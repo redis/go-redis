@@ -1996,6 +1996,7 @@ func (c *ClusterClient) processPipelineNode(
 func (c *ClusterClient) processPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
+	markPipelineExecuted(ctx, cmds)
 	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
 	// for registered fieldsets the batch references get written ahead of
 	// the batch (see himport.go).
@@ -2434,6 +2435,7 @@ func (c *ClusterClient) processTxPipelineNode(
 func (c *ClusterClient) processTxPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, wire []Cmder, cmds []Cmder, asking bool,
 ) *txOutcome {
+	markPipelineExecuted(ctx, cmds)
 	// HIMPORT bookkeeping: pending discards and PREPAREs for registered
 	// fieldsets the transaction references get written ahead of the wire
 	// batch (before ASKING/MULTI; the session state is visible at EXEC).

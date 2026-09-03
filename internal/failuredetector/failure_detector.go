@@ -6,6 +6,7 @@ package failuredetector
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -174,7 +175,7 @@ func NewCommandFailureDetector(config CommandFailureDetectorConfig) *CommandFail
 
 // RecordSuccess records a successful command outcome.
 func (d *CommandFailureDetector) RecordSuccess() {
-	d.bucketFor(d.now().UnixNano()).successes.Add(1)
+	d.addSuccess()
 }
 
 // RecordFailure records a failed command outcome. A nil error is treated as
@@ -184,6 +185,17 @@ func (d *CommandFailureDetector) RecordSuccess() {
 // signal about the database's health.
 func (d *CommandFailureDetector) RecordFailure(err error) {
 	if err == nil {
+		return
+	}
+	// Dial errors mean the TCP connection was never established — the
+	// canonical unreachable-database signal. Checked BEFORE the context
+	// filter below, mirroring the root retry classifier: a dial that expires
+	// through DialTimeout surfaces as *net.OpError wrapping
+	// context.DeadlineExceeded, and filtering it as a client-side context
+	// error would keep the detector from ever tripping on a dead endpoint.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		d.addFailure()
 		return
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -200,7 +212,7 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 		// abort are well-formed server replies — proof of a healthy
 		// database. Count them as successes so miss-heavy or contended
 		// workloads cannot trip the failure rate.
-		d.bucketFor(d.now().UnixNano()).successes.Add(1)
+		d.addSuccess()
 		return
 	}
 	var reply redisReply
@@ -210,10 +222,25 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 		// processed the command: proof of health, not a failure — except
 		// the availability replies (LOADING, CLUSTERDOWN, ...) that signal
 		// a database unable to serve.
-		d.bucketFor(d.now().UnixNano()).successes.Add(1)
+		d.addSuccess()
 		return
 	}
-	d.bucketFor(d.now().UnixNano()).failures.Add(1)
+	d.addFailure()
+}
+
+// addSuccess and addFailure record one outcome in the current bucket, skipping
+// it when bucketFor reports the caller's timestamp is a full ring lap stale
+// (nil) — an already-expired outcome must not be counted in the live window.
+func (d *CommandFailureDetector) addSuccess() {
+	if b := d.bucketFor(d.now().UnixNano()); b != nil {
+		b.successes.Add(1)
+	}
+}
+
+func (d *CommandFailureDetector) addFailure() {
+	if b := d.bucketFor(d.now().UnixNano()); b != nil {
+		b.failures.Add(1)
+	}
 }
 
 // redisReply matches any well-formed server error reply. The concrete
@@ -234,6 +261,12 @@ func isAvailabilityReply(s string) bool {
 	for _, prefix := range []string{
 		"LOADING ", "READONLY ", "CLUSTERDOWN ", "TRYAGAIN ",
 		"MASTERDOWN ", "NOREPLICAS ", "ERR max number of clients",
+		// A MOVED/ASK that reaches this layer means the cluster client
+		// exhausted its redirect budget and still could not route: the member
+		// cannot serve, an availability failure — mirroring the root
+		// classifier's isRedirectReply case. Without these, RecordFailure on a
+		// surfaced redirect would fall through to the success branch below.
+		"MOVED ", "ASK ",
 	} {
 		if strings.HasPrefix(s, prefix) {
 			return true
@@ -289,7 +322,9 @@ func (d *CommandFailureDetector) Stats() (successes, failures uint64) {
 
 // bucketFor returns the bucket that owns the supplied nanosecond timestamp,
 // initialising it (resetting counters and stamping the new epoch) if a
-// previous lap of the ring left stale data in that slot.
+// previous lap of the ring left stale data in that slot. It returns nil when
+// the caller's timestamp is at least a full ring lap stale — the outcome has
+// already aged out of the window and must be dropped, not recorded.
 func (d *CommandFailureDetector) bucketFor(nowNano int64) *bucketState {
 	bucketStart := nowNano - (nowNano % d.bucketWidthNano)
 	idx := (bucketStart / d.bucketWidthNano) % int64(len(d.buckets))
@@ -297,16 +332,34 @@ func (d *CommandFailureDetector) bucketFor(nowNano int64) *bucketState {
 
 	for {
 		st := b.state.Load()
-		if st != nil {
-			if st.epochNano == bucketStart {
-				return st
-			}
-			if st.epochNano > bucketStart {
-				// Clock skew or a concurrent writer already moved this slot
-				// past the current instant; tolerate it.
-				return st
-			}
+		if st != nil && st.epochNano == bucketStart {
+			return st
 		}
+		// A slot holding a LATER epoch than ours is ambiguous. Either a
+		// concurrent writer advanced the ring a full lap while this caller was
+		// descheduled between reading its timestamp and here — the epoch is real
+		// (<= the current clock) — or a backward wall-clock step left a future
+		// epoch (> the current clock) that describes no live bucket. Re-read the
+		// clock to tell them apart.
+		//
+		// In the concurrent-writer case, drop the outcome and return nil: any
+		// two epochs mapping to the same ring slot differ by a whole multiple of
+		// the ring lap (idx = (epoch/width) % N), so a slot epoch strictly later
+		// than ours is at least one full FailureDetectionWindow ahead — this
+		// caller's outcome has already aged out and recording it into the newer
+		// bucket would count an expired failure/success as current. Preserve the
+		// newer bucket untouched; only a rollback artifact falls through to be
+		// rebased below.
+		if st != nil && st.epochNano > bucketStart && st.epochNano <= d.now().UnixNano() {
+			return nil
+		}
+		// st is nil (slot never used), holds an older epoch (a previous lap of
+		// the ring), or holds a future epoch from a backward wall-clock step
+		// (VM restore, NTP step). None describe the current bucket, so stamp a
+		// fresh one. Rebasing the rollback case is what keeps outcomes recorded
+		// after a rollback visible to snapshot (which excludes future epochs);
+		// returning the stale slot would silently drop them until wall time
+		// caught back up.
 		fresh := &bucketState{epochNano: bucketStart}
 		if b.state.CompareAndSwap(st, fresh) {
 			return fresh
@@ -329,7 +382,11 @@ func (d *CommandFailureDetector) snapshot() (successes, failures uint64) {
 	cutoff := nowNano - d.windowNano - d.bucketWidthNano
 	for i := range d.buckets {
 		st := d.buckets[i].state.Load()
-		if st != nil && st.epochNano > cutoff {
+		// The upper bound guards against wall-clock rollback (VM restore,
+		// NTP step): buckets written before the step carry epochs later than
+		// the new now, and counting them would pin stale failures into
+		// ShouldFailover for the rollback duration plus the window.
+		if st != nil && st.epochNano > cutoff && st.epochNano <= nowNano {
 			successes += st.successes.Load()
 			failures += st.failures.Load()
 		}

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	cbq "github.com/redis/go-redis/v9/internal/callbackqueue"
 )
 
 // State represents the state of a circuit breaker.
@@ -81,8 +83,12 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// StateChangeCallback is called when the circuit breaker state changes.
-type StateChangeCallback func(oldState, newState State)
+// StateChangeCallback is called when the circuit breaker state changes. stats
+// is a snapshot taken at the transition, so it reflects the counters that
+// triggered the change even though the callback runs asynchronously (see
+// cbq): read it instead of calling Stats(), which by delivery time may
+// show a later state.
+type StateChangeCallback func(oldState, newState State, stats Stats)
 
 // CircuitBreaker implements the circuit breaker pattern.
 type CircuitBreaker struct {
@@ -93,13 +99,36 @@ type CircuitBreaker struct {
 	successes   atomic.Int32
 	requests    atomic.Int32 // Request count in half-open state
 	lastFailure atomic.Int64 // Unix nano timestamp
+	// generation is bumped on every Open->HalfOpen transition, so a reservation
+	// (see AllowReserve) taken in one half-open episode can be recognized as
+	// stale if it tries to settle after the circuit has cycled through Open and
+	// back to a new half-open episode.
+	generation atomic.Uint64
 
-	// transitionMu serializes the open -> half-open transition so the
-	// half-open counters can be cleared before the new state is published.
+	// resetGen is bumped ONLY by Reset (an operator reselect). Out-of-band
+	// health probes are not admitted through AllowReserve and hold no reservation,
+	// so they gate on this instead: a probe samples resetGen before its checks
+	// run and records its verdict only if no Reset intervened. It deliberately
+	// does NOT move on Open->HalfOpen — a probe verdict is fresh health info and
+	// must still count across a normal recovery transition; only an operator
+	// reselect voids it (see RecordFailureForReset).
+	resetGen atomic.Uint64
+
+	// transitionMu serializes ALL state transitions and the enqueue of their
+	// notifications, so callbacks are delivered in transition (CAS) order. It
+	// is held across the counter-clear + CAS + enqueue only, never across the
+	// callback itself.
 	transitionMu sync.Mutex
 
 	mu        sync.RWMutex
 	callbacks []StateChangeCallback
+
+	// cbq delivers state-change callbacks on a single goroutine in FIFO
+	// order. Enqueue happens under transitionMu, so the queue order matches the
+	// CAS order; the callbacks run OUTSIDE transitionMu, so two concurrent
+	// transitions cannot report out of order and a callback may safely re-enter
+	// the breaker (RecordFailure/CheckState/Reset) without deadlocking.
+	cbq cbq.CallbackQueue
 }
 
 // New creates a new circuit breaker with the given configuration.
@@ -121,44 +150,53 @@ func (cb *CircuitBreaker) State() State {
 // Use this when you need to check if requests should be allowed.
 func (cb *CircuitBreaker) CheckState() State {
 	state := State(cb.state.Load())
-
 	if state == StateOpen {
-		// Check if we should transition to half-open.
 		// Guard against a zero timestamp (no failure recorded yet) so we don't
 		// treat the Unix epoch as the last failure and transition immediately.
 		lastFailure := cb.lastFailure.Load()
 		if lastFailure != 0 && time.Now().UnixNano()-lastFailure >= int64(cb.config.OpenTimeout) {
-			// Clear the half-open counters BEFORE half-open becomes visible:
-			// clearing after a CAS would erase reservations and successes
-			// recorded by requests that observe the new state in between.
-			// The mutex keeps a second (stale) transition attempt from
-			// re-clearing counters that live probes are already using; while
-			// the state is still Open no request touches these counters, so
-			// clearing here is race-free.
 			cb.transitionMu.Lock()
-			// Re-read lastFailure under the lock: a failure recorded after
-			// the check above (e.g. from a request admitted before the
-			// circuit opened) must restart the grace period — transitioning
-			// off the stale timestamp would probe the endpoint early.
-			lastFailure = cb.lastFailure.Load()
-			if State(cb.state.Load()) == StateOpen &&
-				lastFailure != 0 && time.Now().UnixNano()-lastFailure >= int64(cb.config.OpenTimeout) {
-				cb.successes.Store(0)
-				cb.requests.Store(0)
-				// CAS, not Store: a concurrent Reset may have just published
-				// Closed, and overwriting it with HalfOpen would silently
-				// undo the reset.
-				if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
-					cb.transitionMu.Unlock()
-					cb.notifyCallbacks(StateOpen, StateHalfOpen)
-					return StateHalfOpen
-				}
-			}
+			cb.maybeHalfOpenLocked()
 			cb.transitionMu.Unlock()
 		}
 	}
-
 	return State(cb.state.Load())
+}
+
+// maybeHalfOpenLocked performs the Open -> HalfOpen transition when the grace
+// period has elapsed. transitionMu MUST be held.
+//
+// Serializing this transition under the same lock that the half-open
+// reservation operations hold (AllowReserve, RecordSuccessFor, ReleaseFor,
+// RecordFailureFor) is what makes the generation and the half-open counters
+// move atomically with reservation admission and settlement: a reservation
+// cannot observe a torn state where the generation has advanced but the counter
+// has not (or vice versa), which is the whole class of TOCTOU races the
+// lock-free version kept producing.
+func (cb *CircuitBreaker) maybeHalfOpenLocked() {
+	// Re-read lastFailure under the lock: a failure recorded after the caller's
+	// check (e.g. from a request admitted before the circuit opened) must
+	// restart the grace period — transitioning off the stale timestamp would
+	// probe the endpoint early.
+	lastFailure := cb.lastFailure.Load()
+	if State(cb.state.Load()) != StateOpen ||
+		lastFailure == 0 || time.Now().UnixNano()-lastFailure < int64(cb.config.OpenTimeout) {
+		return
+	}
+	// Clear the half-open counters and advance the generation BEFORE the CAS
+	// publishes half-open, so a reservation that observes the new state reads a
+	// clean count and the new generation.
+	cb.successes.Store(0)
+	cb.requests.Store(0)
+	cb.generation.Add(1)
+	// CAS, not Store: a concurrent Reset may have just published Closed, and
+	// overwriting it with HalfOpen would silently undo the reset.
+	if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
+		// Snapshot + enqueue under the lock so callback order matches CAS order;
+		// the callback itself runs on the cbq goroutine.
+		stats := cb.Stats()
+		cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateOpen, StateHalfOpen, stats) })
+	}
 }
 
 // IsAllowed returns true if a request should be allowed through.
@@ -205,6 +243,165 @@ func (cb *CircuitBreaker) Allow() (allowed, reserved bool) {
 	}
 }
 
+// Reservation identifies a single admission returned by AllowReserve. It carries
+// the half-open episode (generation) the admission belongs to and a once-only
+// settle guard, so that:
+//   - a reservation taken in one half-open episode cannot settle against a later
+//     one (the admitted request outlived an open -> half-open cycle), and
+//   - a reservation shared by several outcomes (e.g. a pipeline batch) settles
+//     the half-open slot exactly once, however many outcomes report success.
+//
+// The zero Reservation (held == false) is what a closed-state admission returns:
+// it holds no slot, and RecordSuccessFor treats it as an external success.
+type Reservation struct {
+	gen     uint64
+	held    bool
+	settled *atomic.Bool
+}
+
+// AllowReserve is Allow with an identity-bearing reservation. Prefer it over
+// Allow when the admitted operation may outlive a later open -> half-open
+// transition, or when several outcomes share one admission: the returned
+// Reservation lets RecordSuccessFor / ReleaseFor settle the half-open slot
+// exactly once and only within the episode the slot was reserved in.
+func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
+	state := State(cb.state.Load())
+	if state == StateClosed {
+		// Stamp the generation even on a closed (slot-less) admission: the
+		// !held settle paths use it to drop an outcome that outlived a
+		// reselect/recovery cycle (see RecordSuccessFor/RecordFailureFor).
+		return true, Reservation{gen: cb.generation.Load()}
+	}
+	// A plain Open whose grace period has not elapsed is the common rejected
+	// case — keep it lock-free. Only the half-open lifecycle takes the lock.
+	if state == StateOpen {
+		lastFailure := cb.lastFailure.Load()
+		if lastFailure == 0 || time.Now().UnixNano()-lastFailure < int64(cb.config.OpenTimeout) {
+			return false, Reservation{}
+		}
+	}
+	// HalfOpen, or Open with the grace elapsed: under transitionMu, run any
+	// pending Open -> HalfOpen transition and admit atomically. Because the
+	// generation, the counter and the state cannot move while the lock is held,
+	// there is no admit-then-recheck window: the reservation is bound to exactly
+	// the episode it was admitted into (no stale generation, no phantom slot).
+	cb.transitionMu.Lock()
+	cb.maybeHalfOpenLocked()
+	if State(cb.state.Load()) != StateHalfOpen {
+		st := State(cb.state.Load())
+		gen := cb.generation.Load()
+		cb.transitionMu.Unlock()
+		// Closed admission (slot-less) carries the generation like the lock-free
+		// path above; a non-Closed st means rejected, and its reservation is
+		// never settled.
+		return st == StateClosed, Reservation{gen: gen}
+	}
+	if requests := cb.requests.Add(1); int(requests) > cb.config.MaxHalfOpenRequests {
+		cb.requests.Add(-1)
+		cb.transitionMu.Unlock()
+		return false, Reservation{}
+	}
+	gen := cb.generation.Load()
+	cb.transitionMu.Unlock()
+	return true, Reservation{gen: gen, held: true, settled: new(atomic.Bool)}
+}
+
+// RecordSuccessFor settles a successful outcome for a reservation from
+// AllowReserve. A half-open reservation releases (or, at SuccessThreshold,
+// closes on) its slot at most once, and only while it is still the current
+// half-open episode; a stale reservation — the circuit cycled open -> half-open
+// since it was taken — records nothing. A closed-state reservation (held ==
+// false) clears the failure count while the circuit is still closed and
+// records nothing once it has moved on: its successes predate the failures
+// that opened the circuit and are no evidence of recovery, and counting them
+// would let one in-flight batch close a half-open episode it never probed.
+// Out-of-band evidence goes through RecordExternalSuccess, which does count.
+func (cb *CircuitBreaker) RecordSuccessFor(r Reservation) {
+	if !r.held {
+		// Clear the failure count only while this is still the SAME closed
+		// episode the admission was taken in: the generation must be unchanged
+		// AND the circuit still closed. Every Closed -> ... -> Closed round trip
+		// bumps the generation (Reset, and HalfOpen->Closed via the bump in
+		// maybeHalfOpenLocked), so a stale generation means a reselect or a
+		// recovery cycle happened since admission and this success predates it.
+		// Lock-free: the only action is an idempotent failures.Store(0).
+		if r.gen == cb.generation.Load() && State(cb.state.Load()) == StateClosed {
+			cb.failures.Store(0)
+		}
+		return
+	}
+	if r.settled.Swap(true) {
+		return // already settled by an earlier outcome sharing this reservation
+	}
+	// Under transitionMu the generation check and the settlement are atomic: the
+	// episode cannot cycle between them, so this settles exactly the episode the
+	// reservation was admitted into (or nothing, if it is already stale).
+	cb.transitionMu.Lock()
+	if r.gen == cb.generation.Load() {
+		cb.recordSuccessHalfOpenLocked(true)
+	}
+	cb.transitionMu.Unlock()
+}
+
+// ReleaseFor returns a half-open reservation's slot when the outcome was neither
+// a recordable success nor failure. Like RecordSuccessFor it settles at most
+// once and only within the reservation's own half-open episode; a closed-state
+// or already-settled reservation is a no-op.
+func (cb *CircuitBreaker) ReleaseFor(r Reservation) {
+	if !r.held || r.settled.Swap(true) {
+		return
+	}
+	cb.transitionMu.Lock()
+	if r.gen == cb.generation.Load() {
+		cb.releaseHalfOpenLocked()
+	}
+	cb.transitionMu.Unlock()
+}
+
+// RecordFailureFor records a failure for a reservation from AllowReserve. A
+// half-open reservation records only while it is still the CURRENT half-open
+// episode: a failure from an admission that outlived an open -> half-open cycle
+// must not re-open (and abort the recovery of) the NEW episode — the symmetric
+// guard to RecordSuccessFor. A closed-state reservation (held == false) records
+// only while it is still the SAME closed episode it was admitted in: the
+// generation must be unchanged AND the circuit still closed. If it has moved to
+// open or half-open, or a Reset (reselect) bumped the generation and returned to
+// closed, this failure predates the current episode and must not re-open it (a
+// stale probe failure aborting a recovery, or reversing an operator reselect).
+// Every Closed -> ... -> Closed round trip bumps the generation (Reset, and
+// HalfOpen->Closed via maybeHalfOpenLocked's bump), so the generation check is
+// what distinguishes "still the admission's closed episode" from "a new one".
+// Unlike success/release this does not consume the once-only settle flag — a
+// failure opens the circuit rather than freeing a slot, and the batch path
+// records one failure per command.
+func (cb *CircuitBreaker) RecordFailureFor(r Reservation) {
+	if !r.held {
+		// Under transitionMu, unlike the success path: a failure MUTATES state,
+		// so the generation+state check and the record must be atomic — a Reset
+		// landing between an unlocked check and the record would let a stale
+		// failure re-open the freshly reset breaker (the exact bug). Closed-state
+		// failures are rare, so the lock is cheap here; the hot path is the
+		// lock-free success side.
+		cb.transitionMu.Lock()
+		if r.gen == cb.generation.Load() && State(cb.state.Load()) == StateClosed {
+			cb.lastFailure.Store(time.Now().UnixNano())
+			if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
+				cb.openFromClosedLocked()
+			}
+		}
+		cb.transitionMu.Unlock()
+		return
+	}
+	// Same-episode failures re-open under the lock, atomically with the
+	// generation check; a stale reservation records nothing.
+	cb.transitionMu.Lock()
+	if r.gen == cb.generation.Load() {
+		cb.lastFailure.Store(time.Now().UnixNano())
+		cb.recordFailureHalfOpenLocked()
+	}
+	cb.transitionMu.Unlock()
+}
+
 // ReleaseHalfOpen returns a half-open request slot previously reserved by a
 // successful IsAllowed call when the operation produced neither a recordable
 // success nor failure (for example, it was aborted for an unrelated reason).
@@ -212,6 +409,13 @@ func (cb *CircuitBreaker) Allow() (allowed, reserved bool) {
 // half-open recovery once MaxHalfOpenRequests slots are exhausted. It only has
 // an effect while the breaker is half-open.
 func (cb *CircuitBreaker) ReleaseHalfOpen() {
+	cb.transitionMu.Lock()
+	cb.releaseHalfOpenLocked()
+	cb.transitionMu.Unlock()
+}
+
+// releaseHalfOpenLocked frees a half-open slot. transitionMu MUST be held.
+func (cb *CircuitBreaker) releaseHalfOpenLocked() {
 	if State(cb.state.Load()) != StateHalfOpen {
 		return
 	}
@@ -236,26 +440,81 @@ func (cb *CircuitBreaker) RecordExternalSuccess() {
 	cb.recordSuccess(false)
 }
 
-func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
-	state := State(cb.state.Load())
+// ResetGeneration returns the current reset generation. A health probe samples
+// it BEFORE running its checks and passes it to RecordExternalSuccessForReset /
+// RecordFailureForReset, which drop the verdict if a Reset (an operator reselect)
+// bumped the generation meanwhile. Unlike the reservation generation, this moves
+// only on Reset, so a probe verdict still counts across a normal Open->HalfOpen.
+func (cb *CircuitBreaker) ResetGeneration() uint64 {
+	return cb.resetGen.Load()
+}
 
-	switch state {
+// RecordExternalSuccessForReset records an out-of-band success (a health probe)
+// unless a Reset has run since gen was sampled. Like RecordExternalSuccess it
+// holds no admission slot. The generation check and the record run under
+// transitionMu — the same lock Reset holds across its counter clear + generation
+// bump — so a reselect cannot interleave between them.
+func (cb *CircuitBreaker) RecordExternalSuccessForReset(gen uint64) {
+	cb.transitionMu.Lock()
+	defer cb.transitionMu.Unlock()
+	if cb.resetGen.Load() != gen {
+		return
+	}
+	cb.recordSuccessHalfOpenLocked(false)
+}
+
+// RecordFailureForReset records an out-of-band failure (a health probe) unless a
+// Reset has run since gen was sampled — the guard that stops a probe verdict
+// sampled before an operator reselect from re-opening the freshly selected
+// member (at FailureThreshold 1 a single stale failure would). The check and the
+// record run under transitionMu, so they are atomic with Reset.
+func (cb *CircuitBreaker) RecordFailureForReset(gen uint64) {
+	cb.transitionMu.Lock()
+	defer cb.transitionMu.Unlock()
+	if cb.resetGen.Load() != gen {
+		return
+	}
+	cb.lastFailure.Store(time.Now().UnixNano())
+	switch State(cb.state.Load()) {
+	case StateClosed:
+		if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
+			cb.openFromClosedLocked()
+		}
+	case StateHalfOpen:
+		cb.recordFailureHalfOpenLocked()
+	}
+}
+
+func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
+	// Closed is the hot path (every successful command clears the failure
+	// count): keep it lock-free. The half-open lifecycle is serialized under
+	// transitionMu, the same lock the reservation operations hold.
+	if State(cb.state.Load()) == StateClosed {
+		cb.failures.Store(0)
+		return
+	}
+	cb.transitionMu.Lock()
+	cb.recordSuccessHalfOpenLocked(heldSlot)
+	cb.transitionMu.Unlock()
+}
+
+// recordSuccessHalfOpenLocked applies a success with transitionMu held. In
+// half-open it counts toward SuccessThreshold (closing the circuit) and, for a
+// slot-holding admission that does not close it, releases the slot. In closed
+// it clears the failure count; Open is a no-op.
+func (cb *CircuitBreaker) recordSuccessHalfOpenLocked(heldSlot bool) {
+	switch State(cb.state.Load()) {
 	case StateHalfOpen:
 		successes := cb.successes.Add(1)
-		// Re-check state after increment - another goroutine may have changed it
-		if State(cb.state.Load()) != StateHalfOpen {
-			return
-		}
 		if int(successes) >= cb.config.SuccessThreshold {
-			// Clear the failure counter BEFORE Closed becomes visible: it
-			// still holds the count that opened the circuit, and a failure
-			// recorded between the state swap and a later reset would
-			// immediately re-open the circuit off that stale count.
+			// Clear the failure counter BEFORE Closed becomes visible: it still
+			// holds the count that opened the circuit.
 			cb.failures.Store(0)
 			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateClosed)) {
-				// Notify callbacks before resetting the half-open counters so
-				// they observe the success count that triggered the transition.
-				cb.notifyCallbacks(StateHalfOpen, StateClosed)
+				// Snapshot BEFORE clearing the half-open counters so the callback
+				// observes the success count that triggered the close.
+				stats := cb.Stats()
+				cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateHalfOpen, StateClosed, stats) })
 				cb.successes.Store(0)
 				cb.requests.Store(0)
 			}
@@ -267,7 +526,7 @@ func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
 			// CONCURRENT probes rather than a lifetime budget. Without this,
 			// a MaxHalfOpenRequests lower than SuccessThreshold could never
 			// accumulate enough successes to close the circuit.
-			cb.ReleaseHalfOpen()
+			cb.releaseHalfOpenLocked()
 		}
 	case StateClosed:
 		// Reset failure count on success
@@ -278,47 +537,96 @@ func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
 // RecordFailure records a failed operation.
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.lastFailure.Store(time.Now().UnixNano())
-	state := State(cb.state.Load())
-
-	switch state {
+	switch State(cb.state.Load()) {
 	case StateClosed:
-		failures := cb.failures.Add(1)
-		if int(failures) >= cb.config.FailureThreshold {
-			if cb.state.CompareAndSwap(int32(StateClosed), int32(StateOpen)) {
-				// A Reset that completed between the timestamp store above and
-				// this CAS wiped lastFailure; repair it (CAS so a concurrent
-				// newer failure's timestamp is kept), or the zero-timestamp
-				// guard in CheckState would wedge the circuit open. A Reset
-				// that wipes after this repair also publishes Closed after,
-				// so the circuit does not stay Open with a zero timestamp.
-				cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
-				// Notify callbacks before clearing the half-open counters so
-				// observers see the failure count that triggered the
-				// transition, matching the half-open -> closed/open paths.
-				cb.notifyCallbacks(StateClosed, StateOpen)
-				// successes and requests should already be 0 in Closed (they
-				// are only incremented while half-open, and every half-open
-				// exit zeroes them). Reset defensively so the invariant
-				// "successes/requests are clean on entry to Open" is upheld
-				// consistently across all transitions into Open, even if a
-				// future change starts touching those counters in Closed.
-				cb.successes.Store(0)
-				cb.requests.Store(0)
+		// Hot path: count lock-free, take the lock only to open at the threshold.
+		if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
+			cb.transitionMu.Lock()
+			// Re-read the count under the lock: a Reset (SetActiveDatabase) may
+			// have zeroed it since the lock-free Add crossed the threshold, and
+			// opening off that stale reading would immediately undo an operator
+			// re-selection. openFromClosedLocked's CAS alone cannot tell the
+			// difference — Reset already swapped back to Closed.
+			if int(cb.failures.Load()) >= cb.config.FailureThreshold {
+				cb.openFromClosedLocked()
 			}
+			cb.transitionMu.Unlock()
 		}
 	case StateHalfOpen:
-		// Any failure in half-open state opens the circuit.
+		cb.transitionMu.Lock()
+		cb.recordFailureHalfOpenLocked()
+		cb.transitionMu.Unlock()
+	}
+	// Open: the timestamp store above already restarted the grace period.
+	//
+	// The old lost-CAS retry loop is gone: half-open closes (recordSuccessHalfOpenLocked)
+	// and opens (recordFailureHalfOpenLocked) now both run under transitionMu, so
+	// they are serialized and no CAS can be lost to a concurrent transition.
+}
+
+// openFromClosedLocked performs the Closed -> Open transition. transitionMu MUST
+// be held.
+func (cb *CircuitBreaker) openFromClosedLocked() {
+	if cb.state.CompareAndSwap(int32(StateClosed), int32(StateOpen)) {
+		// A Reset that completed between the timestamp store in the caller and
+		// this CAS wiped lastFailure; repair it (CAS so a concurrent newer
+		// failure's timestamp is kept), or the zero-timestamp guard in
+		// CheckState would wedge the circuit open.
+		cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
+		stats := cb.Stats()
+		cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateClosed, StateOpen, stats) })
+		// successes/requests are 0 in Closed already; reset defensively so the
+		// invariant "clean on entry to Open" holds across all transitions.
+		cb.successes.Store(0)
+		cb.requests.Store(0)
+	}
+}
+
+// recordFailureHalfOpenLocked opens the circuit from half-open (any failure in
+// half-open re-opens). transitionMu MUST be held. If the episode already closed
+// (a settling success won under the same lock before this call), the failure is
+// treated as a fresh closed-state failure.
+func (cb *CircuitBreaker) recordFailureHalfOpenLocked() {
+	switch State(cb.state.Load()) {
+	case StateHalfOpen:
 		if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateOpen)) {
-			// Same timestamp repair as the closed -> open transition above.
 			cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
-			// Notify callbacks before resetting counters so they observe the
-			// counts that triggered the transition, matching the half-open ->
-			// closed path in RecordSuccess.
-			cb.notifyCallbacks(StateHalfOpen, StateOpen)
+			stats := cb.Stats()
+			cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateHalfOpen, StateOpen, stats) })
 			cb.successes.Store(0)
 			cb.requests.Store(0)
 		}
+	case StateClosed:
+		if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
+			cb.openFromClosedLocked()
+		}
 	}
+}
+
+// ForceOpen transitions the breaker straight to Open, regardless of the current
+// failure count. For callers that have already determined a member is down (for
+// example a failed startup or health probe) and want to open the circuit
+// without synthesizing FailureThreshold individual RecordFailure calls.
+func (cb *CircuitBreaker) ForceOpen() {
+	cb.transitionMu.Lock()
+	// Store lastFailure UNDER the lock, before the swap: a concurrent Reset
+	// (also under the lock) must not be able to clear it between the store and
+	// the swap. Otherwise the swap could publish Open with lastFailure == 0,
+	// which CheckState refuses to advance to half-open, wedging the circuit open
+	// forever past OpenTimeout.
+	cb.lastFailure.Store(time.Now().UnixNano())
+	// Swap, capturing the old state for the callback; skip the notify (and the
+	// counter clear) if it was already Open, so a redundant ForceOpen is a no-op.
+	old := State(cb.state.Swap(int32(StateOpen)))
+	if old != StateOpen {
+		// successes/requests are meaningless in Open; clear them so the next
+		// Open -> HalfOpen episode starts clean, matching the other transitions.
+		cb.successes.Store(0)
+		cb.requests.Store(0)
+		stats := cb.Stats()
+		cb.cbq.Dispatch(func() { cb.notifyCallbacks(old, StateOpen, stats) })
+	}
+	cb.transitionMu.Unlock()
 }
 
 // OnStateChange registers a callback to be called when the state changes.
@@ -328,15 +636,21 @@ func (cb *CircuitBreaker) OnStateChange(callback StateChangeCallback) {
 	cb.callbacks = append(cb.callbacks, callback)
 }
 
-// notifyCallbacks notifies all registered callbacks of a state change.
-func (cb *CircuitBreaker) notifyCallbacks(oldState, newState State) {
+// notifyCallbacks notifies all registered callbacks of a state change. It runs
+// on the cbq goroutine (never under transitionMu), so a callback may
+// re-enter the breaker without deadlocking.
+func (cb *CircuitBreaker) notifyCallbacks(oldState, newState State, stats Stats) {
 	cb.mu.RLock()
 	callbacks := make([]StateChangeCallback, len(cb.callbacks))
 	copy(callbacks, cb.callbacks)
 	cb.mu.RUnlock()
 
 	for _, callback := range callbacks {
-		callback(oldState, newState)
+		// Recover per callback: the queue only recovers around this whole
+		// batch, so a panic here would otherwise unwind past the remaining
+		// callbacks and skip them for this transition (and every future one,
+		// since a deterministic panic recurs on the same callback each time).
+		cbq.RunSafely(func() { callback(oldState, newState, stats) })
 	}
 }
 
@@ -348,14 +662,28 @@ func (cb *CircuitBreaker) Reset() {
 	// stale one it could immediately re-open the circuit, and the
 	// lastFailure wipe below would then wedge it open past the
 	// zero-timestamp guard in CheckState.
+	// Hold transitionMu across the clear + swap + enqueue so Reset serializes
+	// with the other transitions and its notification keeps CAS order.
+	cb.transitionMu.Lock()
 	cb.failures.Store(0)
 	cb.successes.Store(0)
 	cb.requests.Store(0)
 	cb.lastFailure.Store(0)
+	// Advance the generation so any in-flight half-open reservation from the
+	// episode being reset is now stale: without this, a reservation handed out
+	// before the Reset still matches the generation and RecordFailureFor would
+	// count its failure against the freshly closed circuit, re-opening the
+	// operator-selected member immediately (FailureThreshold == 1).
+	cb.generation.Add(1)
+	// Bump the probe generation too: a health probe sampled before this reselect
+	// must not record its (now stale) verdict against the freshly closed circuit.
+	cb.resetGen.Add(1)
 	oldState := State(cb.state.Swap(int32(StateClosed)))
 	if oldState != StateClosed {
-		cb.notifyCallbacks(oldState, StateClosed)
+		stats := cb.Stats()
+		cb.cbq.Dispatch(func() { cb.notifyCallbacks(oldState, StateClosed, stats) })
 	}
+	cb.transitionMu.Unlock()
 }
 
 // Stats returns current statistics for monitoring.

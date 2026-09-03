@@ -11,6 +11,10 @@ import (
 // This is an alias to the internal circuitbreaker package.
 type CircuitState = circuitbreaker.State
 
+// Reservation is a circuit-breaker admission handle returned by AllowReserve.
+// This is an alias to the internal circuitbreaker package.
+type Reservation = circuitbreaker.Reservation
+
 const (
 	// CircuitClosed indicates the circuit is closed and requests are allowed.
 	CircuitClosed = circuitbreaker.StateClosed
@@ -77,7 +81,7 @@ func NewCircuitBreaker(config CircuitBreakerConfig) *CircuitBreaker {
 
 // OnStateChange registers a callback to be called when the state changes.
 func (cb *CircuitBreaker) OnStateChange(callback CircuitBreakerCallback) {
-	cb.CircuitBreaker.OnStateChange(func(oldState, newState circuitbreaker.State) {
+	cb.CircuitBreaker.OnStateChange(func(oldState, newState circuitbreaker.State, _ circuitbreaker.Stats) {
 		callback(oldState, newState)
 	})
 }

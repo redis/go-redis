@@ -181,6 +181,19 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 	}
 }
 
+// Reconnect closes the current connection and re-dials through the PubSub's
+// connection factory, resubscribing to all channels and patterns. It is used
+// by MultiDBClient to move subscriptions to the new active database after a
+// failover, and can be called by applications to force a re-dial.
+func (c *PubSub) Reconnect(ctx context.Context, reason error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.reconnect(ctx, reason)
+}
+
 func (c *PubSub) reconnect(ctx context.Context, reason error) {
 	if c.cn != nil && c.cn.ShouldHandoff() {
 		newEndpoint := c.cn.GetHandoffEndpoint()
@@ -792,7 +805,8 @@ func (c *channel) initMsgChan() {
 				case <-timer.C:
 					internal.Logger.Printf(
 						ctx, "redis: %v channel is full for %s (message is dropped)",
-						c, c.chanSendTimeout)
+						c, c.chanSendTimeout,
+					)
 				}
 			default:
 				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)
@@ -846,7 +860,8 @@ func (c *channel) initAllChan() {
 				case <-timer.C:
 					internal.Logger.Printf(
 						ctx, "redis: %v channel is full for %s (message is dropped)",
-						c, c.chanSendTimeout)
+						c, c.chanSendTimeout,
+					)
 				}
 			default:
 				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)

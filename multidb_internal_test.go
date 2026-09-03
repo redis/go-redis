@@ -1,0 +1,1575 @@
+package redis
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	imultidb "github.com/redis/go-redis/v9/internal/multidb"
+	"github.com/redis/go-redis/v9/internal/proto"
+)
+
+// This file consolidates the MultiDB internal (package redis) tests: core
+// failover, probe and breaker gating, membership control paths, and the
+// pipeline / transaction batch paths.
+
+// classifyOutcome must treat typed server replies (the proto reader parses
+// recognized prefixes into *proto.AuthError, *proto.MovedError, ... rather
+// than the concrete proto.RedisError string) exactly like their string
+// forms: application-level replies prove the database served the request,
+// while availability replies and surfaced redirects are failures.
+func TestClassifyOutcomeTypedReplies(t *testing.T) {
+	for _, err := range []error{
+		proto.NewAuthError("NOAUTH Authentication required"),
+		proto.NewPermissionError("NOPERM this user has no permissions"),
+		proto.NewExecAbortError("EXECABORT Transaction discarded because of previous errors"),
+	} {
+		if got := classifyOutcome(err, true); got != outcomeSuccess {
+			t.Errorf("classifyOutcome(%q) = %v, want outcomeSuccess", err.Error(), got)
+		}
+	}
+	for _, err := range []error{
+		proto.NewLoadingError("LOADING Redis is loading the dataset in memory"),
+		proto.NewClusterDownError("CLUSTERDOWN The cluster is down"),
+		// A MOVED/ASK that surfaces to this layer means the cluster client
+		// exhausted its redirect budget: an availability failure, not a
+		// healthy reply (see classifyOutcome's isRedirectReply case).
+		proto.NewMovedError("MOVED 3999 127.0.0.1:6381", "127.0.0.1:6381"),
+		proto.NewAskError("ASK 3999 127.0.0.1:6381", "127.0.0.1:6381"),
+	} {
+		if got := classifyOutcome(err, true); got != outcomeFailure {
+			t.Errorf("classifyOutcome(%q) = %v, want outcomeFailure", err.Error(), got)
+		}
+	}
+	if got := classifyOutcome(proto.RedisError("WRONGTYPE Operation against a key"), true); got != outcomeSuccess {
+		t.Errorf("classifyOutcome(WRONGTYPE) = %v, want outcomeSuccess", got)
+	}
+}
+
+// A cluster member whose client has no known nodes cannot route any command:
+// an availability failure that must drive failover, not a neutral no-op.
+func TestClassifyOutcomeClusterNoNodes(t *testing.T) {
+	if got := classifyOutcome(errClusterNoNodes, true); got != outcomeFailure {
+		t.Errorf("classifyOutcome(errClusterNoNodes) = %v, want outcomeFailure", got)
+	}
+	if got := classifyOutcome(fmt.Errorf("wrapped: %w", errClusterNoNodes), true); got != outcomeFailure {
+		t.Errorf("classifyOutcome(wrapped errClusterNoNodes) = %v, want outcomeFailure", got)
+	}
+}
+
+// TestTryFallbackYieldsWhenFailoverLocked pins that the background fallback
+// yields to a real failover instead of blocking it: with failoverMu already
+// held (as the command-path tryFailover would hold it), tryFallbackToPrimary
+// must return promptly via TryLock rather than block on the lock, and must not
+// change the active member. Under the old Lock() this goroutine would block
+// forever and the test would time out.
+func TestTryFallbackYieldsWhenFailoverLocked(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	active := &multidbDatabase{id: 0, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	cand := &multidbDatabase{id: 1, weight: 2, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	core.dbs[0] = active
+	core.dbs[1] = cand
+	core.active.Store(0)
+
+	// Simulate a concurrent failover holding the lock across a slow probe.
+	core.failoverMu.Lock()
+	defer core.failoverMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		core.tryFallbackToPrimary(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tryFallbackToPrimary blocked on a held failoverMu instead of yielding")
+	}
+	if got := int(core.active.Load()); got != 0 {
+		t.Errorf("active changed to %d while a failover held the lock", got)
+	}
+}
+
+// TestNewPubSubClusterActiveRetryableAfterStandaloneLoss pins that a PubSub
+// created while a standalone member existed treats a later "cluster active, no
+// standalone" state as retryable, not terminal: membership is runtime-mutable
+// (a passive standalone can be removed after failover and another added), so
+// the channel loop must keep polling instead of closing permanently.
+func TestNewPubSubClusterActiveRetryableAfterStandaloneLoss(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	// A passive standalone (id 0) exists at creation, and a cluster member
+	// (id 1) is active — so staticAllCluster is false. (newPubSub adopts the
+	// standalone's options, so give it a real client, not a zero &Client{}.)
+	standalone := NewClient(&Options{Addr: "127.0.0.1:1"})
+	defer standalone.Close()
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: standalone, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
+	core.active.Store(1)
+
+	ps := core.newPubSub() // created while a standalone member (id 0) exists
+
+	// The standalone is removed; the cluster member stays active.
+	delete(core.dbs, 0)
+
+	_, err := ps.newConn(context.Background(), "", nil)
+	if errors.Is(err, ErrClosed) {
+		t.Fatalf("newConn returned terminal ErrClosed for a config that had a standalone at creation")
+	}
+	if !errors.Is(err, errPubSubRequiresStandalone) {
+		t.Fatalf("newConn err = %v, want errPubSubRequiresStandalone (retryable)", err)
+	}
+}
+
+// TestNewPubSubAdoptsStandaloneOptionsWhenClusterActive pins that a PubSub
+// created while a cluster member is active adopts a standalone member's options
+// (write timeout, protocol) rather than the zero Options — otherwise subscribe
+// frames would use a zero WriteTimeout and the wrong Protocol gate after the
+// subscription fails over to the standalone.
+func TestNewPubSubAdoptsStandaloneOptionsWhenClusterActive(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	standalone := NewClient(&Options{Addr: "127.0.0.1:1", WriteTimeout: 4321 * time.Millisecond, Protocol: 3})
+	defer standalone.Close()
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: standalone, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
+	core.active.Store(1)                                                                                              // cluster active at creation
+
+	ps := core.newPubSub()
+	if ps.opt == nil {
+		t.Fatal("PubSub opt is nil")
+	}
+	if ps.opt.WriteTimeout != standalone.opt.WriteTimeout {
+		t.Errorf("PubSub WriteTimeout = %v, want the standalone's %v (zero-Options bug)", ps.opt.WriteTimeout, standalone.opt.WriteTimeout)
+	}
+	if ps.opt.Protocol != 3 {
+		t.Errorf("PubSub Protocol = %d, want 3 (standalone's)", ps.opt.Protocol)
+	}
+}
+
+// TestNewPubSubAllClusterAtCreationTerminal pins the preserved fail-fast path: a
+// PubSub created on an all-cluster config that still has no standalone member
+// returns the terminal ErrClosed so the channel loop exits instead of spinning.
+func TestNewPubSubAllClusterAtCreationTerminal(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
+	core.active.Store(0)
+
+	ps := core.newPubSub() // all-cluster at creation
+
+	_, err := ps.newConn(context.Background(), "", nil)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("all-cluster newConn err = %v, want terminal ErrClosed", err)
+	}
+}
+
+// resettingHealthCheck reports unhealthy and runs onCheck while it executes,
+// simulating an operator reselect (breaker Reset) landing mid-probe.
+type resettingHealthCheck struct{ onCheck func() }
+
+func (c *resettingHealthCheck) CheckHealth(context.Context, *Client) (bool, error) {
+	c.onCheck()
+	return false, nil
+}
+
+func (c *resettingHealthCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	c.onCheck()
+	return false, nil
+}
+
+// TestProbeVerdictVoidedByResetDuringProbe pins that the probe records through
+// the reset-generation gate: an operator reselect (breaker Reset) that lands
+// while the probe's checks run voids the probe's failure verdict, so a stale
+// probe cannot re-open the member the operator just selected.
+func TestProbeVerdictVoidedByResetDuringProbe(t *testing.T) {
+	cb := imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1})
+	db := &multidbDatabase{
+		id:     0,
+		cb:     cb,
+		policy: defaultMultiDBPolicy{},
+		c:      NewClient(&Options{Addr: "127.0.0.1:6379"}),
+	}
+	defer db.c.Close()
+
+	chk := &resettingHealthCheck{onCheck: func() { cb.Reset() }}
+	db.probeWith(context.Background(), time.Second, []MultiDBHealthCheck{chk})
+
+	if cb.State() != imultidb.CircuitClosed {
+		t.Fatalf("breaker %v, want closed: a probe failure overtaken by an operator Reset must not re-open the member", cb.State())
+	}
+}
+
+// okLivenessCheck is an always-healthy, non-fail-back-only check: it stands in
+// for the default PING liveness floor on members built without a client.
+type okLivenessCheck struct{}
+
+func (okLivenessCheck) CheckHealth(context.Context, *Client) (bool, error) { return true, nil }
+func (okLivenessCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	return true, nil
+}
+
+// failbackLagCheck is a fail-back-only check that reports unhealthy and, as a
+// side effect, flips the active member mid-probe — simulating a failover that
+// lands while a passive member is being probed with the full check set.
+type failbackLagCheck struct{ onCheck func() }
+
+func (c *failbackLagCheck) CheckHealth(context.Context, *Client) (bool, error) {
+	c.onCheck()
+	return false, nil
+}
+
+func (c *failbackLagCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	c.onCheck()
+	return false, nil
+}
+
+func (c *failbackLagCheck) FailbackOnly() bool { return true }
+
+// TestBackgroundProbeDoesNotEvictMemberGoneActive pins the split-verdict: the
+// background pass runs a passive member's full checks without recording, then
+// revalidates the active. If the member became active mid-probe, only the
+// active-safe subset is recorded — so a fail-back-only failure (lag) cannot open
+// the breaker of the member now serving traffic.
+func TestBackgroundProbeDoesNotEvictMemberGoneActive(t *testing.T) {
+	// A real probe timeout: the active-safe probe now always runs (liveness
+	// floor), and an already-expired probe context reads as unhealthy.
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second})
+	mkCB := func() *imultidb.CircuitBreaker {
+		return imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1})
+	}
+	// Both members carry a passing liveness check standing in for the default
+	// PING floor (neither has a client).
+	a := &multidbDatabase{id: 0, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{okLivenessCheck{}}}
+	b := &multidbDatabase{id: 1, cb: mkCB(), policy: defaultMultiDBPolicy{}}
+	core.dbs[0] = a
+	core.dbs[1] = b
+	core.active.Store(0) // A active at the start of the pass
+
+	// The fail-back-only check is the one whose failure must not evict b once
+	// it is the active.
+	b.checks = []MultiDBHealthCheck{okLivenessCheck{}, &failbackLagCheck{onCheck: func() { core.active.Store(1) }}}
+
+	core.runHealthChecksOnce(context.Background())
+
+	if b.cb.State() != imultidb.CircuitClosed {
+		t.Fatalf("member that became active mid-probe was evicted by a fail-back-only check: breaker=%v", b.cb.State())
+	}
+}
+
+// lockProbeCheck records whether failoverMu was UNheld at the moment the health
+// check ran — i.e. whether the initial probe runs off the failover lock.
+type lockProbeCheck struct {
+	core    *multidbCore
+	offLock *bool
+}
+
+func (c *lockProbeCheck) CheckHealth(context.Context, *Client) (bool, error) {
+	if c.core.failoverMu.TryLock() {
+		c.core.failoverMu.Unlock()
+		*c.offLock = true
+	}
+	return true, nil
+}
+
+func (c *lockProbeCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	return c.CheckHealth(nil, nil)
+}
+
+// TestAddDatabaseProbesOffFailoverLock pins that AddDatabase runs the initial
+// health probe WITHOUT holding failoverMu. Holding it across the probe (up to
+// HealthCheckTimeout, or unbounded for an uncooperative custom check) would
+// block an urgent tryFailover, which needs the same lock, and let short command
+// contexts expire.
+func TestAddDatabaseProbesOffFailoverLock(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{
+		HealthCheckTimeout:   time.Second,
+		HealthCheckPolicy:    defaultMultiDBPolicy{},
+		CircuitBreakerConfig: &MultiDBCircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: time.Second},
+	})
+	offLock := false
+	chk := &lockProbeCheck{core: core, offLock: &offLock}
+
+	_, _ = core.addDatabase(context.Background(), MultiDBClientConfig{
+		Options:      &Options{Addr: "127.0.0.1:6379"},
+		HealthChecks: []MultiDBHealthCheck{chk},
+		Weight:       1,
+	})
+
+	if !offLock {
+		t.Fatal("initial health probe ran while holding failoverMu — a slow check would block failover")
+	}
+}
+
+// AddDatabase must refuse a cluster member once Close has begun tearing the
+// client down. Close clears the cached autopipeliner pointers and flips
+// autopipelinerClosed under autopipelinerMu before it drains the accepted
+// batches. Without the closed check the liveness guard sees no live
+// autopipeliner and would admit the cluster member while the drain is still
+// flushing, letting a failing-over batch reach it through the unsharded
+// autopipeline path the cluster member does not support.
+func TestAddClusterDatabaseRejectedAfterCloseBegan(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	c := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex), autopipelinerClosed: true}
+
+	before := len(core.dbs)
+	id, err := c.AddDatabase(context.Background(), MultiDBClientConfig{
+		ClusterOptions:         &ClusterOptions{Addrs: []string{"127.0.0.1:6379"}},
+		SkipInitialHealthCheck: true,
+	})
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("cluster add during shutdown: got id=%d err=%v, want ErrClosed", id, err)
+	}
+	if got := len(core.dbs); got != before {
+		t.Fatalf("cluster add during shutdown mutated membership: %d -> %d", before, got)
+	}
+}
+
+// AddDatabase must refuse a STANDALONE member too once Close has begun: the
+// shutdown guard is not cluster-specific. Otherwise a standalone add racing
+// Close could publish a member that the completing Close immediately tears down,
+// handing the caller an id for a dead member.
+func TestAddStandaloneDatabaseRejectedAfterCloseBegan(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	c := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex), autopipelinerClosed: true}
+
+	before := len(core.dbs)
+	id, err := c.AddDatabase(context.Background(), MultiDBClientConfig{
+		Options:                &Options{Addr: "127.0.0.1:6379"},
+		SkipInitialHealthCheck: true,
+	})
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("standalone add during shutdown: got id=%d err=%v, want ErrClosed", id, err)
+	}
+	if got := len(core.dbs); got != before {
+		t.Fatalf("standalone add during shutdown mutated membership: %d -> %d", before, got)
+	}
+}
+
+// apCallingCheck is a health check that calls the MultiDBClient's own
+// AutoPipeline() from inside the probe — the re-entrant pattern that would
+// deadlock a cluster AddDatabase holding autopipelinerMu across the probe.
+type apCallingCheck struct {
+	mdb *MultiDBClient
+	got chan error
+}
+
+func (c *apCallingCheck) CheckHealth(context.Context, *Client) (bool, error) {
+	_, err := c.mdb.AutoPipeline()
+	c.got <- err
+	return true, nil
+}
+
+func (c *apCallingCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	_, err := c.mdb.AutoPipeline()
+	c.got <- err
+	return true, nil
+}
+
+// TestAddClusterDatabaseProbeMayCallAutoPipeline pins that a cluster AddDatabase
+// does not hold autopipelinerMu across the member's initial health probe: a
+// custom check that calls AutoPipeline() must not deadlock. While the add is
+// pending the call is refused (a cluster member is landing, so an unsharded
+// autopipeliner must not be created) — the invariant the lock used to protect,
+// now carried by the pending-add count.
+func TestAddClusterDatabaseProbeMayCallAutoPipeline(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{
+		HealthCheckTimeout:   time.Second,
+		HealthCheckPolicy:    defaultMultiDBPolicy{},
+		CircuitBreakerConfig: &MultiDBCircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: time.Second},
+	})
+	t.Cleanup(func() { _ = core.close() })
+	mdb := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex)}
+	got := make(chan error, 1)
+	chk := &apCallingCheck{mdb: mdb, got: got}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mdb.AddDatabase(context.Background(), MultiDBClientConfig{
+			ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:6379"}},
+			HealthChecks:   []MultiDBHealthCheck{chk},
+			Weight:         1,
+		})
+		done <- err
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AddDatabase deadlocked: the probe's AutoPipeline() call blocked on autopipelinerMu held across the probe")
+	}
+	select {
+	case err := <-got:
+		if !errors.Is(err, errMultiDBAutoPipelineCluster) {
+			t.Fatalf("AutoPipeline() during a pending cluster add: got %v, want errMultiDBAutoPipelineCluster (refused, not created)", err)
+		}
+	default:
+		t.Fatal("health check never ran")
+	}
+}
+
+// TestNaNWeightRejected pins that a NaN member weight is rejected on both the
+// config path (validate) and the runtime API (setWeight). A stored NaN makes
+// every ordered comparison in selection/auto-fallback false, degenerating
+// priority to iteration order.
+func TestNaNWeightRejected(t *testing.T) {
+	cfg := MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:6379"}, Weight: math.NaN()}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("validate accepted a NaN Weight")
+	}
+
+	core := newMultidbCore(&MultiDBOptions{})
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	if err := core.setWeight(0, math.NaN()); err == nil {
+		t.Fatal("setWeight accepted a NaN weight")
+	}
+	if core.dbs[0].weight != 1 {
+		t.Fatalf("NaN weight was stored (weight=%v), member selection is now poisoned", core.dbs[0].weight)
+	}
+}
+
+// TestRemovedFormerActiveErrClosedDoesNotSurface pins that a command whose
+// snapshotted active member was removed mid-flight (its client closed) does not
+// surface the terminal ErrClosed to the caller while the MultiDBClient is still
+// open. It surfaces the retryable ErrTemporarilyNotAvailable instead, so the
+// caller retries like it would for a transport failure; nothing is replayed by
+// the client itself.
+func TestRemovedFormerActiveErrClosedDoesNotSurface(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	// A closed client's pool returns ErrClosed from Process without dialing.
+	a := NewClient(&Options{Addr: "127.0.0.1:6379"})
+	_ = a.Close()
+	db := &multidbDatabase{id: 0, weight: 1, c: a, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	db.removed.Store(true)
+	core.dbs[0] = db
+	core.active.Store(0)
+
+	err := core.process(context.Background(), NewStatusCmd(context.Background(), "ping"))
+	if errors.Is(err, ErrClosed) {
+		t.Fatalf("removed former-active surfaced terminal ErrClosed instead of re-gating: %v", err)
+	}
+	if !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("got %v, want ErrTemporarilyNotAvailable after the bounded re-gate", err)
+	}
+}
+
+// execAll marks every command as executed — the per-command marker a fully
+// executed batch produces (see executedCmds / markPipelineExecuted).
+func execAll(cmds []Cmder) *executedCmds {
+	ec := newExecutedCmds(len(cmds))
+	ec.mark(cmds)
+	return ec
+}
+
+// batchTimeoutErr is a pointer-typed local read timeout: shouldRetry treats it
+// as retryable only when retryTimeout is set, so it is neutral for a blocking
+// command and a transport failure for an ordinary one — the asymmetry the
+// propagation rule below has to reconcile. Pointer identity mirrors the real
+// *net.OpError the reader stamps onto unread followers; the padding byte keeps
+// distinct allocations at distinct addresses (zero-size values may alias).
+type batchTimeoutErr struct{ _ byte }
+
+func (*batchTimeoutErr) Error() string { return "i/o timeout" }
+func (*batchTimeoutErr) Timeout() bool { return true }
+
+// TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral pins the reader
+// stamping rule: pipelineReadCmds stops at the first transport error and stamps
+// that same error onto every unread follower. When the originator is a blocking
+// command whose local deadline is neutral, the followers are propagations of
+// that one event — not N transport failures that would charge the breaker and
+// replay the batch (blocking command included).
+func TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral(t *testing.T) {
+	newDB := func() *multidbDatabase {
+		return &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1,
+		})}
+	}
+	blocking := func() *StatusCmd {
+		b := NewStatusCmd(context.Background(), "blpop", "k", "5")
+		b.setReadTimeout(5 * time.Second)
+		return b
+	}
+	ordinary := func(name string) *StatusCmd {
+		return NewStatusCmd(context.Background(), name, "k", "v")
+	}
+	stamp := func(err error, cmds ...Cmder) {
+		for _, c := range cmds {
+			c.SetErr(err)
+		}
+	}
+
+	t.Run("blocking origin: followers are neutral, batch not replayed", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newDB()
+		e := &batchTimeoutErr{}
+		cmds := []Cmder{blocking(), ordinary("set"), ordinary("get")}
+		stamp(e, cmds...) // reader: origin + identical instance on followers
+
+		got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0)
+		if got != 0 {
+			t.Errorf("transportFailures = %d, want 0: the followers carry the blocker's neutral deadline", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitClosed {
+			t.Errorf("breaker %v, want closed: one neutral event must not be charged N times", st)
+		}
+		for i, c := range cmds {
+			if c.rawErr() != e {
+				t.Errorf("cmd %d error %v, want the propagated timeout surfaced to the caller", i, c.rawErr())
+			}
+		}
+	})
+
+	t.Run("ordinary origin: propagation stays a transport failure", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newDB()
+		e := &batchTimeoutErr{}
+		cmds := []Cmder{ordinary("set"), ordinary("get"), ordinary("incr")}
+		stamp(e, cmds...)
+
+		if got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0); got != 3 {
+			t.Errorf("transportFailures = %d, want 3: an ordinary command's timeout is a real transport failure", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open", st)
+		}
+	})
+
+	t.Run("blocking origin but followers carry a different error", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newDB()
+		origin, other := &batchTimeoutErr{}, &batchTimeoutErr{}
+		cmds := []Cmder{blocking(), ordinary("set"), ordinary("get")}
+		stamp(origin, cmds[0])
+		stamp(other, cmds[1], cmds[2]) // distinct instance: not a propagation
+
+		if got := core.recordBatchOutcomes(db, cmds, origin, execAll(cmds), imultidb.Reservation{}, 0); got != 2 {
+			t.Errorf("transportFailures = %d, want 2: only an identical stamped error is a propagation", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open", st)
+		}
+	})
+
+	t.Run("ordinary origin stamps a later blocking command", func(t *testing.T) {
+		// The first carrier in slice order is the originator. A blocking
+		// command that merely RECEIVED an ordinary command's timeout must not
+		// retroactively neutralize it.
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newDB()
+		e := &batchTimeoutErr{}
+		cmds := []Cmder{ordinary("set"), blocking(), ordinary("get")}
+		stamp(e, cmds...)
+
+		// set: failure (origin); blpop: neutral (its own rule); get: failure.
+		if got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0); got != 2 {
+			t.Errorf("transportFailures = %d, want 2: the ordinary originator's timeout is real", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open", st)
+		}
+	})
+}
+
+// TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen pins the failure
+// path's reservation binding: a half-open batch that outlives its recovery
+// episode must not apply its failure to the NEW half-open episode another
+// request has since opened (that would abort a recovery it was never admitted
+// to). A current admission still re-opens, and a closed admission still counts
+// toward opening.
+func TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen(t *testing.T) {
+	newHalfOpen := func(t *testing.T) *multidbDatabase {
+		t.Helper()
+		db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1,
+			GracePeriod:      20 * time.Millisecond,
+		})}
+		db.cb.RecordFailure() // open
+		time.Sleep(30 * time.Millisecond)
+		if st := db.cb.CheckState(); st != imultidb.CircuitHalfOpen {
+			t.Fatalf("state after grace = %v, want half-open", st)
+		}
+		return db
+	}
+	failedBatch := func() []Cmder {
+		cmd := NewStatusCmd(context.Background(), "set", "k", "v")
+		cmd.SetErr(io.EOF)
+		return []Cmder{cmd}
+	}
+
+	t.Run("stale half-open admission records nothing", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newHalfOpen(t)
+		ok, stale := db.cb.AllowReserve() // episode 1 probe slot
+		if !ok {
+			t.Fatal("AllowReserve on a half-open breaker with a free slot was rejected")
+		}
+		// The recovery fails elsewhere and a NEW half-open episode begins.
+		db.cb.ForceOpen()
+		time.Sleep(30 * time.Millisecond)
+		if st := db.cb.CheckState(); st != imultidb.CircuitHalfOpen {
+			t.Fatalf("state after second grace = %v, want half-open", st)
+		}
+
+		cmds := failedBatch()
+		got := core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), stale, 0)
+		if got != 1 {
+			t.Errorf("transportFailures = %d, want 1: the caller still sees a transport failure", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitHalfOpen {
+			t.Errorf("breaker %v, want half-open: a stale batch must not re-open the new episode", st)
+		}
+	})
+
+	t.Run("current half-open admission re-opens", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newHalfOpen(t)
+		ok, cur := db.cb.AllowReserve()
+		if !ok {
+			t.Fatal("AllowReserve on a half-open breaker with a free slot was rejected")
+		}
+		cmds := failedBatch()
+		core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), cur, 0)
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open: a live probe's failure aborts the recovery", st)
+		}
+	})
+
+	t.Run("closed admission counts toward opening", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1,
+		})}
+		cmds := failedBatch()
+		core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0)
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open", st)
+		}
+	})
+}
+
+// TestProcessTxPipelineHImportPreservesFirstError pins that a rejected HIMPORT
+// transaction reports the positionally-first error (Pipeline.Exec semantics):
+// a command the caller queued with a pre-existing error, before the HIMPORT,
+// must win over errMultiDBHImport.
+func TestProcessTxPipelineHImportPreservesFirstError(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	prior := errors.New("prior error")
+	preErr := NewStatusCmd(context.Background(), "set", "k", "v")
+	preErr.SetErr(prior)
+	him := NewStatusCmd(context.Background(), "himport", "fs")
+
+	// Wrap like TxPipeline().Exec does before dispatch. The synthetic MULTI at
+	// index 0 must not win the first-error ordering over a user command the
+	// caller pre-stamped.
+	wrapped := wrapMultiExec(context.Background(), []Cmder{preErr, him})
+	err := core.processTxPipeline(context.Background(), wrapped)
+	if !errors.Is(err, prior) {
+		t.Fatalf("processTxPipeline = %v, want the positionally-first pre-existing error %v", err, prior)
+	}
+	// The HIMPORT command itself is stamped — proving the envelope was stripped
+	// and the user slice stamped, not that stamping was skipped altogether.
+	if !errors.Is(him.Err(), errMultiDBHImport) {
+		t.Fatalf("HIMPORT command err = %v, want errMultiDBHImport", him.Err())
+	}
+}
+
+func TestRecordBatchOutcomesPostExecHookError(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+	})}
+
+	cmds := []Cmder{NewStatusCmd(context.Background(), "set", "k", "v")}
+
+	// Executed batch, every reply read fine, then a post-exec hook injected
+	// a retryable error without stamping the commands: the commands are
+	// authoritative — no phantom failures, no stamping, no replay signal.
+	if got := core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0); got != 0 {
+		t.Errorf("transportFailures = %d for an executed all-success batch, want 0", got)
+	}
+	if err := cmds[0].Err(); err != nil {
+		t.Errorf("executed batch had its successful command stamped with %v", err)
+	}
+
+	// Not executed (hook aborted before next): the batch error stands in
+	// for the commands and is stamped so callers see it.
+	resetCmds(cmds)
+	if got := core.recordBatchOutcomes(db, cmds, io.EOF, newExecutedCmds(0), imultidb.Reservation{}, 0); got != 1 {
+		t.Errorf("transportFailures = %d for an unexecuted batch, want 1", got)
+	}
+	if err := cmds[0].Err(); err == nil {
+		t.Error("unexecuted batch left the command unstamped")
+	}
+}
+
+func TestMarkPipelineExecuted(t *testing.T) {
+	cmd := NewStatusCmd(context.Background(), "ping")
+	ec := newExecutedCmds(1)
+	markPipelineExecuted(context.WithValue(context.Background(), pipelineExecutedKey{}, ec), []Cmder{cmd})
+	if !ec.has(cmd) {
+		t.Error("marker did not record the executed command")
+	}
+	if !ec.any() {
+		t.Error("marker did not report any executed command")
+	}
+	// Without a marker in the context it must be a no-op, not a panic.
+	markPipelineExecuted(context.Background(), []Cmder{cmd})
+}
+
+func TestRecordBatchOutcomesExecutedBatchKeepsSuccessfulPrefix(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+	})}
+
+	// Executed batch: the first command's nil error is a successfully-read
+	// reply, the second carries a retryable server reply that is also the
+	// batch error. Exactly one failure may be recorded, and the successful
+	// prefix must stay unstamped — otherwise the batch would be replayed.
+	loading := proto.RedisError("LOADING Redis is loading the dataset in memory")
+	cmds := []Cmder{
+		NewStatusCmd(context.Background(), "set", "k1", "v"),
+		NewStatusCmd(context.Background(), "set", "k2", "v"),
+	}
+	cmds[1].SetErr(loading)
+
+	if got := core.recordBatchOutcomes(db, cmds, loading, execAll(cmds), imultidb.Reservation{}, 0); got != 1 {
+		t.Errorf("transportFailures = %d, want 1 (prefix must not count)", got)
+	}
+	if err := cmds[0].Err(); err != nil {
+		t.Errorf("successful prefix was stamped with %v", err)
+	}
+}
+
+func TestRecordBatchOutcomesFailuresBeforeSuccesses(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Nanosecond,
+	})}
+	db.cb.RecordFailure() // -> open; 1ns grace has already elapsed
+	if db.cb.CheckState() != imultidb.CircuitHalfOpen {
+		t.Fatal("setup: expected a half-open breaker")
+	}
+
+	// Executed mixed batch on a half-open breaker: the failure must be
+	// recorded before the success, so a failed recovery batch re-opens the
+	// circuit instead of its own successful prefix closing it.
+	cmds := []Cmder{
+		NewStatusCmd(context.Background(), "set", "k1", "v"),
+		NewStatusCmd(context.Background(), "set", "k2", "v"),
+	}
+	cmds[1].SetErr(io.EOF)
+	_, res := db.cb.AllowReserve() // authentic half-open admission for this batch
+	core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), res, 0)
+
+	if got := db.cb.State(); got != imultidb.CircuitOpen {
+		t.Errorf("breaker state = %v after a failed recovery batch, want open", got)
+	}
+}
+
+func TestRecordBatchOutcomesClosedStateKeepsArrivalOrder(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+	})}
+	db.cb.RecordFailure() // one stale failure below the threshold
+
+	// Closed breaker: the batch's successful reply arrived BEFORE its EOF,
+	// exactly like sequential single commands, whose ordering would reset
+	// the stale failure count. Failure-first recording here would combine
+	// the stale failure with the batch failure and open a healthy member's
+	// circuit; that ordering is only for half-open recovery probes.
+	cmds := []Cmder{
+		NewStatusCmd(context.Background(), "set", "k1", "v"),
+		NewStatusCmd(context.Background(), "set", "k2", "v"),
+	}
+	cmds[1].SetErr(io.EOF)
+	core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0)
+
+	if got := db.cb.State(); got != imultidb.CircuitClosed {
+		t.Errorf("breaker state = %v, want closed (stale failure must be reset by the earlier success)", got)
+	}
+}
+
+func TestRecordBatchOutcomesSuccessSinceFailover(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+	})}
+	// Make db the active member: recordBatchOutcomes marks recovery traffic
+	// (and feeds the detector) only while the batch's member is still the
+	// active, mirroring the single-command path.
+	core.dbs[0] = db
+	core.active.Store(0)
+
+	// An executed batch success is recovery traffic: it breaks the
+	// consecutive-failed-failover escalation chain.
+	cmds := []Cmder{NewStatusCmd(context.Background(), "set", "k", "v")}
+	core.recordBatchOutcomes(db, cmds, nil, execAll(cmds), imultidb.Reservation{}, 0)
+	if !core.successSinceFailover.Load() {
+		t.Error("executed batch success did not mark recovery traffic")
+	}
+
+	// A hook-served batch (nil without execution) is not.
+	core.successSinceFailover.Store(false)
+	resetCmds(cmds)
+	core.recordBatchOutcomes(db, cmds, nil, newExecutedCmds(0), imultidb.Reservation{}, 0)
+	if core.successSinceFailover.Load() {
+		t.Error("hook-served batch counted as recovery traffic")
+	}
+}
+
+// countingFD counts detector outcomes for the recordBatchOutcomes tests.
+type countingFD struct {
+	successes int
+	failures  int
+}
+
+func (d *countingFD) RecordSuccess()       { d.successes++ }
+func (d *countingFD) RecordFailure(error)  { d.failures++ }
+func (d *countingFD) ShouldFailover() bool { return false }
+func (d *countingFD) Reset()               {}
+
+// TestRecordBatchOutcomesPartialExecutionDoesNotCountUntouched pins the
+// per-command execution marker: in a cluster fan-out one node can execute while
+// another short-circuits, leaving its commands untouched (nil error). Only the
+// commands that actually executed may be recorded — an untouched nil-error
+// command must not be counted as a database success.
+func TestRecordBatchOutcomesPartialExecutionDoesNotCountUntouched(t *testing.T) {
+	det := &countingFD{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+	})}
+	core.dbs[0] = db
+	core.active.Store(0)
+
+	cmds := []Cmder{
+		NewStatusCmd(context.Background(), "set", "k1", "v"),
+		NewStatusCmd(context.Background(), "set", "k2", "v"),
+	}
+	// Both commands look successful (nil error), but only the first actually
+	// executed — the second's node short-circuited.
+	ec := newExecutedCmds(len(cmds))
+	ec.mark(cmds[:1])
+
+	core.recordBatchOutcomes(db, cmds, nil, ec, imultidb.Reservation{}, 0)
+
+	if det.successes != 1 {
+		t.Errorf("detector successes = %d, want 1 (an untouched command must not count as a success)", det.successes)
+	}
+	if det.failures != 0 {
+		t.Errorf("detector failures = %d, want 0 (an untouched command must not count at all)", det.failures)
+	}
+}
+
+// unhashableCmd is a value-type Cmder (methods promoted from the embedded
+// *StatusCmd) made non-comparable by a slice field — a legal Cmder that would
+// panic as a map key.
+type unhashableCmd struct {
+	*StatusCmd
+	extra []int
+}
+
+// TestExecutedCmdsSkipsNonComparableCommand pins that executedCmds does not
+// panic on a non-comparable command (Cmder imposes no comparability contract):
+// it goes untracked rather than being hashed as a map key.
+func TestExecutedCmdsSkipsNonComparableCommand(t *testing.T) {
+	e := newExecutedCmds(2)
+	cmd := unhashableCmd{StatusCmd: NewStatusCmd(context.Background(), "ping"), extra: []int{1}}
+
+	e.mark([]Cmder{cmd}) // must not panic ("hash of unhashable type")
+	if e.has(cmd) {
+		t.Error("non-comparable command reported executed; want untracked")
+	}
+	if e.any() {
+		t.Error("a non-comparable-only batch marked something; want none")
+	}
+
+	// A normal pointer command is still tracked.
+	normal := NewStatusCmd(context.Background(), "get", "k")
+	e.mark([]Cmder{normal})
+	if !e.has(normal) {
+		t.Error("normal command not tracked")
+	}
+}
+
+// markThenCloseHook marks the batch executed, then returns ErrClosed without
+// calling next — simulating a cluster fan-out where one shard applied its
+// commands before another shard's connection acquisition failed against a
+// member that was switched away and removed.
+type markThenCloseHook struct{ calls *int32 }
+
+func (markThenCloseHook) DialHook(next DialHook) DialHook          { return next }
+func (markThenCloseHook) ProcessHook(next ProcessHook) ProcessHook { return next }
+func (h markThenCloseHook) ProcessPipelineHook(ProcessPipelineHook) ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		atomic.AddInt32(h.calls, 1)
+		markPipelineExecuted(ctx, cmds)
+		return ErrClosed
+	}
+}
+
+func newRemovedActiveCore(t *testing.T) *multidbCore {
+	t.Helper()
+	core := newMultidbCore(&MultiDBOptions{})
+	// A closed client's pool returns ErrClosed from its hooks without dialing.
+	a := NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1})
+	t.Cleanup(func() { _ = a.Close() })
+	_ = a.Close()
+	db := &multidbDatabase{id: 0, weight: 1, c: a, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	})}
+	db.removed.Store(true)
+	core.dbs[0] = db
+	core.active.Store(0)
+	return core
+}
+
+// TestProcessPipelineRemovedActiveDoesNotSurfaceErrClosed is the batch analogue
+// of the single-command path: a pipeline whose snapshotted member was removed
+// mid-flight must not surface the terminal ErrClosed while the client is open.
+// It reports the retryable ErrTemporarilyNotAvailable instead, so the caller
+// retries; nothing is replayed by the client itself.
+func TestProcessPipelineRemovedActiveDoesNotSurfaceErrClosed(t *testing.T) {
+	core := newRemovedActiveCore(t)
+	err := core.processPipeline(context.Background(), []Cmder{NewStatusCmd(context.Background(), "ping")})
+	if errors.Is(err, ErrClosed) {
+		t.Fatalf("processPipeline surfaced terminal ErrClosed for a removed former active: %v", err)
+	}
+	if !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("got %v, want ErrTemporarilyNotAvailable after the bounded re-gate", err)
+	}
+}
+
+// TestProcessTxPipelineRemovedActiveDoesNotSurfaceErrClosed is the same for the
+// transaction path: the retryable error is surfaced, never a replay — EXEC may
+// have committed, so at-most-once forbids re-running it.
+func TestProcessTxPipelineRemovedActiveDoesNotSurfaceErrClosed(t *testing.T) {
+	core := newRemovedActiveCore(t)
+	wrapped := wrapMultiExec(context.Background(), []Cmder{NewStatusCmd(context.Background(), "ping")})
+	err := core.processTxPipeline(context.Background(), wrapped)
+	if errors.Is(err, ErrClosed) {
+		t.Fatalf("processTxPipeline surfaced terminal ErrClosed for a removed former active: %v", err)
+	}
+	if !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("got %v, want ErrTemporarilyNotAvailable after the bounded re-gate", err)
+	}
+}
+
+// TestProcessPipelinePartiallyExecutedRemovedMemberNotReplayed pins that a batch
+// which PARTIALLY executed (execution marker set) before hitting ErrClosed on a
+// removed member is NOT replayed — replaying would duplicate the applied writes
+// from the completed shard. It surfaces the retryable error exactly once and
+// keeps the executed commands' results (they are not rewritten).
+func TestProcessPipelinePartiallyExecutedRemovedMemberNotReplayed(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	var calls int32
+	a := NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1})
+	t.Cleanup(func() { _ = a.Close() })
+	a.AddHook(markThenCloseHook{calls: &calls})
+	db := &multidbDatabase{id: 0, weight: 1, c: a, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	})}
+	db.removed.Store(true)
+	core.dbs[0] = db
+	core.active.Store(0)
+
+	cmds := []Cmder{
+		NewStatusCmd(context.Background(), "set", "k", "v"),
+		NewStatusCmd(context.Background(), "get", "k"),
+	}
+	err := core.processPipeline(context.Background(), cmds)
+	// The batch executed: the retryable error is surfaced (never a replay), the
+	// batch runs exactly once, and the executed commands keep their results —
+	// they are not rewritten with the aggregate error.
+	if !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("partially-executed removed-member batch: got %v, want ErrTemporarilyNotAvailable", err)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("batch executed %d times, want 1 — it was replayed (duplicating applied writes)", n)
+	}
+	for i, cmd := range cmds {
+		if cmd.rawErr() != nil {
+			t.Fatalf("executed command %d had its result rewritten to %v", i, cmd.rawErr())
+		}
+	}
+}
+
+// TestProcessPipelineReusedCmdErrorsDoNotMaskTransportFailure pins the reset
+// before execution. A caller may hand the batch a command that still carries a
+// Redis error from a prior use. When connection acquisition then fails before
+// anything executes, the stale per-command errors must not mask the transport
+// failure: setCmdsErr fills only empty slots, so without the reset it never
+// stamps the batch error, every command classifies as an unexecuted success,
+// transportFailures stays 0, and the outage is neither recorded on the detector
+// nor failed over. The reset clears the stale errors so the connection-acquire
+// failure is recorded.
+func TestProcessPipelineReusedCmdErrorsDoNotMaskTransportFailure(t *testing.T) {
+	det := &countingFD{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det, CommandRetries: 0})
+	dead := NewClient(&Options{Addr: "127.0.0.1:1", MaxRetries: -1})
+	defer dead.Close()
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: dead, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	})}
+	core.active.Store(0)
+
+	cmds := []Cmder{
+		NewStatusCmd(context.Background(), "set", "k", "v"),
+		NewStatusCmd(context.Background(), "get", "k"),
+	}
+	// Reused commands still carrying a Redis error from a prior batch.
+	for _, cmd := range cmds {
+		cmd.SetErr(proto.RedisError("ERR from a prior use"))
+	}
+
+	_ = core.processPipeline(context.Background(), cmds)
+
+	if det.failures == 0 {
+		t.Fatalf("transport failure not recorded: stale per-command errors masked the connection-acquire failure, so no failover would trigger")
+	}
+}
+
+// TestProcessTxPipelineReusedCmdErrorsDoNotMaskTransportFailure is the tx
+// analogue: processTxPipeline classifies only the user slice inside the
+// MULTI/EXEC envelope, and a reused user command carrying a stale Redis error
+// would otherwise mask a connection-acquire failure exactly as in the plain
+// pipeline path. The reset targets the user slice; the envelope is clean.
+func TestProcessTxPipelineReusedCmdErrorsDoNotMaskTransportFailure(t *testing.T) {
+	det := &countingFD{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det, CommandRetries: 0})
+	dead := NewClient(&Options{Addr: "127.0.0.1:1", MaxRetries: -1})
+	defer dead.Close()
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: dead, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	})}
+	core.active.Store(0)
+
+	// [MULTI, set, get, EXEC]: the user slice is the middle two commands, and
+	// they are the reused ones carrying a stale Redis error.
+	multi := NewStatusCmd(context.Background(), "multi")
+	exec := NewSliceCmd(context.Background(), "exec")
+	set := NewStatusCmd(context.Background(), "set", "k", "v")
+	get := NewStatusCmd(context.Background(), "get", "k")
+	set.SetErr(proto.RedisError("ERR from a prior use"))
+	get.SetErr(proto.RedisError("ERR from a prior use"))
+
+	_ = core.processTxPipeline(context.Background(), []Cmder{multi, set, get, exec})
+
+	if det.failures == 0 {
+		t.Fatalf("transport failure not recorded: stale user-command errors masked the connection-acquire failure inside the transaction")
+	}
+}
+
+// TestTxPipelineRestoresNoRetryForDuplicateCommand pins that the temporary
+// NoRetry marker TxPipeline sets on the wrapped batch is restored correctly even
+// when the SAME Cmder is queued twice. The second occurrence snapshots the
+// already-set marker, so a forward-order restore would end on prev=true and
+// leave the shared command permanently non-retryable for later ordinary use.
+func TestTxPipelineRestoresNoRetryForDuplicateCommand(t *testing.T) {
+	core := newRemovedActiveCore(t) // exec returns fast; the deferred restore still runs
+	mdb := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex)}
+	mdb.initHooks(hooks{
+		process:    core.process,
+		pipeline:   core.processPipeline,
+		txPipeline: core.processTxPipeline,
+	})
+
+	cmd := NewStatusCmd(context.Background(), "set", "k", "v")
+	if cmd.NoRetry() {
+		t.Fatal("precondition: fresh command must be retryable")
+	}
+	pipe := mdb.TxPipeline()
+	_ = pipe.Process(context.Background(), cmd)
+	_ = pipe.Process(context.Background(), cmd) // same object queued twice
+	_, _ = pipe.Exec(context.Background())      // error expected; restore must still run
+
+	if cmd.NoRetry() {
+		t.Fatal("NoRetry left set on a command queued twice in a TxPipeline — a later ordinary request would silently lose retries")
+	}
+}
+
+// TestRecordBatchOutcomesSkipsDetectorAfterReset pins the detector window
+// guard: a batch that sampled its detector generation before a reset (an
+// operator reselect of the current member, an automatic failover, a fallback)
+// must not record its outcome into the fresh window, while a batch in the
+// current window records normally.
+func TestRecordBatchOutcomesSkipsDetectorAfterReset(t *testing.T) {
+	det := &countingFD{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+	db := &multidbDatabase{id: 0, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 1,
+	})}
+	core.dbs[0] = db
+	core.active.Store(0)
+	cmds := []Cmder{NewStatusCmd(context.Background(), "set", "k", "v")}
+	setCmdsErr(cmds, io.EOF)
+
+	dg := core.detectorGen.Load()
+	core.resetDetectorSafely() // a reset lands after the batch sampled its window
+	core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, dg)
+	if det.failures != 0 {
+		t.Fatalf("pre-reset failure recorded into the fresh detector window: %d", det.failures)
+	}
+	core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, core.detectorGen.Load())
+	if det.failures != 1 {
+		t.Fatalf("current-window failure not recorded: %d", det.failures)
+	}
+}
+
+// reselectHook force-reselects the current active member from inside the
+// command (resetting breaker and detector) and then completes the command with
+// err — the in-flight-command-vs-same-member-reselect race, on either outcome.
+type reselectHook struct {
+	core *multidbCore
+	err  error
+}
+
+func (reselectHook) DialHook(next DialHook) DialHook { return next }
+func (h reselectHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		_ = h.core.setActiveDatabase(ctx, 0, false)
+		return h.err
+	}
+}
+
+func (reselectHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+// TestProcessSkipsDetectorAfterSameMemberReselect pins the single-command
+// path: an operator reselect of the CURRENT member while a command is in flight
+// resets the detector; the command's failure must not land in that fresh window
+// even though the member identity is unchanged.
+func TestProcessSkipsDetectorAfterSameMemberReselect(t *testing.T) {
+	det := &countingFD{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+	a := NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1})
+	t.Cleanup(func() { _ = a.Close() })
+	a.AddHook(reselectHook{core: core, err: io.EOF})
+	db := &multidbDatabase{id: 0, weight: 1, c: a, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 1,
+	})}
+	core.dbs[0] = db
+	core.active.Store(0)
+
+	_ = core.process(context.Background(), NewStatusCmd(context.Background(), "ping"))
+
+	if det.failures != 0 {
+		t.Fatalf("failure from before the same-member reselect polluted the fresh detector window: %d", det.failures)
+	}
+}
+
+// TestProcessSameMemberReselectStillBreaksEscalation pins the success side of
+// the same race: the escalation flag means "any success on the active" and has
+// no window semantics, so it must be set even when the detector write is
+// skipped for being outside the sampled window.
+func TestProcessSameMemberReselectStillBreaksEscalation(t *testing.T) {
+	det := &countingFD{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+	a := NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1})
+	t.Cleanup(func() { _ = a.Close() })
+	a.AddHook(reselectHook{core: core, err: nil})
+	db := &multidbDatabase{id: 0, weight: 1, c: a, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 1,
+	})}
+	core.dbs[0] = db
+	core.active.Store(0)
+	core.successSinceFailover.Store(false)
+
+	if err := core.process(context.Background(), NewStatusCmd(context.Background(), "ping")); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if !core.successSinceFailover.Load() {
+		t.Fatal("a success on the active must break the failed-failover chain even when its detector write is outside the sampled window")
+	}
+	if det.successes != 0 {
+		t.Fatalf("success from before the same-member reselect polluted the fresh detector window: %d", det.successes)
+	}
+}
+
+// scriptedStrategy returns a fixed sequence of ids, one per Select call, and
+// records how many candidates each call was offered.
+type scriptedStrategy struct {
+	picks   []int
+	offered []int
+	before  func(call int) // optional side effect run before each pick
+}
+
+func (s *scriptedStrategy) Select(cands []MultiDBDatabaseState) int {
+	if s.before != nil {
+		s.before(len(s.offered))
+	}
+	s.offered = append(s.offered, len(cands))
+	i := len(s.offered) - 1
+	if i >= len(s.picks) {
+		return -1
+	}
+	return s.picks[i]
+}
+
+// TestSelectCandidateDropsDisallowedPick pins the strategy contract: an id
+// whose candidate is not Allowed is never seated — the candidate is dropped and
+// Select is asked again with the rest, so one bad pick does not abort a
+// failover round that still has admissible candidates. The caller's slice must
+// come back untouched (removeCandidate compacts in place).
+func TestSelectCandidateDropsDisallowedPick(t *testing.T) {
+	s := &scriptedStrategy{picks: []int{0, 1}}
+	core := newMultidbCore(&MultiDBOptions{FailoverStrategy: s})
+	cands := []MultiDBDatabaseState{
+		{ID: 0, Weight: 1, Allowed: false},
+		{ID: 1, Weight: 1, Allowed: true},
+	}
+	if got := core.selectCandidate(cands); got != 1 {
+		t.Fatalf("selectCandidate = %d, want 1 (the allowed candidate after dropping the disallowed pick)", got)
+	}
+	if len(s.offered) != 2 || s.offered[1] != 1 {
+		t.Fatalf("Select offered sizes = %v, want a second call offered only the remaining candidate", s.offered)
+	}
+	if cands[0].ID != 0 || cands[1].ID != 1 {
+		t.Fatalf("caller's candidate slice was mutated: %+v", cands)
+	}
+}
+
+// TestSelectCandidateGivesUpWhenOnlyDisallowedPicked: a strategy that keeps
+// naming ids outside the shrinking offered set ends with no target, never with
+// a disallowed member.
+func TestSelectCandidateGivesUpWhenOnlyDisallowedPicked(t *testing.T) {
+	s := &scriptedStrategy{picks: []int{0, 0}}
+	core := newMultidbCore(&MultiDBOptions{FailoverStrategy: s})
+	cands := []MultiDBDatabaseState{
+		{ID: 0, Weight: 1, Allowed: false},
+		{ID: 1, Weight: 1, Allowed: true},
+	}
+	if got := core.selectCandidate(cands); got != -1 {
+		t.Fatalf("selectCandidate = %d, want -1", got)
+	}
+}
+
+// TestPubSubDialErrRewritesRemovedMemberClosed pins the PubSub dial
+// classification: a removed member's closed pool yields ErrClosed, which the
+// channel loops treat as terminal; it must come back as the retryable
+// ErrTemporarilyNotAvailable so the loop re-dials the live active. A live
+// member's ErrClosed and any other error pass through untouched.
+func TestPubSubDialErrRewritesRemovedMemberClosed(t *testing.T) {
+	db := &multidbDatabase{}
+	if err := pubSubDialErr(db, ErrClosed); !errors.Is(err, ErrClosed) {
+		t.Fatalf("live member: got %v, want ErrClosed passthrough", err)
+	}
+	db.removed.Store(true)
+	if err := pubSubDialErr(db, ErrClosed); !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("removed member: got %v, want ErrTemporarilyNotAvailable", err)
+	}
+	if err := pubSubDialErr(db, io.EOF); !errors.Is(err, io.EOF) {
+		t.Fatalf("removed member, other error: got %v, want io.EOF passthrough", err)
+	}
+}
+
+// TestRewriteRemovedMemberErr pins the cluster-override rewrite: ErrClosed
+// from a member removed mid-call becomes the retryable
+// ErrTemporarilyNotAvailable; a live member's ErrClosed and other errors stay.
+func TestRewriteRemovedMemberErr(t *testing.T) {
+	ctx := context.Background()
+	db := &multidbDatabase{}
+	cmd := NewIntCmd(ctx, "dbsize")
+	cmd.SetErr(ErrClosed)
+	rewriteRemovedMemberErr(db, cmd)
+	if !errors.Is(cmd.Err(), ErrClosed) {
+		t.Fatalf("live member: got %v, want ErrClosed untouched", cmd.Err())
+	}
+	db.removed.Store(true)
+	rewriteRemovedMemberErr(db, cmd)
+	if !errors.Is(cmd.Err(), ErrTemporarilyNotAvailable) {
+		t.Fatalf("removed member: got %v, want ErrTemporarilyNotAvailable", cmd.Err())
+	}
+	other := NewIntCmd(ctx, "dbsize")
+	other.SetErr(io.EOF)
+	rewriteRemovedMemberErr(db, other)
+	if !errors.Is(other.Err(), io.EOF) {
+		t.Fatalf("removed member, other error: got %v, want io.EOF untouched", other.Err())
+	}
+}
+
+// shouldFailoverPanicFD is a custom detector whose ShouldFailover panics.
+type shouldFailoverPanicFD struct{}
+
+func (shouldFailoverPanicFD) RecordSuccess()       {}
+func (shouldFailoverPanicFD) RecordFailure(error)  {}
+func (shouldFailoverPanicFD) ShouldFailover() bool { panic("custom detector bug") }
+func (shouldFailoverPanicFD) Reset()               {}
+
+// TestShouldFailoverSafelyRecoversPanic pins the gate's panic safety: a
+// panicking custom detector must not escape (on the background loop it would
+// end health checking for good) and reads as "not tripped", leaving failover
+// to the breaker.
+func TestShouldFailoverSafelyRecoversPanic(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: shouldFailoverPanicFD{}})
+	if core.shouldFailoverSafely() {
+		t.Fatal("a panicking detector must read as not tripped")
+	}
+}
+
+// latchedFD is a custom detector that stays tripped until Reset.
+type latchedFD struct{ tripped bool }
+
+func (d *latchedFD) RecordSuccess()       {}
+func (d *latchedFD) RecordFailure(error)  {}
+func (d *latchedFD) ShouldFailover() bool { return d.tripped }
+func (d *latchedFD) Reset()               { d.tripped = false }
+
+// newLazyMember builds a member around a never-dialed client with a closed
+// breaker, for control-path tests that never send a command.
+func newLazyMember(id int) *multidbDatabase {
+	return &multidbDatabase{
+		id:     id,
+		weight: 1,
+		c:      NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1}),
+		cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 5,
+			SuccessThreshold: 1,
+		}),
+	}
+}
+
+// TestBackgroundFailoverOnceHonorsTrippedDetector pins the background twin of
+// the gate: a tripped detector alone (breaker closed) must move the active off
+// the member with no command traffic, and the switch resets the detector so a
+// second pass does not ping-pong.
+func TestBackgroundFailoverOnceHonorsTrippedDetector(t *testing.T) {
+	det := &latchedFD{tripped: true}
+	core := newMultidbCore(&MultiDBOptions{
+		FailureDetector:  det,
+		FailoverStrategy: &scriptedStrategy{picks: []int{1, 0}},
+	})
+	a, b := newLazyMember(0), newLazyMember(1)
+	t.Cleanup(func() { _ = a.c.Close(); _ = b.c.Close() })
+	core.dbs[0], core.dbs[1] = a, b
+	core.active.Store(0)
+
+	core.backgroundFailoverOnce(context.Background())
+	if got := core.active.Load(); got != 1 {
+		t.Fatalf("active = %d after a pass with a tripped detector and a closed breaker, want 1", got)
+	}
+	if det.tripped {
+		t.Fatal("the switch must reset the detector")
+	}
+	core.backgroundFailoverOnce(context.Background())
+	if got := core.active.Load(); got != 1 {
+		t.Fatalf("active = %d after a second pass with a clear detector, want 1 (no ping-pong)", got)
+	}
+}
+
+// TestTryFailoverRevalidatesCandidateAtCommit pins commit-time revalidation:
+// a candidate whose breaker opened after candidates() snapshotted it must not
+// be published; it is dropped and the next pick is taken.
+func TestTryFailoverRevalidatesCandidateAtCommit(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: &countingFD{}})
+	a, b, cc := newLazyMember(0), newLazyMember(1), newLazyMember(2)
+	t.Cleanup(func() { _ = a.c.Close(); _ = b.c.Close(); _ = cc.c.Close() })
+	core.dbs[0], core.dbs[1], core.dbs[2] = a, b, cc
+	core.active.Store(0)
+	a.cb.ForceOpen()
+	core.strategy = &scriptedStrategy{
+		picks: []int{1, 2},
+		before: func(call int) {
+			if call == 0 {
+				b.cb.ForceOpen() // opens between the snapshot and the commit
+			}
+		},
+	}
+
+	if err := core.tryFailover(context.Background(), 0); err != nil {
+		t.Fatalf("tryFailover: %v", err)
+	}
+	if got := core.active.Load(); got != 2 {
+		t.Fatalf("active = %d, want 2 (the stale pick 1 opened before commit)", got)
+	}
+}
+
+// TestWatchRewritesRemovedMemberClosed pins the Watch removed-member race: a
+// member removed mid-call answers ErrClosed from its closed client although the
+// MultiDBClient is open; the caller must see the retryable error, and the
+// transaction is not replayed.
+func TestWatchRewritesRemovedMemberClosed(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: &countingFD{}})
+	a := newLazyMember(0)
+	core.dbs[0] = a
+	core.active.Store(0)
+	_ = a.c.Close()
+	a.removed.Store(true)
+	mc := &MultiDBClient{core: core}
+
+	calls := 0
+	err := mc.Watch(context.Background(), func(*Tx) error { calls++; return nil }, "k")
+	if !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("Watch on a removed member: got %v, want ErrTemporarilyNotAvailable", err)
+	}
+	if calls != 0 {
+		t.Fatalf("fn ran %d times, want 0 (WATCH failed before fn; no replay)", calls)
+	}
+}
+
+// blockingCheck signals when it starts and then blocks until its context ends.
+type blockingCheck struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingCheck) CheckHealth(ctx context.Context, _ *Client) (bool, error) {
+	b.once.Do(func() { close(b.started) })
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+func (b *blockingCheck) CheckClusterHealth(ctx context.Context, _ *ClusterClient) (bool, error) {
+	return b.CheckHealth(ctx, nil)
+}
+
+// TestCloseCancelsInFlightAddDatabaseProbe pins shutdown vs AddDatabase: a
+// member whose startup probe is still running when Close lands is not in
+// c.dbs yet, so closeAll cannot drain it. Close must cancel the probe so the
+// add unwinds promptly (instead of waiting out HealthCheckTimeout) and closes
+// the built client itself.
+func TestCloseCancelsInFlightAddDatabaseProbe(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{
+		FailureDetector:      &countingFD{},
+		HealthCheckTimeout:   30 * time.Second,
+		HealthCheckPolicy:    defaultMultiDBPolicy{},
+		CircuitBreakerConfig: &MultiDBCircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: time.Second},
+	})
+	check := &blockingCheck{started: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := core.addDatabase(context.Background(), MultiDBClientConfig{
+			Options:      &Options{Addr: "127.0.0.1:6379", MaxRetries: -1},
+			Weight:       1,
+			HealthChecks: []MultiDBHealthCheck{check},
+		})
+		done <- err
+	}()
+	select {
+	case <-check.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup probe never started")
+	}
+	if err := core.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("addDatabase after Close: got %v, want ErrClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("addDatabase did not unwind after Close canceled its probe (would wait out HealthCheckTimeout)")
+	}
+}
+
+// lagOnlyStub is a fail-back-only check (like the lag-aware REST check) that
+// always passes, to exercise a member with no liveness check of its own.
+type lagOnlyStub struct{}
+
+func (lagOnlyStub) CheckHealth(context.Context, *Client) (bool, error) { return true, nil }
+func (lagOnlyStub) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	return true, nil
+}
+func (lagOnlyStub) FailbackOnly() bool { return true }
+
+// TestNonFailbackChecksKeepsLivenessFloor pins the liveness floor: a member
+// configured with only fail-back-only checks still gets the default PING as
+// its active-safe probe, so a dead active endpoint is detected on an idle
+// client instead of the active probe becoming a no-op.
+func TestNonFailbackChecksKeepsLivenessFloor(t *testing.T) {
+	db := &multidbDatabase{checks: []MultiDBHealthCheck{lagOnlyStub{}}}
+	got := db.nonFailbackChecks()
+	if len(got) != 1 {
+		t.Fatalf("nonFailbackChecks = %d checks, want 1 (the default PING)", len(got))
+	}
+	if _, ok := got[0].(defaultPingHealthCheck); !ok {
+		t.Fatalf("nonFailbackChecks = %T, want defaultPingHealthCheck", got[0])
+	}
+	// The floor is a real probe: against a refusing endpoint the active-safe
+	// check set reports unhealthy instead of vacuously healthy.
+	dead := &multidbDatabase{
+		checks: []MultiDBHealthCheck{lagOnlyStub{}},
+		c:      NewClient(&Options{Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 200 * time.Millisecond}),
+		policy: defaultMultiDBPolicy{},
+	}
+	t.Cleanup(func() { _ = dead.c.Close() })
+	if dead.checkHealthyNoRecord(context.Background(), time.Second, dead.nonFailbackChecks()) {
+		t.Fatal("a member with only fail-back-only checks and a dead endpoint must not probe healthy")
+	}
+}
+
+// pongHook answers every command with PONG without dialing, counting calls.
+type pongHook struct{ pings *int }
+
+func (pongHook) DialHook(next DialHook) DialHook { return next }
+func (h pongHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		*h.pings++
+		if sc, ok := cmd.(*StatusCmd); ok {
+			sc.SetVal("PONG")
+		}
+		return nil
+	}
+}
+
+func (pongHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+// TestBackgroundProbeLagOnlyMemberGoneActiveUsesPingFloor is the split-verdict
+// scenario for a member configured with ONLY a fail-back-only check: when it
+// becomes active mid-probe, the active-safe pass must run the PING floor (a
+// real liveness verdict) and must not record the lag failure — the member
+// stays closed because PONG came back, not because nothing was probed.
+func TestBackgroundProbeLagOnlyMemberGoneActiveUsesPingFloor(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second})
+	mkCB := func() *imultidb.CircuitBreaker {
+		return imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1})
+	}
+	a := &multidbDatabase{id: 0, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{okLivenessCheck{}}}
+	pings := 0
+	b := &multidbDatabase{
+		id:     1,
+		weight: 1,
+		c:      NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1}),
+		cb:     mkCB(),
+		policy: defaultMultiDBPolicy{},
+	}
+	t.Cleanup(func() { _ = b.c.Close() })
+	b.c.AddHook(pongHook{pings: &pings})
+	core.dbs[0], core.dbs[1] = a, b
+	core.active.Store(0)
+	b.checks = []MultiDBHealthCheck{&failbackLagCheck{onCheck: func() { core.active.Store(1) }}} // lag-only
+
+	core.runHealthChecksOnce(context.Background())
+
+	if b.cb.State() != imultidb.CircuitClosed {
+		t.Fatalf("lag-only member that went active mid-probe was evicted: breaker=%v (PING answered PONG, so only the lag failure could have opened it)", b.cb.State())
+	}
+	if pings == 0 {
+		t.Fatal("the active-safe pass ran no liveness probe: the PING floor did not execute")
+	}
+}

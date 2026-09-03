@@ -3,6 +3,8 @@ package failuredetector
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -172,6 +174,86 @@ func TestCommandFailureDetector_TreatsReplyErrorsAsSuccess(t *testing.T) {
 	}
 }
 
+func TestCommandFailureDetector_IgnoresFutureBucketsAfterClockRollback(t *testing.T) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	})
+	advance := withFakeClock(fd, time.Unix(1_000_000, 0))
+
+	fd.RecordFailure(errors.New("boom"))
+
+	// The wall clock steps backward (VM restore, NTP step): the recorded
+	// bucket's epoch is now in the future. The lower-bound-only window
+	// predicate would keep counting it for the rollback duration plus the
+	// window — stale failures must not pin ShouldFailover.
+	advance(-2 * time.Hour)
+	if _, failures := fd.Stats(); failures != 0 {
+		t.Errorf("expected 0 failures after clock rollback, got %d", failures)
+	}
+	if fd.ShouldFailover() {
+		t.Error("a future-epoch failure must not trigger failover after clock rollback")
+	}
+}
+
+func TestCommandFailureDetector_CountsFailuresRecordedAfterClockRollback(t *testing.T) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	})
+	advance := withFakeClock(fd, time.Unix(1_000_000, 0))
+
+	// Populate the slot at T, then step the clock back by two ring periods so
+	// that slot's epoch is now in the future AND a fresh write aliases onto it.
+	fd.RecordFailure(errors.New("pre-rollback"))
+	advance(-2 * time.Hour)
+
+	// A failure recorded AFTER the rollback must be counted, not swallowed by
+	// the stale future-epoch bucket occupying its slot.
+	fd.RecordFailure(errors.New("post-rollback"))
+	if _, failures := fd.Stats(); failures == 0 {
+		t.Fatal("failure recorded after clock rollback was swallowed by a future-epoch bucket")
+	}
+	if !fd.ShouldFailover() {
+		t.Error("post-rollback failure must be visible to ShouldFailover")
+	}
+}
+
+func TestCommandFailureDetector_CountsDialDeadlinesAsFailures(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// A dial that expires through DialTimeout surfaces as *net.OpError
+	// wrapping context.DeadlineExceeded (net's timeoutError matches it via
+	// Is). That is the canonical unreachable-database signal — the root
+	// retry classifier checks Op == "dial" BEFORE its context filter for
+	// exactly this reason — and the detector must count it, or an
+	// unreachable active never trips detector-driven failover.
+	for i := 0; i < 3; i++ {
+		fd.RecordFailure(&net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded})
+	}
+	if _, failures := fd.Stats(); failures != 3 {
+		t.Errorf("expected 3 failures for dial deadlines, got %d", failures)
+	}
+	if !fd.ShouldFailover() {
+		t.Error("should failover when every dial times out")
+	}
+
+	// Plain context errors (no transport op) stay client-side and ignored.
+	fd2 := NewCommandFailureDetector(config)
+	fd2.RecordFailure(context.DeadlineExceeded)
+	fd2.RecordFailure(fmt.Errorf("wrapped: %w", context.Canceled))
+	if _, failures := fd2.Stats(); failures != 0 {
+		t.Errorf("expected 0 failures for bare context errors, got %d", failures)
+	}
+}
+
 func TestCommandFailureDetector_TreatsTypedReplyErrorsAsSuccess(t *testing.T) {
 	config := CommandFailureDetectorConfig{
 		MinNumFailures:         1,
@@ -183,13 +265,13 @@ func TestCommandFailureDetector_TreatsTypedReplyErrorsAsSuccess(t *testing.T) {
 	// The proto reader parses recognized reply prefixes into typed structs
 	// (*proto.AuthError, *proto.MovedError, ...) rather than the concrete
 	// proto.RedisError string — they are still well-formed server replies and
-	// must classify exactly like their string forms: application-level
-	// replies as successes, availability replies as failures.
+	// must classify exactly like their string forms: application-level replies
+	// as successes; availability replies AND surfaced redirects (MOVED/ASK, a
+	// cluster client out of redirect budget) as failures.
 	for _, e := range []error{
 		proto.NewAuthError("NOAUTH Authentication required"),
 		proto.NewPermissionError("NOPERM this user has no permissions"),
 		proto.NewExecAbortError("EXECABORT Transaction discarded because of previous errors"),
-		proto.NewMovedError("MOVED 3999 127.0.0.1:6381", "127.0.0.1:6381"),
 	} {
 		fd.RecordFailure(e)
 	}
@@ -197,14 +279,16 @@ func TestCommandFailureDetector_TreatsTypedReplyErrorsAsSuccess(t *testing.T) {
 	if failures != 0 {
 		t.Errorf("expected 0 failures for typed application replies, got %d", failures)
 	}
-	if successes != 4 {
+	if successes != 3 {
 		t.Errorf("expected typed application replies to count as successes, got %d", successes)
 	}
 
 	fd.RecordFailure(proto.NewLoadingError("LOADING Redis is loading the dataset in memory"))
 	fd.RecordFailure(proto.NewClusterDownError("CLUSTERDOWN The cluster is down"))
-	if _, failures := fd.Stats(); failures != 2 {
-		t.Errorf("expected 2 failures for typed availability replies, got %d", failures)
+	fd.RecordFailure(proto.NewMovedError("MOVED 3999 127.0.0.1:6381", "127.0.0.1:6381"))
+	fd.RecordFailure(proto.NewAskError("ASK 3999 127.0.0.1:6381", "127.0.0.1:6381"))
+	if _, failures := fd.Stats(); failures != 4 {
+		t.Errorf("expected 4 failures for typed availability/redirect replies, got %d", failures)
 	}
 }
 
@@ -643,6 +727,58 @@ func TestCommandFailureDetector_ConcurrentRecordWithReaders(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	stop.Store(true)
 	wg.Wait()
+}
+
+// TestCommandFailureDetector_StaleWriterDropsOutcomeKeepsNewerBucket pins that a
+// writer descheduled for at least one ring lap between reading its timestamp and
+// stamping its bucket (a) does NOT clobber the newer bucket a concurrent writer
+// installed in the same slot, and (b) has its own outcome DROPPED (bucketFor
+// returns nil) rather than recorded into that newer bucket — the stale outcome
+// has already aged out of the window. A genuine future epoch (backward clock
+// step) is still rebased to the current slot.
+func TestCommandFailureDetector_StaleWriterDropsOutcomeKeepsNewerBucket(t *testing.T) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.5,
+		FailureDetectionWindow: 10 * time.Millisecond,
+		NumBuckets:             10, // bucketWidth = 1ms, ring lap = 10ms
+	})
+	start := time.Unix(1_000_000, 0) // bucket-aligned (whole seconds)
+	advance := withFakeClock(fd, start)
+
+	// A writer reads the clock at T0, then stalls.
+	staleNano := fd.now().UnixNano()
+
+	// Real time advances a full ring lap; a concurrent writer stamps the same
+	// slot with the newer epoch and records a failure there.
+	advance(10 * time.Millisecond)
+	newer := fd.bucketFor(fd.now().UnixNano())
+	if newer == nil {
+		t.Fatal("current-time bucketFor returned nil")
+	}
+	newer.failures.Add(1)
+
+	// The stalled writer resumes with its OLD timestamp while the clock now
+	// reads the later time. Its outcome is dropped (nil) and the newer bucket is
+	// left untouched.
+	if got := fd.bucketFor(staleNano); got != nil {
+		t.Fatalf("stale writer got a bucket (epoch %d) instead of nil — its expired outcome would be recorded", got.epochNano)
+	}
+	if newer.failures.Load() != 1 {
+		t.Fatalf("newer bucket was disturbed: failures=%d, want 1", newer.failures.Load())
+	}
+
+	// A genuine future epoch (clock stepped backward, VM restore) is still
+	// rebased, not dropped. Step the clock back to T0: the slot now holds a
+	// future epoch relative to now, so bucketFor must stamp a fresh one.
+	advance(-10 * time.Millisecond) // now == T0 again; slot epoch is in the future
+	rebased := fd.bucketFor(fd.now().UnixNano())
+	if rebased == nil || rebased == newer {
+		t.Fatal("rollback future-epoch bucket was dropped/kept instead of rebased")
+	}
+	if rebased.epochNano != start.UnixNano() {
+		t.Fatalf("rebased epoch = %d, want %d (current slot after rollback)", rebased.epochNano, start.UnixNano())
+	}
 }
 
 // BenchmarkCommandFailureDetector_RecordSuccess measures the cost of the

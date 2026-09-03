@@ -250,7 +250,10 @@ func (h *LagAwareHealthCheck) Config() HealthCheckConfig { return h.config }
 // precisely when the member is failing. Failover decisions ride on traffic
 // signals (the failure detector and circuit breaker) and liveness checks.
 // The MultiDB background health loop skips FailbackOnly checks when probing
-// the active member.
+// the active member; if that leaves no check, it runs the default PING
+// instead, so the active always keeps a liveness probe. A member with only
+// FailbackOnly checks is therefore PING-gated while active and lag-gated as
+// a failover or fallback candidate.
 func (h *LagAwareHealthCheck) FailbackOnly() bool { return true }
 
 // hostPortFromAddr is hostFromAddr plus the numeric Redis port (0 when the
@@ -337,12 +340,26 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 		shardCtx, cancel = context.WithDeadline(ctx, time.Now().Add(time.Until(deadline)/4))
 		defer cancel()
 	}
-	_ = client.ForEachShard(shardCtx, func(_ context.Context, shard *redis.Client) error {
-		add(shard.Options().Addr)
+	// Masters only, matching the PING check: MultiDB rejects the
+	// replica-routing options so member traffic never reaches replicas, and
+	// a replica node's local endpoint availability must not mark a candidate
+	// healthy while the master it would actually route to is unavailable or
+	// lagging.
+	ferr := client.ForEachMaster(shardCtx, func(_ context.Context, master *redis.Client) error {
+		add(master.Options().Addr)
 		return nil
 	})
-	for _, addr := range opts.Addrs {
-		add(addr)
+	// Seeds are the bootstrap fallback only: when the topology could not be
+	// enumerated (ForEachMaster errored → no loaded state) OR no masters were
+	// found. When masters ARE known, use only them — opts.Addrs may include
+	// replica seeds, and a replica passing the lag check must not mark the
+	// member healthy while the masters it would route to are down or lagging
+	// (matching the masters-only intent above). ForEachMaster is synchronous,
+	// so len(addrs) here is the count of unique masters it found.
+	if ferr != nil || len(addrs) == 0 {
+		for _, addr := range opts.Addrs {
+			add(addr)
+		}
 	}
 	if len(addrs) == 0 {
 		return false, fmt.Errorf("multidb: cluster client has no addresses")
@@ -470,6 +487,7 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 // host and, when both sides carry one, its Redis port — several Redis
 // Enterprise databases can share a DNS name and differ only by port.
 func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int) bool {
+	hostIP := net.ParseIP(host)
 	for _, ep := range bdb.Endpoints {
 		if port != 0 && ep.Port != 0 && ep.Port != port {
 			continue
@@ -482,6 +500,14 @@ func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int)
 		for _, addr := range ep.Addr {
 			if addr == host {
 				return true
+			}
+			// IPv6 text is not canonical ("2001:0db8::1" vs "2001:db8::1"):
+			// compare parsed IPs so equivalent spellings on the two sides do
+			// not report a healthy member as unavailable.
+			if hostIP != nil {
+				if epIP := net.ParseIP(addr); epIP != nil && epIP.Equal(hostIP) {
+					return true
+				}
 			}
 		}
 	}
