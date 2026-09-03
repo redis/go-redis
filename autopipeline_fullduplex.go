@@ -511,6 +511,12 @@ type fdEngine struct {
 	// submit-queue depth (fdFastSubmitGatePct) so it only runs while the queue is
 	// shallow; a deep/bursting queue falls to the fair blocking select.
 	fastSubmit bool
+
+	// runPipeline runs a shutdown-flush chunk through the client's pipeline retry
+	// loop. Test seam: nil in production (flushReqs falls back to
+	// client.processPipelineRetries), so tests can drive flushReqs's chunk loop
+	// without a live server.
+	runPipeline func(ctx context.Context, cmds []Cmder, maxRetries int) error
 }
 
 // fdFastSubmitGatePct bounds fastSubmit to when the submit channel is below this
@@ -535,6 +541,11 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	if w <= 0 {
 		w = fdDefaultWindow
 	}
+	// Publish the resolved window so Config() reports the value actually enforced
+	// (0 -> default). Runs once at construction before ap escapes newAutoPipeliner,
+	// so no Config() reader races this write. idle/maxHold/maxBatch are resolved
+	// locally too but not written back; the finding scopes this to the window.
+	ap.config.FullDuplexWindow = w
 	idle := ap.config.FullDuplexIdleTimeout
 	if idle <= 0 {
 		idle = fdDefaultIdle
@@ -2103,24 +2114,35 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 // MaxBatchSize/MaxBatchBytes chunks as normal FD writes and completes each
 // request. maxRetries bounds each chunk's retry loop (0 = a single execution,
 // used for already-attempted carried commands so their per-command budget is not
-// exceeded). Returns a non-nil error if a transport failure aborted the remainder
-// (already failed here); per-command Redis errors are normal results and do not
-// abort.
-func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) error {
+// exceeded). Returns a non-nil error when the remainder was aborted and failed
+// here: a transport failure, a desynchronized reply stream (errConnUnusable — e.g.
+// a custom push processor errored during the drain, so the chunk was never sent),
+// or a recovered serialize panic. A plain per-command Redis error is a normal
+// result and does not abort.
+func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) (retErr error) {
 	if len(reqs) == 0 {
 		return nil
 	}
 	// A panic here (user arg encoder inside the pipeline) runs on the engine
 	// goroutine with no other recovery; fail and complete the remainder so no caller
-	// hangs.
+	// hangs. Set the NAMED return so an ordered shutdown flush aborts like a
+	// transport failure: an unnamed result would zero to nil after recovery, and
+	// flushCarryBudgeted/shutdownFlush would then treat the failed group as success
+	// and run later groups + the fresh queue even though an earlier command never
+	// completed.
 	i := 0
 	defer func() {
 		if r := recover(); r != nil {
-			err := fmt.Errorf("redis: autopipeline: panic in shutdown flush: %v", r)
+			retErr = fmt.Errorf("%w: shutdown flush: %v", errFDPanicRecovered, r)
 			internal.Logger.Printf(bg, "autopipeline: recovered shutdown-flush panic: %v\n%s", r, debug.Stack())
-			fd.failReqs(reqs[i:], err)
+			fd.failReqs(reqs[i:], retErr)
 		}
 	}()
+	// Test seam: nil in production, so this is exactly client.processPipelineRetries.
+	run := fd.runPipeline
+	if run == nil {
+		run = fd.client.processPipelineRetries
+	}
 	// Same MaxBatchSize/MaxBatchBytes chunking as normal FD writes: reqs can hold a
 	// large window, and one unchunked pipeline would ignore MaxBatchBytes and burst
 	// the connection.
@@ -2157,16 +2179,20 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 		if c := reqs[i].ctx; c != nil {
 			fctx = context.WithoutCancel(c)
 		}
-		err := fd.client.processPipelineRetries(fctx, cmds, maxRetries) // per-command results/errors set inside
+		err := run(fctx, cmds, maxRetries) // per-command results/errors set inside
 		for j := i; j < end; j++ {
 			reqs[j].complete()
 		}
 		i = end
-		// A transport failure that survived the retry loop means the server is
-		// unreachable: stop and fail the remaining chunks with the same error instead
-		// of re-running the cycle per chunk against a dead endpoint. Per-command Redis
-		// errors are normal results and do not stop the flush.
-		if err != nil && !isRedisError(err) {
+		// Stop and fail the remaining chunks when the error means the earlier chunk
+		// may never have been written correctly: a transport failure that survived
+		// the retry loop (dead endpoint), OR a desynchronized reply stream marked
+		// errConnUnusable (e.g. a custom push processor errored during the close-time
+		// drain, so the chunk was never sent). Continuing would run an ordered
+		// shutdown flush out of order. pipelineErrShouldStamp is the same
+		// errConnUnusable precedence used in generalProcessPipeline; a plain
+		// per-command Redis error is a normal result and does not abort.
+		if err != nil && pipelineErrShouldStamp(err) {
 			fd.failReqs(reqs[i:], err)
 			return err
 		}
