@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"time"
 
@@ -317,6 +318,13 @@ func (cfg *MultiDBClientConfig) validate() error {
 	}
 	if set != 1 {
 		return fmt.Errorf("redis: multidb: exactly one of Options or ClusterOptions must be set per database (got %d)", set)
+	}
+	if math.IsNaN(cfg.Weight) {
+		// A NaN weight makes every ordered comparison false, so the failover
+		// strategy and auto-fallback can neither prefer nor reject the member on
+		// priority — selection degenerates to iteration order. Reject it here
+		// (and in SetWeight) instead of storing a value that poisons selection.
+		return errors.New("redis: multidb: database Weight must not be NaN")
 	}
 	if cfg.ClusterOptions != nil && (cfg.ClusterOptions.RouteByLatency || cfg.ClusterOptions.RouteRandomly || cfg.ClusterOptions.ReadOnly) {
 		// The cluster health checks (built-in PING and lag-aware) probe masters

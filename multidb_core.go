@@ -1354,6 +1354,11 @@ func (c *multidbCore) removeDatabase(ctx context.Context, id int) error {
 }
 
 func (c *multidbCore) setWeight(id int, weight float64) error {
+	if math.IsNaN(weight) {
+		// Reject before touching membership: a NaN weight poisons every ordered
+		// comparison in selection and auto-fallback (see validate()).
+		return errors.New("redis: multidb: database weight must not be NaN")
+	}
 	if c.closed.Load() {
 		// After Close drains the membership the id would surface as a
 		// misleading not-found error; report the terminal state instead,
