@@ -28,6 +28,17 @@ Each command carries its own attempt count; the tail is partitioned so a command
 has spent its retry budget is failed while the rest stay eligible, and a SENT
 `NoRetry` command (and everything ordered after it) is never re-sent.
 
+Carry replay runs BEFORE the serve loop, so the serve loop's `FullDuplexMaxHold` and
+handoff checks are not yet reached while a large tail replays. `writeCarryChunked` polls
+both between chunks (LIVE path only — a terminating Close bounds its own flush and
+outranks max-hold): a `ShouldHandoff()` mark returns `errFDConnMoving`, and passing
+`FullDuplexMaxHold` returns `errFDMaxHold`. Both return the UNWRITTEN suffix out-of-band
+(not pushed into the in-flight deque) and route to the clean `fdRecycle` arm — the reader
+drains the already-written prefix (those callers complete, never re-executed), `attempt`
+Puts the conn (a handoff-marked conn hands off via OnPut; a max-held conn simply returns
+to the pool so the hold ends), and `run` replays only the never-sent suffix on the next
+lease. Pinned by `TestWriteCarryChunkedStopsOnHandoff` / `TestWriteCarryChunkedStopsOnMaxHold`.
+
 ## Panic boundaries
 
 User code runs on the engine goroutine (a `Cmder`'s `Args()`/encoder, `Options.OnConnect`,
@@ -57,6 +68,12 @@ or let a live/half-initialized connection return to the pool. The boundaries:
   Put) and returns the carry as `fdLeaseErr` — the same disposition an `initPooledConn`
   ERROR gets — so `run` applies the lease-retry budget instead of crashing or poisoning
   the pool.
+- `attempt` connection RELEASE: the deferred release runs LAST (LIFO — the init recover
+  is registered after it and runs FIRST), so it has NO outer boundary. Its clean-end
+  branch (`releaseConnToPool` drains pending pushes — a custom `PushNotificationProcessor`
+  is user code — then Puts) is wrapped in a nested recover that Removes the conn on panic:
+  after a panic the conn's drain/Put state is unknown, so Put would poison the pool. Pinned
+  by `TestFDReleasePanicRetiresConn`.
 - `session` writer path: a backstop recover runs the `fdConnErr` teardown (stop the
   reader, wait it out, recover the tail) and returns `fdConnErr` normally, so `attempt`
   Removes the desynced conn and `run` replays the eligible tail.

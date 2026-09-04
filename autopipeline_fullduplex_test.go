@@ -937,7 +937,7 @@ func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
 		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v")}
 	}
 
-	if _, err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, nil); err == nil {
+	if _, err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, nil, nil); err == nil {
 		t.Fatal("writeCarryChunked returned nil error despite a failing write")
 	}
 	// The failing chunk was pushed by writeBatch; the suffix must be pushed too, so
@@ -977,7 +977,7 @@ func TestWriteCarryChunkedStopsOnHandoff(t *testing.T) {
 
 	// readerDone open (not closed) so the handoff branch fires, not the reader-gone one.
 	readerDone := make(chan struct{})
-	suffix, err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, readerDone)
+	suffix, err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, readerDone, nil)
 	if !errors.Is(err, errFDConnMoving) {
 		t.Fatalf("writeCarryChunked returned %v, want errFDConnMoving after the conn was marked for handoff", err)
 	}
@@ -989,6 +989,107 @@ func TestWriteCarryChunkedStopsOnHandoff(t *testing.T) {
 	// (empty) written prefix must not wait on replies for commands that were never sent.
 	if got := inflight.len(); got != 0 {
 		t.Fatalf("in-flight deque holds %d entries after a clean handoff recycle — the unwritten suffix must stay out-of-band, not be pushed", got)
+	}
+}
+
+// TestWriteCarryChunkedStopsOnMaxHold pins r3937925412: a LIVE connection held past
+// FullDuplexMaxHold while replaying a recovered carry must stop between chunks and
+// return the UNWRITTEN suffix out-of-band (errFDMaxHold) WITHOUT pushing it into the
+// in-flight deque — so the caller clean-recycles (drains the written prefix, Puts the
+// conn so the hold ends) and replays only the never-sent suffix on the next lease.
+// Carry replay runs BEFORE the serve loop, so without this poll a long or
+// backpressured replay never reaches the serve loop's max-hold select and pins the conn
+// past FullDuplexMaxHold.
+//
+// Red-check: remove the maxC poll in writeCarryChunked — err is nil (the whole carry is
+// written) and the max-hold bound is never observed during replay.
+func TestWriteCarryChunkedStopsOnMaxHold(t *testing.T) {
+	// A failing-write conn is fine: the max-hold poll is at the TOP of the loop, before
+	// any write, so with maxC already fired the whole carry is the unwritten suffix and
+	// nothing is sent.
+	cn := pool.NewConn(&failWriteNetConn{})
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{ctx: context.Background(), config: &AutoPipelineOptions{}}, // ctx not cancelled: LIVE path
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second}}},
+		maxBatch: 2,
+		window:   16,
+	}
+	inflight := newFDInflight()
+
+	const n = 5
+	carry := make([]fdReq, n)
+	for i := range carry {
+		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v")}
+	}
+
+	// maxC already fired: the top-of-loop poll trips on the first chunk (LIVE path).
+	maxC := make(chan time.Time, 1)
+	maxC <- time.Now()
+	// readerDone open (not closed) so the handoff / reader-gone branches do not fire.
+	readerDone := make(chan struct{})
+	suffix, err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, readerDone, maxC)
+	if !errors.Is(err, errFDMaxHold) {
+		t.Fatalf("writeCarryChunked returned %v, want errFDMaxHold after the conn was held past max-hold", err)
+	}
+	// The whole (unwritten) carry is returned as the suffix to replay on the next lease.
+	if len(suffix) != n {
+		t.Fatalf("returned suffix has %d of %d carry commands — the tail was dropped (callers would hang)", len(suffix), n)
+	}
+	// Critically, the suffix must NOT be in the in-flight deque: a clean drain of the
+	// (empty) written prefix must not wait on replies for commands that were never sent.
+	if got := inflight.len(); got != 0 {
+		t.Fatalf("in-flight deque holds %d entries after a max-hold recycle — the unwritten suffix must stay out-of-band, not be pushed", got)
+	}
+}
+
+// TestWriteCarryChunkedStopsOnMaxHoldUnderBackpressure pins the STUCK-writer arm of
+// r3937925412: a writer blocked in the between-chunk window gate (waiting on
+// inflight.room while the in-flight deque is at the window) cannot observe max-hold from
+// the non-blocking between-chunk poll. The gate select must itself watch maxC so a
+// backpressured replay still recycles the conn instead of pinning it past
+// FullDuplexMaxHold. This is the exact scenario the finding calls out ("writer stuck in
+// writeCarryChunked can't observe maxC").
+//
+// Red-check: remove ONLY the `case <-maxC:` from the LIVE window-gate select (leave the
+// between-chunk poll) — the gate blocks forever and the test times out.
+func TestWriteCarryChunkedStopsOnMaxHoldUnderBackpressure(t *testing.T) {
+	cn := pool.NewConn(&failWriteNetConn{})
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{ctx: context.Background(), config: &AutoPipelineOptions{}}, // LIVE path
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second}}},
+		maxBatch: 4,
+		window:   1, // in-flight at the window forces the writer into the gate wait
+	}
+	inflight := newFDInflight()
+	// Pre-fill the deque to the window so the FIRST chunk blocks in the gate before any
+	// write. Nothing pops it (no reader), so the gate only exits on maxC.
+	inflight.pushBatch([]fdReq{{cmd: NewStatusCmd(context.Background(), "get", "filler")}})
+
+	const n = 5
+	carry := make([]fdReq, n)
+	for i := range carry {
+		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v")}
+	}
+
+	// Empty at entry so the between-chunk poll passes (default), then fired shortly after
+	// so the ONLY exit is the gate's maxC case.
+	maxC := make(chan time.Time)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		maxC <- time.Now()
+	}()
+	readerDone := make(chan struct{})
+
+	suffix, err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, readerDone, maxC)
+	if !errors.Is(err, errFDMaxHold) {
+		t.Fatalf("writeCarryChunked returned %v, want errFDMaxHold after the stuck writer hit max-hold", err)
+	}
+	if len(suffix) != n {
+		t.Fatalf("returned suffix has %d of %d carry commands — the tail was dropped (callers would hang)", len(suffix), n)
+	}
+	// The carry suffix stays out-of-band; only the pre-filled marker remains in the deque.
+	if got := inflight.len(); got != 1 {
+		t.Fatalf("in-flight deque holds %d entries; want 1 (the pre-filled marker; the carry suffix must stay out-of-band)", got)
 	}
 }
 
@@ -3236,6 +3337,96 @@ func TestFDAttemptInitPanicRetiresConnFailsLease(t *testing.T) {
 	}
 	if len(unacked) != len(carry) {
 		t.Fatalf("unacked = %d; want %d (carry returned for the lease-retry budget)", len(unacked), len(carry))
+	}
+}
+
+// fdPutPanicPool is a pool.Pooler whose Put panics — models the release path blowing up
+// (a custom pool, or the push drain in releaseConnToPool running a custom
+// PushNotificationProcessor). It records Remove so a test can assert attempt's
+// release-defer recover retires the conn instead of leaking it.
+type fdPutPanicPool struct {
+	pool.Pooler
+	conn    *pool.Conn
+	removes atomic.Int64
+	puts    atomic.Int64
+}
+
+func (p *fdPutPanicPool) Get(context.Context) (*pool.Conn, error) { return p.conn, nil }
+func (p *fdPutPanicPool) Put(context.Context, *pool.Conn) {
+	p.puts.Add(1)
+	panic("test: pool.Put panic on the full-duplex release path")
+}
+func (p *fdPutPanicPool) Remove(context.Context, *pool.Conn, error) { p.removes.Add(1) }
+
+// TestFDReleasePanicRetiresConn pins r3937925393: attempt's release defer runs LAST
+// (LIFO — the init recover is registered after it and runs FIRST), so a panic while
+// releasing a CLEAN-ended conn (releaseConnToPool drains pushes via a custom processor,
+// then Puts) had no outer boundary: it escaped the sole fd.run goroutine (process crash)
+// and leaked the leased conn. The release defer now recovers the panic and Removes the
+// conn — its drain/Put state is unknown, so Put would poison the pool.
+//
+// Red-check: remove the nested recover in attempt's release else-branch — the Put panic
+// escapes attempt() and crashes the test process.
+func TestFDReleasePanicRetiresConn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const n = 3
+	var reply bytes.Buffer
+	dones := make([]chan struct{}, n)
+	carry := make([]fdReq, n)
+	for i := range carry {
+		reply.WriteString("+OK\r\n")
+		dones[i] = make(chan struct{})
+		carry[i] = fdReq{cmd: NewStatusCmd(ctx, "set", fmt.Sprintf("k%d", i), "v"), hookDone: dones[i], attempts: 1}
+	}
+	cn := pool.NewConn(newFDCannedReplyConn(reply.Bytes()))
+	cn.SetUsable(true) // IsInited() -> initPooledConn is a no-op, so attempt reaches session + the release defer
+	p := &fdPutPanicPool{conn: cn}
+	fd := &fdEngine{
+		ap: &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: ctx},
+		// Protocol != 3: processPushNotifications is a no-op, so releaseConnToPool reaches Put.
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, ReadTimeout: time.Second}}},
+		pool:     p,
+		maxBatch: 1,
+		window:   100,
+	}
+
+	type res struct {
+		result fdResult
+		err    error
+	}
+	done := make(chan res, 1)
+	go func() {
+		_, result, e := fd.attempt(context.Background(), carry)
+		done <- res{result, e}
+	}()
+
+	// Every command completes on the healthy session first.
+	for i := range dones {
+		select {
+		case <-dones[i]:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("command %d never completed", i)
+		}
+	}
+	// End the session cleanly (fdGraceful): attempt then runs the release defer, where Put panics.
+	cancel()
+
+	var got res
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attempt() hung after ctx cancel — a release panic wedged the engine")
+	}
+	if got.result != fdGraceful {
+		t.Fatalf("attempt result = %v, want fdGraceful (a release panic must not change the session outcome)", got.result)
+	}
+	if p.puts.Load() != 1 {
+		t.Fatalf("puts = %d, want 1 (release attempted a Put, which panicked)", p.puts.Load())
+	}
+	if p.removes.Load() != 1 {
+		t.Fatalf("removes = %d, want 1 (the release-panic recover must retire the conn)", p.removes.Load())
 	}
 }
 

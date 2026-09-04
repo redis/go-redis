@@ -506,18 +506,21 @@ const DefaultPipelinePoolSize = 10
 // very large buffers (>=512 KiB) can regress it.
 const DefaultPipelineBufferSize = 64 * 1024
 
-// DefaultPipelinePoolTimeout bounds how long a pipeline waits for a pipeline-pool
-// connection before spilling to the main pool. The pipeline pool is burst
-// capacity, so when every one of its connections is busy a further pipeline
-// should fall back to the main pool promptly rather than queue for the full
-// (main) PoolTimeout, which can be tens of seconds. It is deliberately short:
-// staying under it costs a little extra latency on a saturated pipeline pool
-// (the spill), never correctness. See pipelinePoolOptions / withPipelineConn.
+// DefaultPipelinePoolTimeout is the dedicated pipeline pool's PoolTimeout
+// (pipelinePoolOptions caps the pipeline clone's PoolTimeout at this value but honors
+// a caller's SHORTER PoolTimeout). It does NOT gate the spill to the main pool:
+// withPipelineConn acquires with a non-blocking TryGet, so a burst wider than the
+// pipeline pool's cap spills to the main pool IMMEDIATELY (see the pipeline-pool note
+// in Options and withPipelineConn), never waiting this timeout, and the spilled op
+// then uses the MAIN pool's own PoolTimeout, not this one.
 //
-// Note: PoolTimeout is also the budget for a connection's drainer handoff
-// (maintnotifications), so a pipeline connection that needs a handoff gets this
-// short budget rather than the main pool's — acceptable because pipeline
-// connections are disposable burst capacity that a burst can spill past anyway.
+// Its remaining live effect is the budget for a pipeline connection's maintnotifications
+// drainer handoff: PoolTimeout is one budget for both a pool turn and a drainer handoff
+// (see internal/pool), and TryGet still respects a drainer's bounded claim up to
+// PoolTimeout. So a pipeline connection that needs a handoff gets this short budget
+// rather than the main pool's (tens of seconds) — acceptable because pipeline
+// connections are disposable burst capacity that a burst can spill past anyway. It is
+// deliberately short for the same reason.
 const DefaultPipelinePoolTimeout = 100 * time.Millisecond
 
 func (opt *Options) init() {
