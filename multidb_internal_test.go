@@ -1843,3 +1843,64 @@ func TestInitializeSucceedsAtDeadlineWhenPolicyMet(t *testing.T) {
 		})
 	}
 }
+
+// seqCheck answers one scripted verdict per call and repeats the last one.
+type seqCheck struct {
+	mu       sync.Mutex
+	verdicts []bool
+}
+
+func (s *seqCheck) CheckHealth(context.Context, *Client) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := s.verdicts[0]
+	if len(s.verdicts) > 1 {
+		s.verdicts = s.verdicts[1:]
+	}
+	return v, nil
+}
+
+func (s *seqCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	return s.CheckHealth(context.Background(), nil)
+}
+
+// Startup probes must not touch the breakers. A member that fails the first
+// pass and passes the retry comes out of construction with a breaker that
+// never moved: closed, and no state-change callback fired. (With recording
+// probes the first verdict opened it and the reconciliation reset it, two
+// callbacks, and a slow recording probe could land after the final pass and
+// open the breaker of the member just selected.)
+func TestInitializeProbesDoNotRecordOnBreakers(t *testing.T) {
+	var transitions atomic.Int32
+	opts := &MultiDBOptions{
+		HealthCheckInterval:   time.Hour,
+		AutoFallbackInterval:  -1,
+		HealthCheckTimeout:    time.Second,
+		InitialDBState:        InitialDBStateOneAvailable,
+		CircuitBreakerConfig:  &MultiDBCircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1},
+		OnCircuitStateChanged: func(int, string, string) { transitions.Add(1) },
+		Clients: []MultiDBClientConfig{{
+			Options:      &Options{Addr: "127.0.0.1:1"},
+			Weight:       1,
+			HealthChecks: []MultiDBHealthCheck{&seqCheck{verdicts: []bool{false, true}}},
+		}},
+	}
+	// A deadline is what enables the retry pass.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v (the retry pass should have passed)", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	if got := mdb.core.dbs[0].cb.State(); got != imultidb.CircuitClosed {
+		t.Fatalf("breaker = %v after startup, want closed", got)
+	}
+	// Callbacks are delivered from a queue; give a wrongly recorded
+	// transition time to surface.
+	time.Sleep(200 * time.Millisecond)
+	if n := transitions.Load(); n != 0 {
+		t.Fatalf("%d circuit-state callbacks during startup, want 0: a startup probe recorded on the breaker", n)
+	}
+}

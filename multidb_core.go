@@ -481,25 +481,38 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 		id      int
 		healthy bool
 	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return initHealthErr(err, 0, required)
-		}
-		// Probe every member concurrently. Probing serially let one unreachable
-		// member spend the constructor's deadline after enough healthy members
-		// had already answered, and the pass then failed on the deadline — in
-		// exactly the partial outage OneAvailable and MajorityAvailable exist to
-		// tolerate. The pass still waits for every verdict it can get: the
-		// verdicts decide which members failover may select, and a member that
-		// answers "unhealthy" a moment after the policy is met must still be
-		// forced open. Only the deadline cuts the wait short (below). Each probe
-		// is bounded by HealthCheckTimeout and by ctx, and the channel is
-		// buffered for every member, so a late verdict never blocks anything.
+	// runPass probes every member once and returns how many passed. It
+	// leaves a verdict for every member in probeHealthy.
+	//
+	// The probes run concurrently. Probing serially let one unreachable
+	// member spend the constructor's deadline after enough healthy members
+	// had already answered, and the pass then failed on the deadline — in
+	// exactly the partial outage OneAvailable and MajorityAvailable exist to
+	// tolerate. The pass still waits for every verdict it can get: the
+	// verdicts decide which members failover may select, and a member that
+	// answers "unhealthy" a moment after the policy is met must still be
+	// forced open. Only the deadline cuts the wait short (below). Each probe
+	// is bounded by HealthCheckTimeout and by ctx, and the channel is
+	// buffered for every member, so a late verdict never blocks anything.
+	//
+	// Startup probes record NOTHING on the breakers: the reconciliation after
+	// the final pass applies the verdicts in one place. A recording probe
+	// could otherwise settle after a later pass declared its member healthy
+	// (a slow probe that a deadline stopped waiting for), and open the
+	// breaker of the member just selected active. Each pass also has its own
+	// context, so a probe the pass no longer waits for is stopped instead of
+	// left running.
+	runPass := func() (int, error) {
 		probeHealthy = make(map[int]bool, len(c.dbs))
+		passCtx, cancelPass := context.WithCancel(ctx)
+		defer cancelPass()
 		results := make(chan verdict, len(c.dbs))
 		for id, db := range c.dbs {
 			go func(id int, db *multidbDatabase) {
-				results <- verdict{id: id, healthy: db.probe(ctx, c.opts.HealthCheckTimeout)}
+				start := time.Now()
+				healthy := db.checkHealthyNoRecord(passCtx, c.opts.HealthCheckTimeout, db.checks)
+				otel.RecordMultiDBHealthCheck(passCtx, db.fqdn, healthy, time.Since(start))
+				results <- verdict{id: id, healthy: healthy}
 			}(id, db)
 		}
 		healthy := 0
@@ -524,7 +537,7 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 				// probe that notices cancellation late may report healthy for
 				// a member the caller stopped waiting on.
 				if !errors.Is(ctx.Err(), context.DeadlineExceeded) || healthy < required {
-					return initHealthErr(ctx.Err(), healthy, required)
+					return healthy, initHealthErr(ctx.Err(), healthy, required)
 				}
 				for id := range c.dbs {
 					if _, known := probeHealthy[id]; !known {
@@ -533,6 +546,16 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 				}
 				seen = len(c.dbs)
 			}
+		}
+		return healthy, nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return initHealthErr(err, 0, required)
+		}
+		healthy, err := runPass()
+		if err != nil {
+			return err
 		}
 		if healthy >= required {
 			break
@@ -548,10 +571,10 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	}
 
 	// Reconcile breaker state with the final probe pass, which is the
-	// definitive startup signal:
-	//  - a member that just passed its probe gets a fresh (closed) breaker,
-	//    even if earlier retries of a blocking init opened it — otherwise a
-	//    recovered member could not be selected until the grace period ends;
+	// definitive startup signal. The probes themselves never touch the
+	// breakers (see runPass), so this is the only place startup does:
+	//  - a member that passed keeps a closed breaker (Reset only repairs a
+	//    breaker something else already opened);
 	//  - a member that failed its probe gets its breaker opened, so automatic
 	//    failover cannot switch to a database already known to be down before
 	//    the background checks have had a chance to open it organically.
