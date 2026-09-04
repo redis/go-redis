@@ -63,6 +63,64 @@ func TestCSCRefresherStopDrainBailsOnFirstFailure(t *testing.T) {
 	}
 }
 
+// stopClosingPooler closes stop on its first Get, then fails every Get, counting calls.
+// It drives a NORMAL (non-stopping) refresh flush that is interrupted by Close mid-loop.
+type stopClosingPooler struct {
+	pool.Pooler
+	stop chan struct{}
+	gets int
+}
+
+func (p *stopClosingPooler) Get(context.Context) (*pool.Conn, error) {
+	p.gets++
+	if p.gets == 1 {
+		close(p.stop) // Close arrives while this normal flush is already running
+	}
+	return nil, errors.New("csc test: pool get always fails")
+}
+
+// TestCSCRefresherNormalFlushAbortsOnClose pins r3937722481: a normal (non-stopping)
+// refresh flush already running when Close begins must abort BETWEEN chunks instead of
+// giving each remaining chunk a fresh cscRefreshBatchTimeout against a dead/stalled
+// server (which, with reply budgeting producing one-target chunks, could hold Close for
+// tens of minutes). A full window is 4 chunks; the first chunk's Get closes h.stop, so
+// the between-chunks check must bail the rest — exactly ONE chunk is attempted.
+//
+// Red-check: drop the `if !stopping { select <-h.stop }` guard in flush's chunk loop —
+// the normal flush ignores the now-closed stop and attempts all 4 chunks (gets == 4).
+func TestCSCRefresherNormalFlushAbortsOnClose(t *testing.T) {
+	lc := NewLocalCache(CacheConfig{MaxEntries: 100000})
+	h := &cscRevalidateHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	p := &stopClosingPooler{stop: h.stop}
+	c := &baseClient{opt: &Options{}, csc: lc, cscKeyPrefix: "p:", connPool: p}
+	q := &cscRefreshQueue{
+		ch:       make(chan cscRefreshTarget, cscRefreshWindowMaxKeys+16),
+		demandCh: make(chan uint64, 1),
+	}
+	q.sinceToken.Store(lc.LRUClock())
+
+	// A full window (4 * cscRefreshBatchMax) triggers a NORMAL flush(false,false) from the
+	// q.ch case — this is NOT the stop-drain path (h.stop is not pre-closed).
+	for i := 0; i < cscRefreshWindowMaxKeys; i++ {
+		key := "p:" + strconv.Itoa(i)
+		q.ch <- cscRefreshTarget{cacheKey: key, redisKeys: []string{key}}
+	}
+
+	done := make(chan struct{})
+	go func() { defer close(done); c.runCSCRefresher(h, lc, q) }()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresher did not converge — a normal flush kept refetching after Close began")
+	}
+
+	if p.gets != 1 {
+		t.Fatalf("pool Gets = %d; want 1 — a normal flush must abort mid-loop once Close begins "+
+			"(r3937722481), not attempt every chunk", p.gets)
+	}
+}
+
 // TestCloneSharesRefreshQueueForDemand pins #3965 F4: clone() (WithTimeout/
 // WithContext) must SHARE the owner's refresh queue so a derived client's
 // processCached can signal demand on it. Without the share the clone's field is

@@ -556,6 +556,23 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			writeBudget := cscMissWriteBatchBytes(c.opt)
 			prefixLen := len(c.cscKeyPrefix)
 			for start := 0; start < len(targets); {
+				// Abort a normal (non-stopping) flush that is still running when Close
+				// begins: continuing to give each remaining chunk a fresh
+				// cscRefreshBatchTimeout against a dead/stalled server would delay Close by
+				// minutes (with reply budgeting producing one-target chunks, ~43 min for a
+				// full window). The stopping==true stop-drain already bounds itself by
+				// bailing after the first failed chunk below; this covers a flush that was
+				// ENTERED before Close and is still running when h.stop closes (#3965 F2
+				// follow-up). Bailed targets stay evicted — a reader repopulates them and
+				// this client's coverage is revoked on Close anyway.
+				if !stopping {
+					select {
+					case <-h.stop:
+						bailed = true
+						return
+					default:
+					}
+				}
 				end := cscRefreshChunkEnd(targets, start, prefixLen, writeBudget)
 				// Per-chunk deadline: each round trip gets its own cscRefreshBatchTimeout,
 				// so aggregate latency across chunks cannot expire the later chunks (#3989).
