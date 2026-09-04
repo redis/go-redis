@@ -46,8 +46,9 @@ type multidbDatabase struct {
 	// firing callbacks for it.
 	removed atomic.Bool
 
-	// noFallbackBefore (unix nano) suppresses auto-fallback TO this member
-	// until the deadline. It is (re-)armed whenever an automatic failover
+	// noFallbackBefore (multidbNowNano stamp, monotonic) suppresses
+	// auto-fallback TO this member until the deadline. It is (re-)armed
+	// whenever an automatic failover
 	// vacates the member, so auto-fallback cannot immediately undo a
 	// detector- or breaker-driven failover — a flaky higher-weight primary
 	// whose rate trips the detector (without its breaker ever opening) would
@@ -330,6 +331,16 @@ type multidbCore struct {
 	// wg.Wait). Like the per-db cbq, close() does not wait on this queue.
 	cbq cbq.CallbackQueue
 }
+
+// multidbEpoch anchors the core's clock for deadlines that must survive a
+// wall-clock step (NTP correction, VM restore): time.Since reads Go's
+// monotonic clock. A fallback-suppression deadline stamped from the wall
+// clock would otherwise outlive a backwards step by the size of the step.
+var multidbEpoch = time.Now()
+
+// multidbNowNano returns the monotonic clock in nanoseconds since
+// multidbEpoch. A variable so tests can drive the clock without sleeping.
+var multidbNowNano = func() int64 { return int64(time.Since(multidbEpoch)) }
 
 func newMultidbCore(opts *MultiDBOptions) *multidbCore {
 	core := &multidbCore{
@@ -1334,7 +1345,7 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	// fallback itself (which does not gate on this) are unaffected.
 	if reason == failoverReasonAutomatic {
 		if fromDB := c.dbByID(from); fromDB != nil {
-			fromDB.noFallbackBefore.Store(time.Now().Add(c.fallbackInterval).UnixNano())
+			fromDB.noFallbackBefore.Store(multidbNowNano() + int64(c.fallbackInterval))
 		}
 	}
 
@@ -1822,7 +1833,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 		return
 	}
 
-	now := time.Now().UnixNano()
+	now := multidbNowNano()
 	// Collect every higher-weight, breaker-closed candidate not in its
 	// post-failover suppression window, then RELEASE failoverMu BEFORE probing.
 	// The probes are serial and each waits up to HealthCheckTimeout; holding
@@ -1909,7 +1920,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	stillGood := ok && db == bestDB &&
 		!c.autoFallbackDisabled.Load() && // SetAutoFallback(false) may have raced the off-lock probe
 		db.weight > cur.weight &&
-		time.Now().UnixNano() >= db.noFallbackBefore.Load() &&
+		multidbNowNano() >= db.noFallbackBefore.Load() &&
 		db.cb.CheckState() == imultidb.CircuitClosed
 	c.dbMu.RUnlock()
 	if !stillGood {

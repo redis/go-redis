@@ -2171,3 +2171,35 @@ func TestMultiDBSSubscribeFailsOverOpenActive(t *testing.T) {
 		t.Fatalf("active = %d after SSubscribe, want 1: the subscription was pinned to the open member", got)
 	}
 }
+
+// Fallback suppression must run on the core's monotonic clock: a wall-clock
+// step must not stretch or shrink it. Driven through the injectable clock.
+func TestFallbackSuppressionUsesMonotonicClock(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(1)
+	prev := multidbNowNano
+	multidbNowNano = clock.Load
+	t.Cleanup(func() { multidbNowNano = prev })
+
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second, FailoverStrategy: WeightBasedFailoverStrategy{}})
+	mkCB := func() *imultidb.CircuitBreaker {
+		return imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1})
+	}
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 2, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{okLivenessCheck{}}}
+	core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{okLivenessCheck{}}}
+	core.active.Store(1)
+	// Member 0 was vacated by an automatic failover: suppressed for an hour
+	// on the core's clock.
+	core.dbs[0].noFallbackBefore.Store(clock.Load() + int64(time.Hour))
+
+	core.tryFallbackToPrimary(context.Background())
+	if got := core.activeDatabaseID(); got != 1 {
+		t.Fatalf("active = %d, want 1: fallback ignored the suppression window (compared against the wall clock)", got)
+	}
+	// One hour on the core's clock, no wall-clock time at all.
+	clock.Add(int64(time.Hour) + 1)
+	core.tryFallbackToPrimary(context.Background())
+	if got := core.activeDatabaseID(); got != 0 {
+		t.Fatalf("active = %d, want 0: the suppression window did not end on the core's clock", got)
+	}
+}
