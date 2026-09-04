@@ -367,7 +367,17 @@ func (b *cscInvalBatcher) apply(items []cscInvalItem) {
 		}
 		k := it.key
 		if !canRefresh {
-			cache.DeleteByRedisKey(k)
+			if lc != nil {
+				// *LocalCache with refresh OFF: still honor the fetch-order guard, or a
+				// delayed invalidation would delete a value refetched during the batch
+				// window (fetchSeq > fetchSnap) — a spurious miss that can also cancel an
+				// in-progress fetch and wake waiters as duplicates. Use the sequence-aware
+				// deletion path and discard any collected refresh targets (refresh is off).
+				_ = lc.deleteByRedisKeyCollectingHot(k, cscInvalNoHorizon, it.fetchSnap, nil)
+			} else {
+				// Non-*LocalCache: no per-entry fetch sequence to compare; plain delete.
+				cache.DeleteByRedisKey(k)
+			}
 			continue
 		}
 		// Use the horizon snapshotted at ENQUEUE, not a live load: a batch-window

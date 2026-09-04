@@ -467,6 +467,46 @@ func TestInvalBatcherChByteReservationIsAtomic(t *testing.T) {
 	}
 }
 
+// TestInvalBatcherNoRefreshGuardKeepsRefetched pins r3936994566: the batcher must apply
+// the fetch-order guard even when refresh-on-invalidate is OFF (a *LocalCache with no
+// refresh binding). A delayed invalidation whose fetchSnap predates a refetch must not
+// evict the newer value (fetchSeq > fetchSnap). Before the fix the !canRefresh branch did
+// an unconditional DeleteByRedisKey and served the refetch as a spurious miss.
+func TestInvalBatcherNoRefreshGuardKeepsRefetched(t *testing.T) {
+	ctx := context.Background()
+	lc := NewLocalCache(CacheConfig{MaxEntries: 1024})
+	mkValid := func(cacheKey, redisKey string) {
+		lc.DeleteByCacheKey(cacheKey)
+		tok, fetch := lc.Reserve(cacheKey, []string{redisKey})
+		if tok == 0 || !fetch {
+			t.Fatalf("Reserve(%q) = (%d, %v)", cacheKey, tok, fetch)
+		}
+		if !lc.fulfill(cacheKey, tok, 0, []byte("v")) {
+			t.Fatalf("fulfill(%q) failed", cacheKey)
+		}
+	}
+
+	// Refresh is OFF: no b.refresh binding -> apply takes the !canRefresh branch.
+	b := newTestBatcher(lc, 64, time.Hour)
+
+	mkValid("ck:hot", "rk") // original entry
+	go b.run()
+
+	// Invalidation snapshotted BEFORE the refetch below (its fetchSnap predates it).
+	b.enqueue("rk")
+	// Refetch after the invalidation was observed: the new entry's fetchSeq exceeds the
+	// duplicate's snapshot, so the guard must keep it.
+	mkValid("ck:hot", "rk")
+
+	b.stop()
+	b.join()
+
+	if _, ok := lc.Get(ctx, "ck:hot"); !ok {
+		t.Fatal("refresh-off apply evicted a value refetched after the invalidation; the " +
+			"fetch-order guard must apply even without refresh-on-invalidate (r3936994566)")
+	}
+}
+
 // TestInvalBatcherSizeCapGuardKeepsRefreshed pins #3965 F1 under the fetch-order
 // guard. The size-cap flush now CLEARS the per-epoch dedup (seen), so a key can be
 // applied on both sides of the cap — but a stale duplicate that straddles a
