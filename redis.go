@@ -2268,6 +2268,13 @@ func NewClient(opt *Options) *Client {
 						"CSC is only supported with the built-in processor, behavior is otherwise undefined "+
 						"(invalidation freshness and idle-connection health not guaranteed)")
 			}
+			// Publish the weak back-reference to the canonical *Client BEFORE attachCSC
+			// starts the drainer. The push-handler adapter's canonical close reads
+			// cscClientWeak on the drainer goroutine; setting it afterwards (it used to be
+			// set only later, in cscRegisterCleanups) raced that read and could miss the
+			// close for a push that arrived in the window. Weak so a dropped *Client stays
+			// collectible and its GC cleanup still fires.
+			c.baseClient.cscClientWeak = weak.Make(&c)
 		}
 		c.baseClient.attachCSC(context.Background(), cache)
 

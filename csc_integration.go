@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"weak"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -27,9 +26,10 @@ func cscRegisterCleanups(c *Client) {
 	if h == nil {
 		return
 	}
-	// Weak back-reference for the push-handler adapter's canonical close (see
-	// baseClient.cscClientWeak): must be weak or this cleanup never fires.
-	c.baseClient.cscClientWeak = weak.Make(c)
+	// The weak back-reference (cscClientWeak) is published by the caller BEFORE
+	// attachCSC starts the drainer (see NewClient), so the push-handler adapter's
+	// canonical close reads it race-free. It is deliberately NOT set here: a write
+	// after the drainer is already live would race that read.
 	// Capture cscActive (a standalone *atomic.Bool, not *Client) so the cleanup
 	// also stops clones from serving once the drainer is gone. Capture the miss
 	// coalescer too (set during attach; nil when off): its sessions wait on
