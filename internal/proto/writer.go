@@ -144,19 +144,19 @@ func (w *Writer) WriteArg(v interface{}) error {
 		}
 		return w.uint(*v)
 	case float32:
-		return w.float(float64(v))
+		return w.float32(v)
 	case *float32:
 		if v == nil {
-			return w.float(0)
+			return w.float32(0)
 		}
-		return w.float(float64(*v))
+		return w.float32(*v)
 	case float64:
-		return w.float(v)
+		return w.float64(v)
 	case *float64:
 		if v == nil {
-			return w.float(0)
+			return w.float64(0)
 		}
-		return w.float(*v)
+		return w.float64(*v)
 	case bool:
 		if v {
 			return w.int(1)
@@ -220,8 +220,10 @@ func (w *Writer) writeArgExtra(v interface{}) error {
 		return w.int(rfValue.Int())
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return w.uint(rfValue.Uint())
-	case reflect.Float32, reflect.Float64:
-		return w.float(rfValue.Float())
+	case reflect.Float32:
+		return w.float32(float32(rfValue.Float()))
+	case reflect.Float64:
+		return w.float64(rfValue.Float())
 	case reflect.String:
 		return w.string(rfValue.String())
 	case reflect.Slice:
@@ -242,8 +244,10 @@ func (w *Writer) writeZeroKind(t reflect.Type) error {
 		return w.int(0)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return w.uint(0)
-	case reflect.Float32, reflect.Float64:
-		return w.float(0)
+	case reflect.Float32:
+		return w.float32(0)
+	case reflect.Float64:
+		return w.float64(0)
 	case reflect.String:
 		return w.string("")
 	case reflect.Slice:
@@ -287,7 +291,13 @@ func (w *Writer) int(n int64) error {
 	return w.bytes(w.numBuf)
 }
 
-func (w *Writer) float(f float64) error {
+// float32 formats a float32 value using 32-bit formatting
+func (w *Writer) float32(f float32) error {
+	w.numBuf = strconv.AppendFloat(w.numBuf[:0], float64(f), 'f', -1, 32)
+	return w.bytes(w.numBuf)
+}
+
+func (w *Writer) float64(f float64) error {
 	w.numBuf = strconv.AppendFloat(w.numBuf[:0], f, 'f', -1, 64)
 	return w.bytes(w.numBuf)
 }
