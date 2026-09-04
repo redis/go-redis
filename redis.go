@@ -181,6 +181,16 @@ func (h *hooks) setDefaults() {
 //
 // Please note: "next(ctx, cmd)" is very important, it will call the next hook,
 // if "next(ctx, cmd)" is not executed, the redis command will not be executed.
+//
+// Contract. A hook runs inside the client's command machinery and must be
+// well-behaved, or behavior is undefined:
+//   - Call next (as above) unless deliberately terminating the command.
+//   - Do not call Close or other client control methods from a hook — the hook
+//     runs on the goroutine Close waits for, so this deadlocks.
+//   - Do not panic. A panicking hook can crash the process or leave an operation
+//     unsettled; wrap fallible work and return an error instead.
+//   - Do not mutate client or connection state. A hook may observe and wrap
+//     errors (call cmd.SetErr) but must not reconfigure the client mid-flight.
 func (hs *hooksMixin) AddHook(hook Hook) {
 	hs.hooksMu.Lock()
 	defer hs.hooksMu.Unlock()
@@ -2247,6 +2257,18 @@ func NewClient(opt *Options) *Client {
 			// We constructed it, so we own it (may flush on drainer stop).
 			c.baseClient.cscOwnsCache = true
 		}
+		// CSC is only supported with the built-in push processor: it depends on the
+		// built-in draining kernel-only readability and treating a boundary read timeout
+		// as benign. Warn (do not fail) when a custom processor is paired with CSC — the
+		// contract is that behavior is otherwise undefined. See .claude/specs/push.md.
+		if cache != nil {
+			if _, builtin := c.pushProcessor.(*push.Processor); !builtin {
+				internal.Logger.Printf(context.Background(),
+					"redis: client-side caching enabled with a custom PushNotificationProcessor; "+
+						"CSC is only supported with the built-in processor, behavior is otherwise undefined "+
+						"(invalidation freshness and idle-connection health not guaranteed)")
+			}
+		}
 		c.baseClient.attachCSC(context.Background(), cache)
 
 		// Safety net for a client dropped without Close: the goroutines hold
@@ -3065,7 +3087,26 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	// desync that would evict this conn's CSC coverage in the very window relaxation
 	// covers. Raise the cap to the relaxed timeout while relaxation is active; without
 	// it EffectiveReadTimeout returns the unchanged hard cap.
-	err = cn.WithReaderHardDeadline(pushDrainBudget(cn, cscDrainHardReadCap), func(rd *proto.Reader) error {
+	budget := pushDrainBudget(cn, cscDrainHardReadCap)
+	if budget > cscDrainHardReadCap {
+		// Relaxation active: confirm a RESP byte under the short cap before granting the
+		// relaxed budget. Otherwise a TLS control record — socket-readable (hasData) with
+		// zero RESP bytes and nothing buffered — makes the drain's Peek(1) block for the
+		// full relaxed timeout, and the single-goroutine idle drainer stalls the whole
+		// pass for seconds (#3989). A byte already buffered (the common case, including
+		// the !hasData probe above) makes this Peek return immediately. Mirrors
+		// pushDrainWithin, which the reply-path checkpoint already routes through.
+		if perr := cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+			_, e := rd.Peek(1)
+			return e
+		}); perr != nil {
+			if isTimeout, hasFlag := isTimeoutError(perr); isTimeout && hasFlag {
+				return false, nil // no frame began within the short cap — benign
+			}
+			return false, perr
+		}
+	}
+	err = cn.WithReaderHardDeadline(budget, func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
 				context.Background(), handlerCtx, rd,

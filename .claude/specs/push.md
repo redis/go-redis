@@ -41,6 +41,15 @@ active conns; at the next drainer tick on idle pooled conns. Hard cap
 everywhere: the cache's MaxStaleness. This is documented on
 `Options.ClientSideCacheConfig`.
 
+The next-drainer-tick bound holds for the built-in processor, which consumes
+kernel-only readability. A custom `PushNotificationProcessor` is **not supported**
+with client-side caching: CSC relies on the built-in processor to consume
+kernel-only data and to treat a boundary read timeout as benign, which a custom
+processor's blocking-loop contract does not guarantee. With a custom processor,
+invalidation freshness and idle-connection health are undefined — use the built-in
+processor with CSC. The client logs a warning at init if CSC is enabled with a
+custom processor.
+
 ## Rules (enforced in review)
 
 1. **No new speculative drain call sites.** Each one re-buys the whole edge-case

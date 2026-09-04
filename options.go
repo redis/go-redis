@@ -436,6 +436,12 @@ type Options struct {
 	// connection. In every case a cached entry is never served past the cache's
 	// MaxStaleness, which is the hard upper bound.
 	//
+	// Requires the built-in push processor. Setting a custom
+	// PushNotificationProcessor together with CSC is not supported: the
+	// invalidation mechanism relies on the built-in processor to consume
+	// kernel-only readability and tolerate boundary read timeouts, so behavior is
+	// otherwise undefined (the client logs a warning at init in that case).
+	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
