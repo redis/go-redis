@@ -2076,3 +2076,65 @@ func TestMultiDBClusterControlCommandsFailOverOpenActive(t *testing.T) {
 		t.Errorf("active = %d after the control command, want 1", got)
 	}
 }
+
+// decoratedCmd is a caller's decorator around a Cmder: legal, since embedding
+// promotes the whole interface, but it is not a *baseCmd.
+type decoratedCmd struct{ Cmder }
+
+// batchInspectHook hands every batch to fn and answers it locally.
+type batchInspectHook struct{ fn func([]Cmder) }
+
+func (batchInspectHook) DialHook(next DialHook) DialHook          { return next }
+func (batchInspectHook) ProcessHook(next ProcessHook) ProcessHook { return next }
+func (h batchInspectHook) ProcessPipelineHook(ProcessPipelineHook) ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		h.fn(cmds)
+		return nil
+	}
+}
+
+// A MultiDB transaction marks every command NoRetry so the member's own
+// retry loop cannot replay a possibly committed EXEC. A decorated command
+// must be marked too: a cluster member trims the synthetic MULTI/EXEC before
+// its retry check, so the decorated command is the only marker left.
+func TestMultiDBTxMarksDecoratedCommandsNoRetry(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{
+			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	var seen, marked atomic.Bool
+	mdb.core.dbs[0].cc.AddHook(batchInspectHook{fn: func(cmds []Cmder) {
+		for _, cmd := range cmds {
+			if d, ok := cmd.(decoratedCmd); ok {
+				seen.Store(true)
+				marked.Store(d.NoRetry())
+			}
+		}
+	}})
+
+	inner := NewStatusCmd(ctx, "set", "k", "v")
+	_, _ = mdb.TxPipelined(ctx, func(p Pipeliner) error {
+		return p.Process(ctx, decoratedCmd{inner})
+	})
+	if !seen.Load() {
+		t.Fatal("the decorated command never reached the member")
+	}
+	if !marked.Load() {
+		t.Fatal("decorated command reached the member without NoRetry: a cluster member could replay the transaction")
+	}
+	if inner.NoRetry() {
+		t.Error("NoRetry was not restored on the caller's command after the transaction")
+	}
+}

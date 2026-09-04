@@ -246,6 +246,11 @@ type Cmder interface {
 	// Commands that write directly to an io.Writer should return true since
 	// partial writes cannot be undone on retry.
 	NoRetry() bool
+	// setNoRetry sets the flag NoRetry reports. Part of the interface (not
+	// only of baseCmd) so a decorator that embeds a Cmder promotes it: the
+	// MultiDB transaction path marks every command of a transaction, and a
+	// decorated command must not slip through unmarked.
+	setNoRetry(bool)
 
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType

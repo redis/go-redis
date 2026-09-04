@@ -655,16 +655,14 @@ func (c *MultiDBClient) TxPipeline() Pipeliner {
 			// MULTI would be lost there. The prior NoRetry is restored after
 			// execution: cmds are caller-owned and may be reused, and a plain
 			// client's TxPipeline does not leave them permanently non-retryable.
-			type noRetrier interface {
-				setNoRetry(bool)
-				NoRetry() bool
-			}
+			// setNoRetry is part of Cmder, so a caller's decorator that embeds
+			// a Cmder is marked too (through the embedded command); a type
+			// assertion here would skip such a command and leave a cluster
+			// member's retry check with no NoRetry marker at all.
 			prev := make([]bool, len(cmds))
 			for i, cmd := range cmds {
-				if bc, ok := cmd.(noRetrier); ok {
-					prev[i] = bc.NoRetry()
-					bc.setNoRetry(true)
-				}
+				prev[i] = cmd.NoRetry()
+				cmd.setNoRetry(true)
 			}
 			// Restore via defer so a panic in the hook or member path still
 			// clears the temporary noRetry on the caller-owned commands. Restore
@@ -675,9 +673,7 @@ func (c *MultiDBClient) TxPipeline() Pipeliner {
 			// genuine original state the last write.
 			defer func() {
 				for i := len(cmds) - 1; i >= 0; i-- {
-					if bc, ok := cmds[i].(noRetrier); ok {
-						bc.setNoRetry(prev[i])
-					}
+					cmds[i].setNoRetry(prev[i])
 				}
 			}()
 			return c.processTxPipelineHook(ctx, cmds)
