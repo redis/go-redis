@@ -1429,3 +1429,41 @@ func TestCircuitBreaker_OpenTimeoutUsesMonotonicClock(t *testing.T) {
 		t.Fatal("LastFailureTime is zero after a recorded failure")
 	}
 }
+
+// Allow admits half-open requests under the transition lock, like
+// AllowReserve: no transition can land between the reservation and the
+// decision. The lock-free form reserved, re-checked the state and rejected on
+// any change, which also rejected a request when a concurrent success had
+// just closed the circuit. The interleaving itself cannot be forced without a
+// deschedule hook, so this pins the mechanism: while a transition holds the
+// lock, a half-open Allow waits for it instead of deciding on its own.
+func TestCircuitBreaker_AllowSerializesWithTransitions(t *testing.T) {
+	cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1, OpenTimeout: time.Millisecond, MaxHalfOpenRequests: 1})
+	cb.RecordFailure()
+	time.Sleep(5 * time.Millisecond)
+	if got := cb.CheckState(); got != StateHalfOpen {
+		t.Fatalf("state=%v, want half-open", got)
+	}
+
+	cb.transitionMu.Lock()
+	type result struct{ allowed, reserved bool }
+	done := make(chan result, 1)
+	go func() {
+		a, r := cb.Allow()
+		done <- result{a, r}
+	}()
+	select {
+	case r := <-done:
+		t.Fatalf("Allow decided (%v, %v) while a transition held the lock: admission is not serialized with transitions", r.allowed, r.reserved)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cb.transitionMu.Unlock()
+	select {
+	case r := <-done:
+		if !r.allowed || !r.reserved {
+			t.Fatalf("Allow = (%v, %v) after the lock was released, want a half-open admission", r.allowed, r.reserved)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Allow never returned after the lock was released")
+	}
+}

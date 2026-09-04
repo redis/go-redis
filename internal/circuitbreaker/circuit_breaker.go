@@ -225,34 +225,16 @@ func (cb *CircuitBreaker) IsAllowed() bool {
 // calling ReleaseHalfOpen — an unconditional release would free a slot a
 // real recovery probe is holding.
 func (cb *CircuitBreaker) Allow() (allowed, reserved bool) {
-	state := cb.CheckState()
-
-	switch state {
-	case StateClosed:
-		return true, false
-	case StateOpen:
-		return false, false
-	case StateHalfOpen:
-		// Limit requests in half-open state
-		requests := cb.requests.Add(1)
-		if int(requests) > cb.config.MaxHalfOpenRequests {
-			cb.requests.Add(-1) // Revert
-			return false, false
-		}
-		// Re-check after reserving: a probe failure may have re-opened the
-		// circuit in between (zeroing the counter), and admitting here would
-		// both send a request to the endpoint that just failed its recovery
-		// probe and leave a phantom reservation behind.
-		if State(cb.state.Load()) != StateHalfOpen {
-			if cb.requests.Add(-1) < 0 {
-				cb.requests.Store(0)
-			}
-			return false, false
-		}
-		return true, true
-	default:
-		return false, false
-	}
+	// Same admission as AllowReserve: the half-open reservation is taken
+	// under transitionMu, so no transition can land between the reservation
+	// and the decision. The earlier lock-free form reserved, then re-checked
+	// the state and rejected on any change, which also rejected a request
+	// when a concurrent success had just CLOSED the circuit: a closed circuit
+	// must admit. The reservation's generation is not needed here; the legacy
+	// settle calls (RecordSuccess, RecordFailure, ReleaseHalfOpen) work on
+	// the shared counters.
+	ok, r := cb.AllowReserve()
+	return ok, r.held
 }
 
 // Reservation identifies a single admission returned by AllowReserve. It carries
