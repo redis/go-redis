@@ -2417,9 +2417,14 @@ func (c *Client) init() {
 }
 
 // WithTimeout returns a clone sharing the parent's connection pools with the
-// given read/write timeout. The clone caches its own autopipeliners: an
-// AutoPipeline()/AsyncAutoPipeline() created on the clone is NOT stopped by
-// the parent's Close — call Close on the clone's autopipeliner explicitly.
+// given read/write timeout. The clone caches its own autopipeliners, separate
+// from the parent's: an AutoPipeline()/AsyncAutoPipeline() created on the clone
+// registers a close hook on the shared pool. Closing any pool-sharing wrapper
+// (the parent or another clone) drains and stops every registered engine's
+// background flusher before the shared pools are torn down, so no flusher
+// outlives the pool. That shared-pool drain does not mark the clone's
+// autopipeliner closed, so an explicit Close on the clone still fully tears it
+// (and its autopipeliners) down; Close is idempotent.
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	// Snapshot under the guard: AutoPipeline()/Close() mutate the
 	// autopipeliner fields concurrently, so a bare struct copy of them is a
