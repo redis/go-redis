@@ -49,6 +49,13 @@ func DefaultCircuitBreakerConfig() CircuitBreakerConfig {
 type CircuitBreakerCallback func(oldState, newState CircuitState)
 
 // CircuitBreaker wraps the internal circuitbreaker.CircuitBreaker.
+//
+// MultiDB feeds it two kinds of outcome: admitted commands (the reservation
+// API) and health probes (the ForReset API). The base breaker keeps them as
+// two consecutive-failure streaks, and Stats() reports both: Failures is the
+// command streak, ExternalFailures the probe streak. Either reaching
+// FailureThreshold opens the circuit; a successful command ends only the
+// first, a passing probe only the second.
 type CircuitBreaker struct {
 	*circuitbreaker.CircuitBreaker
 	config CircuitBreakerConfig

@@ -1497,25 +1497,37 @@ func TestCircuitBreaker_ProbeSuccessKeepsClosedFailureStreak(t *testing.T) {
 	}
 }
 
-// Probe failures form their own streak, ended by a passing probe. On an idle
-// client (no command successes) isolated probe failures separated by passing
-// probes must not add up to an open circuit; consecutive ones still must.
-func TestCircuitBreaker_ProbeSuccessClearsProbeStreak(t *testing.T) {
+// External (out-of-band) failures form their own streak, ended by an external
+// success, and Stats reports it apart from the request streak. Without any
+// request successes, isolated external failures separated by external
+// successes must not add up to an open circuit; consecutive ones still must.
+func TestCircuitBreaker_ExternalSuccessClearsExternalStreak(t *testing.T) {
 	cb := New(Config{FailureThreshold: 5, SuccessThreshold: 1, OpenTimeout: time.Hour})
 	gen := cb.ResetGeneration()
-	// Ten isolated probe failures, each followed by a passing probe.
+
+	cb.RecordFailureForReset(gen)
+	cb.RecordFailureForReset(gen)
+	if st := cb.Stats(); st.ExternalFailures != 2 || st.Failures != 0 {
+		t.Fatalf("stats after 2 external failures = %+v, want ExternalFailures 2 and Failures 0", st)
+	}
+	cb.RecordExternalSuccessForReset(gen)
+	if st := cb.Stats(); st.ExternalFailures != 0 {
+		t.Fatalf("ExternalFailures=%d after an external success, want 0", st.ExternalFailures)
+	}
+
+	// Ten isolated external failures, each followed by an external success.
 	for i := 0; i < 10; i++ {
 		cb.RecordFailureForReset(gen)
 		cb.RecordExternalSuccessForReset(gen)
 	}
 	if got := cb.State(); got != StateClosed {
-		t.Fatalf("state=%v after isolated probe failures separated by passing probes, want closed: probe failures accumulated across passing probes", got)
+		t.Fatalf("state=%v after isolated external failures separated by successes, want closed: external failures accumulated across successes", got)
 	}
-	// Five consecutive probe failures: a dead member is still detected.
+	// Five consecutive external failures still open the circuit.
 	for i := 0; i < 5; i++ {
 		cb.RecordFailureForReset(gen)
 	}
 	if got := cb.State(); got != StateOpen {
-		t.Fatalf("state=%v after 5 consecutive probe failures, want open", got)
+		t.Fatalf("state=%v after 5 consecutive external failures, want open", got)
 	}
 }

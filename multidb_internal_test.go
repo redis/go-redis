@@ -2381,6 +2381,32 @@ func (eofHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook
 	return next
 }
 
+// A member's breaker reports the health-probe streak apart from the command
+// streak: failed probes count into ExternalFailures only, and a passing probe
+// ends that streak.
+func TestProbeFailuresCountIntoExternalStreak(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second})
+	db := &multidbDatabase{
+		id:     0,
+		cb:     imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 5, SuccessThreshold: 1}),
+		policy: defaultMultiDBPolicy{},
+		checks: []MultiDBHealthCheck{&seqCheck{verdicts: []bool{false, false, true}}},
+	}
+	core.dbs[0] = db
+	core.active.Store(0)
+	ctx := context.Background()
+
+	db.probe(ctx, time.Second)
+	db.probe(ctx, time.Second)
+	if st := db.cb.Stats(); st.ExternalFailures != 2 || st.Failures != 0 || st.State != imultidb.CircuitClosed {
+		t.Fatalf("stats after two failed probes = %+v, want ExternalFailures 2, Failures 0, closed", st)
+	}
+	db.probe(ctx, time.Second)
+	if st := db.cb.Stats(); st.ExternalFailures != 0 {
+		t.Fatalf("ExternalFailures=%d after a passing probe, want 0", st.ExternalFailures)
+	}
+}
+
 // A PubSub handshake (initConn) that fails with the pool's ErrClosed on a
 // member removed meanwhile must be translated like the dial before it: the
 // channel loops treat ErrClosed as terminal, and the subscription must re-dial

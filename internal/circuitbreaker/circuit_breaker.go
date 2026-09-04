@@ -96,14 +96,15 @@ type CircuitBreaker struct {
 
 	state    atomic.Int32
 	failures atomic.Int32
-	// probeFailures is the consecutive health-probe failure streak, kept apart
-	// from the command streak in failures: a passing probe ends only this one,
-	// a successful command ends only the other. Either streak reaching
-	// FailureThreshold opens the circuit. See RecordFailureForReset.
-	probeFailures atomic.Int32
-	successes     atomic.Int32
-	requests      atomic.Int32 // Request count in half-open state
-	lastFailure   atomic.Int64 // nowNano() stamp (monotonic), 0 = none
+	// externalFailures is the consecutive failure streak of out-of-band
+	// signals (RecordFailureForReset), kept apart from the request streak in
+	// failures: an external success ends only this one, a successful request
+	// ends only the other. Either streak reaching FailureThreshold opens the
+	// circuit. See RecordFailureForReset.
+	externalFailures atomic.Int32
+	successes        atomic.Int32
+	requests         atomic.Int32 // Request count in half-open state
+	lastFailure      atomic.Int64 // nowNano() stamp (monotonic), 0 = none
 	// generation is bumped on every Open->HalfOpen transition, so a reservation
 	// (see AllowReserve) taken in one half-open episode can be recognized as
 	// stale if it tries to settle after the circuit has cycled through Open and
@@ -459,23 +460,23 @@ func (cb *CircuitBreaker) RecordExternalSuccessForReset(gen uint64) {
 	if cb.resetGen.Load() != gen {
 		return
 	}
-	cb.recordProbeSuccessLocked()
+	cb.recordExternalSuccessLocked()
 }
 
-// recordProbeSuccessLocked applies a health-probe success with transitionMu
-// held. In half-open it counts toward SuccessThreshold like any success and
-// never touches an admission slot. In closed it ends the PROBE streak only:
-// a probe answering shows the member is reachable, not that it can serve
-// commands, so it must not clear the command-failure streak. Otherwise a
-// member that answers PING but fails every command, at a rate below
-// FailureThreshold per probe interval, would have its count wiped by every
-// probe and never open. Open is a no-op.
-func (cb *CircuitBreaker) recordProbeSuccessLocked() {
+// recordExternalSuccessLocked applies an out-of-band success with
+// transitionMu held. In half-open it counts toward SuccessThreshold like any
+// success and never touches an admission slot. In closed it ends the
+// EXTERNAL streak only: an external check passing shows the endpoint is
+// reachable, not that requests succeed, so it must not clear the request
+// streak. Otherwise an endpoint that passes its checks but fails every
+// request, at a rate below FailureThreshold per check interval, would have
+// its count wiped by every check and never open. Open is a no-op.
+func (cb *CircuitBreaker) recordExternalSuccessLocked() {
 	switch State(cb.state.Load()) {
 	case StateHalfOpen:
 		cb.recordSuccessHalfOpenLocked(false)
 	case StateClosed:
-		cb.probeFailures.Store(0)
+		cb.externalFailures.Store(0)
 	}
 }
 
@@ -493,12 +494,13 @@ func (cb *CircuitBreaker) RecordFailureForReset(gen uint64) {
 	cb.lastFailure.Store(nowNano())
 	switch State(cb.state.Load()) {
 	case StateClosed:
-		// Probe failures form their own streak. On an idle or Pub/Sub-only
-		// client no command success exists to clear a shared count, so
-		// counting probe failures into the command streak let isolated probe
-		// failures, separated by any number of passing probes, add up to an
-		// open circuit; the passing probes end this streak instead.
-		if int(cb.probeFailures.Add(1)) >= cb.config.FailureThreshold {
+		// External failures form their own streak. A caller that sends no
+		// requests has no request success to clear a shared count, so
+		// counting external failures into the request streak let isolated
+		// external failures, separated by any number of external successes,
+		// add up to an open circuit; the external successes end this streak
+		// instead.
+		if int(cb.externalFailures.Add(1)) >= cb.config.FailureThreshold {
 			cb.openFromClosedLocked()
 		}
 	case StateHalfOpen:
@@ -531,7 +533,7 @@ func (cb *CircuitBreaker) recordSuccessHalfOpenLocked(heldSlot bool) {
 			// Clear the failure counters BEFORE Closed becomes visible: they
 			// still hold the counts that opened the circuit.
 			cb.failures.Store(0)
-			cb.probeFailures.Store(0)
+			cb.externalFailures.Store(0)
 			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateClosed)) {
 				// Snapshot BEFORE clearing the half-open counters so the callback
 				// observes the success count that triggered the close.
@@ -688,7 +690,7 @@ func (cb *CircuitBreaker) Reset() {
 	// with the other transitions and its notification keeps CAS order.
 	cb.transitionMu.Lock()
 	cb.failures.Store(0)
-	cb.probeFailures.Store(0)
+	cb.externalFailures.Store(0)
 	cb.successes.Store(0)
 	cb.requests.Store(0)
 	cb.lastFailure.Store(0)
@@ -711,11 +713,18 @@ func (cb *CircuitBreaker) Reset() {
 
 // Stats returns current statistics for monitoring.
 type Stats struct {
-	State           State
-	Failures        int32
-	Successes       int32
-	Requests        int32
-	LastFailureTime time.Time
+	State State
+	// Failures is the consecutive failure streak of admitted requests
+	// (RecordFailure, RecordFailureFor); a successful request ends it.
+	Failures int32
+	// ExternalFailures is the consecutive failure streak of out-of-band
+	// signals (RecordFailureForReset, e.g. a health check); an external
+	// success ends it. Either streak reaching FailureThreshold opens the
+	// circuit.
+	ExternalFailures int32
+	Successes        int32
+	Requests         int32
+	LastFailureTime  time.Time
 }
 
 // Stats returns current statistics.
@@ -727,11 +736,12 @@ func (cb *CircuitBreaker) Stats() Stats {
 	}
 
 	return Stats{
-		State:           cb.State(),
-		Failures:        cb.failures.Load(),
-		Successes:       cb.successes.Load(),
-		Requests:        cb.requests.Load(),
-		LastFailureTime: lastFailureTime,
+		State:            cb.State(),
+		Failures:         cb.failures.Load(),
+		ExternalFailures: cb.externalFailures.Load(),
+		Successes:        cb.successes.Load(),
+		Requests:         cb.requests.Load(),
+		LastFailureTime:  lastFailureTime,
 	}
 }
 
