@@ -2458,3 +2458,71 @@ func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
 		t.Fatalf("pushes on a connection owned by member 1 would be handled by another member's processor (creation-time member: %v)", got == a.pushProcessor)
 	}
 }
+
+// An AddDatabase that aborts after taking failoverMu (caller context expired
+// while queued behind another control operation) must close the built client
+// with the lock released: closing a client reaches code outside the package
+// (here the OTel pool registrar), and that code may call a control operation
+// that takes failoverMu. With the lock held, AddDatabase never returned.
+func TestMultiDBAddDatabaseClosesAbortedClientOutsideFailoverLock(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{{
+			Options:      &Options{Addr: "127.0.0.1:1"},
+			Weight:       1,
+			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+		}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	reentered := make(chan error, 8)
+	otel.SetGlobalRecorder(&reentrantRegistrar{
+		Recorder:     otel.NoopRecorder(),
+		onUnregister: func() { reentered <- mdb.RemoveDatabase(context.Background(), 12345) },
+	})
+	t.Cleanup(func() { otel.SetGlobalRecorder(otel.NoopRecorder()) })
+
+	// Hold failoverMu so the add queues behind it, and let the caller's
+	// context expire meanwhile: the add then takes the abort branch after
+	// the lock wait.
+	mdb.core.failoverMu.Lock()
+	addCtx, addCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer addCancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := mdb.AddDatabase(addCtx, MultiDBClientConfig{
+			Options:                &Options{Addr: "127.0.0.1:9"},
+			Weight:                 1,
+			HealthChecks:           []MultiDBHealthCheck{okLivenessCheck{}},
+			SkipInitialHealthCheck: true,
+		})
+		done <- err
+	}()
+	<-addCtx.Done()
+	time.Sleep(20 * time.Millisecond)
+	mdb.core.failoverMu.Unlock()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("AddDatabase = %v, want the caller's deadline error", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("AddDatabase did not return: closing the aborted member re-entered a control operation while failoverMu was held")
+	}
+	select {
+	case err := <-reentered:
+		if !errors.Is(err, ErrDatabaseNotFound) {
+			t.Fatalf("re-entrant RemoveDatabase(12345) = %v, want ErrDatabaseNotFound", err)
+		}
+	default:
+		t.Fatal("the registrar's unregister callback never ran: the re-entrant path was not exercised")
+	}
+}

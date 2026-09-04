@@ -1558,11 +1558,23 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	// which also hold failoverMu, and publish under it so the ForceOpen callback
 	// below reports a stable member id.
 	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
+	// The abort branches below close the built client. That runs code outside
+	// this package (an OTel pool registrar's UnregisterPool, for one) which may
+	// call a control operation taking failoverMu, so they release the lock
+	// first; the success path keeps it through the publish and ForceOpen.
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			c.failoverMu.Unlock()
+		}
+	}
+	defer unlock()
 	// Re-check after the lock wait: the caller's context may have expired while
 	// the call queued behind another control operation.
 	if err := ctx.Err(); err != nil {
 		db.removed.Store(true)
+		unlock()
 		_ = db.closeClient()
 		return -1, err
 	}
@@ -1574,6 +1586,7 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 		// (nothing would ever close it).
 		c.dbMu.Unlock()
 		db.removed.Store(true)
+		unlock()
 		_ = db.closeClient()
 		return -1, ErrClosed
 	}
