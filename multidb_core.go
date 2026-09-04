@@ -2032,7 +2032,10 @@ func (c *multidbCore) newPubSub() *PubSub {
 			}
 			if err := db.c.initConn(ctx, cn); err != nil {
 				_ = cn.Close()
-				return nil, err
+				// Same translation as the dial above: a member removed while
+				// the handshake ran answers with the pool's ErrClosed, which
+				// the channel loops treat as terminal.
+				return nil, pubSubDialErr(db, err, c.closed.Load())
 			}
 			db.c.pubSubPool.TrackConn(cn)
 			ownersMu.Lock()

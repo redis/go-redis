@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2261,5 +2262,57 @@ func TestMultiDBRemoveDatabaseClosesClientOutsideFailoverLock(t *testing.T) {
 		}
 	default:
 		t.Fatal("the registrar's unregister callback never ran: the re-entrant path was not exercised")
+	}
+}
+
+// A PubSub handshake (initConn) that fails with the pool's ErrClosed on a
+// member removed meanwhile must be translated like the dial before it: the
+// channel loops treat ErrClosed as terminal, and the subscription must re-dial
+// on the retryable error instead. The trigger is synthetic: the member's
+// credentials provider answers ErrClosed, which initConn wraps and returns
+// before any network I/O, and the member is marked removed as a concurrent
+// RemoveDatabase would.
+func TestMultiDBPubSubInitConnErrTranslatedForRemovedMember(t *testing.T) {
+	pipeDialer := func(context.Context, string, string) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go func() { _, _ = io.Copy(io.Discard, c2) }()
+		return c1, nil
+	}
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{{
+			Options: &Options{
+				Addr:   "127.0.0.1:1",
+				Dialer: pipeDialer,
+				CredentialsProviderContext: func(context.Context) (string, string, error) {
+					return "", "", pool.ErrClosed
+				},
+			},
+			Weight:       1,
+			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+		}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	mdb.core.dbs[0].removed.Store(true)
+
+	ps := mdb.Subscribe(ctx)
+	t.Cleanup(func() { _ = ps.Close() })
+	err = ps.Subscribe(ctx, "ch")
+	if err == nil {
+		t.Fatal("Subscribe succeeded; the handshake was expected to fail")
+	}
+	if !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("Subscribe error = %v, want ErrTemporarilyNotAvailable: the handshake error of a removed member was not translated", err)
+	}
+	if errors.Is(err, pool.ErrClosed) {
+		t.Fatalf("Subscribe error still carries the pool's ErrClosed, which the channel loops treat as terminal: %v", err)
 	}
 }
