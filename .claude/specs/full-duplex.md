@@ -40,11 +40,19 @@ or let a live/half-initialized connection return to the pool. The boundaries:
   and treats the command as non-retryable, so the reply is surfaced inline. Without it
   the panic reaches the reader's session-failure recover, which would replay an
   already-answered command — a mutating command run twice.
-- Carry / Close-backlog sizing: `fdBatchEndSafe` recovers a panicking `Args()` on the
-  session-start command (taken straight from `fd.ch`) and the Close backlog (drained by
-  `takeQueue`), which never passed the serve loop's `cmdApproxBytesSafe` admission. It
-  fails+drops just the offending command and keeps the healthy connection.
+- Carry / in-session Close sizing: `fdBatchEndSafe` recovers a panicking `Args()` during
+  carry replay — the session-start command (taken straight from `fd.ch`) and the
+  in-session Close backlog (`flushBacklogForClose` drains `fd.ch` inline, then
+  `writeCarryChunked`), which never passed the serve loop's `cmdApproxBytesSafe`
+  admission. It fails+drops just the offending command and keeps the healthy connection.
 - Serve-loop sizing: `cmdApproxBytesSafe` (same fail+drop behavior).
+- Idle / between-sessions Close (`takeQueue` → `shutdownFlush` → `flushReqs`): this flush
+  is ORDERED, so it deliberately does NOT drop-and-continue. A panicking `Args()`/
+  `NoRetry()` is contained by the outer shutdown-flush recover, which fails the affected
+  group and aborts the remainder — completing later ordered commands after an earlier
+  failure would break the accepted-⇒-completes-in-order contract (see `flushCarryBudgeted`
+  and `TestFDShutdownFlushAbortsAfterRecoveredPanic`). This is a different, intentional
+  policy from the live/in-session paths above, not a missing guard.
 - `attempt` acquisition/initialization: a recover retires the leased conn (Remove, never
   Put) and returns the carry as `fdLeaseErr` — the same disposition an `initPooledConn`
   ERROR gets — so `run` applies the lease-retry budget instead of crashing or poisoning
