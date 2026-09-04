@@ -333,17 +333,28 @@ func (h *onCloseHooks) unregister(id string) {
 	}
 }
 
-// run invokes all registered callbacks in registration order and returns
-// the first non-nil error encountered. All callbacks are executed even if
-// an earlier one returns an error.
+// run invokes all registered callbacks in REVERSE registration order (LIFO) and
+// returns the first non-nil error encountered. All callbacks are executed even if an
+// earlier one returns an error.
+//
+// LIFO is a dependency-teardown order: a hook registered LATER is a consumer of state
+// that earlier registrations provide, so it must run FIRST. Concretely, the Sentinel
+// failover teardown is registered at client construction (first), while an
+// autopipeliner drain hook is registered lazily on first use (later). The drain needs
+// the failover client alive to resolve the master address / dial a replacement
+// connection for accepted-but-unsent work; running the Sentinel teardown first would
+// set failover.closed, make MasterAddr return pool.ErrClosed, and fail replayable
+// commands even though Redis and the pools are still up (a sibling pool-sharing clone
+// triggering Close was enough). Draining consumers before tearing down discovery keeps
+// those commands serviceable.
 func (h *onCloseHooks) run() error {
 	if h == nil {
 		return nil
 	}
 	h.mu.Lock()
 	fns := make([]func() error, 0, len(h.order))
-	for _, id := range h.order {
-		if fn := h.hooks[id]; fn != nil {
+	for i := len(h.order) - 1; i >= 0; i-- {
+		if fn := h.hooks[h.order[i]]; fn != nil {
 			fns = append(fns, fn)
 		}
 	}

@@ -613,6 +613,11 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// configured.
 	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
 
+	// Registered first (at construction), so onClose.run's LIFO order invokes it LAST —
+	// after any lazily-registered autopipeliner drain hook. The drain needs MasterAddr
+	// (hence a live failover client) to dial a replacement conn for accepted-but-unsent
+	// work; tearing the failover client down here first would make MasterAddr return
+	// pool.ErrClosed and fail those replayable commands. See onCloseHooks.run.
 	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 
 	failover.mu.Lock()
