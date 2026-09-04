@@ -1907,7 +1907,7 @@ func (c *multidbCore) newPubSub() *PubSub {
 			}
 			cn, err := db.c.pubSubPool.NewConn(ctx, db.c.opt.Network, db.c.opt.Addr, channels)
 			if err != nil {
-				return nil, pubSubDialErr(db, err)
+				return nil, pubSubDialErr(db, err, c.closed.Load())
 			}
 			if err := db.c.initConn(ctx, cn); err != nil {
 				_ = cn.Close()
@@ -2167,7 +2167,15 @@ func (defaultMultiDBPolicy) ExecuteCluster(ctx context.Context, checks []MultiDB
 // stop delivery for good, even though the MultiDBClient is still open. Return
 // the retryable ErrTemporarilyNotAvailable instead so the loop re-dials and the
 // next snapshot lands on the live active. Every other error passes through.
-func pubSubDialErr(db *multidbDatabase, err error) error {
+//
+// closed is the core's own closed flag, read at the dial: close() marks every
+// member removed, so without it a dial racing shutdown would hand the channel
+// loop a retryable error for a client that has shut down, and the loop would
+// keep re-dialing instead of exiting.
+func pubSubDialErr(db *multidbDatabase, err error, closed bool) error {
+	if closed {
+		return err
+	}
 	if db.removed.Load() && errors.Is(err, pool.ErrClosed) {
 		return ErrTemporarilyNotAvailable
 	}

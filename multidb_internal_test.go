@@ -1273,15 +1273,20 @@ func TestSelectCandidateGivesUpWhenOnlyDisallowedPicked(t *testing.T) {
 // member's ErrClosed and any other error pass through untouched.
 func TestPubSubDialErrRewritesRemovedMemberClosed(t *testing.T) {
 	db := &multidbDatabase{}
-	if err := pubSubDialErr(db, ErrClosed); !errors.Is(err, ErrClosed) {
+	if err := pubSubDialErr(db, ErrClosed, false); !errors.Is(err, ErrClosed) {
 		t.Fatalf("live member: got %v, want ErrClosed passthrough", err)
 	}
 	db.removed.Store(true)
-	if err := pubSubDialErr(db, ErrClosed); !errors.Is(err, ErrTemporarilyNotAvailable) {
+	if err := pubSubDialErr(db, ErrClosed, false); !errors.Is(err, ErrTemporarilyNotAvailable) {
 		t.Fatalf("removed member: got %v, want ErrTemporarilyNotAvailable", err)
 	}
-	if err := pubSubDialErr(db, io.EOF); !errors.Is(err, io.EOF) {
+	if err := pubSubDialErr(db, io.EOF, false); !errors.Is(err, io.EOF) {
 		t.Fatalf("removed member, other error: got %v, want io.EOF passthrough", err)
+	}
+	// Close marks every member removed: with the client itself closed the
+	// terminal error must survive, or the channel loop would keep re-dialing.
+	if err := pubSubDialErr(db, ErrClosed, true); !errors.Is(err, ErrClosed) {
+		t.Fatalf("removed member on a closed client: got %v, want ErrClosed kept", err)
 	}
 }
 
@@ -1293,20 +1298,28 @@ func TestRewriteRemovedMemberErr(t *testing.T) {
 	db := &multidbDatabase{}
 	cmd := NewIntCmd(ctx, "dbsize")
 	cmd.SetErr(ErrClosed)
-	rewriteRemovedMemberErr(db, cmd)
+	rewriteRemovedMemberErr(db, cmd, false)
 	if !errors.Is(cmd.Err(), ErrClosed) {
 		t.Fatalf("live member: got %v, want ErrClosed untouched", cmd.Err())
 	}
 	db.removed.Store(true)
-	rewriteRemovedMemberErr(db, cmd)
+	rewriteRemovedMemberErr(db, cmd, false)
 	if !errors.Is(cmd.Err(), ErrTemporarilyNotAvailable) {
 		t.Fatalf("removed member: got %v, want ErrTemporarilyNotAvailable", cmd.Err())
 	}
 	other := NewIntCmd(ctx, "dbsize")
 	other.SetErr(io.EOF)
-	rewriteRemovedMemberErr(db, other)
+	rewriteRemovedMemberErr(db, other, false)
 	if !errors.Is(other.Err(), io.EOF) {
 		t.Fatalf("removed member, other error: got %v, want io.EOF untouched", other.Err())
+	}
+	// Close marks every member removed: with the client itself closed the
+	// terminal error must survive, as it does on the command and batch paths.
+	closedCmd := NewIntCmd(ctx, "dbsize")
+	closedCmd.SetErr(ErrClosed)
+	rewriteRemovedMemberErr(db, closedCmd, true)
+	if !errors.Is(closedCmd.Err(), ErrClosed) {
+		t.Fatalf("removed member on a closed client: got %v, want ErrClosed kept", closedCmd.Err())
 	}
 }
 

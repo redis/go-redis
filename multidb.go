@@ -711,7 +711,7 @@ func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
 		res := db.cc.DBSize(ctx)
-		rewriteRemovedMemberErr(db, res)
+		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
 	return c.cmdable.DBSize(ctx)
@@ -728,7 +728,7 @@ func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCm
 	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
 		res := db.cc.ScriptLoad(ctx, script)
-		rewriteRemovedMemberErr(db, res)
+		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
 	return c.cmdable.ScriptLoad(ctx, script)
@@ -744,7 +744,7 @@ func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
 	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
 		res := db.cc.ScriptFlush(ctx)
-		rewriteRemovedMemberErr(db, res)
+		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
 	return c.cmdable.ScriptFlush(ctx)
@@ -766,7 +766,7 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
 		res := db.cc.ScriptExists(ctx, hashes...)
-		rewriteRemovedMemberErr(db, res)
+		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
 	return c.cmdable.ScriptExists(ctx, hashes...)
@@ -778,7 +778,15 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 // MultiDBClient is still open. Rewrite it to the retryable
 // ErrTemporarilyNotAvailable, as the data path does, so the caller retries and
 // the next snapshot lands on the live active.
-func rewriteRemovedMemberErr(db *multidbDatabase, cmd Cmder) {
+// closed is the MultiDBClient's own closed flag, read AFTER the delegated call:
+// Close marks every member removed, so without it a control command in flight
+// across Close would report the retryable error for a client that has shut
+// down. The command, pipeline, transaction and Watch paths keep ErrClosed the
+// same way.
+func rewriteRemovedMemberErr(db *multidbDatabase, cmd Cmder, closed bool) {
+	if closed {
+		return
+	}
 	if db.removed.Load() && errors.Is(cmd.rawErr(), ErrClosed) {
 		cmd.SetErr(ErrTemporarilyNotAvailable)
 	}
