@@ -95,6 +95,10 @@ func (s *cacheShard) collectHotAndDelete(redisKey string, sinceToken int64, fetc
 			dst = append(dst, cscRefreshTarget{
 				cacheKey:  cacheKey,
 				redisKeys: keys,
+				// Preserve the reader-access token so the refresh republish can restore it
+				// and not renew demand (see cscRefreshTarget.accessNs / restoreAccessToken).
+				// Re-load is safe: the shard lock is held, so no writer intervenes.
+				accessNs: entry.lastAccessNs.Load(),
 				// The dying entry's payload size approximates the refetch REPLY size —
 				// the refresher chunks round trips by expected reply bytes with it (see
 				// cscRefreshChunkEnd). Known for free here, under the same shard lock.

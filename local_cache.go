@@ -532,6 +532,24 @@ func (c *LocalCache) fulfill(cacheKey string, token, ownerConnID uint64, value [
 	return stillExists && current == entry && entry.state == cacheEntryValid
 }
 
+// restoreAccessToken resets a Valid entry's reader-access recency (lastAccessNs)
+// to accessNs, undoing the fresh token fulfill stamps. The refresh republish calls
+// this so a background refresh does NOT count as a reader access: otherwise the
+// refreshed key stays above the refresh horizon and every later invalidation
+// refreshes it again even after all readers stop — a self-sustaining refetch loop
+// contrary to the cold-key guard. A reader that get()s between the fulfill and this
+// call has its newer token overwritten, which only UNDER-refreshes that key (the
+// next reader refetches), never serves stale. No-op if the entry is gone or not
+// Valid.
+func (c *LocalCache) restoreAccessToken(cacheKey string, accessNs int64) {
+	s := c.shardFor(cacheKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, ok := s.entries[cacheKey]; ok && entry.state == cacheEntryValid {
+		entry.lastAccessNs.Store(accessNs)
+	}
+}
+
 // EvictByConn removes every entry fetched by connID and returns the count.
 // Called when a conn is removed/swapped: the server stops delivering those
 // keys' invalidations, so keeping them risks stale serves. Errs toward a miss.
