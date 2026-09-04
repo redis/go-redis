@@ -833,9 +833,12 @@ var _ = Describe("isLoopback", func() {
 	)
 })
 
-// TestOnCloseHooks_RunInRegistrationOrder verifies that hooks registered under
-// distinct ids are all invoked on run() in the order they were registered.
-func TestOnCloseHooks_RunInRegistrationOrder(t *testing.T) {
+// TestOnCloseHooks_RunInReverseRegistrationOrder verifies that hooks are invoked in
+// REVERSE registration order (LIFO): a hook registered later is a consumer of state an
+// earlier registration provides, so it must run first. Concretely, an autopipeliner
+// drain (registered lazily) must run before the Sentinel failover teardown (registered
+// at construction) so the drain can still resolve the master address. See onCloseHooks.run.
+func TestOnCloseHooks_RunInReverseRegistrationOrder(t *testing.T) {
 	h := &onCloseHooks{}
 	var calls []string
 
@@ -846,9 +849,9 @@ func TestOnCloseHooks_RunInRegistrationOrder(t *testing.T) {
 	if err := h.run(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []string{"a", "b", "c"}
+	want := []string{"c", "b", "a"}
 	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("run order = %v, want %v", calls, want)
+		t.Fatalf("run order = %v, want %v (LIFO)", calls, want)
 	}
 }
 
@@ -929,7 +932,8 @@ func TestOnCloseHooks_Unregister(t *testing.T) {
 }
 
 // TestOnCloseHooks_AllRunOnError confirms every hook is invoked even if an
-// earlier one returns an error, and that the first error is returned.
+// earlier one returns an error, and that the first error in INVOCATION order (LIFO) is
+// returned. "b" runs before "a" under LIFO, so its error is the first non-nil one.
 func TestOnCloseHooks_AllRunOnError(t *testing.T) {
 	h := &onCloseHooks{}
 	var called [3]bool
@@ -940,9 +944,10 @@ func TestOnCloseHooks_AllRunOnError(t *testing.T) {
 	h.register("b", func() error { called[1] = true; return errSecond })
 	h.register("c", func() error { called[2] = true; return nil })
 
+	// Invocation order is c, b, a (LIFO); the first non-nil error encountered is errSecond.
 	err := h.run()
-	if err != errFirst {
-		t.Fatalf("run() err = %v, want %v", err, errFirst)
+	if err != errSecond {
+		t.Fatalf("run() err = %v, want %v", err, errSecond)
 	}
 	for i, c := range called {
 		if !c {

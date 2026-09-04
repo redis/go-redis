@@ -613,6 +613,11 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// configured.
 	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
 
+	// Registered first (at construction), so onClose.run's LIFO order invokes it LAST —
+	// after any lazily-registered autopipeliner drain hook. The drain needs MasterAddr
+	// (hence a live failover client) to dial a replacement conn for accepted-but-unsent
+	// work; tearing the failover client down here first would make MasterAddr return
+	// pool.ErrClosed and fail those replayable commands. See onCloseHooks.run.
 	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 
 	failover.mu.Lock()
@@ -904,11 +909,20 @@ type sentinelFailover struct {
 	masterAddr string
 	sentinel   *SentinelClient
 	pubsub     *PubSub
+	// closed is set by Close (under mu). Once set, MasterAddr and replicaAddrs
+	// refuse to create a new SentinelClient/pubsub and return pool.ErrClosed.
+	// Close runs as an onClose hook, which fires BEFORE a pool-sharing wrapper's
+	// autopipeliner drain hook (registration order); that drain may dial through
+	// masterReplicaDialer, and without this flag the dial would rebuild the
+	// sentinel client + pubsub after the only cleanup had already run, leaking
+	// them past the pool teardown.
+	closed bool
 }
 
 func (c *sentinelFailover) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.closed = true
 	if c.sentinel != nil {
 		return c.closeSentinel()
 	}
@@ -986,6 +1000,11 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		} else {
 			return addr, nil
 		}
+	}
+
+	// Closed: do not rebuild the sentinel client (see sentinelFailover.closed).
+	if c.closed {
+		return "", pool.ErrClosed
 	}
 
 	// short circuit if no sentinels configured
@@ -1090,6 +1109,11 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 			// setSentinel if it finds disconnected replicas.
 			_ = c.closeSentinel()
 		}
+	}
+
+	// Closed: do not rebuild the sentinel client (see sentinelFailover.closed).
+	if c.closed {
+		return nil, pool.ErrClosed
 	}
 
 	var sentinelReachable bool

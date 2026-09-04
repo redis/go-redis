@@ -799,35 +799,54 @@ const cscDrainProbeReadCap = 50 * time.Microsecond
 const cscDrainCustomErrCap = 8
 
 // processCached runs the Get-Reserve-Fulfill lifecycle for a cacheable command.
-// Only invoked after process has verified that CSC is active and cmd is
+// The caller (process) first makes sure that CSC is active and that cmd is
 // eligible.
-func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *processState) error {
+//
+// startAttempt is the number of attempts already spent before this call. It is
+// not zero only on the full-duplex divert (retryOnNormalConn) of a cacheable
+// command. Such a command spent its first attempt on the FD socket and got a
+// retryable reply. Give startAttempt to every processWithRetry fallback and to
+// the fetch. If you do not, a diverted cache miss runs MaxRetries+1 retries
+// after the FD attempt. That is one attempt too many. A cache HIT does no network
+// attempt and returns before the retry loop, so startAttempt does not affect its
+// retry BUDGET — but it still seeds the reported attempt COUNT (see below) so a
+// diverted hit reports the FD attempt it already spent, not zero.
+func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+
+	// Seed the reported attempt count for the OTel duration metric. A cache hit
+	// returns below without entering processWithRetry's loop (which is what sets
+	// state.attempts), so without this a diverted hit (startAttempt>0) would report
+	// zero attempts, hiding the FD socket attempt it already spent. A miss falls
+	// through to processWithRetry, whose loop overwrites this.
+	if state != nil {
+		state.attempts = startAttempt
 	}
 
 	// Once the drainer has stopped (owner Close, or the owner dropped without
 	// Close), no invalidations flow — a surviving clone must not serve stale hits.
 	if a := c.cscActive; a != nil && !a.Load() {
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
 	rawKey, ok := buildCacheKey(cmd)
 	if !ok {
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
 	redisKeys := extractRedisKeys(cmd)
 	if len(redisKeys) == 0 {
 		// Without a key list we cannot react to invalidations for this command.
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
 	keyPrefix := c.cscKeyPrefix
 	if keyPrefix == "" {
 		// A successfully attached client always has a namespace. Fail closed if
 		// an incomplete custom baseClient reaches this path.
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 	key := cscNamespacedKey(keyPrefix, rawKey)
 	nsRedisKeys := make([]string, len(redisKeys))
@@ -876,7 +895,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		}()
 	}
 
-	err := c.processWithRetry(ctx, cmd, capture, state)
+	err := c.processWithRetry(ctx, cmd, capture, state, startAttempt)
 
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel

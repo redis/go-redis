@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 // internalTestRedisAddr mirrors main_test.go's redisAddr for the internal
@@ -561,6 +563,631 @@ func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
 	}
 	if len(failed.m) != 0 {
 		t.Fatalf("unexpected remapped commands: %d", len(failed.m))
+	}
+}
+
+// TestFDReplyIsFatalPushDrain guards the full-duplex push-drain classification:
+// a drain error (errFDPushDrainFailed) must ABORT the session — stop the reader
+// and replay the unacked tail — even when it wraps a Redis-typed or retryable
+// cause. The drain error carries the processor cause via %w so a caller can still
+// errors.Is/As it, but that wrapped cause must NOT let isRedisError reclassify the
+// desync as a normal command reply: doing so would settle or divert it and leave
+// the unread frame in the stream, shifting every later reply (FIFO desync). This
+// pins the %v->%w wrap against re-opening that hole.
+func TestFDReplyIsFatalPushDrain(t *testing.T) {
+	redisErr := proto.RedisError("WRONGTYPE Operation against a key holding the wrong kind of value")
+	loading := proto.RedisError("LOADING Redis is loading the dataset in memory")
+
+	cases := []struct {
+		name  string
+		err   error
+		fatal bool
+	}{
+		{"transport error stops the session", io.EOF, true},
+		{"plain redis reply is not fatal", redisErr, false},
+		{"drain wrapping a redis error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, redisErr), true},
+		{"drain wrapping a retryable redis error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, loading), true},
+		{"drain wrapping a transport error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, io.EOF), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fdReplyIsFatal(tc.err); got != tc.fatal {
+				t.Fatalf("fdReplyIsFatal(%v) = %v, want %v", tc.err, got, tc.fatal)
+			}
+		})
+	}
+
+	// The %w chain stays intact: after the session fails, a caller can still
+	// recognize both the drain marker and the underlying processor cause.
+	wrapped := fmt.Errorf("%w: %w", errFDPushDrainFailed, redisErr)
+	if !errors.Is(wrapped, errFDPushDrainFailed) {
+		t.Fatalf("errors.Is(wrapped, errFDPushDrainFailed) = false, want true")
+	}
+	var re proto.RedisError
+	if !errors.As(wrapped, &re) {
+		t.Fatalf("errors.As(wrapped, &proto.RedisError) = false, want true (processor cause dropped from chain)")
+	}
+}
+
+// TestFDPartitionByBudget pins the shutdown-flush retry-budget split: a carried
+// command whose budget is spent (attempts > MaxRetries) is separated out so
+// shutdownFlush fails it rather than handing it to processPipeline for a fresh
+// MaxRetries+1 loop. Also guards that kept never aliases carry's backing array —
+// shutdownFlush appends the queue to kept, so aliasing would corrupt the caller's
+// unacked tail.
+func TestFDPartitionByBudget(t *testing.T) {
+	const maxRetries = 3 // budget = 1 FD attempt + 3 replays = 4 attempts
+	carry := []fdReq{{attempts: 1}, {attempts: 4}, {attempts: 3}, {attempts: 5}}
+	kept, exhausted := fdPartitionByBudget(carry, maxRetries)
+
+	if len(kept) != 2 || kept[0].attempts != 1 || kept[1].attempts != 3 {
+		t.Fatalf("kept = %+v, want attempts [1 3] (<= MaxRetries)", kept)
+	}
+	if len(exhausted) != 2 || exhausted[0].attempts != 4 || exhausted[1].attempts != 5 {
+		t.Fatalf("exhausted = %+v, want attempts [4 5] (> MaxRetries)", exhausted)
+	}
+	// Boundary: attempts == MaxRetries is kept (one attempt left); MaxRetries+1 is
+	// exhausted (full budget spent).
+	if _, e := fdPartitionByBudget([]fdReq{{attempts: maxRetries}}, maxRetries); len(e) != 0 {
+		t.Fatalf("attempts == MaxRetries must be kept, got exhausted %+v", e)
+	}
+	if k, _ := fdPartitionByBudget([]fdReq{{attempts: maxRetries + 1}}, maxRetries); len(k) != 0 {
+		t.Fatalf("attempts == MaxRetries+1 must be exhausted, got kept %+v", k)
+	}
+	// Aliasing guard: kept must not share carry's backing array.
+	if len(kept) > 0 && &kept[0] == &carry[0] {
+		t.Fatalf("kept aliases carry's backing array; shutdownFlush would corrupt the caller's tail")
+	}
+
+	// Finding-A scenario: an exhausted command at the head must NOT deny a newer
+	// command written behind it (lower attempts) its remaining retries. run() carries
+	// oldest-first with attempts bumped together, so exhausted is the leading run and
+	// the eligible suffix keeps FIFO order.
+	tail := []fdReq{{attempts: maxRetries + 1}, {attempts: maxRetries}, {attempts: 1}}
+	elig, ex := fdPartitionByBudget(tail, maxRetries)
+	if len(ex) != 1 || ex[0].attempts != maxRetries+1 {
+		t.Fatalf("exhausted = %+v, want the single head at MaxRetries+1", ex)
+	}
+	if len(elig) != 2 || elig[0].attempts != maxRetries || elig[1].attempts != 1 {
+		t.Fatalf("eligible = %+v, want [MaxRetries 1] in order (newer commands keep their retries)", elig)
+	}
+}
+
+// TestFDCarryRemainingRetries pins the Close-flush budget formula. carry is
+// POST-BUMP (a command carried at attempts=A has done A-1 executions), so of its
+// MaxRetries+1 budget it may run MaxRetries+1-A more times; a negative result means
+// the budget is spent (drop). attempts is clamped to >=1 (attempts==0 is test-only).
+func TestFDCarryRemainingRetries(t *testing.T) {
+	cases := []struct {
+		attempts, maxRetries, want int
+	}{
+		// MaxRetries=3 (budget 4 executions).
+		{1, 3, 3},  // never run (0 done): full budget -> 4 executions
+		{2, 3, 2},  // 1 done: 3 more -> 4 total
+		{4, 3, 0},  // 3 done: 1 final execution -> 4 total
+		{5, 3, -1}, // 4 done: budget spent -> drop
+		{0, 3, 3},  // clamp: treat as attempts==1 (full budget), not MaxRetries+2
+		// MaxRetries=0 (budget 1 execution) — the case the old `attempts > mr` drop
+		// mishandled.
+		{1, 0, 0},  // never run: exactly one execution
+		{2, 0, -1}, // 1 done == budget: drop, do not re-run
+	}
+	for _, tc := range cases {
+		if got := fdCarryRemainingRetries(tc.attempts, tc.maxRetries); got != tc.want {
+			t.Errorf("fdCarryRemainingRetries(attempts=%d, maxRetries=%d) = %d, want %d",
+				tc.attempts, tc.maxRetries, got, tc.want)
+		}
+	}
+}
+
+// TestFDRefundUnsentAttempt pins the never-sent-suffix accounting fix: a carried
+// command whose chunk was never written (reader died / conn broke mid-replay) must
+// have the optimistic attempt bump refunded, floored at 0, so it is not declared
+// budget-exhausted a replay early.
+func TestFDRefundUnsentAttempt(t *testing.T) {
+	reqs := []fdReq{{attempts: 2}, {attempts: 3}, {attempts: 1}, {attempts: 0}}
+	fdRefundUnsentAttempt(reqs)
+	want := []int{1, 2, 0, 0} // each -1, floored at 0
+	for i, w := range want {
+		if reqs[i].attempts != w {
+			t.Errorf("reqs[%d].attempts = %d, want %d", i, reqs[i].attempts, w)
+		}
+	}
+}
+
+// TestFDFirstNoRetrySentGate pins the sent-aware NoRetry split: only a NoRetry
+// command whose bytes may have reached the wire (sent) blocks the tail. A
+// never-sent NoRetry recovered from a dead connection's backlog stays in the
+// replay prefix — issuing it is its FIRST send, and failing it would hand the
+// caller an error for a command the server never saw.
+func TestFDFirstNoRetrySentGate(t *testing.T) {
+	ctx := context.Background()
+	retryable := func() fdReq { return fdReq{cmd: NewStatusCmd(ctx, "set", "k", "v")} }
+	noRetry := func(sent bool) fdReq {
+		return fdReq{cmd: NewZeroCopyStringCmd(ctx, make([]byte, 8), "get", "k"), sent: sent}
+	}
+	if !noRetry(false).cmd.NoRetry() {
+		t.Fatal("precondition: zero-copy read should forbid retries")
+	}
+
+	for _, tc := range []struct {
+		name string
+		reqs []fdReq
+		want int
+	}{
+		{"empty", nil, 0},
+		{"no noRetry at all", []fdReq{retryable(), retryable()}, 2},
+		{"never-sent noRetry does not split", []fdReq{retryable(), noRetry(false), retryable()}, 3},
+		{"sent noRetry splits", []fdReq{retryable(), noRetry(true), retryable()}, 1},
+		{"sent noRetry at head", []fdReq{noRetry(true), retryable()}, 0},
+		{"unsent then sent noRetry", []fdReq{noRetry(false), noRetry(true)}, 1},
+	} {
+		if got := fdFirstNoRetry(tc.reqs); got != tc.want {
+			t.Errorf("%s: fdFirstNoRetry = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestFDRetryOnNormalConnBoundedDuringClose pins that a Close-time off-pipe retry does
+// not block the reader or spawn a slot-less goroutine when the retry semaphore is
+// full: it fails the command with ErrClosed instead. The earlier ap.ctx.Done() bypass
+// ran slot-less, so a Close mid retryable-reply storm could spawn one goroutine per
+// in-flight reply (up to FullDuplexWindow) and OOM; blocking instead can deadlock with
+// a spilled main-pool FD session. Bounded fail is the chosen middle.
+func TestFDRetryOnNormalConnBoundedDuringClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // ap.ctx cancelled == Close in progress
+
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{ctx: ctx},
+		retrySem: make(chan struct{}, 1),
+	}
+	fd.retrySem <- struct{}{} // saturate the bound
+
+	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), batch: newAPBatch()}
+	fd.retryOnNormalConn(req, 0) // must return synchronously, not spawn a goroutine
+
+	if err := req.cmd.rawErr(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Close-time retry with a full sem: rawErr = %v, want ErrClosed", err)
+	}
+	if n := len(fd.retrySem); n != 1 {
+		t.Fatalf("fail path must not acquire a slot: retrySem len = %d, want 1", n)
+	}
+}
+
+// TestFDRetryOnNormalConnSpilledDoesNotBlockReader pins fCCni: while the session holds
+// a main-pool conn (spilled or no dedicated pipeline pool), a full retrySem must NOT
+// park the reader — it runs the retry slot-less instead. Blocking would deadlock: the
+// session pins the very conn the off-pipe retries wait for, released only once the
+// reader drains. (Off Close, so the close-fail path does not apply.)
+func TestFDRetryOnNormalConnSpilledDoesNotBlockReader(t *testing.T) {
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{ctx: context.Background()}, // NOT closing
+		retrySem: make(chan struct{}, 1),
+	}
+	fd.retrySem <- struct{}{}     // saturate the bound
+	fd.curConnSpilled.Store(true) // session holds a main-pool conn
+
+	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), batch: newAPBatch()}
+	done := make(chan struct{})
+	go func() { fd.retryOnNormalConn(req, 0); close(done) }()
+
+	select {
+	case <-done: // returned promptly: ran slot-less, did not park the reader
+	case <-time.After(2 * time.Second):
+		t.Fatal("retryOnNormalConn blocked the reader on a full sem while spilled — deadlock risk")
+	}
+}
+
+// TestFDRecoverTailRefundsSuffixOnly pins the fdConnErr recovery-set builder:
+// the drained (sent) tail keeps its attempt charge, the never-sent suffix is
+// refunded (run()'s recovery re-bumps on the real re-issue), and the result is
+// a fresh slice — takeRemaining's array is deque-owned, so appending onto it in
+// place could corrupt the deque.
+func TestFDRecoverTailRefundsSuffixOnly(t *testing.T) {
+	rem := []fdReq{{attempts: 2, sent: true}, {attempts: 2, sent: true}}
+	suffix := []fdReq{{attempts: 2}, {attempts: 1}}
+	out := fdRecoverTail(rem, suffix)
+
+	if len(out) != 4 {
+		t.Fatalf("len(out) = %d, want 4", len(out))
+	}
+	wantAttempts := []int{2, 2, 1, 0} // rem unchanged; suffix -1 each
+	for i, w := range wantAttempts {
+		if out[i].attempts != w {
+			t.Errorf("out[%d].attempts = %d, want %d", i, out[i].attempts, w)
+		}
+	}
+	// Order preserved: sent tail first, suffix after.
+	if !out[0].sent || !out[1].sent || out[2].sent || out[3].sent {
+		t.Error("recovery set out of order: want [sent, sent, unsent, unsent]")
+	}
+	// Fresh backing array: the refund must not have reached the input slices, and
+	// mutating out must not write through into rem.
+	if suffix[0].attempts != 2 || suffix[1].attempts != 1 {
+		t.Error("fdRecoverTail mutated the input suffix slice")
+	}
+	out[0].attempts = 99
+	if rem[0].attempts != 2 {
+		t.Error("fdRecoverTail aliases takeRemaining's backing array")
+	}
+}
+
+// errBreakerOpen is the sentinel a fakeBreaker denies with; the engine must
+// surface it VERBATIM (errors.Is) on every command of a denied chunk.
+var errBreakerOpen = errors.New("fake breaker: open")
+
+// fakeBreaker is a Limiter stand-in for a circuit breaker: denies while open,
+// and counts allows/denies/reports so the strict pairing contract (exactly one
+// ReportResult per successful Allow, none for a deny) is assertable. errReports
+// counts the reports that carried a non-nil error, so a test can assert the
+// breaker actually SEES failures (reply-side reporting) instead of only ever
+// being told success — the finding-ed53z contract.
+type fakeBreaker struct {
+	open       atomic.Bool
+	allows     atomic.Int64
+	denies     atomic.Int64
+	reports    atomic.Int64
+	errReports atomic.Int64
+}
+
+func (b *fakeBreaker) Allow() error {
+	if b.open.Load() {
+		b.denies.Add(1)
+		return errBreakerOpen
+	}
+	b.allows.Add(1)
+	return nil
+}
+
+func (b *fakeBreaker) ReportResult(err error) {
+	b.reports.Add(1)
+	if err != nil {
+		b.errReports.Add(1)
+	}
+}
+
+// TestFDLimiterPerBatch pins the per-batch Limiter contract of the full-duplex
+// engine: Allow() is paid per written chunk (not per session or per lease), a
+// deny fails exactly that chunk's commands with the Limiter's error verbatim
+// while the session and engine survive, and every successful Allow is paired
+// with exactly one ReportResult.
+func TestFDLimiterPerBatch(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:                    internalTestRedisAddr(),
+		Protocol:                3,
+		PipelinePoolSize:        4,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                4,
+		Limiter:                 br,
+	})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// Phase 1 — breaker closed: commands are admitted per chunk and succeed.
+	for i := 0; i < 5; i++ {
+		if err := ap.Set(ctx, "fd:limbatch:"+strconv.Itoa(i), "v", 0).Err(); err != nil {
+			t.Fatalf("phase 1 set %d: %v", i, err)
+		}
+	}
+	if br.allows.Load() < 1 {
+		t.Fatal("phase 1: Limiter.Allow never called — per-batch admission bypassed")
+	}
+
+	// Phase 2 — breaker open: the next chunk's Allow is denied, so the command
+	// fails fast with the Limiter's error VERBATIM (errors.Is must see the
+	// sentinel — the engine must not wrap or replace it). The deny settles the
+	// chunk at write time; nothing hangs waiting for the breaker to close.
+	br.open.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- ap.Set(ctx, "fd:limbatch:denied", "v", 0).Err() }()
+	select {
+	case e := <-done:
+		if !errors.Is(e, errBreakerOpen) {
+			t.Fatalf("phase 2: err = %v, want the breaker sentinel verbatim (errors.Is)", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("phase 2: command hung on an open breaker instead of failing the chunk fast")
+	}
+	if br.denies.Load() < 1 {
+		t.Fatal("phase 2: Limiter denied nothing — the failure did not come from admission")
+	}
+
+	// Phase 3 — breaker closed again: the SAME client/engine serves new work
+	// (the deny failed only the chunk; the session/engine stayed alive, and the
+	// next chunk pays Allow again).
+	br.open.Store(false)
+	if err := ap.Set(ctx, "fd:limbatch:resumed", "v", 0).Err(); err != nil {
+		t.Fatalf("phase 3 set after breaker closed: %v (engine did not resume)", err)
+	}
+
+	// Teardown — strict pairing: after Close (which waits out the engine and any
+	// final flush) every successful Allow must have exactly one ReportResult; a
+	// denied Allow must have none. A brief settle covers the plain-path release
+	// report that can land just after a call returns.
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	a, r, d := br.allows.Load(), br.reports.Load(), br.denies.Load()
+	if a != r {
+		t.Fatalf("Limiter unpaired: allows=%d reports=%d (want equal; denies=%d report nothing)", a, r, d)
+	}
+	if d < 1 {
+		t.Fatalf("denies = %d, want >= 1 (phase 2 must have been denied by the Limiter)", d)
+	}
+}
+
+// failReadNetConn is a net.Conn whose Write succeeds (a peer that ACCEPTS the
+// batch) but whose Read always fails — the reply-side transport failure of
+// finding ed53z: the write is admitted and reported healthy under the old
+// contract, yet no reply ever arrives.
+type failReadNetConn struct{ mockNetConn }
+
+func (c *failReadNetConn) Read(b []byte) (int, error) { return 0, errors.New("read boom") }
+
+// TestFDLimiterReportsReplySide pins the core of finding ed53z at the mechanism
+// level: writeBatch admits a chunk (one Allow) but a CLEAN write must NOT report
+// yet — the obligation is deferred to the reply side and rides the chunk's last
+// req. A later transport failure that abandons the unread replies settles it
+// with the error (settleTail), and the settle is exactly-once (CAS), so a reader
+// and a failure path racing the same obligation cannot double-report.
+func TestFDLimiterReportsReplySide(t *testing.T) {
+	br := &fakeBreaker{}
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, Limiter: br}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+	cn := pool.NewConn(&mockNetConn{}) // Write succeeds -> writeBatch flushes clean
+
+	reqs := make([]fdReq, 3)
+	for i := range reqs {
+		reqs[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", "k", "v")}
+	}
+	if err := fd.writeBatch(context.Background(), cn, inflight, reqs); err != nil {
+		t.Fatalf("writeBatch: %v", err)
+	}
+	// THE discriminator between reply-side and write-outcome reporting: a clean
+	// write admits (allows==1) but reports NOTHING yet.
+	if a, r := br.allows.Load(), br.reports.Load(); a != 1 || r != 0 {
+		t.Fatalf("after a clean write: allows=%d reports=%d, want allows=1 reports=0 (reply-side, not write-time reporting)", a, r)
+	}
+
+	rem := inflight.takeRemaining()
+	if len(rem) != len(reqs) {
+		t.Fatalf("takeRemaining len=%d, want %d", len(rem), len(reqs))
+	}
+	// Only the chunk's LAST req carries the obligation.
+	for i := 0; i < len(rem)-1; i++ {
+		if rem[i].limReport != nil {
+			t.Fatalf("req %d carries a Limiter obligation; only the chunk's LAST req should", i)
+		}
+	}
+	ob := rem[len(rem)-1].limReport
+	if ob == nil {
+		t.Fatal("chunk's last req carries no Limiter obligation — the reader could never report the reply-side outcome")
+	}
+
+	// A transport failure abandoning the unread replies settles the obligation
+	// with the error: the breaker SEES a failure.
+	ob.settle(errBreakerOpen)
+	if a, r, e := br.allows.Load(), br.reports.Load(), br.errReports.Load(); a != 1 || r != 1 || e != 1 {
+		t.Fatalf("after a read-side failure: allows=%d reports=%d errReports=%d, want 1/1/1", a, r, e)
+	}
+	// Exactly-once: a racing second settle (reader vs failure path) is a no-op.
+	ob.settle(nil)
+	ob.settle(errBreakerOpen)
+	if r, e := br.reports.Load(), br.errReports.Load(); r != 1 || e != 1 {
+		t.Fatalf("obligation double-reported: reports=%d errReports=%d, want 1/1 (CAS must make settle exactly-once)", r, e)
+	}
+}
+
+// TestFDLimiterReportsReadFailure drives a whole session() against a peer that
+// ACCEPTS every write but whose reader immediately fails, and asserts the
+// Limiter actually receives the transport failure — the wiring finding ed53z is
+// about. Reverting writeBatch to report the WRITE outcome makes errReports 0 and
+// this test fails (the breaker would only ever be told success and never open).
+// Deterministic and dial-free: no reply is ever produced, so the reader breaks
+// on the first read and the session takes its fdConnErr recovery path.
+func TestFDLimiterReportsReadFailure(t *testing.T) {
+	br := &fakeBreaker{}
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: context.Background()},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, ReadTimeout: time.Second, Limiter: br}}},
+		maxBatch: 2,   // 5 commands -> chunks [0:2] [2:4] [4:5] -> 3 admitted chunks
+		window:   100, // >= command count, so writeCarryChunked never window-gates
+	}
+	cn := pool.NewConn(&failReadNetConn{})
+
+	const n = 5
+	carry := make([]fdReq, n)
+	for i := range carry {
+		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v"), attempts: 1}
+	}
+
+	type res struct {
+		result fdResult
+	}
+	done := make(chan res, 1)
+	go func() {
+		_, r, _ := fd.session(context.Background(), cn, carry)
+		done <- res{r}
+	}()
+	var got res
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session() hung after a read failure — the reader/serve loop did not converge")
+	}
+	if got.result != fdConnErr {
+		t.Fatalf("session result = %v, want fdConnErr (the reader failed)", got.result)
+	}
+
+	a, r, e := br.allows.Load(), br.reports.Load(), br.errReports.Load()
+	if a < 1 {
+		t.Fatal("Limiter.Allow never called — the writes were not admitted per chunk")
+	}
+	if a != r {
+		t.Fatalf("Limiter unpaired: allows=%d reports=%d (want equal — every Allow gets exactly one ReportResult)", a, r)
+	}
+	if e != a {
+		t.Fatalf("read failure reported %d errors of %d reports — a peer that drops before replying must report FAILURE, not success (finding ed53z)", e, a)
+	}
+}
+
+// TestFDLimiterPairingWithReadFailure exercises the strict-pairing contract
+// through the real engine across the main paths: successful chunks (replies land
+// -> ReportResult(nil)), then the connection is killed mid-flight so in-flight
+// replies never arrive (reply-side transport failure -> ReportResult(err)), then
+// Close. Every Allow must still pair 1:1 with a ReportResult, and at least one of
+// those reports must carry the error. Needs redis; uses the delay-proxy harness.
+func TestFDLimiterPairingWithReadFailure(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	const delay = 40 * time.Millisecond
+	paddr, stop := delayReplyProxy(t, "127.0.0.1"+internalTestRedisAddr(), delay)
+	defer stop()
+
+	br := &fakeBreaker{}
+	c := NewClient(&Options{
+		Addr:                    paddr,
+		Protocol:                3,
+		PipelinePoolSize:        4,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                4,
+		MaxRetries:              1, // bound the post-kill re-lease backoff so Close is prompt
+		Limiter:                 br,
+		// Disable the maint-notifications handshake so the ONLY report carrying an
+		// error is the conn kill's abandoned replies (not a version-dependent
+		// CLIENT MAINT_NOTIFICATIONS reply error at init).
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer c.Close()
+	const window, maxBatch = 8, 4
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:       true,
+		FullDuplexWindow: window,
+		MaxBatchSize:     maxBatch,
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// A run of successful chunks first (these report nil), then kill the conn so a
+	// backlog's replies never arrive (these report the transport error).
+	for i := 0; i < 10; i++ {
+		if err := ap.Set(ctx, fmt.Sprintf("fdlrp:ok:%d", i), "v", 0).Err(); err != nil {
+			t.Fatalf("warmup set %d: %v", i, err)
+		}
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = ap.Set(ctx, fmt.Sprintf("fdlrp:kill:%d", i), "v", 0)
+		}
+	}()
+	time.Sleep(delay / 2)
+	stop() // kill live conns: in-flight replies never arrive -> reader failure
+
+	closed := make(chan struct{})
+	go func() { _ = ap.Close(); _ = c.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close hung after conn kill")
+	}
+	wg.Wait()
+	time.Sleep(50 * time.Millisecond)
+
+	a, r, e := br.allows.Load(), br.reports.Load(), br.errReports.Load()
+	if a < 1 || a != r {
+		t.Fatalf("Limiter unpaired after successes + read failure + Close: allows=%d reports=%d (want equal, >=1)", a, r)
+	}
+	if e < 1 {
+		t.Fatalf("no report carried the transport error: errReports=%d, want >=1 (the killed conn's abandoned replies must open the breaker — finding ed53z)", e)
+	}
+}
+
+// TestFDLimiterReplyLevelErrorReportsNil pins that a reply-LEVEL error (redis.Nil
+// from a GET on a missing key) is NOT a transport failure: the server answered,
+// so the chunk's obligation must report success. errReports must stay 0 — a
+// redis.Nil must never open the breaker. Needs redis.
+func TestFDLimiterReplyLevelErrorReportsNil(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:                    internalTestRedisAddr(),
+		Protocol:                3,
+		PipelinePoolSize:        4,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                4,
+		Limiter:                 br,
+		// Disable the maint-notifications handshake: on a server that lacks it the
+		// CLIENT MAINT_NOTIFICATIONS reply-level error is reported to the shared
+		// Limiter at conn init and would pollute errReports (version-dependent).
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+	client.Del(ctx, "fd:lim:missing")
+	if err := ap.Get(ctx, "fd:lim:missing").Err(); !errors.Is(err, Nil) {
+		t.Fatalf("get missing key: err = %v, want redis.Nil (reply-level error)", err)
+	}
+	if err := ap.Close(); err != nil {
+		t.Fatalf("ap close: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	a, r, e := br.allows.Load(), br.reports.Load(), br.errReports.Load()
+	if a < 1 || a != r {
+		t.Fatalf("Limiter unpaired: allows=%d reports=%d (want equal, >=1)", a, r)
+	}
+	if e != 0 {
+		t.Fatalf("redis.Nil opened the breaker: errReports=%d, want 0 (a reply-level error is not a transport failure)", e)
 	}
 }
 
@@ -1634,5 +2261,157 @@ func TestCloseLoserReturnsImmediatelyWaitClosedBlocks(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("WaitClosed did not return after closeDone closed")
+	}
+}
+
+// panicArgsCmd is a Cmder whose Args() panics. It embeds a real Cmder so every
+// other method is promoted. Used to drive the full-duplex sizing recover.
+type panicArgsCmd struct{ Cmder }
+
+func (panicArgsCmd) Args() []interface{} { panic("test: Args panic") }
+
+// panicNoRetryCmd is a Cmder whose NoRetry() panics, for the retry-classification
+// recover.
+type panicNoRetryCmd struct{ Cmder }
+
+func (panicNoRetryCmd) NoRetry() bool { panic("test: NoRetry panic") }
+
+// A custom Cmder's Args() runs on the full-duplex writer's recover-less serve
+// loop when sizing a batch. cmdApproxBytesSafe must convert a panic there into an
+// error (wrapping errFDPanicRecovered) so the caller can drop the one command
+// instead of crashing the engine.
+func TestCmdApproxBytesSafeRecoversArgsPanic(t *testing.T) {
+	ctx := context.Background()
+	if n, err := cmdApproxBytesSafe(NewStatusCmd(ctx, "get", "k")); err != nil || n <= 0 {
+		t.Fatalf("clean sizing: n=%d err=%v; want n>0, err=nil", n, err)
+	}
+	n, err := cmdApproxBytesSafe(panicArgsCmd{NewStatusCmd(ctx, "get", "k")})
+	if err == nil {
+		t.Fatal("panicking Args(): want error, got nil")
+	}
+	if !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("panicking Args(): err=%v; want it to wrap errFDPanicRecovered", err)
+	}
+	if n != 0 {
+		t.Fatalf("panicking Args(): n=%d; want 0", n)
+	}
+}
+
+// A custom Cmder's NoRetry() runs on the same recover-less serve loop during the
+// retry-classification scan. fdFirstNoRetrySafe must report the panic (not crash)
+// so the caller declines to replay and fails the tail conservatively.
+func TestFdFirstNoRetrySafeRecoversScanPanic(t *testing.T) {
+	ctx := context.Background()
+	clean := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k", "v")},
+		{cmd: NewStatusCmd(ctx, "set", "k", "v")},
+	}
+	if n, panicked := fdFirstNoRetrySafe(clean); panicked || n != len(clean) {
+		t.Fatalf("clean scan: n=%d panicked=%v; want n=%d panicked=false", n, panicked, len(clean))
+	}
+	bad := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k", "v")},
+		{cmd: panicNoRetryCmd{NewStatusCmd(ctx, "get", "k")}, sent: true},
+	}
+	if n, panicked := fdFirstNoRetrySafe(bad); !panicked || n != 0 {
+		t.Fatalf("panicking scan: n=%d panicked=%v; want n=0 panicked=true", n, panicked)
+	}
+}
+
+// fdNoRetrySafe wraps the reader's reply-path NoRetry() call. A panic there (after the
+// reply already landed) must be recovered and reported as non-retryable (true), so the
+// reply is surfaced inline instead of the reader's session recover replaying an
+// already-answered command.
+func TestFDNoRetrySafeRecoversPanic(t *testing.T) {
+	ctx := context.Background()
+	base := NewStatusCmd(ctx, "get", "k")
+	if got, want := fdNoRetrySafe(base), base.NoRetry(); got != want {
+		t.Fatalf("clean NoRetry(): got %v, want %v (must pass through)", got, want)
+	}
+	if !fdNoRetrySafe(panicNoRetryCmd{NewStatusCmd(ctx, "get", "k")}) {
+		t.Fatal("panicking NoRetry(): got false, want true (treat as non-retryable)")
+	}
+}
+
+// fdBatchEndSafe sizes a carry chunk with a per-command recover. A panicking Args()
+// must NOT tear the session down: it returns the clean prefix end and the offending
+// index so writeCarryChunked writes the good prefix, fails+drops the bad command, and
+// resumes — keeping the healthy connection.
+func TestFDBatchEndSafeRecoversArgsPanic(t *testing.T) {
+	ctx := context.Background()
+	good := func() fdReq { return fdReq{cmd: NewStatusCmd(ctx, "get", "k")} }
+	bad := func() fdReq { return fdReq{cmd: panicArgsCmd{NewStatusCmd(ctx, "get", "k")}} }
+
+	// Clean chunk: no panic, bad == -1, end == len.
+	clean := []fdReq{good(), good(), good()}
+	if end, b, err := fdBatchEndSafe(clean, 0, 8, 0); end != len(clean) || b != -1 || err != nil {
+		t.Fatalf("clean: end=%d bad=%d err=%v; want end=%d bad=-1 err=nil", end, b, err, len(clean))
+	}
+	// Panic at the chunk start (index 0): empty clean prefix, bad == 0.
+	atStart := []fdReq{bad(), good()}
+	if end, b, err := fdBatchEndSafe(atStart, 0, 8, 0); end != 0 || b != 0 || !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("panic at start: end=%d bad=%d err=%v; want end=0 bad=0 err~errFDPanicRecovered", end, b, err)
+	}
+	// Panic in the middle (index 1): clean prefix [0:1), bad == 1.
+	mid := []fdReq{good(), bad(), good()}
+	if end, b, err := fdBatchEndSafe(mid, 0, 8, 0); end != 1 || b != 1 || !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("panic in middle: end=%d bad=%d err=%v; want end=1 bad=1 err~errFDPanicRecovered", end, b, err)
+	}
+	// Resuming past the bad index sizes the rest cleanly.
+	if end, b, err := fdBatchEndSafe(mid, 2, 8, 0); end != 3 || b != -1 || err != nil {
+		t.Fatalf("resume after bad: end=%d bad=%d err=%v; want end=3 bad=-1 err=nil", end, b, err)
+	}
+}
+
+// newFDEngine resolves zero tuning fields to their defaults and must publish them
+// back so Config() reports what the engine actually enforces, not the raw 0 the
+// caller passed. Needs a server only because the engine's run loop leases a
+// connection; Config() itself is filled synchronously at construction.
+func TestNewFDEnginePublishesResolvedDefaults(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+	cfg := ap.Config()
+	if cfg.FullDuplexWindow != fdDefaultWindow {
+		t.Errorf("FullDuplexWindow=%d; want the default %d", cfg.FullDuplexWindow, fdDefaultWindow)
+	}
+	if cfg.FullDuplexIdleTimeout != fdDefaultIdle {
+		t.Errorf("FullDuplexIdleTimeout=%s; want the default %s", cfg.FullDuplexIdleTimeout, fdDefaultIdle)
+	}
+	if cfg.FullDuplexMaxHold != fdDefaultMaxHold {
+		t.Errorf("FullDuplexMaxHold=%s; want the default %s", cfg.FullDuplexMaxHold, fdDefaultMaxHold)
+	}
+	if cfg.MaxBatchSize != 200 {
+		t.Errorf("MaxBatchSize=%d; want the default 200", cfg.MaxBatchSize)
+	}
+}
+
+// The full-duplex tuning fields are consumed only when FullDuplex is enabled, so a
+// negative on one of them must not reject an otherwise valid half-duplex config; it
+// is still rejected when FullDuplex is on.
+func TestFullDuplexTuningValidatedOnlyWhenEnabled(t *testing.T) {
+	off := &AutoPipelineOptions{FullDuplexWindow: -1, FullDuplexIdleTimeout: -1, FullDuplexMaxHold: -1}
+	if err := off.Validate(); err != nil {
+		t.Errorf("FullDuplex off: negative FD tuning should not error, got %v", err)
+	}
+	for _, on := range []*AutoPipelineOptions{
+		{FullDuplex: true, FullDuplexWindow: -1},
+		{FullDuplex: true, FullDuplexIdleTimeout: -1},
+		{FullDuplex: true, FullDuplexMaxHold: -1},
+	} {
+		if err := on.Validate(); err == nil {
+			t.Errorf("FullDuplex on with a negative FD field %+v: want error, got nil", on)
+		}
 	}
 }

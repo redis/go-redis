@@ -260,9 +260,11 @@ type Options struct {
 	// for main-pool connections. It never pre-dials (MinIdleConns is forced
 	// to 0 on it), so the size is a cap on burst capacity, not a standing
 	// footprint: an unused pipeline pool holds zero connections. A burst of
-	// concurrent pipelines wider than the cap spills to the main pool after a
-	// short wait (DefaultPipelinePoolTimeout) rather than queueing for the full
-	// PoolTimeout. Its connections use DefaultPipelineBufferSize buffers unless
+	// concurrent pipelines wider than the cap spills to the main pool IMMEDIATELY
+	// (a non-blocking TryGet on the pipeline pool) rather than waiting a grace
+	// period — so a saturated pipeline pool never adds latency before falling back,
+	// and DefaultPipelinePoolTimeout does not gate that spill. Its connections use
+	// DefaultPipelineBufferSize buffers unless
 	// the pipeline buffer sizes are set explicitly. It does not inherit
 	// MaxActiveConns: rather than the ~2x total ceiling that inheriting it
 	// verbatim would allow, the pipeline pool adds at most PipelinePoolSize
@@ -309,6 +311,21 @@ type Options struct {
 	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
+
+	// maxConcurrentDialsSet records whether MaxConcurrentDials was set explicitly
+	// by the caller (>0) BEFORE init() normalized it. init() rewrites a 0 to
+	// PoolSize, which makes an explicit MaxConcurrentDials==PoolSize afterward
+	// indistinguishable from the default; pipelinePoolOptions consults this to
+	// preserve an explicit dial cap for the pipeline pool instead of expanding it.
+	maxConcurrentDialsSet bool
+
+	// maxConcurrentDialsInit latches maxConcurrentDialsSet on the first init().
+	// A caller may reuse one *Options across more than one NewClient call. The
+	// first init() normalizes an unset MaxConcurrentDials (0) to PoolSize, so a
+	// second init() would recompute maxConcurrentDialsSet from the normalized value
+	// and wrongly mark it explicit, which stops the pipeline pool from widening its
+	// dial cap. The latch preserves the first decision. Clones copy both flags.
+	maxConcurrentDialsInit bool
 
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
@@ -489,18 +506,21 @@ const DefaultPipelinePoolSize = 10
 // very large buffers (>=512 KiB) can regress it.
 const DefaultPipelineBufferSize = 64 * 1024
 
-// DefaultPipelinePoolTimeout bounds how long a pipeline waits for a pipeline-pool
-// connection before spilling to the main pool. The pipeline pool is burst
-// capacity, so when every one of its connections is busy a further pipeline
-// should fall back to the main pool promptly rather than queue for the full
-// (main) PoolTimeout, which can be tens of seconds. It is deliberately short:
-// staying under it costs a little extra latency on a saturated pipeline pool
-// (the spill), never correctness. See pipelinePoolOptions / withPipelineConn.
+// DefaultPipelinePoolTimeout is the dedicated pipeline pool's PoolTimeout
+// (pipelinePoolOptions caps the pipeline clone's PoolTimeout at this value but honors
+// a caller's SHORTER PoolTimeout). It does NOT gate the spill to the main pool:
+// withPipelineConn acquires with a non-blocking TryGet, so a burst wider than the
+// pipeline pool's cap spills to the main pool IMMEDIATELY (see the pipeline-pool note
+// in Options and withPipelineConn), never waiting this timeout, and the spilled op
+// then uses the MAIN pool's own PoolTimeout, not this one.
 //
-// Note: PoolTimeout is also the budget for a connection's drainer handoff
-// (maintnotifications), so a pipeline connection that needs a handoff gets this
-// short budget rather than the main pool's — acceptable because pipeline
-// connections are disposable burst capacity that a burst can spill past anyway.
+// Its remaining live effect is the budget for a pipeline connection's maintnotifications
+// drainer handoff: PoolTimeout is one budget for both a pool turn and a drainer handoff
+// (see internal/pool), and TryGet still respects a drainer's bounded claim up to
+// PoolTimeout. So a pipeline connection that needs a handoff gets this short budget
+// rather than the main pool's (tens of seconds) — acceptable because pipeline
+// connections are disposable burst capacity that a burst can spill past anyway. It is
+// deliberately short for the same reason.
 const DefaultPipelinePoolTimeout = 100 * time.Millisecond
 
 func (opt *Options) init() {
@@ -549,6 +569,15 @@ func (opt *Options) init() {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
 	}
 
+	// Record explicit-vs-default BEFORE normalizing (a 0 becomes PoolSize below),
+	// so pipelinePoolOptions can tell an explicit MaxConcurrentDials==PoolSize from
+	// the default. Latch on the FIRST init only: a caller may reuse one *Options
+	// across NewClient calls, and a second init() would see the already-normalized
+	// value and wrongly mark it explicit. Clones copy the latched flags.
+	if !opt.maxConcurrentDialsInit {
+		opt.maxConcurrentDialsSet = opt.MaxConcurrentDials > 0
+		opt.maxConcurrentDialsInit = true
+	}
 	if opt.MaxConcurrentDials <= 0 {
 		opt.MaxConcurrentDials = opt.PoolSize
 	} else if opt.MaxConcurrentDials > opt.PoolSize {

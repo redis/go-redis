@@ -268,6 +268,17 @@ const (
 	// onCloseHookIDSentinelFailover identifies the close callback installed
 	// by NewFailoverClient to tear down sentinel failover background work.
 	onCloseHookIDSentinelFailover = "sentinel-failover"
+
+	// onCloseHookIDAutoPipeline / onCloseHookIDAsyncAutoPipeline identify the
+	// close callbacks that cancel a cached autopipeliner's engine context when
+	// the SHARED pools close through any sharer (e.g. a WithTimeout clone falling
+	// through to baseClient.Close). The wrapper's own Close cancels its aps
+	// directly, but a clone shares only the pools + onCloseHooks, so without this
+	// the original wrapper's flusher/full-duplex goroutines would park on ap.ctx
+	// forever. Two ids because one Client caches at most a blocking and an async
+	// instance.
+	onCloseHookIDAutoPipeline      = "autopipeline"
+	onCloseHookIDAsyncAutoPipeline = "autopipeline-async"
 )
 
 // onCloseHooks is a small registry of named close callbacks attached to a
@@ -304,12 +315,9 @@ func (h *onCloseHooks) register(id string, fn func() error) {
 	h.hooks[id] = fn
 }
 
-// unregister removes the callback associated with id, if any. It is kept
-// for API symmetry with register so future callers (e.g. dynamic hook
-// owners that need to detach before client Close) do not have to
-// reinvent it.
-//
-//nolint:unused // kept for API symmetry with register; see comment above.
+// unregister removes the callback associated with id, if any. Used by
+// AutoPipeliner.Close to detach its per-engine close hook (see
+// registerAutoPipelineCloseHook).
 func (h *onCloseHooks) unregister(id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -325,17 +333,28 @@ func (h *onCloseHooks) unregister(id string) {
 	}
 }
 
-// run invokes all registered callbacks in registration order and returns
-// the first non-nil error encountered. All callbacks are executed even if
-// an earlier one returns an error.
+// run invokes all registered callbacks in REVERSE registration order (LIFO) and
+// returns the first non-nil error encountered. All callbacks are executed even if an
+// earlier one returns an error.
+//
+// LIFO is a dependency-teardown order: a hook registered LATER is a consumer of state
+// that earlier registrations provide, so it must run FIRST. Concretely, the Sentinel
+// failover teardown is registered at client construction (first), while an
+// autopipeliner drain hook is registered lazily on first use (later). The drain needs
+// the failover client alive to resolve the master address / dial a replacement
+// connection for accepted-but-unsent work; running the Sentinel teardown first would
+// set failover.closed, make MasterAddr return pool.ErrClosed, and fail replayable
+// commands even though Redis and the pools are still up (a sibling pool-sharing clone
+// triggering Close was enough). Draining consumers before tearing down discovery keeps
+// those commands serviceable.
 func (h *onCloseHooks) run() error {
 	if h == nil {
 		return nil
 	}
 	h.mu.Lock()
 	fns := make([]func() error, 0, len(h.order))
-	for _, id := range h.order {
-		if fn := h.hooks[id]; fn != nil {
+	for i := len(h.order) - 1; i >= 0; i-- {
+		if fn := h.hooks[h.order[i]]; fn != nil {
 			fns = append(fns, fn)
 		}
 	}
@@ -649,6 +668,22 @@ func pipelinePoolOptions(opt *Options) *Options {
 		pipelineOpt.PoolSize = DefaultPipelinePoolSize
 	}
 	pipelineOpt.MinIdleConns = 0
+	// Re-resolve MaxConcurrentDials for the pipeline pool. Options.init capped it to
+	// the MAIN pool size, so a pipeline pool larger than the main pool (e.g.
+	// PoolSize:1 with the default 10-slot pipeline pool) would otherwise dial one
+	// connection at a time — an initial burst serializes slow dials and can hit
+	// PoolTimeout or spill despite idle pipeline slots. If the caller set an EXPLICIT
+	// dial cap, honor it (bounded by the pipeline pool size); otherwise default to
+	// the pipeline pool size. Keyed on maxConcurrentDialsSet, NOT equality with
+	// PoolSize, so an explicit MaxConcurrentDials==PoolSize (e.g. PoolSize:1,
+	// MaxConcurrentDials:1) is not mistaken for the default and silently widened.
+	if opt.maxConcurrentDialsSet {
+		if pipelineOpt.MaxConcurrentDials > pipelineOpt.PoolSize {
+			pipelineOpt.MaxConcurrentDials = pipelineOpt.PoolSize
+		}
+	} else {
+		pipelineOpt.MaxConcurrentDials = pipelineOpt.PoolSize
+	}
 	// Do NOT inherit MaxActiveConns. Inheriting it verbatim would roughly DOUBLE
 	// the client's socket ceiling (e.g. MaxActiveConns 100 -> up to ~200 across
 	// the two pools). Reset to 0 so the pipeline pool is bounded only by its own
@@ -1149,6 +1184,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	return nil
 }
 
+// errConnUnusable marks a connection whose reply stream is desynchronized (a
+// partial push-frame drain, or a panic mid-serialization) but whose error is not a
+// transport bad-conn error. releaseConnToPool removes such a conn instead of
+// returning it to the pool. Wrap the real cause with %w so callers still see it.
+var errConnUnusable = errors.New("redis: connection unusable (reply stream desynchronized)")
+
 func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) {
 	if c.opt.Limiter != nil {
 		c.opt.Limiter.ReportResult(err)
@@ -1163,19 +1204,26 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 // tracking is on. Limiter accounting stays with the callers, whose shapes
 // differ. Shared by releaseConn and withPipelineConn so the two cannot drift.
 func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *pool.Conn, err error) {
-	if isBadConn(err, false, c.opt.Addr) {
+	// errConnUnusable is wrapped around errors that leave the connection's reply
+	// stream desynchronized even though they are not transport (bad-conn) errors:
+	// a push-notification drain that consumed part of a RESP3 frame, or a panic
+	// while serializing a command's args mid-write. Such a conn MUST be removed —
+	// reusing it would decode leftover bytes as the next caller's replies.
+	if isBadConn(err, false, c.opt.Addr) || errors.Is(err, errConnUnusable) {
 		p.Remove(ctx, cn, err)
 		return
 	}
 	// process any pending push notifications before returning the connection to the pool
 	if err := c.processPushNotifications(ctx, cn); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
-		if isBadConn(err, false, c.opt.Addr) {
-			// A mid-frame read failure may leave the reply stream
-			// desynchronized, so the connection cannot be reused.
-			p.Remove(ctx, cn, err)
-			return
-		}
+		// Any drain error may leave the reply stream desynchronized: a mid-frame
+		// read failure, or a custom PushNotificationProcessor that consumed part of a
+		// frame and returned a non-transport error. Remove the conn rather than
+		// relying on isBadConn to recognize the cause — reusing it would decode
+		// leftover bytes as the next caller's reply. The built-in processor returns
+		// nil on a nothing-consumed drain, so its normal path still Puts the conn.
+		p.Remove(ctx, cn, err)
+		return
 	}
 	if c.cscTrackingRequested() {
 		// A TLS-like wrapper can retain decrypted bytes after the command
@@ -1197,6 +1245,15 @@ func (c *baseClient) withConn(
 
 	var fnErr error
 	defer func() {
+		// A panic inside fn (e.g. a user BinaryMarshaler panicking while writeCmd
+		// serializes args) can leave a partial write on the wire, desyncing the conn.
+		// Mark it unusable so releaseConn REMOVES it instead of returning a poisoned
+		// conn to the pool, then re-panic to preserve the caller's panic propagation.
+		if r := recover(); r != nil {
+			fnErr = fmt.Errorf("%w: panic: %v", errConnUnusable, r)
+			c.releaseConn(ctx, cn, fnErr)
+			panic(r)
+		}
 		c.releaseConn(ctx, cn, fnErr)
 	}()
 
@@ -1253,11 +1310,27 @@ func (c *baseClient) withPipelineConn(
 	var connPool pool.Pooler = pipelinePool
 	var fnErr error
 	defer func() {
+		// A panic inside fn (a user encoder panicking mid-write) can desync the conn;
+		// mark it unusable so it is REMOVED, report the failure to the Limiter, and
+		// re-panic after releasing so the caller's panic propagation is preserved.
+		// Recover once, then re-panic at the very end (report-before-release order is
+		// part of the contract — see below — so the release must run first).
+		var pv any
+		panicked := false
+		if r := recover(); r != nil {
+			panicked = true
+			pv = r
+			fnErr = fmt.Errorf("%w: panic: %v", errConnUnusable, r)
+			retErr = fnErr
+		}
 		if c.opt.Limiter != nil {
 			c.opt.Limiter.ReportResult(retErr)
 		}
 		if cn != nil {
 			c.releaseConnToPool(ctx, connPool, cn, fnErr)
+		}
+		if panicked {
+			panic(pv)
 		}
 	}()
 
@@ -1272,14 +1345,19 @@ func (c *baseClient) withPipelineConn(
 	//     pipelinePoolOptions resets MaxActiveConns to 0), and
 	//   - a pipeline-conn init failure (e.g. a fresh dial refused with maxclients)
 	//     — the main pool may have an idle conn and avoid it.
-	// Do NOT spill on a non-saturation Get error (ctx cancelled, pool closed):
-	// the main pool would fail the same way. Spilled pipelines run with the
-	// regular buffer sizes (a throughput detail).
+	// Do NOT spill on a non-saturation error (ctx cancelled, pool closed): the main
+	// pool would fail the same way. Spilled pipelines run with the regular buffer
+	// sizes (a throughput detail).
+	//
+	// TryGet, not Get: on a saturated pipeline pool TryGet returns ErrPoolTryFull
+	// AT ONCE (no PoolTimeout wait, and it is not counted as a pool timeout), so the
+	// pipeline spills to the main pool immediately instead of stalling up to
+	// DefaultPipelinePoolTimeout and recording a spurious Stats.Timeouts.
 	spill := false
-	cn, retErr = pipelinePool.Get(ctx)
+	cn, retErr = pipelinePool.TryGet(ctx)
 	if retErr != nil {
 		cn = nil
-		if !errors.Is(retErr, pool.ErrPoolTimeout) && !errors.Is(retErr, pool.ErrPoolExhausted) {
+		if !errors.Is(retErr, pool.ErrPoolTryFull) && !errors.Is(retErr, pool.ErrPoolExhausted) {
 			return retErr
 		}
 		spill = true
@@ -1332,14 +1410,31 @@ func (c *baseClient) autopipelineCSCActive() bool {
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	return c.processStartingAt(ctx, cmd, 0, time.Time{})
+}
+
+// processStartingAt runs cmd like process() but starts the retry loop at
+// startAttempt. The full-duplex divert (retryOnNormalConn) passes 1 for a command
+// that already spent its initial attempt on the FD socket and came back with a
+// retryable reply, so the retry budget (MaxRetries) is not exceeded by one; it
+// passes 0 for a redirect, where the FD attempt did not execute the command.
+//
+// start is the operation start time for the OTel duration metric. The FD divert
+// passes req.writtenAt so the reported duration spans the initial FD write to
+// final completion, matching the inline FD path and the attempt count (which
+// already includes the FD attempt). A zero start defaults to now, so the normal
+// path measures from here.
+func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAttempt int, start time.Time) error {
 	opDurationCallback := otel.GetOperationDurationCallback()
 	if opDurationCallback == nil {
-		return c.processCommand(ctx, cmd, nil)
+		return c.processCommand(ctx, cmd, nil, startAttempt)
 	}
 
-	start := time.Now()
+	if start.IsZero() {
+		start = time.Now()
+	}
 	var state processState
-	err := c.processCommand(ctx, cmd, &state)
+	err := c.processCommand(ctx, cmd, &state, startAttempt)
 	opDurationCallback(ctx, time.Since(start), cmd, state.attempts, err, state.lastConn, c.opt.DB)
 	return err
 }
@@ -1349,35 +1444,54 @@ type processState struct {
 	lastConn *pool.Conn
 }
 
-func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState) error {
+func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
 	// Reject commands that would make one pooled connection diverge from CSC's
 	// tracking or database assumptions. Pipelines mirror this guard below.
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
 	if c.csc != nil && isCacheable(cmd) {
-		return c.processCached(ctx, cmd, state)
+		// A cacheable command can still reach the cached path on the full-duplex
+		// divert (retryOnNormalConn). The command spent its first attempt on the FD
+		// socket. So startAttempt must go into processCached. On a cache miss
+		// processCached runs the MaxRetries loop. If startAttempt is lost, the
+		// diverted command runs one attempt more than MaxRetries+1.
+		return c.processCached(ctx, cmd, state, startAttempt)
 	}
-	return c.processWithRetry(ctx, cmd, nil, state)
+	return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 }
 
 // processWithRetry runs cmd through the retry loop. capture (optional) is
 // filled by the successful attempt's reply read for the CSC fetch path (see
 // cscFetchCapture).
 func (c *baseClient) processWithRetry(
-	ctx context.Context, cmd Cmder, capture *cscFetchCapture, state *processState,
+	ctx context.Context, cmd Cmder, capture *cscFetchCapture, state *processState, startAttempt int,
 ) error {
 	var lastConn *pool.Conn
 
 	var lastErr error
-	totalAttempts := 0
 	maxRetries := c.opt.MaxRetries
 	himportRetried := false
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	// startAttempt > 0 accounts for attempts already spent elsewhere: the
+	// full-duplex divert passes 1 when a command already used its initial attempt
+	// on the FD socket (a retryable reply), so the total (FD attempt + this loop)
+	// does not exceed MaxRetries+1. Clamp so a caller can never disable execution:
+	// startAttempt <= maxRetries guarantees the loop runs at least once.
+	if startAttempt < 0 {
+		startAttempt = 0
+	}
+	if startAttempt > maxRetries {
+		startAttempt = maxRetries
+	}
+	// Seed with startAttempt so state.attempts (reported to the OTel duration
+	// callback) counts attempts already spent before this loop — e.g. the FD socket
+	// attempt on a diverted retryable command — not just this loop's iterations.
+	totalAttempts := startAttempt
+	for attempt := startAttempt; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		attempt := attempt
 
-		retry, cn, err := c._process(ctx, cmd, attempt, capture)
+		retry, forced, cn, err := c._process(ctx, cmd, attempt, capture)
 		if cn != nil {
 			lastConn = cn
 		}
@@ -1399,9 +1513,12 @@ func (c *baseClient) processWithRetry(
 			lastErr = err
 			continue
 		}
-		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
-		// which writes directly to an io.Writer and cannot undo partial writes)
-		if err == nil || !retry || cmd.NoRetry() {
+		// Don't retry if the command explicitly disables retries (e.g. RawWriteToCmd,
+		// which writes directly to an io.Writer and cannot undo partial writes) — UNLESS
+		// the failure was a pre-write desync (forced): the command never reached the
+		// wire, so replaying it is its first execution, which NoRetry does not forbid
+		// (NoRetry guards against a SECOND execution of a possibly-written command).
+		if err == nil || !retry || (cmd.NoRetry() && !forced) {
 			if err != nil {
 				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 					errorType, statusCode, isInternal := classifyCommandError(err)
@@ -1483,20 +1600,48 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	return "UNKNOWN", "UNKNOWN", true
 }
 
-func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, capture *cscFetchCapture) (bool, *pool.Conn, error) {
+// _process runs one attempt. It returns retry (the error is retryable), forced (the
+// error is a PRE-WRITE desync: the conn was closed before the command reached the
+// wire, so replay is its FIRST execution and safe even for a NoRetry command), the
+// conn used, and the error.
+func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, capture *cscFetchCapture) (retry, forced bool, cn *pool.Conn, err error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
-			return false, nil, err
+			return false, false, nil, err
 		}
 	}
 
 	var usedConn *pool.Conn
 	var retryTimeout atomic.Uint32
+	// forceRetry marks the returned error as retryable regardless of its type, AND
+	// (surfaced as the _process "forced" return) lets the retry bypass a NoRetry
+	// command's gate. Set only when we have already CLOSED the connection before the
+	// command reached the wire (a pre-command push-drain desync), so re-running on a
+	// fresh conn is its FIRST execution — safe even for an error shouldRetry would
+	// reject (a custom push-processor sentinel) and even for a NoRetry command (whose
+	// gate guards a SECOND execution, not a first).
+	var forceRetry atomic.Bool
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
-		// Process any pending push notifications before executing the command
+		// Process any pending push notifications before executing the command. A
+		// non-nil error means the drain may have stopped mid-frame (a fragmented
+		// push straddling its hard read cap), leaving the reader desynced. Do NOT
+		// ignore it: reading this command's reply on the conn would then return
+		// shifted bytes — a wrong result, or a wrong-key cache on the CSC capture
+		// path. Close the conn so releaseConn removes it, mark the error retryable,
+		// and let processWithRetry re-run on a fresh conn. Benign cases return nil
+		// (peekAndProcessPushNotifications gates on MaybeHasData; the built-in
+		// processor propagates only genuine mid-frame errors and a custom processor
+		// is peeked first), so this fires only on a real desync.
 		if err := c.processPushNotifications(ctx, cn); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
+			internal.Logger.Printf(ctx, "push: pre-command drain failed, retiring conn: %v", err)
+			_ = cn.Close()
+			// Force a retry: the conn is closed so re-running on a fresh conn is safe,
+			// and the drain error may be a custom-processor sentinel that shouldRetry
+			// would reject (retryTimeout only affects timeout errors). The command was
+			// not written yet, so replay is clean.
+			forceRetry.Store(true)
+			return err
 		}
 
 		// HIMPORT bookkeeping: pending discards for this session and the
@@ -1602,11 +1747,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		}
 		return readErr
 	}); err != nil {
-		retry := shouldRetry(err, retryTimeout.Load() == 1)
-		return retry, usedConn, err
+		retry := forceRetry.Load() || shouldRetry(err, retryTimeout.Load() == 1)
+		return retry, forceRetry.Load(), usedConn, err
 	}
 
-	return false, usedConn, nil
+	return false, false, usedConn, nil
 }
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {
@@ -1751,14 +1896,25 @@ func (c *baseClient) getAddr() string {
 }
 
 func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE"); err != nil {
+	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", c.opt.MaxRetries); err != nil {
+		return err
+	}
+	return cmdsFirstErr(cmds)
+}
+
+// processPipelineRetries runs a pipeline with an explicit retry bound instead of
+// the client's configured MaxRetries. The autopipeliner's shutdown flush passes
+// maxRetries==0 to give an already-attempted carried command exactly one final
+// execution, so replaying it on Close cannot exceed its per-command retry budget.
+func (c *baseClient) processPipelineRetries(ctx context.Context, cmds []Cmder, maxRetries int) error {
+	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", maxRetries); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
 }
 
 func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	if err := c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds, "MULTI"); err != nil {
+	if err := c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds, "MULTI", c.opt.MaxRetries); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
@@ -1766,8 +1922,21 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 
 type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
+// pipelineErrShouldStamp reports whether a pipeline-level error must be stamped
+// onto every command (setCmdsErr). A per-command Redis reply error (LOADING,
+// WRONGTYPE, ...) is left alone so each command keeps its own reply - EXCEPT when
+// the error is errConnUnusable, which marks a desynchronized reply stream and may
+// WRAP a redis.Error (a custom PushNotificationProcessor that returns a redis.Error
+// on a failed push drain). isRedisError unwraps to that inner redis.Error and would
+// otherwise treat the whole batch as a normal reply, leaving every command with
+// Err()==nil while Exec returns an error - so the errConnUnusable marker takes
+// precedence and the transport failure is stamped onto every command.
+func pipelineErrShouldStamp(err error) bool {
+	return errors.Is(err, errConnUnusable) || !isRedisError(err)
+}
+
 func (c *baseClient) generalProcessPipeline(
-	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
+	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
 ) error {
 	// Pipeline commands never pass through process, so apply the same CSC state
 	// guard here. initConn's internal client is exempt.
@@ -1787,7 +1956,7 @@ func (c *baseClient) generalProcessPipeline(
 	totalAttempts := 0
 
 	var lastErr error
-	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -1806,9 +1975,17 @@ func (c *baseClient) generalProcessPipeline(
 		// withPipelineConn falls back to the regular pool when it is not.
 		lastErr = c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			lastConn = cn
-			// Process any pending push notifications before executing the pipeline
+			// Drain pending push notifications before executing the pipeline. A drain
+			// error can mean a custom processor consumed part of a RESP3 push frame,
+			// leaving the reply stream desynchronized — writing the batch now would
+			// misread every reply (silent cross-command result shift). Fail the batch
+			// with the error instead of logging on: errConnUnusable makes
+			// releaseConnToPool remove the desynced conn, and shouldRetry does not
+			// treat it as retryable, so the caller sees an error rather than shifted
+			// results. (Failing loud is deliberately preferred over teaching the shared
+			// retry classifier a new sentinel.)
 			if err := c.processPushNotifications(ctx, cn); err != nil {
-				internal.Logger.Printf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
+				return fmt.Errorf("%w: pipeline push drain: %w", errConnUnusable, err)
 			}
 			var err error
 			canRetry, err = p(ctx, cn, cmds)
@@ -1819,7 +1996,7 @@ func (c *baseClient) generalProcessPipeline(
 		// undo partial writes on retry)
 		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
-			if !isRedisError(lastErr) {
+			if pipelineErrShouldStamp(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
 			if pipelineOpDurationCallback != nil {
@@ -1844,7 +2021,7 @@ func (c *baseClient) generalProcessPipeline(
 	// error — see the error instead of a nil error and a zero value. Guard on
 	// !isRedisError so a per-command redis error (e.g. LOADING) keeps its own
 	// reply rather than being overwritten.
-	if !isRedisError(lastErr) {
+	if pipelineErrShouldStamp(lastErr) {
 		setCmdsErr(cmds, lastErr)
 	}
 
@@ -1864,9 +2041,16 @@ func (c *baseClient) generalProcessPipeline(
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	// Process any pending push notifications before executing the pipeline
+	// Drain pending push notifications before writing the pipeline. A drain error
+	// may mean the reply stream is desynchronized (a processor consumed part of a
+	// RESP3 frame), so writing now would misread replies. Fail the batch and remove
+	// the conn (errConnUnusable) rather than logging on. (generalProcessPipeline
+	// drains once more before calling this, so this is the belt-and-suspenders gate
+	// for a direct/again-buffered push.)
 	if err := c.processPushNotifications(ctx, cn); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
+		err = fmt.Errorf("%w: pipeline push drain: %w", errConnUnusable, err)
+		setCmdsErr(cmds, err)
+		return false, err
 	}
 
 	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
@@ -1956,9 +2140,14 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	// Process any pending push notifications before executing the transaction pipeline
+	// Drain pending push notifications before writing the transaction. A drain error
+	// may leave the reply stream desynchronized, so fail the batch and remove the
+	// conn (errConnUnusable) rather than logging on. (generalProcessPipeline drains
+	// once more before calling this — belt-and-suspenders gate.)
 	if err := c.processPushNotifications(ctx, cn); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
+		err = fmt.Errorf("%w: txpipeline push drain: %w", errConnUnusable, err)
+		setCmdsErr(cmds, err)
+		return false, err
 	}
 
 	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
@@ -2158,7 +2347,17 @@ func NewClient(opt *Options) *Client {
 	}
 
 	if opt.StreamingCredentialsProvider != nil {
-		c.streamingCredentialsManager = streaming.NewManager(c.connPool, c.opt.PoolTimeout)
+		// Size the re-auth worker semaphore for the COMBINED ceiling of every pool
+		// the hook is registered on: the same hook drives the main pool AND the
+		// (possibly larger) dedicated pipeline pool, so a credential rotation must
+		// be able to re-AUTH connections from both concurrently. Sizing to only the
+		// main PoolSize would serialize pipeline re-auths behind PoolSize workers,
+		// leaving pipeline capacity unavailable well past reAuthTimeout.
+		workers := c.connPool.Size()
+		if pp := c.getPipelinePool(); pp != nil {
+			workers += pp.Size()
+		}
+		c.streamingCredentialsManager = streaming.NewManagerWithWorkers(c.connPool, c.opt.PoolTimeout, workers)
 		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
 		if pp := c.getPipelinePool(); pp != nil {
 			pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())
@@ -2229,9 +2428,14 @@ func (c *Client) init() {
 }
 
 // WithTimeout returns a clone sharing the parent's connection pools with the
-// given read/write timeout. The clone caches its own autopipeliners: an
-// AutoPipeline()/AsyncAutoPipeline() created on the clone is NOT stopped by
-// the parent's Close — call Close on the clone's autopipeliner explicitly.
+// given read/write timeout. The clone caches its own autopipeliners, separate
+// from the parent's: an AutoPipeline()/AsyncAutoPipeline() created on the clone
+// registers a close hook on the shared pool. Closing any pool-sharing wrapper
+// (the parent or another clone) drains and stops every registered engine's
+// background flusher before the shared pools are torn down, so no flusher
+// outlives the pool. That shared-pool drain does not mark the clone's
+// autopipeliner closed, so an explicit Close on the clone still fully tears it
+// (and its autopipeliners) down; Close is idempotent.
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	// Snapshot under the guard: AutoPipeline()/Close() mutate the
 	// autopipeliner fields concurrently, so a bare struct copy of them is a
@@ -2425,7 +2629,7 @@ func (c *Client) AutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, c.baseClient.onClose, onCloseHookIDAutoPipeline, config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -2434,6 +2638,12 @@ func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipe
 		},
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, true) })
 }
+
+// apCloseHookSeq makes each autopipeliner engine's onClose hook id unique so a
+// client and its WithTimeout clone (which share the onClose registry) do not
+// collide on a per-slot constant id. The hook is registered once, under the
+// getOrCreateAutoPipeliner mutex, on the fresh build; ap.Close unregisters it.
+var apCloseHookSeq atomic.Uint64
 
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
 // return immediately and the result accessors (Val/Result/Err) block until the
@@ -2461,7 +2671,7 @@ func (c *Client) AsyncAutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, c.baseClient.onClose, onCloseHookIDAsyncAutoPipeline, config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -2722,6 +2932,23 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 	// of being drained (or removed, when the frame turns out partial).
 	return cn.WithReader(ctx, time.Millisecond, func(rd *proto.Reader) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
+		// Built-in processor: use the Buffered variant so an error AFTER partially
+		// consuming a fragmented frame is PROPAGATED, not swallowed. A swallowed
+		// mid-frame error would leave the reader desynced, and a following reply
+		// read on this conn would consume the residue (wrong result, or a wrong-key
+		// cache on the CSC capture path). A custom processor is handed only a
+		// confirmed push frame: peek the type first, propagate the peek error, and
+		// skip a non-push frame so it cannot consume a coalesced reply.
+		if processor, ok := c.pushProcessor.(*push.Processor); ok {
+			return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
+		}
+		t, err := rd.PeekReplyType()
+		if err != nil {
+			return err
+		}
+		if t != proto.RespPush {
+			return nil
+		}
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
 }
@@ -2776,7 +3003,8 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
-				context.Background(), handlerCtx, rd)
+				context.Background(), handlerCtx, rd,
+			)
 		}
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})
@@ -2821,9 +3049,19 @@ func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Contex
 
 // pushNotificationHandlerContext creates a handler context for push notification processing
 func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
+	// Report the pool that actually owns cn, not always the main pool: with a
+	// dedicated pipeline pool (now created for default clients), a notification
+	// received while running an ordinary pipeline arrives on a pipeline-owned
+	// connection, and a handler that inspects or operates on ConnPool must target
+	// that pool — otherwise it modifies the main pool while the real pipeline
+	// connection is left untouched. poolForConn derefs cn, so guard nil.
+	connPool := pool.Pooler(c.connPool)
+	if cn != nil {
+		connPool = c.poolForConn(cn)
+	}
 	return push.NotificationHandlerContext{
 		Client:   c,
-		ConnPool: c.connPool,
+		ConnPool: connPool,
 		Conn:     cn, // Wrap in adapter for easier interface access
 	}
 }

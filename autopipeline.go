@@ -64,6 +64,161 @@ type AutoPipelineOptions struct {
 	// is a configuration error.
 	Unordered bool
 
+	// FullDuplex enables the ordered full-duplex dispatch path: one held
+	// pipeline-pool connection with a writer+reader goroutine pair streaming the
+	// ordered command stream, instead of the half-duplex one-batch-per-round-trip
+	// flusher. Its win is a latency-bound (WAN) link under many concurrent
+	// goroutines: ~1 RTT latency and pipe-saturated throughput on a single
+	// connection. On a fast link (loopback) prefer half-duplex — with no RTT to
+	// overlap, full-duplex only adds coordination overhead.
+	//
+	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1),
+	// single-shard face of a standalone *Client that has a pipeline pool — BOTH the
+	// deferred (AsyncAutoPipeline) and the blocking (AutoPipeline) face. A SINGLE
+	// blocking caller gains nothing: it has one command in flight, so there is
+	// nothing to overlap, and it still pays the held connection and goroutine
+	// overhead; the win needs MANY concurrent blocking callers, whose commands then
+	// overlap on the shared pipe exactly as on the async face (~1 RTT each instead
+	// of batch phase-locking). NOT supported on cluster clients: a ClusterClient
+	// silently falls back to half-duplex (the options type cannot see the client
+	// type, so Validate cannot catch it). Validate does reject the contradictory
+	// standalone combos (FullDuplex with Unordered or MaxConcurrentBatches>1).
+	//
+	// Ordering caveat: blocking and connection-hostile commands (BLPOP, WAIT,
+	// XREAD BLOCK, SUBSCRIBE, MULTI, ...) are diverted to a separate pooled
+	// connection so they cannot stall the shared pipe. Managed HIMPORT
+	// (PREPARE/SET/DISCARD/DISCARDALL) is diverted too, but only on the full-duplex
+	// path: a fieldset is connection-session state that the FD writer does not
+	// replay and the FD reader does not track, so it runs through the normal Process
+	// path — which injects the registered PREPARE and keeps the registry current —
+	// instead of failing with "no such fieldset". A reply that is a retryable Redis
+	// error (LOADING/READONLY/…) is likewise re-run through Process, off the FD
+	// reader, so the reader keeps completing later replies. A MOVED/ASK redirect is
+	// NOT replayed on the standalone full-duplex path — a standalone Client cannot
+	// route it — so the redirect surfaces to the caller as the command's error,
+	// exactly as it does for a plain standalone command (a cluster-aware FD path
+	// could route it instead; that is a follow-up). Per-caller ordering therefore
+	// does NOT hold across a diverted command: it may settle AFTER a command
+	// submitted later on the same goroutine.
+	// That reorders only a caller holding TWO causally-dependent commands in flight
+	// WITHOUT awaiting the first (e.g. Set(k) then Get(k) both fired on the async
+	// face before reading Set's result); awaiting a result before issuing a
+	// dependent one preserves order, and the blocking face waits per command by
+	// construction, so its per-goroutine ordering is unaffected. NoRetry commands
+	// are never diverted. Half-duplex diverts identically; blocking commands were
+	// never part of the ordered stream.
+	//
+	// Observability: process hooks (redisotel spans/metrics, custom AddHook
+	// ProcessHooks) DO fire on the full-duplex path — each command runs the hook
+	// chain individually (withProcessHook, not the batch ProcessPipelineHook), the
+	// span bracketing its real write→reply latency; with none registered the hosting
+	// is skipped entirely (the fast path). Presence is checked per command at submit
+	// time, so a hook registered via AddHook is observed only by commands submitted
+	// after it (one already in flight is not retroactively spanned). DialHook and
+	// pool stats work as usual. Caveat: the write is already queued on the shared
+	// stream when the hook host starts, so a hook that SHORT-CIRCUITS (returns
+	// without calling next) does NOT cancel execution — the command still runs on
+	// the wire and only the hook's returned error reaches the caller, unlike the
+	// half-duplex path where next() gates the write. A hook that relies on
+	// short-circuiting to BLOCK a command (a policy/ACL/kill-switch hook, or a
+	// mock/cache that must not touch the server) therefore does NOT prevent the
+	// server write under FullDuplex — run such hooks on a plain client or the
+	// half-duplex autopipeline. A hook that calls next and only OBSERVES the
+	// command (reads its result after next, optionally rewriting the returned
+	// error) is unaffected. But because the write is already queued when the host
+	// starts, a hook MUST NOT mutate the command — e.g. cmd.Args() — or set its
+	// result BEFORE calling next: that races the writer's serialization and the
+	// reader's completion. Mutate-before-next hooks must run on a plain client or
+	// the half-duplex autopipeline, where next() gates the write.
+	//
+	// A ProcessHook MUST NOT synchronously call Close (Client.Close or
+	// AutoPipeliner.Close) from inside the hook: the hook runs on the full-duplex
+	// hook-host goroutine and Close waits for that goroutine to finish, so a
+	// synchronous Close from the hook deadlocks until the close backstop (~30s).
+	// Trigger Close from a separate goroutine if a hook must initiate it.
+	//
+	// TODO(fullduplex): offer opt-in write-gating for blocking hooks — a per-client
+	// or per-command flag that waits for the hook to call next before enqueuing the
+	// command onto fd.ch, so a policy hook can veto the write, at the cost of the
+	// ~1-RTT concurrency for gated commands (observability-only hooks keep the fast
+	// path). Until then the short-circuit-does-not-block semantics above are
+	// intentional, not a bug.
+	//
+	// Limiter: Options.Limiter is admitted (Allow/ReportResult) once PER WRITTEN
+	// BATCH — the chunk flushed to the connection in one write, the full-duplex
+	// analogue of a pipeline exec or a half-duplex flush — not per command and
+	// not per session. A deny fails every command of that chunk with the
+	// Limiter's own error, verbatim (examinable via errors.Is); the session and
+	// its connection stay alive, and the next chunk pays Allow again, so an open
+	// breaker fail-fasts and service resumes as soon as it closes. Because
+	// admission happens at write time, a deny surfaces as queue latency on the
+	// awaited result, not as a submit-time error — and one deny covers a whole
+	// chunk, exactly as one Allow covers a whole pipeline exec elsewhere.
+	// ReportResult fires exactly once per admitted chunk, strictly paired with its
+	// Allow, and carries the REPLY-side outcome — not the write result. A clean write
+	// does NOT report at admission: the obligation rides the in-flight deque on the
+	// chunk's last command and reports nil once every reply of the chunk has landed
+	// (reply-LEVEL errors such as redis.Nil / WRONGTYPE / MOVED still report nil — a
+	// server that answers is healthy). A write failure or encoder panic reports that
+	// write error immediately (the replies will never come); a later transport failure
+	// that abandons the chunk's unread replies reports that error. A denied (or
+	// panicking) Allow grants no permit and reports nothing. So a custom Limiter must
+	// expect its permit to be released on the reply side and to observe only transport
+	// failures, never reply-level Redis errors.
+	FullDuplex bool
+
+	// FullDuplexWindow is the maximum in-flight (written-but-unacknowledged)
+	// commands before the writer applies backpressure — a hard memory bound AND the
+	// cap on how deep the pipe can fill, so it must exceed the bandwidth-delay
+	// product (RTT × target rate) or it throttles throughput. The deque holds only
+	// ACTUAL in-flight (self-limited by throughput), so a generous window costs no
+	// memory until a stalled peer makes in-flight grow. Only used when FullDuplex is
+	// set; 0 means the default (65536, covering ~50ms links at ~1.3M ops/s) and a
+	// negative value is rejected by Validate.
+	FullDuplexWindow int
+
+	// FullDuplexIdleTimeout is how long the held full-duplex connection may sit
+	// with no queued work and a drained in-flight before it is returned to the pool
+	// (so it is reusable and its per-conn hooks — streaming-creds re-auth,
+	// maintnotifications — get a chance to run). Only used when FullDuplex is set.
+	// 0 means the default (1s); a negative value is rejected by Validate.
+	FullDuplexIdleTimeout time.Duration
+
+	// FullDuplexMaxHold forces the same clean return under continuous load, so the
+	// per-conn hooks run at least this often even when the connection never goes
+	// idle. Only used when FullDuplex is set. 0 means the default (5s); a negative
+	// value is rejected by Validate.
+	FullDuplexMaxHold time.Duration
+
+	// FullDuplexFastSubmit trades submit fairness for throughput on hot,
+	// low-RTT links. Off by default; only used when FullDuplex is set.
+	//
+	// What: normal submit waits on a blocking three-arm select. The fast path
+	// tries a non-blocking channel send first and only falls back to that select
+	// on a miss, cutting the selectgo cost (~40% of submit CPU) that dominates at
+	// high producer counts.
+	//
+	// Benefit: measured +15-33% throughput at 1 ms RTT and +6-18% at 5 ms with
+	// >=1k concurrent callers on the default window, tail equal-or-better.
+	//
+	// Drawback: it can affect fairness. A producer that finds room jumps ahead of
+	// producers already blocked on a full channel, so under a deep/bursting queue
+	// it would starve them and inflate p99. To bound that, the fast path is
+	// queue-depth gated (fdFastSubmitGatePct, ~10% full): once the channel backs
+	// up, the fair blocking select takes over. No-op on high-RTT links (RTT-bound)
+	// and with a small FullDuplexWindow (the channel is min(window,4096) deep, so
+	// it stays shallow) — the gains are at the default window.
+	//
+	// Ordering is unaffected. The enqueue is synchronous even on the async
+	// (Submit) face — only the reply is deferred, not the send. A caller's command
+	// N is on the ordered channel before its submit returns, and submit(N+1)
+	// cannot start until submit(N) returns, so a goroutine's own commands keep
+	// program order regardless of which path each took. Fast-submit changes only
+	// how long a synchronous enqueue waits and how it interleaves with OTHER
+	// producers (fairness); it can never let a caller's later command overtake its
+	// own earlier one.
+	FullDuplexFastSubmit bool
+
 	// contentSharded is set internally by cluster wiring when commands are
 	// routed to shards by content (slot), so same-key commands always share a
 	// shard and per-key order holds even with several shards. It exempts that
@@ -214,6 +369,29 @@ func DefaultBlockingAutoPipelineOptions() *AutoPipelineOptions {
 // Options.AutoPipelineOptions is validated lazily — on the first getter
 // call, not in NewClient.
 func (cfg *AutoPipelineOptions) Validate() error {
+	if cfg.FullDuplex {
+		// Full-duplex matches replies to commands by FIFO position on one connection,
+		// which Unordered / parallel batches break. Checked BEFORE the generic
+		// MaxConcurrentBatches rule so the message is FullDuplex-specific.
+		if cfg.Unordered {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires an ordered stream " +
+				"(Unordered:false); full-duplex matches replies by in-flight FIFO position, which " +
+				"Unordered breaks")
+		}
+		if cfg.MaxConcurrentBatches > 1 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires MaxConcurrentBatches<=1 "+
+				"(an ordered single stream); got %d", cfg.MaxConcurrentBatches)
+		}
+		// A USER-set NumShards>1 contradicts FullDuplex the same way (one held FIFO
+		// connection is one stream); reject it rather than silently falling back to
+		// half-duplex. contentSharded is exempt: that flag is set by the CLUSTER
+		// wiring (never by users), where the silent fallback IS the documented
+		// behavior, since the options type cannot see the client type.
+		if cfg.NumShards > 1 && !cfg.contentSharded {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires NumShards<=1 "+
+				"(one held FIFO connection is a single stream); got %d", cfg.NumShards)
+		}
+	}
 	if cfg.MaxConcurrentBatches > 1 && !cfg.Unordered {
 		return fmt.Errorf("redis: AutoPipelineOptions.MaxConcurrentBatches=%d requires Unordered:true "+
 			"(parallel batches do not preserve command ordering); set Unordered:true to allow it, "+
@@ -241,6 +419,21 @@ func (cfg *AutoPipelineOptions) Validate() error {
 		return fmt.Errorf("redis: AutoPipelineOptions.AdaptiveDelay requires MaxFlushDelay > 0 " +
 			"(adaptive delay scales MaxFlushDelay by queue fill; with no MaxFlushDelay it would " +
 			"silently disable batch accumulation entirely)")
+	}
+	// The full-duplex tuning fields are consumed only when FullDuplex is enabled
+	// (newFDEngine resolves them; the half-duplex path never reads them), so validate
+	// them only then. Otherwise a leftover negative on an inactive field would reject
+	// an otherwise valid half-duplex config.
+	if cfg.FullDuplex {
+		if cfg.FullDuplexWindow < 0 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexWindow=%d must be >= 0 (0 = default)", cfg.FullDuplexWindow)
+		}
+		if cfg.FullDuplexIdleTimeout < 0 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexIdleTimeout=%s must be >= 0 (0 = default)", cfg.FullDuplexIdleTimeout)
+		}
+		if cfg.FullDuplexMaxHold < 0 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexMaxHold=%s must be >= 0 (0 = default)", cfg.FullDuplexMaxHold)
+		}
 	}
 	return nil
 }
@@ -304,6 +497,14 @@ type apBatch struct {
 	// registered — which is every standalone batch, always, and a cluster
 	// batch outside its node fan-out window.
 	nodeCount atomic.Int32
+	// pooled marks a batch drawn from fdBlockingBatchPool: its done channel is
+	// buffered(1) and completion signals via a non-blocking SEND (see close) so
+	// the channel is reusable, instead of the close()-once unbuffered channel
+	// every other batch uses. Only the full-duplex BLOCKING face produces these
+	// — the one path where the batch is a single-waiter completion signal that
+	// is never installed on the command (no setReady) and is discarded after
+	// Wait. Immutable for the batch's lifecycle; set at construction.
+	pooled bool
 }
 
 // enterNodeDispatch registers the calling goroutine as an executor of this
@@ -407,9 +608,63 @@ func registerBatchExecutors(cmds []Cmder) func() {
 
 func newAPBatch() *apBatch { return &apBatch{done: make(chan struct{})} }
 
-// close completes the batch exactly once, waking every waiter.
+// fdBlockingBatchPool recycles apBatch objects for the full-duplex BLOCKING
+// face — the single path where a batch is a pure, single-waiter completion
+// signal: that face never setReady()s the command (so the batch is invisible to
+// await/readyBatch/resultReady — verified: those all read cmd.ready, set only by
+// setReady) and discards the batch right after Wait returns. Pooled batches use
+// a buffered(1) done channel signalled by a non-blocking SEND (see close), so
+// the channel — the bulk of newAPBatch's ~190 B/op — is reused rather than
+// closed and thrown away. Every other batch (async face, shared flush batches
+// with many/repeat readers) keeps the unbuffered close()-once channel.
+var fdBlockingBatchPool = sync.Pool{
+	New: func() any { return &apBatch{done: make(chan struct{}, 1), pooled: true} },
+}
+
+// getFDBlockingBatch returns a reset pooled batch. Fields are cleared
+// individually (go vet copylocks forbids *b = apBatch{} because of nodeMu); a
+// stale closed=true would make the next completion signal a no-op and park the
+// caller forever, so the reset is not optional.
+func getFDBlockingBatch() *apBatch {
+	b := fdBlockingBatchPool.Get().(*apBatch)
+	b.closed.Store(false)
+	b.dispGid.Store(0)
+	b.nodeCount.Store(0)
+	b.nodeGids = nil
+	// Drain any stray signal so the reused channel starts empty. Insurance: the
+	// blocking face always drains done in Wait, so this is normally a no-op.
+	select {
+	case <-b.done:
+	default:
+	}
+	return b
+}
+
+// putFDBlockingBatch returns a pooled batch after its single waiter has woken.
+// Safe only once the batch is complete and unreferenced (see processBlocking).
+func putFDBlockingBatch(b *apBatch) {
+	if b == nil || !b.pooled {
+		return
+	}
+	fdBlockingBatchPool.Put(b)
+}
+
+// close completes the batch exactly once, waking its waiter(s).
 func (b *apBatch) close() {
 	if b.closed.CompareAndSwap(false, true) {
+		if b.pooled {
+			// Buffered(1) done: signal with a non-blocking send so the channel
+			// stays reusable (a closed channel cannot be reused). The CAS makes
+			// exactly one send and cap 1 makes it never block; the one blocking
+			// waiter (AutoFuture.Wait) drains it. Every completer — reader,
+			// failReqs, shutdownFlush, flushBacklogForClose — funnels through
+			// here, so this single branch covers them all.
+			select {
+			case b.done <- struct{}{}:
+			default:
+			}
+			return
+		}
 		close(b.done)
 	}
 }
@@ -542,10 +797,16 @@ func putQueueSlice(slice []Cmder) {
 // waiting for it.
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
+
 type AutoPipeliner struct {
 	cmdable // Embed cmdable to get all Redis command methods
 
 	pipeliner cmdableClient
+	config    *AutoPipelineOptions
+	// fd, when non-nil, is the ordered full-duplex dispatch engine. When set,
+	// submit() streams on one held connection instead of the sharded batch queue
+	// and no shard flusher is started. See autopipeline_fullduplex.go.
+	fd *fdEngine
 	// pipelinePool is the connection pool that backs autopipelined batch
 	// dispatch (distinct from the client's main pool). Captured once at
 	// construction via an in-package assertion; nil when the underlying client
@@ -561,7 +822,6 @@ type AutoPipeliner struct {
 	// cacheable-solo routing: only an active-CSC client routes through Process
 	// (which honors the cache).
 	cscActiveFn func() bool
-	config      *AutoPipelineOptions
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
 	// when true the command call itself blocks until the command has executed
 	// (drop-in, synchronous shape); when false the call returns immediately and
@@ -628,10 +888,19 @@ type AutoPipeliner struct {
 	execEWMA atomic.Int64
 
 	// Lifecycle
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup // Tracks flusher goroutines
-	batchWg sync.WaitGroup // Tracks batch execution goroutines
+	ctx    context.Context
+	cancel context.CancelFunc
+	// closeHooks / closeHookID: the shared baseClient onClose registry this engine
+	// registered a cancel callback on, and the UNIQUE id it used. Any pool-sharing
+	// wrapper's Close runs the registry and cancels this engine (so a clone closing
+	// the shared pools reaps it); ap.Close unregisters so hooks stay bounded and a
+	// closed engine's stale callback does not linger. The id is unique per engine —
+	// a client and its clone can both cache the same face and must not collide on a
+	// per-slot constant id (that would overwrite one hook and leak its engine).
+	closeHooks  *onCloseHooks
+	closeHookID string
+	wg          sync.WaitGroup // Tracks flusher goroutines
+	batchWg     sync.WaitGroup // Tracks batch execution goroutines
 	// divertWg tracks the goroutines that execute DIVERTED commands (blocking
 	// and connection-hostile ones, which never enter a batch). Close waits on
 	// it exactly like batchWg so a diverted command's pooled connection is not
@@ -652,6 +921,17 @@ type AutoPipeliner struct {
 	// underneath it — while accepted commands are still being flushed.
 	closeDone chan struct{}
 	closeErr  error
+	// drainOnce memoizes cancelAndDrain's body: two closers can reach it for the
+	// same engine (an explicit AutoPipeliner.Close racing a pool-sharing wrapper's
+	// shared-pool close hook, which deliberately leaves ap.closed false). The body
+	// runs exactly once and writes closeErr inside the Once (so closeErr has no
+	// concurrent writer and WaitClosed reads it safely); both callers return that
+	// one result.
+	drainOnce sync.Once
+	// drainRuns counts drain-body executions. The Once holds it at 1 however many
+	// closers race, so a value > 1 means two closers double-drained the engine — the
+	// invariant this counter guards (and a duplicate-close diagnostic).
+	drainRuns atomic.Int64
 }
 
 // apShard is one queue + flusher. Its fields are touched only by enqueuing
@@ -727,6 +1007,8 @@ func getOrCreateAutoPipeliner(
 	slot **AutoPipeliner,
 	closed *bool,
 	sharedClosed *atomic.Bool,
+	onClose *onCloseHooks,
+	closeHookBaseID string,
 	override *AutoPipelineOptions,
 	fallback func() *AutoPipelineOptions,
 	build func(*AutoPipelineOptions) (*AutoPipeliner, error),
@@ -755,6 +1037,41 @@ func getOrCreateAutoPipeliner(
 	// ALREADY-cached instance also refuses enqueues once any sharer closes
 	// the pools (the check above only protects fresh builds).
 	ap.sharedClosed = sharedClosed
+	// Register the shared-pool close hook ONCE, here under mu on the FRESH build —
+	// not per call outside the lock, which would race concurrent first-callers and
+	// register a hook per caller. A UNIQUE id per engine: a client and its
+	// WithTimeout clone share onClose, so a per-slot constant id would overwrite one
+	// registration and leak its engine. ap.Close unregisters by this id. onClose is
+	// nil for cluster/ring (they pass a nil shared flag and have no clone-close leak).
+	if onClose != nil {
+		id := fmt.Sprintf("%s#%d", closeHookBaseID, apCloseHookSeq.Add(1))
+		ap.closeHooks = onClose
+		ap.closeHookID = id
+		onClose.register(id, func() error {
+			// cancelAndDrain, not bare cancel: a pool-sharing wrapper's Close must WAIT
+			// for this engine's shutdown flush to finish before closeResources tears the
+			// shared pools down — cancel-and-return would let the pools close mid-flush
+			// and fail accepted work. It is bounded (the drainAll backstop) so a wedged
+			// flush cannot hang the closing wrapper. It deliberately does NOT set
+			// ap.closed (the engine is rejected via the shared-closed flag) nor detach
+			// this hook, so a later owner Close still runs the full teardown.
+			return ap.cancelAndDrain()
+		})
+	}
+	// Re-check after registering: a concurrent sharer Close sets sharedClosed and
+	// runs onClose (snapshotting its callbacks) without this slot's mutex, so it can
+	// pass the entry check above, snapshot the hooks, and miss the registration just
+	// made — leaving this freshly built engine's goroutines parked on already-closed
+	// pools forever. baseClient.Close sets sharedClosed BEFORE running onClose, so a
+	// close that already ran its hooks is visible here: cancel this engine, detach
+	// its (possibly-missed) hook, and refuse rather than cache a doomed instance.
+	if sharedClosed != nil && sharedClosed.Load() {
+		ap.cancel()
+		if onClose != nil {
+			onClose.unregister(ap.closeHookID)
+		}
+		return nil, ErrClosed
+	}
 	*slot = ap
 	return ap, nil
 }
@@ -864,6 +1181,25 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		perShard = 1
 		remainder = 0
 	}
+	// Ordered full-duplex: the ordered single-shard face on a standalone *Client
+	// with a pipeline pool, async or blocking. When on, submit() streams on one
+	// held connection and no shard flusher runs. The blocking face needs nothing
+	// extra: submit's fd branch skips setReady (the blocking contract) and
+	// processBlocking Waits on the returned batch, as for a half-duplex enqueue.
+	var fdClient *Client
+	fdOn := false
+	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 && nShards == 1 {
+		if c, ok := pipeliner.(*Client); ok && c.getPipelinePool() != nil {
+			fdOn, fdClient = true, c
+		}
+	}
+	// Publish the EFFECTIVE full-duplex state, not the requested one: FullDuplex is a
+	// no-op on a *ClusterClient (or a client with no pipeline pool), where the engine
+	// falls back to the half-duplex shard flushers. Config() promises what the engine
+	// actually runs, so a requested-but-inactive FullDuplex must report false rather
+	// than claim a mode the instance is not in. Only Config() reads this after here.
+	ap.config.FullDuplex = fdOn
+
 	ap.shards = make([]*apShard, nShards)
 	for i := range ap.shards {
 		permits := perShard
@@ -886,12 +1222,29 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			sem:     internal.NewFIFOSemaphore(int32(permits)),
 		}
 		for j := range s.stripes {
-			s.stripes[j].queue = getQueueSlice(config.MaxBatchSize)
+			// In full-duplex mode submissions go straight to the FD engine (fd.ch);
+			// the shard queues are never enqueued to and no flusher drains them, so do
+			// NOT preallocate them to MaxBatchSize. Otherwise a large MaxBatchSize with
+			// a small FullDuplexWindow would allocate MaxBatchSize slots per stripe
+			// (times apEnqueueStripes on the blocking face) up front — tens of MB or an
+			// OOM before any command is sent. A nil queue is safe: nothing appends to
+			// it while fdOn, and Len reads the atomic counter, not the slice.
+			if !fdOn {
+				s.stripes[j].queue = getQueueSlice(config.MaxBatchSize)
+			}
 			s.stripes[j].curBatch = newAPBatch()
 		}
 		ap.shards[i] = s
+		if !fdOn {
+			ap.wg.Add(1)
+			go s.flusher()
+		}
+	}
+
+	if fdOn {
+		ap.fd = newFDEngine(ap, fdClient)
 		ap.wg.Add(1)
-		go s.flusher()
+		go ap.fd.run()
 	}
 
 	return ap, nil
@@ -1051,6 +1404,21 @@ func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
 
 // AddHook adds a hook to the underlying client. Autopipelined batches are hooked
 // too, since dispatch goes through the hook-wrapped pipeline entry.
+//
+// Hook contract:
+//   - Short-circuiting differs by dispatch mode. In half-duplex (batched) mode a
+//     hook MAY return without calling next to skip the server — a supported pattern
+//     for a mock or cache. In full-duplex mode the command is already queued on the
+//     held connection before the hook runs, so returning without calling next does
+//     NOT prevent the server write; a hook cannot cancel a full-duplex command.
+//   - Do not call Close, or any other client control method, from inside a hook. A
+//     hook runs on the engine's dispatch goroutine; in full-duplex mode a synchronous
+//     Close from there blocks until the close backstop, because Close waits on the
+//     very hook host it is running on. Trigger Close from a separate goroutine (see
+//     the FullDuplex GoDoc).
+//   - Do not panic. A panic in a batch hook is recovered so it cannot crash the
+//     process, but the affected batch fails.
+//   - Do not mutate client or connection state.
 func (ap *AutoPipeliner) AddHook(hook Hook) { ap.pipeliner.AddHook(hook) }
 
 // The four commands below have CLUSTER-WIDE overrides on ClusterClient
@@ -1269,6 +1637,16 @@ var blockingCommands = map[string]struct{}{
 	"migrate": {},
 }
 
+// isHImportCmd reports whether cmd is a managed HIMPORT command
+// (PREPARE/SET/DISCARD/DISCARDALL). It uses the same predicate himportInjectedCmds
+// uses to spot HIMPORT in a batch (the himportCmder marker), so it stays in sync
+// with the injection path and covers every subcommand without a name switch. Used
+// only on the full-duplex path to divert HIMPORT off the shared pipe (see submit).
+func isHImportCmd(cmd Cmder) bool {
+	_, ok := cmd.(himportCmder)
+	return ok
+}
+
 // isBlockingCmd reports whether cmd parks the connection. XREAD/XREADGROUP are
 // decided by ARGUMENTS, not by name: only the BLOCK form blocks, and
 // blanket-diverting the (far more common) non-blocking form would drop it out
@@ -1338,7 +1716,13 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// commands that would have worked — typed WAIT/WAITAOF on a cluster with
 	// command policies enabled (review finding by codex on #3942).
 	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
-		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd))
+		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
+		// Managed HIMPORT rides connection-session state (the registered PREPARE)
+		// that the full-duplex writer never injects, so an HIMPORT SET on the FD
+		// pipe can fail "no such fieldset". Divert it to the normal Process path,
+		// which injects the PREPARE (and updates the registry). The half-duplex
+		// sharded path injects inline (himportInjectedCmds) and stays on the pipeline.
+		(ap.fd != nil && isHImportCmd(cmd))
 	if !diverted && ap.preflight != nil {
 		if err := ap.preflight(ctx, cmd); err != nil {
 			cmd.SetErr(err)
@@ -1366,6 +1750,16 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// No finish here: enqueue stamps ready under the stripe lock, before the
 	// command is visible to any drain (the error paths above still go through
 	// finish for uniform accessor behavior).
+	if ap.fd != nil {
+		// Ordered full-duplex: stream on one held connection. enqueue's async
+		// setReady is replicated here since we bypass it. ctx is threaded so a
+		// per-command process-hook host can parent its span correctly.
+		b := ap.fd.submit(ctx, cmd)
+		if !ap.blocking {
+			cmd.setReady(b)
+		}
+		return AutoFuture{cmd: cmd, batch: b}
+	}
 	return AutoFuture{cmd: cmd, batch: ap.enqueue(cmd)}
 }
 
@@ -1454,7 +1848,20 @@ func (ap *AutoPipeliner) processAsync(ctx context.Context, cmd Cmder) error {
 // MaxConcurrentBatches: a caller cannot issue its next command until this one
 // returns, so its commands execute in submit order.
 func (ap *AutoPipeliner) processBlocking(ctx context.Context, cmd Cmder) error {
-	return ap.submit(ctx, cmd).Wait()
+	f := ap.submit(ctx, cmd)
+	err := f.Wait()
+	// Recycle the pooled completion batch. After Wait the batch is complete and
+	// unreferenced: the blocking face never installs it on the command (no
+	// setReady), and the reader drops its fdReq — and with it the batch pointer —
+	// as it advances past the just-completed command, so processBlocking is the
+	// last holder. Gate on pooled (excludes completedBatch and every non-FD /
+	// diverted / async path, all of which use newAPBatch) and dispGid==0
+	// (insurance: a stamped dispatcher gid would mean an executor-goroutine Wait
+	// path that can return without draining done).
+	if b := f.batch; b != nil && b.pooled && b.dispGid.Load() == 0 {
+		putFDBlockingBatch(b)
+	}
+	return err
 }
 
 // completedBatch is a reusable already-completed batch: returned both for
@@ -1632,6 +2039,55 @@ func (ap *AutoPipeliner) Close() error {
 	// waiters exactly once (even if the drain panics).
 	defer close(ap.closeDone)
 
+	// Detach this engine's shared-pool close hook, but only AFTER the drain: a
+	// pool-sharing wrapper that closes the shared pool concurrently with this Close
+	// must still find the hook registered and block on this engine's shutdown flush
+	// (via the hook's cancelAndDrain, serialized by drainOnce) before the pools are
+	// torn down. Unregistering first would let the pool close race ahead of our
+	// flush and tear the pools down mid-write. Detach via defer so a drain panic
+	// does not leave the per-engine callback lingering in the shared onClose
+	// registry (bounded registrations; no stale cancel on a later sharer close).
+	// Only the full Close detaches — the hook's own cancelAndDrain path deliberately
+	// leaves ap.closed false, so a later owner Close still reaches here.
+	if ap.closeHooks != nil {
+		defer ap.closeHooks.unregister(ap.closeHookID)
+	}
+	return ap.cancelAndDrain()
+}
+
+// cancelAndDrain cancels the engine and waits (bounded by the drainAll backstop)
+// for its flushers, shutdown flush, and final shard sweep — WITHOUT flipping
+// ap.closed or detaching the close hook. The shared-pool close hook uses this: when
+// a pool-sharing clone closes the shared pools, this engine's shutdown flush must
+// finish BEFORE closeResources tears the pools down, yet ap.closed must stay false
+// (the engine is then rejected via the shared-closed flag, and a later owner Close
+// still runs the full teardown). Close layers the closed-CAS + hook detach on top.
+func (ap *AutoPipeliner) cancelAndDrain() error {
+	// Run the cancel+drain body exactly ONCE, even when two closers reach it for the
+	// same engine — an explicit AutoPipeliner.Close racing a pool-sharing wrapper's
+	// shared-pool close hook (the hook path deliberately leaves ap.closed false, so
+	// the closed-CAS does not serialize the two). Two concurrent drains are unsafe:
+	// drainAll orders its stages flushers -> shard sweep -> batchWg.Wait precisely so
+	// every batchWg.Add the sweep issues happens-before the Wait; interleaved, one
+	// drain's batchWg.Wait can run while the other's sweep is still dispatching and
+	// calling Add — "sync: WaitGroup misuse: Add called concurrently with Wait", a
+	// runtime panic. The Once also hands both callers the SAME close error and avoids
+	// a duplicate, spuriously-logged shutdown-permit acquisition. Once.Do blocks the
+	// loser until the winner's drain finishes and publishes closeErr (single writer,
+	// inside the Once, so WaitClosed reads it race-free), so this is safe without an
+	// extra channel. A single sweep is a
+	// sufficient barrier against late enqueues: whichever caller wins has already set
+	// the flag enqueue checks (Close sets ap.closed, the hook sets sharedClosed)
+	// before reaching here, so the sweep still closes the lost-command race.
+	ap.drainOnce.Do(func() { ap.closeErr = ap.drainBody() })
+	return ap.closeErr
+}
+
+// drainBody is cancelAndDrain's actual cancel+drain work, invoked exactly once via
+// drainOnce. Split out only so the once wrapper stays trivial.
+func (ap *AutoPipeliner) drainBody() error {
+	ap.drainRuns.Add(1)
+
 	// Cancel context to stop flushers
 	ap.cancel()
 
@@ -1640,11 +2096,13 @@ func (ap *AutoPipeliner) Close() error {
 		s.wake()
 	}
 
-	// Pass through the divert gate once: after the CompareAndSwap above, any
-	// registration either completed before this (so the counter already sees
-	// it) or will observe closed==true and reject. Without this handshake the
-	// wait below could read a zero counter while a diverted command was
-	// between its closed check and its Add.
+	// Pass through the divert gate once: by the time this runs the engine is
+	// already rejecting new work (Close set ap.closed before calling here; the
+	// shared-pool hook path has sharedClosed set before onClose runs), so any
+	// diverted registration either completed before this (the counter already sees
+	// it) or observes closed/shared-closed and rejects. Without this handshake the
+	// wait below could read a zero counter while a diverted command was between its
+	// closed check and its Add.
 	ap.divertMu.Lock()
 	ap.divertMu.Unlock() //nolint:staticcheck // handshake, not a critical section
 
@@ -2659,11 +3117,37 @@ func cmdApproxBytes(cmd Cmder) int64 {
 	return n
 }
 
+// cmdApproxBytesSafe wraps cmdApproxBytes with a recover. cmd.Args() is user code
+// for a custom Cmder and can panic; the full-duplex serve loop sizes each command
+// there with no top-level recover, so a panic would kill the engine and strand
+// every in-flight and future command. On panic it returns a non-nil error wrapping
+// errFDPanicRecovered so the caller can fail and DROP just that command before any
+// batch bytes are written — the alternative (letting it reach writeBatch, whose
+// write-time recover then tears the session down and replays the batch) forces
+// at-least-once re-execution of the poisoned command's innocent batch-mates.
+func cmdApproxBytesSafe(cmd Cmder) (n int64, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: Args() sizing: %v", errFDPanicRecovered, r)
+			internal.Logger.Printf(context.Background(),
+				"autopipeline: recovered full-duplex Args() sizing panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return cmdApproxBytes(cmd), nil
+}
+
 // Len returns the current number of queued commands across all shards.
 func (ap *AutoPipeliner) Len() int {
 	total := 0
 	for _, s := range ap.shards {
 		total += s.Len()
+	}
+	// Full-duplex accepts commands onto fd.ch instead of the shard queues, so
+	// include its backlog — otherwise Len() reports 0 while accepted commands are
+	// buffered behind a backpressured/stalled FD writer, and callers using Len()
+	// for monitoring or local backpressure lose the signal in FullDuplex mode.
+	if ap.fd != nil {
+		total += len(ap.fd.ch)
 	}
 	return total
 }
