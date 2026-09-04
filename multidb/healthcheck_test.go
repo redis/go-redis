@@ -1013,3 +1013,47 @@ func TestLagAwareTLSConfigIsCloned(t *testing.T) {
 		t.Error("expected cloned TLS config to preserve InsecureSkipVerify")
 	}
 }
+
+// latePassCheck ignores ctx, sleeps, then reports healthy: a check whose
+// client has no context timeouts enabled and answers after the check's own
+// Timeout.
+type latePassCheck struct {
+	cfg   HealthCheckConfig
+	sleep time.Duration
+}
+
+func (c *latePassCheck) Config() HealthCheckConfig { return c.cfg }
+func (c *latePassCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
+	time.Sleep(c.sleep)
+	return true, nil
+}
+
+func (c *latePassCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	time.Sleep(c.sleep)
+	return true, nil
+}
+
+// A pass that arrives after the check's Timeout must not count as healthy:
+// the timeout is the bound on how long a healthy member may take to answer.
+func TestPoliciesRejectPassAfterCheckTimeout(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	defer client.Close()
+	for name, p := range map[string]interface {
+		Execute(context.Context, []redis.MultiDBHealthCheck, *redis.Client) bool
+	}{
+		"all":      NewHealthyAllPolicy(),
+		"majority": NewHealthyMajorityPolicy(),
+		"any":      NewHealthyAnyPolicy(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			late := &latePassCheck{cfg: HealthCheckConfig{Probes: 1, Timeout: 30 * time.Millisecond}, sleep: 150 * time.Millisecond}
+			if p.Execute(context.Background(), []redis.MultiDBHealthCheck{late}, client) {
+				t.Fatal("a pass that arrived after the check's Timeout was accepted as healthy")
+			}
+			inTime := &latePassCheck{cfg: HealthCheckConfig{Probes: 1, Timeout: time.Second}}
+			if !p.Execute(context.Background(), []redis.MultiDBHealthCheck{inTime}, client) {
+				t.Fatal("an in-time pass was rejected")
+			}
+		})
+	}
+}

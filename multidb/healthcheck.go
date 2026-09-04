@@ -247,7 +247,11 @@ func runProbesAllMustPass(ctx context.Context, hc redis.MultiDBHealthCheck, prob
 	defer cancel()
 
 	for i := 0; i < cfg.Probes; i++ {
-		if ok, _ := probe(ctx, hc); !ok {
+		ok, _ := probe(ctx, hc)
+		// A pass that arrives after the check's Timeout does not count:
+		// the timeout bounds how long a healthy member may take to answer,
+		// and a check that ignores ctx can otherwise return true late.
+		if !ok || ctx.Err() != nil {
 			return false
 		}
 		if i < cfg.Probes-1 && cfg.Delay > 0 {
@@ -277,7 +281,12 @@ func runProbesMajority(ctx context.Context, hc redis.MultiDBHealthCheck, probe p
 	successes := 0
 
 	for i := 0; i < cfg.Probes; i++ {
-		if ok, _ := probe(ctx, hc); ok {
+		ok, _ := probe(ctx, hc)
+		if ok && ctx.Err() != nil {
+			// Late pass (see runProbesAllMustPass): counts as a failure.
+			ok = false
+		}
+		if ok {
 			successes++
 			if successes >= requiredSuccesses {
 				return true
@@ -306,7 +315,13 @@ func runProbesAny(ctx context.Context, hc redis.MultiDBHealthCheck, probe probeF
 	defer cancel()
 
 	for i := 0; i < cfg.Probes; i++ {
-		if ok, _ := probe(ctx, hc); ok {
+		ok, _ := probe(ctx, hc)
+		if ctx.Err() != nil {
+			// Late pass (see runProbesAllMustPass): does not count, and no
+			// probe after the timeout can.
+			return false
+		}
+		if ok {
 			return true
 		}
 		if i < cfg.Probes-1 && cfg.Delay > 0 {
