@@ -928,7 +928,19 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		// Pass req.writtenAt as the operation start so the duration metric spans the
 		// initial FD write, not just this diverted attempt (the attempt count already
 		// includes the FD attempt).
-		err := fd.client.processStartingAt(rctx, req.cmd, startAttempt, req.writtenAt)
+		// Register this retry goroutine as the batch's executor for the call, mirroring
+		// reportReplyMetrics: a custom RecordOperationDuration callback inside
+		// processStartingAt that reads its own command (cmd.Err()/cmd.String()) awaits
+		// batch.done, which req.complete() closes only AFTER this returns — so without the
+		// guard the callback wedges this goroutine and Close waits for the backstop. On the
+		// executor goroutine the accessor hands back the just-set view instead. The reader's
+		// reply-side guard does not cover this off-pipe retry path.
+		err := func() error {
+			if req.batch != nil {
+				defer req.batch.enterNodeDispatch()()
+			}
+			return fd.client.processStartingAt(rctx, req.cmd, startAttempt, req.writtenAt)
+		}()
 		req.cmd.SetErr(err)
 		req.complete()
 	}()
