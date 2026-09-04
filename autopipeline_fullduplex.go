@@ -1178,6 +1178,30 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 		}
 	}()
 
+	// Panic boundary for the ACQUISITION/INITIALIZATION phase. initPooledConn runs
+	// user-controlled init (Options.OnConnect, credentials providers); a panic there
+	// would otherwise escape the sole fd.run goroutine and crash the process, and the
+	// release defer above — seeing the zero-value result (fdGraceful) — would Put the
+	// half-initialized conn back into the pool. Registered AFTER that defer so it runs
+	// FIRST (LIFO): retire the leased conn (Remove), set cn=nil so the release defer is a
+	// no-op, and return the carry as fdLeaseErr — the SAME disposition an initPooledConn
+	// error gets below, so run() applies the lease-retry budget and fails accepted work
+	// fast on a deterministic panic instead of poisoning the pool. A session-body panic
+	// is contained by session()'s own recover, which returns fdConnErr normally, so this
+	// boundary fires only for the lease/init phase (and as a last-resort backstop).
+	defer func() {
+		if r := recover(); r != nil {
+			aerr = fmt.Errorf("%w: full-duplex attempt: %v", errFDPanicRecovered, r)
+			internal.Logger.Printf(bg, "autopipeline: recovered full-duplex attempt panic: %v\n%s", r, debug.Stack())
+			if cn != nil {
+				connPool.Remove(bg, cn, aerr)
+				cn = nil
+			}
+			unacked = carry
+			result = fdLeaseErr
+		}
+	}()
+
 	// initCtx: initialize with the SESSION-INITIATING caller's context (values only,
 	// via WithoutCancel), not context.Background(). A CredentialsProviderContext
 	// derives credentials from context values, and Background made those invisible so
@@ -1353,7 +1377,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// advances past it now. Per-caller ordering is NOT promised across this
 				// divert (same exception as the blocking-command divert); NoRetry commands
 				// keep their error.
-				if e != nil && !req.cmd.NoRetry() {
+				if e != nil && !fdNoRetrySafe(req.cmd) {
 					moved, ask, _ := isMovedError(e)
 					// Do NOT divert a redirect. FD is enabled only for a standalone
 					// *Client, whose normal path cannot follow a MOVED/ASK — it neither
@@ -1411,6 +1435,32 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				failOnce(rerr)
 				return
 			}
+		}
+	}()
+
+	// Panic boundary for the WRITER path. The reader goroutine above has its own recover;
+	// the writer (this goroutine) runs writeCarryChunked, the serve loop and the
+	// Close-backlog flush with no top-level recover, so an unguarded user-code panic (a
+	// Cmder Args()/encoder, a Limiter, a metrics callback) would kill the sole fd.run
+	// goroutine and leave attempt()'s defer to Put a live conn. Registered AFTER the
+	// reader is spawned, so readerDone is guaranteed to close. On a panic, run the
+	// fdConnErr teardown (stop the reader, wait it out, recover the unacked tail) and
+	// return fdConnErr NORMALLY, so attempt()'s release defer Removes the desynced conn
+	// and run() replays the eligible tail (errFDPanicRecovered is replayable, bounded by
+	// each command's own attempt budget). The known sizing/limiter/metrics panics are
+	// already contained at their sites (cmdApproxBytesSafe, fdBatchEndSafe, fdAllow,
+	// reportReplyMetrics); this backstop guarantees the goroutine survives any other.
+	defer func() {
+		if r := recover(); r != nil {
+			e := fmt.Errorf("%w: full-duplex session: %v", errFDPanicRecovered, r)
+			internal.Logger.Printf(bg, "autopipeline: recovered full-duplex session writer panic: %v\n%s", r, debug.Stack())
+			failOnce(e)
+			inflight.hardClose()
+			_ = cn.Close()
+			<-readerDone
+			unacked = fd.settleTail(inflight.takeRemaining(), e)
+			result = fdConnErr
+			aerr = e
 		}
 	}()
 
@@ -1881,6 +1931,40 @@ func fdBatchEnd(reqs []fdReq, start, maxBatch int, byteLimit int64) int {
 	return end
 }
 
+// fdBatchEndSafe is fdBatchEnd with a per-command recover. cmd.Args() (used by
+// cmdApproxBytes) is user code and may panic. A carried chunk can include commands
+// that never passed the serve loop's cmdApproxBytesSafe admission — the session-start
+// command taken straight from fd.ch and the Close backlog drained by takeQueue — so a
+// deterministic panicking Args() can reach here; it must be contained WITHOUT tearing
+// down a healthy connection (nothing in the chunk is written yet, so the conn is not
+// desynced). On a panic it returns the clean prefix end (start..end, end>=start) and
+// bad = the index of the offending command, plus the wrapped error; the caller writes
+// [start:end), fails+drops carry[bad], and resumes at bad+1. bad == -1 means the whole
+// chunk sized cleanly.
+func fdBatchEndSafe(reqs []fdReq, start, maxBatch int, byteLimit int64) (end, bad int, err error) {
+	end, bad = start, -1
+	idx := start // the command currently being sized; the recover reports it as bad
+	defer func() {
+		if r := recover(); r != nil {
+			end, bad = idx, idx // clean prefix is [start:idx); idx is what panicked
+			err = fmt.Errorf("%w: Args: %v", errFDPanicRecovered, r)
+			internal.Logger.Printf(context.Background(),
+				"autopipeline: recovered full-duplex carry Args() panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	bytes := cmdApproxBytes(reqs[start].cmd)
+	end = start + 1
+	for end < len(reqs) && end-start < maxBatch {
+		if byteLimit > 0 && bytes >= byteLimit {
+			break
+		}
+		idx = end
+		bytes += cmdApproxBytes(reqs[end].cmd)
+		end++
+	}
+	return end, -1, nil
+}
+
 // writeCarryChunked re-issues a recovered tail on a fresh connection in the same
 // capped chunks as freshly drained work (see fdBatchEnd), so a large recovered
 // window is not flushed in one oversized write.
@@ -1990,33 +2074,48 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 				lim = room
 			}
 		}
-		// Carry re-sizing uses cmd.Args() (user code) with no recover here on
-		// purpose: the carried commands ALREADY passed the serve-loop sizing
-		// (cmdApproxBytesSafe) that admitted them, so a deterministic panicking
-		// Args() was dropped there and never reaches carry. Guarding here would only
-		// catch a non-deterministic Args() that panics on re-size but not on the
-		// original size — a deeper contract violation — and only by tearing the
-		// session down, which discards a HEALTHY connection (nothing is written yet,
-		// so the conn is not desynced). The contract (see AddHook / a Cmder's Args)
-		// requires deterministic, panic-free Args(); we do not damage a good conn to
-		// paper over a triple violation.
-		end := fdBatchEnd(carry, i, lim, byteLimit)
-		if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
-			// writeBatch pushed carry[i:end] into inflight before the failed write (it
-			// was attempted — at-least-once — so the serialized prefix keeps its bumped count), but
-			// the suffix carry[end:] was never pushed. Push it too, or it sits in neither
-			// fd.ch nor inflight and its callers hang: on fdConnErr takeRemaining replays
-			// it, on Close the caller fails it. It is only ever settled via failReqs or
-			// replayed — never completed inline by the reader — so its zero writtenAt
-			// never reaches the write→reply metric. carry[end:] was NEVER written, so
-			// refund its optimistic attempt bump here; the never-serialized tail of
-			// carry[i:end] (behind an encoder panic) is refunded by writeBatch itself, so
-			// only its serialized prefix keeps the charge.
-			if end < len(carry) {
-				fdRefundUnsentAttempt(carry[end:])
-				inflight.pushBatch(carry[end:])
+		// Carry re-sizing uses cmd.Args() (user code), guarded by fdBatchEndSafe. A
+		// carried chunk CAN include commands that never passed the serve loop's
+		// cmdApproxBytesSafe admission — the session-start command taken straight from
+		// fd.ch (run() blocks on the first command and hands it in as carry) and the
+		// Close backlog drained by takeQueue — so a deterministic panicking Args() can
+		// reach here. Contain it WITHOUT tearing the session down: nothing in this chunk
+		// is written yet, so the conn is healthy. Fail+drop just the offending command
+		// (like the serve loop's sizing guard) and resume with the rest, instead of
+		// killing the engine goroutine and letting attempt()'s defer Put a live conn.
+		// The contract (see AddHook / a Cmder's Args) still requires deterministic,
+		// panic-free Args(); this only stops one bad command from stranding a whole
+		// accepted backlog.
+		end, bad, sizeErr := fdBatchEndSafe(carry, i, lim, byteLimit)
+		if end > i {
+			if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
+				// writeBatch pushed carry[i:end] into inflight before the failed write (it
+				// was attempted — at-least-once — so the serialized prefix keeps its bumped count), but
+				// the suffix carry[end:] was never pushed. Push it too, or it sits in neither
+				// fd.ch nor inflight and its callers hang: on fdConnErr takeRemaining replays
+				// it, on Close the caller fails it. It is only ever settled via failReqs or
+				// replayed — never completed inline by the reader — so its zero writtenAt
+				// never reaches the write→reply metric. carry[end:] was NEVER written, so
+				// refund its optimistic attempt bump here; the never-serialized tail of
+				// carry[i:end] (behind an encoder panic) is refunded by writeBatch itself, so
+				// only its serialized prefix keeps the charge.
+				if end < len(carry) {
+					fdRefundUnsentAttempt(carry[end:])
+					inflight.pushBatch(carry[end:])
+				}
+				return nil, e
 			}
-			return nil, e
+		}
+		if bad >= 0 {
+			// carry[bad] (== carry[end]) panicked while sizing. It was never written and
+			// is not in inflight, so failing it here cannot double-complete it. Refund the
+			// optimistic attempt bump (run() charged the whole carry a send before
+			// re-issuing it), fail just this command, and resume past it — the healthy
+			// conn keeps serving the rest of the carry.
+			fdRefundUnsentAttempt(carry[bad : bad+1])
+			fd.failReqs(carry[bad:bad+1], sizeErr)
+			i = bad + 1
+			continue
 		}
 		i = end
 	}
@@ -2072,6 +2171,24 @@ func fdFirstNoRetrySafe(reqs []fdReq) (n int, panicked bool) {
 		}
 	}()
 	return fdFirstNoRetry(reqs), false
+}
+
+// fdNoRetrySafe wraps a single cmd.NoRetry() call with a recover. On the reader's
+// reply path NoRetry() is consulted AFTER the reply has already been consumed but
+// BEFORE the request is counted complete; a custom Cmder whose NoRetry() panics there
+// would otherwise reach the reader's session-failure recover, which treats the request
+// as an unacked tail and REPLAYS it — running an already-answered mutating command
+// twice. Recover locally and report the command as non-retryable (true) so the caller
+// surfaces the already-landed reply inline and never diverts or replays it.
+func fdNoRetrySafe(cmd Cmder) (noRetry bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(),
+				"autopipeline: recovered full-duplex NoRetry() panic: %v\n%s", r, debug.Stack())
+			noRetry = true
+		}
+	}()
+	return cmd.NoRetry()
 }
 
 // fdRecoverTail builds an fdConnErr recovery set from a drained unacked tail and

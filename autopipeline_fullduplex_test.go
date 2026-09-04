@@ -3128,6 +3128,197 @@ func TestFDLimiterReportPanicOnReplyDoesNotReplay(t *testing.T) {
 	}
 }
 
+// fdRecordPool is a minimal pool.Pooler that hands out one preset conn and records
+// Put/Remove, so a test can assert an init-panicked conn is Removed and never Put.
+type fdRecordPool struct {
+	pool.Pooler
+	conn    *pool.Conn
+	gets    atomic.Int64
+	puts    atomic.Int64
+	removes atomic.Int64
+}
+
+func (p *fdRecordPool) Get(context.Context) (*pool.Conn, error) { p.gets.Add(1); return p.conn, nil }
+func (p *fdRecordPool) Put(context.Context, *pool.Conn)         { p.puts.Add(1) }
+func (p *fdRecordPool) Remove(context.Context, *pool.Conn, error) {
+	p.removes.Add(1)
+}
+
+// fdPanicInitConn is a net.Conn whose I/O panics, so the init handshake in
+// initPooledConn panics rather than returning an error.
+type fdPanicInitConn struct{ mockNetConn }
+
+func (fdPanicInitConn) Write([]byte) (int, error) { panic("test: net.Conn Write panic during init") }
+func (fdPanicInitConn) Read([]byte) (int, error)  { panic("test: net.Conn Read panic during init") }
+
+// TestFDAttemptInitPanicRetiresConnFailsLease pins the 1218 fix: a panic during the
+// acquisition/initialization phase (initPooledConn -> OnConnect/handshake) must be
+// recovered in attempt, the leased conn RETIRED (Removed, never Put back
+// half-initialized), and the carry returned as fdLeaseErr — the same disposition an
+// init error gets — instead of crashing the sole engine goroutine.
+//
+// Red-check: remove attempt's recover defer — the panic escapes fd.run (process crash)
+// and the release defer, seeing the zero-value result, Puts the poisoned conn.
+func TestFDAttemptInitPanicRetiresConnFailsLease(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cn := pool.NewConn(&fdPanicInitConn{})
+	p := &fdRecordPool{conn: cn}
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: ctx},
+		client:   &Client{baseClient: &baseClient{opt: &Options{DialTimeout: time.Second, ReadTimeout: time.Second, WriteTimeout: time.Second}}},
+		pool:     p,
+		maxBatch: 1,
+		window:   100,
+	}
+	carry := []fdReq{{cmd: NewStatusCmd(ctx, "get", "k"), attempts: 1}}
+
+	unacked, result, aerr := fd.attempt(context.Background(), carry)
+
+	if result != fdLeaseErr {
+		t.Fatalf("result = %v; want fdLeaseErr (init panic disposed like an init error)", result)
+	}
+	if !errors.Is(aerr, errFDPanicRecovered) {
+		t.Fatalf("aerr = %v; want it to wrap errFDPanicRecovered (a recover fired)", aerr)
+	}
+	// Prove it was ATTEMPT's boundary (init phase), not session's writer backstop:
+	// attempt wraps with "full-duplex attempt:", session with "full-duplex session:".
+	if !strings.Contains(aerr.Error(), "full-duplex attempt:") {
+		t.Fatalf("aerr = %v; want attempt's recover (prefix 'full-duplex attempt:')", aerr)
+	}
+	if p.removes.Load() != 1 {
+		t.Fatalf("removes = %d; want 1 (the half-initialized conn must be Removed)", p.removes.Load())
+	}
+	if p.puts.Load() != 0 {
+		t.Fatalf("puts = %d; want 0 (a panicked-init conn must NEVER be Put back)", p.puts.Load())
+	}
+	if len(unacked) != len(carry) {
+		t.Fatalf("unacked = %d; want %d (carry returned for the lease-retry budget)", len(unacked), len(carry))
+	}
+}
+
+// TestFDReaderNoRetryPanicSurfacesInlineNoReplay pins the 1356 fix: the reply-path
+// NoRetry() consult runs AFTER the reply has already landed. A panicking custom
+// NoRetry() there must be recovered (fdNoRetrySafe treats it as non-retryable) so the
+// reply is surfaced INLINE — never diverted/replayed, which would re-run an
+// already-answered (possibly mutating) command.
+//
+// Red-check: revert line ~1356 to `!req.cmd.NoRetry()` — the panic reaches the reader's
+// session recover, the command is recovered as an unacked tail, and either the command
+// never completes (hangs below) or session returns it for replay (reqs != 0).
+func TestFDReaderNoRetryPanicSurfacesInlineNoReplay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: ctx},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, ReadTimeout: time.Second, MaxRetries: 3}}},
+		maxBatch: 1,
+		window:   100,
+	}
+	done := make(chan struct{})
+	cmd := panicNoRetryCmd{NewStatusCmd(ctx, "get", "k")}
+	carry := []fdReq{{cmd: cmd, hookDone: done, attempts: 1}}
+	// A RETRYABLE reply error (a normal command would divert to the client's normal
+	// path with MaxRetries>0). The panicking NoRetry() must be contained, so the reply
+	// is surfaced inline instead.
+	cn := pool.NewConn(newFDCannedReplyConn([]byte("-LOADING Redis is loading the dataset in memory\r\n")))
+
+	type sess struct {
+		reqs   []fdReq
+		result fdResult
+		err    error
+	}
+	res := make(chan sess, 1)
+	go func() { r, rs, e := fd.session(context.Background(), cn, carry); res <- sess{r, rs, e} }()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("command never completed — the NoRetry() panic killed the reader (replay/loss)")
+	}
+	if cmd.Err() == nil {
+		t.Fatal("command Err() = nil; want the LOADING reply surfaced inline")
+	}
+	cancel()
+	var got sess
+	select {
+	case got = <-res:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session hung after cancel — the engine did not converge")
+	}
+	if len(got.reqs) != 0 {
+		t.Fatalf("session returned %d reqs for replay, want 0 (an answered command must not be re-executed)", len(got.reqs))
+	}
+}
+
+// TestFDCarryArgsPanicDropsCommandKeepsSession pins the 2003 fix: a carry command whose
+// Args() panics during sizing (the session-start command / Close backlog never passed
+// the serve loop's admission) is failed+dropped without tearing the session down — the
+// other carried commands still complete on the HEALTHY connection.
+//
+// Red-check: replace fdBatchEndSafe with the unguarded fdBatchEnd — the panic escapes
+// the engine goroutine and every command below hangs (the process would crash in prod).
+func TestFDCarryArgsPanicDropsCommandKeepsSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: ctx},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, ReadTimeout: time.Second}}},
+		maxBatch: 1,
+		window:   100,
+	}
+	g0 := NewStatusCmd(ctx, "get", "k0")
+	g2 := NewStatusCmd(ctx, "get", "k2")
+	bad := panicArgsCmd{NewStatusCmd(ctx, "get", "bad")}
+	d0, d1, d2 := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	carry := []fdReq{
+		{cmd: g0, hookDone: d0, attempts: 1},
+		{cmd: bad, hookDone: d1, attempts: 1},
+		{cmd: g2, hookDone: d2, attempts: 1},
+	}
+	// Only the two GOOD commands are written and get replies; the middle command's
+	// Args() panics during sizing and is failed+dropped.
+	cn := pool.NewConn(newFDCannedReplyConn([]byte("+OK\r\n+OK\r\n")))
+
+	type sess struct {
+		reqs   []fdReq
+		result fdResult
+		err    error
+	}
+	res := make(chan sess, 1)
+	go func() { r, rs, e := fd.session(context.Background(), cn, carry); res <- sess{r, rs, e} }()
+
+	for i, d := range []chan struct{}{d0, d1, d2} {
+		select {
+		case <-d:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("carry command %d never completed — a carry Args() panic stranded the session", i)
+		}
+	}
+	if g0.Err() != nil || g0.Val() != "OK" {
+		t.Errorf("g0: err=%v val=%q; want OK", g0.Err(), g0.Val())
+	}
+	if g2.Err() != nil || g2.Val() != "OK" {
+		t.Errorf("g2: err=%v val=%q; want OK", g2.Err(), g2.Val())
+	}
+	if err := bad.Err(); err == nil || !errors.Is(err, errFDPanicRecovered) {
+		t.Errorf("bad: err=%v; want it to wrap errFDPanicRecovered (failed+dropped)", err)
+	}
+	cancel()
+	var got sess
+	select {
+	case got = <-res:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session hung after cancel — the engine did not converge")
+	}
+	if got.result != fdGraceful {
+		t.Fatalf("session result = %v; want fdGraceful (the conn stayed healthy — a carry Args panic must not desync it)", got.result)
+	}
+	if len(got.reqs) != 0 {
+		t.Fatalf("session returned %d reqs; want 0", len(got.reqs))
+	}
+}
+
 // TestFDLimiterReportPanicOnWriteFailureNoCrash pins the write-side half of the
 // finding: writeBatch's report defer settles the chunk's obligation with the write
 // error via fdLimiterReport.settle. A panicking ReportResult there must be contained

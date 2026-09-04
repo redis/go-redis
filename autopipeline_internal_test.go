@@ -2318,6 +2318,51 @@ func TestFdFirstNoRetrySafeRecoversScanPanic(t *testing.T) {
 	}
 }
 
+// fdNoRetrySafe wraps the reader's reply-path NoRetry() call. A panic there (after the
+// reply already landed) must be recovered and reported as non-retryable (true), so the
+// reply is surfaced inline instead of the reader's session recover replaying an
+// already-answered command.
+func TestFDNoRetrySafeRecoversPanic(t *testing.T) {
+	ctx := context.Background()
+	base := NewStatusCmd(ctx, "get", "k")
+	if got, want := fdNoRetrySafe(base), base.NoRetry(); got != want {
+		t.Fatalf("clean NoRetry(): got %v, want %v (must pass through)", got, want)
+	}
+	if !fdNoRetrySafe(panicNoRetryCmd{NewStatusCmd(ctx, "get", "k")}) {
+		t.Fatal("panicking NoRetry(): got false, want true (treat as non-retryable)")
+	}
+}
+
+// fdBatchEndSafe sizes a carry chunk with a per-command recover. A panicking Args()
+// must NOT tear the session down: it returns the clean prefix end and the offending
+// index so writeCarryChunked writes the good prefix, fails+drops the bad command, and
+// resumes — keeping the healthy connection.
+func TestFDBatchEndSafeRecoversArgsPanic(t *testing.T) {
+	ctx := context.Background()
+	good := func() fdReq { return fdReq{cmd: NewStatusCmd(ctx, "get", "k")} }
+	bad := func() fdReq { return fdReq{cmd: panicArgsCmd{NewStatusCmd(ctx, "get", "k")}} }
+
+	// Clean chunk: no panic, bad == -1, end == len.
+	clean := []fdReq{good(), good(), good()}
+	if end, b, err := fdBatchEndSafe(clean, 0, 8, 0); end != len(clean) || b != -1 || err != nil {
+		t.Fatalf("clean: end=%d bad=%d err=%v; want end=%d bad=-1 err=nil", end, b, err, len(clean))
+	}
+	// Panic at the chunk start (index 0): empty clean prefix, bad == 0.
+	atStart := []fdReq{bad(), good()}
+	if end, b, err := fdBatchEndSafe(atStart, 0, 8, 0); end != 0 || b != 0 || !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("panic at start: end=%d bad=%d err=%v; want end=0 bad=0 err~errFDPanicRecovered", end, b, err)
+	}
+	// Panic in the middle (index 1): clean prefix [0:1), bad == 1.
+	mid := []fdReq{good(), bad(), good()}
+	if end, b, err := fdBatchEndSafe(mid, 0, 8, 0); end != 1 || b != 1 || !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("panic in middle: end=%d bad=%d err=%v; want end=1 bad=1 err~errFDPanicRecovered", end, b, err)
+	}
+	// Resuming past the bad index sizes the rest cleanly.
+	if end, b, err := fdBatchEndSafe(mid, 2, 8, 0); end != 3 || b != -1 || err != nil {
+		t.Fatalf("resume after bad: end=%d bad=%d err=%v; want end=3 bad=-1 err=nil", end, b, err)
+	}
+}
+
 // newFDEngine resolves zero tuning fields to their defaults and must publish them
 // back so Config() reports what the engine actually enforces, not the raw 0 the
 // caller passed. Needs a server only because the engine's run loop leases a
