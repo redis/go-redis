@@ -1403,3 +1403,29 @@ func TestCircuitBreaker_FailureAfterSettlingSuccessIsReclassified(t *testing.T) 
 		t.Fatalf("failures=%d, want at least 1: the failure outcome was not counted", got)
 	}
 }
+
+// The open-timeout clock is the breaker's own monotonic clock, not the wall
+// clock: a wall-clock step (NTP, VM restore) must not stretch or shrink the
+// grace period. Driven through the injectable clock: advancing it past
+// OpenTimeout, with no real time passing, is what moves Open to HalfOpen.
+func TestCircuitBreaker_OpenTimeoutUsesMonotonicClock(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(1)
+	prev := nowNano
+	nowNano = clock.Load
+	t.Cleanup(func() { nowNano = prev })
+
+	cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1, OpenTimeout: time.Hour})
+	cb.RecordFailure()
+	if got := cb.CheckState(); got != StateOpen {
+		t.Fatalf("state=%v right after opening, want open", got)
+	}
+	// One hour on the breaker's clock, no wall-clock time at all.
+	clock.Add(int64(time.Hour) + 1)
+	if got := cb.CheckState(); got != StateHalfOpen {
+		t.Fatalf("state=%v after the grace period on the breaker's clock, want half-open: the grace period is not keyed off nowNano", got)
+	}
+	if cb.Stats().LastFailureTime.IsZero() {
+		t.Fatal("LastFailureTime is zero after a recorded failure")
+	}
+}

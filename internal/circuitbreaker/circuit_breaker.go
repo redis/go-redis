@@ -98,7 +98,7 @@ type CircuitBreaker struct {
 	failures    atomic.Int32
 	successes   atomic.Int32
 	requests    atomic.Int32 // Request count in half-open state
-	lastFailure atomic.Int64 // Unix nano timestamp
+	lastFailure atomic.Int64 // nowNano() stamp (monotonic), 0 = none
 	// generation is bumped on every Open->HalfOpen transition, so a reservation
 	// (see AllowReserve) taken in one half-open episode can be recognized as
 	// stale if it tries to settle after the circuit has cycled through Open and
@@ -141,6 +141,18 @@ func New(config Config) *CircuitBreaker {
 	return cb
 }
 
+// cbEpoch anchors the breaker's clock. time.Since reads Go's monotonic
+// clock, so open-timeout math keeps working when the wall clock steps (an
+// NTP correction, a VM restore). With wall-clock stamps a backwards step
+// made "now - lastFailure" negative and held an open breaker open, with no
+// way for probes to recover it, until the wall clock caught up.
+var cbEpoch = time.Now()
+
+// nowNano returns the monotonic clock in nanoseconds since cbEpoch. It is
+// never 0: lastFailure uses 0 for "no failure recorded". A variable so tests
+// can drive the clock without sleeping.
+var nowNano = func() int64 { return int64(time.Since(cbEpoch)) + 1 }
+
 // State returns the current state without triggering any transitions.
 func (cb *CircuitBreaker) State() State {
 	return State(cb.state.Load())
@@ -154,7 +166,7 @@ func (cb *CircuitBreaker) CheckState() State {
 		// Guard against a zero timestamp (no failure recorded yet) so we don't
 		// treat the Unix epoch as the last failure and transition immediately.
 		lastFailure := cb.lastFailure.Load()
-		if lastFailure != 0 && time.Now().UnixNano()-lastFailure >= int64(cb.config.OpenTimeout) {
+		if lastFailure != 0 && nowNano()-lastFailure >= int64(cb.config.OpenTimeout) {
 			cb.transitionMu.Lock()
 			cb.maybeHalfOpenLocked()
 			cb.transitionMu.Unlock()
@@ -180,7 +192,7 @@ func (cb *CircuitBreaker) maybeHalfOpenLocked() {
 	// probe the endpoint early.
 	lastFailure := cb.lastFailure.Load()
 	if State(cb.state.Load()) != StateOpen ||
-		lastFailure == 0 || time.Now().UnixNano()-lastFailure < int64(cb.config.OpenTimeout) {
+		lastFailure == 0 || nowNano()-lastFailure < int64(cb.config.OpenTimeout) {
 		return
 	}
 	// Clear the half-open counters and advance the generation BEFORE the CAS
@@ -276,7 +288,7 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 	// case — keep it lock-free. Only the half-open lifecycle takes the lock.
 	if state == StateOpen {
 		lastFailure := cb.lastFailure.Load()
-		if lastFailure == 0 || time.Now().UnixNano()-lastFailure < int64(cb.config.OpenTimeout) {
+		if lastFailure == 0 || nowNano()-lastFailure < int64(cb.config.OpenTimeout) {
 			return false, Reservation{}
 		}
 	}
@@ -384,7 +396,7 @@ func (cb *CircuitBreaker) RecordFailureFor(r Reservation) {
 		// lock-free success side.
 		cb.transitionMu.Lock()
 		if r.gen == cb.generation.Load() && State(cb.state.Load()) == StateClosed {
-			cb.lastFailure.Store(time.Now().UnixNano())
+			cb.lastFailure.Store(nowNano())
 			if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
 				cb.openFromClosedLocked()
 			}
@@ -396,7 +408,7 @@ func (cb *CircuitBreaker) RecordFailureFor(r Reservation) {
 	// generation check; a stale reservation records nothing.
 	cb.transitionMu.Lock()
 	if r.gen == cb.generation.Load() {
-		cb.lastFailure.Store(time.Now().UnixNano())
+		cb.lastFailure.Store(nowNano())
 		cb.recordFailureHalfOpenLocked()
 	}
 	cb.transitionMu.Unlock()
@@ -474,7 +486,7 @@ func (cb *CircuitBreaker) RecordFailureForReset(gen uint64) {
 	if cb.resetGen.Load() != gen {
 		return
 	}
-	cb.lastFailure.Store(time.Now().UnixNano())
+	cb.lastFailure.Store(nowNano())
 	switch State(cb.state.Load()) {
 	case StateClosed:
 		if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
@@ -536,7 +548,7 @@ func (cb *CircuitBreaker) recordSuccessHalfOpenLocked(heldSlot bool) {
 
 // RecordFailure records a failed operation.
 func (cb *CircuitBreaker) RecordFailure() {
-	cb.lastFailure.Store(time.Now().UnixNano())
+	cb.lastFailure.Store(nowNano())
 	switch State(cb.state.Load()) {
 	case StateClosed:
 		// Hot path: count lock-free, take the lock only to open at the threshold.
@@ -572,7 +584,7 @@ func (cb *CircuitBreaker) openFromClosedLocked() {
 		// this CAS wiped lastFailure; repair it (CAS so a concurrent newer
 		// failure's timestamp is kept), or the zero-timestamp guard in
 		// CheckState would wedge the circuit open.
-		cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
+		cb.lastFailure.CompareAndSwap(0, nowNano())
 		stats := cb.Stats()
 		cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateClosed, StateOpen, stats) })
 		// successes/requests are 0 in Closed already; reset defensively so the
@@ -590,7 +602,7 @@ func (cb *CircuitBreaker) recordFailureHalfOpenLocked() {
 	switch State(cb.state.Load()) {
 	case StateHalfOpen:
 		if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateOpen)) {
-			cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
+			cb.lastFailure.CompareAndSwap(0, nowNano())
 			stats := cb.Stats()
 			cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateHalfOpen, StateOpen, stats) })
 			cb.successes.Store(0)
@@ -614,7 +626,7 @@ func (cb *CircuitBreaker) ForceOpen() {
 	// the swap. Otherwise the swap could publish Open with lastFailure == 0,
 	// which CheckState refuses to advance to half-open, wedging the circuit open
 	// forever past OpenTimeout.
-	cb.lastFailure.Store(time.Now().UnixNano())
+	cb.lastFailure.Store(nowNano())
 	// Swap, capturing the old state for the callback; skip the notify (and the
 	// counter clear) if it was already Open, so a redundant ForceOpen is a no-op.
 	old := State(cb.state.Swap(int32(StateOpen)))
@@ -700,7 +712,7 @@ func (cb *CircuitBreaker) Stats() Stats {
 	lastFailure := cb.lastFailure.Load()
 	var lastFailureTime time.Time
 	if lastFailure > 0 {
-		lastFailureTime = time.Unix(0, lastFailure)
+		lastFailureTime = cbEpoch.Add(time.Duration(lastFailure - 1))
 	}
 
 	return Stats{
