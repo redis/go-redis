@@ -14,26 +14,24 @@ var semTimers = sync.Pool{
 	},
 }
 
-// putSemTimer returns a timer to the pool, draining any pending fire first so a
-// later Reset-and-reuse cannot deliver a stale timeout.
+// putSemTimer stops a pooled timer and drains a stale fire before reuse,
+// portably across both timer-channel semantics (the drain must never block):
 //
-// The drain is UNCONDITIONAL. Stop's return value cannot decide whether a fire
-// is pending: it reports false for an already-expired timer, but a fire can also
-// settle into the channel while Stop runs, and Stop can report true in that
-// window. The earlier code gated the drain on `!t.Stop()` and skipped it when
-// Stop returned true, so a timer holding an undelivered fire went back to the
-// pool dirty; the next Acquire's select then read that stale value as an instant
-// timeout. Observed in CI on Go 1.24 (oldstable, GODEBUG unset) as a spurious
-// timeout in TestFIFOSemaphoreNoStaleTimerFire (semaphore_test.go).
-//
-// The non-blocking select/default is safe under both timer-channel semantics and
-// never hangs: after Stop the timer is disarmed, so at most one fire can be
-// pending; if none is pending the default branch runs.
+//   - main module on go >= 1.23 (synchronous channels): Stop returns TRUE for
+//     an expired-but-undelivered fire — the delivery is aborted — and false
+//     only once the value was actually received. With the sole receiver
+//     being Acquire's own select, the drain branch is unreachable; the
+//     select-with-default is a safety net so a future semantics shift cannot
+//     turn it into a blocking receive (reviewed on #3942).
+//   - GODEBUG=asynctimerchan=1 (consumer main module on go < 1.23, old
+//     buffered channels): Stop returns false and the fired value sits in the
+//     buffer; the drain consumes it so the timer is clean for Reset-reuse.
 func putSemTimer(t *time.Timer) {
-	t.Stop()
-	select {
-	case <-t.C:
-	default:
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
 	}
 	semTimers.Put(t)
 }
