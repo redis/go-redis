@@ -781,18 +781,22 @@ func (c *MultiDBClient) SSubscribe(ctx context.Context, channels ...string) *Pub
 	// is being torn down: the MultiDB PubSub path below fails dials with
 	// the terminal ErrClosed instead.
 	if !c.core.closed.Load() {
-		db := c.activeAfterGate(ctx)
-		if db != nil && db.cc != nil {
+		// A gate failure (the active is rejected and nothing can replace it)
+		// falls through to the follower below rather than pinning the
+		// subscription to the rejected member: the follower re-dials on the
+		// next active change, so it recovers when a member does.
+		db, err := c.activeAfterGate(ctx)
+		if err == nil && db != nil && db.cc != nil {
 			return db.cc.SSubscribe(ctx, channels...)
 		}
-		if db != nil {
+		if err == nil && db != nil {
 			return db.c.SSubscribe(ctx, channels...)
 		}
 	}
-	// No active database (or closed): return a PubSub that fails to
-	// connect — with the requested channels registered, like Subscribe and
-	// PSubscribe, so the failure surfaces on use instead of silently
-	// subscribing to nothing.
+	// No active database (or closed, or gate failure): return a PubSub that
+	// fails to connect — with the requested channels registered, like
+	// Subscribe and PSubscribe, so the failure surfaces on use instead of
+	// silently subscribing to nothing.
 	pubsub := c.core.newPubSub()
 	if len(channels) > 0 {
 		_ = pubsub.SSubscribe(ctx, channels...)

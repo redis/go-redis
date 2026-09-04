@@ -2269,6 +2269,66 @@ func TestMultiDBRemoveDatabaseClosesClientOutsideFailoverLock(t *testing.T) {
 	}
 }
 
+// When the active is rejected by the gate and no member can replace it, a
+// cluster control command must fail with the gate's verdict, not run against
+// the rejected member.
+func TestMultiDBClusterControlCommandsDoNotRunOnRejectedMember(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{
+			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	mdb.core.dbs[0].cb.ForceOpen()
+
+	err = mdb.DBSize(ctx).Err()
+	if err == nil {
+		t.Fatal("DBSize succeeded against a member whose breaker is open")
+	}
+	if !errors.Is(err, ErrTemporarilyNotAvailable) && !errors.Is(err, ErrPermanentlyNotAvailable) {
+		t.Fatalf("DBSize error = %v, want the gate's unavailability verdict (the command was sent to the rejected member)", err)
+	}
+}
+
+// When the active is rejected and nothing can replace it, SSubscribe must not
+// pin the subscription to the rejected member: it falls back to the follower,
+// which re-dials on the next active change.
+func TestMultiDBSSubscribeFallsBackToFollowerWhenGateRejects(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{
+			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	mdb.core.dbs[0].cb.ForceOpen()
+
+	ps := mdb.SSubscribe(ctx, "ch")
+	t.Cleanup(func() { _ = ps.Close() })
+	// Only the MultiDB follower carries a per-connection processor lookup; a
+	// member's own PubSub does not.
+	if ps.processorFor == nil {
+		t.Fatal("SSubscribe returned a PubSub pinned to the rejected member; want the follower")
+	}
+}
+
 // A PubSub handshake (initConn) that fails with the pool's ErrClosed on a
 // member removed meanwhile must be translated like the dial before it: the
 // channel loops treat ErrClosed as terminal, and the subscription must re-dial

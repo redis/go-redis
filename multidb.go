@@ -752,7 +752,7 @@ func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	if db := c.activeClusterAfterGate(ctx); db != nil {
+	if db, err := c.activeClusterAfterGate(ctx); err == nil && db != nil {
 		res := db.cc.DBSize(ctx)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
@@ -766,27 +766,33 @@ func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 // bind work to a member already known to be unhealthy. No half-open probe
 // slot is reserved and no outcome is recorded: the callers (cluster control
 // commands, sharded subscriptions) are not health-representative traffic.
-// Returns nil when there is no active member.
-func (c *MultiDBClient) activeAfterGate(ctx context.Context) *multidbDatabase {
+// Returns (nil, nil) when there is no active member, and the failover error
+// when the active was rejected and no member could replace it: the rejected
+// member is never handed back, so the caller does not bind work to it.
+func (c *MultiDBClient) activeAfterGate(ctx context.Context) (*multidbDatabase, error) {
 	db, idx := c.core.activeSnapshot()
 	if db != nil && (!db.selectable() || c.core.shouldFailoverSafely()) {
-		// A failed failover (no selectable candidate) keeps the current
-		// active: the operation then fails against it, as any command would.
-		if err := c.core.tryFailover(ctx, idx); err == nil {
-			db, _ = c.core.activeSnapshot()
+		if err := c.core.tryFailover(ctx, idx); err != nil {
+			return nil, err
 		}
+		db, _ = c.core.activeSnapshot()
 	}
-	return db
+	return db, nil
 }
 
 // activeClusterAfterGate is activeAfterGate restricted to a cluster member:
-// it returns nil when the active is not one, and the caller then takes the
-// regular hook-wrapped path (see DBSize).
-func (c *MultiDBClient) activeClusterAfterGate(ctx context.Context) *multidbDatabase {
-	if db := c.activeAfterGate(ctx); db != nil && db.cc != nil {
-		return db
+// it returns nil when the active is not one. On nil the caller takes the
+// regular hook-wrapped path (see DBSize), which repeats the gate verdict as
+// the command's error when the failover failed.
+func (c *MultiDBClient) activeClusterAfterGate(ctx context.Context) (*multidbDatabase, error) {
+	db, err := c.activeAfterGate(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	if db != nil && db.cc != nil {
+		return db, nil
+	}
+	return nil, nil
 }
 
 // ScriptLoad delegates to the active member so a cluster member loads the
@@ -798,7 +804,7 @@ func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCm
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	if db := c.activeClusterAfterGate(ctx); db != nil {
+	if db, err := c.activeClusterAfterGate(ctx); err == nil && db != nil {
 		res := db.cc.ScriptLoad(ctx, script)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
@@ -814,7 +820,7 @@ func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	if db := c.activeClusterAfterGate(ctx); db != nil {
+	if db, err := c.activeClusterAfterGate(ctx); err == nil && db != nil {
 		res := db.cc.ScriptFlush(ctx)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
@@ -836,7 +842,7 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	if db := c.activeClusterAfterGate(ctx); db != nil {
+	if db, err := c.activeClusterAfterGate(ctx); err == nil && db != nil {
 		res := db.cc.ScriptExists(ctx, hashes...)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
