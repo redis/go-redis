@@ -2263,3 +2263,91 @@ func TestCloseLoserReturnsImmediatelyWaitClosedBlocks(t *testing.T) {
 		t.Fatal("WaitClosed did not return after closeDone closed")
 	}
 }
+
+// panicArgsCmd is a Cmder whose Args() panics. It embeds a real Cmder so every
+// other method is promoted. Used to drive the full-duplex sizing recover.
+type panicArgsCmd struct{ Cmder }
+
+func (panicArgsCmd) Args() []interface{} { panic("test: Args panic") }
+
+// panicNoRetryCmd is a Cmder whose NoRetry() panics, for the retry-classification
+// recover.
+type panicNoRetryCmd struct{ Cmder }
+
+func (panicNoRetryCmd) NoRetry() bool { panic("test: NoRetry panic") }
+
+// A custom Cmder's Args() runs on the full-duplex writer's recover-less serve
+// loop when sizing a batch. cmdApproxBytesSafe must convert a panic there into an
+// error (wrapping errFDPanicRecovered) so the caller can drop the one command
+// instead of crashing the engine.
+func TestCmdApproxBytesSafeRecoversArgsPanic(t *testing.T) {
+	ctx := context.Background()
+	if n, err := cmdApproxBytesSafe(NewStatusCmd(ctx, "get", "k")); err != nil || n <= 0 {
+		t.Fatalf("clean sizing: n=%d err=%v; want n>0, err=nil", n, err)
+	}
+	n, err := cmdApproxBytesSafe(panicArgsCmd{NewStatusCmd(ctx, "get", "k")})
+	if err == nil {
+		t.Fatal("panicking Args(): want error, got nil")
+	}
+	if !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("panicking Args(): err=%v; want it to wrap errFDPanicRecovered", err)
+	}
+	if n != 0 {
+		t.Fatalf("panicking Args(): n=%d; want 0", n)
+	}
+}
+
+// A custom Cmder's NoRetry() runs on the same recover-less serve loop during the
+// retry-classification scan. fdFirstNoRetrySafe must report the panic (not crash)
+// so the caller declines to replay and fails the tail conservatively.
+func TestFdFirstNoRetrySafeRecoversScanPanic(t *testing.T) {
+	ctx := context.Background()
+	clean := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k", "v")},
+		{cmd: NewStatusCmd(ctx, "set", "k", "v")},
+	}
+	if n, panicked := fdFirstNoRetrySafe(clean); panicked || n != len(clean) {
+		t.Fatalf("clean scan: n=%d panicked=%v; want n=%d panicked=false", n, panicked, len(clean))
+	}
+	bad := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k", "v")},
+		{cmd: panicNoRetryCmd{NewStatusCmd(ctx, "get", "k")}, sent: true},
+	}
+	if n, panicked := fdFirstNoRetrySafe(bad); !panicked || n != 0 {
+		t.Fatalf("panicking scan: n=%d panicked=%v; want n=0 panicked=true", n, panicked)
+	}
+}
+
+// newFDEngine resolves zero tuning fields to their defaults and must publish them
+// back so Config() reports what the engine actually enforces, not the raw 0 the
+// caller passed. Needs a server only because the engine's run loop leases a
+// connection; Config() itself is filled synchronously at construction.
+func TestNewFDEnginePublishesResolvedDefaults(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+	cfg := ap.Config()
+	if cfg.FullDuplexWindow != fdDefaultWindow {
+		t.Errorf("FullDuplexWindow=%d; want the default %d", cfg.FullDuplexWindow, fdDefaultWindow)
+	}
+	if cfg.FullDuplexIdleTimeout != fdDefaultIdle {
+		t.Errorf("FullDuplexIdleTimeout=%s; want the default %s", cfg.FullDuplexIdleTimeout, fdDefaultIdle)
+	}
+	if cfg.FullDuplexMaxHold != fdDefaultMaxHold {
+		t.Errorf("FullDuplexMaxHold=%s; want the default %s", cfg.FullDuplexMaxHold, fdDefaultMaxHold)
+	}
+	if cfg.MaxBatchSize != 200 {
+		t.Errorf("MaxBatchSize=%d; want the default 200", cfg.MaxBatchSize)
+	}
+}

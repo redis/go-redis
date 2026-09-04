@@ -157,8 +157,11 @@ type fdReq struct {
 	// ctx is the caller's submit context, kept so the per-command OTel metric can
 	// be recorded against it (span/baggage correlation), mirroring process().
 	ctx context.Context
-	// writtenAt is stamped when the command is flushed to the wire; the reader
-	// uses write→reply as the command's operation duration for the OTel metric.
+	// writtenAt is stamped at the command's FIRST flush to the wire and kept across
+	// replays; the reader uses write→reply as the command's operation duration for
+	// the OTel metric. Anchoring on the first write (not the last replay) makes the
+	// duration span the whole retry sequence, matching the normal command path,
+	// instead of timing only the final attempt.
 	writtenAt time.Time
 	// attempts counts how many times this command has been issued: 1 at submit,
 	// incremented on each connection-error replay of the carried tail. Fed to the
@@ -543,19 +546,22 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	if w <= 0 {
 		w = fdDefaultWindow
 	}
-	// Publish the resolved window so Config() reports the value actually enforced
-	// (0 -> default). Runs once at construction before ap escapes newAutoPipeliner,
-	// so no Config() reader races this write. idle/maxHold/maxBatch are resolved
-	// locally too but not written back; the finding scopes this to the window.
+	// Publish every resolved value so Config() reports what the engine actually
+	// enforces (a zero field -> its default), not the raw 0 the user passed. Runs
+	// once at construction before ap escapes newAutoPipeliner, so no Config() reader
+	// races these writes. Validate rejects negatives. (MaxBatchSize is already
+	// defaulted upstream in newAutoPipeliner, so it needs no write-back here.)
 	ap.config.FullDuplexWindow = w
 	idle := ap.config.FullDuplexIdleTimeout
 	if idle <= 0 {
 		idle = fdDefaultIdle
 	}
+	ap.config.FullDuplexIdleTimeout = idle
 	maxHold := ap.config.FullDuplexMaxHold
 	if maxHold <= 0 {
 		maxHold = fdDefaultMaxHold
 	}
+	ap.config.FullDuplexMaxHold = maxHold
 	// The submit queue does not need window-sized storage. Backpressure comes from
 	// the in-flight deque, which grows only with ACTUAL in-flight, while a buffered
 	// channel allocates its full capacity up front: several MiB per engine at the
@@ -870,8 +876,19 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		if fd.curConnSpilled.Load() {
 			// slot stays false: run slot-less, do NOT block the reader.
 		} else {
-			fd.retrySem <- struct{}{}
-			slot = true
+			// Block for a slot, but stay cancellable. A Close that arrives while
+			// the reader is parked here must not deadlock: cancelAndDrain waits on
+			// the reader to advance the deque, and the reader is the goroutine
+			// blocked on this send. On ctx cancel, FAIL ErrClosed (same as the
+			// ctx.Done arm above) rather than park forever.
+			select {
+			case fd.retrySem <- struct{}{}:
+				slot = true
+			case <-fd.ap.ctx.Done():
+				req.cmd.SetErr(ErrClosed)
+				req.complete()
+				return
+			}
 		}
 	}
 	fd.retryWg.Add(1)
@@ -1089,8 +1106,12 @@ func (fd *fdEngine) run() {
 				// never-sent NoRetry stays in the replay prefix — issuing it is its first
 				// send (see fdReq.sent). With a sent NoRetry at the eligible head (n==0)
 				// nothing ahead of it is retryable, so fall through and fail whatever
-				// eligible remains (exhausted was already failed above).
-				if n := fdFirstNoRetry(eligible); n > 0 {
+				// eligible remains (exhausted was already failed above). If the scan
+				// itself panicked (a custom Cmder's NoRetry() is user code on this
+				// recover-less serve loop), we cannot classify the tail: skip the replay
+				// and fall through to fail it — a command that may be a sent NoRetry must
+				// never be re-sent when in doubt.
+				if n, scanPanic := fdFirstNoRetrySafe(eligible); !scanPanic && n > 0 {
 					if n < len(eligible) {
 						fd.failReqs(eligible[n:], aerr)
 					}
@@ -1486,7 +1507,19 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			select {
 			case req := <-fd.ch:
 				batch := append(scratch[:0], req)
-				batchBytes := cmdApproxBytes(req.cmd)
+				batchBytes, sizeErr := cmdApproxBytesSafe(req.cmd)
+				if sizeErr != nil {
+					// req.cmd.Args() panicked (custom Cmder) while sizing the batch, on
+					// this recover-less serve loop. Fail just that command and take the
+					// next: nothing was written and nothing is in flight, so dropping it
+					// here avoids letting it reach writeBatch, whose write-time recover
+					// would tear the whole session down and replay its batch-mates
+					// at-least-once. It is the only command in the batch, so skip the flush.
+					// Do not resetIdle: a dropped command is not session activity, and the
+					// idle timer firing normally is harmless.
+					fd.failReqs(batch, sizeErr)
+					continue
+				}
 				// Cap this batch by the REMAINING window room, not just MaxBatchSize:
 				// the gate above only ensures in-flight < window before draining, so a
 				// window smaller than MaxBatchSize would let one drain blow through it
@@ -1508,7 +1541,17 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					select {
 					case r := <-fd.ch:
 						batch = append(batch, r)
-						batchBytes += cmdApproxBytes(r.cmd)
+						rb, sizeErr := cmdApproxBytesSafe(r.cmd)
+						if sizeErr != nil {
+							// r.cmd.Args() panicked while sizing. Fail just r, DROP it from
+							// the batch, and flush the good prefix accumulated so far. Failing
+							// it while leaving it in batch would double-complete it: writeBatch
+							// would push it into inflight and the reader would settle it again.
+							fd.failReqs(batch[len(batch)-1:], sizeErr)
+							batch = batch[:len(batch)-1]
+							break drain
+						}
+						batchBytes += rb
 					default:
 						break drain
 					}
@@ -1794,7 +1837,9 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	now := time.Now()
 	err = cn.WithWriter(bg, fd.client.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for i := range reqs {
-			reqs[i].writtenAt = now
+			if reqs[i].writtenAt.IsZero() {
+				reqs[i].writtenAt = now // first write anchors the duration; replays keep it
+			}
 			reqs[i].sent = true
 			written = i + 1 // reached this command this call (attempt-local; see refund defer)
 			if e := writeCmd(wr, reqs[i].cmd); e != nil {
@@ -1945,6 +1990,16 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 				lim = room
 			}
 		}
+		// Carry re-sizing uses cmd.Args() (user code) with no recover here on
+		// purpose: the carried commands ALREADY passed the serve-loop sizing
+		// (cmdApproxBytesSafe) that admitted them, so a deterministic panicking
+		// Args() was dropped there and never reaches carry. Guarding here would only
+		// catch a non-deterministic Args() that panics on re-size but not on the
+		// original size — a deeper contract violation — and only by tearing the
+		// session down, which discards a HEALTHY connection (nothing is written yet,
+		// so the conn is not desynced). The contract (see AddHook / a Cmder's Args)
+		// requires deterministic, panic-free Args(); we do not damage a good conn to
+		// paper over a triple violation.
 		end := fdBatchEnd(carry, i, lim, byteLimit)
 		if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
 			// writeBatch pushed carry[i:end] into inflight before the failed write (it
@@ -1999,6 +2054,24 @@ func fdFirstNoRetry(reqs []fdReq) int {
 		}
 	}
 	return len(reqs)
+}
+
+// fdFirstNoRetrySafe wraps fdFirstNoRetry with a recover. cmd.NoRetry() may be a
+// custom Cmder's user code, and the retry-classification scan runs on run()'s
+// serve loop, which has no top-level recover — a panic there would kill the
+// engine and strand every in-flight and future command. On panic it returns
+// panicked=true; the caller then declines to replay and fails the tail (the
+// conservative choice: a command that cannot be classified as retryable, and may
+// be a sent NoRetry, must never be re-sent).
+func fdFirstNoRetrySafe(reqs []fdReq) (n int, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(),
+				"autopipeline: recovered full-duplex NoRetry() scan panic: %v\n%s", r, debug.Stack())
+			n, panicked = 0, true
+		}
+	}()
+	return fdFirstNoRetry(reqs), false
 }
 
 // fdRecoverTail builds an fdConnErr recovery set from a drained unacked tail and

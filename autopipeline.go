@@ -1392,6 +1392,16 @@ func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
 
 // AddHook adds a hook to the underlying client. Autopipelined batches are hooked
 // too, since dispatch goes through the hook-wrapped pipeline entry.
+//
+// Hook contract (behavior is undefined otherwise):
+//   - Call next. A hook that returns without calling next drops the command.
+//   - Do not call Close, or any other control method, on this AutoPipeliner or its
+//     client from inside a hook. A hook runs on the engine's dispatch goroutine; a
+//     Close from there would wait on the very drain it is part of (the re-entrant
+//     Close is detected and returns without waiting, but the command still fails).
+//   - Do not panic. A panic in a batch hook is recovered so it cannot crash the
+//     process, but the affected batch fails.
+//   - Do not mutate client or connection state.
 func (ap *AutoPipeliner) AddHook(hook Hook) { ap.pipeliner.AddHook(hook) }
 
 // The four commands below have CLUSTER-WIDE overrides on ClusterClient
@@ -2012,13 +2022,18 @@ func (ap *AutoPipeliner) Close() error {
 	// waiters exactly once (even if the drain panics).
 	defer close(ap.closeDone)
 
-	// Detach this engine's shared-pool close hook: it is closing now, so its
-	// per-engine callback must not linger in the shared onClose registry (bounded
-	// registrations; no stale cancel on a later sharer close). Only the full Close
-	// detaches — the hook's own cancelAndDrain path deliberately leaves ap.closed
-	// false, so a later owner Close still reaches here.
+	// Detach this engine's shared-pool close hook, but only AFTER the drain: a
+	// pool-sharing wrapper that closes the shared pool concurrently with this Close
+	// must still find the hook registered and block on this engine's shutdown flush
+	// (via the hook's cancelAndDrain, serialized by drainOnce) before the pools are
+	// torn down. Unregistering first would let the pool close race ahead of our
+	// flush and tear the pools down mid-write. Detach via defer so a drain panic
+	// does not leave the per-engine callback lingering in the shared onClose
+	// registry (bounded registrations; no stale cancel on a later sharer close).
+	// Only the full Close detaches — the hook's own cancelAndDrain path deliberately
+	// leaves ap.closed false, so a later owner Close still reaches here.
 	if ap.closeHooks != nil {
-		ap.closeHooks.unregister(ap.closeHookID)
+		defer ap.closeHooks.unregister(ap.closeHookID)
 	}
 	return ap.cancelAndDrain()
 }
@@ -3083,6 +3098,25 @@ func cmdApproxBytes(cmd Cmder) int64 {
 		n += perArgOverhead
 	}
 	return n
+}
+
+// cmdApproxBytesSafe wraps cmdApproxBytes with a recover. cmd.Args() is user code
+// for a custom Cmder and can panic; the full-duplex serve loop sizes each command
+// there with no top-level recover, so a panic would kill the engine and strand
+// every in-flight and future command. On panic it returns a non-nil error wrapping
+// errFDPanicRecovered so the caller can fail and DROP just that command before any
+// batch bytes are written — the alternative (letting it reach writeBatch, whose
+// write-time recover then tears the session down and replays the batch) forces
+// at-least-once re-execution of the poisoned command's innocent batch-mates.
+func cmdApproxBytesSafe(cmd Cmder) (n int64, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: Args() sizing: %v", errFDPanicRecovered, r)
+			internal.Logger.Printf(context.Background(),
+				"autopipeline: recovered full-duplex Args() sizing panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return cmdApproxBytes(cmd), nil
 }
 
 // Len returns the current number of queued commands across all shards.
