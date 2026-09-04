@@ -144,9 +144,7 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 				// The flag has no window semantics, so it is set regardless of
 				// the detector generation; only the detector write is gated.
 				c.successSinceFailover.Store(true)
-				if c.detectorGen.Load() == detectorGen {
-					c.detector.RecordSuccess()
-				}
+				c.recordDetectorSuccess(detectorGen)
 			}
 			recorded++
 		case outcomeFailure:

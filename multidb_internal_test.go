@@ -2684,6 +2684,45 @@ func TestMultiDBPubSubDropsPushesOnClosedConnection(t *testing.T) {
 	}
 }
 
+// resetInsideRecordSuccessFD is resetInsideRecordFD's success twin: its
+// RecordSuccess first resets the core's detector window, then counts the
+// success, as a pre-reset success arriving into the fresh window would.
+type resetInsideRecordSuccessFD struct {
+	core      *multidbCore
+	once      sync.Once
+	successes atomic.Int32
+}
+
+func (d *resetInsideRecordSuccessFD) RecordSuccess() {
+	d.once.Do(func() { d.core.resetDetectorSafely() })
+	d.successes.Add(1)
+}
+func (d *resetInsideRecordSuccessFD) RecordFailure(error)  {}
+func (d *resetInsideRecordSuccessFD) ShouldFailover() bool { return false }
+func (d *resetInsideRecordSuccessFD) Reset()               { d.successes.Store(0) }
+
+// A success whose detector window moved between the generation check and the
+// write must not survive in the fresh window either: many such stale
+// successes would dilute the new member's failure rate.
+func TestProcessDetectorSuccessAfterConcurrentResetIsWiped(t *testing.T) {
+	fd := &resetInsideRecordSuccessFD{}
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second, FailoverStrategy: WeightBasedFailoverStrategy{}, FailureDetector: fd})
+	fd.core = core
+	member := newLazyMember(0)
+	t.Cleanup(func() { _ = member.c.Close() })
+	pings := 0
+	member.c.AddHook(pongHook{pings: &pings})
+	core.dbs[0] = member
+	core.active.Store(0)
+
+	cmd := NewStatusCmd(context.Background(), "ping")
+	if err := core.process(context.Background(), cmd); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if got := fd.successes.Load(); got != 0 {
+		t.Fatalf("%d pre-reset success(es) survived in the detector's fresh window, want 0", got)
+	}
+}
 
 // An AddDatabase that aborts after taking failoverMu (caller context expired
 // while queued behind another control operation) must close the built client

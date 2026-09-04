@@ -777,6 +777,20 @@ func (c *multidbCore) recordDetectorFailure(gen uint64, err error) {
 	}
 }
 
+// recordDetectorSuccess is recordDetectorFailure's counterpart: a success
+// recorded into a window that moved during the write is wiped the same way,
+// so a burst of pre-reset successes cannot dilute the fresh window's failure
+// rate or clear state in a custom detector.
+func (c *multidbCore) recordDetectorSuccess(gen uint64) {
+	if c.detectorGen.Load() != gen {
+		return
+	}
+	c.detector.RecordSuccess()
+	if c.detectorGen.Load() != gen {
+		c.resetDetectorSafely()
+	}
+}
+
 // activeDatabaseID returns the stable id of the active database, or -1 when none is
 // selected.
 func (c *multidbCore) activeDatabaseID() int {
@@ -953,9 +967,7 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 				// the active counts — so it is set regardless of the detector
 				// generation; only the detector write is window-gated.
 				c.successSinceFailover.Store(true)
-				if c.detectorGen.Load() == dg {
-					c.detector.RecordSuccess()
-				}
+				c.recordDetectorSuccess(dg)
 			}
 			return err
 		case outcomeNeutral:
