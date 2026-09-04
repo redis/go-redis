@@ -96,21 +96,24 @@ func (cb *CircuitBreaker) IsOpen() bool {
 }
 
 // allowRequest reports whether a request should be allowed through and
-// whether the admission reserved a half-open probe slot (half-open
-// admissions are bounded by MaxHalfOpenRequests; closed admissions reserve
-// nothing). A reserved slot must be settled with a subsequent
-// recordSuccess/recordFailure, or released via releaseRequest when the
-// operation produced neither outcome — callers must consult reserved first,
-// or a handoff admitted while closed that outlives a later open -> half-open
-// transition would free a slot a real recovery probe is holding.
-func (cb *CircuitBreaker) allowRequest() (allowed, reserved bool) {
-	return cb.inner.Allow()
+// returns the admission's reservation. A half-open admission holds one of
+// the MaxHalfOpenRequests probe slots; a closed admission holds nothing
+// (res.Held() is false). The reservation must be settled with exactly one of
+// recordSuccess, recordFailure or releaseRequest. Settling through the
+// reservation, not through a flag, is what keeps a handoff that outlives an
+// open -> half-open cycle (possible when CircuitBreakerResetTimeout is
+// shorter than HandoffTimeout) from touching the new episode: a stale
+// reservation settles nothing.
+func (cb *CircuitBreaker) allowRequest() (allowed bool, res circuitbreaker.Reservation) {
+	return cb.inner.AllowReserve()
 }
 
-// releaseRequest returns a half-open slot reserved by allowRequest when the
-// operation completed without a recordable success or failure.
-func (cb *CircuitBreaker) releaseRequest() {
-	cb.inner.ReleaseHalfOpen()
+// releaseRequest gives back the admission when the operation produced
+// neither a recordable success nor a failure. It frees a half-open slot only
+// for the episode the reservation belongs to, and is a no-op for a closed
+// admission or a stale reservation.
+func (cb *CircuitBreaker) releaseRequest(res circuitbreaker.Reservation) {
+	cb.inner.ReleaseFor(res)
 }
 
 // Execute runs the given function with circuit breaker protection
@@ -128,22 +131,20 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 	return err
 }
 
-// recordFailure records a failure (for external use when not using Execute)
-func (cb *CircuitBreaker) recordFailure() {
-	cb.inner.RecordFailure()
+// recordFailure settles the admission with a failure. A stale reservation
+// (the circuit cycled open -> half-open since the admission) records nothing,
+// so an old handoff cannot re-open a new recovery episode.
+func (cb *CircuitBreaker) recordFailure(res circuitbreaker.Reservation) {
+	cb.inner.RecordFailureFor(res)
 }
 
-// recordSuccess records a success (for external use when not using Execute).
-// reserved must be the flag allowRequest returned for this operation's
-// admission: a closed-state admission holds no half-open slot, so its
-// success must count toward closing without releasing one.
-func (cb *CircuitBreaker) recordSuccess(reserved bool) {
+// recordSuccess settles the admission with a success. A half-open admission
+// counts toward closing and releases its slot; a closed admission clears the
+// failure count while still in the same closed episode; a stale reservation
+// records nothing.
+func (cb *CircuitBreaker) recordSuccess(res circuitbreaker.Reservation) {
 	cb.lastSuccessTime.Store(time.Now().Unix())
-	if reserved {
-		cb.inner.RecordSuccess()
-	} else {
-		cb.inner.RecordExternalSuccess()
-	}
+	cb.inner.RecordSuccessFor(res)
 }
 
 // GetState returns the current state of the circuit breaker

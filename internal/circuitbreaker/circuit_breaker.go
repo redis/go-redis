@@ -306,6 +306,12 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 	return true, Reservation{gen: gen, held: true, settled: new(atomic.Bool)}
 }
 
+// Held reports whether the reservation holds a half-open probe slot (a
+// half-open admission) rather than being a slot-less closed admission.
+func (r Reservation) Held() bool {
+	return r.held
+}
+
 // RecordSuccessFor settles a successful outcome for a reservation from
 // AllowReserve. A half-open reservation releases (or, at SuccessThreshold,
 // closes on) its slot at most once, and only while it is still the current
@@ -748,26 +754,21 @@ func (cb *CircuitBreaker) Stats() Stats {
 // Execute runs the given function with circuit breaker protection.
 // Returns ErrCircuitOpen if the circuit is open and not ready for testing.
 func (cb *CircuitBreaker) Execute(fn func() error) error {
-	allowed, reserved := cb.Allow()
+	// Settle through the reservation, so an fn that outlives an open ->
+	// half-open cycle settles nothing against the new episode: neither a
+	// failure that would re-open it, nor a success that would count toward
+	// closing it or free a slot it never held.
+	allowed, res := cb.AllowReserve()
 	if !allowed {
 		return ErrCircuitOpen
 	}
 
 	err := fn()
 	if err != nil {
-		cb.RecordFailure()
+		cb.RecordFailureFor(res)
 		return err
 	}
-
-	if reserved {
-		cb.RecordSuccess()
-	} else {
-		// Admitted while closed: no slot was reserved, so the success must
-		// not release one — fn can outlive a later open -> half-open
-		// transition, and RecordSuccess would free a slot a real recovery
-		// probe is holding.
-		cb.RecordExternalSuccess()
-	}
+	cb.RecordSuccessFor(res)
 	return nil
 }
 

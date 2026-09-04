@@ -240,24 +240,78 @@ func TestAllowRequestReportsReservation(t *testing.T) {
 	cb := newCircuitBreaker("test-endpoint:6379", config)
 
 	// Closed admission: allowed, nothing reserved.
-	allowed, reserved := cb.allowRequest()
-	if !allowed || reserved {
-		t.Fatalf("closed: allowRequest() = (%v, %v), want (true, false)", allowed, reserved)
+	allowed, closedRes := cb.allowRequest()
+	if !allowed || closedRes.Held() {
+		t.Fatalf("closed: allowRequest() = (%v, held=%v), want (true, false)", allowed, closedRes.Held())
 	}
 
 	// While that handoff runs: a failure opens the breaker, the reset
 	// timeout elapses, and a recovery probe reserves the only slot.
-	cb.recordFailure()
+	_, failing := cb.allowRequest()
+	cb.recordFailure(failing)
 	time.Sleep(50 * time.Millisecond)
-	if allowed, reserved := cb.allowRequest(); !allowed || !reserved {
-		t.Fatalf("half-open: allowRequest() = (%v, %v), want (true, true)", allowed, reserved)
+	if allowed, probe := cb.allowRequest(); !allowed || !probe.Held() {
+		t.Fatalf("half-open: allowRequest() = (%v, held=%v), want (true, true)", allowed, probe.Held())
 	}
 
-	// The closed-admitted handoff finishes with an init error; the worker
-	// skips releaseRequest because reserved was false. The probe's slot
-	// must still be held.
+	// The closed-admitted handoff finishes with an init error and gives its
+	// admission back. That admission held no slot, so the probe's slot must
+	// still be held.
+	cb.releaseRequest(closedRes)
 	if allowed, _ := cb.allowRequest(); allowed {
 		t.Error("a second half-open admission succeeded — the probe slot was freed")
+	}
+}
+
+// A handoff admitted while closed can outlive an open -> half-open cycle when
+// the reset timeout is shorter than the handoff timeout. Its settlement must
+// not touch the new episode: a stale success must not count toward closing,
+// and a stale failure must not re-open it.
+func TestCircuitBreakerStaleAdmissionDoesNotSettleNewEpisode(t *testing.T) {
+	config := &Config{
+		CircuitBreakerFailureThreshold: 1,
+		CircuitBreakerResetTimeout:     30 * time.Millisecond,
+		CircuitBreakerMaxRequests:      1,
+	}
+	cb := newCircuitBreaker("test-endpoint:6379", config)
+
+	// A long handoff admitted while closed.
+	_, stale := cb.allowRequest()
+
+	// Meanwhile: another handoff fails and opens the breaker, the reset
+	// timeout elapses, and a recovery probe is admitted (new episode).
+	_, failing := cb.allowRequest()
+	cb.recordFailure(failing)
+	time.Sleep(50 * time.Millisecond)
+	allowed, probe := cb.allowRequest()
+	if !allowed || !probe.Held() || cb.GetState() != CircuitBreakerHalfOpen {
+		t.Fatalf("expected a half-open probe admission, got allowed=%v held=%v state=%v", allowed, probe.Held(), cb.GetState())
+	}
+
+	// The stale handoff succeeds: it must not close the circuit the probe
+	// is still testing.
+	cb.recordSuccess(stale)
+	if got := cb.GetState(); got != CircuitBreakerHalfOpen {
+		t.Fatalf("state=%v after a stale closed-admission success, want half-open: the stale settlement closed the new episode", got)
+	}
+	// The probe's own success closes it.
+	cb.recordSuccess(probe)
+	if got := cb.GetState(); got != CircuitBreakerClosed {
+		t.Fatalf("state=%v after the probe's success, want closed", got)
+	}
+
+	// And a stale failure from before the cycle must not re-open the
+	// freshly closed circuit either.
+	_, oldFail := cb.allowRequest()
+	_, again := cb.allowRequest()
+	cb.recordFailure(again)
+	time.Sleep(50 * time.Millisecond)
+	if _, p := cb.allowRequest(); !p.Held() {
+		t.Fatal("expected a new half-open episode")
+	}
+	cb.recordFailure(oldFail)
+	if got := cb.GetState(); got != CircuitBreakerHalfOpen {
+		t.Fatalf("state=%v after a stale failure, want half-open (stale failure must not re-open)", got)
 	}
 }
 
