@@ -2014,3 +2014,65 @@ func TestBackgroundPassFailsOverBeforeProbingPassives(t *testing.T) {
 		}
 	}
 }
+
+// intReplyHook answers every command with a fixed integer and never dials.
+type intReplyHook struct {
+	val   int64
+	calls *atomic.Int32
+}
+
+func (intReplyHook) DialHook(next DialHook) DialHook { return next }
+func (h intReplyHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		h.calls.Add(1)
+		if ic, ok := cmd.(*IntCmd); ok {
+			ic.SetVal(h.val)
+		}
+		return nil
+	}
+}
+
+func (intReplyHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+// Cluster control commands (DBSize, Script*) bypass the hook chain, but not
+// the admission gate: an active cluster member whose breaker is open must be
+// failed over before the command is sent, like any other command.
+func TestMultiDBClusterControlCommandsFailOverOpenActive(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{
+			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	if got := mdb.core.activeDatabaseID(); got != 0 {
+		t.Fatalf("active = %d, want the cluster member (0)", got)
+	}
+	var calls atomic.Int32
+	mdb.core.dbs[1].c.AddHook(intReplyHook{val: 42, calls: &calls})
+
+	// The cluster member is now known-unhealthy.
+	mdb.core.dbs[0].cb.ForceOpen()
+
+	res := mdb.DBSize(ctx)
+	if err := res.Err(); err != nil {
+		t.Fatalf("DBSize: %v (sent to the open cluster member instead of failing over)", err)
+	}
+	if res.Val() != 42 || calls.Load() == 0 {
+		t.Fatalf("DBSize = %d (standalone hook calls %d), want 42 from the failed-over member", res.Val(), calls.Load())
+	}
+	if got := mdb.core.activeDatabaseID(); got != 1 {
+		t.Errorf("active = %d after the control command, want 1", got)
+	}
+}

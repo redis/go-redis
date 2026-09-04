@@ -703,18 +703,43 @@ func (c *MultiDBClient) PSubscribe(ctx context.Context, patterns ...string) *Pub
 // often a partial/single-shard condition for which moving the whole member
 // off is the wrong response (e.g. re-loading a script on a different member).
 // Member health is driven by the data path, which does feed the accounting.
+// The active is still admitted like any command, though: one whose breaker
+// is open, or whose failure detector has tripped, is failed over BEFORE the
+// command is sent (see activeClusterAfterGate).
 func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 	if c.core.closed.Load() {
 		cmd := NewIntCmd(ctx, "dbsize")
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
+	if db := c.activeClusterAfterGate(ctx); db != nil {
 		res := db.cc.DBSize(ctx)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
 	return c.cmdable.DBSize(ctx)
+}
+
+// activeClusterAfterGate returns the active member when it is a cluster
+// member, after the admission the data path applies to every command: an
+// active whose breaker is open, or whose failure detector has tripped, is
+// failed over first, so a control command is not sent to a member already
+// known to be unhealthy. No half-open probe slot is reserved and no outcome
+// is recorded (see DBSize for why). It returns nil when the active is not a
+// cluster member, and the caller then takes the regular hook-wrapped path.
+func (c *MultiDBClient) activeClusterAfterGate(ctx context.Context) *multidbDatabase {
+	db, idx := c.core.activeSnapshot()
+	if db != nil && (!db.selectable() || c.core.shouldFailoverSafely()) {
+		// A failed failover (no selectable candidate) keeps the current
+		// active: the command then fails against it, as any command would.
+		if err := c.core.tryFailover(ctx, idx); err == nil {
+			db, _ = c.core.activeSnapshot()
+		}
+	}
+	if db == nil || db.cc == nil {
+		return nil
+	}
+	return db
 }
 
 // ScriptLoad delegates to the active member so a cluster member loads the
@@ -726,7 +751,7 @@ func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCm
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
+	if db := c.activeClusterAfterGate(ctx); db != nil {
 		res := db.cc.ScriptLoad(ctx, script)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
@@ -742,7 +767,7 @@ func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
+	if db := c.activeClusterAfterGate(ctx); db != nil {
 		res := db.cc.ScriptFlush(ctx)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
@@ -764,7 +789,7 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
+	if db := c.activeClusterAfterGate(ctx); db != nil {
 		res := db.cc.ScriptExists(ctx, hashes...)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
