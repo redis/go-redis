@@ -2090,12 +2090,23 @@ func (c *multidbCore) newPubSub() *PubSub {
 	// member's handlers (maintenance notifications, for one) must see its
 	// pushes. The owner map is the same one closeConn uses; a member's
 	// processor never changes after the client is built.
+	// The owner decides both halves of the push gate: whether the connection
+	// speaks RESP3 at all, and which processor handles its pushes. A PubSub
+	// created while a RESP2 member was active must still dispatch the pushes
+	// of a RESP3 member it re-dials to after a failover, and the reverse
+	// must not decode RESP2 traffic as pushes.
 	pubsub.processorFor = func(cn *pool.Conn) push.NotificationProcessor {
 		ownersMu.Lock()
 		owner := owners[cn]
 		ownersMu.Unlock()
-		if owner != nil && owner.pushProcessor != nil {
+		if owner != nil {
+			if owner.opt.Protocol != 3 {
+				return nil
+			}
 			return owner.pushProcessor
+		}
+		if pubsub.opt.Protocol != 3 {
+			return nil
 		}
 		return pubsub.pushProcessor
 	}
@@ -2108,11 +2119,10 @@ func (c *multidbCore) newPubSub() *PubSub {
 	// time, and deliberately not refreshed on failover: PubSub reads opt
 	// outside its mutex (e.g. the RESP3 push gate on the receive path), so
 	// swapping it at re-dial time would be a data race. Each connection is
-	// still initialized through the owning member's own initConn/handshake;
-	// only PubSub-level knobs (write timeout on subscribe frames, the
-	// Protocol gate for push processing) keep the creation-time values —
-	// configure members with matching Protocol when mixing them under one
-	// MultiDB client.
+	// still initialized through the owning member's own initConn/handshake,
+	// and push processing (the RESP3 gate and the processor) follows the
+	// connection's owner through processorFor below; only the PubSub-level
+	// write timeout on subscribe frames keeps the creation-time value.
 	if db, _ := c.activeSnapshot(); db != nil && db.c != nil {
 		optCopy := *db.c.opt
 		pubsub.opt = &optCopy

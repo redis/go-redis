@@ -2515,13 +2515,16 @@ func TestMultiDBTrackedAutopipelinersDropDrainedReferences(t *testing.T) {
 }
 
 // A push arriving on a MultiDB PubSub connection is handled by the push
-// processor of the member that owns that connection. The creation-time
-// member's processor must not be used for a connection re-dialed through
-// another member after a failover.
+// processor of the member that owns that connection, and the RESP3 gate is
+// the owner's too. The creation-time member's processor and protocol must
+// not be used for a connection re-dialed through another member after a
+// failover: here the PubSub is created while a RESP2 member is active and
+// re-dials to a RESP3 member.
 func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
-	// A pipe whose far end answers every command with an empty array: the
-	// handshake's HELLO parses that as an empty map, which is all it needs.
-	// With identity disabled and no auth, HELLO is the only command sent.
+	// A pipe whose far end answers every command with an empty map (RESP3
+	// HELLO 3) or an empty array (RESP2): the handshake's HELLO parses either
+	// as an empty map, which is all it needs. With identity disabled and no
+	// auth, HELLO is the only command sent.
 	respDialer := func(context.Context, string, string) (net.Conn, error) {
 		c1, c2 := net.Pipe()
 		go func() {
@@ -2536,28 +2539,38 @@ func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
 					continue
 				}
 				n, _ := strconv.Atoi(strings.TrimSpace(line[1:]))
-				for i := 0; i < 2*n; i++ {
-					if _, err := rd.ReadString('\n'); err != nil {
+				var args []string
+				for i := 0; i < n; i++ {
+					if _, err := rd.ReadString('\n'); err != nil { // $len
 						return
 					}
+					arg, err := rd.ReadString('\n')
+					if err != nil {
+						return
+					}
+					args = append(args, strings.TrimSpace(arg))
 				}
-				if _, err := c2.Write([]byte("*0\r\n")); err != nil {
+				reply := "*0\r\n"
+				if len(args) >= 2 && strings.EqualFold(args[0], "hello") && args[1] == "3" {
+					reply = "%0\r\n"
+				}
+				if _, err := c2.Write([]byte(reply)); err != nil {
 					return
 				}
 			}
 		}()
 		return c1, nil
 	}
-	member := func(addr string) *Options {
-		return &Options{Addr: addr, Dialer: respDialer, Protocol: 2, DisableIdentity: true}
+	member := func(addr string, protocol int) *Options {
+		return &Options{Addr: addr, Dialer: respDialer, Protocol: protocol, DisableIdentity: true}
 	}
 	opts := &MultiDBOptions{
 		HealthCheckInterval:  time.Hour,
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{Options: member("127.0.0.1:1"), Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
-			{Options: member("127.0.0.1:2"), Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: member("127.0.0.1:1", 2), Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: member("127.0.0.1:2", 3), Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2573,27 +2586,31 @@ func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
 	a.pushProcessor = push.NewProcessor()
 	b.pushProcessor = push.NewProcessor()
 
+	// Created while the RESP2 member is active.
 	ps := mdb.core.newPubSub()
 	t.Cleanup(func() { _ = ps.Close() })
+	if ps.opt.Protocol != 2 {
+		t.Fatalf("PubSub creation-time protocol = %d, want 2 (member 0 is active)", ps.opt.Protocol)
+	}
 
 	cn, err := ps.newConn(ctx, "", nil)
 	if err != nil {
 		t.Fatalf("newConn on the active member: %v", err)
 	}
 	t.Cleanup(func() { _ = ps.closeConn(cn) })
-	if got := ps.processorForConn(cn); got != a.pushProcessor {
-		t.Fatalf("processor for a connection owned by member 0 is not member 0's")
+	if got := ps.pushProcessorFor(cn); got != nil {
+		t.Fatalf("pushes would be processed on a connection owned by the RESP2 member")
 	}
 
-	// Failover: the follower's next dial lands on member 1.
+	// Failover: the follower's next dial lands on member 1 (RESP3).
 	mdb.core.active.Store(1)
 	cn2, err := ps.newConn(ctx, "", nil)
 	if err != nil {
 		t.Fatalf("newConn after failover: %v", err)
 	}
 	t.Cleanup(func() { _ = ps.closeConn(cn2) })
-	if got := ps.processorForConn(cn2); got != b.pushProcessor {
-		t.Fatalf("pushes on a connection owned by member 1 would be handled by another member's processor (creation-time member: %v)", got == a.pushProcessor)
+	if got := ps.pushProcessorFor(cn2); got != b.pushProcessor {
+		t.Fatalf("pushes on a connection owned by the RESP3 member 1 are not dispatched to its processor (got nil: %v, creation-time member's: %v)", got == nil, got == a.pushProcessor)
 	}
 }
 

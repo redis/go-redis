@@ -625,18 +625,24 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 	return c.allCh.allCh
 }
 
-// processorForConn returns the push processor for pushes arriving on cn.
-func (c *PubSub) processorForConn(cn *pool.Conn) push.NotificationProcessor {
+// pushProcessorFor returns the processor for pushes arriving on cn, or nil
+// when pushes are not processed on that connection: no RESP3, or no
+// processor. With processorFor set (MultiDB), the connection's owner decides
+// both, since its protocol and its processor may differ from the ones this
+// PubSub was created with.
+func (c *PubSub) pushProcessorFor(cn *pool.Conn) push.NotificationProcessor {
 	if c.processorFor != nil {
 		return c.processorFor(cn)
+	}
+	if c.opt.Protocol != 3 {
+		return nil
 	}
 	return c.pushProcessor
 }
 
 func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
-	processor := c.processorForConn(cn)
-	// Only process push notifications for RESP3 connections with a processor
-	if c.opt.Protocol != 3 || processor == nil {
+	processor := c.pushProcessorFor(cn)
+	if processor == nil {
 		return nil
 	}
 
