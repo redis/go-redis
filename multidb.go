@@ -60,6 +60,9 @@ var (
 // The default implementation is a sliding-window detector that trips when at
 // least a minimum number of failures AND a minimum failure rate are observed
 // within the detection window.
+//
+// A detector is called from inside the command and failover paths and must
+// not call the control operations (see MultiDBCtrl).
 type MultiDBFailureDetector interface {
 	RecordSuccess()
 	RecordFailure(err error)
@@ -94,6 +97,9 @@ type MultiDBDatabaseState struct {
 // that candidate and Select is asked again with the remaining ones, until it
 // returns an allowed id or -1. An id that is not among the offered candidates
 // ends the selection with no target.
+//
+// Select runs under MultiDB's failover lock and must not call the control
+// operations (see MultiDBCtrl).
 type MultiDBFailoverStrategy interface {
 	Select(candidates []MultiDBDatabaseState) int
 }
@@ -379,6 +385,16 @@ func (cfg *MultiDBClientConfig) fqdn() string {
 // reused, so a handle held by the caller (or delivered to a callback) never
 // silently points at a different member. An id that names no current member
 // yields ErrDatabaseNotFound.
+//
+// Control operations (every method here, and Close) are for application code.
+// Do not call them from code that MultiDB runs on your behalf: hooks installed
+// with AddHook or AddDatabaseHook, health checks and health-check policies,
+// failover strategies and failure detectors. That code runs inside MultiDB's
+// command, probe and failover paths, in places under MultiDB's own locks or
+// while an admission is held, and a control call from there can deadlock or
+// corrupt the failover accounting. The asynchronous callbacks (OnFailover,
+// OnActiveDatabaseChanged, OnCircuitStateChanged) are the exception: they run
+// on their own queue and may call control operations.
 type MultiDBCtrl interface {
 	// ActiveDatabaseID returns the stable id of the currently active database,
 	// or -1 when none is selected.
@@ -526,10 +542,11 @@ func (c *MultiDBClient) Process(ctx context.Context, cmd Cmder) error {
 //     until that drain reaches its internal backstop, then reports a timeout:
 //     the drain is waiting for the batch whose hook is calling Close.
 //
-// Calling Close from a member hook on an ordinary (not autopipelined) command
-// is fine, as is calling it from OnFailover, OnActiveDatabaseChanged or
-// OnCircuitStateChanged — those callbacks run on a queue Close does not wait
-// for.
+// Calling Close from OnFailover, OnActiveDatabaseChanged or
+// OnCircuitStateChanged is fine: those callbacks run on a queue Close does not
+// wait for. Close is a control operation like the MultiDBCtrl methods, so the
+// rule there applies: do not call it from hooks, health checks, policies,
+// strategies or detectors.
 func (c *MultiDBClient) Close() error {
 	// Serialize concurrent Close calls. Without this a second caller can
 	// observe the autopipeliner pointers already cleared, skip the drain loop,
@@ -637,6 +654,10 @@ func (c *MultiDBClient) SetAutoFallback(enabled bool) {
 // delegates every connection to its member databases. To instrument member
 // dialing (or any other per-connection behaviour), install the hook on the
 // member with AddDatabaseHook instead.
+//
+// A hook must not call the control operations (the MultiDBCtrl methods, or
+// Close): see MultiDBCtrl. It runs inside the command path, and a control
+// call from there can deadlock or corrupt the failover accounting.
 func (c *MultiDBClient) AddHook(hook Hook) {
 	c.hooksMixin.AddHook(hook)
 }
@@ -644,6 +665,12 @@ func (c *MultiDBClient) AddHook(hook Hook) {
 // AddDatabaseHook installs a hook on the underlying client of the database with
 // the given id. Unlike AddHook it wraps the member connection directly, so it
 // is the way to instrument member dialing and per-connection behaviour.
+//
+// A member hook must not call the control operations (the MultiDBCtrl
+// methods, or Close): see MultiDBCtrl. It runs inside the member's command
+// path while MultiDB holds an admission for that command, and in the
+// autopipeliner's batch dispatch; a control call from there can deadlock or
+// corrupt the failover accounting.
 //
 // A member hook must pass the context it receives — or one derived from it —
 // to next. MultiDB carries per-batch execution tracking in context values:
