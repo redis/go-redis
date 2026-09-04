@@ -3128,6 +3128,48 @@ func TestFDLimiterReportPanicOnReplyDoesNotReplay(t *testing.T) {
 	}
 }
 
+// fdPanicErrorStr is an error whose Error() panics — models an error returned by a
+// custom Limiter whose stringification is buggy. classifyCommandError calls Error(), so
+// this exercises the classify-before-complete panic path.
+type fdPanicErrorStr struct{}
+
+func (fdPanicErrorStr) Error() string { panic("boom: error Error() panic") }
+
+// TestFDFailReqsClassifyPanicStillCompletes pins r3937450285: failReqs classifies the
+// error (err.Error(), user-reachable) BEFORE completing the chunk, which is not in the
+// in-flight queue, so a panic there would block every caller forever. The guarded
+// classification must contain it and still complete the requests.
+//
+// Red-check: revert classifyCommandErrorGuarded back to classifyCommandError — the panic
+// escapes failReqs and the command below never completes (test times out).
+func TestFDFailReqsClassifyPanicStillCompletes(t *testing.T) {
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		Error: func(context.Context, string, *pool.Conn, string, bool, int) {},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+	done := make(chan struct{})
+	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), hookDone: done, attempts: 1}
+
+	fin := make(chan struct{})
+	go func() {
+		defer close(fin)
+		fd.failReqs([]fdReq{req}, fdPanicErrorStr{})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failReqs did not complete the request — a panicking err.Error() in classification wedged it")
+	}
+	select {
+	case <-fin:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failReqs did not return")
+	}
+}
+
 // fdRecordPool is a minimal pool.Pooler that hands out one preset conn and records
 // Put/Remove, so a test can assert an init-panicked conn is Removed and never Put.
 type fdRecordPool struct {

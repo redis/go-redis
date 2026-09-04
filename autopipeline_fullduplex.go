@@ -2239,6 +2239,23 @@ func (fd *fdEngine) settleTail(reqs []fdReq, err error) []fdReq {
 }
 
 // failReqs completes a set of commands with err (used on retry exhaustion / Close).
+// classifyCommandErrorGuarded wraps classifyCommandError with a recover: it calls
+// err.Error(), which is user-reachable (e.g. an error returned by a custom Limiter) and
+// can panic. The failing paths classify BEFORE completing their requests, and the chunk
+// is not in the in-flight queue, so an escaping panic here would leave every caller
+// blocked forever (session recovery cannot reclaim it). On panic, fall back to empty
+// classification so the requests still settle.
+func classifyCommandErrorGuarded(err error) (errorType, statusCode string, isInternal bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(),
+				"autopipeline: recovered full-duplex error classification panic: %v", r)
+			errorType, statusCode, isInternal = "", "", false
+		}
+	}()
+	return classifyCommandError(err)
+}
+
 func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 	// Error-metric parity: commands terminated here (lease failure, retry
 	// exhaustion, a NoRetry tail, Close) never reach the reader's inline
@@ -2249,7 +2266,7 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 	var errorType, statusCode string
 	var isInternal bool
 	if errorCallback != nil && len(reqs) > 0 {
-		errorType, statusCode, isInternal = classifyCommandError(err)
+		errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 	}
 	for i := range reqs {
 		// rawErr(), not Err(): this runs on the engine goroutine, and Err()
@@ -2485,7 +2502,7 @@ func (fd *fdEngine) failQueue(err error) {
 			r.cmd.SetErr(err)
 			if errorCallback != nil {
 				if !classified {
-					errorType, statusCode, isInternal = classifyCommandError(err)
+					errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 					classified = true
 				}
 				octx := r.ctx
