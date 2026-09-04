@@ -2054,6 +2054,21 @@ func (c *multidbCore) newPubSub() *PubSub {
 			return cn.Close()
 		},
 	}
+	// A push is handled by the processor of the member that owns the
+	// connection it arrived on, not by the creation-time member's: after a
+	// failover the follower re-dials through another member, and that
+	// member's handlers (maintenance notifications, for one) must see its
+	// pushes. The owner map is the same one closeConn uses; a member's
+	// processor never changes after the client is built.
+	pubsub.processorFor = func(cn *pool.Conn) push.NotificationProcessor {
+		ownersMu.Lock()
+		owner := owners[cn]
+		ownersMu.Unlock()
+		if owner != nil && owner.pushProcessor != nil {
+			return owner.pushProcessor
+		}
+		return pubsub.pushProcessor
+	}
 
 	// opt must always be non-nil (PubSub reads it unconditionally). Clone the
 	// active standalone member's options rather than sharing the pointer: the

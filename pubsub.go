@@ -45,6 +45,12 @@ type PubSub struct {
 
 	// Push notification processor for handling generic push notifications
 	pushProcessor push.NotificationProcessor
+	// processorFor, when set, picks the push processor for a given connection
+	// instead of pushProcessor. MultiDB sets it: the connections of one
+	// PubSub may be owned by different member clients over its lifetime, and
+	// a push must be handled by the processor of the member that owns the
+	// connection it arrived on.
+	processorFor func(*pool.Conn) push.NotificationProcessor
 
 	// Cleanup callback for maintenanceNotifications upgrade tracking
 	onClose func()
@@ -619,15 +625,24 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 	return c.allCh.allCh
 }
 
+// processorForConn returns the push processor for pushes arriving on cn.
+func (c *PubSub) processorForConn(cn *pool.Conn) push.NotificationProcessor {
+	if c.processorFor != nil {
+		return c.processorFor(cn)
+	}
+	return c.pushProcessor
+}
+
 func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	processor := c.processorForConn(cn)
 	// Only process push notifications for RESP3 connections with a processor
-	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+	if c.opt.Protocol != 3 || processor == nil {
 		return nil
 	}
 
 	// Create handler context with client, connection pool, and connection information
 	handlerCtx := c.pushNotificationHandlerContext(cn)
-	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	return processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
 func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {

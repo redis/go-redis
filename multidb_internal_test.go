@@ -1,12 +1,15 @@
 package redis
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/routing"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // This file consolidates the MultiDB internal (package redis) tests: core
@@ -2369,5 +2373,88 @@ func TestMultiDBTrackedAutopipelinersDropDrainedReferences(t *testing.T) {
 		if full[i] != nil {
 			t.Fatalf("slot %d behind the slice length still references an autopipeliner: drained instances are retained", i)
 		}
+	}
+}
+
+// A push arriving on a MultiDB PubSub connection is handled by the push
+// processor of the member that owns that connection. The creation-time
+// member's processor must not be used for a connection re-dialed through
+// another member after a failover.
+func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
+	// A pipe whose far end answers every command with an empty array: the
+	// handshake's HELLO parses that as an empty map, which is all it needs.
+	// With identity disabled and no auth, HELLO is the only command sent.
+	respDialer := func(context.Context, string, string) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go func() {
+			defer c2.Close()
+			rd := bufio.NewReader(c2)
+			for {
+				line, err := rd.ReadString('\n')
+				if err != nil {
+					return
+				}
+				if len(line) == 0 || line[0] != '*' {
+					continue
+				}
+				n, _ := strconv.Atoi(strings.TrimSpace(line[1:]))
+				for i := 0; i < 2*n; i++ {
+					if _, err := rd.ReadString('\n'); err != nil {
+						return
+					}
+				}
+				if _, err := c2.Write([]byte("*0\r\n")); err != nil {
+					return
+				}
+			}
+		}()
+		return c1, nil
+	}
+	member := func(addr string) *Options {
+		return &Options{Addr: addr, Dialer: respDialer, Protocol: 2, DisableIdentity: true}
+	}
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{
+			{Options: member("127.0.0.1:1"), Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: member("127.0.0.1:2"), Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	a, b := mdb.core.dbs[0].c, mdb.core.dbs[1].c
+	// Distinct processors per member, as with per-member maintenance
+	// notification managers.
+	a.pushProcessor = push.NewProcessor()
+	b.pushProcessor = push.NewProcessor()
+
+	ps := mdb.core.newPubSub()
+	t.Cleanup(func() { _ = ps.Close() })
+
+	cn, err := ps.newConn(ctx, "", nil)
+	if err != nil {
+		t.Fatalf("newConn on the active member: %v", err)
+	}
+	t.Cleanup(func() { _ = ps.closeConn(cn) })
+	if got := ps.processorForConn(cn); got != a.pushProcessor {
+		t.Fatalf("processor for a connection owned by member 0 is not member 0's")
+	}
+
+	// Failover: the follower's next dial lands on member 1.
+	mdb.core.active.Store(1)
+	cn2, err := ps.newConn(ctx, "", nil)
+	if err != nil {
+		t.Fatalf("newConn after failover: %v", err)
+	}
+	t.Cleanup(func() { _ = ps.closeConn(cn2) })
+	if got := ps.processorForConn(cn2); got != b.pushProcessor {
+		t.Fatalf("pushes on a connection owned by member 1 would be handled by another member's processor (creation-time member: %v)", got == a.pushProcessor)
 	}
 }
