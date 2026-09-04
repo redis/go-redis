@@ -1496,3 +1496,26 @@ func TestCircuitBreaker_ProbeSuccessKeepsClosedFailureStreak(t *testing.T) {
 		t.Fatalf("state=%v after a half-open probe success, want closed", got)
 	}
 }
+
+// Probe failures form their own streak, ended by a passing probe. On an idle
+// client (no command successes) isolated probe failures separated by passing
+// probes must not add up to an open circuit; consecutive ones still must.
+func TestCircuitBreaker_ProbeSuccessClearsProbeStreak(t *testing.T) {
+	cb := New(Config{FailureThreshold: 5, SuccessThreshold: 1, OpenTimeout: time.Hour})
+	gen := cb.ResetGeneration()
+	// Ten isolated probe failures, each followed by a passing probe.
+	for i := 0; i < 10; i++ {
+		cb.RecordFailureForReset(gen)
+		cb.RecordExternalSuccessForReset(gen)
+	}
+	if got := cb.State(); got != StateClosed {
+		t.Fatalf("state=%v after isolated probe failures separated by passing probes, want closed: probe failures accumulated across passing probes", got)
+	}
+	// Five consecutive probe failures: a dead member is still detected.
+	for i := 0; i < 5; i++ {
+		cb.RecordFailureForReset(gen)
+	}
+	if got := cb.State(); got != StateOpen {
+		t.Fatalf("state=%v after 5 consecutive probe failures, want open", got)
+	}
+}

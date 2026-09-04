@@ -94,11 +94,16 @@ type StateChangeCallback func(oldState, newState State, stats Stats)
 type CircuitBreaker struct {
 	config Config
 
-	state       atomic.Int32
-	failures    atomic.Int32
-	successes   atomic.Int32
-	requests    atomic.Int32 // Request count in half-open state
-	lastFailure atomic.Int64 // nowNano() stamp (monotonic), 0 = none
+	state    atomic.Int32
+	failures atomic.Int32
+	// probeFailures is the consecutive health-probe failure streak, kept apart
+	// from the command streak in failures: a passing probe ends only this one,
+	// a successful command ends only the other. Either streak reaching
+	// FailureThreshold opens the circuit. See RecordFailureForReset.
+	probeFailures atomic.Int32
+	successes     atomic.Int32
+	requests      atomic.Int32 // Request count in half-open state
+	lastFailure   atomic.Int64 // nowNano() stamp (monotonic), 0 = none
 	// generation is bumped on every Open->HalfOpen transition, so a reservation
 	// (see AllowReserve) taken in one half-open episode can be recognized as
 	// stale if it tries to settle after the circuit has cycled through Open and
@@ -459,17 +464,19 @@ func (cb *CircuitBreaker) RecordExternalSuccessForReset(gen uint64) {
 
 // recordProbeSuccessLocked applies a health-probe success with transitionMu
 // held. In half-open it counts toward SuccessThreshold like any success and
-// never touches an admission slot. In closed it does NOTHING: a probe
-// answering shows the member is reachable, not that it can serve commands,
-// so it must not clear the consecutive command-failure count. Otherwise a
+// never touches an admission slot. In closed it ends the PROBE streak only:
+// a probe answering shows the member is reachable, not that it can serve
+// commands, so it must not clear the command-failure streak. Otherwise a
 // member that answers PING but fails every command, at a rate below
 // FailureThreshold per probe interval, would have its count wiped by every
-// probe and never open. Open is a no-op as well.
+// probe and never open. Open is a no-op.
 func (cb *CircuitBreaker) recordProbeSuccessLocked() {
-	if State(cb.state.Load()) != StateHalfOpen {
-		return
+	switch State(cb.state.Load()) {
+	case StateHalfOpen:
+		cb.recordSuccessHalfOpenLocked(false)
+	case StateClosed:
+		cb.probeFailures.Store(0)
 	}
-	cb.recordSuccessHalfOpenLocked(false)
 }
 
 // RecordFailureForReset records an out-of-band failure (a health probe) unless a
@@ -486,7 +493,12 @@ func (cb *CircuitBreaker) RecordFailureForReset(gen uint64) {
 	cb.lastFailure.Store(nowNano())
 	switch State(cb.state.Load()) {
 	case StateClosed:
-		if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
+		// Probe failures form their own streak. On an idle or Pub/Sub-only
+		// client no command success exists to clear a shared count, so
+		// counting probe failures into the command streak let isolated probe
+		// failures, separated by any number of passing probes, add up to an
+		// open circuit; the passing probes end this streak instead.
+		if int(cb.probeFailures.Add(1)) >= cb.config.FailureThreshold {
 			cb.openFromClosedLocked()
 		}
 	case StateHalfOpen:
@@ -516,9 +528,10 @@ func (cb *CircuitBreaker) recordSuccessHalfOpenLocked(heldSlot bool) {
 	case StateHalfOpen:
 		successes := cb.successes.Add(1)
 		if int(successes) >= cb.config.SuccessThreshold {
-			// Clear the failure counter BEFORE Closed becomes visible: it still
-			// holds the count that opened the circuit.
+			// Clear the failure counters BEFORE Closed becomes visible: they
+			// still hold the counts that opened the circuit.
 			cb.failures.Store(0)
+			cb.probeFailures.Store(0)
 			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateClosed)) {
 				// Snapshot BEFORE clearing the half-open counters so the callback
 				// observes the success count that triggered the close.
@@ -675,6 +688,7 @@ func (cb *CircuitBreaker) Reset() {
 	// with the other transitions and its notification keeps CAS order.
 	cb.transitionMu.Lock()
 	cb.failures.Store(0)
+	cb.probeFailures.Store(0)
 	cb.successes.Store(0)
 	cb.requests.Store(0)
 	cb.lastFailure.Store(0)

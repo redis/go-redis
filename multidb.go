@@ -126,7 +126,10 @@ func (WeightBasedFailoverStrategy) Select(candidates []MultiDBDatabaseState) int
 // MultiDBCircuitBreakerConfig configures the per-database circuit breaker.
 type MultiDBCircuitBreakerConfig struct {
 	// FailureThreshold is the number of consecutive failures before the
-	// circuit opens. Default: 5.
+	// circuit opens. Default: 5. Commands and health probes keep separate
+	// streaks: a successful command ends the command streak, a passing probe
+	// ends the probe streak, and either streak reaching the threshold opens
+	// the circuit.
 	FailureThreshold int
 	// SuccessThreshold is the number of successes in half-open state before
 	// the circuit closes again. Default: 2.
