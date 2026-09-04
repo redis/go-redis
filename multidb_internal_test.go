@@ -2214,3 +2214,52 @@ func TestFallbackSuppressionUsesMonotonicClock(t *testing.T) {
 		t.Fatalf("active = %d, want 0: the suppression window did not end on the core's clock", got)
 	}
 }
+
+// RemoveDatabase must close the removed member's client with failoverMu
+// released: closing a client reaches code outside the package (here the OTel
+// pool registrar), and that code may call a control operation that takes
+// failoverMu. With the lock held, such a call deadlocked RemoveDatabase.
+func TestMultiDBRemoveDatabaseClosesClientOutsideFailoverLock(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{
+			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	reentered := make(chan error, 8)
+	otel.SetGlobalRecorder(&reentrantRegistrar{
+		Recorder: otel.NoopRecorder(),
+		// A control operation that takes failoverMu, from inside the close.
+		onUnregister: func() { reentered <- mdb.RemoveDatabase(context.Background(), 12345) },
+	})
+	t.Cleanup(func() { otel.SetGlobalRecorder(otel.NoopRecorder()) })
+
+	done := make(chan error, 1)
+	go func() { done <- mdb.RemoveDatabase(ctx, 1) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RemoveDatabase: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RemoveDatabase did not return: closing the member re-entered a control operation while failoverMu was held")
+	}
+	select {
+	case err := <-reentered:
+		if !errors.Is(err, ErrDatabaseNotFound) {
+			t.Fatalf("re-entrant RemoveDatabase(12345) = %v, want ErrDatabaseNotFound", err)
+		}
+	default:
+		t.Fatal("the registrar's unregister callback never ran: the re-entrant path was not exercised")
+	}
+}

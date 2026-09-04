@@ -1612,36 +1612,45 @@ func (c *multidbCore) removeDatabase(ctx context.Context, id int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Hold failoverMu so the active-id check below cannot race a concurrent
-	// switchActive (all active transitions happen under it).
-	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
-	// Re-check after the lock wait: a client closed or an operator request
-	// whose context died while queued must not still delete a member.
-	if c.closed.Load() {
-		return ErrClosed
+	// detach takes the member out of the membership under the locks. The
+	// client is closed AFTER both locks are released: closing a client runs
+	// code outside this package (an OTel pool registrar's UnregisterPool, for
+	// one) that may call back into a control operation taking failoverMu, and
+	// a slow pool close under failoverMu would also block an urgent failover.
+	detach := func() (*multidbDatabase, error) {
+		// Hold failoverMu so the active-id check below cannot race a concurrent
+		// switchActive (all active transitions happen under it).
+		c.failoverMu.Lock()
+		defer c.failoverMu.Unlock()
+		// Re-check after the lock wait: a client closed or an operator request
+		// whose context died while queued must not still delete a member.
+		if c.closed.Load() {
+			return nil, ErrClosed
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		c.dbMu.Lock()
+		defer c.dbMu.Unlock()
+		db, ok := c.dbs[id]
+		if !ok {
+			return nil, fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
+		}
+		if int(c.active.Load()) == id {
+			return nil, errors.New("redis: multidb: cannot remove the active database")
+		}
+		// Mark before the client is closed: a background probe holding a stale
+		// snapshot must stop recording outcomes for this member.
+		db.removed.Store(true)
+		// Ids are stable and `active` is an id, so removing a non-active member
+		// renumbers nothing and never shifts the active — just drop the key.
+		delete(c.dbs, id)
+		return db, nil
 	}
-	if err := ctx.Err(); err != nil {
+	db, err := detach()
+	if err != nil {
 		return err
 	}
-	c.dbMu.Lock()
-	db, ok := c.dbs[id]
-	if !ok {
-		c.dbMu.Unlock()
-		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
-	}
-	if int(c.active.Load()) == id {
-		c.dbMu.Unlock()
-		return errors.New("redis: multidb: cannot remove the active database")
-	}
-	// Mark before the client is closed: a background probe holding a stale
-	// snapshot must stop recording outcomes for this member.
-	db.removed.Store(true)
-	// Ids are stable and `active` is an id, so removing a non-active member
-	// renumbers nothing and never shifts the active — just drop the key.
-	delete(c.dbs, id)
-	c.dbMu.Unlock()
-
 	return db.closeClient()
 }
 
