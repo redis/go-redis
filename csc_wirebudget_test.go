@@ -181,11 +181,16 @@ func TestCSCMissCoalescerShedsWhenActualOverBudget(t *testing.T) {
 }
 
 // TestCSCMissCoalescerBoundsConcurrentSerialize pins #3965 F3: the serialization
-// admission must cap how many callers hold a wire snapshot at once, so a concurrent
-// burst of undercounted misses cannot coexist an unbounded set of multi-MiB
-// snapshots before reconcileWireBytes sheds. Single-threaded and deterministic: it
-// fills the semaphore, then confirms further acquisitions shed (never exceed the
-// cap) and that a release frees exactly one slot.
+// admission caps HOW MANY callers hold a wire snapshot at once
+// (cscMissMaxConcurrentSerialize), so a concurrent burst cannot coexist an unbounded
+// NUMBER of snapshots. It bounds peak snapshot memory to cap x per-snapshot size, NOT
+// to the wire budget: a single undercounted argument (e.g. a BinaryMarshaler returning
+// hundreds of MiB) still allocates its full snapshot before reconcileWireBytes sheds
+// it, so up to cap such snapshots can coexist. A per-request byte ceiling (bounding the
+// serializer itself, and capping buildCacheKey which serializes uncapped upstream) is a
+// deferred follow-up. Single-threaded and deterministic: it fills the semaphore, then
+// confirms further acquisitions shed (never exceed the cap) and that a release frees
+// exactly one slot.
 func TestCSCMissCoalescerBoundsConcurrentSerialize(t *testing.T) {
 	// Shed immediately when the sem is full, so the over-cap attempts are
 	// deterministic (no timing dependence on the wait).

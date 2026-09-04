@@ -372,10 +372,18 @@ func TestFullDuplexDisabledMidMissRetriesUncached(t *testing.T) {
 	if !shouldFetch {
 		t.Fatal("expected to own the reservation")
 	}
+	// Capture the coalescer BEFORE disabling: disableCSCServing signals the drainer,
+	// whose teardown asynchronously swaps cscMissCoalescer to nil. A scheduler delay
+	// between the two would make a live cscMissCoalescer.Load() below return nil and
+	// nil-deref. The captured pointer still honors the serving-off flag fetch checks.
+	mc := cached.cscMissCoalescer.Load()
+	if mc == nil {
+		t.Fatal("coalescer not active")
+	}
 	cached.disableCSCServing(ctx, "test: force retry-uncached path")
 
 	cmd := NewStringCmd(ctx, "get", key)
-	if _, err := cached.cscMissCoalescer.Load().fetch(ctx, cmd, nsKey, token); err != errCSCRetryUncached {
+	if _, err := mc.fetch(ctx, cmd, nsKey, token); err != errCSCRetryUncached {
 		t.Fatalf("fetch after CSC disabled = %v; want errCSCRetryUncached (should not surface ErrClosed)", err)
 	}
 	// The reservation must be released, or later readers block IN_PROGRESS until
