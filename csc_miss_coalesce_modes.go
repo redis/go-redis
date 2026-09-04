@@ -356,6 +356,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			// []*cscMissReq, so this persists to the reply path (which re-sets it).
 			for _, r := range buf {
 				r.servedBy = cn
+				r.sentConn.Store(cn) // atomic view for a caller abandoning before req.done
 			}
 
 			// Hand the batch to the reader BEFORE writing it, so the reader drains

@@ -144,6 +144,13 @@ type cscMissReq struct {
 	// reports its serving connection and an attempt, like any other command.
 	// Nil when the request never reached a session (enqueue reject, abandon).
 	servedBy *pool.Conn
+	// sentConn is servedBy published atomically: the session stores it when the batch
+	// is assigned to a connection (at send), so a caller that abandons on ctx-cancel
+	// BEFORE the req.done happens-before edge can still attribute the metric to the
+	// serving conn instead of reporting nil for a command Redis actually received
+	// (#3989). Plain servedBy is unsafe to read on that branch (it races the session's
+	// write); this atomic is the safe view for it. Nil until the batch reaches a conn.
+	sentConn atomic.Pointer[pool.Conn]
 	// wire is cmd's RESP encoding, snapshotted at enqueue while the caller
 	// still owned cmd. The session writer writes ONLY these engine-owned bytes
 	// — it never reads cmd — so an abandoning caller may reuse mutable args
@@ -598,16 +605,16 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// context cancellation — without this the cancellation rate is undercounted
 		// whenever miss coalescing is enabled. Attribute against the caller's ctx.
 		//
-		// Pass a nil conn deliberately: req.servedBy is written by the session and
-		// only safe to read AFTER the req.done receive (that receive is the
-		// happens-before edge, see the field doc), which has NOT happened on this
-		// branch — reading it here would race the engine's write and, on a
-		// cancellation that beats the serve, be nil anyway. The metric recorder
-		// treats a nil conn as "no peer attributes", matching processWithRetry when
-		// it cancels before a connection is obtained.
+		// Attribute to the SENT conn via req.sentConn — an atomic view safe to read on
+		// this pre-req.done branch, unlike servedBy, which would race the session's
+		// write. If the session already sent this command before the caller abandoned,
+		// Redis received it, so report and return that conn rather than nil. Nil only
+		// when the command never reached a connection (a true pre-send cancellation), for
+		// which the recorder's "no peer attributes" is correct.
+		sentConn := req.sentConn.Load()
 		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 			errorType, statusCode, isInternal := classifyCommandError(ctx.Err())
-			errorCallback(ctx, errorType, nil, statusCode, isInternal, 0)
+			errorCallback(ctx, errorType, sentConn, statusCode, isInternal, 0)
 		}
 		if !req.claimAbandon() {
 			<-req.done
@@ -618,7 +625,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// it. But if the coalescer is STOPPING, this req may have landed in mc.ch
 		// after the shutdown drain, where nothing will settle it — see cancelIfStopping.
 		mc.cancelIfStopping(cacheKey, token)
-		return nil, ctx.Err()
+		return sentConn, ctx.Err()
 	}
 }
 
