@@ -2551,49 +2551,50 @@ func TestMultiDBTrackedAutopipelinersDropDrainedReferences(t *testing.T) {
 // not be used for a connection re-dialed through another member after a
 // failover: here the PubSub is created while a RESP2 member is active and
 // re-dials to a RESP3 member.
-func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
-	// A pipe whose far end answers every command with an empty map (RESP3
-	// HELLO 3) or an empty array (RESP2): the handshake's HELLO parses either
-	// as an empty map, which is all it needs. With identity disabled and no
-	// auth, HELLO is the only command sent.
-	respDialer := func(context.Context, string, string) (net.Conn, error) {
-		c1, c2 := net.Pipe()
-		go func() {
-			defer c2.Close()
-			rd := bufio.NewReader(c2)
-			for {
-				line, err := rd.ReadString('\n')
+// helloRespondingDialer returns a net.Pipe whose far end answers every command
+// with an empty map (RESP3 HELLO 3) or an empty array (RESP2): the handshake's
+// HELLO parses either as an empty map, which is all it needs. With identity
+// disabled and no auth, HELLO is the only command a member sends.
+func helloRespondingDialer(context.Context, string, string) (net.Conn, error) {
+	c1, c2 := net.Pipe()
+	go func() {
+		defer c2.Close()
+		rd := bufio.NewReader(c2)
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if len(line) == 0 || line[0] != '*' {
+				continue
+			}
+			n, _ := strconv.Atoi(strings.TrimSpace(line[1:]))
+			var args []string
+			for i := 0; i < n; i++ {
+				if _, err := rd.ReadString('\n'); err != nil { // $len
+					return
+				}
+				arg, err := rd.ReadString('\n')
 				if err != nil {
 					return
 				}
-				if len(line) == 0 || line[0] != '*' {
-					continue
-				}
-				n, _ := strconv.Atoi(strings.TrimSpace(line[1:]))
-				var args []string
-				for i := 0; i < n; i++ {
-					if _, err := rd.ReadString('\n'); err != nil { // $len
-						return
-					}
-					arg, err := rd.ReadString('\n')
-					if err != nil {
-						return
-					}
-					args = append(args, strings.TrimSpace(arg))
-				}
-				reply := "*0\r\n"
-				if len(args) >= 2 && strings.EqualFold(args[0], "hello") && args[1] == "3" {
-					reply = "%0\r\n"
-				}
-				if _, err := c2.Write([]byte(reply)); err != nil {
-					return
-				}
+				args = append(args, strings.TrimSpace(arg))
 			}
-		}()
-		return c1, nil
-	}
+			reply := "*0\r\n"
+			if len(args) >= 2 && strings.EqualFold(args[0], "hello") && args[1] == "3" {
+				reply = "%0\r\n"
+			}
+			if _, err := c2.Write([]byte(reply)); err != nil {
+				return
+			}
+		}
+	}()
+	return c1, nil
+}
+
+func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
 	member := func(addr string, protocol int) *Options {
-		return &Options{Addr: addr, Dialer: respDialer, Protocol: protocol, DisableIdentity: true}
+		return &Options{Addr: addr, Dialer: helloRespondingDialer, Protocol: protocol, DisableIdentity: true}
 	}
 	opts := &MultiDBOptions{
 		HealthCheckInterval:  time.Hour,
@@ -2644,6 +2645,45 @@ func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
 		t.Fatalf("pushes on a connection owned by the RESP3 member 1 are not dispatched to its processor (got nil: %v, creation-time member's: %v)", got == nil, got == a.pushProcessor)
 	}
 }
+
+// After closeConn has finished with a connection, a push still being read on
+// it is dropped: the lookup must not fall back to the creation-time member's
+// processor and dispatch the old member's push through it.
+func TestMultiDBPubSubDropsPushesOnClosedConnection(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{{
+			Options:      &Options{Addr: "127.0.0.1:1", Dialer: helloRespondingDialer, Protocol: 3, DisableIdentity: true},
+			Weight:       1,
+			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+		}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	mdb.core.dbs[0].c.pushProcessor = push.NewProcessor()
+
+	ps := mdb.core.newPubSub()
+	t.Cleanup(func() { _ = ps.Close() })
+	cn, err := ps.newConn(ctx, "", nil)
+	if err != nil {
+		t.Fatalf("newConn: %v", err)
+	}
+	if ps.pushProcessorFor(cn) == nil {
+		t.Fatal("a live RESP3 connection has no processor")
+	}
+	_ = ps.closeConn(cn)
+	if got := ps.pushProcessorFor(cn); got != nil {
+		t.Fatal("a push on a closed connection would be dispatched through the creation-time member's processor; want dropped")
+	}
+}
+
 
 // An AddDatabase that aborts after taking failoverMu (caller context expired
 // while queued behind another control operation) must close the built client

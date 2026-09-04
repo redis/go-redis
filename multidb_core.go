@@ -2076,12 +2076,20 @@ func (c *multidbCore) newPubSub() *PubSub {
 		closeConn: func(cn *pool.Conn) error {
 			ownersMu.Lock()
 			owner := owners[cn]
-			delete(owners, cn)
 			ownersMu.Unlock()
 			if owner != nil {
 				owner.pubSubPool.UntrackConn(cn)
 			}
-			return cn.Close()
+			// Close first, forget the owner after: a receive that is still
+			// processing a buffered push on this connection looks the owner
+			// up lock-free, and must not find it gone while the connection
+			// is alive. After Close a miss means "closed", and pushes on a
+			// closed connection are dropped (see processorFor).
+			err := cn.Close()
+			ownersMu.Lock()
+			delete(owners, cn)
+			ownersMu.Unlock()
+			return err
 		},
 	}
 	// A push is handled by the processor of the member that owns the
@@ -2099,16 +2107,18 @@ func (c *multidbCore) newPubSub() *PubSub {
 		ownersMu.Lock()
 		owner := owners[cn]
 		ownersMu.Unlock()
-		if owner != nil {
-			if owner.opt.Protocol != 3 {
-				return nil
-			}
-			return owner.pushProcessor
-		}
-		if pubsub.opt.Protocol != 3 {
+		if owner == nil {
+			// Every connection is registered before newConn returns, so a
+			// miss means closeConn has finished with it: a push read after
+			// that belongs to a member that is no longer serving this
+			// subscription and is dropped rather than dispatched through
+			// another member's processor.
 			return nil
 		}
-		return pubsub.pushProcessor
+		if owner.opt.Protocol != 3 {
+			return nil
+		}
+		return owner.pushProcessor
 	}
 
 	// opt must always be non-nil (PubSub reads it unconditionally). Clone the
