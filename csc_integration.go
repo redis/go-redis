@@ -393,7 +393,14 @@ func (h *invalidateHandler) HandlePushNotification(
 				// concurrent window change turned batching off: fall through to
 				// the inline delete path below rather than enqueue on a nil
 				// batcher (which would panic).
-				if b := h.ensureBatcher(); b != nil {
+				// Pair the batcher with the SNAPSHOT cache: after a last-user release +
+				// rebind to a different cache (A->B) between the entry snapshot and here,
+				// ensureBatcher returns B's batcher, which would delete B's entries for a
+				// push meant for A (A would keep serving stale). fullFlush guards the same
+				// A->B pairing. sameCache also returns false for a non-comparable cache
+				// type, so such caches fall through to the inline delete path (correct,
+				// just not batched).
+				if b := h.ensureBatcher(); b != nil && sameCache(b.cache, cache) {
 					for _, k := range payload {
 						var name string
 						switch v := k.(type) {
@@ -413,6 +420,13 @@ func (h *invalidateHandler) HandlePushNotification(
 		var hot []cscRefreshTarget
 		lc, canRefresh := cache.(*LocalCache)
 		canRefresh = canRefresh && refresh != nil
+		// Snapshot the fetch-order sequence ONCE, at notification-observe time, and reuse
+		// it for every key in this push. A live per-key load would include a fetch
+		// reserved AFTER this push was observed but before the loop reached that key, so
+		// collectHotAndDelete would not treat it as newer and would evict the fresh value
+		// / cancel its in-progress reservation (mirrors cscInvalItem.fetchSnap, taken at
+		// enqueue; see cacheEntry.fetchSeq).
+		fetchSnap := cscFetchSeq.Load()
 		for _, k := range payload {
 			var name string
 			switch v := k.(type) {
@@ -428,10 +442,10 @@ func (h *invalidateHandler) HandlePushNotification(
 				cache.DeleteByRedisKey(nsKey)
 				continue
 			}
-			// Inline (window==0) path: observe and delete synchronously, so the snapshot
-			// is a live load here. Any entry with a greater fetchSeq was reserved by a
-			// concurrent refetch and is correctly kept (see cacheEntry.fetchSeq).
-			hot = lc.deleteByRedisKeyCollectingHot(nsKey, refresh.sinceToken.Load(), cscFetchSeq.Load(), hot[:0])
+			// Inline (window==0) path: observe and delete synchronously. An entry with a
+			// fetchSeq greater than the observe-time snapshot was reserved by a refetch
+			// issued after this push and is correctly kept (see cacheEntry.fetchSeq).
+			hot = lc.deleteByRedisKeyCollectingHot(nsKey, refresh.sinceToken.Load(), fetchSnap, hot[:0])
 			for i := range hot {
 				refresh.offer(hot[i])
 			}
@@ -449,14 +463,16 @@ func (h *invalidateHandler) HandlePushNotification(
 // and still applies — its post-flush delete must not be lost.
 //
 // Drop the batcher ONLY when it still belongs to the cache being flushed
-// (h.cache == cache). A same-cache batcher rebuild (setInvalBatchWindow /
+// (sameCache(h.cache, cache)). A same-cache batcher rebuild (setInvalBatchWindow /
 // set/clearRefreshQueue, all under h.mu.Lock) must have its FRESH batcher dropped, or
 // the new batcher's queued deletes survive the flush and evict post-flush
 // repopulations. But a last-user release + rebind to a DIFFERENT cache (A->B) between
 // the caller's entry snapshot and this RLock leaves h.batcher = B's while cache = A;
 // dropping B's batcher would bump B's epoch and skip B's queued deletes while only A is
-// flushed, so B would serve stale (#3989). The h.cache == cache guard drops the batcher
-// only when the binding is unchanged.
+// flushed, so B would serve stale (#3989). The sameCache guard drops the batcher only
+// when the binding is unchanged. sameCache (not ==) also avoids a panic when the cache's
+// dynamic type is non-comparable; for such a type it returns false, so the batcher is
+// not dropped on flush — a bounded spurious miss, correct versus a crash.
 //
 // Flush the CACHE SNAPSHOT, not the live h.cache: a last-user releaseLocked can nil
 // h.cache, and a guarded `if h.cache != nil` would then silently skip the wipe. RLock
@@ -465,7 +481,7 @@ func (h *invalidateHandler) HandlePushNotification(
 func (h *invalidateHandler) fullFlush(cache Cache) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	if h.cache == cache && h.batcher != nil {
+	if sameCache(h.cache, cache) && h.batcher != nil {
 		h.batcher.drop()
 	}
 	cache.Flush()

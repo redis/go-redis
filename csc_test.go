@@ -4000,3 +4000,27 @@ func TestInvalidateHandlerFullFlushPairsBatcherWithSnapshotCache(t *testing.T) {
 		t.Fatal("fullFlush must drop the batcher when the binding is unchanged")
 	}
 }
+
+// TestInvalidateHandlerFullFlushNonComparableCacheNoPanic pins the sameCache guard in
+// fullFlush: comparing h.cache == cache directly panics when the cache's dynamic type is
+// non-comparable (a struct with a slice field), crashing the push goroutine on every
+// FLUSHDB/FLUSHALL. sameCache compares safely (#3989).
+func TestInvalidateHandlerFullFlushNonComparableCacheNoPanic(t *testing.T) {
+	inner := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache := nonComparableCache{Cache: inner, marker: []byte("m")}
+	batcher := newTestBatcher(cache, 64, time.Hour)
+	h := &invalidateHandler{cache: cache, batcher: batcher}
+
+	inner.set("get:x", []string{"x"}, []byte("v"))
+	if inner.Len() == 0 {
+		t.Fatal("precondition: cache should hold an entry")
+	}
+
+	// A bare == would panic here; sameCache must guard it. The batcher is not dropped for
+	// a non-comparable type (sameCache returns false), but the snapshot is still flushed.
+	h.fullFlush(cache)
+
+	if inner.Len() != 0 {
+		t.Fatal("fullFlush did not flush the non-comparable cache")
+	}
+}
