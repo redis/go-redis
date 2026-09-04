@@ -625,6 +625,40 @@ func TestLagAwareMatchesDNSAlias(t *testing.T) {
 	}
 }
 
+// With a fixed base URL every per-master call would hit the same /v1/local/
+// endpoint: the cluster check runs once instead of once per master.
+func TestLagAwareFixedBaseURLChecksClusterOnce(t *testing.T) {
+	ok200 := func(body string) *http.Response {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}
+	}
+	cc := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{"m1.example.com:6379"},
+		ClusterSlots: func(context.Context) ([]redis.ClusterSlot, error) {
+			return []redis.ClusterSlot{
+				{Start: 0, End: 8191, Nodes: []redis.ClusterNode{{Addr: "m1.example.com:6379"}}},
+				{Start: 8192, End: 16383, Nodes: []redis.ClusterNode{{Addr: "m2.example.com:6379"}}},
+			}, nil
+		},
+	})
+	defer cc.Close()
+	// Exactly one round of REST calls is scripted for the fixed host; a second
+	// master's round would run out of responses and fail the check.
+	client := &hostScriptedHTTPClient{responses: map[string][]*http.Response{
+		"admin.example.com": {
+			ok200(`[{"uid": 1, "endpoints": [{"dns_name": "m1.example.com", "addr": [], "port": 6379}, {"dns_name": "m2.example.com", "addr": [], "port": 6379}]}]`),
+			ok200(`{}`),
+		},
+	}}
+	hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(client), WithLagAwareBaseURL("https://admin.example.com:9443"))
+	ok, err := hc.CheckClusterHealth(context.Background(), cc)
+	if !ok || err != nil {
+		t.Fatalf("CheckClusterHealth = (%v, %v), want healthy after ONE check against the fixed URL", ok, err)
+	}
+	if left := len(client.responses["admin.example.com"]); left != 0 {
+		t.Fatalf("%d scripted responses unused: the check did not run", left)
+	}
+}
+
 func TestLagAwareDrainsAvailabilityBody(t *testing.T) {
 	bdbList := `[{"uid": 7, "endpoints": [{"dns_name": "redis.example.com", "addr": [], "port": 6379}]}]`
 	avail := &drainTrackingBody{r: strings.NewReader(`{"status":"ok"}`)}

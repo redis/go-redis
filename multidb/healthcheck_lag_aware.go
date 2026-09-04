@@ -70,6 +70,11 @@ func WithLagAwareHealthCheckConfig(opts ...HealthCheckOption) LagAwareHealthChec
 // (or resolve to) the cluster node hosting this member's endpoint — routing
 // it through a shared admin address, proxy, or load balancer makes the check
 // report the availability of whichever node the URL happens to reach.
+//
+// For a cluster member the same limit applies to every master: a fixed URL
+// cannot reach each master's own node, so the check runs ONCE against the
+// configured URL instead of once per master and reports the node it reaches.
+// Leave the base URL unset to get the per-master check.
 func WithLagAwareBaseURL(baseURL string) LagAwareHealthCheckOption {
 	return func(h *LagAwareHealthCheck) { h.baseURL = baseURL }
 }
@@ -369,6 +374,13 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 	}
 	if len(addrs) == 0 {
 		return false, fmt.Errorf("multidb: cluster client has no addresses")
+	}
+	// A fixed base URL is answered by one node, whichever it reaches (see
+	// WithLagAwareBaseURL): every per-master call would hit the same
+	// /v1/local/ endpoint and return the same verdict. Check once, so the
+	// verdict is not repeated N times and the limitation is explicit.
+	if h.baseURL != "" && len(addrs) > 1 {
+		addrs = addrs[:1]
 	}
 
 	if fromMasters {
