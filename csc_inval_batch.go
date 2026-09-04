@@ -226,14 +226,24 @@ func (b *cscInvalBatcher) drop() {
 // is stopped (no worker left to drain, see stopMu) does it apply inline so an
 // invalidation is never dropped.
 func (b *cscInvalBatcher) enqueue(nsKey string) {
+	// Convenience entry point (tests, single-key callers): snapshot fetch order per
+	// call. The push handler batches MANY keys per notification, so it snapshots ONCE
+	// at observe time and calls enqueueAt, sharing one fetchSnap across the whole push
+	// (a per-key load would let a fetch reserved after the push was observed slip in as
+	// "not newer" for a later key — the same drift the inline delete path already avoids).
+	b.enqueueAt(nsKey, cscFetchSeq.Load())
+}
+
+func (b *cscInvalBatcher) enqueueAt(nsKey string, fetchSnap uint64) {
 	it := cscInvalItem{
 		key:        nsKey,
 		epoch:      b.epoch.Load(),
 		sinceToken: cscInvalNoHorizon,
-		// Snapshot fetch-issue order NOW (observe time) so a Valid entry refetched
-		// after this invalidation is kept at apply, and a queued duplicate that
-		// straddles that refetch cannot undo it (see cscInvalItem.fetchSnap).
-		fetchSnap: cscFetchSeq.Load(),
+		// fetchSnap is cscFetchSeq observed at the notification OBSERVE time (shared by
+		// every key in one push) so a Valid entry refetched after this invalidation is
+		// kept at apply, and a queued duplicate that straddles that refetch cannot undo
+		// it (see cscInvalItem.fetchSnap).
+		fetchSnap: fetchSnap,
 	}
 	// Snapshot the refresh recency horizon NOW (enqueue time), so a batch-window
 	// delay can't advance it out from under apply's hot-entry check (see the field

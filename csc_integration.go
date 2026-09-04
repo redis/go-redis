@@ -401,6 +401,12 @@ func (h *invalidateHandler) HandlePushNotification(
 				// type, so such caches fall through to the inline delete path (correct,
 				// just not batched).
 				if b := h.ensureBatcher(); b != nil && sameCache(b.cache, cache) {
+					// Snapshot fetch-order ONCE for the whole push (mirrors the inline delete
+					// path below and cscInvalItem.fetchSnap): a per-key load inside enqueue
+					// would include a fetch reserved AFTER this push was observed but before
+					// the loop reached that key, so apply would not treat it as newer and
+					// could evict the fresh value / cancel its in-progress reservation.
+					fetchSnap := cscFetchSeq.Load()
 					for _, k := range payload {
 						var name string
 						switch v := k.(type) {
@@ -411,7 +417,7 @@ func (h *invalidateHandler) HandlePushNotification(
 						default:
 							continue
 						}
-						b.enqueue(cscNamespacedKey(keyPrefix, name))
+						b.enqueueAt(cscNamespacedKey(keyPrefix, name), fetchSnap)
 					}
 					return nil
 				}

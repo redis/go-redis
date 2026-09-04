@@ -86,6 +86,30 @@ func TestInvalBatcherEnqueueSnapshotsSinceToken(t *testing.T) {
 	}
 }
 
+// TestInvalBatcherEnqueueAtStampsSuppliedFetchSnap pins the per-push fetch-order
+// snapshot: enqueueAt must stamp the CALLER's fetchSnap, not a fresh cscFetchSeq
+// load. The push handler snapshots cscFetchSeq once per notification and reuses it
+// for every key (csc_integration.go), so a fetch reserved after the push was
+// observed cannot slip in as "not newer" for a later key in the same push.
+func TestInvalBatcherEnqueueAtStampsSuppliedFetchSnap(t *testing.T) {
+	b := newTestBatcher(&countingCache{}, 4, time.Hour) // worker not started: item stays on ch
+
+	prev := cscFetchSeq.Load()
+	cscFetchSeq.Store(999) // the value a stale per-key load would pick up
+	defer cscFetchSeq.Store(prev)
+
+	b.enqueueAt("k", 4242)
+
+	select {
+	case it := <-b.ch:
+		if it.fetchSnap != 4242 {
+			t.Fatalf("enqueued item fetchSnap = %d, want 4242 (caller snapshot, not a fresh load)", it.fetchSnap)
+		}
+	default:
+		t.Fatal("enqueueAt did not land on ch")
+	}
+}
+
 // TestInvalBatcherRefreshAttachUsesLiveHorizon pins the recency gate across a
 // refresh ATTACH: an item enqueued while the batcher had no refresh binding must
 // not be applied as "horizon 0" once a binding appears before apply (setRefreshQueue
