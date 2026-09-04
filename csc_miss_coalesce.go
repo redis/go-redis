@@ -83,10 +83,16 @@ const (
 	// can all pass the byte reservation and each allocate its full wireBuf BEFORE
 	// reconcileWireBytes sheds — a transient set of multi-MiB snapshots the budget
 	// never sees, which can exhaust memory even though none stay queued. Bounding the
-	// concurrent set to budget/batch keeps that peak at O(budget): at most this many
-	// batch-sized snapshots coexist before any is reconciled. A caller that cannot
-	// get a slot promptly sheds to the pooled path rather than block. Serialization
-	// is CPU-only and brief, so normal small-command bursts pass without shedding.
+	// concurrent set to budget/batch caps the COUNT of coexisting snapshots, not their
+	// bytes: when Args() sizes its encoded form accurately each snapshot is about
+	// batch-sized, so the peak is ~O(budget). A single command whose encoded form far
+	// exceeds cmdApproxBytes' estimate (e.g. an encoding.BinaryMarshaler returning
+	// hundreds of MB) makes that one snapshot arbitrarily large, so the true worst-case
+	// transient peak is cap x (largest single serialized command), NOT O(budget) — a
+	// hard per-request byte ceiling enforced during writeCmd is a focused follow-up. A
+	// caller that cannot get a slot promptly sheds to the pooled path rather than block.
+	// Serialization is CPU-only and brief, so normal small-command bursts pass without
+	// shedding.
 	cscMissMaxConcurrentSerialize = cscMissWireBudgetBytes / cscMissBatchBytes // 8
 )
 
