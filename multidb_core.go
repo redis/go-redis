@@ -822,6 +822,19 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 	// active index in a busy loop instead of surfacing unavailability.
 	gateRejections := 0
 
+	// The current attempt's admission, released on any exit that did not
+	// settle it: a panic in a member hook unwinds past the settle paths
+	// below, and a leaked half-open slot would wedge the breaker at
+	// MaxHalfOpenRequests. ReleaseFor settles at most once and no-ops for a
+	// closed admission (same guard as processPipeline and Watch).
+	var pendingDB *multidbDatabase
+	var pendingRes imultidb.Reservation
+	defer func() {
+		if pendingDB != nil {
+			pendingDB.cb.ReleaseFor(pendingRes)
+		}
+	}()
+
 	for attempt < attempts {
 		if c.closed.Load() {
 			// Close landed mid-retry: report the terminal state instead of
@@ -874,7 +887,11 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			cmd.SetErr(nil)
 		}
 		attempt++
+		pendingDB, pendingRes = db, res
 		err := db.process(ctx, cmd)
+		// Back from the member: every path below settles the admission
+		// itself, so the deferred release must stand down.
+		pendingDB = nil
 		if err != nil && ctx.Err() != nil {
 			// The caller's own context ended (deadline/cancel) while the
 			// command ran — typically cutting a dial short, which surfaces as

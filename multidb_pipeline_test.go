@@ -573,8 +573,23 @@ func TestMultiDBTxPipelinePanicRestoresNoRetry(t *testing.T) {
 // panic in the member hook unwinds past recordBatchOutcomes and the cancel
 // branch. The slot must still come back, or the breaker stays wedged at
 // MaxHalfOpenRequests for good (Watch already defers the release).
+// panicProcessHook panics on every single command (the pipeline path is left
+// alone), standing in for a member hook that blows up mid-command.
+type panicProcessHook struct{}
+
+func (panicProcessHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (panicProcessHook) ProcessHook(redis.ProcessHook) redis.ProcessHook {
+	return func(context.Context, redis.Cmder) error {
+		panic("boom: injected command panic")
+	}
+}
+
+func (panicProcessHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
 func TestMultiDBBatchPanicReleasesHalfOpenProbeSlot(t *testing.T) {
-	newClient := func(t *testing.T) *redis.MultiDBClient {
+	newClient := func(t *testing.T, hook redis.Hook) *redis.MultiDBClient {
 		// Built from raw options rather than newTestMultiDB: that helper installs
 		// a per-member hookedDB which serves batches locally and would sit ahead
 		// of the panicking hook in the chain, so the panic would never fire. A
@@ -602,12 +617,15 @@ func TestMultiDBBatchPanicReleasesHalfOpenProbeSlot(t *testing.T) {
 		// A: half-open (recovering) with its single probe slot free.
 		mdb.TestBreakerRecordFailure(0)
 		time.Sleep(50 * time.Millisecond)
-		armed := &atomic.Bool{}
-		armed.Store(true)
-		if err := mdb.AddDatabaseHook(0, panicPipelineHook{armed: armed}); err != nil {
+		if err := mdb.AddDatabaseHook(0, hook); err != nil {
 			t.Fatalf("AddDatabaseHook: %v", err)
 		}
 		return mdb
+	}
+	armedPipelinePanic := func() redis.Hook {
+		armed := &atomic.Bool{}
+		armed.Store(true)
+		return panicPipelineHook{armed: armed}
 	}
 	mustPanic := func(t *testing.T, fn func() error) {
 		t.Helper()
@@ -621,7 +639,7 @@ func TestMultiDBBatchPanicReleasesHalfOpenProbeSlot(t *testing.T) {
 	}
 
 	t.Run("pipeline", func(t *testing.T) {
-		mdb := newClient(t)
+		mdb := newClient(t, armedPipelinePanic())
 		mustPanic(t, func() error {
 			_, err := mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
 				p.Set(context.Background(), "k", "v", 0)
@@ -634,7 +652,7 @@ func TestMultiDBBatchPanicReleasesHalfOpenProbeSlot(t *testing.T) {
 		}
 	})
 	t.Run("tx", func(t *testing.T) {
-		mdb := newClient(t)
+		mdb := newClient(t, armedPipelinePanic())
 		mustPanic(t, func() error {
 			_, err := mdb.TxPipelined(context.Background(), func(p redis.Pipeliner) error {
 				p.Set(context.Background(), "k", "v", 0)
@@ -644,6 +662,17 @@ func TestMultiDBBatchPanicReleasesHalfOpenProbeSlot(t *testing.T) {
 		})
 		if !mdb.TestBreakerReserveHalfOpen(0) {
 			t.Error("tx panic leaked A's half-open probe slot")
+		}
+	})
+	// The single-command path admits through the same gate, so a panic in a
+	// member hook must give the slot back there too.
+	t.Run("command", func(t *testing.T) {
+		mdb := newClient(t, panicProcessHook{})
+		mustPanic(t, func() error {
+			return mdb.Set(context.Background(), "k", "v", 0).Err()
+		})
+		if !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Error("command panic leaked A's half-open probe slot")
 		}
 	})
 }
