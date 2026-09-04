@@ -755,6 +755,30 @@ func TestFDRetryOnNormalConnBoundedDuringClose(t *testing.T) {
 	}
 }
 
+// TestFDRetryOnNormalConnSpilledDoesNotBlockReader pins fCCni: while the session holds
+// a main-pool conn (spilled or no dedicated pipeline pool), a full retrySem must NOT
+// park the reader — it runs the retry slot-less instead. Blocking would deadlock: the
+// session pins the very conn the off-pipe retries wait for, released only once the
+// reader drains. (Off Close, so the close-fail path does not apply.)
+func TestFDRetryOnNormalConnSpilledDoesNotBlockReader(t *testing.T) {
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{ctx: context.Background()}, // NOT closing
+		retrySem: make(chan struct{}, 1),
+	}
+	fd.retrySem <- struct{}{}     // saturate the bound
+	fd.curConnSpilled.Store(true) // session holds a main-pool conn
+
+	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), batch: newAPBatch()}
+	done := make(chan struct{})
+	go func() { fd.retryOnNormalConn(req, 0); close(done) }()
+
+	select {
+	case <-done: // returned promptly: ran slot-less, did not park the reader
+	case <-time.After(2 * time.Second):
+		t.Fatal("retryOnNormalConn blocked the reader on a full sem while spilled — deadlock risk")
+	}
+}
+
 // TestFDRecoverTailRefundsSuffixOnly pins the fdConnErr recovery-set builder:
 // the drained (sent) tail keeps its attempt charge, the never-sent suffix is
 // refunded (run()'s recovery re-bumps on the real re-issue), and the result is

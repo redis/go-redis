@@ -493,6 +493,13 @@ type fdEngine struct {
 	curInflight    atomic.Pointer[fdInflight] // current session's in-flight deque; test observability
 	curConn        atomic.Pointer[pool.Conn]  // current session's held conn; test observability (handoff)
 	fastSubmitTake atomic.Int64               // fast-path submits taken; test observability
+	// curConnSpilled is true while the current session holds a MAIN-pool connection —
+	// a spilled lease, or the no-dedicated-pool case where fd.pool IS the main pool.
+	// retryOnNormalConn must not block the reader on retrySem then: the session pins a
+	// main-pool conn until the reader drains, so off-pipe retries waiting on that same
+	// pool would deadlock (see retryOnNormalConn). Set in attempt before the reader is
+	// spawned; biased true when a lease is undecided so an unknown state never blocks.
+	curConnSpilled atomic.Bool
 
 	submitMu sync.RWMutex // guards closed; RLock across the submit send, WLock to close the gate
 	closed   bool         // set once run() is tearing down; submit then rejects new work
@@ -833,30 +840,46 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 	// then submitters — end-to-end backpressure. No cycle: retries drain on the main
 	// pool, independent of the reader waiting here.
 	//
-	// Off Close: block for a slot (the backpressure above). On Close (ap.ctx done):
-	// take a slot if one is FREE, else FAIL the command — never block and never run
-	// slot-less. Blocking the reader on Close can deadlock: a spilled FD session
-	// (attempt's spill) pins a main-pool conn until the reader drains, so parking the
-	// reader while retry holders contend for that same pool hangs at a small PoolSize.
-	// Running slot-less (an earlier ap.ctx.Done() bypass) let a Close mid retryable-
-	// reply storm spawn one goroutine per in-flight reply (up to FullDuplexWindow) and
-	// OOM. Bounded fail is the lesser evil: the engine is closing, so ErrClosed on the
-	// overflow is acceptable, and retryWg still covers the slots that were granted.
+	// Take a free slot if one is available. Otherwise, by state:
+	//   - Close (ap.ctx done): FAIL ErrClosed. Never block (a spilled session pins a
+	//     main-pool conn until the reader drains, so parking the reader deadlocks the
+	//     retries that need that pool) and never run slot-less (a Close-time storm would
+	//     spawn a goroutine per in-flight reply, up to FullDuplexWindow, and OOM). The
+	//     engine is closing; retryWg still covers granted slots.
+	//   - spilled session (curConnSpilled): run SLOT-LESS rather than block, for the
+	//     same deadlock reason — the reader must keep draining so the session releases
+	//     its pinned main-pool conn (fCCni). Residual: up to a window of transient retry
+	//     goroutines while spilled, reachable only when the pipeline pool is saturated
+	//     at a small PoolSize; documented, and the lesser evil versus a hang.
+	//   - otherwise: BLOCK for a slot — end-to-end backpressure, safe because a
+	//     pipeline-pool session does not compete with the main-pool retries.
+	slot := false
 	select {
 	case fd.retrySem <- struct{}{}:
+		slot = true
 	case <-fd.ap.ctx.Done():
 		select {
 		case fd.retrySem <- struct{}{}:
+			slot = true
 		default:
 			req.cmd.SetErr(ErrClosed)
 			req.complete()
 			return
 		}
+	default:
+		if fd.curConnSpilled.Load() {
+			// slot stays false: run slot-less, do NOT block the reader.
+		} else {
+			fd.retrySem <- struct{}{}
+			slot = true
+		}
 	}
 	fd.retryWg.Add(1)
 	go func() {
 		defer func() {
-			<-fd.retrySem
+			if slot {
+				<-fd.retrySem
+			}
 			fd.retryWg.Done()
 		}()
 		// process runs user code (hooks, arg encoders) and can panic; without
@@ -1112,6 +1135,10 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// the main pool on a spill (see the acquire below) — so the deferred remove/release
 	// returns it to the pool that owns it.
 	connPool := fd.pool
+	// Bias to spilled==true until the lease is decided below: an unknown state must
+	// never let retryOnNormalConn block the reader (a leftover true only makes off-pipe
+	// retries slot-less, which is safe; a stale false is the deadlock this guards).
+	fd.curConnSpilled.Store(true)
 	defer func() {
 		if cn == nil {
 			return // nothing acquired, or already Removed inline below
@@ -1196,6 +1223,11 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 			return carry, fdLeaseErr, e
 		}
 	}
+
+	// The lease is decided: spilled iff the conn came from the main pool (a spill, or
+	// no dedicated pipeline pool). Stored before session() spawns the reader, so the
+	// reader's retryOnNormalConn sees the right value (happens-before).
+	fd.curConnSpilled.Store(connPool == fd.client.connPool)
 
 	unacked, result, aerr = fd.session(bg, cn, carry)
 	return unacked, result, aerr
