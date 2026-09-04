@@ -149,22 +149,22 @@ func TestLagAwareHealthCheck(t *testing.T) {
 			},
 		}
 
-		if !hc.bdbMatchesHost(bdb, "redis.example.com", 0) {
+		if !hc.bdbMatchesHost(bdb, "redis.example.com", 0, nil) {
 			t.Error("expected bdbMatchesHost to match DNS name without a port")
 		}
-		if !hc.bdbMatchesHost(bdb, "redis.example.com", 12000) {
+		if !hc.bdbMatchesHost(bdb, "redis.example.com", 12000, nil) {
 			t.Error("expected bdbMatchesHost to match DNS name with matching port")
 		}
-		if hc.bdbMatchesHost(bdb, "redis.example.com", 12001) {
+		if hc.bdbMatchesHost(bdb, "redis.example.com", 12001, nil) {
 			t.Error("expected bdbMatchesHost to reject a same-host different-port database")
 		}
-		if !hc.bdbMatchesHost(bdb, "Redis.EXAMPLE.com", 12000) {
+		if !hc.bdbMatchesHost(bdb, "Redis.EXAMPLE.com", 12000, nil) {
 			t.Error("expected bdbMatchesHost to match DNS name case-insensitively")
 		}
-		if !hc.bdbMatchesHost(bdb, "10.0.0.1", 12000) {
+		if !hc.bdbMatchesHost(bdb, "10.0.0.1", 12000, nil) {
 			t.Error("expected bdbMatchesHost to match address")
 		}
-		if hc.bdbMatchesHost(bdb, "other.example.com", 0) {
+		if hc.bdbMatchesHost(bdb, "other.example.com", 0, nil) {
 			t.Error("expected bdbMatchesHost to not match different host")
 		}
 	})
@@ -259,14 +259,14 @@ func TestLagAwareBDBMatchesEquivalentIPText(t *testing.T) {
 	// REST API's JSON can spell the same IP differently. Equivalent
 	// representations must match, or a healthy member reports unavailable.
 	for _, host := range []string{"2001:0db8::1", "2001:db8:0:0:0:0:0:1", "2001:db8::1"} {
-		if !hc.bdbMatchesHost(bdb, host, 6379) {
+		if !hc.bdbMatchesHost(bdb, host, 6379, nil) {
 			t.Errorf("bdbMatchesHost(%q) = false, want true (equivalent IPv6 text)", host)
 		}
 	}
-	if !hc.bdbMatchesHost(bdb, "10.0.0.1", 6379) {
+	if !hc.bdbMatchesHost(bdb, "10.0.0.1", 6379, nil) {
 		t.Error("bdbMatchesHost(10.0.0.1) = false, want true")
 	}
-	if hc.bdbMatchesHost(bdb, "2001:db8::2", 6379) {
+	if hc.bdbMatchesHost(bdb, "2001:db8::2", 6379, nil) {
 		t.Error("bdbMatchesHost(2001:db8::2) = true, want false (different IP)")
 	}
 }
@@ -589,6 +589,39 @@ func TestLagAwareDrainsErrorResponseBody(t *testing.T) {
 	}
 	if !body.sawEOF {
 		t.Error("non-2xx response body not drained before return")
+	}
+}
+
+// A configured hostname may be a DNS alias of the endpoint's canonical
+// dns_name. The REST API reports the canonical name and the addresses, so the
+// match must accept an alias that resolves to one of the reported addresses.
+func TestLagAwareMatchesDNSAlias(t *testing.T) {
+	bdbList := `[{"uid": 7, "endpoints": [{"dns_name": "redis-canonical.example.com", "addr": ["10.0.0.9"], "port": 6379}]}]`
+	newClient := func() *scriptedHTTPClient {
+		return &scriptedHTTPClient{responses: []*http.Response{
+			{StatusCode: 200, Body: io.NopCloser(strings.NewReader(bdbList))},
+			{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`))},
+		}}
+	}
+	client := redis.NewClient(&redis.Options{Addr: "alias.example.com:6379"})
+	defer client.Close()
+
+	hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(newClient()))
+	hc.lookupHost = func(_ context.Context, host string) ([]string, error) {
+		if host != "alias.example.com" {
+			t.Fatalf("resolved %q, want the configured host", host)
+		}
+		return []string{"10.0.0.9"}, nil
+	}
+	if ok, err := hc.CheckHealth(context.Background(), client); !ok || err != nil {
+		t.Fatalf("CheckHealth = (%v, %v), want healthy: the alias resolves to the endpoint's address", ok, err)
+	}
+
+	// An alias that resolves elsewhere still does not match.
+	hc = NewLagAwareHealthCheck(WithLagAwareHTTPClient(newClient()))
+	hc.lookupHost = func(context.Context, string) ([]string, error) { return []string{"10.0.0.250"}, nil }
+	if ok, err := hc.CheckHealth(context.Background(), client); ok || err == nil {
+		t.Fatalf("CheckHealth = (%v, %v), want no matching bdb", ok, err)
 	}
 }
 

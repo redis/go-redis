@@ -36,6 +36,9 @@ type LagAwareHealthCheck struct {
 	username     string
 	password     string
 	tlsConfig    *tls.Config
+	// lookupHost resolves a configured hostname for endpoint matching (see
+	// bdbMatchesHost). nil means the system resolver; tests inject one.
+	lookupHost func(ctx context.Context, host string) ([]string, error)
 	// configErr records the first error encountered while applying options
 	// (e.g. an invalid PEM or unreadable cert file). When set, health checks
 	// fail fast rather than silently running with an incomplete TLS config.
@@ -429,10 +432,25 @@ func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string,
 	if err != nil {
 		return false, err
 	}
+	// A configured hostname may be a DNS alias of the endpoint's canonical
+	// dns_name. The REST API reports the canonical name and the addresses,
+	// so resolve the alias once and let the match use the addresses too. A
+	// resolution failure is not a health verdict: the literal matches still
+	// apply, and no match reports "no matching bdb" as before.
+	var hostIPs []net.IP
+	if net.ParseIP(dbHost) == nil {
+		if resolved, rerr := h.resolveHost(ctx, dbHost); rerr == nil {
+			for _, s := range resolved {
+				if ip := net.ParseIP(s); ip != nil {
+					hostIPs = append(hostIPs, ip)
+				}
+			}
+		}
+	}
 	var uid int
 	found := false
 	for _, bdb := range bdbs {
-		if h.bdbMatchesHost(bdb, dbHost, dbPort) {
+		if h.bdbMatchesHost(bdb, dbHost, dbPort, hostIPs) {
 			uid = bdb.UID
 			found = true
 			break
@@ -514,10 +532,19 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 	return bdbs, nil
 }
 
+// resolveHost resolves a configured hostname to its addresses. Tests inject
+// lookupHost; the default is the system resolver.
+func (h *LagAwareHealthCheck) resolveHost(ctx context.Context, host string) ([]string, error) {
+	if h.lookupHost != nil {
+		return h.lookupHost(ctx, host)
+	}
+	return net.DefaultResolver.LookupHost(ctx, host)
+}
+
 // bdbMatchesHost reports whether a database endpoint matches the client's
 // host and, when both sides carry one, its Redis port — several Redis
 // Enterprise databases can share a DNS name and differ only by port.
-func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int) bool {
+func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int, hostIPs []net.IP) bool {
 	hostIP := net.ParseIP(host)
 	for _, ep := range bdb.Endpoints {
 		if port != 0 && ep.Port != 0 && ep.Port != port {
@@ -532,11 +559,20 @@ func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int)
 			if addr == host {
 				return true
 			}
+			epIP := net.ParseIP(addr)
+			// A configured DNS alias (CNAME) resolves to the endpoint's
+			// addresses even though its name differs from the reported
+			// dns_name: match on the resolved addresses.
+			for _, hip := range hostIPs {
+				if epIP != nil && epIP.Equal(hip) {
+					return true
+				}
+			}
 			// IPv6 text is not canonical ("2001:0db8::1" vs "2001:db8::1"):
 			// compare parsed IPs so equivalent spellings on the two sides do
 			// not report a healthy member as unavailable.
 			if hostIP != nil {
-				if epIP := net.ParseIP(addr); epIP != nil && epIP.Equal(hostIP) {
+				if epIP != nil && epIP.Equal(hostIP) {
 					return true
 				}
 			}
