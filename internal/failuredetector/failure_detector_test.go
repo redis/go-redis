@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -18,9 +19,33 @@ import (
 // advance time without sleeping. The returned closure shifts the clock by
 // the given duration. Use this for any test that depends on window expiry.
 func withFakeClock(fd *CommandFailureDetector, start time.Time) (advance func(time.Duration)) {
-	cur := start
-	fd.now = func() time.Time { return cur }
-	return func(d time.Duration) { cur = cur.Add(d) }
+	cur := start.UnixNano()
+	fd.nowNano = func() int64 { return cur }
+	return func(d time.Duration) { cur += int64(d) }
+}
+
+// The window math follows the detector's own monotonic clock. Driven through
+// the injectable clock: failures recorded at one instant leave the window
+// once that clock, and only that clock, has advanced past it.
+func TestCommandFailureDetector_WindowFollowsMonotonicClock(t *testing.T) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.5,
+		FailureDetectionWindow: time.Second,
+		NumBuckets:             4,
+	})
+	advance := withFakeClock(fd, time.Unix(0, 0))
+	for i := 0; i < 3; i++ {
+		fd.RecordFailure(io.EOF)
+	}
+	if !fd.ShouldFailover() {
+		t.Fatal("3 failures inside the window did not trip the detector: the buckets are not keyed on the detector's clock")
+	}
+	// No real time passes; only the detector's clock moves past the window.
+	advance(2 * time.Second)
+	if fd.ShouldFailover() {
+		t.Fatal("failures still counted after the detector's clock left the window")
+	}
 }
 
 func TestCommandFailureDetector_ShouldFailover(t *testing.T) {
@@ -747,12 +772,12 @@ func TestCommandFailureDetector_StaleWriterDropsOutcomeKeepsNewerBucket(t *testi
 	advance := withFakeClock(fd, start)
 
 	// A writer reads the clock at T0, then stalls.
-	staleNano := fd.now().UnixNano()
+	staleNano := fd.nowNano()
 
 	// Real time advances a full ring lap; a concurrent writer stamps the same
 	// slot with the newer epoch and records a failure there.
 	advance(10 * time.Millisecond)
-	newer := fd.bucketFor(fd.now().UnixNano())
+	newer := fd.bucketFor(fd.nowNano())
 	if newer == nil {
 		t.Fatal("current-time bucketFor returned nil")
 	}
@@ -772,7 +797,7 @@ func TestCommandFailureDetector_StaleWriterDropsOutcomeKeepsNewerBucket(t *testi
 	// rebased, not dropped. Step the clock back to T0: the slot now holds a
 	// future epoch relative to now, so bucketFor must stamp a fresh one.
 	advance(-10 * time.Millisecond) // now == T0 again; slot epoch is in the future
-	rebased := fd.bucketFor(fd.now().UnixNano())
+	rebased := fd.bucketFor(fd.nowNano())
 	if rebased == nil || rebased == newer {
 		t.Fatal("rollback future-epoch bucket was dropped/kept instead of rebased")
 	}

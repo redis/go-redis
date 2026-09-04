@@ -149,7 +149,12 @@ type CommandFailureDetector struct {
 	buckets         []bucket
 	bucketWidthNano int64
 	windowNano      int64
-	now             func() time.Time // injectable for tests
+	// nowNano is the detector's clock in nanoseconds. By default it is the
+	// monotonic time since the detector was built, so a wall-clock step in
+	// either direction neither forgets recent buckets (forward step) nor pins
+	// stale ones (backward step). Injectable for tests, which may drive it
+	// backwards; the future-epoch guards below stay for that.
+	nowNano func() int64
 }
 
 // NewCommandFailureDetector creates a new sliding-window failure detector
@@ -164,12 +169,16 @@ func NewCommandFailureDetector(config CommandFailureDetectorConfig) *CommandFail
 	if bucketWidthNano < 1 {
 		bucketWidthNano = 1
 	}
+	epoch := time.Now()
 	return &CommandFailureDetector{
 		config:          config,
 		buckets:         make([]bucket, config.NumBuckets),
 		bucketWidthNano: bucketWidthNano,
 		windowNano:      int64(config.FailureDetectionWindow),
-		now:             time.Now,
+		// time.Since reads the monotonic clock: bucket epochs and the window
+		// cutoff are all relative to the detector's start, never to the wall
+		// clock.
+		nowNano: func() int64 { return int64(time.Since(epoch)) },
 	}
 }
 
@@ -232,13 +241,13 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 // it when bucketFor reports the caller's timestamp is a full ring lap stale
 // (nil) — an already-expired outcome must not be counted in the live window.
 func (d *CommandFailureDetector) addSuccess() {
-	if b := d.bucketFor(d.now().UnixNano()); b != nil {
+	if b := d.bucketFor(d.nowNano()); b != nil {
 		b.successes.Add(1)
 	}
 }
 
 func (d *CommandFailureDetector) addFailure() {
-	if b := d.bucketFor(d.now().UnixNano()); b != nil {
+	if b := d.bucketFor(d.nowNano()); b != nil {
 		b.failures.Add(1)
 	}
 }
@@ -350,7 +359,7 @@ func (d *CommandFailureDetector) bucketFor(nowNano int64) *bucketState {
 		// bucket would count an expired failure/success as current. Preserve the
 		// newer bucket untouched; only a rollback artifact falls through to be
 		// rebased below.
-		if st != nil && st.epochNano > bucketStart && st.epochNano <= d.now().UnixNano() {
+		if st != nil && st.epochNano > bucketStart && st.epochNano <= d.nowNano() {
 			return nil
 		}
 		// st is nil (slot never used), holds an older epoch (a previous lap of
@@ -378,7 +387,7 @@ func (d *CommandFailureDetector) bucketFor(nowNano int64) *bucketState {
 // aggregated counts only ever undercount the true value by at most the
 // in-flight writes.
 func (d *CommandFailureDetector) snapshot() (successes, failures uint64) {
-	nowNano := d.now().UnixNano()
+	nowNano := d.nowNano()
 	cutoff := nowNano - d.windowNano - d.bucketWidthNano
 	for i := range d.buckets {
 		st := d.buckets[i].state.Load()
