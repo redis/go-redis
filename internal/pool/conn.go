@@ -641,19 +641,30 @@ func (cn *Conn) expireRelaxedTimeout(deadlineNs int64) {
 
 // HasRelaxedTimeout returns true when the relaxed timeouts are active on this
 // connection. Active means a holder is present, a timeout is set, and any deadline
-// is still in the future. It does one lock-free snapshot Load.
+// is still in the future. When the deadline has passed it removes the deadline holder
+// once (like getEffective*) and re-reads the snapshot: a surviving non-deadline holder
+// keeps the window active. Before this, an expired deadline made it report false even
+// while another holder was still active, contradicting the surviving-holder semantics.
+// This reports the boolean only; the timeout VALUE it would relax to may still be the
+// expired holder's, since all holders share one (readNs, writeNs) pair — see the
+// per-holder timeout follow-up.
 func (cn *Conn) HasRelaxedTimeout() bool {
 	cur := cn.relaxed.Load()
-	if cur == nil || cur.count <= 0 {
+	if cur == nil || cur.count <= 0 || (cur.readNs <= 0 && cur.writeNs <= 0) {
 		return false
 	}
-	if cur.readNs <= 0 && cur.writeNs <= 0 {
-		return false
-	}
-	if cur.deadlineNs == 0 {
+	if cur.deadlineNs == 0 || time.Now().UnixNano() < cur.deadlineNs {
 		return true
 	}
-	return time.Now().UnixNano() < cur.deadlineNs
+	// The deadline passed. Remove the deadline holder, then re-read: a notification
+	// holder can still be active with no deadline (surviving-holder semantics), matching
+	// getEffectiveReadTimeout.
+	cn.expireRelaxedTimeout(cur.deadlineNs)
+	s := cn.relaxed.Load()
+	if s == nil || s.count <= 0 || (s.readNs <= 0 && s.writeNs <= 0) {
+		return false
+	}
+	return s.deadlineNs == 0 || time.Now().UnixNano() < s.deadlineNs
 }
 
 // EffectiveReadTimeout reports the read timeout that a read on this connection

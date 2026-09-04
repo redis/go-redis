@@ -171,6 +171,35 @@ func TestRelaxedTimeoutExpiryKeepsNotificationWindow(t *testing.T) {
 	}
 }
 
+// TestHasRelaxedTimeoutExpiresDeadlineAndReadsSurvivor pins r3934148728: called on a
+// conn whose handoff DEADLINE holder has expired while a notification holder survives,
+// HasRelaxedTimeout must retire the deadline holder and re-read, reporting true — not
+// return false on the stale snapshot just because no Effective* call has triggered the
+// expiry yet. (TestRelaxedTimeoutExpiryKeepsNotificationWindow only reaches
+// HasRelaxedTimeout AFTER an Effective* already expired the deadline.)
+func TestHasRelaxedTimeoutExpiresDeadlineAndReadsSurvivor(t *testing.T) {
+	netConn := &net.TCPConn{}
+	cn := NewConn(netConn)
+	defer cn.Close()
+
+	// Expired handoff deadline holder + a surviving notification holder (no deadline).
+	cn.SetRelaxedTimeoutWithDeadline(time.Second, time.Second, time.Now().Add(-time.Minute))
+	cn.SetRelaxedTimeout(2*time.Second, 2*time.Second)
+	if count := cn.relaxedHolderCount(); count != 2 {
+		t.Fatalf("relaxed counter = %d, want 2", count)
+	}
+
+	// Call HasRelaxedTimeout FIRST (before any Effective*): it must expire the deadline
+	// holder and re-read, seeing the surviving notification holder -> true.
+	if !cn.HasRelaxedTimeout() {
+		t.Fatal("HasRelaxedTimeout returned false while a notification holder survives the expired deadline (r3934148728)")
+	}
+	// The expiry retired only the deadline holder.
+	if count := cn.relaxedHolderCount(); count != 1 {
+		t.Fatalf("relaxed counter = %d after HasRelaxedTimeout expiry, want 1 (notification holder kept)", count)
+	}
+}
+
 // TestRelaxedTimeoutOverlappingHandoffsClear guards the other direction: two
 // overlapping deadline-scoped handoffs on one conn must NOT leave it permanently
 // relaxed. The holder guard means the re-arm replaces the deadline in place
