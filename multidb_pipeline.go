@@ -784,13 +784,22 @@ func (c *MultiDBClient) SSubscribe(ctx context.Context, channels ...string) *Pub
 		// A gate failure (the active is rejected and nothing can replace it)
 		// falls through to the follower below rather than pinning the
 		// subscription to the rejected member: the follower re-dials on the
-		// next active change, so it recovers when a member does.
+		// next active change, so it recovers when a member does. The follower
+		// dials standalone members only, though. With no standalone member
+		// at all, it would fail terminally, so an all-cluster deployment binds
+		// to the active cluster member instead: rejected now, but the
+		// subscription recovers with it, which a terminal failure never does.
 		db, err := c.activeAfterGate(ctx)
 		if err == nil && db != nil && db.cc != nil {
 			return db.cc.SSubscribe(ctx, channels...)
 		}
 		if err == nil && db != nil {
 			return db.c.SSubscribe(ctx, channels...)
+		}
+		if err != nil && !c.core.hasStandaloneMember() {
+			if cur, _ := c.core.activeSnapshot(); cur != nil && cur.cc != nil {
+				return cur.cc.SSubscribe(ctx, channels...)
+			}
 		}
 	}
 	// No active database (or closed, or gate failure): return a PubSub that

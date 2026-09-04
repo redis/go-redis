@@ -2329,6 +2329,37 @@ func TestMultiDBSSubscribeFallsBackToFollowerWhenGateRejects(t *testing.T) {
 	}
 }
 
+// With no standalone member the follower cannot serve at all (it dials
+// standalone members only and fails terminally), so on a gate failure an
+// all-cluster deployment binds to the active cluster member: rejected now,
+// but the subscription recovers with it.
+func TestMultiDBSSubscribeAllClusterGateRejectBindsToClusterMember(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{
+			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	mdb.core.dbs[0].cb.ForceOpen()
+
+	ps := mdb.SSubscribe(ctx, "ch")
+	t.Cleanup(func() { _ = ps.Close() })
+	// The MultiDB follower carries a per-connection processor lookup; a
+	// member's own PubSub does not.
+	if ps.processorFor != nil {
+		t.Fatal("SSubscribe returned the standalone-only follower for an all-cluster deployment; it can never attach")
+	}
+}
+
 // resetInsideRecordFD simulates a detector reset (operator reselect, failover,
 // fallback) landing between the generation check and the detector write: its
 // RecordFailure first resets the core's detector window, then latches, as a
