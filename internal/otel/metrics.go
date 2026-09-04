@@ -291,10 +291,16 @@ func RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, 
 	getRecorder().RecordMultiDBHealthCheck(ctx, dbFQDN, success, duration)
 }
 
+// NoopRecorder returns the recorder that discards everything. A test that
+// installs a partial recorder embeds it so the methods the test does not
+// care about still have an implementation.
+func NoopRecorder() Recorder { return noopRecorder{} }
+
 type noopRecorder struct{}
 
 func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, error, *pool.Conn, int) {
 }
+
 func (noopRecorder) RecordPipelineOperationDuration(context.Context, time.Duration, string, int, int, error, *pool.Conn, int) {
 }
 func (noopRecorder) RecordConnectionCreateTime(context.Context, time.Duration, *pool.Conn) {}

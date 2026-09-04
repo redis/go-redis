@@ -12,6 +12,8 @@ import (
 	"time"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
+	"github.com/redis/go-redis/v9/internal/otel"
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/routing"
 )
@@ -1902,5 +1904,63 @@ func TestInitializeProbesDoNotRecordOnBreakers(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := transitions.Load(); n != 0 {
 		t.Fatalf("%d circuit-state callbacks during startup, want 0: a startup probe recorded on the breaker", n)
+	}
+}
+
+// reentrantRegistrar is an OTel pool registrar whose unregister callbacks
+// call back into MultiDB, as a metrics integration reacting to a pool going
+// away might.
+type reentrantRegistrar struct {
+	otel.Recorder
+	onUnregister func()
+}
+
+func (*reentrantRegistrar) RegisterPool(string, pool.Pooler)             {}
+func (r *reentrantRegistrar) UnregisterPool(pool.Pooler)                 { r.onUnregister() }
+func (*reentrantRegistrar) RegisterPubSubPool(string, otel.PubSubPooler) {}
+func (r *reentrantRegistrar) UnregisterPubSubPool(otel.PubSubPooler)     { r.onUnregister() }
+
+// Close must not hold the membership lock while it closes member clients:
+// closing a client reaches code outside the package (here the OTel pool
+// registrar), and that code may call back into MultiDB. With the lock held,
+// such a call deadlocked Close.
+func TestMultiDBCloseReleasesMembershipLockBeforeClosingClients(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{{
+			Options:      &Options{Addr: "127.0.0.1:1"},
+			Weight:       1,
+			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+		}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	reentered := make(chan int, 8)
+	otel.SetGlobalRecorder(&reentrantRegistrar{
+		Recorder:     otel.NoopRecorder(),
+		onUnregister: func() { reentered <- mdb.core.memberCount() },
+	})
+	t.Cleanup(func() { otel.SetGlobalRecorder(otel.NoopRecorder()) })
+
+	done := make(chan error, 1)
+	go func() { done <- mdb.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close did not return: closing a member client re-entered MultiDB while the membership lock was held")
+	}
+	select {
+	case <-reentered:
+	default:
+		t.Fatal("the registrar's unregister callback never ran: the re-entrant path was not exercised")
 	}
 }

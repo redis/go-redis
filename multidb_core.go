@@ -2136,20 +2136,29 @@ func (c *multidbCore) close() error {
 }
 
 func (c *multidbCore) closeAll() error {
+	// Take the members out of the membership under dbMu, then close their
+	// clients with the lock released. Closing a client runs code outside
+	// this package (an OTel pool registrar's UnregisterPool, for one), and
+	// that code may call back into MultiDB; holding dbMu across it would
+	// deadlock such a call.
 	c.dbMu.Lock()
-	defer c.dbMu.Unlock()
-	var firstErr error
-	for _, db := range c.dbs {
+	dbs := c.dbs
+	c.dbs = nil
+	for _, db := range dbs {
 		// Mark removed before closing: a circuit-state change fired during
 		// teardown (or already queued) checks this flag at delivery, and
 		// close() does not wait on the callback queue — without it an
 		// OnCircuitStateChanged could fire after Close returns.
 		db.removed.Store(true)
+	}
+	c.dbMu.Unlock()
+
+	var firstErr error
+	for _, db := range dbs {
 		if err := db.closeClient(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	c.dbs = nil
 	return firstErr
 }
 
