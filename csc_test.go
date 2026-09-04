@@ -3962,3 +3962,41 @@ func TestPushDrainWithinShortBoundaryUnderRelaxation(t *testing.T) {
 			"(%v), not the relaxed timeout (#3989)", elapsed, cscDrainHardReadCap)
 	}
 }
+
+// TestInvalidateHandlerFullFlushPairsBatcherWithSnapshotCache pins #3989 fCCqu: a
+// full-cache flush must drop the batcher only when it still belongs to the cache being
+// flushed. If a release+rebind (A->B) races between the caller's snapshot and the
+// flush, dropping B's batcher while flushing A would skip B's queued deletes and B
+// would serve stale.
+func TestInvalidateHandlerFullFlushPairsBatcherWithSnapshotCache(t *testing.T) {
+	cacheA := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cacheB := NewLocalCache(CacheConfig{MaxEntries: 16})
+	batcherB := newTestBatcher(cacheB, 64, time.Hour)
+
+	// Handler now bound to cache B (post-rebind); the full-flush was snapshotted for A.
+	h := &invalidateHandler{cache: cacheB, batcher: batcherB}
+
+	cacheA.set("get:x", []string{"x"}, []byte("v"))
+	if cacheA.Len() == 0 {
+		t.Fatal("precondition: cacheA should hold an entry")
+	}
+	epochBefore := batcherB.epoch.Load()
+
+	// Snapshot was A, but h.cache is B: flush A, and DO NOT drop B's batcher.
+	h.fullFlush(cacheA)
+
+	if got := batcherB.epoch.Load(); got != epochBefore {
+		t.Fatalf("fullFlush dropped the rebound cache B's batcher (epoch %d -> %d) while flushing A (#3989)",
+			epochBefore, got)
+	}
+	if cacheA.Len() != 0 {
+		t.Fatal("fullFlush did not flush the snapshot cache A")
+	}
+
+	// Control: an unchanged binding (h.cache == cache) DOES drop the batcher.
+	epochB2 := batcherB.epoch.Load()
+	h.fullFlush(cacheB)
+	if batcherB.epoch.Load() == epochB2 {
+		t.Fatal("fullFlush must drop the batcher when the binding is unchanged")
+	}
+}
