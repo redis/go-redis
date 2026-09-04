@@ -771,13 +771,17 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 // SSubscribe subscribes to shard channels on the database that is active at
 // call time. Unlike Subscribe/PSubscribe, sharded subscriptions do not follow
-// the active database across failovers yet.
+// the active database across failovers yet. Because the subscription stays
+// pinned, the active is admitted first like a command: an active whose
+// breaker is open or whose failure detector has tripped is failed over
+// before the subscription binds, so it is not pinned to a member already
+// known to be unhealthy.
 func (c *MultiDBClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	// The closed check keeps a Close race from delegating to a member that
 	// is being torn down: the MultiDB PubSub path below fails dials with
 	// the terminal ErrClosed instead.
 	if !c.core.closed.Load() {
-		db, _ := c.core.activeSnapshot()
+		db := c.activeAfterGate(ctx)
 		if db != nil && db.cc != nil {
 			return db.cc.SSubscribe(ctx, channels...)
 		}

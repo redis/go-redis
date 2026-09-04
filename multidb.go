@@ -720,26 +720,33 @@ func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 	return c.cmdable.DBSize(ctx)
 }
 
-// activeClusterAfterGate returns the active member when it is a cluster
-// member, after the admission the data path applies to every command: an
-// active whose breaker is open, or whose failure detector has tripped, is
-// failed over first, so a control command is not sent to a member already
-// known to be unhealthy. No half-open probe slot is reserved and no outcome
-// is recorded (see DBSize for why). It returns nil when the active is not a
-// cluster member, and the caller then takes the regular hook-wrapped path.
-func (c *MultiDBClient) activeClusterAfterGate(ctx context.Context) *multidbDatabase {
+// activeAfterGate returns the active member after the admission the data
+// path applies to every command: an active whose breaker is open, or whose
+// failure detector has tripped, is failed over first, so the caller does not
+// bind work to a member already known to be unhealthy. No half-open probe
+// slot is reserved and no outcome is recorded: the callers (cluster control
+// commands, sharded subscriptions) are not health-representative traffic.
+// Returns nil when there is no active member.
+func (c *MultiDBClient) activeAfterGate(ctx context.Context) *multidbDatabase {
 	db, idx := c.core.activeSnapshot()
 	if db != nil && (!db.selectable() || c.core.shouldFailoverSafely()) {
 		// A failed failover (no selectable candidate) keeps the current
-		// active: the command then fails against it, as any command would.
+		// active: the operation then fails against it, as any command would.
 		if err := c.core.tryFailover(ctx, idx); err == nil {
 			db, _ = c.core.activeSnapshot()
 		}
 	}
-	if db == nil || db.cc == nil {
-		return nil
-	}
 	return db
+}
+
+// activeClusterAfterGate is activeAfterGate restricted to a cluster member:
+// it returns nil when the active is not one, and the caller then takes the
+// regular hook-wrapped path (see DBSize).
+func (c *MultiDBClient) activeClusterAfterGate(ctx context.Context) *multidbDatabase {
+	if db := c.activeAfterGate(ctx); db != nil && db.cc != nil {
+		return db
+	}
+	return nil
 }
 
 // ScriptLoad delegates to the active member so a cluster member loads the

@@ -2138,3 +2138,36 @@ func TestMultiDBTxMarksDecoratedCommandsNoRetry(t *testing.T) {
 		t.Error("NoRetry was not restored on the caller's command after the transaction")
 	}
 }
+
+// A sharded subscription is pinned to the member it binds to, so it must
+// bind only after the same admission commands get: an active whose breaker
+// is open is failed over first.
+func TestMultiDBSSubscribeFailsOverOpenActive(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{
+			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	if got := mdb.core.activeDatabaseID(); got != 0 {
+		t.Fatalf("active = %d, want 0", got)
+	}
+
+	mdb.core.dbs[0].cb.ForceOpen()
+
+	ps := mdb.SSubscribe(ctx, "ch")
+	t.Cleanup(func() { _ = ps.Close() })
+	if got := mdb.core.activeDatabaseID(); got != 1 {
+		t.Fatalf("active = %d after SSubscribe, want 1: the subscription was pinned to the open member", got)
+	}
+}
