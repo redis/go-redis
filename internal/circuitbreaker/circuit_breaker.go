@@ -330,10 +330,20 @@ func (cb *CircuitBreaker) RecordSuccessFor(r Reservation) {
 		// bumps the generation (Reset, and HalfOpen->Closed via the bump in
 		// maybeHalfOpenLocked), so a stale generation means a reselect or a
 		// recovery cycle happened since admission and this success predates it.
-		// Lock-free: the only action is an idempotent failures.Store(0).
+		// Fast path, lock-free: nothing to clear. This is the common case
+		// on a healthy member, so the lock below costs nothing there.
+		if cb.failures.Load() == 0 {
+			return
+		}
+		// Clear under transitionMu, atomically with Reset: a lock-free
+		// check-then-store could pass the checks, be descheduled across a
+		// Reset, and then wipe failures recorded against the freshly reset
+		// member, delaying its opening.
+		cb.transitionMu.Lock()
 		if r.gen == cb.generation.Load() && State(cb.state.Load()) == StateClosed {
 			cb.failures.Store(0)
 		}
+		cb.transitionMu.Unlock()
 		return
 	}
 	if r.settled.Swap(true) {

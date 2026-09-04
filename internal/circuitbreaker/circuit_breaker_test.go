@@ -1430,6 +1430,51 @@ func TestCircuitBreaker_OpenTimeoutUsesMonotonicClock(t *testing.T) {
 	}
 }
 
+// A closed-state success clears the failure count under the transition lock,
+// atomically with Reset, but only when there is something to clear: the
+// common case (no failures) stays lock-free.
+func TestCircuitBreaker_ClosedSuccessClearSerializesWithReset(t *testing.T) {
+	cb := New(Config{FailureThreshold: 5, SuccessThreshold: 1, OpenTimeout: time.Hour})
+	allowed, res := cb.AllowReserve()
+	if !allowed || res.Held() {
+		t.Fatalf("closed admission: allowed=%v held=%v", allowed, res.Held())
+	}
+
+	// Nothing to clear: returns even while a transition holds the lock.
+	cb.transitionMu.Lock()
+	done := make(chan struct{})
+	go func() { cb.RecordSuccessFor(res); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		cb.transitionMu.Unlock()
+		t.Fatal("RecordSuccessFor with no failures to clear blocked on the transition lock")
+	}
+	cb.transitionMu.Unlock()
+
+	// Something to clear: waits for the lock, then clears.
+	cb.RecordFailure()
+	cb.RecordFailure()
+	cb.transitionMu.Lock()
+	done = make(chan struct{})
+	go func() { cb.RecordSuccessFor(res); close(done) }()
+	select {
+	case <-done:
+		cb.transitionMu.Unlock()
+		t.Fatal("RecordSuccessFor cleared failures while a transition held the lock: the clear is not atomic with Reset")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cb.transitionMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RecordSuccessFor never returned after the lock was released")
+	}
+	if got := cb.Stats().Failures; got != 0 {
+		t.Fatalf("failures=%d after a closed-state success, want 0", got)
+	}
+}
+
 // Allow admits half-open requests under the transition lock, like
 // AllowReserve: no transition can land between the reservation and the
 // decision. The lock-free form reserved, re-checked the state and rejected on
