@@ -2316,3 +2316,58 @@ func TestMultiDBPubSubInitConnErrTranslatedForRemovedMember(t *testing.T) {
 		t.Fatalf("Subscribe error still carries the pool's ErrClosed, which the channel loops treat as terminal: %v", err)
 	}
 }
+
+// The tracked-autopipeliner list is compacted in place when a new instance
+// is built. The slots behind the new length must be cleared, or drained
+// instances stay reachable through the backing array.
+func TestMultiDBTrackedAutopipelinersDropDrainedReferences(t *testing.T) {
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		HealthCheckTimeout:   time.Second,
+		Clients: []MultiDBClientConfig{{
+			Options:      &Options{Addr: "127.0.0.1:1"},
+			Weight:       1,
+			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+		}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	// Two live instances, then both drained: the next build compacts a
+	// two-slot array down to one entry.
+	a, err := mdb.AutoPipeline()
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+	b, err := mdb.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	_ = a.Close()
+	_ = a.WaitClosed()
+	_ = b.Close()
+	_ = b.WaitClosed()
+	c, err := mdb.AutoPipeline()
+	if err != nil {
+		t.Fatalf("AutoPipeline after drain: %v", err)
+	}
+
+	mdb.autopipelinerMu.Lock()
+	s := mdb.builtAutopipeliners
+	full := s[:cap(s)]
+	mdb.autopipelinerMu.Unlock()
+	if len(s) != 1 || s[0] != c {
+		t.Fatalf("tracked = %d entries (first == new: %v), want exactly the new instance", len(s), len(s) > 0 && s[0] == c)
+	}
+	for i := len(s); i < len(full); i++ {
+		if full[i] != nil {
+			t.Fatalf("slot %d behind the slice length still references an autopipeliner: drained instances are retained", i)
+		}
+	}
+}

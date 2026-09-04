@@ -897,6 +897,10 @@ func (c *MultiDBClient) trackAutopipelinerLocked(ap *AutoPipeliner, err error) (
 			kept = append(kept, p)
 		}
 	}
+	// Drop the references left behind the new length: the backing array is
+	// reused, and drained instances would otherwise stay reachable through
+	// it until overwritten.
+	clear(c.builtAutopipeliners[len(kept):])
 	c.builtAutopipeliners = append(kept, ap)
 	return ap, nil
 }
