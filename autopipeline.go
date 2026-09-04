@@ -420,14 +420,20 @@ func (cfg *AutoPipelineOptions) Validate() error {
 			"(adaptive delay scales MaxFlushDelay by queue fill; with no MaxFlushDelay it would " +
 			"silently disable batch accumulation entirely)")
 	}
-	if cfg.FullDuplexWindow < 0 {
-		return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexWindow=%d must be >= 0 (0 = default)", cfg.FullDuplexWindow)
-	}
-	if cfg.FullDuplexIdleTimeout < 0 {
-		return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexIdleTimeout=%s must be >= 0 (0 = default)", cfg.FullDuplexIdleTimeout)
-	}
-	if cfg.FullDuplexMaxHold < 0 {
-		return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexMaxHold=%s must be >= 0 (0 = default)", cfg.FullDuplexMaxHold)
+	// The full-duplex tuning fields are consumed only when FullDuplex is enabled
+	// (newFDEngine resolves them; the half-duplex path never reads them), so validate
+	// them only then. Otherwise a leftover negative on an inactive field would reject
+	// an otherwise valid half-duplex config.
+	if cfg.FullDuplex {
+		if cfg.FullDuplexWindow < 0 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexWindow=%d must be >= 0 (0 = default)", cfg.FullDuplexWindow)
+		}
+		if cfg.FullDuplexIdleTimeout < 0 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexIdleTimeout=%s must be >= 0 (0 = default)", cfg.FullDuplexIdleTimeout)
+		}
+		if cfg.FullDuplexMaxHold < 0 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexMaxHold=%s must be >= 0 (0 = default)", cfg.FullDuplexMaxHold)
+		}
 	}
 	return nil
 }
@@ -1187,6 +1193,12 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			fdOn, fdClient = true, c
 		}
 	}
+	// Publish the EFFECTIVE full-duplex state, not the requested one: FullDuplex is a
+	// no-op on a *ClusterClient (or a client with no pipeline pool), where the engine
+	// falls back to the half-duplex shard flushers. Config() promises what the engine
+	// actually runs, so a requested-but-inactive FullDuplex must report false rather
+	// than claim a mode the instance is not in. Only Config() reads this after here.
+	ap.config.FullDuplex = fdOn
 
 	ap.shards = make([]*apShard, nShards)
 	for i := range ap.shards {
@@ -1393,12 +1405,17 @@ func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
 // AddHook adds a hook to the underlying client. Autopipelined batches are hooked
 // too, since dispatch goes through the hook-wrapped pipeline entry.
 //
-// Hook contract (behavior is undefined otherwise):
-//   - Call next. A hook that returns without calling next drops the command.
-//   - Do not call Close, or any other control method, on this AutoPipeliner or its
-//     client from inside a hook. A hook runs on the engine's dispatch goroutine; a
-//     Close from there would wait on the very drain it is part of (the re-entrant
-//     Close is detected and returns without waiting, but the command still fails).
+// Hook contract:
+//   - Short-circuiting differs by dispatch mode. In half-duplex (batched) mode a
+//     hook MAY return without calling next to skip the server — a supported pattern
+//     for a mock or cache. In full-duplex mode the command is already queued on the
+//     held connection before the hook runs, so returning without calling next does
+//     NOT prevent the server write; a hook cannot cancel a full-duplex command.
+//   - Do not call Close, or any other client control method, from inside a hook. A
+//     hook runs on the engine's dispatch goroutine; in full-duplex mode a synchronous
+//     Close from there blocks until the close backstop, because Close waits on the
+//     very hook host it is running on. Trigger Close from a separate goroutine (see
+//     the FullDuplex GoDoc).
 //   - Do not panic. A panic in a batch hook is recovered so it cannot crash the
 //     process, but the affected batch fails.
 //   - Do not mutate client or connection state.

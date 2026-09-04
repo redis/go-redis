@@ -2351,3 +2351,22 @@ func TestNewFDEnginePublishesResolvedDefaults(t *testing.T) {
 		t.Errorf("MaxBatchSize=%d; want the default 200", cfg.MaxBatchSize)
 	}
 }
+
+// The full-duplex tuning fields are consumed only when FullDuplex is enabled, so a
+// negative on one of them must not reject an otherwise valid half-duplex config; it
+// is still rejected when FullDuplex is on.
+func TestFullDuplexTuningValidatedOnlyWhenEnabled(t *testing.T) {
+	off := &AutoPipelineOptions{FullDuplexWindow: -1, FullDuplexIdleTimeout: -1, FullDuplexMaxHold: -1}
+	if err := off.Validate(); err != nil {
+		t.Errorf("FullDuplex off: negative FD tuning should not error, got %v", err)
+	}
+	for _, on := range []*AutoPipelineOptions{
+		{FullDuplex: true, FullDuplexWindow: -1},
+		{FullDuplex: true, FullDuplexIdleTimeout: -1},
+		{FullDuplex: true, FullDuplexMaxHold: -1},
+	} {
+		if err := on.Validate(); err == nil {
+			t.Errorf("FullDuplex on with a negative FD field %+v: want error, got nil", on)
+		}
+	}
+}
