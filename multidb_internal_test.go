@@ -1964,3 +1964,53 @@ func TestMultiDBCloseReleasesMembershipLockBeforeClosingClients(t *testing.T) {
 		t.Fatal("the registrar's unregister callback never ran: the re-entrant path was not exercised")
 	}
 }
+
+// activeObservingCheck records which member was active when it ran.
+type activeObservingCheck struct {
+	core    *multidbCore
+	healthy bool
+	saw     chan int64
+}
+
+func (c *activeObservingCheck) CheckHealth(context.Context, *Client) (bool, error) {
+	c.saw <- c.core.active.Load()
+	return c.healthy, nil
+}
+
+func (c *activeObservingCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	return c.CheckHealth(context.Background(), nil)
+}
+
+// The background pass probes the active first and decides failover right
+// after it: by the time any passive is probed, an active found unhealthy has
+// already been replaced. Probing the passives first made an idle client wait
+// for every passive's probe (up to HealthCheckTimeout each) before it could
+// switch.
+func TestBackgroundPassFailsOverBeforeProbingPassives(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second, FailoverStrategy: WeightBasedFailoverStrategy{}})
+	mkCB := func() *imultidb.CircuitBreaker {
+		return imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1})
+	}
+	saw := make(chan int64, 4)
+	activeCheck := &activeObservingCheck{core: core, healthy: false, saw: make(chan int64, 4)}
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 3, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{activeCheck}}
+	core.dbs[1] = &multidbDatabase{id: 1, weight: 2, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{&activeObservingCheck{core: core, healthy: true, saw: saw}}}
+	core.dbs[2] = &multidbDatabase{id: 2, weight: 1, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{&activeObservingCheck{core: core, healthy: true, saw: saw}}}
+	core.active.Store(0)
+
+	core.runHealthChecksOnce(context.Background())
+
+	if got := core.activeDatabaseID(); got != 1 {
+		t.Fatalf("active = %d after the pass, want 1 (highest-weight healthy passive)", got)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case id := <-saw:
+			if id == 0 {
+				t.Fatal("a passive was probed while member 0 was still active: failover waited for the passives' probes")
+			}
+		default:
+			t.Fatalf("only %d passive probes ran, want 2", i)
+		}
+	}
+}

@@ -1729,6 +1729,20 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 	}
 	c.dbMu.RUnlock()
 
+	// Probe the active first. Its verdict is the one that can call for a
+	// failover, and a client with no command traffic (idle, or Pub/Sub only)
+	// learns about a dead active only from this pass: probing it last would
+	// make such a client wait for every passive's probe (up to
+	// HealthCheckTimeout each) before it could switch.
+	if active, _ := c.activeSnapshot(); active != nil {
+		for i, db := range dbs {
+			if db == active {
+				dbs[0], dbs[i] = dbs[i], dbs[0]
+				break
+			}
+		}
+	}
+
 	for _, db := range dbs {
 		select {
 		case <-c.stopCh:
@@ -1746,6 +1760,10 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 			// lag-aware REST check): their verdicts gate routing traffic TO
 			// a member, never evicting the one traffic flows through.
 			db.probeAsActive(ctx, c.opts.HealthCheckTimeout)
+			// Decide failover now, not after the rest of the pass: an active
+			// this probe found unhealthy must not keep traffic (and an idle
+			// client's Pub/Sub) on it while the passives are probed.
+			c.backgroundFailoverOnce(ctx)
 			continue
 		}
 		// Passive member: run the FULL check set but do NOT record yet, then
