@@ -454,6 +454,21 @@ func (cb *CircuitBreaker) RecordExternalSuccessForReset(gen uint64) {
 	if cb.resetGen.Load() != gen {
 		return
 	}
+	cb.recordProbeSuccessLocked()
+}
+
+// recordProbeSuccessLocked applies a health-probe success with transitionMu
+// held. In half-open it counts toward SuccessThreshold like any success and
+// never touches an admission slot. In closed it does NOTHING: a probe
+// answering shows the member is reachable, not that it can serve commands,
+// so it must not clear the consecutive command-failure count. Otherwise a
+// member that answers PING but fails every command, at a rate below
+// FailureThreshold per probe interval, would have its count wiped by every
+// probe and never open. Open is a no-op as well.
+func (cb *CircuitBreaker) recordProbeSuccessLocked() {
+	if State(cb.state.Load()) != StateHalfOpen {
+		return
+	}
 	cb.recordSuccessHalfOpenLocked(false)
 }
 

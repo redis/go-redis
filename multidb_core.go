@@ -245,6 +245,9 @@ func (db *multidbDatabase) applyProbeVerdict(ctx context.Context, gen uint64, he
 		// the reset generation: a success sampled before an operator reselect must
 		// not count toward closing the freshly reset episode. (CheckState bumps
 		// only the reservation generation, not resetGen, so it never voids this.)
+		// On a CLOSED breaker a probe success changes nothing: the consecutive
+		// command-failure count is command evidence, and a member that answers
+		// PING but fails commands must still be able to open.
 		db.cb.CheckState()
 		db.cb.RecordExternalSuccessForReset(gen)
 	} else {

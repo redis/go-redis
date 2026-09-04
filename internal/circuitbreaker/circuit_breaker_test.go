@@ -1467,3 +1467,32 @@ func TestCircuitBreaker_AllowSerializesWithTransitions(t *testing.T) {
 		t.Fatal("Allow never returned after the lock was released")
 	}
 }
+
+// A health-probe success on a CLOSED breaker must not clear the consecutive
+// command-failure count: a member that answers PING but fails commands, at a
+// rate below FailureThreshold per probe interval, could otherwise never open.
+// In half-open the probe success still counts toward closing.
+func TestCircuitBreaker_ProbeSuccessKeepsClosedFailureStreak(t *testing.T) {
+	cb := New(Config{FailureThreshold: 5, SuccessThreshold: 1, OpenTimeout: time.Millisecond})
+	for i := 0; i < 3; i++ {
+		cb.RecordFailure()
+	}
+	// A scheduled probe answers between the command failures.
+	cb.RecordExternalSuccessForReset(cb.ResetGeneration())
+	for i := 0; i < 2; i++ {
+		cb.RecordFailure()
+	}
+	if got := cb.State(); got != StateOpen {
+		t.Fatalf("state=%v after 5 consecutive command failures around a probe success, want open: the probe cleared the failure count", got)
+	}
+
+	// Half-open: the probe success is recovery evidence and closes the circuit.
+	time.Sleep(5 * time.Millisecond)
+	if got := cb.CheckState(); got != StateHalfOpen {
+		t.Fatalf("state=%v, want half-open", got)
+	}
+	cb.RecordExternalSuccessForReset(cb.ResetGeneration())
+	if got := cb.State(); got != StateClosed {
+		t.Fatalf("state=%v after a half-open probe success, want closed", got)
+	}
+}
