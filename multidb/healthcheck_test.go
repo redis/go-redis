@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -494,6 +495,82 @@ func TestLagAwareClusterTriesAllSeedAddresses(t *testing.T) {
 	if !ok || err != nil {
 		t.Fatalf("CheckClusterHealth = (%v, %v), want healthy via the second seed", ok, err)
 	}
+}
+
+// hostScriptedHTTPClient plays back canned responses per host, in order. The
+// lag check discovers masters concurrently (ForEachMaster), so the order in
+// which hosts are probed is not fixed; keying by host keeps the script
+// deterministic while the per-host sequence (bdbs, then availability) is.
+type hostScriptedHTTPClient struct {
+	responses map[string][]*http.Response // keyed by URL hostname
+}
+
+func (c *hostScriptedHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	host := req.URL.Hostname()
+	rs := c.responses[host]
+	if len(rs) == 0 {
+		return nil, context.DeadlineExceeded
+	}
+	c.responses[host] = rs[1:]
+	if rs[0] == nil {
+		return nil, context.DeadlineExceeded
+	}
+	return rs[0], nil
+}
+
+// TestLagAwareClusterRequiresEveryMaster pins the verdict rule for a cluster
+// member whose masters were discovered: EVERY routed master must pass, like
+// the cluster PING check. Commands route by key to all masters, so one
+// lagging or unavailable master exposes stale data or failures for its slots
+// no matter how healthy the others are. (The seed fallback keeps any-passes:
+// see TestLagAwareClusterTriesAllSeedAddresses.)
+func TestLagAwareClusterRequiresEveryMaster(t *testing.T) {
+	ok200 := func(body string) *http.Response {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}
+	}
+	bdb := func(uid int, host string) string {
+		return fmt.Sprintf(`[{"uid": %d, "endpoints": [{"dns_name": %q, "addr": [], "port": 6379}]}]`, uid, host)
+	}
+	// Two masters, supplied as topology so no Redis is dialed.
+	newCluster := func() *redis.ClusterClient {
+		return redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs: []string{"m1.example.com:6379"},
+			ClusterSlots: func(context.Context) ([]redis.ClusterSlot, error) {
+				return []redis.ClusterSlot{
+					{Start: 0, End: 8191, Nodes: []redis.ClusterNode{{Addr: "m1.example.com:6379"}}},
+					{Start: 8192, End: 16383, Nodes: []redis.ClusterNode{{Addr: "m2.example.com:6379"}}},
+				}, nil
+			},
+		})
+	}
+
+	t.Run("one master not passing fails the member", func(t *testing.T) {
+		client := &hostScriptedHTTPClient{responses: map[string][]*http.Response{
+			"m1.example.com": {ok200(bdb(1, "m1.example.com")), ok200(`{}`)},
+			"m2.example.com": {ok200(bdb(2, "m2.example.com")), {StatusCode: 503, Body: io.NopCloser(strings.NewReader(`{}`))}},
+		}}
+		hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(client))
+		cc := newCluster()
+		defer cc.Close()
+		ok, err := hc.CheckClusterHealth(context.Background(), cc)
+		if ok || err == nil {
+			t.Fatalf("CheckClusterHealth = (%v, %v), want unhealthy: one routed master did not pass", ok, err)
+		}
+	})
+
+	t.Run("every master passing is healthy", func(t *testing.T) {
+		client := &hostScriptedHTTPClient{responses: map[string][]*http.Response{
+			"m1.example.com": {ok200(bdb(1, "m1.example.com")), ok200(`{}`)},
+			"m2.example.com": {ok200(bdb(2, "m2.example.com")), ok200(`{}`)},
+		}}
+		hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(client))
+		cc := newCluster()
+		defer cc.Close()
+		ok, err := hc.CheckClusterHealth(context.Background(), cc)
+		if !ok || err != nil {
+			t.Fatalf("CheckClusterHealth = (%v, %v), want healthy", ok, err)
+		}
+	})
 }
 
 func TestLagAwareDrainsErrorResponseBody(t *testing.T) {

@@ -349,6 +349,9 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 		add(master.Options().Addr)
 		return nil
 	})
+	// Remember whether addrs are the routed masters or the seed fallback: the
+	// two need different verdict rules below.
+	fromMasters := ferr == nil && len(addrs) > 0
 	// Seeds are the bootstrap fallback only: when the topology could not be
 	// enumerated (ForEachMaster errored → no loaded state) OR no masters were
 	// found. When masters ARE known, use only them — opts.Addrs may include
@@ -365,6 +368,34 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 		return false, fmt.Errorf("multidb: cluster client has no addresses")
 	}
 
+	if fromMasters {
+		// Routed masters: EVERY one must pass, like the cluster PING check.
+		// Commands route by key to all of them, so a member with one lagging
+		// or unavailable master exposes stale data or failures for that
+		// master's slots, and no other master can serve them. Fail on the
+		// first master that does not pass.
+		for _, addr := range addrs {
+			host, port, ok := hostPortFromAddr(addr)
+			if !ok {
+				return false, fmt.Errorf("multidb: cannot derive REST API host from address %q", addr)
+			}
+			healthy, err := h.checkLagHealth(ctx, host, port)
+			if !healthy {
+				if err == nil {
+					err = fmt.Errorf("multidb: master %s did not pass the lag check", addr)
+				}
+				return false, err
+			}
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+
+	// Seed fallback: the topology could not be enumerated, and seeds are ways
+	// to reach the REST API rather than routed shards, so ANY seed that
+	// answers healthy is the best available signal.
 	var lastErr error
 	for _, addr := range addrs {
 		host, port, ok := hostPortFromAddr(addr)
