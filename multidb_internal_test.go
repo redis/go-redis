@@ -13,6 +13,7 @@ import (
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 // This file consolidates the MultiDB internal (package redis) tests: core
@@ -371,10 +372,9 @@ func (c *apCallingCheck) CheckClusterHealth(context.Context, *ClusterClient) (bo
 
 // TestAddClusterDatabaseProbeMayCallAutoPipeline pins that a cluster AddDatabase
 // does not hold autopipelinerMu across the member's initial health probe: a
-// custom check that calls AutoPipeline() must not deadlock. While the add is
-// pending the call is refused (a cluster member is landing, so an unsharded
-// autopipeliner must not be created) — the invariant the lock used to protect,
-// now carried by the pending-add count.
+// custom check that calls AutoPipeline() must neither deadlock nor be refused.
+// Cluster members and autopipeliners coexist — commands that cannot ride a
+// pipeline on the member are kept out of merged batches instead.
 func TestAddClusterDatabaseProbeMayCallAutoPipeline(t *testing.T) {
 	core := newMultidbCore(&MultiDBOptions{
 		HealthCheckTimeout:   time.Second,
@@ -402,8 +402,8 @@ func TestAddClusterDatabaseProbeMayCallAutoPipeline(t *testing.T) {
 	}
 	select {
 	case err := <-got:
-		if !errors.Is(err, errMultiDBAutoPipelineCluster) {
-			t.Fatalf("AutoPipeline() during a pending cluster add: got %v, want errMultiDBAutoPipelineCluster (refused, not created)", err)
+		if err != nil {
+			t.Fatalf("AutoPipeline() from inside a cluster member's probe: %v, want an instance", err)
 		}
 	default:
 		t.Fatal("health check never ran")
@@ -1571,5 +1571,198 @@ func TestBackgroundProbeLagOnlyMemberGoneActiveUsesPingFloor(t *testing.T) {
 	}
 	if pings == 0 {
 		t.Fatal("the active-safe pass ran no liveness probe: the PING floor did not execute")
+	}
+}
+
+// policyByName resolves a fixed request policy for one command name and
+// nothing for the rest, standing in for a server's reported command tips.
+func policyByName(name string, req routing.RequestPolicy) *commandInfoResolver {
+	return NewCommandInfoResolver(func(_ context.Context, cmd Cmder) *routing.CommandPolicy {
+		if cmd.Name() != name {
+			return nil
+		}
+		return &routing.CommandPolicy{Request: req}
+	})
+}
+
+// newClusterMemberClient builds a MultiDBClient holding one cluster member
+// whose command policies come from resolver. The member never dials: these
+// tests only ask what may be pipelined, which is answered from policy alone.
+func newClusterMemberClient(t *testing.T, resolver *commandInfoResolver) *MultiDBClient {
+	t.Helper()
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: &countingFD{}})
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:1"}})
+	t.Cleanup(func() { _ = cc.Close() })
+	cc.SetCommandInfoResolver(resolver)
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, cc: cc, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 1,
+	})}
+	core.active.Store(0)
+	return &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex)}
+}
+
+// TestCanPipelineAsksClusterMembers pins the per-command query that replaced
+// the blanket cluster refusal. A command whose request policy needs several
+// nodes cannot ride a pipeline on a cluster member, so it must be kept out of
+// merged batches; ordinary commands still may.
+func TestCanPipelineAsksClusterMembers(t *testing.T) {
+	ctx := context.Background()
+	fanOut := []routing.RequestPolicy{routing.ReqAllNodes, routing.ReqAllShards, routing.ReqMultiShard}
+	for _, req := range fanOut {
+		mdb := newClusterMemberClient(t, policyByName("dbsize", req))
+		if mdb.canPipeline(ctx, NewIntCmd(ctx, "dbsize")) {
+			t.Errorf("canPipeline(dbsize) with request policy %v = true, want false", req)
+		}
+		if !mdb.canPipeline(ctx, NewStatusCmd(ctx, "set", "k", "v")) {
+			t.Errorf("canPipeline(set) with a %v dbsize policy = false, want true", req)
+		}
+	}
+
+	// Routing that is not derived from the slot cannot ride a batch either: the
+	// batch router would send it to the wrong shard.
+	mdb := newClusterMemberClient(t, policyByName("ft.cursor", routing.ReqSpecial))
+	if mdb.canPipeline(ctx, NewStatusCmd(ctx, "ft.cursor", "read", "idx", "1")) {
+		t.Error("canPipeline(ft.cursor) with ReqSpecial = true, want false")
+	}
+}
+
+// TestCanPipelineWithoutClusterMembers pins the standalone case: with no
+// cluster member configured nothing is withheld from batching, and no policy
+// is consulted at all.
+func TestCanPipelineWithoutClusterMembers(t *testing.T) {
+	ctx := context.Background()
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: &countingFD{}})
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: NewClient(&Options{Addr: "127.0.0.1:1"}), cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 1,
+	})}
+	t.Cleanup(func() { _ = core.dbs[0].c.Close() })
+	core.active.Store(0)
+	mdb := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex)}
+
+	if !mdb.canPipeline(ctx, NewIntCmd(ctx, "dbsize")) {
+		t.Error("canPipeline(dbsize) with only a standalone member = false, want true")
+	}
+}
+
+// TestCanPipelineAsksEveryClusterMember pins the conservative reach: a command
+// is withheld when ANY cluster member refuses it, not only the active one. The
+// active member can change between the submit that batched the command and the
+// flush that dispatches it, and by then the batch is already formed.
+func TestCanPipelineAsksEveryClusterMember(t *testing.T) {
+	ctx := context.Background()
+	mdb := newClusterMemberClient(t, NewCommandInfoResolver(
+		func(_ context.Context, _ Cmder) *routing.CommandPolicy { return nil },
+	))
+
+	// A second cluster member, NOT the active one, refuses dbsize.
+	strict := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:2"}})
+	t.Cleanup(func() { _ = strict.Close() })
+	strict.SetCommandInfoResolver(policyByName("dbsize", routing.ReqAllShards))
+	mdb.core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cc: strict, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 1,
+	})}
+
+	if mdb.canPipeline(ctx, NewIntCmd(ctx, "dbsize")) {
+		t.Error("canPipeline(dbsize) = true, want false: a passive cluster member refuses it")
+	}
+}
+
+// countingDispatchHook records how commands reached the member: one at a time,
+// or inside a pipeline batch. That is what distinguishes a diverted command
+// from a batched one.
+type countingDispatchHook struct {
+	single  atomic.Int32
+	batched atomic.Int32
+}
+
+func (*countingDispatchHook) DialHook(next DialHook) DialHook { return next }
+
+func (h *countingDispatchHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(_ context.Context, cmd Cmder) error {
+		h.single.Add(1)
+		return nil
+	}
+}
+
+func (h *countingDispatchHook) ProcessPipelineHook(ProcessPipelineHook) ProcessPipelineHook {
+	return func(_ context.Context, cmds []Cmder) error {
+		h.batched.Add(int32(len(cmds)))
+		return nil
+	}
+}
+
+// TestMultiDBAutoPipelineDivertsUnpipelineableOnClusterMember is the end-to-end
+// counterpart of the canPipeline unit tests. With a cluster member configured,
+// a command that member cannot pipeline must reach the active member on its own
+// connection, while ordinary commands still ride a batch. Before the
+// per-command check existed, an autopipeliner could not be created at all here.
+func TestMultiDBAutoPipelineDivertsUnpipelineableOnClusterMember(t *testing.T) {
+	ctx := context.Background()
+	opts := &MultiDBOptions{
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		InitialDBState:       InitialDBStateOneAvailable,
+		Clients: []MultiDBClientConfig{
+			// Standalone, highest weight, so it is the active member and its
+			// dispatches are observable through the hook below.
+			{
+				Options:      &Options{Addr: "127.0.0.1:1"},
+				Weight:       2,
+				HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+			},
+			// Cluster member, passive. It never serves a command here; it only
+			// has to be present for canPipeline to consult it.
+			{
+				ClusterOptions:         &ClusterOptions{Addrs: []string{"127.0.0.1:2"}},
+				Weight:                 1,
+				HealthChecks:           []MultiDBHealthCheck{okLivenessCheck{}},
+				SkipInitialHealthCheck: true,
+			},
+		},
+	}
+	mdb, err := NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	hook := &countingDispatchHook{}
+	if err := mdb.AddDatabaseHook(0, hook); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+	// MGET, not DBSIZE: the autopipeliner delegates typed fan-out admin
+	// commands (DBSize, Script*, HImport*) straight to the client, so they
+	// never reach a batch on any client type. The commands that DO reach one
+	// and that a cluster member refuses are the multi-key data commands, whose
+	// request policy is multi_shard.
+	mdb.core.dbs[1].cc.SetCommandInfoResolver(policyByName("mget", routing.ReqMultiShard))
+	if got := mdb.core.activeDatabaseID(); got != 0 {
+		t.Fatalf("active member = %d, want 0 (the standalone one)", got)
+	}
+
+	ap, err := mdb.AutoPipeline()
+	if err != nil {
+		t.Fatalf("AutoPipeline with a cluster member configured: %v", err)
+	}
+
+	// The cluster member cannot pipeline MGET, so it must be diverted.
+	_ = ap.MGet(ctx, "a", "b").Err()
+	if got := hook.single.Load(); got != 1 {
+		t.Errorf("MGet reached the member as a single command %d times, want 1 (it must be diverted)", got)
+	}
+	if got := hook.batched.Load(); got != 0 {
+		t.Errorf("MGet was batched (%d commands in batches), want 0", got)
+	}
+
+	// An ordinary command still rides a batch.
+	_ = ap.Set(ctx, "k", "v", 0).Err()
+	if got := hook.batched.Load(); got != 1 {
+		t.Errorf("Set arrived in a batch %d times, want 1", got)
+	}
+	if got := hook.single.Load(); got != 1 {
+		t.Errorf("Set was diverted too: single dispatches = %d, want still 1", got)
 	}
 }

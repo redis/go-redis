@@ -433,14 +433,6 @@ type MultiDBClient struct {
 	// Drained entries are dropped as new ones are added, so recreating in a
 	// loop does not accumulate. Guarded by autopipelinerMu.
 	builtAutopipeliners []*AutoPipeliner
-	// pendingClusterAdds counts cluster AddDatabase calls that passed the
-	// liveness check and released autopipelinerMu to run the member's initial
-	// health probe. The autopipeliner build funcs refuse to create an instance
-	// while it is > 0, which keeps the cluster-vs-autopipeliner invariant without
-	// holding the mutex across user-supplied health checks — a check that calls
-	// AutoPipeline itself would otherwise deadlock on the non-reentrant mutex.
-	pendingClusterAdds int // guarded by autopipelinerMu
-
 	// closeOnce serializes concurrent Close calls so a second caller cannot
 	// race ahead to core.close() while the first is still draining the
 	// autopipeliner; closeErr carries that single close result to every caller.
@@ -602,52 +594,23 @@ func (c *MultiDBClient) ForceActiveDatabase(ctx context.Context, id int) error {
 	return c.core.setActiveDatabase(ctx, id, false)
 }
 
-// AddDatabase implements MultiDBCtrl. Adding a cluster member is refused
-// while a live autopipeliner instance exists: the cached autopipeliner was
-// built without the cluster-specific safeguards and a later failover onto the
-// new member would route merged batches around them. Close the autopipeliners
-// first, add the member, then recreate them (closed instances do not block).
+// AddDatabase implements MultiDBCtrl. A cluster member may be added while
+// autopipeliners are live: commands that cannot ride a pipeline on it are kept
+// out of merged batches from then on (see canPipeline on this type).
 func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig) (int, error) {
-	// Reject any add — cluster OR standalone — once Close has begun. Close sets
-	// autopipelinerClosed under autopipelinerMu before it drains the
-	// autopipeliners and calls core.close(); a member published in that window
-	// would be torn down by the completing Close, handing the caller an id for a
-	// dead member. Checked under the mutex so it cannot race the flag write.
+	// Reject any add once Close has begun. Close sets autopipelinerClosed under
+	// autopipelinerMu before it drains the autopipeliners and calls
+	// core.close(); a member published in that window would be torn down by the
+	// completing Close, handing the caller an id for a dead member. Checked
+	// under the mutex so it cannot race the flag write, and released before
+	// core.addDatabase: that call runs the member's initial health probe
+	// synchronously, and a custom check calling AutoPipeline() would otherwise
+	// deadlock on the non-reentrant mutex.
 	c.autopipelinerMu.Lock()
 	if c.autopipelinerClosed {
 		c.autopipelinerMu.Unlock()
 		return -1, ErrClosed
 	}
-	if cfg.ClusterOptions != nil {
-		// A live autopipeliner and a cluster member must never coexist: the
-		// cached instance was built without the cluster-specific safeguards and a
-		// later failover onto the new member would route merged batches around
-		// them. Check liveness under the mutex, then mark the add as pending and
-		// RELEASE the mutex before core.addDatabase. That call runs the member's
-		// initial health probe synchronously, and a custom check that calls
-		// AutoPipeline()/AsyncAutoPipeline() would otherwise deadlock on the
-		// non-reentrant mutex. The pending count keeps the invariant the lock used
-		// to hold: the build funcs (see AutoPipelineWithOptions) refuse to create
-		// an instance while a cluster add is in flight, so no unsharded instance
-		// can appear between this check and the member landing.
-		hasLiveAP := (c.autopipeliner != nil && !c.autopipeliner.closed.Load()) ||
-			(c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load())
-		if hasLiveAP {
-			c.autopipelinerMu.Unlock()
-			return -1, errors.New("redis: multidb: close autopipeliners before adding a cluster member database")
-		}
-		c.pendingClusterAdds++
-		c.autopipelinerMu.Unlock()
-		// Deferred so the count is released on a panic in the member path too.
-		defer func() {
-			c.autopipelinerMu.Lock()
-			c.pendingClusterAdds--
-			c.autopipelinerMu.Unlock()
-		}()
-		return c.core.addDatabase(ctx, cfg)
-	}
-	// Standalone: a standalone member has no cluster-autopipeline hazard, so the
-	// mutex need not span the membership change as the cluster branch does.
 	c.autopipelinerMu.Unlock()
 	return c.core.addDatabase(ctx, cfg)
 }

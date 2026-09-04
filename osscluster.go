@@ -1883,6 +1883,38 @@ func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*A
 // node's slots together. Keyless commands hash to slot -1 → bucket 0; multi-node
 // commands are already rejected from pipelines, so only single-node commands
 // reach here.
+// cmdPolicy resolves cmd's command policy, or nil when this client has none to
+// consult (no resolver installed, or the command is unknown to it).
+func (c *ClusterClient) cmdPolicy(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
+	if c.cmdInfoResolver == nil {
+		return nil
+	}
+	return c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
+}
+
+// canPipeline reports whether cmd may be placed in a pipeline on this cluster
+// client. Two kinds of command cannot:
+//
+//   - A request policy of ReqAllNodes, ReqAllShards or ReqMultiShard needs
+//     several nodes, while a pipeline dispatches each batch to one node, so
+//     mapCmdsByNode refuses the whole mapping.
+//   - ReqSpecial routing is not derived from the slot (FT.CURSOR READ/DEL stay
+//     on the node holding the cursor), and inside a batch mapCmdsByNode would
+//     route by slot and reach the wrong shard.
+//
+// It answers true when no policy is known, which matches what the pipeline
+// paths do without a resolver: they impose no restriction. Callers decide what
+// to do with a false answer — a user pipeline rejects the batch because one
+// caller owns it, while the autopipeliner diverts the command because its
+// batches merge independent callers.
+func (c *ClusterClient) canPipeline(ctx context.Context, cmd Cmder) bool {
+	policy := c.cmdPolicy(ctx, cmd)
+	if policy == nil {
+		return true
+	}
+	return policy.CanBeUsedInPipeline() && policy.Request != routing.ReqSpecial
+}
+
 func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 	// Reject commands whose request policy cannot ride a pipeline (ReqAllNodes/
 	// ReqAllShards/ReqMultiShard) at submit, BEFORE they can join a merged
@@ -1892,10 +1924,7 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 	// lone-command fast path consistent with batched dispatch — the command is
 	// refused regardless of what it happens to coalesce with.
 	ap.setPreflight(func(ctx context.Context, cmd Cmder) error {
-		if c.cmdInfoResolver == nil {
-			return nil
-		}
-		if policy := c.cmdInfoResolver.GetCommandPolicy(ctx, cmd); policy != nil && !policy.CanBeUsedInPipeline() {
+		if policy := c.cmdPolicy(ctx, cmd); policy != nil && !policy.CanBeUsedInPipeline() {
 			return fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
 			)
@@ -1910,10 +1939,7 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 	// instead of rejecting: they work fine on their own connection (review
 	// finding by codex on #3942).
 	ap.setMustDivert(func(ctx context.Context, cmd Cmder) bool {
-		if c.cmdInfoResolver == nil {
-			return false
-		}
-		policy := c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
+		policy := c.cmdPolicy(ctx, cmd)
 		return policy != nil && policy.Request == routing.ReqSpecial
 	})
 

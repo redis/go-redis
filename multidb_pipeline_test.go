@@ -210,7 +210,10 @@ func TestMultiDBTxPipelineRecordsOnlyUserCommands(t *testing.T) {
 	}
 }
 
-func TestMultiDBAutoPipelineRefusesClusterMembers(t *testing.T) {
+// A cluster member no longer refuses an autopipeliner. Commands that cannot
+// ride a pipeline on it are diverted per command instead (see
+// TestMultiDBAutoPipelineDivertsUnpipelineableOnClusterMember).
+func TestMultiDBAutoPipelineAllowsClusterMembers(t *testing.T) {
 	standalone := newTestDB("db1", "127.0.0.1:1", 2.0, true)
 	clusterCheck := newFakeHealthCheck(true)
 
@@ -230,21 +233,23 @@ func TestMultiDBAutoPipelineRefusesClusterMembers(t *testing.T) {
 	}
 	defer mdb.Close()
 
-	if _, err := mdb.AutoPipeline(); err == nil {
-		t.Error("AutoPipeline with a cluster member should be refused")
+	if _, err := mdb.AutoPipeline(); err != nil {
+		t.Errorf("AutoPipeline with a cluster member: %v, want an instance", err)
 	}
-	if _, err := mdb.AsyncAutoPipeline(); err == nil {
-		t.Error("AsyncAutoPipeline with a cluster member should be refused")
+	if _, err := mdb.AsyncAutoPipeline(); err != nil {
+		t.Errorf("AsyncAutoPipeline with a cluster member: %v, want an instance", err)
 	}
 }
 
-func TestMultiDBAddClusterMemberVsAutoPipeliner(t *testing.T) {
+// A cluster member can also be added while an autopipeliner is live: the
+// per-command check consults every cluster member, so an instance built before
+// the member landed starts keeping unfit commands out of its batches too.
+func TestMultiDBAddClusterMemberWithLiveAutoPipeliner(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1)
 	ctx := context.Background()
 
-	ap, err := mdb.AutoPipeline()
-	if err != nil {
+	if _, err := mdb.AutoPipeline(); err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
 	}
 
@@ -254,23 +259,13 @@ func TestMultiDBAddClusterMemberVsAutoPipeliner(t *testing.T) {
 		HealthChecks:           []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
 		SkipInitialHealthCheck: true,
 	}
-
-	// Live autopipeliner blocks cluster additions.
-	if _, err := mdb.AddDatabase(ctx, clusterCfg); err == nil {
-		t.Fatal("AddDatabase(cluster) should be refused while an autopipeliner is live")
-	}
-
-	// A CLOSED autopipeliner must not block forever.
-	if err := ap.Close(); err != nil {
-		t.Fatalf("AutoPipeliner.Close: %v", err)
-	}
 	if _, err := mdb.AddDatabase(ctx, clusterCfg); err != nil {
-		t.Fatalf("AddDatabase(cluster) after closing the autopipeliner: %v", err)
+		t.Fatalf("AddDatabase(cluster) with a live autopipeliner: %v", err)
 	}
 
-	// And with a cluster member present, new autopipeliners are refused.
-	if _, err := mdb.AutoPipeline(); err == nil {
-		t.Error("AutoPipeline should be refused once a cluster member exists")
+	// And the instance stays usable afterwards.
+	if _, err := mdb.AutoPipeline(); err != nil {
+		t.Errorf("AutoPipeline after adding a cluster member: %v", err)
 	}
 }
 

@@ -812,22 +812,25 @@ func (c *MultiDBClient) PoolStats() *PoolStats {
 	return db.c.PoolStats()
 }
 
-// errMultiDBAutoPipelineCluster is returned when an autopipeliner is
-// requested while a cluster member database is configured: the MultiDB
-// autopipeliner would bypass the cluster-specific autopipeline wiring
-// (command preflight, diversion and slot sharding), so cluster members are
-// not supported yet.
-var errMultiDBAutoPipelineCluster = errors.New("redis: multidb: autopipeline does not support cluster member databases yet")
-
-func (c *multidbCore) hasClusterMember() bool {
-	c.dbMu.RLock()
-	defer c.dbMu.RUnlock()
-	for _, db := range c.dbs {
-		if db.cc != nil {
-			return true
+// canPipeline reports whether cmd may join a pipeline batch on this client. It
+// asks each cluster member and answers false if any of them refuses; standalone
+// members impose no restriction, so a deployment with none answers true without
+// resolving a single policy.
+//
+// It asks EVERY cluster member rather than only the active one on purpose. The
+// active member can change between this call and the batch's flush, and a
+// command judged pipelineable against a standalone member would then reach a
+// cluster member inside a merged batch — where one unfit command fails the whole
+// mapping, and with it the unrelated callers sharing that batch.
+func (c *MultiDBClient) canPipeline(ctx context.Context, cmd Cmder) bool {
+	c.core.dbMu.RLock()
+	defer c.core.dbMu.RUnlock()
+	for _, db := range c.core.dbs {
+		if db.cc != nil && !db.cc.canPipeline(ctx, cmd) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // AutoPipeline returns the blocking autopipeliner for this MultiDB client:
@@ -836,8 +839,11 @@ func (c *multidbCore) hasClusterMember() bool {
 // database (bounded by CommandRetries). The instance is cached and shared; the
 // first call's config wins.
 //
-// Cluster member databases are not supported yet (checked at call time): the
-// cluster-specific autopipeline safeguards would be bypassed.
+// Cluster member databases are supported. A command that cannot ride a pipeline
+// on a cluster member — a fan-out request policy, or routing that is not derived
+// from the slot — is executed on its own connection instead of joining a batch
+// (see canPipeline). Such a command keeps full MultiDB semantics, but not its
+// position relative to the batch around it.
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AutoPipeline() (*AutoPipeliner, error) {
@@ -848,21 +854,32 @@ func (c *MultiDBClient) AutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	// The cluster-member check runs inside the build function, under
-	// autopipelinerMu: AddDatabase performs its cluster-vs-autopipeliner check
-	// under the same mutex, so the two cannot interleave. AddDatabase releases
-	// the mutex before running the new member's health probe (so a probe that
-	// calls AutoPipeline cannot deadlock) and leaves pendingClusterAdds > 0 for
-	// that window; the build func refuses then too, so no unsharded instance is
-	// created while a cluster member is landing.
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, nil, config,
 		DefaultBlockingAutoPipelineOptions,
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
-			if c.core.hasClusterMember() || c.pendingClusterAdds > 0 {
-				return nil, errMultiDBAutoPipelineCluster
-			}
-			return c.trackAutopipelinerLocked(newAutoPipeliner(c, cfg, true))
+			return c.trackAutopipelinerLocked(c.newMultiDBAutoPipeliner(cfg, true))
 		})
+}
+
+// newMultiDBAutoPipeliner builds an instance over this client and installs the
+// only MultiDB-specific wiring it needs: keep commands that cannot ride a
+// pipeline out of merged batches. Everything else — routing to the active
+// member, the failover gate, breaker and detector accounting, retries — comes
+// from dispatching through this client's own pipeline path.
+func (c *MultiDBClient) newMultiDBAutoPipeliner(cfg *AutoPipelineOptions, blocking bool) (*AutoPipeliner, error) {
+	ap, err := newAutoPipeliner(c, cfg, blocking)
+	if err != nil {
+		return nil, err
+	}
+	// Divert rather than reject. The cluster pipeline path fails the WHOLE
+	// mapping on an unfit command, which in a merged batch would fail the
+	// unrelated callers sharing it. Diverted commands run through
+	// MultiDBClient.Process, so a fan-out command still fans out on the active
+	// member and still passes the gate.
+	ap.setMustDivert(func(ctx context.Context, cmd Cmder) bool {
+		return !c.canPipeline(ctx, cmd)
+	})
+	return ap, nil
 }
 
 // trackAutopipelinerLocked records a freshly built autopipeliner so Close can
@@ -899,9 +916,6 @@ func (c *MultiDBClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, nil, config,
 		DefaultAutoPipelineOptions,
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
-			if c.core.hasClusterMember() || c.pendingClusterAdds > 0 {
-				return nil, errMultiDBAutoPipelineCluster
-			}
-			return c.trackAutopipelinerLocked(newAutoPipeliner(c, cfg, false))
+			return c.trackAutopipelinerLocked(c.newMultiDBAutoPipeliner(cfg, false))
 		})
 }
