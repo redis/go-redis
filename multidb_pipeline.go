@@ -845,6 +845,11 @@ func (c *MultiDBClient) canPipeline(ctx context.Context, cmd Cmder) bool {
 // (see canPipeline). Such a command keeps full MultiDB semantics, but not its
 // position relative to the batch around it.
 //
+// The check runs when a command is accepted, against the members of that
+// moment. A cluster member added with AddDatabase afterwards is not applied
+// to commands already queued: see AddDatabase for the window and how to
+// avoid it.
+//
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AutoPipeline() (*AutoPipeliner, error) {
 	return c.AutoPipelineWithOptions(nil)

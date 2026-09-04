@@ -614,6 +614,16 @@ func (c *MultiDBClient) ForceActiveDatabase(ctx context.Context, id int) error {
 // AddDatabase implements MultiDBCtrl. A cluster member may be added while
 // autopipeliners are live: commands that cannot ride a pipeline on it are kept
 // out of merged batches from then on (see canPipeline on this type).
+//
+// "From then on" is the limit: a command accepted into a batch before the
+// member was published is not re-checked at flush, and neither is a batch
+// retried onto the new member after a failover. If such a batch carries a
+// command the cluster cannot pipeline, the cluster member fails the whole
+// batch with its routing error (retryable; the callers retry) or, for a
+// command with special routing, runs it on the shard the cluster picks. The
+// window is the flush interval after the add. To avoid it, add cluster
+// members before enabling autopipelining, or close and re-create the
+// autopipeliners around the add.
 func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig) (int, error) {
 	// Reject any add once Close has begun. Close sets autopipelinerClosed under
 	// autopipelinerMu before it drains the autopipeliners and calls
