@@ -392,12 +392,14 @@ func (cfg *MultiDBClientConfig) fqdn() string {
 // Control operations (every method here, and Close) are for application code.
 // Do not call them from code that MultiDB runs on your behalf: hooks installed
 // with AddHook or AddDatabaseHook, health checks and health-check policies,
-// failover strategies and failure detectors. That code runs inside MultiDB's
-// command, probe and failover paths, in places under MultiDB's own locks or
-// while an admission is held, and a control call from there can deadlock or
-// corrupt the failover accounting. The asynchronous callbacks (OnFailover,
-// OnActiveDatabaseChanged, OnCircuitStateChanged) are the exception: they run
-// on their own queue and may call control operations.
+// failover strategies, failure detectors, and metrics recorders (the OTel
+// recorder receives health-check and failover events from inside the failover
+// paths). That code runs inside MultiDB's command, probe and failover paths,
+// in places under MultiDB's own locks or while an admission is held, and a
+// control call from there can deadlock or corrupt the failover accounting.
+// The asynchronous callbacks (OnFailover, OnActiveDatabaseChanged,
+// OnCircuitStateChanged) are the exception: they run on their own queue and
+// may call control operations.
 type MultiDBCtrl interface {
 	// ActiveDatabaseID returns the stable id of the currently active database,
 	// or -1 when none is selected.
@@ -684,6 +686,14 @@ func (c *MultiDBClient) AddHook(hook Hook) {
 // path while MultiDB holds an admission for that command, and in the
 // autopipeliner's batch dispatch; a control call from there can deadlock or
 // corrupt the failover accounting.
+//
+// A member hook's outcome is the member's outcome. MultiDB records what
+// comes back from the member's hook chain on the member's circuit breaker
+// and on the failure detector, so a hook that answers without calling next
+// (a cache serving reads locally, an error synthesized before the wire) is
+// counted as if the database had answered. A hook that answers locally
+// belongs on the MultiDBClient (AddHook): it then runs before the gate and
+// records nothing.
 //
 // A member hook must pass the context it receives — or one derived from it —
 // to next. MultiDB carries per-batch execution tracking in context values:
