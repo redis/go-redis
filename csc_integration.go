@@ -807,11 +807,22 @@ const cscDrainCustomErrCap = 8
 // command. Such a command spent its first attempt on the FD socket and got a
 // retryable reply. Give startAttempt to every processWithRetry fallback and to
 // the fetch. If you do not, a diverted cache miss runs MaxRetries+1 retries
-// after the FD attempt. That is one attempt too many. A cache hit returns
-// before the retry loop, so startAttempt does not apply to a hit.
+// after the FD attempt. That is one attempt too many. A cache HIT does no network
+// attempt and returns before the retry loop, so startAttempt does not affect its
+// retry BUDGET — but it still seeds the reported attempt COUNT (see below) so a
+// diverted hit reports the FD attempt it already spent, not zero.
 func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+
+	// Seed the reported attempt count for the OTel duration metric. A cache hit
+	// returns below without entering processWithRetry's loop (which is what sets
+	// state.attempts), so without this a diverted hit (startAttempt>0) would report
+	// zero attempts, hiding the FD socket attempt it already spent. A miss falls
+	// through to processWithRetry, whose loop overwrites this.
+	if state != nil {
+		state.attempts = startAttempt
 	}
 
 	// Once the drainer has stopped (owner Close, or the owner dropped without
