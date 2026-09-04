@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -479,6 +481,12 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	defer func() {
 		if !enqueued {
 			mc.releaseWireBytes(req.reserved)
+			// Release the cache reservation too when the request never got queued,
+			// including the panic path (writeCmd serializing a user arg that panics),
+			// which skips the explicit Cancel on the error returns and would otherwise
+			// leave the key IN_PROGRESS until StaleTimeout, blocking later readers.
+			// Cancel is token-guarded, so this is a no-op next to the explicit Cancels.
+			mc.c.csc.Cancel(cacheKey, token)
 		}
 	}()
 	// Honor ContextTimeoutEnabled for the REPLY wait below (an enqueued request's
@@ -502,6 +510,17 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, errCSCRetryUncached
 	}
+	// Release the slot even if writeCmd panics while serializing a user arg (a
+	// panicking Marshaler): without this the slot leaks and counts against
+	// cscMissMaxConcurrentSerialize forever, shedding later misses to the pooled
+	// path. Cleared after each explicit release below, so the normal path still
+	// releases before the enqueue select (the defer then no-ops).
+	serializeHeld := true
+	defer func() {
+		if serializeHeld {
+			mc.releaseSerialize()
+		}
+	}()
 	// Snapshot the wire form NOW, while the caller still owns cmd: the session
 	// writer writes these engine-owned bytes and never reads cmd again, so an
 	// abandoning caller can immediately reuse mutable args (e.g. a []byte key)
@@ -512,6 +531,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	var wireBuf bytes.Buffer
 	if err := writeCmd(proto.NewWriter(&wireBuf), cmd); err != nil {
 		mc.releaseSerialize()
+		serializeHeld = false
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, err
 	}
@@ -526,6 +546,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	// Release the serialization slot BEFORE the enqueue select: the snapshot exists
 	// and is reconciled, so the transient-allocation concern the slot bounds is over.
 	mc.releaseSerialize()
+	serializeHeld = false
 	if !fits {
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, errCSCRetryUncached
@@ -561,71 +582,82 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, ctx.Err()
 	}
-	select {
-	case err := <-req.done:
-		mc.emitReplyErr(ctx, req, err)
-		return req.servedBy, err
-	case <-mc.stop:
-		// Close raced our enqueue: the req may have landed in mc.ch after the
-		// shutdown drain, so nothing will settle req.done. Winning the interlock
-		// means no reply is being applied — cancel the reservation and return instead
-		// of hanging (a duplicate Cancel, if the drain also got this req, is a no-op
-		// on a settled token).
-		if req.claimAbandon() {
-			mc.c.csc.Cancel(cacheKey, token)
-			// The req may be sitting in mc.ch AFTER the shutdown drain ran, where
-			// no worker will ever dequeue it — a live WithTimeout clone's pointer
-			// would then retain it (and its Cmder) indefinitely. Re-run the
-			// non-blocking drain to empty the queue; settling our own abandoned
-			// req is harmless (done is buffered, the duplicate Cancel is a no-op).
-			mc.drainQueueErr(errCSCRetryUncached)
-			return nil, errCSCRetryUncached
-		}
-		// The reader claimed cmd and is mid-apply: wait so we do not read/reuse
-		// cmd concurrently (the receive is a happens-before edge), then return
-		// the settle result itself — the reply may have been applied
-		// successfully, and discarding it for a blanket ErrClosed would fail a
-		// read that has its value.
-		e := <-req.done
-		mc.emitReplyErr(ctx, req, e)
-		return req.servedBy, e
-	case <-wctx.Done():
-		// Caller stopped waiting (only when ContextTimeoutEnabled; otherwise wctx is
-		// Background and this never fires — matching the ordinary path's I/O timeout
-		// policy). If we win the interlock the reader skips the cmd
-		// write but (in the live case) still settles the token and publishes to the
-		// cache — see the stopping caveat below; if it already
-		// claimed cmd, wait rather than race by reusing cmd. Either way return the
-		// context error, matching the non-coalesced path (processWithRetry), so a
-		// cancelled Get never returns a value depending on who won the CAS.
-		//
+	// The reply wait honors caller cancellation in two phases. PRE-I/O (the batch has
+	// not reached a connection, req.sentConn == nil) a caller cancel aborts on the RAW
+	// ctx regardless of ContextTimeoutEnabled — matching the ordinary path, which passes
+	// ctx to ConnPool.Get and only drops to the policy ctx for socket I/O. Once I/O has
+	// begun (sentConn set) cancellation follows wctx (the policy): ctxDone is disabled so
+	// an enqueued command Redis is already serving is not abandoned early on a deadline
+	// the ordinary socket-I/O path would not enforce.
+	abandon := func() (*pool.Conn, error) {
 		// Report the cancellation metric here, like processWithRetry: the reader may
-		// still complete the background fetch (a success via applyAndSettle, or its
-		// own error via settleErr), so neither of those records THIS caller's
-		// context cancellation — without this the cancellation rate is undercounted
-		// whenever miss coalescing is enabled. Attribute against the caller's ctx.
-		//
-		// Attribute to the SENT conn via req.sentConn — an atomic view safe to read on
-		// this pre-req.done branch, unlike servedBy, which would race the session's
-		// write. If the session already sent this command before the caller abandoned,
-		// Redis received it, so report and return that conn rather than nil. Nil only
-		// when the command never reached a connection (a true pre-send cancellation), for
-		// which the recorder's "no peer attributes" is correct.
+		// still complete the background fetch (success via applyAndSettle, or its own
+		// error via settleErr), so neither records THIS caller's cancellation — without
+		// this it is undercounted whenever coalescing is on. Attribute to the SENT conn
+		// via req.sentConn (an atomic view safe on this pre-req.done branch, unlike
+		// servedBy, which would race the session's write): if the command was already
+		// sent, Redis received it, so report that conn; nil only for a true pre-send cancel.
 		sentConn := req.sentConn.Load()
 		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 			errorType, statusCode, isInternal := classifyCommandError(ctx.Err())
 			errorCallback(ctx, errorType, sentConn, statusCode, isInternal, 0)
 		}
+		// Lost the interlock: the reader claimed cmd and is mid-apply — wait (the receive
+		// is a happens-before edge) rather than race by reusing cmd, and return its
+		// result. Won it: the reader skips the cmd write; in the LIVE case it still
+		// publishes and settles the token, so leave it — except when stopping, where the
+		// req may be stranded past the shutdown drain (cancelIfStopping). Return ctx.Err()
+		// either way, matching processWithRetry.
 		if !req.claimAbandon() {
 			<-req.done
 			return req.servedBy, ctx.Err()
 		}
-		// Won the interlock: the reader will skip the cmd write. In the LIVE case it
-		// still dequeues this req and publishes to the cache, so leave the token to
-		// it. But if the coalescer is STOPPING, this req may have landed in mc.ch
-		// after the shutdown drain, where nothing will settle it — see cancelIfStopping.
 		mc.cancelIfStopping(cacheKey, token)
 		return sentConn, ctx.Err()
+	}
+	ctxDone := ctx.Done()
+	for {
+		select {
+		case err := <-req.done:
+			mc.emitReplyErr(ctx, req, err)
+			return req.servedBy, err
+		case <-mc.stop:
+			// Close raced our enqueue: the req may have landed in mc.ch after the
+			// shutdown drain, so nothing will settle req.done. Winning the interlock
+			// means no reply is being applied — cancel the reservation and return instead
+			// of hanging (a duplicate Cancel, if the drain also got this req, is a no-op
+			// on a settled token).
+			if req.claimAbandon() {
+				mc.c.csc.Cancel(cacheKey, token)
+				// The req may be sitting in mc.ch AFTER the shutdown drain ran, where
+				// no worker will ever dequeue it — a live WithTimeout clone's pointer
+				// would then retain it (and its Cmder) indefinitely. Re-run the
+				// non-blocking drain to empty the queue; settling our own abandoned
+				// req is harmless (done is buffered, the duplicate Cancel is a no-op).
+				mc.drainQueueErr(errCSCRetryUncached)
+				return nil, errCSCRetryUncached
+			}
+			// The reader claimed cmd and is mid-apply: wait so we do not read/reuse
+			// cmd concurrently (the receive is a happens-before edge), then return
+			// the settle result itself — the reply may have been applied successfully.
+			e := <-req.done
+			mc.emitReplyErr(ctx, req, e)
+			return req.servedBy, e
+		case <-wctx.Done():
+			// Caller stopped waiting under ContextTimeoutEnabled (otherwise wctx is
+			// Background and never fires — matching the ordinary path's I/O timeout policy).
+			return abandon()
+		case <-ctxDone:
+			// Raw caller cancellation. Honor it only PRE-I/O (sentConn == nil); once the
+			// batch reached a conn, disable this case and fall through to the wctx policy,
+			// so a command Redis is already serving is not abandoned early when
+			// ContextTimeoutEnabled is off (wctx == Background there).
+			if req.sentConn.Load() != nil {
+				ctxDone = nil
+				continue
+			}
+			return abandon()
+		}
 	}
 }
 
@@ -658,6 +690,20 @@ func (mc *cscMissCoalescer) cancelIfStopping(cacheKey string, token uint64) {
 // reply is classified from a throwaway parse and, when cacheable, published for
 // the next reader; only the caller's cmd write is skipped.
 func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, capturedGen uint64) {
+	// A user CacheSizer (via fulfillCached) or a custom Cmder's reply parse (via
+	// applyCachedReply) runs on the full-duplex reader goroutine, which has no other
+	// recover. A panic here would crash the process AND leave this caller blocked on
+	// req.done forever (the req is already off inflight, so the teardown drain can
+	// never reach it). Recover, then settleErr: it cancels the reservation, tags a
+	// cscSessionError so the caller re-runs on the pooled path, and wakes the caller.
+	// The normal settle below is the terminal statement, so a panic never double-settles.
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(),
+				"csc: miss-coalesce apply/publish panic (recovered): %v", r)
+			mc.settleErr(req, fmt.Errorf("csc: apply panic: %v", r))
+		}
+	}()
 	c := mc.c
 	var applyErr error
 	if req.claimApply() {

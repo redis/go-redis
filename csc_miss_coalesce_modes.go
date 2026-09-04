@@ -442,7 +442,14 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 		defer ticker.Stop()
 
 		readOne := func(req *cscMissReq) bool { // false => fatal, reader must exit
-			rerr := cn.WithReader(sctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+			// batchBudget (write + read), not bare ReadTimeout: the writer hands the batch
+			// to this reader BEFORE flushing it (deadlock avoidance), so a reply read can
+			// arm while its request is still being written — an oversized first command
+			// (allowed past the batch byte cap) or a slow/WAN link then charges write-flush
+			// time against a bare ReadTimeout and spuriously times out (and tears down) a
+			// session whose write is within WriteTimeout (#3989). batchBudget is exactly the
+			// batch's write+read bound; relaxation still raises it further via EffectiveReadTimeout.
+			rerr := cn.WithReader(sctx, mc.batchBudget(), func(rd *proto.Reader) error {
 				// Push handling with the nonblocking Close adapter: this reader
 				// is part of mc.wg, so a custom push handler calling Close() on
 				// the raw client would self-deadlock (Close waits on mc.wg while
@@ -568,11 +575,14 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	drainBackstop := func(stopping bool) {
 		prev := readsDone.Load()
 		for {
-			// One blocked read may legitimately wait out the conn's EFFECTIVE
-			// read timeout (a maintenance-relaxed timeout can far exceed the
-			// batch budget), so the zero-progress verdict must not fire sooner.
-			// Recomputed per interval: an expired relaxation shrinks it back.
-			interval := mc.batchBudget()
+			// One blocked read may legitimately wait out its full reply deadline
+			// (readOne arms batchBudget, and a maintenance-relaxed timeout can exceed
+			// even that), so the zero-progress verdict must not fire before the reader's
+			// own deadline. Keep the interval strictly ABOVE batchBudget — the reader's
+			// per-read bound — so a single legitimately-slow reply is never mistaken for a
+			// stall and its connection force-closed. Recomputed per interval: an expired
+			// relaxation shrinks it back.
+			interval := mc.batchBudget() + time.Second
 			rt := cn.EffectiveReadTimeout(c.opt.ReadTimeout)
 			wt := cn.EffectiveWriteTimeout(c.opt.WriteTimeout)
 			if rt+time.Second > interval {
