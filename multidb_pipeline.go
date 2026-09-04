@@ -165,8 +165,8 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			// the single-command path does; a closed admission always counts
 			// toward opening.
 			db.cb.RecordFailureFor(res)
-			if cur, _ := c.activeSnapshot(); cur == db && c.detectorGen.Load() == detectorGen {
-				c.detector.RecordFailure(cmd.rawErr())
+			if cur, _ := c.activeSnapshot(); cur == db {
+				c.recordDetectorFailure(detectorGen, cmd.rawErr())
 			}
 			transportFailures++
 			recorded++

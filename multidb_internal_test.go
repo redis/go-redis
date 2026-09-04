@@ -2329,6 +2329,58 @@ func TestMultiDBSSubscribeFallsBackToFollowerWhenGateRejects(t *testing.T) {
 	}
 }
 
+// resetInsideRecordFD simulates a detector reset (operator reselect, failover,
+// fallback) landing between the generation check and the detector write: its
+// RecordFailure first resets the core's detector window, then latches, as a
+// pre-reset failure arriving into the fresh window would.
+type resetInsideRecordFD struct {
+	core    *multidbCore
+	once    sync.Once
+	tripped atomic.Bool
+}
+
+func (d *resetInsideRecordFD) RecordSuccess() {}
+func (d *resetInsideRecordFD) RecordFailure(error) {
+	d.once.Do(func() { d.core.resetDetectorSafely() })
+	d.tripped.Store(true)
+}
+func (d *resetInsideRecordFD) ShouldFailover() bool { return d.tripped.Load() }
+func (d *resetInsideRecordFD) Reset()               { d.tripped.Store(false) }
+
+// A failure whose detector window moved between the generation check and the
+// write must not survive in the fresh window: with a detector that trips on a
+// single failure, the next gate would fail away from the member the reset
+// had just selected.
+func TestProcessDetectorFailureAfterConcurrentResetIsWiped(t *testing.T) {
+	fd := &resetInsideRecordFD{}
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second, FailoverStrategy: WeightBasedFailoverStrategy{}, FailureDetector: fd})
+	fd.core = core
+	member := newLazyMember(0)
+	t.Cleanup(func() { _ = member.c.Close() })
+	member.c.AddHook(eofHook{})
+	core.dbs[0] = member
+	core.active.Store(0)
+
+	cmd := NewStatusCmd(context.Background(), "set", "k", "v")
+	_ = core.process(context.Background(), cmd)
+
+	if fd.ShouldFailover() {
+		t.Fatal("a pre-reset failure survived in the detector's fresh window: the next gate would fail away from the just-selected member")
+	}
+}
+
+// eofHook fails every command with a transport error without dialing.
+type eofHook struct{}
+
+func (eofHook) DialHook(next DialHook) DialHook { return next }
+func (eofHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(context.Context, Cmder) error { return io.EOF }
+}
+
+func (eofHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
 // A PubSub handshake (initConn) that fails with the pool's ErrClosed on a
 // member removed meanwhile must be translated like the dial before it: the
 // channel loops treat ErrClosed as terminal, and the subscription must re-dial

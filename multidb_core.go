@@ -760,6 +760,23 @@ func (c *multidbCore) resetDetectorSafely() {
 	c.detector.Reset()
 }
 
+// recordDetectorFailure writes a failure into the detector window the caller
+// sampled as gen, and nothing into a later window. The generation check and
+// the write are not atomic: a reset that lands between them puts a pre-reset
+// failure into the fresh window. So the window is re-checked after the write
+// and, if it moved, reset again. A second reset is idempotent, and wiping the
+// few legitimate outcomes recorded in between is the conservative direction:
+// it can only delay a failover, never cause one.
+func (c *multidbCore) recordDetectorFailure(gen uint64, err error) {
+	if c.detectorGen.Load() != gen {
+		return
+	}
+	c.detector.RecordFailure(err)
+	if c.detectorGen.Load() != gen {
+		c.resetDetectorSafely()
+	}
+}
+
 // activeDatabaseID returns the stable id of the active database, or -1 when none is
 // selected.
 func (c *multidbCore) activeDatabaseID() int {
@@ -974,8 +991,8 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// changing identity, and a pre-reset failure must not pollute the
 			// fresh window (the breaker half is already guarded by its reset
 			// generation through RecordFailureFor).
-			if cur, _ := c.activeSnapshot(); cur == db && c.detectorGen.Load() == dg {
-				c.detector.RecordFailure(err)
+			if cur, _ := c.activeSnapshot(); cur == db {
+				c.recordDetectorFailure(dg, err)
 			}
 			lastErr = err
 			if cmd.NoRetry() {
