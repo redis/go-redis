@@ -2031,6 +2031,37 @@ func TestBackgroundPassFailsOverBeforeProbingPassives(t *testing.T) {
 	}
 }
 
+// A background probe that closes the active's breaker is recovery evidence:
+// it must break the chain of consecutive failed failovers, because a client
+// that sends no commands (idle, or Pub/Sub only) has no command success to do
+// so, and the next outage would otherwise resume the old count.
+func TestBackgroundProbeRecoveryBreaksEscalationChain(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second, FailoverStrategy: WeightBasedFailoverStrategy{}})
+	db := &multidbDatabase{
+		id:     0,
+		weight: 1,
+		cb:     imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: 5 * time.Millisecond}),
+		policy: defaultMultiDBPolicy{},
+		checks: []MultiDBHealthCheck{okLivenessCheck{}},
+	}
+	core.dbs[0] = db
+	core.active.Store(0)
+
+	// The active went down (breaker open) and no command has succeeded since.
+	db.cb.ForceOpen()
+	core.successSinceFailover.Store(false)
+	time.Sleep(20 * time.Millisecond) // grace period: the next probe runs half-open
+
+	core.runHealthChecksOnce(context.Background())
+
+	if got := db.cb.State(); got != imultidb.CircuitClosed {
+		t.Fatalf("breaker = %v after a passing probe in half-open, want closed", got)
+	}
+	if !core.successSinceFailover.Load() {
+		t.Fatal("a probe-driven recovery of the active did not break the escalation chain: an idle client would report permanent unavailability after the next single failed attempt")
+	}
+}
+
 // intReplyHook answers every command with a fixed integer and never dials.
 type intReplyHook struct {
 	val   int64

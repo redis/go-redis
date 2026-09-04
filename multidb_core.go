@@ -1841,7 +1841,18 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 			// The active is probed without fail-back-only checks (e.g. the
 			// lag-aware REST check): their verdicts gate routing traffic TO
 			// a member, never evicting the one traffic flows through.
+			before := db.cb.State()
 			db.probeAsActive(ctx, c.opts.HealthCheckTimeout)
+			// A probe that closes the active's breaker is recovery evidence,
+			// like a successful command: it breaks the chain of consecutive
+			// failed failovers. A client that sends no commands (idle, or
+			// Pub/Sub only) has no command success to do that, so without
+			// this a member that recovered in place kept the old attempt
+			// count and the next outage could report permanent
+			// unavailability after a single failed attempt.
+			if before != imultidb.CircuitClosed && db.cb.State() == imultidb.CircuitClosed {
+				c.successSinceFailover.Store(true)
+			}
 			// Decide failover now, not after the rest of the pass: an active
 			// this probe found unhealthy must not keep traffic (and an idle
 			// client's Pub/Sub) on it while the passives are probed.
