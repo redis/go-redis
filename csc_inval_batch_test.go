@@ -290,6 +290,41 @@ func TestInvalBatcherSpillByteCapTriggersFlush(t *testing.T) {
 	}
 }
 
+// The worker's PENDING batch is size-capped by retained key BYTES, not only by item
+// count: a stream of large keys (each under the admission limit) that stays far below
+// the 4096-item cap must still flush once pending bytes cross the byte cap, so pending
+// memory cannot grow to GBs across one window (fS2RM). The byte cap applies the batch
+// (per-key deletes), it does not full-Flush.
+func TestInvalBatcherPendingByteCapFlushes(t *testing.T) {
+	cache := &countingCache{}
+	b := newTestBatcher(cache, 64, time.Hour) // window never fires; only the byte cap can flush
+	b.batchMaxBytes = 4096                    // small pending byte cap; item cap stays at 4096
+	go b.run()
+
+	// ~1 KiB keys: a dozen distinct keys cross the 4 KiB byte cap several times while
+	// the item count stays a dozen, far under the 4096-item cap.
+	bigKey := strings.Repeat("y", 1<<10)
+	for i := 0; i < 12; i++ {
+		b.enqueue(bigKey + strconv.Itoa(i))
+	}
+
+	// The byte cap must apply the batch BEFORE any stop-drain and WITHOUT the (1h)
+	// window firing. Capture deletes before stop, then tear down.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && cache.deletes.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	got := cache.deletes.Load()
+	b.stop()
+	b.join()
+	if got == 0 {
+		t.Fatal("pending byte cap did not flush: deletes=0 before stop (only the item cap/window would have)")
+	}
+	if f := cache.flushes.Load(); f != 0 {
+		t.Fatalf("byte cap should apply the batch, not full-Flush; flushes=%d", f)
+	}
+}
+
 // TestClearRefreshQueueDetachesBatcherWithoutJoin pins the Group-A contract: the
 // handler paths that tear a batcher down (here clearRefreshQueue; also
 // setRefreshQueue/releaseLocked/setInvalBatchWindow) must DETACH and SIGNAL the

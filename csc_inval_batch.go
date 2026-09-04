@@ -47,6 +47,16 @@ const cscInvalSpillMax = 1 << 16 // 65536
 // of the refresh queue's key-byte cap (cscRefreshTargetMaxBytes).
 const cscInvalSpillMaxBytes = 8 << 20 // 8 MiB
 
+// cscInvalBatchMaxBytes size-caps the worker's PENDING batch by retained KEY
+// bytes, the byte twin of cscInvalBatchMax. ch and spill bound the bytes WAITING
+// to be consumed, but the worker then holds each key in `pending` until the window
+// or the item cap flushes — so a stream of large keys (each under the admission
+// limit) could retain GBs in pending across one window while the item count stays
+// far below cscInvalBatchMax. At this many pending key bytes the worker flushes the
+// batch early (a normal apply, not a full-cache Flush), bounding pending memory. 8
+// MiB mirrors the spill/refresh key-byte caps.
+const cscInvalBatchMaxBytes = 8 << 20 // 8 MiB
+
 // cscInvalItem is one queued invalidation, tagged with the batcher epoch it
 // was enqueued under so a full-cache flush can supersede it (see drop()).
 type cscInvalItem struct {
@@ -88,6 +98,10 @@ type cscInvalBatcher struct {
 	// (not a mutable global) so a test can lower it without racing other batchers'
 	// worker goroutines reading it under -race; production leaves it 0.
 	batchMax int
+	// batchMaxBytes size-caps the pending batch by retained KEY bytes; 0 means
+	// cscInvalBatchMaxBytes. Per-batcher like batchMax so a test can lower it
+	// race-free; production leaves it 0.
+	batchMaxBytes int
 	// cache is snapshotted at creation (batcher lifetime is inside the binding
 	// lifetime): the release-time stop-drain must still apply queued deletes AFTER
 	// releaseLocked nils h.cache, or a successor reusing the shared cache serves
@@ -371,9 +385,17 @@ func (b *cscInvalBatcher) run() {
 	if batchMax <= 0 {
 		batchMax = cscInvalBatchMax
 	}
+	batchMaxBytes := b.batchMaxBytes
+	if batchMaxBytes <= 0 {
+		batchMaxBytes = cscInvalBatchMaxBytes
+	}
 	t := time.NewTimer(b.window)
 	defer t.Stop()
 	pending := make([]cscInvalItem, 0, 256)
+	// pendingBytes tracks the retained KEY bytes in `pending`, so the size-cap flush
+	// bounds the batch by memory as well as by item count (see cscInvalBatchMaxBytes).
+	// Reset together with pending on every flush.
+	pendingBytes := 0
 	// seen dedups by key WITHIN an epoch: the same key arriving again after a
 	// flush bumped the epoch must be re-appended (the old occurrence will be
 	// skipped by apply), or its post-flush delete would be lost to dedup. idx is the
@@ -414,6 +436,7 @@ func (b *cscInvalBatcher) run() {
 			b.apply(pending)
 		}()
 		pending = pending[:0]
+		pendingBytes = 0
 	}
 	flush := func() {
 		applyPending()
@@ -427,6 +450,7 @@ func (b *cscInvalBatcher) run() {
 		if e, dup := seen[it.key]; !dup || e.epoch != it.epoch {
 			seen[it.key] = seenEntry{epoch: it.epoch, idx: len(pending)}
 			pending = append(pending, it)
+			pendingBytes += len(it.key)
 		} else if it.fetchSnap > pending[e.idx].fetchSnap {
 			// Same key, same epoch: dropped as a duplicate delete, BUT carry the LATEST
 			// fetch snapshot onto the retained item. A second write to the key in this
@@ -440,8 +464,11 @@ func (b *cscInvalBatcher) run() {
 		// once, so it becomes a single deletion. The incoming push was already
 		// counted at the handler, so the dropped duplicate needs no accounting — it
 		// just won't add a deletion, which is exactly the dedup signal.
-		if len(pending) >= batchMax {
-			// Size-cap flush: apply the batch AND clear seen. A key straddling the cap
+		if len(pending) >= batchMax || pendingBytes >= batchMaxBytes {
+			// Size-cap flush (by item COUNT or retained key BYTES): apply the batch AND
+			// clear seen. The byte cap keeps a burst of large keys from retaining GBs in
+			// pending across a window (each key can be under the per-item admission limit
+			// yet sum far past it). A key straddling the cap
 			// can now be applied in both halves, but that is harmless: the fetch-order
 			// guard (cscInvalItem.fetchSnap) makes the second apply a no-op when the
 			// first apply's refetch already republished the entry — the duplicate's
@@ -485,6 +512,7 @@ func (b *cscInvalBatcher) run() {
 		// individual deletions (the Flush invalidates wholesale). Incoming pushes
 		// were already counted at the handler, so just reset the batch.
 		pending = pending[:0]
+		pendingBytes = 0
 		clearSeen()
 	}
 	for {
