@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1876,41 +1875,38 @@ type pipelineExecutedKey struct{}
 // node executing must not make another node's short-circuited (untouched,
 // nil-error) commands look like served database successes.
 type executedCmds struct {
-	mu   sync.Mutex
-	done map[Cmder]struct{}
+	mu sync.Mutex
+	// Keyed by the command's embedded baseCmd, not by the Cmder interface
+	// value: a value-type decorator that embeds a command plus a slice or map
+	// field is not comparable and cannot be a map key, and skipping such
+	// commands left a batch of them looking never-executed after a transport
+	// error, so a retry could replay writes that had applied. Every command
+	// embeds a baseCmd, and a decorator promotes base() from the command it
+	// embeds, so this key identifies the command that executed.
+	done map[*baseCmd]struct{}
 }
 
 func newExecutedCmds(size int) *executedCmds {
-	return &executedCmds{done: make(map[Cmder]struct{}, size)}
+	return &executedCmds{done: make(map[*baseCmd]struct{}, size)}
 }
 
 func (e *executedCmds) mark(cmds []Cmder) {
 	e.mu.Lock()
 	for _, cmd := range cmds {
-		// Cmder carries no comparability contract: a value-type command that
-		// embeds a builtin cmd plus a slice/map field is not comparable and
-		// would panic ("hash of unhashable type") as a map key. Skip those —
-		// they go untracked (has == false), which is conservative: an untracked
-		// successful command records no health signal (recordBatchOutcomes'
-		// success path guards on the marker), and failures record regardless.
-		// A batch of ONLY non-comparable commands leaves any() == false, so a
-		// batch-level error would stamp them via the never-executed path — a
-		// documented corner the eventual per-command marker on baseCmd removes
-		// by dropping the map entirely. A nil dynamic type (t == nil) is the
-		// comparable nil interface and is tracked as before.
-		if t := reflect.TypeOf(cmd); t == nil || t.Comparable() {
-			e.done[cmd] = struct{}{}
+		if cmd == nil {
+			continue
 		}
+		e.done[cmd.base()] = struct{}{}
 	}
 	e.mu.Unlock()
 }
 
 func (e *executedCmds) has(cmd Cmder) bool {
-	if t := reflect.TypeOf(cmd); t != nil && !t.Comparable() {
-		return false // never tracked (see mark) — treat as not executed
+	if cmd == nil {
+		return false
 	}
 	e.mu.Lock()
-	_, ok := e.done[cmd]
+	_, ok := e.done[cmd.base()]
 	e.mu.Unlock()
 	return ok
 }

@@ -885,19 +885,30 @@ type unhashableCmd struct {
 	extra []int
 }
 
-// TestExecutedCmdsSkipsNonComparableCommand pins that executedCmds does not
-// panic on a non-comparable command (Cmder imposes no comparability contract):
-// it goes untracked rather than being hashed as a map key.
-func TestExecutedCmdsSkipsNonComparableCommand(t *testing.T) {
+// TestExecutedCmdsTracksNonComparableCommand pins that executedCmds tracks a
+// non-comparable command (Cmder imposes no comparability contract) by the
+// identity of the command it embeds, instead of skipping it: a batch of such
+// commands that executed must not look never-executed after a transport
+// error, or a retry could replay writes that had applied.
+func TestExecutedCmdsTracksNonComparableCommand(t *testing.T) {
 	e := newExecutedCmds(2)
-	cmd := unhashableCmd{StatusCmd: NewStatusCmd(context.Background(), "ping"), extra: []int{1}}
+	inner := NewStatusCmd(context.Background(), "ping")
+	cmd := unhashableCmd{StatusCmd: inner, extra: []int{1}}
 
 	e.mark([]Cmder{cmd}) // must not panic ("hash of unhashable type")
-	if e.has(cmd) {
-		t.Error("non-comparable command reported executed; want untracked")
+	if !e.has(cmd) {
+		t.Error("non-comparable command not reported executed after mark")
 	}
-	if e.any() {
-		t.Error("a non-comparable-only batch marked something; want none")
+	if !e.any() {
+		t.Error("a batch of one non-comparable command looks never-executed")
+	}
+	// Identity is the embedded command: another decorator around it, and the
+	// bare command, are the same execution.
+	if !e.has(unhashableCmd{StatusCmd: inner, extra: []int{2}}) || !e.has(inner) {
+		t.Error("the embedded command's identity is not what is tracked")
+	}
+	if e.has(NewStatusCmd(context.Background(), "ping")) {
+		t.Error("a different command reported executed")
 	}
 
 	// A normal pointer command is still tracked.

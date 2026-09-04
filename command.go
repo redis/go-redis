@@ -251,6 +251,10 @@ type Cmder interface {
 	// MultiDB transaction path marks every command of a transaction, and a
 	// decorated command must not slip through unmarked.
 	setNoRetry(bool)
+	// base returns the command's embedded baseCmd: the identity of the
+	// command that executes, stable across decorators, and usable as a map
+	// key where the Cmder value itself may not be comparable.
+	base() *baseCmd
 
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
@@ -588,6 +592,11 @@ func (cmd *baseCmd) NoRetry() bool {
 // client's retry loop.
 func (cmd *baseCmd) setNoRetry(v bool) {
 	cmd.noRetry = v
+}
+
+// base returns the command's identity (see Cmder.base).
+func (cmd *baseCmd) base() *baseCmd {
+	return cmd
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
