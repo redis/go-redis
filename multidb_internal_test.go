@@ -1779,3 +1779,67 @@ func TestMultiDBAutoPipelineDivertsUnpipelineableOnClusterMember(t *testing.T) {
 		t.Errorf("Set was diverted too: single dispatches = %d, want still 1", got)
 	}
 }
+
+// TestInitializeSucceedsAtDeadlineWhenPolicyMet pins startup under the
+// partial outage OneAvailable and MajorityAvailable exist to tolerate. One
+// member's probe blocks until the constructor's deadline; the others answer
+// at once. A serial pass that waited for every member let the blocked probe
+// spend the deadline and then failed startup. Now the deadline that arrives
+// with the policy already met succeeds on the verdicts gathered before it:
+// the initial active is the highest-weight member that PASSED (even when the
+// blocked member outranks it), and the blocked member — which did not answer
+// within the whole deadline — is recorded unhealthy and forced open, exactly
+// like a probe that hit HealthCheckTimeout, so failover cannot select it.
+func TestInitializeSucceedsAtDeadlineWhenPolicyMet(t *testing.T) {
+	const deadline = time.Second
+	for _, tc := range []struct {
+		name       string
+		state      InitialDBState
+		weights    [3]float64 // members 0, 1, 2; member 2 is the blocked one
+		wantActive int
+	}{
+		{"one_available", InitialDBStateOneAvailable, [3]float64{3, 2, 1}, 0},
+		{"majority", InitialDBStateMajorityAvailable, [3]float64{3, 2, 1}, 0},
+		{"majority_blocked_outranks", InitialDBStateMajorityAvailable, [3]float64{2, 1, 3}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stuck := &blockingCheck{started: make(chan struct{})}
+			opts := &MultiDBOptions{
+				HealthCheckInterval:  time.Hour,
+				AutoFallbackInterval: -1,
+				HealthCheckTimeout:   5 * time.Second, // longer than the deadline
+				InitialDBState:       tc.state,
+				Clients: []MultiDBClientConfig{
+					{Options: &Options{Addr: "127.0.0.1:1"}, Weight: tc.weights[0], HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+					{Options: &Options{Addr: "127.0.0.1:2"}, Weight: tc.weights[1], HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+					{Options: &Options{Addr: "127.0.0.1:3"}, Weight: tc.weights[2], HealthChecks: []MultiDBHealthCheck{stuck}},
+				},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			defer cancel()
+
+			start := time.Now()
+			mdb, err := NewMultiDBClient(ctx, opts)
+			elapsed := time.Since(start)
+			if err != nil {
+				t.Fatalf("NewMultiDBClient: %v (after %v) — two members were healthy at once", err, elapsed)
+			}
+			t.Cleanup(func() { _ = mdb.Close() })
+			// The pass waits for every verdict it can get, so with one blocked
+			// member it runs to the deadline — and succeeds there instead of
+			// failing.
+			if elapsed < deadline/2 || elapsed > deadline+time.Second {
+				t.Fatalf("startup took %v, want about the %v deadline", elapsed, deadline)
+			}
+			if got := mdb.core.activeDatabaseID(); got != tc.wantActive {
+				t.Errorf("active = %d, want %d (highest-weight member that PASSED)", got, tc.wantActive)
+			}
+			// The blocked member did not answer within the deadline: recorded
+			// unhealthy and forced open, so failover cannot select it before
+			// the background loop has probed it.
+			if got := mdb.core.dbs[2].cb.CheckState(); got != imultidb.CircuitOpen {
+				t.Errorf("blocked member's breaker = %v, want open (no answer within the deadline)", got)
+			}
+		})
+	}
+}

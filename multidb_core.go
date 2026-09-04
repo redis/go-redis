@@ -472,26 +472,67 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	required := c.requiredAvailableCount()
 	_, hasDeadline := ctx.Deadline()
 
-	probeHealthy := make(map[int]bool, len(c.dbs))
+	// probeHealthy holds every member's verdict from the pass that satisfied
+	// the policy. A member that had not answered when the constructor's
+	// deadline arrived is recorded as unhealthy, like a probe that hit
+	// HealthCheckTimeout.
+	var probeHealthy map[int]bool
+	type verdict struct {
+		id      int
+		healthy bool
+	}
 	for {
-		healthy := 0
-		for id, db := range c.dbs {
-			// Stop probing as soon as the constructor's context ends, rather
-			// than finishing the whole pass: a check that ignores ctx would
-			// otherwise keep the constructor running past cancellation.
-			if err := ctx.Err(); err != nil {
-				return initHealthErr(err, healthy, required)
-			}
-			probeHealthy[id] = db.probe(ctx, c.opts.HealthCheckTimeout)
-			if probeHealthy[id] {
-				healthy++
-			}
-		}
 		if err := ctx.Err(); err != nil {
-			// A probe may report healthy even after the constructor's
-			// context expired (checks that notice cancellation late): a
-			// canceled construction must not return a live client.
-			return initHealthErr(err, healthy, required)
+			return initHealthErr(err, 0, required)
+		}
+		// Probe every member concurrently. Probing serially let one unreachable
+		// member spend the constructor's deadline after enough healthy members
+		// had already answered, and the pass then failed on the deadline — in
+		// exactly the partial outage OneAvailable and MajorityAvailable exist to
+		// tolerate. The pass still waits for every verdict it can get: the
+		// verdicts decide which members failover may select, and a member that
+		// answers "unhealthy" a moment after the policy is met must still be
+		// forced open. Only the deadline cuts the wait short (below). Each probe
+		// is bounded by HealthCheckTimeout and by ctx, and the channel is
+		// buffered for every member, so a late verdict never blocks anything.
+		probeHealthy = make(map[int]bool, len(c.dbs))
+		results := make(chan verdict, len(c.dbs))
+		for id, db := range c.dbs {
+			go func(id int, db *multidbDatabase) {
+				results <- verdict{id: id, healthy: db.probe(ctx, c.opts.HealthCheckTimeout)}
+			}(id, db)
+		}
+		healthy := 0
+		for seen := 0; seen < len(c.dbs); {
+			select {
+			case v := <-results:
+				seen++
+				probeHealthy[v.id] = v.healthy
+				if v.healthy {
+					healthy++
+				}
+			case <-ctx.Done():
+				// A caller's cancellation fails: a canceled construction must
+				// not return a live client. A DEADLINE that arrives with the
+				// policy already met by the verdicts gathered before it
+				// succeeds on them. A member still probing then did not
+				// answer within the whole constructor deadline, so it is
+				// recorded as unhealthy — the same verdict a probe that hit
+				// HealthCheckTimeout gets — and forced open below, never
+				// selected, and repaired by the background loop once it
+				// answers. A verdict landing after expiry is not counted: a
+				// probe that notices cancellation late may report healthy for
+				// a member the caller stopped waiting on.
+				if !errors.Is(ctx.Err(), context.DeadlineExceeded) || healthy < required {
+					return initHealthErr(ctx.Err(), healthy, required)
+				}
+				for id := range c.dbs {
+					if _, known := probeHealthy[id]; !known {
+						probeHealthy[id] = false
+					}
+				}
+				seen = len(c.dbs)
+			}
 		}
 		if healthy >= required {
 			break
@@ -514,9 +555,8 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	//  - a member that failed its probe gets its breaker opened, so automatic
 	//    failover cannot switch to a database already known to be down before
 	//    the background checks have had a chance to open it organically.
-	// The context check above guarantees the loop only breaks with a live
-	// context, so every probe verdict here is real (a canceled pass returns
-	// before this reconciliation).
+	// Every member has a verdict here: either its probe answered, or the
+	// deadline arrived first and it was recorded as unhealthy.
 	for id, db := range c.dbs {
 		if probeHealthy[id] {
 			if db.cb.CheckState() != imultidb.CircuitClosed {
