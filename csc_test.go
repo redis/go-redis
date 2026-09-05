@@ -3139,6 +3139,50 @@ func TestInvalidateHandlerDecodesPayloads(t *testing.T) {
 	}
 }
 
+// TestInvalidateHandlerInlineNoRefreshKeepsRefetched pins the cursor Medium finding
+// (csc_integration.go inline !canRefresh path): with refresh OFF, the inline invalidation
+// must still honor the fetch-order guard — the mirror of the batcher's !canRefresh branch
+// (TestInvalBatcherNoRefreshGuardKeepsRefetched). An entry whose fetchSeq exceeds the
+// push's observe snapshot (a miss reserved AFTER the invalidation was observed) must NOT
+// be cancelled, or coalesced waiters wake as spurious extra misses.
+//
+// Deterministic seam: Reserve stamps the entry's fetchSeq from the global cscFetchSeq;
+// storing the global back below it makes the handler's snapshot (loaded from cscFetchSeq)
+// precede the entry, modelling the reserved-after-observe race without a live goroutine.
+//
+// Red-check: revert the inline branch to cache.DeleteByRedisKey — the entry is
+// unconditionally evicted and this fails.
+func TestInvalidateHandlerInlineNoRefreshKeepsRefetched(t *testing.T) {
+	ctx := context.Background()
+	old := cscFetchSeq.Load()
+	defer cscFetchSeq.Store(old)
+
+	lc := NewLocalCache(CacheConfig{MaxEntries: 1024})
+	rk := testCSCNamespacedKey(0, "rk")
+	tok, fetch := lc.Reserve("ck:hot", []string{rk})
+	if tok == 0 || !fetch {
+		t.Fatalf("Reserve = (%d, %v); want a fresh reservation", tok, fetch)
+	}
+	if !lc.fulfill("ck:hot", tok, 0, []byte("v")) {
+		t.Fatal("fulfill failed")
+	}
+	// The entry's fetchSeq is now > 0. Drop the global BELOW it so the handler's
+	// observe-snapshot (cscFetchSeq.Load()) precedes the entry: the guard must keep it.
+	cscFetchSeq.Store(0)
+
+	// refresh nil + batcher nil (window 0) -> the inline !canRefresh path with lc != nil.
+	h := &invalidateHandler{cache: lc, keyPrefix: cscNamespacePrefix(0, "")}
+	if err := h.HandlePushNotification(ctx, push.NotificationHandlerContext{},
+		[]interface{}{"invalidate", []interface{}{"rk"}}); err != nil {
+		t.Fatalf("HandlePushNotification: %v", err)
+	}
+
+	if _, ok := lc.Get(ctx, "ck:hot"); !ok {
+		t.Fatal("inline refresh-off invalidation evicted a value refetched after the observe " +
+			"snapshot; the fetch-order guard must apply on the inline path too (cursor Medium)")
+	}
+}
+
 // TestInvalidateHandlerNilPayloadFlushes: a nil <keys> payload (emitted by the
 // server on FLUSHDB/FLUSHALL) must flush the entire cache.
 func TestInvalidateHandlerNilPayloadFlushes(t *testing.T) {

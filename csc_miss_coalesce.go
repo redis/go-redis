@@ -204,6 +204,12 @@ type cscMissCoalescer struct {
 	stopOnce sync.Once // guards close(stop): Close and the GC cleanup can both stop
 	wg       sync.WaitGroup
 
+	// stopDrainBudget overrides the Close-time drain cap. Zero in all production paths
+	// (never set outside tests) — cscMissStopDrainIntervals × interval applies. Set only
+	// by tests, which cannot otherwise reach the cap in bounded time: interval is floored
+	// at batchBudget()+1s >= 6s, so the default cap first fires ~48s in.
+	stopDrainBudget time.Duration
+
 	// maxBatchBytes bounds the serialized size of one coalesced write batch to the
 	// connection's write buffer (see cscMissWriteBatchBytes). This keeps bufio from
 	// a flush in the middle of a batch. The reason: the reader waits until the whole
@@ -741,13 +747,29 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 	mc.settle(req, applyErr)
 }
 
+// cscMissStopDrainIntervals caps the whole Close-time (stopping) drain at N
+// stall-detection intervals. Without a total cap the per-interval progress check
+// renews forever, so a server trickling one reply per interval keeps a deep in-flight
+// pipeline (up to cscFullDuplexDepth) draining and blocks Close in wg.Wait for hours.
+// This is an explicit TRADEOFF against the unbounded-progress rule the non-stopping
+// drain keeps (see drainBackstop): a deep, legitimately slow-but-progressing drain
+// CAN exceed N intervals, and past that budget Close-never-wedges outranks completing
+// the remainder — some accepted in-flight replies may be cut. N × interval scales the
+// budget with the configured (and maintenance-relaxed) timeouts instead of a fixed
+// wall-clock; N=8 keeps a normal Close prompt while bounding the trickle case to tens
+// of seconds. Only the stopping path is capped; an age-out/handoff recycle stays
+// unbounded (the client is alive, only this conn's recycle waits).
+const cscMissStopDrainIntervals = 8
+
 // batchBudget bounds one coalesced batch's write + reads (connection acquisition
 // is bounded separately, by acquireCtx). It follows the client's configured
 // timeouts instead of a fixed cap: a client that deliberately sets
 // ReadTimeout/WriteTimeout high for slow cacheable reads must not see only its
 // coalesced misses cut off early (WithReader clamps the read to min(ctx deadline,
 // ReadTimeout), so a shorter ctx would win). The 5s floor covers scheduling
-// overhead when the configured timeouts are tiny or disabled.
+// overhead when the configured timeouts are tiny or disabled, and also keeps the
+// drainBackstop stall interval (batchBudget + 1s) safely above the reader's per-read
+// bound so a single slow reply is never mistaken for a stall.
 func (mc *cscMissCoalescer) batchBudget() time.Duration {
 	opt := mc.c.opt
 	var budget time.Duration

@@ -445,7 +445,17 @@ func (h *invalidateHandler) HandlePushNotification(
 			}
 			nsKey := cscNamespacedKey(keyPrefix, name)
 			if !canRefresh {
-				cache.DeleteByRedisKey(nsKey)
+				if lc != nil {
+					// *LocalCache with refresh OFF: still honor the fetch-order guard
+					// (mirrors the batcher's !canRefresh branch), or a delayed invalidation
+					// would delete/cancel a miss reserved AFTER this push was observed
+					// (fetchSeq > fetchSnap) and wake coalesced waiters as duplicate misses.
+					// cscInvalNoHorizon = no refresh horizon; discard collected targets.
+					_ = lc.deleteByRedisKeyCollectingHot(nsKey, cscInvalNoHorizon, fetchSnap, nil)
+				} else {
+					// Non-*LocalCache: no per-entry fetch sequence to compare; plain delete.
+					cache.DeleteByRedisKey(nsKey)
+				}
 				continue
 			}
 			// Inline (window==0) path: observe and delete synchronously. An entry with a

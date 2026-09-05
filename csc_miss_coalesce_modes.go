@@ -572,59 +572,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	// its reply, so len(inflight) is blind to the active read and would call a
 	// lone deep read a stall. Each budget interval that completed at least one
 	// reply extends the wait; only a zero-progress interval closes the conn.
-	drainBackstop := func(stopping bool) {
-		prev := readsDone.Load()
-		for {
-			// One blocked read may legitimately wait out its full reply deadline
-			// (readOne arms batchBudget, and a maintenance-relaxed timeout can exceed
-			// even that), so the zero-progress verdict must not fire before the reader's
-			// own deadline. Keep the interval strictly ABOVE batchBudget — the reader's
-			// per-read bound — so a single legitimately-slow reply is never mistaken for a
-			// stall and its connection force-closed. Recomputed per interval: an expired
-			// relaxation shrinks it back.
-			interval := mc.batchBudget() + time.Second
-			rt := cn.EffectiveReadTimeout(c.opt.ReadTimeout)
-			wt := cn.EffectiveWriteTimeout(c.opt.WriteTimeout)
-			if rt+time.Second > interval {
-				interval = rt + time.Second
-			}
-			if wt+time.Second > interval {
-				interval = wt + time.Second
-			}
-			// Deadline-less I/O (no active relaxation): the user explicitly
-			// disabled the read and/or write deadline, so the RECYCLE path must
-			// not cut a session whose reader is in a legitimately long reply OR
-			// whose writer is blocked flushing a large request — readsDone
-			// cannot show progress before a reply exists, so a deadline-free
-			// blocked WRITE looks exactly like a stall. Wait for the session
-			// (or Close) instead. Close still terminates: once stop fires, the
-			// bounded zero-progress close below applies, which is the shutdown
-			// contract (Close never wedges). NOTE the <= 0: Options.init
-			// normalizes -1 (indefinite) to 0 and -2 (no deadline calls) to
-			// -1, so both deadline-less modes land at <= 0 here.
-			if !stopping && (rt <= 0 || wt <= 0) {
-				select {
-				case <-superDone:
-					return
-				case <-mc.stop:
-					stopping = true
-				}
-				continue
-			}
-			select {
-			case <-superDone:
-				return
-			case <-time.After(interval):
-				cur := readsDone.Load()
-				if cur != prev {
-					prev = cur // still consuming replies; give it another interval
-					continue
-				}
-				_ = cn.Close()
-				return
-			}
-		}
-	}
+	drainBackstop := func(stopping bool) { mc.drainBackstopRun(cn, &readsDone, superDone, stopping) }
 	go func() {
 		defer close(supDead)
 		select {
@@ -681,6 +629,92 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			mc.settleErr(r, reasonErr())
 		default:
 			return stopFlag.Load(), errored()
+		}
+	}
+}
+
+// drainBackstop bounds a graceful drain of the full-duplex miss-coalescer session
+// by PROGRESS (completed reads, readsDone), not wall clock — see the block comment at
+// the call site and cscMissStopDrainIntervals for the stopping-path total cap.
+// Extracted from runFullDuplexSession so the stopping-drain budget is unit-testable.
+func (mc *cscMissCoalescer) drainBackstopRun(cn *pool.Conn, readsDone *atomic.Uint64, superDone <-chan struct{}, stopping bool) {
+	prev := readsDone.Load()
+	// On the stopping (Close) path the progress branch below must not renew forever:
+	// a server trickling one reply per interval keeps readsDone advancing, so with up
+	// to cscFullDuplexDepth in-flight, Close would block in wg.Wait for hours. Cap the
+	// whole stopping drain with a total deadline, armed ONCE (the first stopping loop),
+	// at cscMissStopDrainIntervals × interval. This is a TRADEOFF, not a free win: a
+	// deep, legitimately slow-but-progressing drain CAN exceed that budget (see the
+	// unbounded-progress rationale below), and past it Close-never-wedges outranks
+	// completing the remainder — some accepted in-flight replies may be cut. Non-stopping
+	// (age-out / handoff recycle) keeps the unbounded rule: the client stays alive, only
+	// this conn's recycle waits.
+	var stopDeadline time.Time
+	for {
+		// One blocked read may legitimately wait out its full reply deadline
+		// (readOne arms batchBudget, and a maintenance-relaxed timeout can exceed
+		// even that), so the zero-progress verdict must not fire before the reader's
+		// own deadline. Keep the interval strictly ABOVE batchBudget — the reader's
+		// per-read bound — so a single legitimately-slow reply is never mistaken for a
+		// stall and its connection force-closed. Recomputed per interval: an expired
+		// relaxation shrinks it back.
+		interval := mc.batchBudget() + time.Second
+		rt := cn.EffectiveReadTimeout(mc.c.opt.ReadTimeout)
+		wt := cn.EffectiveWriteTimeout(mc.c.opt.WriteTimeout)
+		if rt+time.Second > interval {
+			interval = rt + time.Second
+		}
+		if wt+time.Second > interval {
+			interval = wt + time.Second
+		}
+		// Arm the total stopping-drain deadline once (see cscMissStopDrainIntervals):
+		// N intervals from the first stopping loop, so a trickling server cannot renew
+		// the drain past a bounded budget on Close. mc.stopDrainBudget overrides the cap
+		// (tests only; zero in production).
+		if stopping && stopDeadline.IsZero() {
+			budget := cscMissStopDrainIntervals * interval
+			if mc.stopDrainBudget > 0 {
+				budget = mc.stopDrainBudget
+			}
+			stopDeadline = time.Now().Add(budget)
+		}
+		// Deadline-less I/O (no active relaxation): the user explicitly
+		// disabled the read and/or write deadline, so the RECYCLE path must
+		// not cut a session whose reader is in a legitimately long reply OR
+		// whose writer is blocked flushing a large request — readsDone
+		// cannot show progress before a reply exists, so a deadline-free
+		// blocked WRITE looks exactly like a stall. Wait for the session
+		// (or Close) instead. Close still terminates: once stop fires, the
+		// bounded zero-progress close below applies, which is the shutdown
+		// contract (Close never wedges). NOTE the <= 0: Options.init
+		// normalizes -1 (indefinite) to 0 and -2 (no deadline calls) to
+		// -1, so both deadline-less modes land at <= 0 here.
+		if !stopping && (rt <= 0 || wt <= 0) {
+			select {
+			case <-superDone:
+				return
+			case <-mc.stop:
+				stopping = true
+			}
+			continue
+		}
+		select {
+		case <-superDone:
+			return
+		case <-time.After(interval):
+			cur := readsDone.Load()
+			if cur != prev {
+				prev = cur // still consuming replies; give it another interval
+				// ...unless the total stopping-drain budget is spent: Close-never-wedges
+				// outranks completing the remaining in-flight against a trickling server.
+				if !stopDeadline.IsZero() && !time.Now().Before(stopDeadline) {
+					_ = cn.Close()
+					return
+				}
+				continue
+			}
+			_ = cn.Close()
+			return
 		}
 	}
 }

@@ -7,9 +7,11 @@ import (
 	"io"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -476,5 +478,82 @@ func TestGrabIntoAlwaysIncludesFirst(t *testing.T) {
 	}
 	if carry != more {
 		t.Fatalf("carry = %p, want the deferred request %p", carry, more)
+	}
+}
+
+// recordCloseConn records whether Close was called (drainBackstopRun force-closes the
+// conn when the stopping-drain budget is spent).
+type recordCloseConn struct {
+	mockNetConn
+	closed atomic.Bool
+}
+
+func (c *recordCloseConn) Close() error { c.closed.Store(true); return nil }
+
+// TestCSCMissStopDrainCapsTotalOnTrickle pins the P1 (csc_miss_coalesce_modes.go): on the
+// stopping (Close) path, drainBackstopRun must not renew the drain forever when the server
+// trickles one reply per interval. Without a total cap the per-interval progress check
+// renews indefinitely — with up to cscFullDuplexDepth in-flight, Close blocks in wg.Wait
+// for hours. With the cap it force-closes the conn and returns once the stopping budget is
+// spent, EVEN WHILE readsDone keeps advancing.
+//
+// stopDrainBudget is set below one interval so the FIRST timer (interval is floored at
+// batchBudget()+1s >= 6s) already sees the budget spent — exercising the cap in bounded
+// time instead of the ~48s (8 × interval) production default.
+//
+// Red-check: remove ONLY the stopDeadline ARMING in drainBackstopRun (leave the comparison)
+// — the trickle keeps progress alive, the drain never returns, and the watchdog fires.
+func TestCSCMissStopDrainCapsTotalOnTrickle(t *testing.T) {
+	nc := &recordCloseConn{mockNetConn: mockNetConn{addr: ":6379"}}
+	cn := pool.NewConn(nc)
+	mc := &cscMissCoalescer{
+		c:               &baseClient{opt: &Options{}}, // Read/WriteTimeout 0 -> batchBudget floor 5s -> interval 6s
+		stop:            make(chan struct{}),
+		stopDrainBudget: 50 * time.Millisecond, // below one interval: the first timer sees it spent
+	}
+
+	var readsDone atomic.Uint64
+	superDone := make(chan struct{}) // never closed: force the timer path, not a clean finish
+	trickleStop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tk := time.NewTicker(200 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-trickleStop:
+				return
+			case <-tk.C:
+				readsDone.Add(1) // steady progress that OUTLIVES the first interval
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		mc.drainBackstopRun(cn, &readsDone, superDone, true)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		close(trickleStop)
+		wg.Wait()
+		t.Fatal("drainBackstopRun did not return: the stopping drain renewed forever despite the total cap (arming missing?)")
+	}
+	close(trickleStop)
+	wg.Wait()
+
+	if !nc.closed.Load() {
+		t.Fatal("connection was not force-closed when the stopping-drain budget was spent")
+	}
+	// Prove the CAP fired (progress branch), not the zero-progress branch: the trickle
+	// bumped across the first ~6s interval, so readsDone advanced before the drain returned.
+	// The zero-progress branch requires an interval with NO bump, which the trickle prevents.
+	if got := readsDone.Load(); got < 2 {
+		t.Fatalf("readsDone = %d; want >= 2 (the trickle must outlive the first interval so the CAP fires, not zero-progress)", got)
 	}
 }
