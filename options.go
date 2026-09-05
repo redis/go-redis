@@ -136,6 +136,7 @@ type Options struct {
 	DialTimeout time.Duration
 
 	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	// A value <= 0 uses the default.
 	//
 	// default: 5
 	DialerRetries int
@@ -428,6 +429,19 @@ type Options struct {
 	// namespace is selected. Fixed Username/Password values are supported and
 	// included in the cache namespace.
 	//
+	// Invalidation freshness: a server invalidation is applied when the client
+	// next reads from the connection that carries it — at arrival on a
+	// full-duplex autopipeline connection, at the next command on an active
+	// connection, and at the next background drainer tick on an idle pooled
+	// connection. In every case a cached entry is never served past the cache's
+	// MaxStaleness, which is the hard upper bound.
+	//
+	// Requires the built-in push processor. Setting a custom
+	// PushNotificationProcessor together with CSC is not supported: the
+	// invalidation mechanism relies on the built-in processor to consume
+	// kernel-only readability and tolerate boundary read timeouts, so behavior is
+	// otherwise undefined (the client logs a warning at init in that case).
+	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
@@ -453,6 +467,61 @@ type Options struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
+
+	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
+	// their invalidation arrives, instead of waiting for a reader to miss.
+	//
+	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
+	// to a *LocalCache), like the other CSC knobs: the refresher's hot-entry
+	// collection and publish path are LocalCache-specific. With a custom Cache
+	// implementation the option is ignored.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheRefreshOnInvalidate bool
+
+	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses so they
+	// stream on a held tracked full-duplex connection instead of each taking a
+	// pool connection: a lone miss is written immediately (no batching delay —
+	// the caller is waiting), concurrent misses share writes opportunistically,
+	// and new misses go out while earlier replies are still in flight (~1 RTT
+	// per miss, no batch phase-lock). Cuts pool contention and the churn p99
+	// tail at a small pool.
+	//
+	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
+	// to a *LocalCache): the coalescer's publish path (fetch capture, refresh
+	// integration, hot-entry collection) is LocalCache-specific. With a custom
+	// Cache implementation the option is ignored and every miss fetches on its
+	// caller's connection as usual.
+	//
+	// Pool sizing: under sustained miss traffic the engine holds one pool
+	// connection (released after a 1s idle gap and at the recycle age). Size
+	// PoolSize for that held connection — with PoolSize 1, continuous misses
+	// can make unrelated non-cacheable commands wait on the pool.
+	//
+	// Limiter: a coalescer session holds ONE connection and serves MANY misses on
+	// it, so Options.Limiter is admitted (Allow/ReportResult) once PER SESSION —
+	// per held connection — not per coalesced miss, unlike the plain per-command
+	// path. This is inherent to the held-connection model (a per-miss Allow would
+	// defeat the coalescing and re-admit a connection already held). A caller that
+	// needs strict per-command admission or circuit-breaking should not enable
+	// miss coalescing.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceMisses bool
+
+	// ClientSideCacheInvalidationBatchWindow coalesces invalidation-driven cache
+	// deletes into windowed background batches instead of applying them inline on
+	// the connection reader. 0 (default) applies invalidations inline. Set it no
+	// larger than the cache MaxStaleness: deferring a delete by up to the window
+	// lets a reader see the pre-invalidation value for up to that long.
+	//
+	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
+	// to a *LocalCache), like ClientSideCacheCoalesceMisses: the batcher's
+	// hot-entry refresh integration is LocalCache-specific. With a custom Cache
+	// implementation the window is ignored and deletes apply inline.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheInvalidationBatchWindow time.Duration
 }
 
 // CSCStrategy selects the client-side caching invalidation architecture. Set via
@@ -517,6 +586,27 @@ func (opt *Options) init() {
 			opt.ClientSideCacheStrategy)
 		opt.ClientSideCacheStrategy = CSCStrategySharedTracking
 	}
+	// Deferring invalidation deletes by more than the cache's MaxStaleness lets a
+	// reader see a value past the point a received invalidation should have evicted
+	// it — beyond the staleness contract. Warn (not clamp): the field is
+	// experimental and a caller may accept it knowingly, but a window larger than
+	// MaxStaleness is almost always a misconfiguration. Checkable for the built-in
+	// cache via its config AND for an injected *LocalCache via its effective bound;
+	// a custom Cache implementation has no MaxStaleness to compare against.
+	if opt.ClientSideCacheInvalidationBatchWindow > 0 {
+		staleness := time.Duration(0)
+		if opt.ClientSideCacheConfig != nil {
+			staleness = opt.ClientSideCacheConfig.MaxStaleness
+		} else if lc, ok := opt.ClientSideCache.(*LocalCache); ok && lc != nil {
+			staleness = lc.effectiveMaxStaleness()
+		}
+		if staleness > 0 && opt.ClientSideCacheInvalidationBatchWindow > staleness {
+			internal.Logger.Printf(context.Background(),
+				"redis: ClientSideCacheInvalidationBatchWindow (%s) exceeds the cache MaxStaleness (%s); "+
+					"invalidations can be deferred past the staleness bound, serving stale values",
+				opt.ClientSideCacheInvalidationBatchWindow, staleness)
+		}
+	}
 	if opt.Network == "" {
 		if strings.HasPrefix(opt.Addr, "/") {
 			opt.Network = "unix"
@@ -536,7 +626,11 @@ func (opt *Options) init() {
 	if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
-	if opt.DialerRetries == 0 {
+	// <= 0, not == 0: the pool already treats a nonpositive value as the default
+	// (internal/pool ConnPool.dialConn), so normalize here too — code that
+	// derives a budget from opt.DialerRetries (the miss-coalescer's acquire
+	// deadline) must see the same count the pool will actually use.
+	if opt.DialerRetries <= 0 {
 		opt.DialerRetries = 5
 	}
 	if opt.DialerRetryTimeout == 0 {
