@@ -1682,6 +1682,19 @@ func (ap *AutoPipeliner) WaitClosed() error {
 	return ap.closeErr
 }
 
+// drained reports whether the Close that claimed this autopipeliner's shutdown
+// has already finished its drain, without blocking. A wrapping client that
+// keeps closed instances around so it can wait for their drains uses this to
+// drop the ones that are already finished.
+func (ap *AutoPipeliner) drained() bool {
+	select {
+	case <-ap.closeDone:
+		return true
+	default:
+		return false
+	}
+}
+
 // drainAll runs Close's whole drain tail under a single bound and returns an
 // error naming every stage that was still outstanding when it expired. Split
 // out of Close so the bound is testable without a real stalled connection.
