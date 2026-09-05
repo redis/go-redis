@@ -698,9 +698,22 @@ func (mc *cscMissCoalescer) drainBackstopRun(cn *pool.Conn, readsDone *atomic.Ui
 			}
 			continue
 		}
+		// Watch mc.stop on the non-stopping (recycle) path too: if Close arrives AFTER an
+		// age-out/handoff recycle drain has already started here, flip to the stopping path
+		// so the next loop arms the total cap. Without this, a recycle-then-Close race stays
+		// on this unbounded progress wait and a trickling server hangs Close in wg.Wait —
+		// the exact hang cscMissStopDrainIntervals was added to prevent. nil once stopping:
+		// mc.stop is then closed and would busy-spin the select.
+		var stopCh <-chan struct{}
+		if !stopping {
+			stopCh = mc.stop
+		}
 		select {
 		case <-superDone:
 			return
+		case <-stopCh:
+			stopping = true
+			continue
 		case <-time.After(interval):
 			cur := readsDone.Load()
 			if cur != prev {

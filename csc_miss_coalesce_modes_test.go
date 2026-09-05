@@ -557,3 +557,70 @@ func TestCSCMissStopDrainCapsTotalOnTrickle(t *testing.T) {
 		t.Fatalf("readsDone = %d; want >= 2 (the trickle must outlive the first interval so the CAP fires, not zero-progress)", got)
 	}
 }
+
+// TestCSCMissStopDrainCapsAfterCloseRaceInRecycle pins the cursor High follow-up
+// (r...fiab4): the cap must also bound a drain that STARTED as a non-stopping recycle
+// (age-out / handoff) and only then saw Close. Such a drain enters drainBackstopRun with
+// stopping=false; the main progress-wait must watch mc.stop, flip to stopping, and arm the
+// cap — otherwise a recycle-then-Close race stays on the unbounded path and a trickling
+// server hangs Close in wg.Wait.
+//
+// ReadTimeout/WriteTimeout are > 0 so the deadline-less branch (which already watched
+// mc.stop) is SKIPPED and the drain sits in the main timer select — the branch that lacked
+// the mc.stop watch. Red-check: remove the `case <-stopCh:` from the main select — the
+// close below is never observed, stopping never flips, the cap never arms, and the watchdog
+// fires.
+func TestCSCMissStopDrainCapsAfterCloseRaceInRecycle(t *testing.T) {
+	nc := &recordCloseConn{mockNetConn: mockNetConn{addr: ":6379"}}
+	cn := pool.NewConn(nc)
+	mc := &cscMissCoalescer{
+		// rt>0 && wt>0 (tiny) -> batchBudget floors to 5s (interval 6s) but the deadline-less
+		// branch is skipped, so the drain reaches the main timer select with stopping=false.
+		c:               &baseClient{opt: &Options{ReadTimeout: time.Millisecond, WriteTimeout: time.Millisecond}},
+		stop:            make(chan struct{}),
+		stopDrainBudget: 50 * time.Millisecond,
+	}
+
+	var readsDone atomic.Uint64
+	superDone := make(chan struct{})
+	trickleStop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tk := time.NewTicker(200 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-trickleStop:
+				return
+			case <-tk.C:
+				readsDone.Add(1)
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		mc.drainBackstopRun(cn, &readsDone, superDone, false) // STARTS as a recycle drain
+		close(done)
+	}()
+
+	// Let the recycle drain settle into the main timer select, THEN Close races in.
+	time.Sleep(100 * time.Millisecond)
+	close(mc.stop)
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		close(trickleStop)
+		wg.Wait()
+		t.Fatal("drainBackstopRun did not return after a recycle-then-Close race: the main progress wait did not observe mc.stop, so the cap never armed")
+	}
+	close(trickleStop)
+	wg.Wait()
+
+	if !nc.closed.Load() {
+		t.Fatal("connection was not force-closed after the recycle-then-Close race")
+	}
+}
