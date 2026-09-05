@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -226,16 +227,49 @@ func (c cmdable) XRevRangeN(ctx context.Context, stream, start, stop string, cou
 	return cmd
 }
 
+// XReadArgs describes the arguments accepted by the XRead command.
+//
+// Streams may be provided in one of two shapes:
+//
+//   - Stream keys only (recommended): Streams holds only the stream
+//     names, e.g. []string{"stream1", "stream2"}. The IDs to read
+//     from are supplied via ID (same ID for every stream) or IDs
+//     (one ID per stream). When IDs is non-empty it takes precedence
+//     over ID.
+//
+//   - Keys+ids inline: Streams holds the stream names followed
+//     by one ID per stream, e.g. []string{"stream1", "stream2", "id1", "id2"}.
+//     In this shape ID and IDs must both be left empty; XRead will
+//     forward Streams to the server as-is.
 type XReadArgs struct {
-	Streams  []string // list of streams and ids, e.g. stream1 stream2 id1 id2
+	// Streams is either the list of stream keys, or the list of
+	// stream keys followed by one ID per stream (inline form).
+	// See the XReadArgs doc comment for the supported shapes.
+	Streams  []string
 	Count    int64
 	MaxCount int64 // cumulative cap on total entries across all streams (Redis >= 8.10)
 	MaxSize  int64 // soft cumulative cap on total reply size in bytes across all streams (Redis >= 8.10)
 	Block    time.Duration
-	ID       string
+	// ID is a single ID applied to every stream in Streams.
+	// When reading from multiple streams that require different IDs,
+	// use IDs instead so each stream can be resumed from its own last ID.
+	// Ignored when IDs is non-empty. Must be left empty when Streams
+	// already contains the IDs inline (inline form).
+	ID string
+	// IDs is the per-stream list of IDs and, when non-empty, must
+	// contain exactly one ID per entry in Streams. When set, IDs takes
+	// precedence over ID. Must be empty when Streams already contains
+	// the IDs inline (inline form).
+	IDs []string
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
+	if len(a.IDs) > 0 && len(a.IDs) != len(a.Streams) {
+		cmd := NewXStreamSliceCmd(ctx)
+		cmd.SetErr(errors.New("redis: XRead IDs length must match Streams length"))
+		return cmd
+	}
+
 	args := make([]interface{}, 0, 2*len(a.Streams)+10)
 	args = append(args, "xread")
 
@@ -263,7 +297,12 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	for _, s := range a.Streams {
 		args = append(args, s)
 	}
-	if a.ID != "" {
+	switch {
+	case len(a.IDs) > 0:
+		for _, id := range a.IDs {
+			args = append(args, id)
+		}
+	case a.ID != "":
 		for range a.Streams {
 			args = append(args, a.ID)
 		}
