@@ -1974,10 +1974,14 @@ func fdBatchEnd(reqs []fdReq, start, maxBatch int, byteLimit int64) int {
 // fdBatchEndSafe is fdBatchEnd with a per-command recover. cmd.Args() (used by
 // cmdApproxBytes) is user code and may panic. A carried chunk can include commands
 // that never passed the serve loop's cmdApproxBytesSafe admission — the session-start
-// command taken straight from fd.ch and the Close backlog drained by takeQueue — so a
-// deterministic panicking Args() can reach here; it must be contained WITHOUT tearing
-// down a healthy connection (nothing in the chunk is written yet, so the conn is not
-// desynced). On a panic it returns the clean prefix end (start..end, end>=start) and
+// command handed straight from fd.ch (run() blocks on the first command and re-issues
+// it as carry) and an unacked tail carried between sessions — so a deterministic
+// panicking Args() can reach here; it must be contained WITHOUT tearing down a healthy
+// connection (nothing in the chunk is written yet, so the conn is not desynced). This
+// is the LIVE-session write path (writeCarryChunked only); the terminal Close backlog
+// drained by takeQueue does not reach here — it flushes through shutdownFlush/flushReqs,
+// which contains a panic with its own recover and aborts the ordered flush. On a panic
+// it returns the clean prefix end (start..end, end>=start) and
 // bad = the index of the offending command, plus the wrapped error; the caller writes
 // [start:end), fails+drops carry[bad], and resumes at bad+1. bad == -1 means the whole
 // chunk sized cleanly.
@@ -2144,9 +2148,11 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		// Carry re-sizing uses cmd.Args() (user code), guarded by fdBatchEndSafe. A
 		// carried chunk CAN include commands that never passed the serve loop's
 		// cmdApproxBytesSafe admission — the session-start command taken straight from
-		// fd.ch (run() blocks on the first command and hands it in as carry) and the
-		// Close backlog drained by takeQueue — so a deterministic panicking Args() can
-		// reach here. Contain it WITHOUT tearing the session down: nothing in this chunk
+		// fd.ch (run() blocks on the first command and hands it in as carry) and an
+		// unacked tail carried between sessions — so a deterministic panicking Args()
+		// can reach here. (The terminal Close backlog drained by takeQueue does NOT reach
+		// here; it flushes through shutdownFlush/flushReqs, whose own recover aborts the
+		// ordered flush.) Contain it WITHOUT tearing the session down: nothing in this chunk
 		// is written yet, so the conn is healthy. Fail+drop just the offending command
 		// (like the serve loop's sizing guard) and resume with the rest, instead of
 		// killing the engine goroutine and letting attempt()'s defer Put a live conn.
@@ -2457,6 +2463,13 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 // a custom push processor errored during the drain, so the chunk was never sent),
 // or a recovered serialize panic. A plain per-command Redis error is a normal
 // result and does not abort.
+//
+// Unlike the live-session write path (writeCarryChunked, which sizes with
+// fdBatchEndSafe and isolates a single panicking command), this terminal Close
+// flush does NOT isolate a per-command Args()/NoRetry() panic: the outer recover
+// fails the remainder so an ordered flush stops rather than running later chunks
+// out of order. Every accepted command still settles (it is failed, not left
+// hanging), honoring accepted⇒completes. See TestFDShutdownFlushAbortsAfterRecoveredPanic.
 func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) (retErr error) {
 	if len(reqs) == 0 {
 		return nil
