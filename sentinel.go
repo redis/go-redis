@@ -578,6 +578,22 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
+	// Close a partially-built client if any construction step below panics before
+	// this constructor returns. Mirrors NewClient: the pools (and their MinIdleConns
+	// dialing goroutines) are created below, and a later step can panic — a pipeline
+	// pool whose PipelinePoolSize overflows int32, otel registration, or a push
+	// processor rejecting handler registration. The panic propagates to the caller
+	// (which may recover it), but rdb is never returned, so without this its pools
+	// would leak with no reference left to Close them. Close is nil-safe for a
+	// partially-built client and this defer does not recover, so the panic still
+	// surfaces.
+	built := false
+	defer func() {
+		if !built {
+			_ = rdb.Close()
+		}
+	}()
+
 	// Initialize push notification processor using shared helper
 	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
@@ -639,6 +655,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	failover.mu.Unlock()
 
+	built = true
 	return rdb
 }
 
