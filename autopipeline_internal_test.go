@@ -1503,6 +1503,37 @@ func TestBlockingDetectionNormalizesArgTypes(t *testing.T) {
 	}
 }
 
+// TestBlockingDetectionStopsAtStreams pins that BLOCK is only recognized in the
+// option section BEFORE the STREAMS keyword. A stream key (or ID) literally named
+// "block" appears AFTER STREAMS and must not be mistaken for the option, or a
+// non-blocking XREAD/XREADGROUP would be diverted off the ordered pipe and let a
+// later command execute first (cursor bugbot on #4002).
+func TestBlockingDetectionStopsAtStreams(t *testing.T) {
+	ctx := context.Background()
+	// Non-blocking: "block" is a stream key / ID after STREAMS, not the option.
+	nonBlocking := [][]interface{}{
+		{"xread", "STREAMS", "block", "0"},
+		{"xread", "COUNT", 10, "STREAMS", "block", "$"},
+		{"xreadgroup", "GROUP", "g", "c", "STREAMS", "block", ">"},
+		{"xread", "STREAMS", "s1", "block", "0", "0"}, // "block" as a second key
+	}
+	for _, args := range nonBlocking {
+		if isBlockingCmd(NewCmd(ctx, args...)) {
+			t.Errorf("isBlockingCmd(%v) = true, want false (stream key named \"block\" must stay batched)", args)
+		}
+	}
+	// Still blocking when BLOCK really is the option, even with a stream named "block".
+	stillBlocking := [][]interface{}{
+		{"xread", "BLOCK", 0, "STREAMS", "block", "$"},
+		{"xreadgroup", "GROUP", "g", "c", "BLOCK", 100, "STREAMS", "block", ">"},
+	}
+	for _, args := range stillBlocking {
+		if !isBlockingCmd(NewCmd(ctx, args...)) {
+			t.Errorf("isBlockingCmd(%v) = false, want true (BLOCK option present)", args)
+		}
+	}
+}
+
 // TestDivertRegistrationRacesClose hammers the window between a diverted
 // command's closed check and its registration against Close: every submitted
 // command must end with a definite outcome, and Close must never report

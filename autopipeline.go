@@ -1666,8 +1666,17 @@ func isBlockingCmd(cmd Cmder) bool {
 	// tokens as []byte or *string (see baseCmd.stringArg), and a type switch on
 	// string alone would let NewCmd(ctx, "xread", []byte("BLOCK"), 0, ...) be
 	// batched onto a shared connection.
+	// BLOCK is an OPTION that appears before the STREAMS keyword; the keys and IDs
+	// that follow STREAMS may be literally "block" (e.g.
+	// XReadArgs{Streams: []string{"block", "0"}}). Stop at STREAMS so a stream key
+	// is never mistaken for the option — that would divert a non-blocking
+	// XREAD/XREADGROUP off the ordered pipe and let a later command run first.
+	// ts.read carries no STREAMS token, so its scan is unchanged (whole-arg).
 	for _, arg := range cmd.Args() {
-		if internal.ToLower(blockingArgString(arg)) == "block" {
+		switch internal.ToLower(blockingArgString(arg)) {
+		case "streams":
+			return false
+		case "block":
 			return true
 		}
 	}
