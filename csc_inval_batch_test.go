@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// enqueue is the single-key convenience form of enqueueAt, used only by tests:
+// it snapshots the current fetch order per call. Production code always goes
+// through enqueueAt with a fetchSnap taken once at push-observe time (see the
+// enqueueAt doc), so this wrapper lives here rather than in the package to keep
+// it out of the shipped surface.
+func (b *cscInvalBatcher) enqueue(nsKey string) {
+	b.enqueueAt(nsKey, cscFetchSeq.Load())
+}
+
 // countingCache implements just enough of Cache for the batcher's apply path
 // (refresh==nil + a non-*LocalCache cache => apply calls DeleteByRedisKey once
 // per unique key). Other Cache methods are never reached; the embedded nil Cache

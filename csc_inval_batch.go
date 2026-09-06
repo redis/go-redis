@@ -220,20 +220,18 @@ func (b *cscInvalBatcher) drop() {
 	b.applyMu.Unlock()
 }
 
-// enqueue hands a namespaced key to the batcher without blocking the caller and
+// enqueueAt hands a namespaced key to the batcher without blocking the caller and
 // without ever applying a delete inline on the producer (see the spill field):
 // on a full ch it appends to spill and nudges the worker; only once the batcher
 // is stopped (no worker left to drain, see stopMu) does it apply inline so an
 // invalidation is never dropped.
-func (b *cscInvalBatcher) enqueue(nsKey string) {
-	// Convenience entry point (tests, single-key callers): snapshot fetch order per
-	// call. The push handler batches MANY keys per notification, so it snapshots ONCE
-	// at observe time and calls enqueueAt, sharing one fetchSnap across the whole push
-	// (a per-key load would let a fetch reserved after the push was observed slip in as
-	// "not newer" for a later key — the same drift the inline delete path already avoids).
-	b.enqueueAt(nsKey, cscFetchSeq.Load())
-}
-
+//
+// fetchSnap is cscFetchSeq observed at the notification OBSERVE time. The push
+// handler batches MANY keys per notification, so it snapshots ONCE and passes the
+// same value for every key in the push (a per-key load would let a fetch reserved
+// after the push was observed slip in as "not newer" for a later key — the same
+// drift the inline delete path already avoids). See the test-only enqueue helper
+// for the single-key convenience form.
 func (b *cscInvalBatcher) enqueueAt(nsKey string, fetchSnap uint64) {
 	it := cscInvalItem{
 		key:        nsKey,
