@@ -1,0 +1,320 @@
+package redis
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// clusterFDTestAddrs is the local 3-master cluster the functional test targets.
+// Override with GOREDIS_CLUSTER_FD_ADDRS (comma-separated) to point at another
+// cluster (e.g. a real RE endpoint). The test self-skips when the cluster is not
+// reachable, so it is safe to run in any environment.
+var clusterFDTestAddrs = clusterFDTestAddrsFromEnv()
+
+func clusterFDTestAddrsFromEnv() []string {
+	if v := os.Getenv("GOREDIS_CLUSTER_FD_ADDRS"); v != "" {
+		return strings.Split(v, ",")
+	}
+	return []string{"127.0.0.1:16600", "127.0.0.1:16601", "127.0.0.1:16602"}
+}
+
+func dialClusterFDTest(t *testing.T) *ClusterClient {
+	t.Helper()
+	cc := NewClusterClient(&ClusterOptions{Addrs: clusterFDTestAddrs})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := cc.Ping(ctx).Err(); err != nil {
+		cc.Close()
+		t.Skipf("local cluster not reachable at %v: %v", clusterFDTestAddrs, err)
+	}
+	// Force a topology load so state.Masters is populated for the assertions.
+	if _, err := cc.state.ReloadOrGet(ctx); err != nil {
+		cc.Close()
+		t.Skipf("cluster state not loadable: %v", err)
+	}
+	return cc
+}
+
+// TestClusterFullDuplexEngagesPerNode is the correctness demo for native
+// full-duplex on a ClusterClient: FD is reported active, one FD child engine
+// runs per master, a mixed workload across all slots executes with zero errors,
+// diverted commands (fan-out, blocking) still work, and Close returns cleanly.
+func TestClusterFullDuplexEngagesPerNode(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	// (a) Config() reports FD active — the exact bit that was always false on a
+	// ClusterClient before this change.
+	if !ap.Config().FullDuplex {
+		t.Fatalf("Config().FullDuplex = false, want true (cluster FD should be active)")
+	}
+	if ap.clusterFD == nil {
+		t.Fatalf("ap.clusterFD is nil, want a router")
+	}
+	if got := ap.Config().NumShards; got != 1 {
+		t.Fatalf("Config().NumShards = %d, want 1 (cluster FD forces a single flusherless shard)", got)
+	}
+
+	// (c) Mixed GET/SET across many keys → keys spread over all three masters'
+	// slot ranges. Fire concurrently so the FD engines actually batch. Zero errors
+	// and correct read-back proves per-node routing lands each key on its owner.
+	const nKeys = 300
+	var wg sync.WaitGroup
+	errCh := make(chan error, nKeys)
+	for i := 0; i < nKeys; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("cfd:{%d}:k", i)
+			val := fmt.Sprintf("v%d", i)
+			if err := ap.Set(ctx, key, val, 0).Err(); err != nil {
+				errCh <- fmt.Errorf("SET %s: %w", key, err)
+				return
+			}
+			got, err := ap.Get(ctx, key).Result()
+			if err != nil {
+				errCh <- fmt.Errorf("GET %s: %w", key, err)
+				return
+			}
+			if got != val {
+				errCh <- fmt.Errorf("GET %s = %q, want %q", key, got, val)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("workload error: %v", err)
+	}
+
+	// (b) One FD child engine per master, and every child actually engaged FD.
+	state, err := cc.state.Get(ctx)
+	if err != nil {
+		t.Fatalf("state.Get: %v", err)
+	}
+	nMasters := len(state.Masters)
+	ap.clusterFD.mu.RLock()
+	nChildren := len(ap.clusterFD.children)
+	var notFD, badBudget int
+	for _, ch := range ap.clusterFD.children {
+		if ch.fd == nil {
+			notFD++
+			continue
+		}
+		// Recovery budget must be the cluster's MaxRedirects, not the node client's
+		// MaxRetries (-1) — otherwise carry-replay is disabled on this master.
+		if ch.fd.retryBudget() != cc.opt.MaxRedirects {
+			badBudget++
+		}
+	}
+	ap.clusterFD.mu.RUnlock()
+	if nChildren != nMasters {
+		t.Errorf("clusterFD has %d children, want %d (one per master)", nChildren, nMasters)
+	}
+	if notFD != 0 {
+		t.Errorf("%d/%d children did not engage FD (child.fd == nil)", notFD, nChildren)
+	}
+	if badBudget != 0 {
+		t.Errorf("%d/%d children have retryBudget != cc.MaxRedirects (%d) — carry-replay would be misbudgeted",
+			badBudget, nChildren, cc.opt.MaxRedirects)
+	}
+	t.Logf("cluster FD: %d masters, %d FD children engaged", nMasters, nChildren-notFD)
+
+	// (d) Diversion still works: a fan-out command (DBSIZE) and a blocking command
+	// (BLPOP with a short timeout) must not ride the FD pipe.
+	if err := cc.DBSize(ctx).Err(); err != nil {
+		t.Errorf("DBSize (fan-out) failed: %v", err)
+	}
+	blKey := "cfd:{bl}:list"
+	if _, err := ap.BLPop(ctx, 100*time.Millisecond, blKey).Result(); err != nil && err != Nil {
+		t.Errorf("BLPop (diverted) unexpected error: %v", err)
+	}
+
+	// (e) Close returns without hanging.
+	done := make(chan error, 1)
+	go func() { done <- ap.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("ap.Close returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("ap.Close did not return within 10s")
+	}
+}
+
+// TestClusterFullDuplexReuseAfterClose covers the lifecycle the single-AP test
+// cannot: closing the cluster autopipeliner closes the per-node FD children,
+// which stay cached on each node.Client. A fresh autopipeliner on the SAME
+// (still-open) ClusterClient must NOT hand back a closed child and fail every
+// command with ErrClosed — the node getter rebuilds a live child and the router
+// re-engages FD.
+func TestClusterFullDuplexReuseAfterClose(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap1, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("first AsyncAutoPipelineWithOptions: %v", err)
+	}
+	if err := ap1.Set(ctx, "cfd:{reuse}:k", "1", 0).Err(); err != nil {
+		t.Fatalf("first SET: %v", err)
+	}
+	if err := ap1.Close(); err != nil {
+		t.Fatalf("ap1.Close: %v", err)
+	}
+
+	// getOrCreateAutoPipeliner rebuilds on a closed cached instance, so this
+	// returns a NEW parent (the ClusterClient itself was never closed).
+	ap2, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("second AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap2.Close()
+	if ap2 == ap1 {
+		t.Fatalf("expected a fresh autopipeliner after Close, got the closed one")
+	}
+	if !ap2.Config().FullDuplex {
+		t.Fatalf("reused AP Config().FullDuplex = false, want true")
+	}
+
+	// The command that would have failed ErrClosed if a closed child were cached.
+	got, err := func() (string, error) {
+		if err := ap2.Set(ctx, "cfd:{reuse}:k", "2", 0).Err(); err != nil {
+			return "", err
+		}
+		return ap2.Get(ctx, "cfd:{reuse}:k").Result()
+	}()
+	if err != nil {
+		t.Fatalf("SET/GET on reused AP: %v", err)
+	}
+	if got != "2" {
+		t.Fatalf("GET after reuse = %q, want %q", got, "2")
+	}
+
+	// FD re-engaged: a fresh live child, not the closed one.
+	ap2.clusterFD.mu.RLock()
+	var closedChildren int
+	for _, ch := range ap2.clusterFD.children {
+		if ch.fd == nil || ch.IsClosed() {
+			closedChildren++
+		}
+	}
+	nChildren := len(ap2.clusterFD.children)
+	ap2.clusterFD.mu.RUnlock()
+	if nChildren == 0 {
+		t.Fatalf("reused AP has no FD children after traffic")
+	}
+	if closedChildren != 0 {
+		t.Errorf("reused AP cached %d closed/non-FD children, want 0", closedChildren)
+	}
+}
+
+// TestClusterFullDuplexGatedOffForReplicaRouting asserts the construction gate:
+// a ClusterClient configured for replica routing (ReadOnly / RouteByLatency /
+// RouteRandomly) must NOT engage cluster FD, because the router only routes to
+// the slot master (slotMasterNode) and would silently ignore those options,
+// pinning reads to masters. It must fall back to the half-duplex flushers (which
+// honor the ShardPicker) and report Config().FullDuplex == false — the honest
+// effective state. Pure construction check: no live cluster required (the gate
+// reads cc.opt synchronously, and the half-duplex AP dials nothing until a
+// command is submitted).
+func TestClusterFullDuplexGatedOffForReplicaRouting(t *testing.T) {
+	addrs := []string{"127.0.0.1:16600"}
+	cases := []struct {
+		name string
+		opt  *ClusterOptions
+	}{
+		{"ReadOnly", &ClusterOptions{Addrs: addrs, ReadOnly: true}},
+		{"RouteByLatency", &ClusterOptions{Addrs: addrs, RouteByLatency: true}},
+		{"RouteRandomly", &ClusterOptions{Addrs: addrs, RouteRandomly: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cc := NewClusterClient(tc.opt)
+			defer cc.Close()
+			ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+			if err != nil {
+				t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+			}
+			defer ap.Close()
+			if ap.Config().FullDuplex {
+				t.Errorf("Config().FullDuplex = true, want false (replica routing must disable cluster FD)")
+			}
+			if ap.clusterFD != nil {
+				t.Errorf("ap.clusterFD is non-nil, want nil (cluster FD must not engage under replica routing)")
+			}
+		})
+	}
+}
+
+// TestClusterFullDuplexResolvesDefaultsOnParent asserts the effective-defaults
+// contract: a default-constructed cluster-FD autopipeliner must report the
+// resolved FD tuning defaults from Config(), not the raw zeros the user passed —
+// the same guarantee the standalone FD path gives. The per-node children resolve
+// these in newFDEngine; the parent must resolve them too so Config() is honest.
+// Pure construction check: cluster FD engages on PipelinePoolSize>=0 (the default)
+// without loading topology, so no live cluster is required.
+func TestClusterFullDuplexResolvesDefaultsOnParent(t *testing.T) {
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:16600"}})
+	defer cc.Close()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	cfg := ap.Config()
+	if !cfg.FullDuplex || ap.clusterFD == nil {
+		t.Fatalf("cluster FD did not engage (FullDuplex=%v, clusterFD==nil:%v); cannot check defaults",
+			cfg.FullDuplex, ap.clusterFD == nil)
+	}
+	if cfg.FullDuplexWindow != fdDefaultWindow {
+		t.Errorf("Config().FullDuplexWindow = %d, want %d (effective default)", cfg.FullDuplexWindow, fdDefaultWindow)
+	}
+	if cfg.FullDuplexIdleTimeout != fdDefaultIdle {
+		t.Errorf("Config().FullDuplexIdleTimeout = %v, want %v (effective default)", cfg.FullDuplexIdleTimeout, fdDefaultIdle)
+	}
+	if cfg.FullDuplexMaxHold != fdDefaultMaxHold {
+		t.Errorf("Config().FullDuplexMaxHold = %v, want %v (effective default)", cfg.FullDuplexMaxHold, fdDefaultMaxHold)
+	}
+}
+
+// TestClusterFullDuplexRecoveryBudgetFromMaxRedirects asserts the connection-
+// failure recovery budget wiring: a cluster node.Client normalizes MaxRetries to
+// -1 (cluster retries live in MaxRedirects), which the FD carry-replay would read
+// as "budget already spent" and fail every in-flight command on the first socket
+// error. The router must seed each child with the ClusterClient's MaxRedirects
+// instead. Pure construction check: the router is built at construction, so no
+// live cluster is needed to verify the plumbed budget.
+func TestClusterFullDuplexRecoveryBudgetFromMaxRedirects(t *testing.T) {
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:16600"}, MaxRedirects: 5})
+	defer cc.Close()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+	if ap.clusterFD == nil {
+		t.Fatalf("cluster FD did not engage; cannot check the recovery budget")
+	}
+	if got := ap.clusterFD.childCfg.clusterRetryBudget; got != 5 {
+		t.Errorf("child clusterRetryBudget = %d, want 5 (cc.opt.MaxRedirects); the node client's MaxRetries=-1 would disable carry-replay", got)
+	}
+}

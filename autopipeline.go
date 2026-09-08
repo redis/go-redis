@@ -79,10 +79,13 @@ type AutoPipelineOptions struct {
 	// nothing to overlap, and it still pays the held connection and goroutine
 	// overhead; the win needs MANY concurrent blocking callers, whose commands then
 	// overlap on the shared pipe exactly as on the async face (~1 RTT each instead
-	// of batch phase-locking). NOT supported on cluster clients: a ClusterClient
-	// silently falls back to half-duplex (the options type cannot see the client
-	// type, so Validate cannot catch it). Validate does reject the contradictory
-	// standalone combos (FullDuplex with Unordered or MaxConcurrentBatches>1).
+	// of batch phase-locking). On a ClusterClient it runs natively per node: the
+	// engine keeps one FD child per master (each on that node's node.Client, which
+	// has a pipeline pool by default) and routes each command to the child that
+	// owns its slot; MOVED/ASK redirects are followed through the redirect-aware
+	// cluster path (topology reload included). It falls back to half-duplex only
+	// when PipelinePoolSize<0 removes the node pipeline pools. Validate rejects the
+	// contradictory standalone combos (FullDuplex with Unordered or MaxConcurrentBatches>1).
 	//
 	// Ordering caveat: blocking and connection-hostile commands (BLPOP, WAIT,
 	// XREAD BLOCK, SUBSCRIBE, MULTI, ...) are diverted to a separate pooled
@@ -225,6 +228,22 @@ type AutoPipelineOptions struct {
 	// wiring from the NumShards ordering check in newAutoPipeliner. Never set
 	// by users (unexported).
 	contentSharded bool
+
+	// clusterReprocess is set internally by the cluster full-duplex router on each
+	// per-node child config. When non-nil, the child's full-duplex engine re-runs a
+	// command that came back with a retryable reply or a MOVED/ASK redirect through
+	// this function instead of the node client's standalone process path, so the
+	// redirect is followed on the redirect-aware ClusterClient (which routes to the
+	// target node, sends ASKING, and reloads topology). Never set by users
+	// (unexported). See clusterFDRouter and fdEngine.reprocess.
+	clusterReprocess func(ctx context.Context, cmd Cmder, startAttempt int, writtenAt time.Time) error
+
+	// clusterRetryBudget is set internally by the cluster full-duplex router to the
+	// ClusterClient's MaxRedirects. The child's full-duplex engine uses it as its
+	// connection-failure recovery budget (fdEngine.retryBudget) instead of the node
+	// client's MaxRetries, which cluster node clients normalize to -1 (cluster
+	// retries live in MaxRedirects). Never set by users (unexported).
+	clusterRetryBudget int
 
 	// NumShards is the number of independent queue+flusher shards the
 	// autopipeliner runs. 0 (the default) means auto: a single shard, which
@@ -807,6 +826,12 @@ type AutoPipeliner struct {
 	// submit() streams on one held connection instead of the sharded batch queue
 	// and no shard flusher is started. See autopipeline_fullduplex.go.
 	fd *fdEngine
+	// clusterFD, when non-nil, runs ordered full-duplex natively on a
+	// *ClusterClient by routing each command to a per-node FD child autopipeliner
+	// (one held connection per master). Mutually exclusive with fd and with the
+	// half-duplex shard flushers: when set, submit() routes to the owning node's
+	// child and no shard flusher is started. See autopipeline_cluster_fd.go.
+	clusterFD *clusterFDRouter
 	// pipelinePool is the connection pool that backs autopipelined batch
 	// dispatch (distinct from the client's main pool). Captured once at
 	// construction via an in-package assertion; nil when the underlying client
@@ -1167,6 +1192,55 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	if nShards <= 0 {
 		nShards = 1
 	}
+	// Cluster full-duplex: a *ClusterClient cannot host an fdEngine (it has no
+	// pipeline pool of its own), but every master node's node.Client is a
+	// standalone *Client that gets one by default. When full-duplex is requested
+	// on the ordered single-face cluster autopipeliner, route each command to a
+	// per-node FD child (clusterFDRouter) instead of the half-duplex shard
+	// flushers. Gate on cc.opt.PipelinePoolSize >= 0 — the exact predicate that
+	// decides whether every node.Client gets a pipeline pool (osscluster.go passes
+	// it through, redis.go creates the pool on it) — so the check is synchronous
+	// and needs no topology load under the getter's mutex. Force a single
+	// flusherless shard, exactly like the fdOn path: no half-duplex flusher runs
+	// and enqueue's shard indexing stays safe (never a %0), even though submit
+	// routes past it.
+	var clusterFDCC *ClusterClient
+	clusterFDOn := false
+	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 {
+		// The router always routes to the slot's MASTER node child (slotMasterNode).
+		// A client configured for replica routing — ReadOnly, RouteByLatency, or
+		// RouteRandomly — would have those options silently ignored under cluster FD,
+		// pinning reads to masters. Fall back to the half-duplex shard flushers, which
+		// route through Process and honor the configured ShardPicker, and let
+		// Config().FullDuplex report false (honest: FD is not the effective mode).
+		// RouteByLatency/RouteRandomly auto-enable ReadOnly at option init (before this
+		// gate reads them), so !ReadOnly alone would cover all three; the explicit
+		// three document intent and are robust to any init reordering.
+		if cc, ok := pipeliner.(*ClusterClient); ok &&
+			cc.opt.PipelinePoolSize >= 0 &&
+			!cc.opt.ReadOnly && !cc.opt.RouteByLatency && !cc.opt.RouteRandomly {
+			clusterFDOn, clusterFDCC = true, cc
+			nShards = 1
+			// Report the actual shard count (1), not the cluster default, from Config().
+			config.NumShards = 1
+			// Resolve the FD tuning defaults on the PARENT config now, mirroring
+			// newFDEngine (which only writes them onto each child's config). Without
+			// this, Config() on a default-constructed cluster-FD autopipeliner would
+			// report zero for these while the children enforce nonzero defaults —
+			// breaking the effective-defaults contract the standalone FD path honors.
+			// config is the same pointer Config() reads; this runs at construction
+			// before ap escapes, so no Config() reader races these writes.
+			if config.FullDuplexWindow <= 0 {
+				config.FullDuplexWindow = fdDefaultWindow
+			}
+			if config.FullDuplexIdleTimeout <= 0 {
+				config.FullDuplexIdleTimeout = fdDefaultIdle
+			}
+			if config.FullDuplexMaxHold <= 0 {
+				config.FullDuplexMaxHold = fdDefaultMaxHold
+			}
+		}
+	}
 	// Split the concurrent-batch budget across shards so each shard has its own
 	// semaphore. A single shared semaphore became a contention point once the
 	// per-shard queue mutexes were no longer the bottleneck. Integer division
@@ -1193,12 +1267,15 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			fdOn, fdClient = true, c
 		}
 	}
-	// Publish the EFFECTIVE full-duplex state, not the requested one: FullDuplex is a
-	// no-op on a *ClusterClient (or a client with no pipeline pool), where the engine
-	// falls back to the half-duplex shard flushers. Config() promises what the engine
-	// actually runs, so a requested-but-inactive FullDuplex must report false rather
-	// than claim a mode the instance is not in. Only Config() reads this after here.
-	ap.config.FullDuplex = fdOn
+	// Publish the EFFECTIVE full-duplex state, not the requested one: FullDuplex
+	// engages on a standalone *Client with a pipeline pool (fdOn) or on a
+	// *ClusterClient whose node clients have pipeline pools (clusterFDOn, via the
+	// per-node router). On a client with no pipeline pool it is a no-op and the
+	// engine falls back to the half-duplex shard flushers. Config() promises what
+	// the engine actually runs, so a requested-but-inactive FullDuplex must report
+	// false rather than claim a mode the instance is not in. Only Config() reads
+	// this after here.
+	ap.config.FullDuplex = fdOn || clusterFDOn
 
 	ap.shards = make([]*apShard, nShards)
 	for i := range ap.shards {
@@ -1222,20 +1299,22 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			sem:     internal.NewFIFOSemaphore(int32(permits)),
 		}
 		for j := range s.stripes {
-			// In full-duplex mode submissions go straight to the FD engine (fd.ch);
-			// the shard queues are never enqueued to and no flusher drains them, so do
-			// NOT preallocate them to MaxBatchSize. Otherwise a large MaxBatchSize with
+			// In full-duplex mode submissions go straight to the FD engine (fd.ch),
+			// or — on a cluster — to a per-node FD child (clusterFD); the shard
+			// queues are never enqueued to and no flusher drains them, so do NOT
+			// preallocate them to MaxBatchSize. Otherwise a large MaxBatchSize with
 			// a small FullDuplexWindow would allocate MaxBatchSize slots per stripe
 			// (times apEnqueueStripes on the blocking face) up front — tens of MB or an
 			// OOM before any command is sent. A nil queue is safe: nothing appends to
-			// it while fdOn, and Len reads the atomic counter, not the slice.
-			if !fdOn {
+			// it while a full-duplex engine is active, and Len reads the atomic
+			// counter, not the slice.
+			if !fdOn && !clusterFDOn {
 				s.stripes[j].queue = getQueueSlice(config.MaxBatchSize)
 			}
 			s.stripes[j].curBatch = newAPBatch()
 		}
 		ap.shards[i] = s
-		if !fdOn {
+		if !fdOn && !clusterFDOn {
 			ap.wg.Add(1)
 			go s.flusher()
 		}
@@ -1245,6 +1324,9 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		ap.fd = newFDEngine(ap, fdClient)
 		ap.wg.Add(1)
 		go ap.fd.run()
+	}
+	if clusterFDOn {
+		ap.clusterFD = newClusterFDRouter(ap, clusterFDCC, config, blocking)
 	}
 
 	return ap, nil
@@ -1731,7 +1813,9 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// pipe can fail "no such fieldset". Divert it to the normal Process path,
 		// which injects the PREPARE (and updates the registry). The half-duplex
 		// sharded path injects inline (himportInjectedCmds) and stays on the pipeline.
-		(ap.fd != nil && isHImportCmd(cmd))
+		// Cluster full-duplex (clusterFD) routes to per-node FD children whose
+		// engines have the same limitation, so divert there too.
+		((ap.fd != nil || ap.clusterFD != nil) && isHImportCmd(cmd))
 	if !diverted && ap.preflight != nil {
 		if err := ap.preflight(ctx, cmd); err != nil {
 			cmd.SetErr(err)
@@ -1759,6 +1843,13 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// No finish here: enqueue stamps ready under the stripe lock, before the
 	// command is visible to any drain (the error paths above still go through
 	// finish for uniform accessor behavior).
+	if ap.clusterFD != nil {
+		// Cluster full-duplex: route to the per-node FD child that owns this
+		// command's slot. The child is a standalone FD autopipeliner sharing this
+		// face's blocking flag, so its submit honors the same setReady/blocking
+		// contract — return its AutoFuture directly.
+		return ap.clusterFD.submit(ctx, cmd)
+	}
 	if ap.fd != nil {
 		// Ordered full-duplex: stream on one held connection. enqueue's async
 		// setReady is replicated here since we bypass it. ctx is threaded so a
@@ -1988,6 +2079,16 @@ func (ap *AutoPipeliner) Config() AutoPipelineOptions {
 	// round-robin shards, which really do flush concurrently and really do
 	// break submit order (review finding by codex on #3942).
 	cfg.contentSharded = false
+	// Same hazard for clusterReprocess: it holds a live ClusterClient.process
+	// closure set by the cluster FD router. Round-tripping this config into a
+	// STANDALONE *Client would carry that closure onto an unrelated client's FD
+	// engine (flipping redirectAware on and routing its retries through the wrong
+	// ClusterClient). Strip it.
+	cfg.clusterReprocess = nil
+	// clusterRetryBudget is internal cluster-FD wiring (the ClusterClient's
+	// MaxRedirects, used as the child engine's recovery budget); it has no meaning
+	// on a config a caller copies into a standalone client, so strip it too.
+	cfg.clusterRetryBudget = 0
 	return cfg
 }
 
@@ -2105,6 +2206,19 @@ func (ap *AutoPipeliner) drainBody() error {
 		s.wake()
 	}
 
+	// Cluster full-duplex: close the per-node FD children before the (empty) shard
+	// sweep and before clusterNodes closes the node clients, so each child flushes
+	// its accepted commands on the still-open node connection. Idempotent if a
+	// child was already reaped by its node client's close hook.
+	var clusterFDErr error
+	if ap.clusterFD != nil {
+		// Capture the child-drain error: a stalled/failed per-node child means
+		// accepted commands were not flushed, which the caller must be able to
+		// detect. Joined into closeErr below so it is not masked by the (empty)
+		// shard sweep's nil result.
+		clusterFDErr = ap.clusterFD.close()
+	}
+
 	// Pass through the divert gate once: by the time this runs the engine is
 	// already rejecting new work (Close set ap.closed before calling here; the
 	// shared-pool hook path has sharedClosed set before onClose runs), so any
@@ -2131,7 +2245,7 @@ func (ap *AutoPipeliner) drainBody() error {
 	// instead of blocking the caller: the engine is already closed to new work,
 	// and the leaked goroutines end when the server or the OS breaks the
 	// connection. See autoPipelineCloseBackstop for why the bound is generous.
-	ap.closeErr = ap.drainAll(autoPipelineCloseBackstop)
+	ap.closeErr = errors.Join(ap.drainAll(autoPipelineCloseBackstop), clusterFDErr)
 	return ap.closeErr
 }
 
@@ -3157,6 +3271,11 @@ func (ap *AutoPipeliner) Len() int {
 	// for monitoring or local backpressure lose the signal in FullDuplex mode.
 	if ap.fd != nil {
 		total += len(ap.fd.ch)
+	}
+	// Cluster full-duplex accepts commands onto per-node FD children, not the
+	// shard queues; include their backlog for the same monitoring reason.
+	if ap.clusterFD != nil {
+		total += ap.clusterFD.len()
 	}
 	return total
 }
