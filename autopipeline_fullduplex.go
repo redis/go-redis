@@ -534,6 +534,41 @@ type fdEngine struct {
 	// client.processPipelineRetries), so tests can drive flushReqs's chunk loop
 	// without a live server.
 	runPipeline func(ctx context.Context, cmds []Cmder, maxRetries int) error
+
+	// reprocess re-runs a command that came back with a retryable reply or a
+	// redirect on a NORMAL (non-FD) path. Defaults to client.processStartingAt (the
+	// standalone client, which cannot follow a redirect). The cluster full-duplex
+	// router overrides it (via AutoPipelineOptions.clusterReprocess) to route
+	// through the redirect-aware ClusterClient. Set once in newFDEngine before
+	// run() starts, so the reader goroutine reads it race-free.
+	reprocess func(ctx context.Context, cmd Cmder, startAttempt int, writtenAt time.Time) error
+	// redirectAware is true when reprocess follows MOVED/ASK (cluster mode). The
+	// reply path then diverts a redirect to reprocess instead of surfacing it
+	// inline. Standalone FD leaves this false: its normal path cannot follow a
+	// redirect, so diverting would waste a round trip and return the redirect anyway.
+	redirectAware bool
+	// clusterRetryBudget is the connection-failure recovery budget used ONLY in
+	// cluster mode (redirectAware): the ClusterClient's MaxRedirects, injected by the
+	// router. See retryBudget().
+	clusterRetryBudget int
+}
+
+// retryBudget bounds the engine's OWN connection-failure recovery: the lease retry
+// loop, the carried-tail replay (fdPartitionByBudget) and the Close-path flush.
+// Standalone FD uses the client's MaxRetries. Cluster node clients normalize
+// MaxRetries to -1 (cluster retries live in MaxRedirects), so a cluster child would
+// otherwise treat every carried command as budget-spent and fail all in-flight
+// commands on the first socket error instead of replaying them; the router injects
+// the ClusterClient's MaxRedirects (clusterRetryBudget) for that case. Reading the
+// client's option live (rather than caching a field) keeps test-constructed engines
+// working: they set client but not the cluster budget. The reply-side standalone
+// retryable divert still uses client.opt.MaxRetries directly (only reached when
+// !redirectAware).
+func (fd *fdEngine) retryBudget() int {
+	if fd.redirectAware {
+		return fd.clusterRetryBudget
+	}
+	return fd.client.opt.MaxRetries
 }
 
 // fdFastSubmitGatePct bounds fastSubmit to when the submit channel is below this
@@ -599,7 +634,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	if retryCap < 1 {
 		retryCap = 1
 	}
-	return &fdEngine{
+	fd := &fdEngine{
 		ap:         ap,
 		client:     client,
 		pool:       client.getPipelinePool(),
@@ -611,6 +646,23 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		retrySem:   make(chan struct{}, retryCap),
 		fastSubmit: ap.config.FullDuplexFastSubmit,
 	}
+	// Redirect/retry reprocess target. Default: the standalone client's own retry
+	// path (cannot follow a redirect). Cluster mode injects a redirect-aware
+	// ClusterClient path via config, which also flips redirectAware so the reply
+	// path diverts MOVED/ASK. Set before run() starts (below, in the caller), so
+	// the reader reads both fields without a race.
+	if ap.config.clusterReprocess != nil {
+		fd.reprocess = ap.config.clusterReprocess
+		fd.redirectAware = true
+		// Cluster node clients normalize MaxRetries to -1, which would make the
+		// carry-replay budget treat every command as spent. Use the cluster's
+		// MaxRedirects (where cluster retries live), injected by the router.
+		// retryBudget() reads this when redirectAware.
+		fd.clusterRetryBudget = ap.config.clusterRetryBudget
+	} else {
+		fd.reprocess = client.processStartingAt
+	}
+	return fd
 }
 
 // submit enqueues a command onto the ordered stream and returns its batch.
@@ -933,7 +985,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		if req.ctx != nil {
 			rctx = context.WithoutCancel(req.ctx)
 		}
-		// processStartingAt, not pipeliner.process: fd.client IS the pipeliner
+		// reprocess (default client.processStartingAt): fd.client IS the pipeliner
 		// (fdClient is the *Client behind it), so this is the same raw exec, but it
 		// starts the retry loop at startAttempt — 1 for a retryable reply that already
 		// spent an attempt on the FD socket, 0 for a redirect that did not execute.
@@ -951,7 +1003,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 			if req.batch != nil {
 				defer req.batch.enterNodeDispatch()()
 			}
-			return fd.client.processStartingAt(rctx, req.cmd, startAttempt, req.writtenAt)
+			return fd.reprocess(rctx, req.cmd, startAttempt, req.writtenAt)
 		}()
 		req.cmd.SetErr(err)
 		req.complete()
@@ -1066,7 +1118,7 @@ func (fd *fdEngine) run() {
 				fd.shutdownFlush(bg, carry)
 				return
 			}
-			if shouldRetry(aerr, true) && leaseAttempts < fd.client.opt.MaxRetries {
+			if shouldRetry(aerr, true) && leaseAttempts < fd.retryBudget() {
 				leaseAttempts++
 				fd.sleepBackoff(leaseAttempts)
 				continue // carry unchanged; re-lease
@@ -1076,7 +1128,7 @@ func (fd *fdEngine) run() {
 			carry = nil
 			leaseAttempts++
 			fd.sleepBackoff(leaseAttempts)
-			if leaseAttempts >= fd.client.opt.MaxRetries {
+			if leaseAttempts >= fd.retryBudget() {
 				leaseAttempts = 0
 			}
 		default: // fdConnErr — a real connection error occurred
@@ -1116,11 +1168,11 @@ func (fd *fdEngine) run() {
 			eligible := unacked
 			if replayable && len(unacked) > 0 {
 				// unacked is PRE-BUMP here (a command sent A times carries attempts==A),
-				// so attempts > MaxRetries is exactly the spent-budget set. The Close-path
+				// so attempts > retryBudget is exactly the spent-budget set. The Close-path
 				// flush (flushCarryBudgeted) instead sees POST-BUMP carry, where the same
 				// command carries attempts==A+1 — do not unify the two thresholds.
 				var exhausted []fdReq
-				eligible, exhausted = fdPartitionByBudget(unacked, fd.client.opt.MaxRetries)
+				eligible, exhausted = fdPartitionByBudget(unacked, fd.retryBudget())
 				if len(exhausted) > 0 {
 					fd.failReqs(exhausted, aerr) // spent MaxRetries+1 attempts; fail with the real cause
 				}
@@ -1161,7 +1213,7 @@ func (fd *fdEngine) run() {
 			carry = nil
 			retryAttempts++
 			fd.sleepBackoff(retryAttempts)
-			if retryAttempts >= fd.client.opt.MaxRetries {
+			if retryAttempts >= fd.retryBudget() {
 				retryAttempts = 0 // reset so backoff restarts small once we're serving again
 			}
 		}
@@ -1413,38 +1465,71 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// the standard retry/backoff. Done off the reader goroutine so it does not
 				// stall other in-flight replies, and counted in `done` so the reader
 				// advances past it now. Per-caller ordering is NOT promised across this
-				// divert (same exception as the blocking-command divert); NoRetry commands
-				// keep their error.
-				if e != nil && !fdNoRetrySafe(req.cmd) {
+				// divert (same exception as the blocking-command divert).
+				if e != nil {
 					moved, ask, _ := isMovedError(e)
-					// Do NOT divert a redirect. FD is enabled only for a standalone
-					// *Client, whose normal path cannot follow a MOVED/ASK — it neither
-					// re-routes to the target node nor sends ASKING, it just re-hits the
-					// same endpoint. Diverting would waste a round trip and return the
-					// redirect anyway, so surface it inline (below), exactly as a plain
-					// standalone command does. (A cluster-capable FD/CSC would route it
-					// here instead — follow-up.)
+					// Cluster full-duplex redirect: a MOVED/ASK is followable for EVERY
+					// command, including NoRetry ones (e.g. GetToBuffer, RawWriteTo). NoRetry
+					// guards against replaying a command whose partial response was already
+					// consumed, but a MOVED/ASK reply carries no payload — the command did
+					// NOT execute on this node — so there is nothing to replay, and the normal
+					// ClusterClient.process follows redirects for all commands before
+					// consulting NoRetry. So divert a redirect independent of the NoRetry gate
+					// below. reprocess re-routes MOVED to the target node (LazyReload) and
+					// follows ASK through cc.process's own loop (ASKING on the next hop),
+					// bounded by MaxRedirects; startAttempt is unused by the cluster reprocess
+					// (it re-runs the full loop from the base), so pass the redirect value (0).
+					// isMovedError/e here are reply-level only: a transport or protocol failure
+					// is !isRedisError and already broke the read loop via fdReplyIsFatal above.
 					//
-					// Divert a RETRYABLE reply only while retries are enabled AND the
-					// budget is not already spent. req.attempts counts FD attempts spent
-					// (1 at submit, +1 on each fdConnErr carry replay). Once it reaches
-					// MaxRetries+1 another execution would exceed the budget, so fall
-					// through to the inline settle, which surfaces the reply as the final
-					// error and reports the true attempt count. Without this guard the
-					// startAttempt clamp in processWithRetry would turn an exhausted budget
-					// into one more send.
-					if !moved && !ask &&
-						shouldRetry(e, false) &&
-						fd.client.opt.MaxRetries > 0 &&
-						req.attempts <= fd.client.opt.MaxRetries {
-						// The retryable reply executed on the FD socket, so the divert starts
-						// one attempt in; add req.attempts-1 for FD attempts already spent on
-						// carry replays so a carried-then-diverted command does not run the
-						// full loop from the base. The guard above keeps this within
-						// MaxRetries+1.
-						fd.retryOnNormalConn(req, retryStartAttempt(false, false)+req.attempts-1)
+					// Standalone FD (redirectAware == false) cannot follow a MOVED/ASK (it
+					// neither re-routes to the target node nor sends ASKING), so it falls
+					// through to the inline settle and surfaces the redirect, as before.
+					if fd.redirectAware && (moved || ask) {
+						fd.retryOnNormalConn(req, retryStartAttempt(moved, ask))
 						done++
 						continue
+					}
+					// A RETRYABLE execution error (not a redirect) may have produced a
+					// partially consumed response, so it stays gated on NoRetry.
+					if !fdNoRetrySafe(req.cmd) {
+						// Cluster full-duplex: divert a retryable server reply
+						// (LOADING/READONLY/TRYAGAIN/CLUSTERDOWN/MASTERDOWN/NOREPLICAS/
+						// max-clients) to the redirect-aware ClusterClient. It consults NO
+						// FD-side budget and — the key difference from the standalone branch
+						// below — does NOT gate on the node client's MaxRetries: cluster node
+						// clients default MaxRetries to -1 (osscluster.go), which is <= 0, so a
+						// MaxRetries>0 gate would wrongly settle the reply inline and fail the
+						// caller instead of recovering it the way half-duplex does. cc.process
+						// owns the whole cluster retry budget; startAttempt is unused by the
+						// cluster reprocess. shouldRetry(e) here matches only reply-level Redis
+						// errors (see the fdReplyIsFatal note above).
+						if fd.redirectAware && shouldRetry(e, false) {
+							fd.retryOnNormalConn(req, retryStartAttempt(false, false))
+							done++
+							continue
+						}
+						// Standalone FD: divert a RETRYABLE reply only while retries are
+						// enabled AND the budget is not already spent. req.attempts counts FD
+						// attempts spent (1 at submit, +1 on each fdConnErr carry replay). Once
+						// it reaches MaxRetries+1 another execution would exceed the budget, so
+						// fall through to the inline settle, which surfaces the reply as the
+						// final error and reports the true attempt count. Without this guard the
+						// startAttempt clamp in processWithRetry would turn an exhausted budget
+						// into one more send.
+						if !moved && !ask &&
+							shouldRetry(e, false) &&
+							fd.client.opt.MaxRetries > 0 &&
+							req.attempts <= fd.client.opt.MaxRetries {
+							// The retryable reply executed on the FD socket, so the divert starts
+							// one attempt in; add req.attempts-1 for FD attempts already spent on
+							// carry replays so a carried-then-diverted command does not run the
+							// full loop from the base. The guard above keeps this within
+							// MaxRetries+1.
+							fd.retryOnNormalConn(req, retryStartAttempt(false, false)+req.attempts-1)
+							done++
+							continue
+						}
 					}
 				}
 				req.cmd.SetErr(e) // nil, a redirect (MOVED/ASK), or a non-retryable Redis error
@@ -2403,7 +2488,7 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	}
 	// Last flush: a transport failure is already handled inside flushReqs (it fails
 	// the remainder), and there is nothing after it, so the returned error is moot.
-	_ = fd.flushReqs(bg, fresh, fd.client.opt.MaxRetries)
+	_ = fd.flushReqs(bg, fresh, fd.retryBudget())
 }
 
 // fdCarryRemainingRetries returns the retry bound for a carried command flushed on
@@ -2430,7 +2515,7 @@ func fdCarryRemainingRetries(attempts, maxRetries int) int {
 // normally attempts-descending, so groups are few, but a non-sorted slice just
 // yields more groups). Returns a transport error that aborted the remainder.
 func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error {
-	mr := fd.client.opt.MaxRetries
+	mr := fd.retryBudget()
 	for i := 0; i < len(carry); {
 		a := carry[i].attempts
 		j := i + 1

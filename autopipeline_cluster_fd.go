@@ -1,0 +1,279 @@
+package redis
+
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+// clusterFDRouter runs the ordered full-duplex autopipeline natively on a
+// *ClusterClient.
+//
+// Full-duplex needs one held connection with a writer/reader goroutine pair
+// (fdEngine), which only a standalone *Client with a dedicated pipeline pool can
+// provide — a *ClusterClient has none of its own. But every master node's
+// node.Client IS a standalone *Client that gets a pipeline pool by default
+// (redis.go creates it whenever PipelinePoolSize >= 0, and osscluster.go passes
+// that option through to each node). So instead of the half-duplex shard
+// flushers, the router keeps one FD child autopipeliner per master node and
+// routes each command to the child that owns its slot. The parent AutoPipeliner
+// keeps diversion (blocking / fan-out / ReqSpecial) on the *ClusterClient, so
+// cluster-wide commands still fan out and aggregate correctly.
+//
+// Children are created lazily on first use for a node and cached on the
+// node.Client itself (via its AutoPipeline getters), so this router shares one
+// child instance per node with anything else that asks that node client for an
+// autopipeliner.
+//
+// Routing uses the live cluster state on every submit, so a stable topology
+// routes correctly. Redirects are handled too: a child's FD engine surfaces a
+// MOVED/ASK reply to the router's injected reprocess function (childCfg.
+// clusterReprocess), which re-runs the command through the redirect-aware
+// ClusterClient (cc.process) — MOVED is routed to the target node with a topology
+// reload; ASK is followed through cc.process's own redirect loop (which issues
+// ASKING). So a slot migration is followed rather than surfaced as an error.
+type clusterFDRouter struct {
+	parent   *AutoPipeliner
+	cc       *ClusterClient
+	blocking bool
+	// childCfg is the standalone FD config every node child is built with,
+	// derived once from the parent's config. Reused verbatim so the node
+	// client's "first getter call wins" cache always sees the same config.
+	childCfg *AutoPipelineOptions
+
+	mu       sync.RWMutex
+	closed   bool
+	children map[*Client]*AutoPipeliner
+}
+
+func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipelineOptions, blocking bool) *clusterFDRouter {
+	// Derive the per-node child config from the parent's: force the ordered
+	// single-shard full-duplex combo the fdOn gate requires, carry the caller's
+	// sizing knobs (MaxBatchSize, FullDuplexWindow, MaxFlushDelay, ...) as-is, and
+	// strip contentSharded — a cluster-only bit that must not leak onto a
+	// standalone node child.
+	child := *cfg
+	child.FullDuplex = true
+	child.Unordered = false
+	child.MaxConcurrentBatches = 1
+	child.NumShards = 1
+	child.contentSharded = false
+	// Redirect handling: each child's FD engine re-runs a MOVED/ASK (or retryable)
+	// reply through the redirect-aware ClusterClient instead of its own node-local
+	// standalone path. cc.process is the cluster redirect loop (MOVED -> target node
+	// + LazyReload, ASK -> followed via its own loop with ASKING, bounded by
+	// MaxRedirects). One fn serves every node: the redirect target is resolved from
+	// the reply, not the source node. startAttempt/writtenAt are unused here —
+	// cc.process owns its own MaxRedirects budget.
+	child.clusterReprocess = func(ctx context.Context, cmd Cmder, _ int, _ time.Time) error {
+		return cc.process(ctx, cmd)
+	}
+	// Connection-failure recovery budget for each child engine. A node.Client
+	// normalizes MaxRetries to -1 (cluster retries live in MaxRedirects), which the
+	// FD carry-replay would read as "budget already spent" and fail every in-flight
+	// command on the first socket error. Give the child the cluster's MaxRedirects
+	// so a transient node blip replays the unacked tail on a fresh connection.
+	child.clusterRetryBudget = cc.opt.MaxRedirects
+	return &clusterFDRouter{
+		parent:   parent,
+		cc:       cc,
+		blocking: blocking,
+		childCfg: &child,
+		children: make(map[*Client]*AutoPipeliner),
+	}
+}
+
+// submit routes cmd to the FD child that owns its slot. It is called from
+// AutoPipeliner.submit AFTER diversion and preflight have been decided, so cmd
+// is a batchable single-node command. On any routing miss (keyless command,
+// unresolved slot, topology not loaded, or a node whose client turns out not to
+// be FD-capable) it falls back to the normal cluster Process path — correct,
+// just not pipelined.
+func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
+	// Mirror enqueue's closed contract: reject once the parent is closing rather
+	// than route to a child that Close is tearing down.
+	if r.parent.isClosed() {
+		cmd.SetErr(ErrClosed)
+		if !r.blocking {
+			cmd.setReady(completedBatch)
+		}
+		return AutoFuture{cmd: cmd, batch: completedBatch}
+	}
+
+	child, closed := r.childFor(ctx, cmd)
+	if closed {
+		// close() ran between the parent.isClosed() check above and here (the router
+		// is tearing down). Mirror the closed contract rather than route to — or
+		// create — a child the drain has already swept; getOrCreateChild discards any
+		// child it built in this window so it cannot leak.
+		cmd.SetErr(ErrClosed)
+		if !r.blocking {
+			cmd.setReady(completedBatch)
+		}
+		return AutoFuture{cmd: cmd, batch: completedBatch}
+	}
+	if child == nil {
+		// runOutsidePipeline sets the command ready itself on the deferred face and
+		// returns a batch that completes when the command has executed — exactly
+		// the parent's own diverted path.
+		return AutoFuture{cmd: cmd, batch: r.parent.runOutsidePipeline(ctx, cmd)}
+	}
+	// Submit straight to the child's FD engine, skipping child.submit
+	// (AutoPipeliner.submit). The parent already decided this command is
+	// pipelineable — diversion (readTimeout/runsOutsidePipeline/isBlockingCmd/
+	// HIMPORT/mustDivert) and preflight ran above — so the child's submit would only
+	// re-run that same classification, hit its nil preflight, and build a finish
+	// closure: pure per-command CPU on the hot path (measured ~1/3 of submit cost is
+	// this second pass). child.fd is non-nil (getOrCreateChild screened it) and
+	// fd.submit still runs the child's own closed-check, so a racing child close is
+	// handled. Mirror the parent's fd branch: setReady on the async face (the child
+	// shares this face's blocking flag), return the batch.
+	b := child.fd.submit(ctx, cmd)
+	if !r.blocking {
+		cmd.setReady(b)
+	}
+	return AutoFuture{cmd: cmd, batch: b}
+}
+
+// childFor resolves the FD child for cmd's owning master node. It returns
+// (nil, false) when the command should divert to Process (keyless, unresolved
+// slot, topology not loaded, or a non-FD node), and (nil, true) when the router
+// is closing (submit must then reject with ErrClosed rather than divert).
+func (r *clusterFDRouter) childFor(ctx context.Context, cmd Cmder) (*AutoPipeliner, bool) {
+	slot := r.cc.cmdSlot(cmd, -1)
+	if slot < 0 {
+		// Keyless command: no single owning node. Let it run through Process, which
+		// applies the configured ShardPicker.
+		return nil, false
+	}
+	state, err := r.cc.state.Get(ctx)
+	if err != nil {
+		return nil, false
+	}
+	node, err := state.slotMasterNode(slot)
+	if err != nil || node == nil {
+		return nil, false
+	}
+	return r.getOrCreateChild(node.Client)
+}
+
+// getOrCreateChild returns the FD child autopipeliner for a node client,
+// creating it on first use. The second return value reports that the router is
+// closed. It returns (nil, false) when the node client is not FD-capable (its
+// child engine did not engage) so the caller diverts that node to Process, and
+// (nil, true) when the router has been closed (the caller must reject, not
+// divert — the drain has already swept the children).
+func (r *clusterFDRouter) getOrCreateChild(nc *Client) (*AutoPipeliner, bool) {
+	r.mu.RLock()
+	ch := r.children[nc]
+	closed := r.closed
+	r.mu.RUnlock()
+	if closed {
+		return nil, true
+	}
+	if ch != nil && !ch.IsClosed() {
+		return ch, false
+	}
+
+	// Build (or fetch the node client's cached) child WITHOUT holding the router
+	// lock: the node getter is idempotent (first call wins, cached on nc, and it
+	// rebuilds when its cached instance is closed — see getOrCreateAutoPipeliner),
+	// so a concurrent build just returns the same live instance. Keeping the
+	// getter off r.mu means a non-FD node (child.fd == nil) does not serialize
+	// every later submit on the write lock re-calling it.
+	var (
+		child *AutoPipeliner
+		err   error
+	)
+	if r.blocking {
+		child, err = nc.AutoPipelineWithOptions(r.childCfg)
+	} else {
+		child, err = nc.AsyncAutoPipelineWithOptions(r.childCfg)
+	}
+	// Honesty check: only treat this node as an FD node if the engine actually
+	// engaged, is live, AND is redirect-aware. A node client without a pipeline pool
+	// (PipelinePoolSize < 0) falls back to half-duplex (child.fd == nil); a
+	// just-closed instance must not be cached (fd is not nilled on close). The
+	// redirectAware requirement guards the first-call-wins node getter: application
+	// code may have already created a plain standalone autopipeliner on this
+	// node.Client (e.g. via ForEachMaster), and the getter would hand that instance
+	// back. It has no clusterReprocess, so a MOVED/ASK reply on it would be surfaced
+	// to the caller instead of routed through the cluster client. Divert all of
+	// these to Process rather than dispatch through an engine that cannot follow
+	// redirects.
+	if err != nil || child == nil || child.fd == nil || child.IsClosed() || !child.fd.redirectAware {
+		return nil, false
+	}
+
+	r.mu.Lock()
+	if r.closed {
+		// close() ran while we built this child outside the lock: it already
+		// snapshotted+cleared the map, so storing ours would leak a held FD conn and
+		// its writer/reader goroutines (nothing would ever close it). Discard it.
+		// Close AFTER releasing the lock so a concurrent close() draining the
+		// snapshot does not serialize behind this child's own drain (Close blocks on
+		// it). Close is idempotent, so double-closing a node-client-cached instance
+		// close() also holds is harmless.
+		r.mu.Unlock()
+		_ = child.Close()
+		return nil, true
+	}
+	// Prefer a live child another goroutine cached first; otherwise store ours.
+	if cached := r.children[nc]; cached != nil && !cached.IsClosed() {
+		child = cached
+	} else {
+		r.children[nc] = child
+	}
+	r.mu.Unlock()
+	return child, false
+}
+
+// len sums the pending backlog across all node children, for AutoPipeliner.Len.
+func (r *clusterFDRouter) len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	total := 0
+	for _, ch := range r.children {
+		total += ch.Len()
+	}
+	return total
+}
+
+// close closes every node child and waits for each drain to finish. Called from
+// the parent's drain before the parent's own (empty) shard sweep, and before
+// clusterNodes closes the node clients — so each child flushes its accepted
+// commands on the still-open node connection. A child may already have been
+// closed by its node client's shared-pool close hook; AutoPipeliner.Close is
+// idempotent, so the second close returns immediately.
+func (r *clusterFDRouter) close() error {
+	r.mu.Lock()
+	// Mark closed under the lock BEFORE snapshotting: a submit racing past the
+	// parent.isClosed() check that then builds a child outside the router lock will
+	// see r.closed when it takes the lock to store, and discard its orphan instead
+	// of leaking it (getOrCreateChild). Children created and stored before this
+	// point are in the snapshot below and get closed here.
+	r.closed = true
+	children := make([]*AutoPipeliner, 0, len(r.children))
+	for _, ch := range r.children {
+		children = append(children, ch)
+	}
+	r.children = make(map[*Client]*AutoPipeliner)
+	r.mu.Unlock()
+
+	var firstErr error
+	for _, ch := range children {
+		// WaitClosed is the authoritative drain result: Close returns the drain error
+		// only to the caller that WINS the close CAS, and returns nil to a loser. If
+		// application code already started Close on this node autopipeliner (exposed
+		// via ForEachMaster), our ch.Close() loses and returns nil while the real
+		// error surfaces here. So prefer WaitClosed's result and fall back to Close's.
+		cerr := ch.Close()
+		if werr := ch.WaitClosed(); werr != nil {
+			cerr = werr
+		}
+		if cerr != nil && firstErr == nil {
+			firstErr = cerr
+		}
+	}
+	return firstErr
+}
