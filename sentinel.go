@@ -603,15 +603,25 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	mainPoolName := opt.Addr + "_" + uniqueID
 	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
 
-	var err error
-	rdb.connPool, err = newConnPool(opt, rdb.dialHook, mainPoolName)
+	// Assign the pool fields only AFTER the error check, mirroring NewClient.
+	// newConnPool returns a nil *pool.ConnPool on error, and assigning that
+	// straight to the pool.Pooler interface field would leave a typed-nil
+	// interface that closeResources treats as present (its != nil check passes),
+	// so the panic-cleanup defer above would nil-deref inside ConnPool.Close and
+	// replace the intended "failed to create connection pool" panic. A local var
+	// keeps the field nil on failure. (pubSubPool is a concrete *pool.PubSubPool
+	// whose nil is caught correctly by the != nil check, but assign it the same
+	// way to keep this constructor identical to NewClient.)
+	connPool, err := newConnPool(opt, rdb.dialHook, mainPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
-	rdb.pubSubPool, err = newPubSubPool(opt, rdb.dialHook, pubsubPoolName)
+	rdb.connPool = connPool
+	pubSubPool, err := newPubSubPool(opt, rdb.dialHook, pubsubPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
+	rdb.pubSubPool = pubSubPool
 
 	// Create the dedicated pipeline pool unconditionally, mirroring NewClient
 	// via the shared buildPipelinePool helper. PipelinePoolSize < 0 opts out.
