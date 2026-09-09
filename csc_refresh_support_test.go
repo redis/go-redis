@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // TestCollectHotAndDeleteRecencyFilter pins the recency gate that decides which
@@ -56,6 +57,123 @@ func TestCollectHotAndDeleteRecencyFilter(t *testing.T) {
 	// Unknown redis key: nothing collected, no panic on the missing index.
 	if got := lc.deleteByRedisKeyCollectingHot("rk:nonexistent", 0, ^uint64(0), nil); len(got) != 0 {
 		t.Fatalf("unknown redis key produced refetch targets: %v", got)
+	}
+}
+
+// TestCollectHotAndDeleteNoHorizonRefreshesEverything pins the default
+// refresh-everything mode (Options.ClientSideCacheRefreshRecencyWindow
+// unset): cscInvalNoHorizon passed as sinceToken must collect a Valid entry
+// as a refetch target REGARDLESS of how long ago it was last read — the
+// mirror image of TestCollectHotAndDeleteRecencyFilter's cold case, which is
+// what a real (non-sentinel) horizon excludes.
+func TestCollectHotAndDeleteNoHorizonRefreshesEverything(t *testing.T) {
+	ctx := context.Background()
+	lc := NewLocalCache(CacheConfig{MaxEntries: 64})
+
+	tok, fetch := lc.Reserve("ck:old", []string{"rk:old"})
+	if tok == 0 || !fetch {
+		t.Fatalf("Reserve(ck:old) = (%d, %v)", tok, fetch)
+	}
+	if !lc.fulfill("ck:old", tok, 0, []byte("v")) {
+		t.Fatal("fulfill(ck:old) failed")
+	}
+
+	// A horizon taken long after the entry's last read would normally exclude
+	// it (see TestCollectHotAndDeleteRecencyFilter). cscInvalNoHorizon must
+	// override that and collect it anyway.
+	for i := 0; i < 100; i++ {
+		lruSequence.Add(1)
+	}
+
+	got := lc.deleteByRedisKeyCollectingHot("rk:old", cscInvalNoHorizon, ^uint64(0), nil)
+	if len(got) != 1 || got[0].cacheKey != "ck:old" {
+		t.Fatalf("cscInvalNoHorizon did not collect the entry as a refetch target: %v", got)
+	}
+	if _, ok := lc.Get(ctx, "ck:old"); ok {
+		t.Fatal("entry was not deleted by the invalidation")
+	}
+}
+
+// TestCscRecencyRingOldest pins the ring's circular-buffer arithmetic:
+// oldest() must return the earliest-still-held snapshot both before the ring
+// fills (ramp-up) and after it wraps repeatedly.
+func TestCscRecencyRingOldest(t *testing.T) {
+	r := newCscRecencyRing(3)
+
+	// Ramp-up: not yet full, oldest is always the first push.
+	r.push(10)
+	if got := r.oldest(); got != 10 {
+		t.Fatalf("after 1 push: oldest = %d, want 10", got)
+	}
+	r.push(20)
+	if got := r.oldest(); got != 10 {
+		t.Fatalf("after 2 pushes: oldest = %d, want 10 (ring not full yet)", got)
+	}
+
+	// Full: oldest is the least-recent of the last 3.
+	r.push(30)
+	if got := r.oldest(); got != 10 {
+		t.Fatalf("after 3 pushes (just filled): oldest = %d, want 10", got)
+	}
+
+	// Wraps: each push evicts the true oldest.
+	r.push(40) // holds {20,30,40}
+	if got := r.oldest(); got != 20 {
+		t.Fatalf("after 4 pushes: oldest = %d, want 20", got)
+	}
+	r.push(50) // holds {30,40,50}
+	if got := r.oldest(); got != 30 {
+		t.Fatalf("after 5 pushes: oldest = %d, want 30", got)
+	}
+
+	// Size 1 degenerates to "just the latest push" — today's pre-option behavior.
+	one := newCscRecencyRing(1)
+	one.push(7)
+	if got := one.oldest(); got != 7 {
+		t.Fatalf("size-1 ring: oldest = %d, want 7", got)
+	}
+	one.push(9)
+	if got := one.oldest(); got != 9 {
+		t.Fatalf("size-1 ring after second push: oldest = %d, want 9", got)
+	}
+
+	// size < 1 clamps to 1 rather than panicking on a zero-length buffer.
+	zero := newCscRecencyRing(0)
+	zero.push(5)
+	if got := zero.oldest(); got != 5 {
+		t.Fatalf("size-0 ring (clamped to 1): oldest = %d, want 5", got)
+	}
+}
+
+// TestCscRefreshWindowTicks pins the window->ring-size rounding: the enforced
+// window (ticks-1)*tick must never fall short of the requested duration,
+// regardless of how it divides the tick, and must match exactly on an exact
+// multiple (no off-by-one slack beyond the documented [w, w+tick) range).
+func TestCscRefreshWindowTicks(t *testing.T) {
+	tick := cscRefreshRecencyTick
+	cases := []struct {
+		name string
+		w    time.Duration
+		want int
+	}{
+		{"exact one tick", tick, 2},
+		{"exact two ticks", 2 * tick, 3},
+		{"sub-tick rounds up to one tick's guarantee", tick / 4, 2},
+		{"just over one tick", tick + time.Millisecond, 3},
+		{"just under two ticks", 2*tick - time.Millisecond, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cscRefreshWindowTicks(tc.w); got != tc.want {
+				t.Fatalf("cscRefreshWindowTicks(%v) = %d, want %d", tc.w, got, tc.want)
+			}
+			// The guarantee itself: enforced minimum lookback (ticks-1)*tick must
+			// cover the requested window.
+			enforced := time.Duration(tc.want-1) * tick
+			if enforced < tc.w {
+				t.Fatalf("cscRefreshWindowTicks(%v): enforced minimum %v < requested %v", tc.w, enforced, tc.w)
+			}
+		})
 	}
 }
 

@@ -12,12 +12,16 @@ import (
 func TestUniversalOptionsSimpleCopiesCSCCoalesce(t *testing.T) {
 	u := &UniversalOptions{
 		ClientSideCacheRefreshOnInvalidate:     true,
+		ClientSideCacheRefreshRecencyWindow:    3 * time.Millisecond,
 		ClientSideCacheCoalesceMisses:          true,
 		ClientSideCacheInvalidationBatchWindow: 7 * time.Millisecond,
 	}
 	o := u.Simple()
 	if !o.ClientSideCacheRefreshOnInvalidate {
 		t.Error("Simple() dropped ClientSideCacheRefreshOnInvalidate")
+	}
+	if o.ClientSideCacheRefreshRecencyWindow != 3*time.Millisecond {
+		t.Errorf("Simple() ClientSideCacheRefreshRecencyWindow = %v, want 3ms", o.ClientSideCacheRefreshRecencyWindow)
 	}
 	if !o.ClientSideCacheCoalesceMisses {
 		t.Error("Simple() dropped ClientSideCacheCoalesceMisses")

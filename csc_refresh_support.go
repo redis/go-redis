@@ -1,6 +1,9 @@
 package redis
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // Support shims for refresh-on-invalidate and reader-miss coalescing, kept in
 // one file so the feature is a clean addition over the CSC base.
@@ -21,6 +24,79 @@ func (h *cscRevalidateHandle) signalStop() {
 // LRUClock returns the current global recency token; the refresher uses it as
 // the "recently read" horizon.
 func (c *LocalCache) LRUClock() int64 { return lruSequence.Load() }
+
+// cscRecencyRing holds the last N per-tick LRUClock() snapshots, giving
+// startCSCRefresher's sinceToken horizon a bounded multi-tick lookback
+// instead of the single most-recent tick, so
+// Options.ClientSideCacheRefreshRecencyWindow can span more than one
+// cscRefreshRecencyTick. oldest() is the horizon: once the ring has filled,
+// an entry read since oldest() was captured is guaranteed to fall within the
+// configured window, regardless of where an invalidation lands relative to
+// the tick phase (see the ring-sizing comment in startCSCRefresher). Owned
+// solely by the refresher goroutine — push/oldest are not called
+// concurrently, so no lock.
+type cscRecencyRing struct {
+	buf []int64
+	pos int
+	n   int
+}
+
+// cscRecencyRingMaxSize caps the ring allocation newCscRecencyRing builds. At
+// the 200ms tick this is ~58 hours of coverage — a pathological
+// ClientSideCacheRefreshRecencyWindow (a duration typo, or math.MaxInt64)
+// degrades to that cap instead of an oversized or panicking make([]int64, N).
+const cscRecencyRingMaxSize = 1 << 20
+
+// newCscRecencyRing builds a ring of the given size, clamped to
+// [1, cscRecencyRingMaxSize].
+func newCscRecencyRing(size int) *cscRecencyRing {
+	if size < 1 {
+		size = 1
+	}
+	if size > cscRecencyRingMaxSize {
+		size = cscRecencyRingMaxSize
+	}
+	return &cscRecencyRing{buf: make([]int64, size)}
+}
+
+// cscRefreshWindowTicks converts a requested
+// Options.ClientSideCacheRefreshRecencyWindow into a cscRecencyRing size.
+// Ring size N gives a GUARANTEED-minimum lookback of (N-1)*cscRefreshRecencyTick
+// once the ring has filled (oldest() is then N-1 ticks behind the latest
+// push) — the tick phase relative to an arbitrary invalidation can cost up to
+// one full tick of coverage, so N-1 must itself already be >= ceil(w/tick)
+// for the enforced window to never fall short of w. Hence N = ceil(w/tick)+1,
+// giving an enforced window in [w, w+tick). Extracted pure so the rounding is
+// unit-tested; w<=0 (unbounded mode) never reaches this function.
+func cscRefreshWindowTicks(w time.Duration) int {
+	ticks := int(w / cscRefreshRecencyTick)
+	if w%cscRefreshRecencyTick != 0 {
+		ticks++
+	}
+	return ticks + 1
+}
+
+// push records the latest per-tick snapshot, evicting the oldest once full.
+func (r *cscRecencyRing) push(v int64) {
+	r.buf[r.pos] = v
+	r.pos = (r.pos + 1) % len(r.buf)
+	if r.n < len(r.buf) {
+		r.n++
+	}
+}
+
+// oldest returns the least-recent snapshot currently held. Before the ring
+// fills (just after the refresher starts), it returns the earliest snapshot
+// taken so far, so every access since the refresher started counts as hot
+// until the configured window has had time to mature. Once full, r.pos
+// always points at the slot about to be overwritten next — the oldest value
+// held — a standard circular-buffer property.
+func (r *cscRecencyRing) oldest() int64 {
+	if r.n < len(r.buf) {
+		return r.buf[0]
+	}
+	return r.buf[r.pos]
+}
 
 // InvalidationStats reports INCOMING invalidation pushes: the count of keys named
 // in server invalidation messages, tallied at the handler before dedup/batching.

@@ -479,6 +479,33 @@ type Options struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheRefreshOnInvalidate bool
 
+	// ClientSideCacheRefreshRecencyWindow bounds ClientSideCacheRefreshOnInvalidate
+	// to keys read within this window before their invalidation arrived. 0
+	// (default) refreshes every invalidated Valid entry, regardless of how long
+	// ago it was last read. A positive value only refreshes entries whose last
+	// read falls inside the window; an entry outside it is just evicted (an
+	// ordinary miss on the next read, same as refresh being off).
+	//
+	// Tradeoff: refreshing re-registers the key with the server's tracking
+	// table, which manufactures the NEXT invalidation on the next write — so
+	// the default (refresh everything) turns a write-heavy, rarely-read key
+	// into a self-sustaining refresh loop driven by write traffic, not read
+	// traffic, for as long as its entry survives capacity eviction. Set a
+	// window to bound that blast radius to keys actually being read.
+	//
+	// Recency is tracked at the existing 200ms tick resolution
+	// (cscRefreshRecencyTick): a nonzero window is rounded up to the tick
+	// boundary that guarantees AT LEAST the requested window is covered
+	// regardless of where an invalidation lands relative to the tick phase, so
+	// the enforced window is somewhere in [window, window+200ms). It also takes
+	// up to one tick to reach full accuracy right after the refresher starts.
+	//
+	// Ignored unless ClientSideCacheRefreshOnInvalidate is set, and requires
+	// the built-in cache like that option does.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheRefreshRecencyWindow time.Duration
+
 	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses so they
 	// stream on a held tracked full-duplex connection instead of each taking a
 	// pool connection: a lone miss is written immediately (no batching delay —

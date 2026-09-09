@@ -192,6 +192,12 @@ type UniversalOptions struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheRefreshOnInvalidate bool
 
+	// ClientSideCacheRefreshRecencyWindow bounds ClientSideCacheRefreshOnInvalidate
+	// to recently-read keys. See Options.ClientSideCacheRefreshRecencyWindow.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheRefreshRecencyWindow time.Duration
+
 	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses onto a held
 	// full-duplex connection. See Options.ClientSideCacheCoalesceMisses.
 	//
@@ -411,6 +417,7 @@ func (o *UniversalOptions) Simple() *Options {
 		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
 
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheRefreshRecencyWindow:    o.ClientSideCacheRefreshRecencyWindow,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
 		ClientSideCacheInvalidationBatchWindow: o.ClientSideCacheInvalidationBatchWindow,
 	}

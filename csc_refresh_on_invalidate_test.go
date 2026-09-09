@@ -121,6 +121,67 @@ func TestCSCRefresherNormalFlushAbortsOnClose(t *testing.T) {
 	}
 }
 
+// TestStartCSCRefresherRecencyWindowWiring pins the construction-time wiring
+// between Options.ClientSideCacheRefreshRecencyWindow and the live
+// cscRefreshQueue: default (window unset) must leave q.recency nil and pin
+// sinceToken at the unbounded sentinel (refresh everything); a configured
+// window must build a ring sized by cscRefreshWindowTicks and seed
+// sinceToken from it (a real token, not the sentinel). The ring's own
+// push/oldest arithmetic and the window->ticks rounding are separately
+// pinned (TestCscRecencyRingOldest, TestCscRefreshWindowTicks); this only
+// covers startCSCRefresher actually wiring them together.
+func TestStartCSCRefresherRecencyWindowWiring(t *testing.T) {
+	t.Run("default_is_unbounded", func(t *testing.T) {
+		lc := NewLocalCache(CacheConfig{MaxEntries: 1000})
+		c := &baseClient{
+			opt:          &Options{ClientSideCacheRefreshOnInvalidate: true},
+			csc:          lc,
+			cscKeyPrefix: "p:",
+		}
+		c.startCSCRefresher()
+		defer c.stopCSCRefresher()
+
+		q := c.cscRefreshQueue
+		if q == nil {
+			t.Fatal("startCSCRefresher did not build a refresh queue")
+		}
+		if q.recency != nil {
+			t.Fatal("default (window unset) built a recency ring; want nil (unbounded mode)")
+		}
+		if got := q.sinceToken.Load(); got != cscInvalNoHorizon {
+			t.Fatalf("default sinceToken = %d, want cscInvalNoHorizon (%d)", got, cscInvalNoHorizon)
+		}
+	})
+
+	t.Run("configured_window_builds_ring", func(t *testing.T) {
+		lc := NewLocalCache(CacheConfig{MaxEntries: 1000})
+		c := &baseClient{
+			opt: &Options{
+				ClientSideCacheRefreshOnInvalidate:  true,
+				ClientSideCacheRefreshRecencyWindow: 2 * cscRefreshRecencyTick,
+			},
+			csc:          lc,
+			cscKeyPrefix: "p:",
+		}
+		c.startCSCRefresher()
+		defer c.stopCSCRefresher()
+
+		q := c.cscRefreshQueue
+		if q == nil {
+			t.Fatal("startCSCRefresher did not build a refresh queue")
+		}
+		if q.recency == nil {
+			t.Fatal("configured window left q.recency nil; want a ring")
+		}
+		if got, want := len(q.recency.buf), cscRefreshWindowTicks(2*cscRefreshRecencyTick); got != want {
+			t.Fatalf("ring size = %d, want %d (cscRefreshWindowTicks(2*tick))", got, want)
+		}
+		if got := q.sinceToken.Load(); got == cscInvalNoHorizon {
+			t.Fatal("configured window initialized sinceToken to the unbounded sentinel")
+		}
+	})
+}
+
 // TestCloneSharesRefreshQueueForDemand pins #3965 F4: clone() (WithTimeout/
 // WithContext) must SHARE the owner's refresh queue so a derived client's
 // processCached can signal demand on it. Without the share the clone's field is

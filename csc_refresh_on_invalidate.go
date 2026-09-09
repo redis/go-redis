@@ -227,7 +227,17 @@ type cscRefreshQueue struct {
 	// would both pin the server's tracking table and manufacture the next
 	// invalidation — a feedback loop that generates its own work. Same guard the
 	// time-based sweeper uses for the same reason.
+	//
+	// Holds cscInvalNoHorizon (-1) forever when
+	// Options.ClientSideCacheRefreshRecencyWindow is unset (the default): every
+	// Valid entry is then "hot" by construction, and the feedback-loop tradeoff
+	// above is an accepted, documented default (see the option's doc comment) —
+	// bound it with the option to restore this guard's original intent.
 	sinceToken atomic.Int64
+	// recency holds the multi-tick history backing sinceToken when
+	// ClientSideCacheRefreshRecencyWindow is set; nil in the default
+	// refresh-everything mode, where sinceToken is fixed and this is unused.
+	recency *cscRecencyRing
 
 	enqueued      atomic.Uint64
 	dropped       atomic.Uint64
@@ -420,7 +430,16 @@ func (c *baseClient) startCSCRefresher() {
 		ch:       make(chan cscRefreshTarget, cscRefreshQueueDepth),
 		demandCh: make(chan uint64, 1),
 	}
-	q.sinceToken.Store(lc.LRUClock())
+	// Default (window <= 0): refresh every invalidated Valid entry regardless of
+	// recency. cscInvalNoHorizon (-1) is less than any real lastAccessNs token,
+	// so it marks everything hot; sinceToken then never changes (see the
+	// recency-tick case in runCSCRefresher, which no-ops when q.recency is nil).
+	q.sinceToken.Store(cscInvalNoHorizon)
+	if w := c.opt.ClientSideCacheRefreshRecencyWindow; w > 0 {
+		q.recency = newCscRecencyRing(cscRefreshWindowTicks(w))
+		q.recency.push(lc.LRUClock())
+		q.sinceToken.Store(q.recency.oldest())
+	}
 	c.cscRefreshQueue = q
 
 	h := &cscRevalidateHandle{stop: make(chan struct{}), done: make(chan struct{})}
@@ -645,9 +664,14 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			}
 
 		case <-recency.C:
-			// Advance the horizon: entries not read since the previous tick stop
-			// being worth refetching.
-			q.sinceToken.Store(lc.LRUClock())
+			// Advance the horizon: entries not read within the configured window
+			// stop being worth refetching. Default (q.recency nil, window
+			// unset): sinceToken is fixed at cscInvalNoHorizon — refresh
+			// everything, forever — so there is nothing to advance.
+			if q.recency != nil {
+				q.recency.push(lc.LRUClock())
+				q.sinceToken.Store(q.recency.oldest())
+			}
 
 		case t := <-q.ch:
 			collect(t)
