@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -93,11 +94,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// Mirror enqueue's closed contract: reject once the parent is closing rather
 	// than route to a child that Close is tearing down.
 	if r.parent.isClosed() {
-		cmd.SetErr(ErrClosed)
-		if !r.blocking {
-			cmd.setReady(completedBatch)
-		}
-		return AutoFuture{cmd: cmd, batch: completedBatch}
+		return r.rejectClosed(cmd)
 	}
 
 	child, closed := r.childFor(ctx, cmd)
@@ -106,17 +103,10 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// is tearing down). Mirror the closed contract rather than route to — or
 		// create — a child the drain has already swept; getOrCreateChild discards any
 		// child it built in this window so it cannot leak.
-		cmd.SetErr(ErrClosed)
-		if !r.blocking {
-			cmd.setReady(completedBatch)
-		}
-		return AutoFuture{cmd: cmd, batch: completedBatch}
+		return r.rejectClosed(cmd)
 	}
 	if child == nil {
-		// runOutsidePipeline sets the command ready itself on the deferred face and
-		// returns a batch that completes when the command has executed — exactly
-		// the parent's own diverted path.
-		return AutoFuture{cmd: cmd, batch: r.parent.runOutsidePipeline(ctx, cmd)}
+		return r.divertToProcess(ctx, cmd)
 	}
 	// Submit straight to the child's FD engine, skipping child.submit
 	// (AutoPipeliner.submit). The parent already decided this command is
@@ -124,15 +114,61 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// HIMPORT/mustDivert) and preflight ran above — so the child's submit would only
 	// re-run that same classification, hit its nil preflight, and build a finish
 	// closure: pure per-command CPU on the hot path (measured ~1/3 of submit cost is
-	// this second pass). child.fd is non-nil (getOrCreateChild screened it) and
-	// fd.submit still runs the child's own closed-check, so a racing child close is
-	// handled. Mirror the parent's fd branch: setReady on the async face (the child
-	// shares this face's blocking flag), return the batch.
+	// this second pass). child.fd is non-nil (getOrCreateChild screened it).
 	b := child.fd.submit(ctx, cmd)
+	if b == completedBatch && errors.Is(cmd.Err(), ErrClosed) {
+		// Topology GC (a cluster reload dropping this node, or the node's own pool
+		// close hook) can close this child at any point up to and including while
+		// fd.submit is parked on a full fd.ch waiting for room — the fd.ap.ctx.Done()
+		// / fd.closed arms in fdEngine.submit. Those keep the race SAFE (ErrClosed,
+		// no hang), but silently failing the command instead of falling back
+		// contradicts this router's own contract (see the doc comment above): a
+		// routing miss should divert to Process, not error. Distinguish from the
+		// CALLER's own ctx cancelling mid-backpressure (fdEngine.submit's separate
+		// ctx.Done() arm, which sets ctx.Err(), not ErrClosed) — that one must NOT
+		// be retried; the caller asked to stop.
+		//
+		// Neither setReady (below) nor any waiter has observed cmd yet — child.fd's
+		// rejection ran on this goroutine, before the async face is armed — so it is
+		// still safe to override. Re-resolve once: childFor rebuilds a fresh child
+		// for a node still in the topology (self-healing, same as its own
+		// cached-but-closed handling in getOrCreateChild), reports a genuine miss
+		// for a node that is gone, or reports the ROUTER itself closing (in which
+		// case rejectClosed below is the same outcome this rejection would have
+		// been anyway). One retry only, no loop: SetErr on the second attempt
+		// (accept, or fail again) simply overwrites this one.
+		child, closed = r.childFor(ctx, cmd)
+		if closed {
+			return r.rejectClosed(cmd)
+		}
+		if child == nil {
+			return r.divertToProcess(ctx, cmd)
+		}
+		b = child.fd.submit(ctx, cmd)
+	}
 	if !r.blocking {
 		cmd.setReady(b)
 	}
 	return AutoFuture{cmd: cmd, batch: b}
+}
+
+// rejectClosed mirrors the parent AutoPipeliner's closed-submit contract: fail
+// cmd with ErrClosed and, on the async face, mark it ready against the shared
+// completedBatch sentinel immediately (no host goroutine, nothing to wait on).
+func (r *clusterFDRouter) rejectClosed(cmd Cmder) AutoFuture {
+	cmd.SetErr(ErrClosed)
+	if !r.blocking {
+		cmd.setReady(completedBatch)
+	}
+	return AutoFuture{cmd: cmd, batch: completedBatch}
+}
+
+// divertToProcess routes cmd through the parent's normal (non-FD) diverted
+// path — correct, just not pipelined. runOutsidePipeline sets the command
+// ready itself on the deferred face and returns a batch that completes when
+// the command has executed.
+func (r *clusterFDRouter) divertToProcess(ctx context.Context, cmd Cmder) AutoFuture {
+	return AutoFuture{cmd: cmd, batch: r.parent.runOutsidePipeline(ctx, cmd)}
 }
 
 // childFor resolves the FD child for cmd's owning master node. It returns

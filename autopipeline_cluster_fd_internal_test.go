@@ -224,6 +224,82 @@ func TestClusterFullDuplexReuseAfterClose(t *testing.T) {
 	}
 }
 
+// TestClusterFullDuplexChildCloseSelfHeals covers the case ReuseAfterClose does
+// not: the ROUTER's parent AutoPipeliner stays open, but ONE node child gets
+// closed underneath it — the shape of a cluster topology GC closing a node's
+// client (and its cached FD child) while the rest of the cluster, and this
+// router, are still very much in use. A command on that node must self-heal
+// (rebuild the child, or divert to Process for a node that is truly gone)
+// rather than surface the closed child's ErrClosed to the caller.
+//
+// This pins the observable CONTRACT, not the specific race a bot review
+// flagged. Closing the child here happens strictly BEFORE the next submit, so
+// getOrCreateChild's own pre-existing cached-but-closed rebuild
+// (autopipeline_cluster_fd.go childFor) already satisfies this test on its
+// own — the harder case (a submit that is already parked inside
+// fdEngine.submit's backpressure select when the child closes, per
+// autopipeline_fullduplex.go) is a true TOCTOU race with no deterministic
+// repro; clusterFDRouter.submit's post-dispatch retry (same file) narrows
+// that window but is not exercised as a distinct case here.
+func TestClusterFullDuplexChildCloseSelfHeals(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	const key = "cfd:{childclose}:k"
+	if err := ap.Set(ctx, key, "1", 0).Err(); err != nil {
+		t.Fatalf("initial SET: %v", err)
+	}
+
+	// Grab the child that owns key's slot and close it DIRECTLY — simulating
+	// topology GC tearing down a node child without touching the ClusterClient
+	// or the router (unlike ReuseAfterClose, which closes the whole parent).
+	ap.clusterFD.mu.RLock()
+	var closedChild *AutoPipeliner
+	for _, ch := range ap.clusterFD.children {
+		closedChild = ch
+		break
+	}
+	ap.clusterFD.mu.RUnlock()
+	if closedChild == nil {
+		t.Fatalf("no FD child cached after initial SET")
+	}
+	if err := closedChild.Close(); err != nil {
+		t.Fatalf("closedChild.Close: %v", err)
+	}
+
+	// A command on the SAME key must still succeed — self-healed, not ErrClosed.
+	if err := ap.Set(ctx, key, "2", 0).Err(); err != nil {
+		t.Fatalf("SET after child close: %v (want self-heal, not ErrClosed)", err)
+	}
+	got, err := ap.Get(ctx, key).Result()
+	if err != nil {
+		t.Fatalf("GET after child close: %v", err)
+	}
+	if got != "2" {
+		t.Fatalf("GET after child close = %q, want %q", got, "2")
+	}
+
+	// The router now caches a fresh, live child for that node — not the closed one.
+	ap.clusterFD.mu.RLock()
+	var sawFresh bool
+	for _, ch := range ap.clusterFD.children {
+		if ch != closedChild && !ch.IsClosed() {
+			sawFresh = true
+		}
+	}
+	ap.clusterFD.mu.RUnlock()
+	if !sawFresh {
+		t.Errorf("router did not rebuild a fresh child after the cached one closed")
+	}
+}
+
 // TestClusterFullDuplexGatedOffForReplicaRouting asserts the construction gate:
 // a ClusterClient configured for replica routing (ReadOnly / RouteByLatency /
 // RouteRandomly) must NOT engage cluster FD, because the router only routes to

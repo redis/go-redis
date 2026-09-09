@@ -968,7 +968,12 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		// host, parked on hookDone) waits forever.
 		defer func() {
 			if r := recover(); r != nil {
-				req.cmd.SetErr(fmt.Errorf("redis: autopipeline: panic in full-duplex off-pipe retry: %v", r))
+				// fdSetErrSafe, not a raw SetErr: this recover is itself the backstop for
+				// a panicking Cmder, so a SECOND panic from the same custom SetErr here —
+				// e.g. triggered by the retry's own req.cmd.SetErr(err) below — must not
+				// escape a deferred function mid-unwind, which Go cannot recover from
+				// (it kills the process, not just this goroutine).
+				fdSetErrSafe(req.cmd, fmt.Errorf("redis: autopipeline: panic in full-duplex off-pipe retry: %v", r))
 				internal.Logger.Printf(context.Background(),
 					"autopipeline: recovered full-duplex retry panic: %v\n%s", r, debug.Stack())
 				req.complete()
@@ -1005,7 +1010,11 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 			}
 			return fd.reprocess(rctx, req.cmd, startAttempt, req.writtenAt)
 		}()
-		req.cmd.SetErr(err)
+		// fdSetErrSafe: same custom-Cmder-panic hazard as the reader's reply path
+		// (see fdSetErrSafe's doc comment) — a panic here would otherwise reach the
+		// recover above, which itself calls SetErr and would then have no outer
+		// boundary of its own.
+		fdSetErrSafe(req.cmd, err)
 		req.complete()
 	}()
 }
@@ -1532,7 +1541,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						}
 					}
 				}
-				req.cmd.SetErr(e) // nil, a redirect (MOVED/ASK), or a non-retryable Redis error
+				fdSetErrSafe(req.cmd, e) // nil, a redirect (MOVED/ASK), or a non-retryable Redis error; panic-safe (see fdSetErrSafe)
 				// Per-command OTel duration (write→reply): the FD reader bypasses
 				// process, which is what normally emits it. Inline-completed commands
 				// only — a diverted command emits its own through process.
@@ -2347,6 +2356,28 @@ func fdNoRetrySafe(cmd Cmder) (noRetry bool) {
 		}
 	}()
 	return cmd.NoRetry()
+}
+
+// fdSetErrSafe wraps a single cmd.SetErr() call with a recover. Same hazard as
+// fdNoRetrySafe: every caller settles a request that is about to be marked
+// complete regardless of outcome (the reader's reply path, and the off-pipe
+// retry goroutine's own recover) — completion must happen unconditionally so
+// the request is never left in an unacked, replayable state. A custom Cmder
+// whose SetErr() panics here would otherwise escape to whichever recover is
+// the caller's own outer boundary (for the reader, the session-failure
+// recover, which treats an incomplete request as an unacked tail and REPLAYS
+// it — running an already-executed mutating command twice; for the retry
+// goroutine's recover, there is no outer boundary at all, so a second panic
+// mid-unwind would kill the process). Recover locally and log; the caller
+// proceeds to complete the request either way.
+func fdSetErrSafe(cmd Cmder, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(),
+				"autopipeline: recovered full-duplex SetErr() panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	cmd.SetErr(err)
 }
 
 // fdRecoverTail builds an fdConnErr recovery set from a drained unacked tail and

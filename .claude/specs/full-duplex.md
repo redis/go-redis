@@ -1,13 +1,16 @@
 # Full-duplex autopipeline engine
 
 Design notes for the ordered full-duplex (FD) autopipeline engine
-(`autopipeline_fullduplex.go`, `autopipeline.go`). Read this before changing the
-engine. It records invariants and decisions that are not obvious from the code.
+(`autopipeline_fullduplex.go`, `autopipeline.go`, `autopipeline_cluster_fd.go`).
+Read this before changing the engine. It records invariants and decisions that
+are not obvious from the code.
 
-FD is opt-in (`AutoPipelineConfig.FullDuplex`) and standalone-only: it is enabled
-only for a single-node `*Client`. It holds ONE connection for MANY callers and
-streams commands on it while a reader drains replies in FIFO order, so a caller does
-not wait for a round trip before the next command is written.
+FD is opt-in (`AutoPipelineOptions.FullDuplex`). The engine itself (`fdEngine`)
+holds ONE connection for MANY callers and streams commands on it while a reader
+drains replies in FIFO order, so a caller does not wait for a round trip before
+the next command is written. A single `fdEngine` instance always belongs to one
+standalone `*Client` — but that `*Client` may be a `ClusterClient` node child, not
+just a directly-constructed standalone client. See "Cluster support" below.
 
 ## Engine model
 
@@ -38,6 +41,52 @@ drains the already-written prefix (those callers complete, never re-executed), `
 Puts the conn (a handoff-marked conn hands off via OnPut; a max-held conn simply returns
 to the pool so the hold ends), and `run` replays only the never-sent suffix on the next
 lease. Pinned by `TestWriteCarryChunkedStopsOnHandoff` / `TestWriteCarryChunkedStopsOnMaxHold`.
+
+## Cluster support
+
+A `*ClusterClient` has no connection of its own to hold full-duplex on, but every
+master node's `node.Client` is a standalone `*Client` with its own pipeline pool
+— so `clusterFDRouter` (`autopipeline_cluster_fd.go`) keeps one FD child
+`AutoPipeliner` per master node and routes each command to the child owning its
+slot, instead of running the half-duplex shard flushers. The parent
+`AutoPipeliner` still owns diversion (blocking / fan-out / `ReqSpecial`) on the
+`*ClusterClient` itself, so cluster-wide commands keep fanning out and
+aggregating correctly; only single-node commands route through a child.
+
+- **Child config**: derived once from the parent's `AutoPipelineOptions`,
+  forcing the ordered single-shard FD combo (`FullDuplex/!Unordered/
+  MaxConcurrentBatches<=1/NumShards<=1`) the engine requires, and stripping the
+  cluster-only `contentSharded` bit so it cannot leak onto a node child.
+- **Redirects**: each child's `fdEngine.reprocess` is wired to
+  `clusterReprocess`, which re-runs a MOVED/ASK (or otherwise retryable) reply
+  through the redirect-aware `cc.process` — MOVED targets the right node with a
+  topology reload, ASK is followed through `cc.process`'s own loop (issuing
+  `ASKING`), bounded by `cc.opt.MaxRedirects`. One function serves every node;
+  the redirect target comes from the reply, not the source node.
+- **Retry budget**: a cluster node client normalizes `MaxRetries` to `-1`
+  (cluster retries live in `MaxRedirects` instead), which the FD carry-replay
+  budget would otherwise read as "already spent" and fail the whole in-flight
+  tail on the first socket error. The router injects `cc.opt.MaxRedirects` as
+  `clusterRetryBudget`, which `fdEngine.retryBudget()` substitutes in when
+  `redirectAware`.
+- **Fallback to `Process`**: routing (`childFor`/`getOrCreateChild`) resolves the
+  owning node from live cluster state on every submit. A keyless command, an
+  unresolved slot, a not-yet-loaded topology, or a node whose client turns out
+  not to be FD-capable (no pipeline pool, or a plain non-redirect-aware
+  autopipeliner already cached on it by other code) all fall back to the normal
+  `Process` path — correct, just not pipelined for that command.
+- **Node-close race**: cluster topology GC can close a node's `*Client` (and its
+  cached FD child) concurrently with an in-flight submit for that node, off the
+  router's own lock — including while the submit is parked on a full `fd.ch`
+  (`fdEngine.submit`'s `fd.ap.ctx.Done()`/`fd.closed` arms). `clusterFDRouter.submit`
+  detects that specific rejection shape (`child.fd.submit` returned the
+  submit-time-rejection sentinel with `ErrClosed`, as opposed to the caller's own
+  ctx cancelling) and re-resolves the child ONCE before the async face is armed,
+  so a GC'd node self-heals into a fresh child (still in the topology) or a clean
+  `Process` fallback (node truly gone) instead of surfacing a raw `ErrClosed` to
+  the caller. This is a single bounded retry immediately before/after the
+  dispatch call, not a lock held across it — a second, much rarer double-unlucky
+  race on the retry itself is not further retried and does surface `ErrClosed`.
 
 ## Panic boundaries
 

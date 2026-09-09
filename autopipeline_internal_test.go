@@ -2307,6 +2307,12 @@ type panicNoRetryCmd struct{ Cmder }
 
 func (panicNoRetryCmd) NoRetry() bool { panic("test: NoRetry panic") }
 
+// panicSetErrCmd is a Cmder whose SetErr() panics, for the reader's reply-settle
+// recover (fdSetErrSafe).
+type panicSetErrCmd struct{ Cmder }
+
+func (panicSetErrCmd) SetErr(error) { panic("test: SetErr panic") }
+
 // A custom Cmder's Args() runs on the full-duplex writer's recover-less serve
 // loop when sizing a batch. cmdApproxBytesSafe must convert a panic there into an
 // error (wrapping errFDPanicRecovered) so the caller can drop the one command
@@ -2362,6 +2368,22 @@ func TestFDNoRetrySafeRecoversPanic(t *testing.T) {
 	if !fdNoRetrySafe(panicNoRetryCmd{NewStatusCmd(ctx, "get", "k")}) {
 		t.Fatal("panicking NoRetry(): got false, want true (treat as non-retryable)")
 	}
+}
+
+// fdSetErrSafe wraps the reader's reply-path SetErr() call. A panic there (after the
+// reply already landed but before req is counted complete) must be recovered rather
+// than escape to the reader's session-failure recover, which would treat req as an
+// unacked tail and replay an already-executed mutating command.
+func TestFDSetErrSafeRecoversPanic(t *testing.T) {
+	ctx := context.Background()
+	base := NewStatusCmd(ctx, "get", "k")
+	wantErr := errors.New("boom")
+	fdSetErrSafe(base, wantErr)
+	if base.Err() != wantErr {
+		t.Fatalf("clean SetErr(): base.Err()=%v, want %v", base.Err(), wantErr)
+	}
+	// Must not panic (recovered internally) — the point of the test.
+	fdSetErrSafe(panicSetErrCmd{NewStatusCmd(ctx, "get", "k")}, wantErr)
 }
 
 // fdBatchEndSafe sizes a carry chunk with a per-command recover. A panicking Args()
