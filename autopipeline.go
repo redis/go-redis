@@ -1741,20 +1741,48 @@ func isBlockingCmd(cmd Cmder) bool {
 	// Arg-driven: these block only in their BLOCK form, and blanket-diverting
 	// the far more common non-blocking form would drop it out of batching for
 	// nothing. TS.READ takes BLOCK the same way (see TSReadWithArgs).
-	if name != "xread" && name != "xreadgroup" && name != "ts.read" {
+	args := cmd.Args()
+	switch name {
+	case "xread":
+		return blockOptionBeforeStreams(args, 1)
+	case "xreadgroup":
+		// args[1:4] are the mandatory GROUP keyword plus the group and
+		// consumer names. Those names are arbitrary values — a consumer
+		// literally named "streams" must not be mistaken for the STREAMS
+		// terminator (which would hide a real, later BLOCK and let the
+		// command ride the shared pipe — cursor bugbot on #4002) — so skip
+		// them positionally rather than matching on value.
+		return blockOptionBeforeStreams(args, 4)
+	case "ts.read":
+		// TS.READ has no STREAMS terminator at all, so there is nothing to
+		// stop the scan early for: the key and timestamp are arbitrary
+		// values (e.g. a key literally named "streams") that must not be
+		// treated as one. Just look for the BLOCK keyword anywhere.
+		for _, arg := range args {
+			if internal.ToLower(blockingArgString(arg)) == "block" {
+				return true
+			}
+		}
+		return false
+	default:
 		return false
 	}
-	// Match the token the way the encoder does: a raw Cmder may carry RESP
-	// tokens as []byte or *string (see baseCmd.stringArg), and a type switch on
-	// string alone would let NewCmd(ctx, "xread", []byte("BLOCK"), 0, ...) be
-	// batched onto a shared connection.
-	// BLOCK is an OPTION that appears before the STREAMS keyword; the keys and IDs
-	// that follow STREAMS may be literally "block" (e.g.
-	// XReadArgs{Streams: []string{"block", "0"}}). Stop at STREAMS so a stream key
-	// is never mistaken for the option — that would divert a non-blocking
-	// XREAD/XREADGROUP off the ordered pipe and let a later command run first.
-	// ts.read carries no STREAMS token, so its scan is unchanged (whole-arg).
-	for _, arg := range cmd.Args() {
+}
+
+// blockOptionBeforeStreams scans the option section of XREAD/XREADGROUP
+// (COUNT/MAXCOUNT/MAXSIZE/BLOCK/NOACK/CLAIM, in any combination) for the
+// BLOCK keyword, stopping at the STREAMS keyword that always terminates the
+// option section. start must already be past any positional arguments
+// (XREADGROUP's GROUP clause) that cannot be told apart from a keyword by
+// value alone. Match the token the way the encoder does: a raw Cmder may
+// carry RESP tokens as []byte or *string (see baseCmd.stringArg), and a type
+// switch on string alone would let NewCmd(ctx, "xread", []byte("BLOCK"), 0,
+// ...) be batched onto a shared connection.
+func blockOptionBeforeStreams(args []interface{}, start int) bool {
+	if start > len(args) {
+		return false
+	}
+	for _, arg := range args[start:] {
 		switch internal.ToLower(blockingArgString(arg)) {
 		case "streams":
 			return false

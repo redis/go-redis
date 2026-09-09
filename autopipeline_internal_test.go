@@ -1534,6 +1534,52 @@ func TestBlockingDetectionStopsAtStreams(t *testing.T) {
 	}
 }
 
+// TestBlockingDetectionGroupConsumerNamedStreams pins that a value earlier in
+// the arg list literally equal to "streams" or "block" is never mistaken for
+// a keyword: XREADGROUP's GROUP/consumer names sit at fixed positions before
+// the option section, so a consumer or group named "streams" must not be
+// read as the STREAMS terminator (which would hide a later, real BLOCK and
+// let the command ride the shared pipe instead of being diverted — cursor
+// bugbot on #4002), and a group/consumer named "block" must not be read as
+// the BLOCK option (which would divert a non-blocking command for nothing).
+func TestBlockingDetectionGroupConsumerNamedStreams(t *testing.T) {
+	ctx := context.Background()
+	blocking := [][]interface{}{
+		{"xreadgroup", "GROUP", "streams", "c", "BLOCK", 100, "STREAMS", "s", ">"},
+		{"xreadgroup", "GROUP", "g", "streams", "BLOCK", 100, "STREAMS", "s", ">"},
+		{"xreadgroup", "GROUP", "block", "c", "BLOCK", 100, "STREAMS", "s", ">"},
+	}
+	for _, args := range blocking {
+		if !isBlockingCmd(NewCmd(ctx, args...)) {
+			t.Errorf("isBlockingCmd(%v) = false, want true (BLOCK option present after group/consumer named streams/block)", args)
+		}
+	}
+	nonBlocking := [][]interface{}{
+		{"xreadgroup", "GROUP", "streams", "c", "STREAMS", "s", ">"},
+		{"xreadgroup", "GROUP", "block", "c", "STREAMS", "s", ">"},
+	}
+	for _, args := range nonBlocking {
+		if isBlockingCmd(NewCmd(ctx, args...)) {
+			t.Errorf("isBlockingCmd(%v) = true, want false (group/consumer named streams/block, no real BLOCK option)", args)
+		}
+	}
+}
+
+// TestBlockingDetectionTSReadKeyNamedStreams pins that TS.READ, which has no
+// STREAMS terminator at all, never stops its scan early on a key or
+// timestamp literally equal to "streams" — that would hide a later, real
+// BLOCK option and let the command ride the shared pipe (cursor bugbot on
+// #4002).
+func TestBlockingDetectionTSReadKeyNamedStreams(t *testing.T) {
+	ctx := context.Background()
+	if !isBlockingCmd(NewCmd(ctx, "ts.read", "streams", "-", "BLOCK", 100, 1)) {
+		t.Error(`isBlockingCmd(ts.read key="streams" ... BLOCK) = false, want true`)
+	}
+	if isBlockingCmd(NewCmd(ctx, "ts.read", "streams", "-", "MAX_COUNT", 10)) {
+		t.Error(`isBlockingCmd(ts.read key="streams", no BLOCK) = true, want false`)
+	}
+}
+
 // TestDivertRegistrationRacesClose hammers the window between a diverted
 // command's closed check and its registration against Close: every submitted
 // command must end with a definite outcome, and Close must never report
