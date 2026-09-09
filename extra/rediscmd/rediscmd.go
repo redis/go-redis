@@ -142,10 +142,24 @@ func secretArgs(args []interface{}) []bool {
 			if equalFoldArg(args, i, "keys") {
 				break
 			}
+			// Advance past the marked value(s): otherwise a password that is
+			// itself "auth"/"auth2" would be re-checked as a keyword and redact
+			// the following argument (and leave the real password in the clear).
 			if equalFoldArg(args, i, "auth") {
 				mark(i + 1)
+				i++
 			} else if equalFoldArg(args, i, "auth2") {
 				mark(i + 2)
+				i += 2
+			}
+		}
+
+	case equalFoldArg(args, 0, "sentinel") && equalFoldArg(args, 1, "set"):
+		// SENTINEL SET <master> option value [option value ...]; auth-pass holds
+		// the monitored master's password.
+		for i := 3; i+1 < len(args); i += 2 {
+			if equalFoldArg(args, i, "auth-pass") {
+				mark(i + 1)
 			}
 		}
 	}
