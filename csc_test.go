@@ -3805,6 +3805,73 @@ func TestGetConnLimitedSurfacesRejection(t *testing.T) {
 	}
 }
 
+// TestCSCMissLimiterDenialOnlyFailsWakingRequestPlainly pins a cursor review
+// finding on #3989: a Limiter.Allow rejection at session acquire is specific
+// to the ONE request that woke the session (first) and triggered that Allow
+// call — not to every OTHER request already sitting in mc.ch, which never
+// called Allow themselves. Failing them all with first's raw, non-retryable
+// error (the previous drainQueuePlain) denied operations the limiter was
+// never asked about. first must still get the raw error (a re-run would call
+// Allow a second time — see TestGetConnLimitedSurfacesRejection); every
+// already-queued request must instead get errCSCRetryUncached, so
+// processCached re-runs it on the ordinary per-command path and each calls
+// Allow independently.
+func TestCSCMissLimiterDenialOnlyFailsWakingRequestPlainly(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	sentinel := errors.New("csc test: limiter denied")
+	lim := &rejectingLimiter{err: sentinel}
+	mc := &cscMissCoalescer{
+		c:    &baseClient{opt: &Options{Limiter: lim}, csc: cache},
+		ch:   make(chan *cscMissReq, 4),
+		stop: make(chan struct{}),
+	}
+
+	mkReq := func(key string) *cscMissReq {
+		token, ok := cache.Reserve(key, []string{key})
+		if !ok {
+			t.Fatalf("Reserve(%q) declined a fresh key", key)
+		}
+		return &cscMissReq{cacheKey: key, token: token, done: make(chan error, 1)}
+	}
+
+	first := mkReq("first")
+	queued := mkReq("queued")
+	// Send order matters: runFullDuplexSession pulls exactly one request off
+	// mc.ch as "first" via a blocking receive, so first must be sent first;
+	// queued must still be sitting in the channel when Limiter.Allow denies
+	// the session.
+	mc.ch <- first
+	mc.ch <- queued
+
+	stopped, backoff := mc.runFullDuplexSession()
+	if stopped || !backoff {
+		t.Fatalf("runFullDuplexSession = (stopped=%v, backoff=%v); want (false, true)", stopped, backoff)
+	}
+
+	select {
+	case err := <-first.done:
+		if err != sentinel {
+			t.Fatalf("first.done = %v; want the raw sentinel (first triggered the denied Allow call)", err)
+		}
+	default:
+		t.Fatal("first was not settled")
+	}
+
+	select {
+	case err := <-queued.done:
+		if err != errCSCRetryUncached {
+			t.Fatalf("queued.done = %v; want errCSCRetryUncached — queued never called Allow, so it "+
+				"must retry on the ordinary per-command path instead of inheriting first's denial", err)
+		}
+	default:
+		t.Fatal("queued was not settled")
+	}
+
+	if got := lim.allow.Load(); got != 1 {
+		t.Fatalf("Allow called %d times, want exactly 1 (only for first)", got)
+	}
+}
+
 // --- CSC teardown lifecycle (F1/F2/F3) -------------------------------------
 
 // newCSCTeardownClient builds a client with BOTH refresh-on-invalidate and
@@ -3933,6 +4000,130 @@ func TestCSCStopCSCRefresherAndCoalescerSetsWorkersTornDown(t *testing.T) {
 	}
 	if active.Load() {
 		t.Fatal("stopCSCRefresherAndCoalescer did not deactivate cscActive")
+	}
+}
+
+// TestCSCStartRefresherHoldsLockAcrossBatcherJoin pins a second bot-review
+// round (cursor) on the workersTornDown fix: checking the flag only around
+// the initial field write (cscRefreshHandle/cscMissCoalescer) was not
+// enough — startCSCRefresher's remaining setup (setRefreshQueue's
+// predecessor-batcher join) and startCSCMissCoalescer's wg.Add loop both run
+// AFTER that write, so a concurrent stopCSCRefresherAndCoalescer could still
+// see the published handle and block on <-h.done for a goroutine not yet
+// launched (unbounded on a slow/stuck predecessor batcher; for the
+// coalescer, a concurrent wg.Wait()/wg.Add is sync.WaitGroup's documented
+// misuse case). The fix moved the ENTIRE publish sequence (see
+// startCSCRefresher's "publish" closure) inside the workersMu critical
+// section.
+//
+// This installs a controlled predecessor batcher (no run() goroutine backs
+// it, so its join blocks until the test releases it) standing in for that
+// slow window, and checks workersTornDown WHILE startCSCRefresher is
+// confirmed still parked in the join — not just that teardown eventually
+// finishes. Verified against the version that only locks around the field
+// write (commit e2a103e5): there, workersMu is free by the time this checks
+// it (start released it before setRefreshQueue/join), so the TryLock below
+// succeeds and the test correctly fails.
+//
+// Covers only the refresher: its predecessor-batcher join is the one
+// controllable blocking hook available without wiring a live connection.
+// startCSCMissCoalescer's mirrored wg.Add/wg.Wait window is fixed by the
+// same lock widening (see its publish closure) but has no separate test —
+// there is no equivalent controllable hook in its publish sequence.
+func TestCSCStartRefresherHoldsLockAcrossBatcherJoin(t *testing.T) {
+	proc := NewPushNotificationProcessor()
+	lc := NewLocalCache(CacheConfig{MaxEntries: 16})
+	if err := registerInvalidateHandler(proc, lc, "p:"); err != nil {
+		t.Fatalf("registerInvalidateHandler: %v", err)
+	}
+	ih := lookupInvalidateHandler(proc)
+
+	controlledDone := make(chan struct{})
+	ih.mu.Lock()
+	ih.batcher = &cscInvalBatcher{
+		cache:  lc,
+		ch:     make(chan cscInvalItem, 1),
+		wake:   make(chan struct{}, 1),
+		stopCh: make(chan struct{}),
+		done:   controlledDone,
+	}
+	ih.mu.Unlock()
+
+	dh := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	active := &atomic.Bool{}
+	active.Store(true)
+	c := &baseClient{
+		opt: &Options{
+			ClientSideCacheRefreshOnInvalidate: true,
+			PushNotificationProcessor:          proc,
+		},
+		csc:            lc,
+		cscKeyPrefix:   "p:",
+		cscDrainHandle: dh,
+		cscActive:      active,
+	}
+
+	startDone := make(chan struct{})
+	go func() {
+		c.startCSCRefresher()
+		close(startDone)
+	}()
+
+	// Poll (bounded, 2s deadline) until startCSCRefresher has actually
+	// acquired workersMu, rather than sleeping a fixed interval and hoping it
+	// got scheduled in time: a not-yet-scheduled goroutine passes a plain
+	// "hasn't returned yet" check identically, which is exactly the kind of
+	// timing assumption that flakes under -race/CI load. TryLock never
+	// blocks, so polling it cannot deadlock on the very lock being observed;
+	// a failed TryLock is the (only) proof the lock is currently held.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if !dh.workersMu.TryLock() {
+			break // observed held: start has reached the lock
+		}
+		dh.workersMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("startCSCRefresher never acquired workersMu within 2s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	teardownDone := make(chan struct{})
+	go func() {
+		c.stopCSCRefresherAndCoalescer()
+		close(teardownDone)
+	}()
+
+	// Give teardown a moment to attempt (and, on a regression, complete) its
+	// own acquisition. Not itself load-bearing for correctness: the assertion
+	// below only depends on start still holding the lock, which the poll
+	// above already established and which cannot change until this test
+	// closes controlledDone.
+	time.Sleep(20 * time.Millisecond)
+
+	// TryLock, not Lock: on the fix, start holds workersMu for the whole
+	// publish sequence (including this join), so Lock here would block until
+	// close(controlledDone) below — deadlocking the test on itself. TryLock
+	// never blocks, so it can observe "still held" without contending for the
+	// very lock we're testing the holder of.
+	if dh.workersMu.TryLock() {
+		dh.workersMu.Unlock()
+		t.Fatal("workersMu was free while startCSCRefresher was still blocked in the predecessor " +
+			"batcher's join — it must hold the lock across the whole publish sequence, not just " +
+			"the initial field write, or a concurrent teardown can get past it (and set " +
+			"workersTornDown) before publish has actually finished")
+	}
+
+	close(controlledDone) // release the join
+	select {
+	case <-startDone:
+	case <-time.After(time.Second):
+		t.Fatal("startCSCRefresher did not finish after the batcher join was released")
+	}
+	select {
+	case <-teardownDone:
+	case <-time.After(time.Second):
+		t.Fatal("stopCSCRefresherAndCoalescer did not finish after startCSCRefresher completed")
 	}
 }
 

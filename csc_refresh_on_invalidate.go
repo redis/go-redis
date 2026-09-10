@@ -441,42 +441,64 @@ func (c *baseClient) startCSCRefresher() {
 
 	h := &cscRevalidateHandle{stop: make(chan struct{}), done: make(chan struct{})}
 
-	// Publish under the drain handle's lock, checked against workersTornDown
-	// (see cscDrainHandle, stopCSCRefresherAndCoalescer): a concurrent teardown
-	// may already have consumed workersStopOnce — reachable via the drainer's
-	// own self-disable tick reacting to an async conn init's disableCSCServing,
-	// racing this construction (a bot review flagged this). That teardown must
-	// not be handed a queue/handle it will never get another chance to stop, so
-	// decline to publish (and start nothing) if it already ran. dh is nil only
-	// for tests that call this directly without a drain handle; there is
-	// nothing to race against in that case.
-	if dh := c.cscDrainHandle; dh != nil {
-		dh.workersMu.Lock()
-		tornDown := dh.workersTornDown
-		if !tornDown {
-			c.cscRefreshQueue = q
-			c.cscRefreshHandle = h
-		}
-		dh.workersMu.Unlock()
-		if tornDown {
-			return
-		}
-	} else {
+	// publish attaches the queue to the invalidate handler (so pushes start
+	// feeding it, joining any detached predecessor batcher's stop-drain into it
+	// first) and launches the goroutine. Extracted so both the guarded and the
+	// no-drain-handle path below run the exact same sequence.
+	publish := func() {
 		c.cscRefreshQueue = q
 		c.cscRefreshHandle = h
-	}
-
-	// The invalidate handler is what sees the pushes, so it owns the producer end.
-	if ih := lookupInvalidateHandler(c.opt.PushNotificationProcessor); ih != nil {
-		// Join the detached batcher OUTSIDE h.mu (setRefreshQueue only detaches +
-		// signals) so the attach is synchronous without holding the join under the
-		// handler lock — the drain has fully applied before the client proceeds.
-		if b := ih.setRefreshQueue(q); b != nil {
-			b.join()
+		// The invalidate handler is what sees the pushes, so it owns the producer
+		// end. Join the detached batcher (setRefreshQueue only detaches + signals)
+		// so the attach is synchronous — the drain has fully applied before the
+		// goroutine launches below.
+		if ih := lookupInvalidateHandler(c.opt.PushNotificationProcessor); ih != nil {
+			if b := ih.setRefreshQueue(q); b != nil {
+				b.join()
+			}
 		}
+		go c.runCSCRefresher(h, lc, q)
 	}
 
-	go c.runCSCRefresher(h, lc, q)
+	// Run publish under the drain handle's lock, checked against
+	// workersTornDown (see cscDrainHandle, stopCSCRefresherAndCoalescer): a
+	// concurrent teardown may already have consumed workersStopOnce —
+	// reachable via the drainer's own self-disable tick reacting to an async
+	// conn init's disableCSCServing, racing this construction (a bot review
+	// flagged this). That teardown must not be handed a handle it will never
+	// get another chance to stop, so decline to publish (and start nothing) if
+	// it already ran. The WHOLE of publish runs inside the lock, not just the
+	// field writes: teardown's body sets workersTornDown as its own first
+	// action under this same lock, so holding it across setRefreshQueue's
+	// batcher join and the goroutine launch guarantees teardown cannot observe
+	// a published handle/coalescer whose goroutine isn't fully running yet — a
+	// second bot review caught that the field-writes-only version still let
+	// stopCSCRefresher block on a <-h.done that nothing had started yet
+	// (bounded by however long the join took, not a permanent deadlock, but
+	// unnecessary and worth just closing). dh is nil only for tests that call
+	// this directly without a drain handle; there is nothing to race against in
+	// that case.
+	//
+	// Safety of holding workersMu this long: publish only calls internal,
+	// panic-free code (setRefreshQueue/join, a launch of our own
+	// runCSCRefresher) — lookupInvalidateHandler's GetHandler is a plain
+	// registry map lookup, never user code, because CSC requires the built-in
+	// push processor (a custom one is rejected at init). A panic here would
+	// leave workersMu held forever and deadlock every later teardown, so this
+	// only holds because publish cannot panic. Lock order while held:
+	// workersMu -> (invalidateHandler.mu acquired and released entirely inside
+	// setRefreshQueue) -> block on the detached batcher's done. Nothing on
+	// that path re-enters workersMu; keep it that way if either lock's scope
+	// grows.
+	if dh := c.cscDrainHandle; dh != nil {
+		dh.workersMu.Lock()
+		if !dh.workersTornDown {
+			publish()
+		}
+		dh.workersMu.Unlock()
+		return
+	}
+	publish()
 }
 
 func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *cscRefreshQueue) {

@@ -195,14 +195,22 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 		}
 		if limited {
 			// Limiter.Allow REJECTED admission for the session connection (before any
-			// dial). Surface the rejection to the caller UNCHANGED — settle without the
-			// cscSessionError tag so processCached returns it as-is instead of re-running
-			// on the pooled path, whose getConn would call Limiter.Allow a SECOND time
-			// and could admit (defeat) the denial the limiter just issued. Fail queued
-			// callers the same way. Still an error end (backoff also damps Allow
-			// frequency under sustained rejection).
+			// dial): first was the ONE request that woke the session and triggered that
+			// Allow call. Surface the rejection to IT unchanged — settle without the
+			// cscSessionError tag so processCached returns it as-is instead of
+			// re-running on the pooled path, whose getConn would call Limiter.Allow a
+			// SECOND time and could admit (defeat) the denial the limiter just issued.
+			//
+			// The requests already queued behind first never called Allow themselves —
+			// they were just waiting for the session to write their command. Failing
+			// them with first's raw, non-retryable error would deny operations the
+			// limiter was never asked about. Settle them retry-uncached instead: each
+			// re-runs on the ordinary per-command path and calls Allow independently,
+			// which is what would have happened had they never been queued (cursor
+			// review #3989). Still an error end for the session loop (backoff also
+			// damps Allow frequency under sustained rejection).
 			mc.settlePlain(first, err)
-			mc.drainQueuePlain(err)
+			mc.drainQueueErr(errCSCRetryUncached)
 			return false, true
 		}
 		// Genuine acquire failure (dial error, pool exhaustion, an unrelated

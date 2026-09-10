@@ -274,37 +274,49 @@ func (c *baseClient) startCSCMissCoalescer() {
 		maxBatchBytes: cscMissWriteBatchBytes(c.opt),
 		serializeSem:  make(chan struct{}, cscMissMaxConcurrentSerialize),
 	}
-	// Publish under the drain handle's lock, checked against workersTornDown
-	// (see cscDrainHandle, stopCSCRefresherAndCoalescer, and the mirrored check
-	// in startCSCRefresher): a concurrent teardown may already have consumed
-	// workersStopOnce — reachable via the drainer's own self-disable tick
-	// reacting to an async conn init's disableCSCServing, racing this
-	// construction. That teardown must not be handed a coalescer it will never
-	// get another chance to stop (it would then hold a pool connection for the
-	// client's remaining life), so decline to start at all if it already ran.
-	// dh is nil only for tests that call this directly without a drain handle;
-	// there is nothing to race against in that case.
+
+	// publish stores the coalescer and launches its N sessions. Extracted so
+	// both the guarded and the no-drain-handle path below run the exact same
+	// sequence.
+	publish := func() {
+		c.cscMissCoalescer.Store(mc)
+		// N independent full-duplex sessions, each holding its own connection and
+		// pulling misses from the shared queue. Order-free: coalesced misses are
+		// standalone per-key fetches with no cross-request contract, and each
+		// session's per-conn reader still matches replies to its own requests.
+		for i := 0; i < cscFullDuplexConnsDefault; i++ {
+			mc.wg.Add(1)
+			go mc.fullDuplexLoop()
+		}
+	}
+
+	// Run publish under the drain handle's lock, checked against
+	// workersTornDown (see cscDrainHandle, stopCSCRefresherAndCoalescer, and
+	// the mirrored check in startCSCRefresher): a concurrent teardown may
+	// already have consumed workersStopOnce — reachable via the drainer's own
+	// self-disable tick reacting to an async conn init's disableCSCServing,
+	// racing this construction. That teardown must not be handed a coalescer
+	// it will never get another chance to stop (it would then hold a pool
+	// connection for the client's remaining life), so decline to start at all
+	// if it already ran. The WHOLE of publish runs inside the lock, not just
+	// the Store: teardown's body sets workersTornDown as its own first action
+	// under this same lock, so holding it across the wg.Add/go loop guarantees
+	// teardown cannot call mc.wg.Wait() (in stopCSCMissCoalescer) concurrently
+	// with an in-progress mc.wg.Add — sync.WaitGroup's documented misuse case,
+	// which can panic — because teardown cannot even read the published
+	// pointer until every Add has happened (a second bot review caught that
+	// the Store-only version left this window open). dh is nil only for tests
+	// that call this directly without a drain handle; there is nothing to race
+	// against in that case.
 	if dh := c.cscDrainHandle; dh != nil {
 		dh.workersMu.Lock()
-		tornDown := dh.workersTornDown
-		if !tornDown {
-			c.cscMissCoalescer.Store(mc)
+		if !dh.workersTornDown {
+			publish()
 		}
 		dh.workersMu.Unlock()
-		if tornDown {
-			return
-		}
-	} else {
-		c.cscMissCoalescer.Store(mc)
+		return
 	}
-	// N independent full-duplex sessions, each holding its own connection and
-	// pulling misses from the shared queue. Order-free: coalesced misses are
-	// standalone per-key fetches with no cross-request contract, and each
-	// session's per-conn reader still matches replies to its own requests.
-	for i := 0; i < cscFullDuplexConnsDefault; i++ {
-		mc.wg.Add(1)
-		go mc.fullDuplexLoop()
-	}
+	publish()
 }
 
 func (c *baseClient) stopCSCMissCoalescer() {
@@ -881,20 +893,6 @@ func (mc *cscMissCoalescer) settlePlain(req *cscMissReq, err error) {
 	mc.c.csc.Cancel(req.cacheKey, req.token)
 	mc.settle(req, err)
 	mc.failed.Add(1)
-}
-
-// drainQueuePlain fails every currently-queued request (non-blocking) with err
-// untagged — see settlePlain. Used alongside it so queued callers behind a denied
-// session admission are not re-run and re-admitted either.
-func (mc *cscMissCoalescer) drainQueuePlain(err error) {
-	for {
-		select {
-		case req := <-mc.ch:
-			mc.settlePlain(req, err)
-		default:
-			return
-		}
-	}
 }
 
 // grabInto appends first, plus any misses already queued, into dst. It does not
