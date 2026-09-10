@@ -27,11 +27,13 @@ package e2e
 import (
 	"os"
 	"testing"
+
+	fi "github.com/redis/go-redis/v9/maintnotifications/e2e"
 )
 
 var (
 	e2eTopology   Topology
-	faultInjector *FaultInjectorClient
+	faultInjector *fi.FaultInjectorClient
 )
 
 func TestMain(m *testing.M) {
@@ -53,7 +55,7 @@ func TestMain(m *testing.M) {
 	if url := os.Getenv("FAULT_INJECTION_API_URL"); url != "" {
 		// Real mode: cae-client-testing (or a manually pointed run) already
 		// has a fault-injector service up.
-		faultInjector = NewFaultInjectorClient(url)
+		faultInjector = fi.NewFaultInjectorClient(url)
 	} else {
 		// Mock mode: start the in-process mock, wired to the local compose
 		// Topology it also owns (MockMembers), independent of e2eTopology
@@ -63,7 +65,7 @@ func TestMain(m *testing.M) {
 		mock := NewMockFaultInjector(MockBDBID, MockMembers, mech)
 		srv := mock.Start()
 		mockServer = srv
-		faultInjector = NewFaultInjectorClient(srv.URL)
+		faultInjector = fi.NewFaultInjectorClient(srv.URL)
 	}
 
 	// os.Exit does not run deferred calls, so the mock server (if any) is

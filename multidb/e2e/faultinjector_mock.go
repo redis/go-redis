@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	fi "github.com/redis/go-redis/v9/maintnotifications/e2e"
 )
 
 // NetworkFaultMechanism severs and restores a proxy container's
@@ -120,14 +122,16 @@ type MockMember struct {
 
 // mockAction tracks one submitted action's async execution.
 type mockAction struct {
-	status string // pending|running|success|failed
+	status fi.ActionStatus
 	err    string
 }
 
 // MockFaultInjector implements the real fault-injector's wire contract
-// (POST /action, GET /action/{id}) for ActionNetworkFailure only, backed by
-// NetworkFaultMechanism against the local compose Topology. It is
-// deliberately NOT an extension of maintnotifications/e2e's
+// (POST /action, GET /action/{id}) for fi.ActionNetworkFailure only, backed
+// by NetworkFaultMechanism against the local compose Topology. It reuses
+// maintnotifications/e2e's FaultInjectorClient and wire types on the
+// caller side (same module, no reason to duplicate a pure-HTTP-protocol
+// client) but is deliberately NOT an extension of that package's own mock,
 // proxy_fault_injector_server.go: that server's generic HTTP/job-tracking
 // shell is reusable in principle, but its executeAction cases are
 // maintenance-notification-specific (RESP3 push-frame injection), and
@@ -167,65 +171,77 @@ func (s *MockFaultInjector) handleAction(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var req triggerActionRequest
+	var req fi.ActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("decode request: %v", err), http.StatusBadRequest)
 		return
 	}
-	if ActionType(req.Type) != ActionNetworkFailure {
+	if req.Type != fi.ActionNetworkFailure {
 		http.Error(w, fmt.Sprintf("unsupported action type %q", req.Type), http.StatusBadRequest)
 		return
 	}
-	// Re-marshal/unmarshal Parameters (decoded as map[string]interface{} by
-	// the generic request shape) into the typed params.
-	raw, err := json.Marshal(req.Parameters)
+	clusterIndex, err := intParam(req.Parameters, "cluster_index", 0)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("re-marshal parameters: %v", err), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	var params NetworkFailureParams
-	if err := json.Unmarshal(raw, &params); err != nil {
-		http.Error(w, fmt.Sprintf("decode parameters: %v", err), http.StatusBadRequest)
+	delay, err := intParam(req.Parameters, "delay", 1)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if params.ClusterIndex < 0 || params.ClusterIndex >= len(s.members) {
-		http.Error(w, fmt.Sprintf("cluster_index %d out of range [0,%d)", params.ClusterIndex, len(s.members)), http.StatusBadRequest)
+	if clusterIndex < 0 || clusterIndex >= len(s.members) {
+		http.Error(w, fmt.Sprintf("cluster_index %d out of range [0,%d)", clusterIndex, len(s.members)), http.StatusBadRequest)
 		return
 	}
-	if params.Delay <= 0 {
-		params.Delay = 1
+	if delay <= 0 {
+		delay = 1
 	}
 
 	id := newActionID()
 	s.mu.Lock()
-	s.actions[id] = &mockAction{status: "pending"}
+	s.actions[id] = &mockAction{status: fi.StatusPending}
 	s.mu.Unlock()
 
-	member := s.members[params.ClusterIndex]
-	go s.execute(id, member, params.Delay)
+	member := s.members[clusterIndex]
+	go s.execute(id, member, delay)
 
-	writeJSON(w, http.StatusOK, triggerActionResponse{ActionID: id})
+	writeJSON(w, http.StatusOK, fi.ActionResponse{ActionID: id, Status: string(fi.StatusPending)})
+}
+
+// intParam reads an integer parameter out of a decoded JSON parameters map,
+// where a JSON number always decodes as float64.
+func intParam(params map[string]interface{}, key string, def int) (int, error) {
+	v, ok := params[key]
+	if !ok {
+		return def, nil
+	}
+	n, ok := v.(float64)
+	if !ok {
+		return 0, fmt.Errorf("parameter %q: want number, got %T", key, v)
+	}
+	return int(n), nil
 }
 
 func (s *MockFaultInjector) execute(id string, member MockMember, delaySeconds int) {
-	s.setStatus(id, "running", "")
+	s.setStatus(id, fi.StatusRunning, "")
 
 	ctx := context.Background()
 	if err := s.mech.Sever(ctx, member.Container); err != nil {
-		s.setStatus(id, "failed", fmt.Sprintf("sever %s: %v", member.Container, err))
+		s.setStatus(id, fi.StatusFailed, fmt.Sprintf("sever %s: %v", member.Container, err))
 		return
 	}
 
 	time.Sleep(time.Duration(delaySeconds) * time.Second)
 
 	if err := s.mech.Restore(ctx, member.Container, member.Addr); err != nil {
-		s.setStatus(id, "failed", fmt.Sprintf("restore %s: %v", member.Container, err))
+		s.setStatus(id, fi.StatusFailed, fmt.Sprintf("restore %s: %v", member.Container, err))
 		return
 	}
-	s.setStatus(id, "success", "")
+	s.setStatus(id, fi.StatusSuccess, "")
 }
 
-func (s *MockFaultInjector) setStatus(id, status, errMsg string) {
+func (s *MockFaultInjector) setStatus(id string, status fi.ActionStatus, errMsg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if a, ok := s.actions[id]; ok {
@@ -247,7 +263,17 @@ func (s *MockFaultInjector) handleActionStatus(w http.ResponseWriter, r *http.Re
 		http.Error(w, "action not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, ActionStatus{Status: a.status, Error: a.err})
+	writeJSON(w, http.StatusOK, fi.ActionStatusResponse{ActionID: id, Status: a.status, Error: errOrNil(a.err)})
+}
+
+// errOrNil returns nil for an empty message so the response's Error field
+// (interface{}, `omitempty`) is actually omitted rather than serialized as
+// an empty string — omitempty only skips a true nil interface value.
+func errOrNil(msg string) interface{} {
+	if msg == "" {
+		return nil
+	}
+	return msg
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
