@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	fi "github.com/redis/go-redis/v9/maintnotifications/e2e"
 )
 
 // proxyFarm drives the per-member proxy containers (MockMembers, shared
@@ -210,45 +211,51 @@ func endpointOptions(raw string) *redis.Options {
 	return opts
 }
 
-// triggerNetworkFailure fires ActionNetworkFailure against member (a
+// triggerNetworkFailure fires fi.ActionNetworkFailure against member (a
 // cluster_index into e2eTopology.Endpoints) for delay, and registers a
 // t.Cleanup that waits for the action's own timer to restore the member —
 // guaranteeing the next test starts from a healthy Topology without any
 // docker-specific reset. It does NOT wait before returning: callers that
 // need to observe behavior during the outage must assert first (see
-// NetworkFailureParams' doc comment); callers whose assertion is about
+// fi.ActionNetworkFailure's doc comment); callers whose assertion is about
 // post-restore behavior should call waitForActionDone with the returned id.
 func triggerNetworkFailure(t *testing.T, member int, delay time.Duration) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	id, err := faultInjector.TriggerAction(ctx, ActionNetworkFailure, NetworkFailureParams{
-		BDBID:        e2eTopology.BDBID,
-		ClusterIndex: member,
-		Delay:        int(delay.Seconds()),
-	})
+	resp, err := faultInjector.TriggerNetworkFailure(ctx, e2eTopology.BDBID, member, int(delay.Seconds()))
 	if err != nil {
-		t.Fatalf("TriggerAction(network_failure, member=%d): %v", member, err)
+		t.Fatalf("TriggerNetworkFailure(member=%d): %v", member, err)
 	}
+	id := resp.ActionID
 	t.Cleanup(func() {
 		wctx, wcancel := context.WithTimeout(context.Background(), delay+30*time.Second)
 		defer wcancel()
-		if _, err := faultInjector.WaitForAction(wctx, id, delay+30*time.Second); err != nil {
+		st, err := faultInjector.WaitForAction(wctx, id, fi.WithMaxWaitTime(delay+30*time.Second))
+		switch {
+		case err != nil:
 			t.Logf("cleanup: waiting for network_failure action %s to finish: %v", id, err)
+		case st.Status == fi.StatusFailed:
+			t.Logf("cleanup: network_failure action %s failed: %v", id, st.Error)
 		}
 	})
 	return id
 }
 
 // waitForActionDone blocks until id reaches a terminal status, failing the
-// test on error or timeout. Use for assertions that are specifically about
-// post-restore behavior (e.g. auto-fallback) — see triggerNetworkFailure.
+// test on error, failure, or timeout. Use for assertions that are
+// specifically about post-restore behavior (e.g. auto-fallback) — see
+// triggerNetworkFailure.
 func waitForActionDone(t *testing.T, id string, timeout time.Duration) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if _, err := faultInjector.WaitForAction(ctx, id, timeout); err != nil {
+	st, err := faultInjector.WaitForAction(ctx, id, fi.WithMaxWaitTime(timeout))
+	if err != nil {
 		t.Fatalf("waiting for action %s: %v", id, err)
+	}
+	if st.Status == fi.StatusFailed {
+		t.Fatalf("action %s failed: %v", id, st.Error)
 	}
 }
 
