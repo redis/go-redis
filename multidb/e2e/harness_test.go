@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -12,31 +11,22 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// memberProxy is one MultiDB member endpoint: a cae-resp-proxy container
-// fronting the shared target Redis.
-type memberProxy struct {
-	Container string
-	Addr      string
-}
-
-// proxyFarm drives the per-member proxy containers with docker CLI faults.
+// proxyFarm drives the per-member proxy containers (MockMembers, shared
+// with the mock fault-injector) with docker CLI faults directly. It exists
+// only for the two scenarios that have no real-FI equivalent
+// (TestBackgroundDrivenFailover's hang semantics under the default
+// mechanism, TestEscalationWhenAllMembersDown's multi-restart
+// choreography) — see scenarios_test.go. Every other scenario drives faults
+// through faultInjector instead, which works unmodified against either the
+// local mock or a real fault-injector service.
 type proxyFarm struct {
 	t       *testing.T
-	members []memberProxy
+	members []MockMember
 }
 
 func newProxyFarm(t *testing.T) *proxyFarm {
 	t.Helper()
-	f := &proxyFarm{
-		t: t,
-		members: []memberProxy{
-			// 127.0.0.1, not localhost: docker publishes on IPv4, and hosts
-			// that resolve localhost to ::1 first would dial the wrong stack.
-			{Container: "cae-proxy-db0", Addr: "127.0.0.1:17100"},
-			{Container: "cae-proxy-db1", Addr: "127.0.0.1:17101"},
-			{Container: "cae-proxy-db2", Addr: "127.0.0.1:17102"},
-		},
-	}
+	f := &proxyFarm{t: t, members: append([]MockMember(nil), MockMembers...)}
 	// Whatever a test did, the next one starts from "everything running".
 	t.Cleanup(f.RestoreAll)
 	f.RestoreAll()
@@ -44,15 +34,7 @@ func newProxyFarm(t *testing.T) *proxyFarm {
 }
 
 func (f *proxyFarm) docker(args ...string) error {
-	// Bounded: a stuck docker daemon must fail the scenario, not hang the
-	// whole suite until the package timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("docker %v: %v: %s", args, err, out)
-	}
-	return nil
+	return RunDocker(context.Background(), args...)
 }
 
 func (f *proxyFarm) Stop(i int) {
@@ -133,7 +115,7 @@ func fastMultiDBOptions(f *proxyFarm) *redis.MultiDBOptions {
 		},
 		// Every proxy must be genuinely healthy at startup: with the default
 		// majority policy a mis-wired member could slip through and scenarios
-		// that stop member 0 would silently test the wrong topology.
+		// that stop member 0 would silently test the wrong Topology.
 		InitialDBState:      redis.InitialDBStateAllAvailable,
 		HealthCheckInterval: 500 * time.Millisecond,
 		HealthCheckTimeout:  250 * time.Millisecond,
@@ -163,6 +145,138 @@ func memberOptions(f *proxyFarm, i int) *redis.Options {
 		// timeout instead of the intended HealthCheckTimeout.
 		ContextTimeoutEnabled: true,
 	}
+}
+
+// --- Fault-injector-driven harness (both mock and real mode) ---
+//
+// buildOptions/endpointOptions/triggerNetworkFailure below back every
+// scenario that has a real-FI equivalent. They read e2eTopology (resolved
+// once in TestMain from REDIS_ENDPOINTS_CONFIG_PATH, or the local mock
+// default) instead of proxyFarm, so the same test code runs against N
+// real Active-Active regions or the 3-member local mock Topology alike.
+
+// fiMultiDBOptions builds MultiDBOptions from e2eTopology: weights descend
+// N..1 so index 0 is always the initial highest-weight active, matching the
+// fixed-Topology fastMultiDBOptions' convention.
+func fiMultiDBOptions() *redis.MultiDBOptions {
+	n := len(e2eTopology.Endpoints)
+	clients := make([]redis.MultiDBClientConfig, n)
+	for i, addr := range e2eTopology.Endpoints {
+		clients[i] = redis.MultiDBClientConfig{Options: endpointOptions(addr), Weight: float64(n - i)}
+	}
+	return &redis.MultiDBOptions{
+		Clients:             clients,
+		InitialDBState:      redis.InitialDBStateAllAvailable,
+		HealthCheckInterval: 500 * time.Millisecond,
+		HealthCheckTimeout:  250 * time.Millisecond,
+		CircuitBreakerConfig: &redis.MultiDBCircuitBreakerConfig{
+			FailureThreshold: 3,
+			SuccessThreshold: 1,
+			GracePeriod:      2 * time.Second,
+		},
+		CommandRetries:       3,
+		AutoFallbackInterval: 3 * time.Second,
+		MaxFailoverAttempts:  4,
+		FailoverAttemptDelay: 500 * time.Millisecond,
+	}
+}
+
+// endpointOptions builds *redis.Options for one Topology endpoint. Real-mode
+// entries are redis:// URLs; the local mock Topology uses plain host:port.
+func endpointOptions(raw string) *redis.Options {
+	var opts *redis.Options
+	if strings.Contains(raw, "://") {
+		parsed, err := redis.ParseURL(raw)
+		if err != nil {
+			panic(fmt.Sprintf("multidb/e2e: invalid endpoint URL %q: %v", raw, err))
+		}
+		opts = parsed
+	} else {
+		opts = &redis.Options{Addr: raw}
+	}
+	if e2eTopology.Username != "" {
+		opts.Username = e2eTopology.Username
+	}
+	if e2eTopology.Password != "" {
+		opts.Password = e2eTopology.Password
+	}
+	opts.DialTimeout = 500 * time.Millisecond
+	opts.ReadTimeout = time.Second
+	opts.WriteTimeout = time.Second
+	// Fail fast inside a single command attempt so MultiDB's own retry and
+	// failover logic drives recovery, not the per-client retries.
+	opts.MaxRetries = -1
+	opts.ContextTimeoutEnabled = true
+	return opts
+}
+
+// triggerNetworkFailure fires ActionNetworkFailure against member (a
+// cluster_index into e2eTopology.Endpoints) for delay, and registers a
+// t.Cleanup that waits for the action's own timer to restore the member —
+// guaranteeing the next test starts from a healthy Topology without any
+// docker-specific reset. It does NOT wait before returning: callers that
+// need to observe behavior during the outage must assert first (see
+// NetworkFailureParams' doc comment); callers whose assertion is about
+// post-restore behavior should call waitForActionDone with the returned id.
+func triggerNetworkFailure(t *testing.T, member int, delay time.Duration) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	id, err := faultInjector.TriggerAction(ctx, ActionNetworkFailure, NetworkFailureParams{
+		BDBID:        e2eTopology.BDBID,
+		ClusterIndex: member,
+		Delay:        int(delay.Seconds()),
+	})
+	if err != nil {
+		t.Fatalf("TriggerAction(network_failure, member=%d): %v", member, err)
+	}
+	t.Cleanup(func() {
+		wctx, wcancel := context.WithTimeout(context.Background(), delay+30*time.Second)
+		defer wcancel()
+		if _, err := faultInjector.WaitForAction(wctx, id, delay+30*time.Second); err != nil {
+			t.Logf("cleanup: waiting for network_failure action %s to finish: %v", id, err)
+		}
+	})
+	return id
+}
+
+// waitForActionDone blocks until id reaches a terminal status, failing the
+// test on error or timeout. Use for assertions that are specifically about
+// post-restore behavior (e.g. auto-fallback) — see triggerNetworkFailure.
+func waitForActionDone(t *testing.T, id string, timeout time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if _, err := faultInjector.WaitForAction(ctx, id, timeout); err != nil {
+		t.Fatalf("waiting for action %s: %v", id, err)
+	}
+}
+
+// awaitUnreachable polls addr until a TCP dial fails or timeout elapses.
+// Used after triggerNetworkFailure when a test needs the fault to be
+// observably in effect before proceeding, rather than merely triggered
+// (TriggerAction returns before the effect is guaranteed — see its doc
+// comment).
+func awaitUnreachable(t *testing.T, addr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("%s never became unreachable", addr)
+}
+
+// lastMemberAddr returns the address of the highest-index (lowest-weight)
+// Topology member — the harness's convention for "a member that stays up"
+// when a scenario faults member 0, generalized over Topology size (index 2
+// for the 3-member mock, index 1 for a 2-region real deployment).
+func lastMemberAddr() string {
+	return e2eTopology.Endpoints[len(e2eTopology.Endpoints)-1]
 }
 
 func newE2EClient(t *testing.T, opts *redis.MultiDBOptions) *redis.MultiDBClient {

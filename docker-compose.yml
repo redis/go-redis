@@ -48,10 +48,16 @@ services:
   # Per-member RESP proxies for MultiDB (Active-Active) e2e tests. Each proxy
   # is one "member database" endpoint; all front the same target Redis so data
   # written through one member is visible through the others (a converged
-  # CRDB). Faults are injected at the container level (docker stop/pause).
+  # CRDB). Faults are injected via the multidb/e2e mock fault-injector
+  # (faultinjector_mock.go), which drives docker stop/start by default or, if
+  # MULTIDB_E2E_FI_MECHANISM=iptables is enabled after verifying the image
+  # supports it (see the design doc), `docker exec ... iptables` — hence
+  # cap_add: NET_ADMIN below, unused by the default mechanism.
   cae-proxy-db0:
     image: redislabs/client-resp-proxy:latest
     container_name: cae-proxy-db0
+    cap_add:
+      - NET_ADMIN
     environment:
       - TARGET_HOST=redis
       - TARGET_PORT=6379
@@ -70,6 +76,8 @@ services:
   cae-proxy-db1:
     image: redislabs/client-resp-proxy:latest
     container_name: cae-proxy-db1
+    cap_add:
+      - NET_ADMIN
     environment:
       - TARGET_HOST=redis
       - TARGET_PORT=6379
@@ -88,6 +96,8 @@ services:
   cae-proxy-db2:
     image: redislabs/client-resp-proxy:latest
     container_name: cae-proxy-db2
+    cap_add:
+      - NET_ADMIN
     environment:
       - TARGET_HOST=redis
       - TARGET_PORT=6379
