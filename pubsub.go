@@ -225,10 +225,6 @@ func (c *PubSub) Close() error {
 		return pool.ErrClosed
 	}
 	c.closed = true
-	// Override construction-time stickyErr (e.g. Ring failedPubSub) so
-	// Channel receivers observe pool.ErrClosed and exit cleanly.
-	// Matches SingleConnPool.Close which sets stickyErr = ErrClosed.
-	c.stickyErr = pool.ErrClosed
 	close(c.exit)
 
 	// Call cleanup callback if set
@@ -579,9 +575,26 @@ func (c *PubSub) getContext() context.Context {
 // is blocked full for 1 minute the message is dropped.
 // Receive* APIs can not be used after channel is created.
 //
+// If the PubSub was created with a sticky error (e.g. Ring subscribe on empty
+// ring or shard lookup failure), or if Channel is called after
+// ChannelWithSubscriptions, a warning is logged and an already-closed channel is
+// returned.
+//
 // go-redis periodically sends ping messages to test connection health
 // and re-subscribes if ping can not received for 1 minute.
 func (c *PubSub) Channel(opts ...ChannelOption) <-chan *Message {
+	c.mu.Lock()
+	if c.stickyErr != nil && !c.closed {
+		err := c.stickyErr
+		c.mu.Unlock()
+		internal.Logger.Printf(context.Background(),
+			"redis: Channel returning closed channel due to sticky error: %s", err)
+		ch := make(chan *Message)
+		close(ch)
+		return ch
+	}
+	c.mu.Unlock()
+
 	c.chOnce.Do(func() {
 		c.msgCh = newChannel(c, opts...)
 		c.msgCh.initMsgChan()
@@ -612,8 +625,25 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 // *Subscription or *Message. Subscription messages can be used to detect
 // reconnections.
 //
+// If the PubSub was created with a sticky error (e.g. Ring subscribe on empty
+// ring or shard lookup failure), or if ChannelWithSubscriptions is called after
+// Channel or ChannelSize, a warning is logged and an already-closed channel is
+// returned.
+//
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
 func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interface{} {
+	c.mu.Lock()
+	if c.stickyErr != nil && !c.closed {
+		err := c.stickyErr
+		c.mu.Unlock()
+		internal.Logger.Printf(context.Background(),
+			"redis: ChannelWithSubscriptions returning closed channel due to sticky error: %s", err)
+		ch := make(chan interface{})
+		close(ch)
+		return ch
+	}
+	c.mu.Unlock()
+
 	c.chOnce.Do(func() {
 		c.allCh = newChannel(c, opts...)
 		c.allCh.initAllChan()
