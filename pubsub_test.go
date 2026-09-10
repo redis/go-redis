@@ -675,7 +675,7 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal(text))
 	})
 
-	It("closes Channel when PubSub with sticky error is closed", func() {
+	It("closes Channel when PubSub with sticky error is consumed", func() {
 		ring := redis.NewRing(&redis.RingOptions{})
 		defer ring.Close()
 
@@ -683,8 +683,41 @@ var _ = Describe("PubSub", func() {
 		pubsub := ring.Subscribe(ctx)
 
 		ch := pubsub.Channel()
-		Expect(pubsub.Close()).To(Succeed())
-
 		Eventually(ch, 5*time.Second).Should(BeClosed())
+
+		// Verify range does not hang
+		for range ch {
+			Fail("should not receive messages from failed pubsub channel")
+		}
+
+		Expect(pubsub.Close()).To(Succeed())
+	})
+
+	It("closes ChannelWithSubscriptions when PubSub with sticky error is consumed", func() {
+		ring := redis.NewRing(&redis.RingOptions{})
+		defer ring.Close()
+
+		pubsub := ring.Subscribe(ctx)
+
+		ch := pubsub.ChannelWithSubscriptions()
+		Eventually(ch, 5*time.Second).Should(BeClosed())
+
+		for range ch {
+			Fail("should not receive messages from failed pubsub channel")
+		}
+
+		Expect(pubsub.Close()).To(Succeed())
+	})
+
+	It("returns closed channel when calling conflicting Channel methods", func() {
+		pubsub := client.Subscribe(ctx, "mychannel")
+		defer pubsub.Close()
+
+		ch1 := pubsub.Channel()
+		Expect(ch1).NotTo(BeNil())
+
+		// Second call with ChannelWithSubscriptions should return closed channel
+		ch2 := pubsub.ChannelWithSubscriptions()
+		Eventually(ch2, 5*time.Second).Should(BeClosed())
 	})
 })
