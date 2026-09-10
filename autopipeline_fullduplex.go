@@ -941,7 +941,12 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		case fd.retrySem <- struct{}{}:
 			slot = true
 		default:
-			req.cmd.SetErr(ErrClosed)
+			// fdSetErrSafe: this runs synchronously on the READER goroutine, before
+			// the retry's own recover (below) is even in play — a panicking custom
+			// Cmder here would escape to the reader's session-failure recovery,
+			// tearing down the whole session and replaying the unacked tail,
+			// including requests already written (double execution).
+			fdSetErrSafe(req.cmd, ErrClosed)
 			req.complete()
 			return
 		}
@@ -958,7 +963,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 			case fd.retrySem <- struct{}{}:
 				slot = true
 			case <-fd.ap.ctx.Done():
-				req.cmd.SetErr(ErrClosed)
+				fdSetErrSafe(req.cmd, ErrClosed) // same reason as the ctx.Done arm above
 				req.complete()
 				return
 			}

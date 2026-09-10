@@ -1781,6 +1781,71 @@ func TestFDFailReqsNoDeadlock(t *testing.T) {
 	}
 }
 
+// TestFDRetryOnNormalConnCloseCancelPanicSafeSetErr pins that both
+// retrySem-saturated arms in retryOnNormalConn — reached when Close cancels
+// fd.ap.ctx while retrySem is full — go through fdSetErrSafe. Both run
+// synchronously on the READER goroutine, before retryOnNormalConn's own
+// recover (which only wraps the retry goroutine spawned further down) is in
+// play: a panicking custom Cmder there previously escaped to the reader's
+// session-failure recovery, tearing down the whole session and replaying the
+// unacked tail — including requests already written, executing them twice
+// (cursor bugbot on #4002). Pure, no server.
+func TestFDRetryOnNormalConnCloseCancelPanicSafeSetErr(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("ctx already done before the first select", func(t *testing.T) {
+		apCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		fd := &fdEngine{ap: &AutoPipeliner{ctx: apCtx}, retrySem: make(chan struct{}, 1)}
+		fd.retrySem <- struct{}{} // saturate: no free slot
+
+		cmd := &fdSetErrPanicCmd{StatusCmd: NewStatusCmd(ctx, "ping")}
+		b := newAPBatch()
+		done := make(chan struct{})
+		go func() {
+			fd.retryOnNormalConn(fdReq{cmd: cmd, batch: b, ctx: ctx}, 0)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("retryOnNormalConn hung on a Close-time SetErr panic (first arm)")
+		}
+		select {
+		case <-b.done:
+		default:
+			t.Fatal("batch was not completed")
+		}
+	})
+
+	t.Run("ctx cancelled while blocked waiting for a slot", func(t *testing.T) {
+		apCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		fd := &fdEngine{ap: &AutoPipeliner{ctx: apCtx}, retrySem: make(chan struct{}, 1)}
+		fd.retrySem <- struct{}{} // saturate: no free slot, ctx still live
+
+		cmd := &fdSetErrPanicCmd{StatusCmd: NewStatusCmd(ctx, "ping")}
+		b := newAPBatch()
+		done := make(chan struct{})
+		go func() {
+			fd.retryOnNormalConn(fdReq{cmd: cmd, batch: b, ctx: ctx}, 0)
+			close(done)
+		}()
+		time.Sleep(20 * time.Millisecond) // let it park in the blocking inner select
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("retryOnNormalConn hung on a Close-time SetErr panic (second arm)")
+		}
+		select {
+		case <-b.done:
+		default:
+			t.Fatal("batch was not completed")
+		}
+	})
+}
+
 // TestFDInflightHardCloseTakesUnackedTail pins deque ownership: an entry the
 // reader has completed+advanced must NEVER also be returned by the recovery path.
 // hardClose stops the reader; takeRemaining (called after the reader would have
