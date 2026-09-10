@@ -144,6 +144,15 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		if child == nil {
 			return r.divertToProcess(ctx, cmd)
 		}
+		// Clear the stale ErrClosed from the first attempt before retrying: a
+		// live engine's OWN synchronous rejection paths (lease failure, limiter
+		// deny, budget exhaustion) only stamp their real error when rawErr() is
+		// nil, so without this reset a second, different failure would leave the
+		// first attempt's ErrClosed in place and misreport a live engine as
+		// closed. A successful retry is unaffected either way — the reader's
+		// inline completion unconditionally overwrites cmd's error with the
+		// reply outcome.
+		cmd.SetErr(nil)
 		b = child.fd.submit(ctx, cmd)
 	}
 	if !r.blocking {

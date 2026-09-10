@@ -801,7 +801,13 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 				<-hookDone
 			}
 			if cmd.rawErr() == nil {
-				cmd.SetErr(fmt.Errorf("redis: autopipeline: panic in full-duplex process hook: %v", r))
+				// fdSetErrSafe, not a raw SetErr: this call itself is already inside a
+				// panic recovery for a custom Cmder whose SetErr panicked (the normal
+				// assignment below), so a second unguarded call here would panic again
+				// mid-unwind — unrecovered, since this defer's own recover() has already
+				// fired — and kill the hostHook goroutine before b.close() wakes the
+				// waiter.
+				fdSetErrSafe(cmd, fmt.Errorf("redis: autopipeline: panic in full-duplex process hook: %v", r))
 			}
 			internal.Logger.Printf(ctx, "autopipeline: recovered full-duplex hook panic: %v\n%s", r, debug.Stack())
 			b.close()
@@ -821,8 +827,11 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 		<-hookDone
 		awaited = true
 	}
-	cmd.SetErr(err) // honor a hook that rewrote / short-circuited the result
-	b.close()       // now wake the waiter
+	// fdSetErrSafe: a panicking custom Cmder here must not escape unrecovered —
+	// the recover above only guards its OWN callers, not this line, and an
+	// escaping panic would skip b.close() and leave the waiter blocked forever.
+	fdSetErrSafe(cmd, err) // honor a hook that rewrote / short-circuited the result
+	b.close()              // now wake the waiter
 }
 
 // retryStartAttempt returns the normal-path retry loop's starting attempt for an FD
@@ -2450,7 +2459,11 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 		// awaits batch.done — the very channel complete() closes just below — so
 		// awaiting here would self-deadlock (the same trap hostHook documents).
 		if reqs[i].cmd.rawErr() == nil {
-			reqs[i].cmd.SetErr(err)
+			// fdSetErrSafe: a panicking custom Cmder must not escape here — this
+			// runs on the sole fd.run goroutine with no outer recover, so an
+			// unguarded panic would kill the engine and leave every later req in
+			// reqs unsettled.
+			fdSetErrSafe(reqs[i].cmd, err)
 		}
 		if errorCallback != nil {
 			octx := reqs[i].ctx
@@ -2683,7 +2696,9 @@ func (fd *fdEngine) failQueue(err error) {
 	for {
 		select {
 		case r := <-fd.ch:
-			r.cmd.SetErr(err)
+			// fdSetErrSafe: same hazard as failReqs — a panicking custom Cmder must
+			// not escape on the sole fd.run goroutine with no outer recover.
+			fdSetErrSafe(r.cmd, err)
 			if errorCallback != nil {
 				if !classified {
 					errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)

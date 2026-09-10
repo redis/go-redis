@@ -2326,6 +2326,52 @@ func TestFullDuplexPreNextHookPanicSettlesWithoutRace(t *testing.T) {
 	}
 }
 
+// fdSetErrPanicCmd models a user-defined Cmder with a broken invariant check
+// in SetErr: it always panics instead of recording the error.
+type fdSetErrPanicCmd struct {
+	*StatusCmd
+}
+
+func (c *fdSetErrPanicCmd) SetErr(error) { panic("boom: SetErr panics") }
+
+// TestFullDuplexHookHostSetErrPanicRecovers pins that hostHook's normal
+// result assignment AND its own recovery-defer reassignment both go through
+// fdSetErrSafe. Before that fix, a custom Cmder whose SetErr always panics
+// would panic on the normal assignment, enter the recovery defer, panic AGAIN
+// on that defer's own SetErr call, and escape unrecovered — killing the
+// hook-host goroutine (and the process) before b.close() ever woke the
+// caller (cursor bugbot on #4002).
+func TestFullDuplexHookHostSetErrPanicRecovers(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	c.AddHook(fdNoopHook{})
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	cmd := &fdSetErrPanicCmd{StatusCmd: NewStatusCmd(ctx, "ping")}
+	f := ap.Submit(ctx, cmd)
+	done := make(chan struct{})
+	go func() {
+		f.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("caller hung after a panicking SetErr in the hook host")
+	}
+}
+
 // TestFDFirstNoRetry verifies the tail-split index that lets the FD retry path
 // replay the retryable PREFIX of an unacked tail while never re-sending a SENT
 // NoRetry command (or anything ordered after it). The gate is sent-aware: a
