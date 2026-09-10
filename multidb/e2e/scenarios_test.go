@@ -224,6 +224,11 @@ func TestManualFailover(t *testing.T) {
 	const healthy = 1
 
 	triggerNetworkFailure(t, dead, 60*time.Second)
+	// TriggerAction returns before the fault is necessarily in effect (see
+	// its doc comment) — the very next assertion depends on member `dead`
+	// already being unreachable, unlike most scenarios in this file which
+	// tolerate the async lag by polling via eventually().
+	awaitUnreachable(t, endpointOptions(e2eTopology.Endpoints[dead]).Addr, 15*time.Second)
 
 	if err := mdb.SetActiveDatabase(ctx, dead); !errors.Is(err, redis.ErrTargetUnhealthy) {
 		t.Fatalf("SetActiveDatabase to down member: err = %v, want ErrTargetUnhealthy", err)
