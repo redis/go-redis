@@ -248,7 +248,7 @@ type Options struct {
 	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
 	// Setting this alone still sizes the (now always-created) dedicated pipeline
 	// pool; its buffers default to the larger of the regular buffer size and
-	// DefaultPipelineBufferSize (64 KiB), unless PipelineReadBufferSize /
+	// DefaultPipelineBufferSize (128 KiB), unless PipelineReadBufferSize /
 	// PipelineWriteBufferSize are set.
 	//
 	// Pipelining typically needs fewer connections than regular operations because
@@ -502,9 +502,19 @@ const DefaultPipelinePoolSize = 10
 // (the larger of this and the regular buffer size is used). Pipeline
 // connections move whole batches per round trip, so they earn bigger buffers
 // than regular per-command traffic: measured on the autopipeline engine,
-// throughput plateaus around 64 KiB and gains nothing past ~128 KiB, while
-// very large buffers (>=512 KiB) can regress it.
-const DefaultPipelineBufferSize = 64 * 1024
+// throughput plateaus around 64 KiB and gains nothing past ~128 KiB for
+// TYPICAL (small-command) traffic, while very large buffers (>=512 KiB) can
+// regress it.
+//
+// Set to 128 KiB anyway: the extra headroom is not about typical-traffic
+// throughput but about full-duplex's large-payload backpressure guardrail
+// (see MaxBatchBytes's default) — more bufio headroom before a write() to a
+// slow-draining peer blocks widens the margin before that guardrail's cap is
+// reached. The aggregate memory cost stays negligible because the pool this
+// backs holds few connections: the dedicated pipeline pool never pre-dials
+// (DefaultPipelinePoolSize, MinIdleConns forced to 0), and full-duplex holds
+// exactly one connection per node regardless of pool size.
+const DefaultPipelineBufferSize = 128 * 1024
 
 // DefaultPipelinePoolTimeout is the dedicated pipeline pool's PoolTimeout
 // (pipelinePoolOptions caps the pipeline clone's PoolTimeout at this value but honors
@@ -514,13 +524,17 @@ const DefaultPipelineBufferSize = 64 * 1024
 // in Options and withPipelineConn), never waiting this timeout, and the spilled op
 // then uses the MAIN pool's own PoolTimeout, not this one.
 //
-// Its remaining live effect is the budget for a pipeline connection's maintnotifications
-// drainer handoff: PoolTimeout is one budget for both a pool turn and a drainer handoff
-// (see internal/pool), and TryGet still respects a drainer's bounded claim up to
-// PoolTimeout. So a pipeline connection that needs a handoff gets this short budget
-// rather than the main pool's (tens of seconds) — acceptable because pipeline
-// connections are disposable burst capacity that a burst can spill past anyway. It is
-// deliberately short for the same reason.
+// It currently has NO other live effect either. Every acquisition against the
+// dedicated pipeline pool — withPipelineConn's per-round-trip borrow above, and
+// the full-duplex engine's own session lease (autopipeline_fullduplex.go) — uses
+// TryGet, never the blocking Get. TryGet's non-wait branch returns ErrPoolTryFull
+// at once for BOTH a saturated pool turn and an active maintnotifications drainer
+// claim, before waitForDrainer or this deadline is ever consulted (see
+// ConnPool.getConn/waitTurn in internal/pool). A previous version of this doc
+// claimed a residual drainer-handoff budget; that was inaccurate (codex on #4002)
+// — there is no code path that currently waits out this value. It is kept short
+// anyway in case a future acquisition path, or a caller that obtains the pool via
+// getPipelinePool's exported pool.Pooler interface, uses the blocking Get.
 const DefaultPipelinePoolTimeout = 100 * time.Millisecond
 
 func (opt *Options) init() {

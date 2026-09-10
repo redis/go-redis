@@ -32,14 +32,31 @@ type AutoPipelineOptions struct {
 	// DefaultBlockingAutoPipelineOptions, uses 300).
 	MaxBatchSize int
 
-	// MaxBatchBytes, when > 0, caps a batch by APPROXIMATE payload volume: the
+	// MaxBatchBytes caps a batch by APPROXIMATE payload volume: the
 	// accumulator stops waiting once the queued commands' argument bytes reach
 	// it, so many large values flush as several bounded writes instead of one
 	// huge burst (300 x 64KiB is ~19MB written down one connection before any
 	// reply is read — enough to stall a constrained link past its write
 	// deadline). Like MaxBatchSize it is a soft threshold, not a hard cap.
 	// The estimate counts string/[]byte argument lengths plus a small
-	// per-argument overhead. Default: 0 (no byte cap).
+	// per-argument overhead.
+	//
+	// Default: 128 KiB (unset/<=0 gets this default; there is no "unbounded"
+	// setting — pass a deliberately large value instead). This is a
+	// full-duplex safety guardrail, not a throughput knob: with FullDuplex,
+	// the reader cannot start draining replies until the writer finishes
+	// flushing the WHOLE batch (see autopipeline_fullduplex.go), so a batch
+	// with ≥2 large-payload commands can deadlock both directions — Redis
+	// blocks writing an early large reply while the client is still blocked
+	// writing the rest of the batch, resolved only by WriteTimeout, and
+	// recovery may then replay a command Redis already executed (cursor/codex
+	// on #4002). The cap bounds this for large-REQUEST commands (big ECHO,
+	// large SET values); it does NOT bound expected REPLY size, so a batch of
+	// plain GETs against large values is still exposed regardless of this
+	// setting — closing that gap needs the reader to drain incrementally, not
+	// a byte cap. For ordinary small commands this default rarely binds:
+	// MaxBatchSize's 200-command cap already keeps a typical batch under
+	// ~15 KiB, far below this threshold.
 	MaxBatchBytes int
 
 	// MaxConcurrentBatches is the maximum number of pipeline batches that may
@@ -351,8 +368,9 @@ func numAutoPipelineShards() int {
 func DefaultAutoPipelineOptions() *AutoPipelineOptions {
 	return &AutoPipelineOptions{
 		MaxBatchSize:         200,
-		MaxConcurrentBatches: 1, // ordered by default
-		MaxFlushDelay:        0, // lowest latency; no coalescing wait (batch via in-flight backpressure)
+		MaxBatchBytes:        128 * 1024, // see MaxBatchBytes doc: full-duplex deadlock guardrail, not a throughput knob
+		MaxConcurrentBatches: 1,          // ordered by default
+		MaxFlushDelay:        0,          // lowest latency; no coalescing wait (batch via in-flight backpressure)
 	}
 }
 
@@ -374,6 +392,7 @@ func DefaultAutoPipelineOptions() *AutoPipelineOptions {
 func DefaultBlockingAutoPipelineOptions() *AutoPipelineOptions {
 	return &AutoPipelineOptions{
 		MaxBatchSize:         300,
+		MaxBatchBytes:        128 * 1024, // see MaxBatchBytes doc: full-duplex deadlock guardrail, not a throughput knob
 		MaxConcurrentBatches: 1,
 	}
 }
@@ -1129,6 +1148,14 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		config.MaxBatchSize = 200
 	}
 
+	if config.MaxBatchBytes <= 0 {
+		// Full-duplex deadlock guardrail, not a throughput knob — see the
+		// MaxBatchBytes field doc. Applies here too so a caller-constructed
+		// config that leaves this zero (rather than going through
+		// DefaultAutoPipelineOptions) still gets the safety net.
+		config.MaxBatchBytes = 128 * 1024
+	}
+
 	if config.MaxConcurrentBatches <= 0 {
 		// Default to an ordered single stream. Callers raise this (with
 		// Unordered:true) to opt into parallel-batch throughput.
@@ -1754,11 +1781,16 @@ func isBlockingCmd(cmd Cmder) bool {
 		// them positionally rather than matching on value.
 		return blockOptionBeforeStreams(args, 4)
 	case "ts.read":
-		// TS.READ has no STREAMS terminator at all, so there is nothing to
-		// stop the scan early for: the key and timestamp are arbitrary
-		// values (e.g. a key literally named "streams") that must not be
-		// treated as one. Just look for the BLOCK keyword anywhere.
-		for _, arg := range args {
+		// TS.READ has no STREAMS terminator, but it DOES have two fixed
+		// positional args before the option section: args[1] is the key and
+		// args[2] is the timestamp (see TSReadWithArgs), and either can be
+		// arbitrary user data (e.g. a key literally named "block"). Scanning
+		// from args[0] would mistake that key for the BLOCK option and divert
+		// a non-blocking TS.READ off the ordered pipe (codex on #4002).
+		if len(args) < 3 {
+			return false
+		}
+		for _, arg := range args[3:] {
 			if internal.ToLower(blockingArgString(arg)) == "block" {
 				return true
 			}

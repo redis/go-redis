@@ -1580,6 +1580,21 @@ func TestBlockingDetectionTSReadKeyNamedStreams(t *testing.T) {
 	}
 }
 
+// TestBlockingDetectionTSReadKeyNamedBlock pins that TS.READ's scan starts
+// AFTER its two fixed positional args (key, timestamp — see TSReadWithArgs),
+// not from args[0]: a key literally named "block" must not be mistaken for
+// the BLOCK option, which would divert a non-blocking TS.READ off the
+// ordered pipe and break ordering for the async face (codex on #4002).
+func TestBlockingDetectionTSReadKeyNamedBlock(t *testing.T) {
+	ctx := context.Background()
+	if isBlockingCmd(NewCmd(ctx, "ts.read", "block", "-", "MAX_COUNT", 10)) {
+		t.Error(`isBlockingCmd(ts.read key="block", no real BLOCK option) = true, want false`)
+	}
+	if !isBlockingCmd(NewCmd(ctx, "ts.read", "block", "-", "BLOCK", 100, 1)) {
+		t.Error(`isBlockingCmd(ts.read key="block" ... BLOCK) = false, want true`)
+	}
+}
+
 // TestDivertRegistrationRacesClose hammers the window between a diverted
 // command's closed check and its registration against Close: every submitted
 // command must end with a definite outcome, and Close must never report

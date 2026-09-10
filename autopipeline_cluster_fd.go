@@ -263,6 +263,21 @@ func (r *clusterFDRouter) getOrCreateChild(nc *Client) (*AutoPipeliner, bool) {
 		_ = child.Close()
 		return nil, true
 	}
+	// Evict stale entries for OTHER node clients while the write lock is
+	// already held: topology GC can close a node client (and its cached
+	// child) while this router stays up, and once the cluster's slot map
+	// stops pointing at that *Client, getOrCreateChild is never called with
+	// it again — nothing else would notice it went stale. Without this sweep
+	// a closed child (and its FD engine, submit channel, held connection)
+	// sits retained in this map for the router's whole life on a cluster that
+	// scales down or replaces node addresses (cursor bugbot on #4002). The
+	// child is already closed (its own node-client close hook got there
+	// first), so this only drops the reference for GC — no Close() needed.
+	for k, v := range r.children {
+		if k != nc && v.IsClosed() {
+			delete(r.children, k)
+		}
+	}
 	// Prefer a live child another goroutine cached first; otherwise store ours.
 	if cached := r.children[nc]; cached != nil && !cached.IsClosed() {
 		child = cached

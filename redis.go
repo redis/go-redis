@@ -693,12 +693,14 @@ func pipelinePoolOptions(opt *Options) *Options {
 	// 0 the pipeline pool never itself returns ErrPoolExhausted; a burst wider
 	// than PoolSize spills on ErrPoolTimeout instead — see withPipelineConn.)
 	pipelineOpt.MaxActiveConns = 0
-	// Spill, don't queue: when every pipeline connection is busy, fall back to the
-	// main pool after a short wait rather than blocking for the (main) PoolTimeout,
-	// which the clone would otherwise inherit (tens of seconds). withPipelineConn
-	// spills on the resulting ErrPoolTimeout. Cap at DefaultPipelinePoolTimeout but
-	// honor a caller's SHORTER PoolTimeout, so a client tuned to spill faster is not
-	// forced to wait the full default before falling back.
+	// Spill, don't queue: withPipelineConn acquires from the pipeline pool with
+	// TryGet, which never waits out PoolTimeout — a saturated pool returns
+	// ErrPoolTryFull AT ONCE and the caller spills to the main pool immediately
+	// (see withPipelineConn, DefaultPipelinePoolTimeout). This value therefore
+	// has no live effect on that acquisition; it only bounds what PoolTimeout
+	// ends up stored on the pipeline pool's Options, capped here so a caller
+	// tuned to a short PoolTimeout is not silently widened to the (main)
+	// default (tens of seconds), which the clone would otherwise inherit.
 	pipelineOpt.PoolTimeout = DefaultPipelinePoolTimeout
 	if opt.PoolTimeout > 0 && opt.PoolTimeout < DefaultPipelinePoolTimeout {
 		pipelineOpt.PoolTimeout = opt.PoolTimeout

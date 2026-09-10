@@ -300,6 +300,101 @@ func TestClusterFullDuplexChildCloseSelfHeals(t *testing.T) {
 	}
 }
 
+// nodeClientFor reports the *Client that owns key's slot in the current
+// topology, without creating or touching any FD child (unlike childFor).
+// Used by eviction tests to find a key that routes to a node different from
+// one already cached.
+func nodeClientFor(t *testing.T, ctx context.Context, r *clusterFDRouter, key string) (*Client, bool) {
+	t.Helper()
+	slot := r.cc.cmdSlot(NewStatusCmd(ctx, "get", key), -1)
+	if slot < 0 {
+		return nil, false
+	}
+	state, err := r.cc.state.Get(ctx)
+	if err != nil {
+		return nil, false
+	}
+	node, err := state.slotMasterNode(slot)
+	if err != nil || node == nil {
+		return nil, false
+	}
+	return node.Client, true
+}
+
+// TestClusterFullDuplexEvictsStaleChildOnRebuild pins that a closed node
+// child for a DIFFERENT node than the one currently being (re)built gets
+// swept out of clusterFDRouter.children. Topology GC can close a node client
+// (and its cached child) while the router stays up; once the cluster stops
+// routing to that *Client, getOrCreateChild is never called with it again, so
+// nothing else would notice it went stale — without the sweep it (and its FD
+// engine, submit channel, held connection) would sit retained in the map for
+// the router's whole life (cursor bugbot on #4002).
+func TestClusterFullDuplexEvictsStaleChildOnRebuild(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	// Seed one key to populate its node's child, then hunt for a second tag
+	// that lands on a DIFFERENT node — a first-time build for that second
+	// node is what forces getOrCreateChild's write-lock (sweep) path without
+	// needing to touch the second node's own cache state.
+	const seedKey = "cfd:{evictseed}:k"
+	if err := ap.Set(ctx, seedKey, "1", 0).Err(); err != nil {
+		t.Fatalf("seed SET: %v", err)
+	}
+	ap.clusterFD.mu.RLock()
+	var staleClient *Client
+	var staleChild *AutoPipeliner
+	for c, ch := range ap.clusterFD.children {
+		staleClient, staleChild = c, ch
+	}
+	ap.clusterFD.mu.RUnlock()
+	if staleClient == nil {
+		t.Fatal("no FD child cached after seed SET")
+	}
+
+	var secondKey string
+	for i := 0; i < 50; i++ {
+		k := fmt.Sprintf("cfd:{evicttarget%d}:k", i)
+		nc, ok := nodeClientFor(t, ctx, ap.clusterFD, k)
+		if ok && nc != staleClient {
+			secondKey = k
+			break
+		}
+	}
+	if secondKey == "" {
+		t.Skip("could not find a tag routing to a different master after 50 tries")
+	}
+
+	// Simulate topology GC: close the seed node's child directly, but leave
+	// its (now stale) entry in the map exactly as a real close hook would.
+	if err := staleChild.Close(); err != nil {
+		t.Fatalf("staleChild.Close: %v", err)
+	}
+
+	// First-time build for the second node: write-lock path, sweep runs.
+	if err := ap.Set(ctx, secondKey, "1", 0).Err(); err != nil {
+		t.Fatalf("SET on second node: %v", err)
+	}
+
+	ap.clusterFD.mu.RLock()
+	_, stillPresent := ap.clusterFD.children[staleClient]
+	n := len(ap.clusterFD.children)
+	ap.clusterFD.mu.RUnlock()
+	if stillPresent {
+		t.Error("stale closed child was not evicted from clusterFDRouter.children")
+	}
+	if n != 1 {
+		t.Errorf("clusterFDRouter.children has %d entries, want 1 (only the second node's fresh child)", n)
+	}
+}
+
 // TestClusterFullDuplexGatedOffForReplicaRouting asserts the construction gate:
 // a ClusterClient configured for replica routing (ReadOnly / RouteByLatency /
 // RouteRandomly) must NOT engage cluster FD, because the router only routes to
