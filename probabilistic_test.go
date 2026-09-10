@@ -483,7 +483,7 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 				})
 
 				It("should report CMSInfo cell size", Label("cms", "cmsinfo"), func() {
-					SkipBeforeRedisVersion("8.11", "CMS.INFO reports cell size since Redis 8.12 (8.11 pre-release)")
+					SkipBeforeRedisVersion("8.11", "CMS.INFO reports cell_size since Redis 8.12 (8.11 pre-release)")
 
 					err := client.CMSInitByDim(ctx, "testcms1", 5, 10).Err()
 					Expect(err).NotTo(HaveOccurred())

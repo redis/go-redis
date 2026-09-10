@@ -9,7 +9,7 @@ import (
 )
 
 // The probabilistic *.INFO replies are open-ended maps; newer servers add
-// fields (e.g. CMS.INFO "cell size" in Redis 8.12). Unknown fields must be
+// fields (e.g. CMS.INFO "cell_size" in Redis 8.12). Unknown fields must be
 // drained so the reader stays aligned with the following reply instead of
 // failing the whole command.
 
@@ -18,7 +18,7 @@ func TestCMSInfoCmdParsesCellSizeAndIgnoresUnknownField(t *testing.T) {
 		"+width\r\n:2000\r\n" +
 		"+depth\r\n:5\r\n" +
 		"+count\r\n:0\r\n" +
-		"+cell size\r\n:4\r\n" +
+		"+cell_size\r\n:4\r\n" +
 		"+new-cms-field\r\n$5\r\nhello\r\n" // unknown field, string value
 
 	cmd := NewCMSInfoCmd(context.Background())

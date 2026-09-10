@@ -877,7 +877,7 @@ func (cmd *CMSInfoCmd) readReply(rd *proto.Reader) (err error) {
 			result.Depth, err = rd.ReadInt()
 		case "count":
 			result.Count, err = rd.ReadInt()
-		case "cell size":
+		case "cell_size":
 			result.CellSize, err = rd.ReadInt()
 		default:
 			// skip unknown fields so newer servers don't break the parser
