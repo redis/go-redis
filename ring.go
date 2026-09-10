@@ -735,6 +735,7 @@ func (c *Ring) failedPubSub(err error) *PubSub {
 	if err == nil {
 		err = fmt.Errorf("redis: pubsub failed")
 	}
+	internal.Logger.Printf(context.Background(), "redis: ring pubsub creation failed: %s", err)
 	pubsub := &PubSub{
 		opt:       c.opt.clientOptions(),
 		stickyErr: err,
@@ -744,6 +745,8 @@ func (c *Ring) failedPubSub(err error) *PubSub {
 }
 
 // Subscribe subscribes the client to the specified channels.
+// If channels is empty or shard lookup fails (e.g. empty ring), it returns
+// a PubSub with a sticky error rather than panicking.
 func (c *Ring) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	if len(channels) == 0 {
 		return c.failedPubSub(fmt.Errorf("redis: at least one channel is required"))
@@ -757,6 +760,8 @@ func (c *Ring) Subscribe(ctx context.Context, channels ...string) *PubSub {
 }
 
 // PSubscribe subscribes the client to the given patterns.
+// If channels is empty or shard lookup fails (e.g. empty ring), it returns
+// a PubSub with a sticky error rather than panicking.
 func (c *Ring) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	if len(channels) == 0 {
 		return c.failedPubSub(fmt.Errorf("redis: at least one channel is required"))
@@ -770,6 +775,8 @@ func (c *Ring) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 }
 
 // SSubscribe Subscribes the client to the specified shard channels.
+// If channels is empty or shard lookup fails (e.g. empty ring), it returns
+// a PubSub with a sticky error rather than panicking.
 func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	if len(channels) == 0 {
 		return c.failedPubSub(fmt.Errorf("redis: at least one channel is required"))
