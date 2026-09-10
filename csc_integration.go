@@ -1021,6 +1021,29 @@ type cscDrainHandle struct {
 	closeOnce         sync.Once
 	closeErr          error
 	invalidateHandler *invalidateHandler
+
+	// workersMu/workersTornDown close the race between
+	// stopCSCRefresherAndCoalescer's one-time teardown and
+	// startCSCRefresher/startCSCMissCoalescer's publish step (a bot review
+	// flagged this: async conn init can call disableCSCServing, which the
+	// drainer goroutine observes on ITS OWN tick and reacts to with the same
+	// teardown Close uses — and that tick can in principle land concurrently
+	// with construction). workersStopOnce alone is not enough: it only
+	// guarantees the teardown body runs once, not that it runs AFTER a
+	// worker exists to be stopped. A start function checks workersTornDown
+	// under this lock immediately before publishing its queue/handle; if
+	// teardown already ran, it declines to start instead of creating a
+	// goroutine workersStopOnce can never be Do'd again to stop. See both
+	// start functions and stopCSCRefresherAndCoalescer's body.
+	//
+	// startBackgroundDrainer (attachSharedTrackingCSC's first call, before
+	// either start function) needs no matching guard: it is what allocates
+	// this struct and assigns it to c.cscDrainHandle, so no teardown path can
+	// observe a non-nil handle — let alone race this lock — until after it
+	// returns. Every teardown entry point (Close, the drainer's own
+	// self-disable) reads c.cscDrainHandle first and no-ops on nil.
+	workersMu       sync.Mutex
+	workersTornDown bool
 }
 
 // signalStop closes stop at most once (so Close and the AddCleanup safety net
@@ -1193,14 +1216,13 @@ func (c *baseClient) startBackgroundDrainer() {
 						"csc: disabling client-side caching: the custom push notification processor failed %d consecutive drains "+
 							"(each failure removes a connection because the reader may be mid-frame); "+
 							"caching cannot be kept fresh safely with this processor", consecFatal)
-					// Deactivate BEFORE the defer's teardown so the refresher's stop-drain
-					// flush no-ops and the exit stays prompt. No warming is reachable here:
-					// damping fires precisely because the custom processor is persistently
-					// broken, and every refresh chunk routes its push drain through that same
-					// processor — the flush would only burn its per-chunk deadlines (the exact
-					// ~160s stall shape F3 removed) while a concurrent Close waits on
-					// workersStopOnce behind it. The defer still stops and joins both workers
-					// (F1); this only skips the guaranteed-useless flush.
+					// Deactivate BEFORE the defer's teardown so nothing else (ordinary reads
+					// via processCached, a normal in-flight flush's refreshInvalidatedBatch
+					// bail) keeps treating a persistently-broken custom processor as still
+					// serving. The refresher's OWN stop-drain flush no longer depends on this
+					// timing either way: it now unconditionally skips its refetch when
+					// stopping (see runCSCRefresher's h.stop case), so the exit stays prompt
+					// regardless. The defer still stops and joins both workers (F1).
 					active.Store(false)
 					return
 				}
@@ -1279,42 +1301,55 @@ func (c *baseClient) stopBackgroundDrainer() {
 //     This is why the earlier "deactivate before stopping the coalescer" step is gone:
 //     the errCSCRetryUncached backstop it relied on already makes deactivate-first
 //     unnecessary, and it conflicted with releasing the connection before the flush.
-//  2. Stop the refresher, STILL while cscActive is true, so its stop-drain flush
-//     re-fetches the in-window invalidated keys (refreshInvalidatedBatch bails once
-//     cscActive is false). The pool connection freed in step 1 is available for it.
-//     The order is preserved because it is FREE and UNIFORM (one canonical order for
-//     Close and the self-disable defer) and never serves a stale value — NOT because
-//     the flush warms a sibling. It does not: the entries it publishes are attributed
-//     to THIS client's refresh connection, and the drainer defer's
-//     invalidateAllCoverage then revokes this pool's coverage and evicts them before
-//     Close returns (pre-existing; see TestStopBackgroundDrainerEvictsSharedCacheCoverage).
-//     Only the CLOSE path reaches this with cscActive true; both self-disable paths
-//     arrive with it already false (disableCSCServing set it; damping deactivates
-//     first), so the flush is a no-op there. It still counts Refreshed on Close.
+//  2. Stop the refresher. Its stop-drain flush no longer re-fetches the in-window
+//     invalidated keys over the network at all (runCSCRefresher's h.stop case):
+//     the drainer defer's invalidateAllCoverage revokes this pool's coverage and
+//     evicts every entry attributed to this client's refresh connection right
+//     after (pre-existing; see TestStopBackgroundDrainerEvictsSharedCacheCoverage),
+//     so a refetch here would only be discarded a moment later — it used to run
+//     anyway and could cost thousands of pointless round trips against a healthy
+//     server (codex #3989 P1). The targets are abandoned instead: counted into
+//     RefreshFailed, left evicted for a reader to repopulate. Because the flush no
+//     longer touches the network, the coalescer-first order in step 1 (freeing the
+//     pool connection) is no longer LOAD-BEARING for this step, but stays: it is
+//     still the one canonical order for Close and the self-disable defer, and
+//     still never serves a stale value.
 //  3. Deactivate serving.
 //
 // STARTUP WINDOW: attachSharedTrackingCSC launches the drainer before it assigns
-// cscRefreshHandle/cscMissCoalescer. The drainer cannot exit before its first
-// (>=1ms) tick, by which point those synchronous assignments have completed; and
-// startCSCRefresher/startCSCMissCoalescer skip starting when cscActive is already
-// false, so a disable during construction cannot leave a worker this helper missed.
+// cscRefreshHandle/cscMissCoalescer, so this can in principle run (via the
+// drainer's self-disable defer, reacting to a HELLO/tracking downgrade an
+// async conn init observed) WHILE startCSCRefresher/startCSCMissCoalescer are
+// still constructing. workersStopOnce alone only guarantees body runs once —
+// it does not guarantee a worker exists yet to be stopped by it. The
+// workersMu/workersTornDown flag below (set FIRST, before either stop call)
+// closes that gap: a start function checks the flag under the same lock
+// immediately before publishing, so either it sees teardown hasn't happened
+// yet and publishes (and this body's later stop call correctly joins it), or
+// it sees the flag already set and declines to start at all — never leaving
+// a worker workersStopOnce can no longer reach.
 func (c *baseClient) stopCSCRefresherAndCoalescer() {
-	body := func() {
-		c.stopCSCMissCoalescer()
-		c.stopCSCRefresher()
-		if c.cscActive != nil {
-			c.cscActive.Store(false)
-		}
-	}
 	// Owner-only. Every worker (drainer, refresher, coalescer) is created together
 	// under a cscDrainHandle; a caller without one is a clone (clone() copies neither
 	// the handle nor the workers, see redis.go) or a client where CSC never attached,
 	// so it has nothing of its own to stop. Running body() here would call
 	// stopCSCRefresher, whose read-then-nil of cscRefreshHandle is UNSYNCHRONIZED
 	// (single-owner by design), racing the real owner's teardown.
-	if h := c.cscDrainHandle; h != nil {
-		h.workersStopOnce.Do(body)
+	h := c.cscDrainHandle
+	if h == nil {
+		return
 	}
+	body := func() {
+		h.workersMu.Lock()
+		h.workersTornDown = true
+		h.workersMu.Unlock()
+		c.stopCSCMissCoalescer()
+		c.stopCSCRefresher()
+		if c.cscActive != nil {
+			c.cscActive.Store(false)
+		}
+	}
+	h.workersStopOnce.Do(body)
 }
 
 // applyCachedReply populates cmd from a previously captured raw RESP reply by

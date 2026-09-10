@@ -261,11 +261,9 @@ func (c *baseClient) startCSCMissCoalescer() {
 	if _, ok := c.csc.(*LocalCache); !ok {
 		return
 	}
-	// If CSC serving was already disabled during construction (a HELLO 3 downgrade
-	// or CLIENT TRACKING rejection in initConn calls disableCSCServing before the
-	// drainer's first tick), do not start sessions the drainer's teardown may have
-	// already run past — they would run for the client's life holding a pool conn.
-	// startBackgroundDrainer set cscActive before this ran.
+	// Cheap fast path: if CSC serving is already known inactive, skip building
+	// anything. Not the safety mechanism on its own — see the workersMu check
+	// below, which is what actually closes the construction/teardown race.
 	if a := c.cscActive; a != nil && !a.Load() {
 		return
 	}
@@ -276,7 +274,29 @@ func (c *baseClient) startCSCMissCoalescer() {
 		maxBatchBytes: cscMissWriteBatchBytes(c.opt),
 		serializeSem:  make(chan struct{}, cscMissMaxConcurrentSerialize),
 	}
-	c.cscMissCoalescer.Store(mc)
+	// Publish under the drain handle's lock, checked against workersTornDown
+	// (see cscDrainHandle, stopCSCRefresherAndCoalescer, and the mirrored check
+	// in startCSCRefresher): a concurrent teardown may already have consumed
+	// workersStopOnce — reachable via the drainer's own self-disable tick
+	// reacting to an async conn init's disableCSCServing, racing this
+	// construction. That teardown must not be handed a coalescer it will never
+	// get another chance to stop (it would then hold a pool connection for the
+	// client's remaining life), so decline to start at all if it already ran.
+	// dh is nil only for tests that call this directly without a drain handle;
+	// there is nothing to race against in that case.
+	if dh := c.cscDrainHandle; dh != nil {
+		dh.workersMu.Lock()
+		tornDown := dh.workersTornDown
+		if !tornDown {
+			c.cscMissCoalescer.Store(mc)
+		}
+		dh.workersMu.Unlock()
+		if tornDown {
+			return
+		}
+	} else {
+		c.cscMissCoalescer.Store(mc)
+	}
 	// N independent full-duplex sessions, each holding its own connection and
 	// pulling misses from the shared queue. Order-free: coalesced misses are
 	// standalone per-key fetches with no cross-request contract, and each

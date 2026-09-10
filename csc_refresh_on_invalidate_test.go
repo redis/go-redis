@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,29 +12,38 @@ import (
 )
 
 // erroringPooler fails every Get, so refreshInvalidatedBatch (via withConn)
-// returns an error deterministically without a live server.
-type erroringPooler struct{ pool.Pooler }
+// returns an error deterministically without a live server. gets counts calls,
+// so a test can assert the stop-drain never even attempts a round trip.
+type erroringPooler struct {
+	pool.Pooler
+	gets atomic.Int64
+}
 
-func (*erroringPooler) Get(context.Context) (*pool.Conn, error) {
+func (p *erroringPooler) Get(context.Context) (*pool.Conn, error) {
+	p.gets.Add(1)
 	return nil, errors.New("csc test: pool get always fails")
 }
 
-// TestCSCRefresherStopDrainBailsOnFirstFailure pins #3965 F2: the Close stop-drain
-// must BAIL after the first failed refresh chunk rather than give each of many
-// chunks a fresh cscRefreshBatchTimeout against a dead/stalled server (which could
-// delay Close by minutes). With several chunks queued and every refresh failing,
-// exactly ONE chunk is attempted.
-func TestCSCRefresherStopDrainBailsOnFirstFailure(t *testing.T) {
+// TestCSCRefresherStopDrainSkipsRefetchEntirely pins #3989 P1: the Close
+// stop-drain must not spend ANY network round trip on the buffered backlog — a
+// refetch here is always discarded a moment later by the teardown that follows
+// (invalidateAllCoverage evicts every entry this connection would publish), so
+// attempting it only delays Close. This supersedes #3965 F2's weaker "bail
+// after the first failed chunk" bound, which never triggered against a HEALTHY
+// server: with several chunks queued and Get never even called, the drain must
+// abandon every target without touching the pool.
+func TestCSCRefresherStopDrainSkipsRefetchEntirely(t *testing.T) {
 	// No cscRefreshWindow mutation: runCSCRefresher runs synchronously below with
 	// stop already signalled, so the drain completes in microseconds against the
 	// failing pool — the default window/recency timers never fire, and mutating the
 	// shared global would risk a -race read against another test's live refresher.
 	lc := NewLocalCache(CacheConfig{MaxEntries: 10000})
+	pooler := &erroringPooler{}
 	c := &baseClient{
 		opt:          &Options{},
 		csc:          lc,
 		cscKeyPrefix: "p:",
-		connPool:     &erroringPooler{},
+		connPool:     pooler,
 	}
 	q := &cscRefreshQueue{
 		ch:       make(chan cscRefreshTarget, 1024),
@@ -43,8 +53,8 @@ func TestCSCRefresherStopDrainBailsOnFirstFailure(t *testing.T) {
 	h := &cscRevalidateHandle{stop: make(chan struct{}), done: make(chan struct{})}
 
 	// More than one chunk's worth (cscRefreshBatchMax) but within one drainQueue
-	// round (< cscRefreshWindowMaxKeys) so the whole backlog is flushed once; a
-	// buggy drain would then attempt every chunk.
+	// round (< cscRefreshWindowMaxKeys) so the whole backlog is flushed at once; a
+	// regression that still refetches would then attempt multiple chunks.
 	const chunks = 3
 	const targets = chunks * cscRefreshBatchMax
 	for i := 0; i < targets; i++ {
@@ -53,13 +63,21 @@ func TestCSCRefresherStopDrainBailsOnFirstFailure(t *testing.T) {
 	}
 
 	// Signal stop up front, then run the refresher synchronously: it takes the
-	// stop-drain path, flushes the backlog, and returns.
+	// stop-drain path, abandons the backlog, and returns.
 	close(h.stop)
 	c.runCSCRefresher(h, lc, q)
 
-	if got := q.refreshFailed.Load(); got != 1 {
-		t.Fatalf("refreshFailed = %d; want 1 — the stop-drain must bail after the first "+
-			"failed chunk, not attempt all %d chunks (#3965 F2)", got, chunks)
+	if got := pooler.gets.Load(); got != 0 {
+		t.Fatalf("pool.Get calls = %d; want 0 — the stop-drain must not attempt any "+
+			"refetch at all, not even the first chunk (#3989 P1)", got)
+	}
+	if got := q.refreshed.Load(); got != 0 {
+		t.Fatalf("refreshed = %d; want 0 — no refetch ran", got)
+	}
+	if got := q.refreshFailed.Load(); got != 0 {
+		t.Fatalf("refreshFailed = %d; want 0 — these targets were abandoned by choice, "+
+			"not by a failed round trip, so the round-trip-failure metric must stay "+
+			"untouched (its doc: \"counts refresh round trips that errored\")", got)
 	}
 }
 

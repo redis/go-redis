@@ -3863,6 +3863,119 @@ func TestCSCSelfDisableStopsRefresherAndCoalescer(t *testing.T) {
 	}
 }
 
+// TestCSCConstructionRaceDeclinesToStartAfterTeardown pins the fix for a bot
+// review finding: attachSharedTrackingCSC starts the drainer BEFORE assigning
+// cscRefreshHandle/cscMissCoalescer, so stopCSCRefresherAndCoalescer's
+// one-time workersStopOnce body can in principle run (via the drainer's own
+// self-disable defer reacting to an async conn init's disableCSCServing)
+// WHILE startCSCRefresher/startCSCMissCoalescer are still constructing.
+// workersStopOnce alone only guarantees the teardown body runs once — not
+// that it runs after a worker exists for it to stop. Forcing teardown to run
+// FIRST (deterministic, no goroutine timing needed) must make both start
+// functions decline to publish anything, rather than create a goroutine
+// nothing will ever stop again.
+func TestCSCConstructionRaceDeclinesToStartAfterTeardown(t *testing.T) {
+	lc := NewLocalCache(CacheConfig{MaxEntries: 16})
+	dh := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	active := &atomic.Bool{}
+	active.Store(true)
+	c := &baseClient{
+		opt: &Options{
+			ClientSideCacheRefreshOnInvalidate: true,
+			ClientSideCacheCoalesceMisses:      true,
+		},
+		csc:            lc,
+		cscKeyPrefix:   "p:",
+		cscDrainHandle: dh,
+		cscActive:      active,
+	}
+
+	// Set ONLY workersTornDown, bypassing the rest of stopCSCRefresherAndCoalescer's
+	// body — cscActive stays TRUE. This isolates the new check: if it were removed,
+	// both start functions' pre-existing "cscActive already false" fast path would
+	// not fire either (cscActive is true here), so a pass can only be explained by
+	// the workersMu/workersTornDown check actually running.
+	dh.workersMu.Lock()
+	dh.workersTornDown = true
+	dh.workersMu.Unlock()
+
+	// A worker that starts AFTER losing the race must decline entirely: no
+	// queue/handle/coalescer published, no goroutine leaked past Close().
+	c.startCSCRefresher()
+	if c.cscRefreshQueue != nil || c.cscRefreshHandle != nil {
+		t.Fatal("startCSCRefresher published a queue/handle after teardown already ran " +
+			"(workersStopOnce can never be Do'd again to stop it — leaked goroutine)")
+	}
+	c.startCSCMissCoalescer()
+	if c.cscMissCoalescer.Load() != nil {
+		t.Fatal("startCSCMissCoalescer published a coalescer after teardown already ran " +
+			"(workersStopOnce can never be Do'd again to stop it — leaked goroutine holding a pool conn)")
+	}
+}
+
+// TestCSCStopCSCRefresherAndCoalescerSetsWorkersTornDown pins the plumbing
+// TestCSCConstructionRaceDeclinesToStartAfterTeardown assumes: the real
+// teardown entry point actually sets the flag the start functions check, not
+// just a hand-set test double.
+func TestCSCStopCSCRefresherAndCoalescerSetsWorkersTornDown(t *testing.T) {
+	dh := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	active := &atomic.Bool{}
+	active.Store(true)
+	c := &baseClient{cscDrainHandle: dh, cscActive: active}
+
+	c.stopCSCRefresherAndCoalescer()
+
+	dh.workersMu.Lock()
+	tornDown := dh.workersTornDown
+	dh.workersMu.Unlock()
+	if !tornDown {
+		t.Fatal("stopCSCRefresherAndCoalescer did not set workersTornDown")
+	}
+	if active.Load() {
+		t.Fatal("stopCSCRefresherAndCoalescer did not deactivate cscActive")
+	}
+}
+
+// TestCSCConstructionWinsRaceStartsNormally is the control for
+// TestCSCConstructionRaceDeclinesToStartAfterTeardown: absent a concurrent
+// teardown, both start functions must publish and launch exactly as before —
+// the fix only changes behavior on the losing side of the race.
+//
+// startCSCMissCoalescer launches real fullDuplexLoop goroutines against a
+// baseClient with a nil connPool. That's safe only because those goroutines
+// select on mc.stop/mc.ch before ever touching the pool, and this test's mc.ch
+// never receives — stopCSCRefresherAndCoalescer below signals stop first. If a
+// future change pre-feeds cscMissCoalescer.ch here, this becomes a nil-pointer
+// panic on the pool, not a race-detector finding.
+func TestCSCConstructionWinsRaceStartsNormally(t *testing.T) {
+	lc := NewLocalCache(CacheConfig{MaxEntries: 16})
+	dh := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	active := &atomic.Bool{}
+	active.Store(true)
+	c := &baseClient{
+		opt: &Options{
+			ClientSideCacheRefreshOnInvalidate: true,
+			ClientSideCacheCoalesceMisses:      true,
+		},
+		csc:            lc,
+		cscKeyPrefix:   "p:",
+		cscDrainHandle: dh,
+		cscActive:      active,
+	}
+
+	c.startCSCRefresher()
+	if c.cscRefreshQueue == nil || c.cscRefreshHandle == nil {
+		t.Fatal("startCSCRefresher did not publish when no teardown raced it")
+	}
+	c.startCSCMissCoalescer()
+	if c.cscMissCoalescer.Load() == nil {
+		t.Fatal("startCSCMissCoalescer did not publish when no teardown raced it")
+	}
+
+	// Clean up what was started so the test does not leak goroutines.
+	c.stopCSCRefresherAndCoalescer()
+}
+
 // TestCSCTeardownReleasesCoalescerBeforeRefresher pins F3's ordering: teardown must
 // stop the coalescer (releasing its held pool connection) BEFORE it signals and
 // joins the refresher, whose stop-drain flush needs a main-pool connection. It also

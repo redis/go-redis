@@ -417,11 +417,9 @@ func (c *baseClient) startCSCRefresher() {
 	if !c.cscRefreshOnInvalidateEnabled() || c.cscRefreshQueue != nil {
 		return
 	}
-	// If CSC serving was already disabled during construction (a HELLO 3 downgrade
-	// or CLIENT TRACKING rejection in initConn calls disableCSCServing before the
-	// drainer's first tick), do not start a refresher: the drainer's teardown may
-	// already have run past the point where it could join one, leaving a goroutine
-	// with nothing to stop it. startBackgroundDrainer set cscActive before this ran.
+	// Cheap fast path: if CSC serving is already known inactive, skip building
+	// anything. Not the safety mechanism on its own — see the workersMu check
+	// below, which is what actually closes the construction/teardown race.
 	if a := c.cscActive; a != nil && !a.Load() {
 		return
 	}
@@ -440,10 +438,33 @@ func (c *baseClient) startCSCRefresher() {
 		q.recency.push(lc.LRUClock())
 		q.sinceToken.Store(q.recency.oldest())
 	}
-	c.cscRefreshQueue = q
 
 	h := &cscRevalidateHandle{stop: make(chan struct{}), done: make(chan struct{})}
-	c.cscRefreshHandle = h
+
+	// Publish under the drain handle's lock, checked against workersTornDown
+	// (see cscDrainHandle, stopCSCRefresherAndCoalescer): a concurrent teardown
+	// may already have consumed workersStopOnce — reachable via the drainer's
+	// own self-disable tick reacting to an async conn init's disableCSCServing,
+	// racing this construction (a bot review flagged this). That teardown must
+	// not be handed a queue/handle it will never get another chance to stop, so
+	// decline to publish (and start nothing) if it already ran. dh is nil only
+	// for tests that call this directly without a drain handle; there is
+	// nothing to race against in that case.
+	if dh := c.cscDrainHandle; dh != nil {
+		dh.workersMu.Lock()
+		tornDown := dh.workersTornDown
+		if !tornDown {
+			c.cscRefreshQueue = q
+			c.cscRefreshHandle = h
+		}
+		dh.workersMu.Unlock()
+		if tornDown {
+			return
+		}
+	} else {
+		c.cscRefreshQueue = q
+		c.cscRefreshHandle = h
+	}
 
 	// The invalidate handler is what sees the pushes, so it owns the producer end.
 	if ih := lookupInvalidateHandler(c.opt.PushNotificationProcessor); ih != nil {
@@ -492,14 +513,23 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 		}
 	}
 
-	// flush applies the collected window. When stopping is true it runs the Close
-	// stop-drain: a bounded shutdown that BAILS after the first failed chunk
-	// (returns bailed==true) instead of giving every remaining chunk a fresh
-	// cscRefreshBatchTimeout against a dead/stalled server — a full queue would
-	// otherwise delay Close by minutes (#3965 F2). The bailed targets stay evicted;
-	// a reader repopulates them, and this client's coverage is revoked on Close
-	// anyway. The normal (non-stopping) path is unchanged: it refetches every chunk.
-	flush := func(demand, stopping bool) (bailed bool) {
+	// flush applies the collected window. When stopping is true (Close's
+	// stop-drain) it skips the refetch below entirely instead of running it:
+	// stopCSCRefresherAndCoalescer's teardown (step 2 doc, invalidateAllCoverage,
+	// csc_integration.go:1305-1316) evicts every entry attributed to this
+	// client's refresh connection right after this call returns, regardless of
+	// whether the refetch would have succeeded — so running it first only spends
+	// network round trips on a result that is discarded a moment later. Against a
+	// healthy server that cost used to go unbounded: nothing here ever fails, so
+	// the previous "bail after the first failed chunk" bound (#3965 F2) never
+	// triggered, and a full backlog could cost thousands of round trips — one per
+	// chunk once the reply-byte budget shrinks each chunk to a single target
+	// (codex #3989 P1). The abandoned targets stay evicted; a reader repopulates
+	// them normally, the same outcome a failed refetch already produced. The
+	// normal (non-stopping) path is unchanged: it refetches every chunk, only
+	// aborting if Close begins while it's still running (see the h.stop check
+	// below).
+	flush := func(demand, stopping bool) {
 		if windowArmed {
 			windowArmed = false
 			if !window.Stop() {
@@ -540,6 +570,12 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 		case <-q.demandCh:
 		default:
 		}
+		if stopping {
+			// Abandoned by choice, not by network failure: leave RefreshFailed (one
+			// count per errored ROUND TRIP, per its doc) alone. These targets simply
+			// stay evicted, same as an errored refetch's targets already do.
+			return
+		}
 		// A window can hold more than one round trip's worth; chunk it. Keys that
 		// self-healed during the window (a reader missed and repopulated them) are
 		// now Valid, so Reserve inside refreshInvalidatedBatch declines them for
@@ -554,12 +590,6 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			defer func() {
 				if r := recover(); r != nil {
 					q.refreshFailed.Add(1)
-					// A panic mid stop-drain bails too, or the outer loop would re-drain
-					// and retry the remaining chunks — the same unbounded shutdown this
-					// bound closes via the error path below.
-					if stopping {
-						bailed = true
-					}
 					internal.Logger.Printf(context.Background(),
 						"csc: refresh-on-invalidate batch panic (recovered): %v", r)
 				}
@@ -575,22 +605,19 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			writeBudget := cscMissWriteBatchBytes(c.opt)
 			prefixLen := len(c.cscKeyPrefix)
 			for start := 0; start < len(targets); {
-				// Abort a normal (non-stopping) flush that is still running when Close
-				// begins: continuing to give each remaining chunk a fresh
-				// cscRefreshBatchTimeout against a dead/stalled server would delay Close by
-				// minutes (with reply budgeting producing one-target chunks, ~43 min for a
-				// full window). The stopping==true stop-drain already bounds itself by
-				// bailing after the first failed chunk below; this covers a flush that was
-				// ENTERED before Close and is still running when h.stop closes (#3965 F2
-				// follow-up). Bailed targets stay evicted — a reader repopulates them and
-				// this client's coverage is revoked on Close anyway.
-				if !stopping {
-					select {
-					case <-h.stop:
-						bailed = true
-						return
-					default:
-					}
+				// Abort this (always non-stopping — see the stopping check above) flush
+				// if Close begins while it's still running: continuing to give each
+				// remaining chunk a fresh cscRefreshBatchTimeout against a dead/stalled
+				// server would delay Close by minutes (with reply budgeting producing
+				// one-target chunks, ~43 min for a full window). This covers a flush that
+				// was ENTERED before Close and is still running when h.stop closes (#3965
+				// F2 follow-up); the stop-drain's OWN flush call never reaches here at all
+				// now. Bailed targets stay evicted — a reader repopulates them and this
+				// client's coverage is revoked on Close anyway.
+				select {
+				case <-h.stop:
+					return
+				default:
 				}
 				end := cscRefreshChunkEnd(targets, start, prefixLen, writeBudget)
 				// Per-chunk deadline: each round trip gets its own cscRefreshBatchTimeout,
@@ -609,18 +636,10 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 						internal.Logger.Printf(context.Background(),
 							"csc: refresh-on-invalidate batch failed: %v", err)
 					}
-					// Shutdown drain: stop after the first failed chunk (see the flush
-					// doc). A dead/stalled server would otherwise cost one full
-					// cscRefreshBatchTimeout per remaining chunk before Close returns.
-					if stopping {
-						bailed = true
-						return
-					}
 				}
 				start = end
 			}
 		}()
-		return bailed
 	}
 
 	// drainQueue moves targets already waiting in q.ch into the window without
@@ -642,22 +661,22 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 	for {
 		select {
 		case <-h.stop:
-			// Final flush must include targets still buffered in q.ch (offered but
-			// not yet collected), not just the collected window: stopCSCRefresher
+			// Pull everything buffered in q.ch (offered but not yet collected) and
+			// hand it to flush, which (stopping==true) abandons it without a refetch
+			// — see flush's doc: a refetch here would only be discarded by the
+			// teardown that runs right after this join anyway. stopCSCRefresher
 			// rebinds the handler away from this queue BEFORE signalling stop, so
-			// nothing new arrives here and those buffered targets would otherwise be
-			// abandoned — up to cscRefreshQueueDepth hot entries that, on a SHARED
-			// cache, stay evicted for the surviving sibling until a later reader
-			// misses. The channel is quiescent, so this loop is finite; the pool is
-			// still open (closeResources runs after this join).
+			// nothing new arrives here, making this loop finite. Loop until q.ch is
+			// fully drained rather than stopping after one window-cap-sized batch:
+			// c.cscRefreshQueue is never nilled on stop (see stopCSCRefresher), so a
+			// caller that keeps a reference to the closed *Client would otherwise
+			// keep every undrained target's key bytes reachable through it — up to
+			// cscRefreshQueueDepth entries at cscRefreshTargetMaxBytes each. Cheap
+			// now that flush does no network I/O: at most
+			// cscRefreshQueueDepth/cscRefreshWindowMaxKeys rounds.
 			for {
 				empty := drainQueue()
-				if flush(false, true) {
-					// A chunk failed: stop draining rather than spend a fresh per-chunk
-					// deadline on every remaining chunk (and every later drainQueue round)
-					// against a dead server — the bound this fix adds (#3965 F2).
-					return
-				}
+				flush(false, true)
 				if empty {
 					return
 				}
