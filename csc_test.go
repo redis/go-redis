@@ -876,6 +876,79 @@ func TestProcessCached_NilHitIsTerminal(t *testing.T) {
 	}
 }
 
+// TestProcessCached_CoalescerBailCarriesAttempt pins the convergence follow-up
+// from codex on #3989 ("Count the failed coalesced attempt in retry metrics"):
+// when a coalesced miss reached a session connection and then failed with a
+// session/transport error, the pooled re-run must start at attempt 1, so the
+// coalesced attempt is counted in state.attempts (the OTel duration metric)
+// and consumes one unit of retry budget — instead of processWithRetry
+// restarting from zero and reporting one attempt for an operation that made
+// two. A bail that never reached a session (a pre-queue shed) carries nothing.
+//
+// Deterministic: the "session" is a goroutine that dequeues the request,
+// attributes it to a connection (as the writer does before the write) and
+// settles it with a session error; the re-run then fails at once on a pooler
+// whose Get always errors (non-retryable), so processWithRetry runs exactly
+// one iteration. MaxRetries=1 keeps the seed visible (processWithRetry clamps
+// startAttempt to MaxRetries): 2 attempts when the coalesced attempt reached a
+// conn, 1 otherwise.
+func TestProcessCached_CoalescerBailCarriesAttempt(t *testing.T) {
+	newClient := func() (*baseClient, *cscMissCoalescer) {
+		cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+		c := &baseClient{
+			opt:          &Options{Protocol: 3, MaxRetries: 1},
+			csc:          cache,
+			cscKeyPrefix: cscNamespacePrefix(0, ""),
+			connPool:     &erroringPooler{},
+		}
+		mc := &cscMissCoalescer{c: c, ch: make(chan *cscMissReq, 1), stop: make(chan struct{})}
+		c.cscMissCoalescer.Store(mc)
+		return c, mc
+	}
+	run := func(t *testing.T, c *baseClient) int {
+		t.Helper()
+		ctx := context.Background()
+		cmd := NewStringCmd(ctx, "get", "k")
+		var state processState
+		done := make(chan error, 1)
+		go func() { done <- c.processCached(ctx, cmd, &state, 0) }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("processCached succeeded; the erroring pooler must fail the re-run")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("processCached did not return")
+		}
+		return state.attempts
+	}
+
+	t.Run("reached_session_conn_counts", func(t *testing.T) {
+		c, mc := newClient()
+		server, client := net.Pipe()
+		t.Cleanup(func() { server.Close(); client.Close() })
+		cn := pool.NewConn(client)
+		go func() {
+			req := <-mc.ch
+			req.servedBy = cn // the writer attributes a batch to its conn before the write
+			mc.settleErr(req, errors.New("csc test: session read failed"))
+		}()
+		if got := run(t, c); got != 2 {
+			t.Fatalf("state.attempts = %d; want 2 (the coalesced attempt on the session conn "+
+				"plus the pooled re-run)", got)
+		}
+	})
+
+	t.Run("pre_queue_shed_carries_nothing", func(t *testing.T) {
+		c, mc := newClient()
+		// Saturate the wire budget so fetch sheds before queueing: served == nil.
+		mc.wireBytes.Store(cscMissWireBudgetBytes)
+		if got := run(t, c); got != 1 {
+			t.Fatalf("state.attempts = %d; want 1 (a shed never reached a connection)", got)
+		}
+	})
+}
+
 func TestProcessCached_RecordsCacheHitDuration(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
 	client := NewClient(&Options{

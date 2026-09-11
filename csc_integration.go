@@ -1514,11 +1514,21 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 			// nothing, so connection blips and wire-budget sheds left the key uncached
 			// and later readers missed).
 			//
-			// TODO(convergence): the re-run starts its retry metrics at attempt 0, so
-			// the coalesced attempt is missing from retry_attempts. Fix by starting the
-			// re-run at attempt 1 via the explicit-start plumbing (processStartingAt)
-			// once the full-duplex autopipeline branch, which introduces it, is on this
-			// branch. See #3989 review thread on coalescer attempt counting.
+			// Carry the coalesced attempt into the re-run's accounting. served is
+			// non-nil exactly when the request reached a session connection (the
+			// writer attributes every request of a batch to its conn before the
+			// write; a pre-queue shed or a session that never acquired a conn leaves
+			// it nil), which is the same "one attempt on that conn" rule the success
+			// branch below applies. processWithRetry seeds both its reported attempt
+			// count and its retry-budget position from startAttempt, so the failed
+			// coalesced attempt shows up in retry_attempts and the error callback, and
+			// the re-run does not get MaxRetries+1 fresh attempts on top of the one
+			// already spent (codex on #3989; needs the explicit-start plumbing from the
+			// full-duplex autopipeline branch, now merged). processWithRetry clamps to
+			// MaxRetries, so this can never disable the re-run itself.
+			if served != nil {
+				startAttempt++
+			}
 			token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
 			if !shouldFetch {
 				// Another waiter won the re-Reserve race and is fetching. WAIT on it
