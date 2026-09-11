@@ -98,6 +98,32 @@ type OTelConnectionCounter interface {
 	RecordPendingRequests(ctx context.Context, delta int, cn ConnInfo, poolName string)
 }
 
+// OTelMultiDBRecorder is an optional capability interface for recording
+// MultiDB (geo-failover) metrics. Implementations of OTelRecorder can
+// optionally implement this interface to receive MultiDB notifications.
+// This is kept separate from OTelRecorder to avoid breaking existing
+// third-party implementations when new methods are added.
+type OTelMultiDBRecorder interface {
+	// RecordMultiDBFailover records a MultiDB (geo-failover) failover from one
+	// member database to another. fromFQDN/toFQDN are host-only database FQDNs,
+	// reason is "automatic" or "manual", and duration is the wall time of the
+	// failover.
+	RecordMultiDBFailover(ctx context.Context, fromFQDN, toFQDN, reason string, duration time.Duration)
+
+	// RecordMultiDBActiveDatabaseChange records a change of the active MultiDB
+	// member database (failover, fallback, or manual selection). fromFQDN/toFQDN
+	// are host-only database FQDNs.
+	RecordMultiDBActiveDatabaseChange(ctx context.Context, fromFQDN, toFQDN string)
+
+	// RecordMultiDBCircuitStateChange records a MultiDB circuit breaker state
+	// transition for the database identified by dbFQDN.
+	RecordMultiDBCircuitStateChange(ctx context.Context, dbFQDN, fromState, toState string)
+
+	// RecordMultiDBHealthCheck records the result of a MultiDB health-check pass
+	// for the database identified by dbFQDN. duration is the wall time of the check.
+	RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, duration time.Duration)
+}
+
 // This is used for async gauge metrics that need to pull stats from pools periodically.
 type OTelPoolRegistrar interface {
 	// RegisterPool is called when a new client is created with its main connection pool.
@@ -180,6 +206,30 @@ func (a *otelRecorderAdapter) RecordPubSubMessage(ctx context.Context, cn *pool.
 
 func (a *otelRecorderAdapter) RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string) {
 	a.recorder.RecordStreamLag(ctx, lag, toConnInfo(cn), streamName, consumerGroup, consumerName)
+}
+
+func (a *otelRecorderAdapter) RecordMultiDBFailover(ctx context.Context, fromFQDN, toFQDN, reason string, duration time.Duration) {
+	if r, ok := a.recorder.(OTelMultiDBRecorder); ok {
+		r.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, duration)
+	}
+}
+
+func (a *otelRecorderAdapter) RecordMultiDBActiveDatabaseChange(ctx context.Context, fromFQDN, toFQDN string) {
+	if r, ok := a.recorder.(OTelMultiDBRecorder); ok {
+		r.RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
+	}
+}
+
+func (a *otelRecorderAdapter) RecordMultiDBCircuitStateChange(ctx context.Context, dbFQDN, fromState, toState string) {
+	if r, ok := a.recorder.(OTelMultiDBRecorder); ok {
+		r.RecordMultiDBCircuitStateChange(ctx, dbFQDN, fromState, toState)
+	}
+}
+
+func (a *otelRecorderAdapter) RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, duration time.Duration) {
+	if r, ok := a.recorder.(OTelMultiDBRecorder); ok {
+		r.RecordMultiDBHealthCheck(ctx, dbFQDN, success, duration)
+	}
 }
 
 func (a *otelRecorderAdapter) RecordConnectionCount(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
