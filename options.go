@@ -198,8 +198,12 @@ type Options struct {
 	// throughput) while keeping regular command buffers small (to save memory).
 	//
 	// If not set (0), the pipeline pool's read buffer is the larger of
-	// ReadBufferSize and DefaultPipelineBufferSize (128 KiB). Pipelines never fall
-	// back to the regular pool or its buffer size.
+	// ReadBufferSize and DefaultPipelineBufferSize (128 KiB). The pipeline pool is
+	// always created and a pipeline uses it whenever it has a free turn; when it
+	// is saturated the pipeline spills to the regular pool without waiting (a
+	// non-blocking TryGet), and that connection has the regular ReadBufferSize.
+	// Size the pipeline pool (PipelinePoolSize) for the pipeline concurrency you
+	// expect if every pipeline must get this buffer.
 	//
 	// Recommended: 64–128 KiB for high-throughput pipelining. The benefit here is
 	// on the READ side: a batch's replies arrive as one large stream, and a bigger
@@ -238,8 +242,11 @@ type Options struct {
 	// throughput) while keeping regular command buffers small (to save memory).
 	//
 	// If not set (0), the pipeline pool's write buffer is the larger of
-	// WriteBufferSize and DefaultPipelineBufferSize (128 KiB). Pipelines never fall
-	// back to the regular pool or its buffer size.
+	// WriteBufferSize and DefaultPipelineBufferSize (128 KiB). As with the read
+	// buffer, a pipeline that finds the pipeline pool saturated spills to the
+	// regular pool without waiting and then writes through the regular
+	// WriteBufferSize; size PipelinePoolSize for your pipeline concurrency if
+	// every pipeline must get this buffer.
 	//
 	// Recommended: 64–128 KiB for high-throughput pipelining (size to roughly
 	// MaxBatchSize × average-command-bytes). Throughput plateaus past ~64 KiB and
