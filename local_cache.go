@@ -41,6 +41,18 @@ type cacheEntry struct {
 	// Written under Lock (Set/Fulfill), read under RLock (get).
 	validAt time.Time
 
+	// fetchSeq is the global cscFetchSeq value at the moment this entry's fetch was
+	// ISSUED (Reserve), carried unchanged through fulfill. It lets a batched
+	// invalidation tell "this value predates me" from "this value was refetched
+	// after me": an invalidation snapshots cscFetchSeq at OBSERVE time, and a delete
+	// is skipped when entry.fetchSeq > that snapshot (the fetch was issued after the
+	// invalidate, so it reached a server that had already applied the write). Fetch-
+	// ISSUE order is used, not fulfill-COMPLETION order, because the invalidation and
+	// the reply travel on different connections with no ordering — a stale reply can
+	// fulfill after the invalidate is observed (see deleteByRedisKey). Set/read under
+	// the shard Lock.
+	fetchSeq uint64
+
 	// ownerConnID is the conn that fetched this entry (set by FulfillOwned; 0 =
 	// none). Default CLIENT TRACKING sends a key's invalidation only to that
 	// conn, so the entry must be evicted when it goes away (see EvictByConn).
@@ -54,6 +66,17 @@ var lruSequence atomic.Int64
 // nextLRUToken returns the next strictly-greater LRU token.
 func nextLRUToken() int64 {
 	return lruSequence.Add(1)
+}
+
+// cscFetchSeq is the global monotonic counter feeding cacheEntry.fetchSeq. It
+// totally orders fetch-ISSUE (Reserve) events against invalidation OBSERVE
+// events so a batched delete can skip an entry refetched after the invalidation
+// (see cacheEntry.fetchSeq).
+var cscFetchSeq atomic.Uint64
+
+// nextFetchSeq returns the next strictly-greater fetch-issue sequence.
+func nextFetchSeq() uint64 {
+	return cscFetchSeq.Add(1)
 }
 
 // CacheSizer calculates estimated memory usage in bytes for a cache entry.
@@ -211,6 +234,17 @@ func NewLocalCache(cfg CacheConfig) *LocalCache {
 	return c
 }
 
+// effectiveMaxStaleness reports the cache's staleness bound (0 = none). Every
+// shard carries the same value, so shard 0 is authoritative. Used by
+// Options.init to run the batch-window-vs-staleness sanity warning for an
+// INJECTED *LocalCache too, where no ClientSideCacheConfig exists to read.
+func (c *LocalCache) effectiveMaxStaleness() time.Duration {
+	if len(c.shards) == 0 {
+		return 0
+	}
+	return c.shards[0].maxStaleness
+}
+
 // LocalCache is the built-in sharded approximate-LRU cache.
 //
 // Experimental: this API may change in a minor release.
@@ -223,6 +257,16 @@ type LocalCache struct {
 	nextToken atomic.Uint64
 	hits      atomic.Uint64
 	misses    atomic.Uint64
+
+	// Invalidation accounting for refresh-on-invalidate (see CSCRefreshStats).
+	// invalidations counts keys named in INCOMING pushes, tallied once at the
+	// handler choke point before dedup/batching. deletions/deletionsNoop count
+	// APPLIED deletes (post-dedup) and the subset that matched no live entry. The
+	// gap between invalidations and deletions is the direct measure of dedup +
+	// duplicate invalidations (and, under a flood, the spill-cap full-Flush).
+	invalidations atomic.Uint64
+	deletions     atomic.Uint64
+	deletionsNoop atomic.Uint64
 }
 
 var _ Cache = (*LocalCache)(nil)
@@ -420,6 +464,10 @@ func (c *LocalCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 		reservedAt: reservedAt,
 		waitCh:     waitCh,
 		sizeBytes:  sizeBytes,
+		// Stamp fetch-ISSUE order now so a later invalidation can tell a value
+		// refetched after it (keep) from one that predates it (evict). Carried
+		// through fulfill unchanged. See cacheEntry.fetchSeq.
+		fetchSeq: nextFetchSeq(),
 	}
 	entry.lastAccessNs.Store(nextLRUToken())
 
@@ -484,6 +532,24 @@ func (c *LocalCache) fulfill(cacheKey string, token, ownerConnID uint64, value [
 	return stillExists && current == entry && entry.state == cacheEntryValid
 }
 
+// restoreAccessToken resets a Valid entry's reader-access recency (lastAccessNs)
+// to accessNs, undoing the fresh token fulfill stamps. The refresh republish calls
+// this so a background refresh does NOT count as a reader access: otherwise the
+// refreshed key stays above the refresh horizon and every later invalidation
+// refreshes it again even after all readers stop — a self-sustaining refetch loop
+// contrary to the cold-key guard. A reader that get()s between the fulfill and this
+// call has its newer token overwritten, which only UNDER-refreshes that key (the
+// next reader refetches), never serves stale. No-op if the entry is gone or not
+// Valid.
+func (c *LocalCache) restoreAccessToken(cacheKey string, accessNs int64) {
+	s := c.shardFor(cacheKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, ok := s.entries[cacheKey]; ok && entry.state == cacheEntryValid {
+		entry.lastAccessNs.Store(accessNs)
+	}
+}
+
 // EvictByConn removes every entry fetched by connID and returns the count.
 // Called when a conn is removed/swapped: the server stops delivering those
 // keys' invalidations, so keeping them risks stale serves. Errs toward a miss.
@@ -544,11 +610,18 @@ func (c *LocalCache) Cancel(cacheKey string, token uint64) bool {
 	return true
 }
 
-// DeleteByRedisKey removes entries associated with redisKey.
+// DeleteByRedisKey removes entries associated with redisKey. It is the applied-
+// delete path used when refresh-on-invalidate is off (the collecting variant is
+// used when it is on); counting deletions here keeps DeletionStats accurate on
+// both paths. The two are disjoint — neither calls the other — so no double count.
 func (c *LocalCache) DeleteByRedisKey(redisKey string) int {
 	removed := 0
 	for i := range c.shards {
 		removed += c.shards[i].deleteByRedisKey(redisKey)
+	}
+	c.deletions.Add(1)
+	if removed == 0 {
+		c.deletionsNoop.Add(1)
 	}
 	return removed
 }

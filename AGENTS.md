@@ -114,6 +114,16 @@ error, it must call `cmd.SetErr(wrappedErr)` so the typed-error helpers
 (`redis.IsLoadingError`, `IsMovedError`, etc. in `error.go`) keep working through
 `errors.As`. The README has a longer pipeline-hook example.
 
+**Hook contract** (behavior is undefined otherwise — the mechanism assumes
+well-behaved hooks rather than defending every corner case): a hook must call
+`next` (unless deliberately terminating the command), must **not** call `Close`
+or other client control methods (it runs on the goroutine `Close` waits for, so
+it deadlocks), must **not** panic, and must **not** mutate client or connection
+state. It may observe and wrap errors only. User callbacks such as `CacheSizer`
+follow the same no-panic rule. Client-side caching additionally requires the
+**built-in** push processor; a custom `PushNotificationProcessor` is unsupported
+with CSC (the client logs a warning at init). See `.claude/specs/push.md`.
+
 ### Connection pool (`internal/pool`)
 
 Owns dialing, idle/active connection bookkeeping, conn state (`conn_state.go`),

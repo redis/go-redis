@@ -3181,6 +3181,9 @@ func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
 		if err != nil {
 			return err
 		}
+		// Populate rawVal on the RESP2 path too, so RawVal()/RawResult() behave
+		// the same regardless of protocol (the RESP3 branch sets it above).
+		cmd.rawVal = data
 	}
 
 	result, cursorResult, err := parseFTHybrid(data, cmd.withCursor)
