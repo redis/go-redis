@@ -15,12 +15,54 @@ import (
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 )
 
 var ctx = context.TODO()
+
+type stubPooler struct {
+	putCalls    int
+	removeCalls int
+	putConns    []*pool.Conn
+	removeConns []*pool.Conn
+}
+
+type trackingPushProcessor struct {
+	calls int
+}
+
+func (p *trackingPushProcessor) GetHandler(string) push.NotificationHandler { return nil }
+func (p *trackingPushProcessor) ProcessPendingNotifications(context.Context, push.NotificationHandlerContext, *proto.Reader) error {
+	p.calls++
+	return nil
+}
+func (p *trackingPushProcessor) RegisterHandler(string, push.NotificationHandler, bool) error {
+	return nil
+}
+func (p *trackingPushProcessor) UnregisterHandler(string) error { return nil }
+
+func (s *stubPooler) NewConn(context.Context) (*pool.Conn, error)                 { return nil, nil }
+func (s *stubPooler) CloseConn(context.Context, *pool.Conn, string, string) error { return nil }
+func (s *stubPooler) Get(context.Context) (*pool.Conn, error)                     { return nil, nil }
+func (s *stubPooler) Put(context.Context, *pool.Conn) {
+	s.putCalls++
+	s.putConns = append(s.putConns, nil)
+}
+func (s *stubPooler) Remove(context.Context, *pool.Conn, error) {
+	s.removeCalls++
+	s.removeConns = append(s.removeConns, nil)
+}
+func (s *stubPooler) Len() int                                             { return 0 }
+func (s *stubPooler) IdleLen() int                                         { return 0 }
+func (s *stubPooler) Stats() *pool.Stats                                   { return &pool.Stats{} }
+func (s *stubPooler) Size() int                                            { return 0 }
+func (s *stubPooler) AddPoolHook(pool.PoolHook)                            {}
+func (s *stubPooler) RemovePoolHook(pool.PoolHook)                         {}
+func (s *stubPooler) RemoveWithoutTurn(context.Context, *pool.Conn, error) {}
+func (s *stubPooler) Close() error                                         { return nil }
 
 type capturingLogger struct {
 	mu   sync.Mutex
@@ -765,6 +807,76 @@ var _ = Describe("withConn", Label("NonRedisEnterprise"), func() {
 		Expect(client.connPool.Len()).To(Equal(1))
 	})
 })
+
+// TestReleaseConnDrainsContextTimeoutAndPoolsConnection verifies that a
+// context-timeout error can still be surfaced to the caller while allowing the
+// connection to be re-pooled when the remaining reply can be drained safely.
+func TestReleaseConnDrainsContextTimeoutAndPoolsConnection(t *testing.T) {
+	server, clientConn := net.Pipe()
+	defer func() { _ = server.Close(); _ = clientConn.Close() }()
+
+	go func() {
+		_, _ = server.Write([]byte("+OK\r\n"))
+		_ = server.Close()
+	}()
+
+	cn := pool.NewConn(clientConn)
+	pooler := &stubPooler{}
+	client := &baseClient{
+		opt: &Options{
+			DrainOnContextTimeout:      true,
+			ContextTimeoutDrainTimeout: 50 * time.Millisecond,
+		},
+		connPool: pooler,
+	}
+
+	client.releaseConn(context.Background(), cn, context.DeadlineExceeded)
+
+	if pooler.putCalls != 1 {
+		t.Fatalf("expected connection to be put back into pool, got %d puts and %d removes", pooler.putCalls, pooler.removeCalls)
+	}
+	if pooler.removeCalls != 0 {
+		t.Fatalf("expected connection not to be removed, got %d removes", pooler.removeCalls)
+	}
+}
+
+// TestReleaseConnDrainsContextTimeoutAndProcessesPushNotifications exercises
+// the same drain path for RESP3 connections and confirms that pending push
+// notifications are processed before the reply is consumed.
+func TestReleaseConnDrainsContextTimeoutAndProcessesPushNotifications(t *testing.T) {
+	server, clientConn := net.Pipe()
+	defer func() { _ = server.Close(); _ = clientConn.Close() }()
+
+	go func() {
+		_, _ = server.Write([]byte(">2\r\n$7\r\nmessage\r\n$5\r\nhello\r\n+OK\r\n"))
+		_ = server.Close()
+	}()
+
+	cn := pool.NewConn(clientConn)
+	pooler := &stubPooler{}
+	processor := &trackingPushProcessor{}
+	client := &baseClient{
+		opt: &Options{
+			Protocol:                   3,
+			DrainOnContextTimeout:      true,
+			ContextTimeoutDrainTimeout: 50 * time.Millisecond,
+		},
+		connPool:      pooler,
+		pushProcessor: processor,
+	}
+
+	client.releaseConn(context.Background(), cn, context.DeadlineExceeded)
+
+	if processor.calls != 1 {
+		t.Fatalf("expected push processor to be invoked once, got %d", processor.calls)
+	}
+	if pooler.putCalls != 1 {
+		t.Fatalf("expected connection to be put back into pool, got %d puts and %d removes", pooler.putCalls, pooler.removeCalls)
+	}
+	if pooler.removeCalls != 0 {
+		t.Fatalf("expected connection not to be removed, got %d removes", pooler.removeCalls)
+	}
+}
 
 var _ = Describe("ClusterClient", func() {
 	var client *ClusterClient

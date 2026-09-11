@@ -109,9 +109,11 @@ type FailoverOptions struct {
 	// See Options.DialerRetryBackoff for details.
 	DialerRetryBackoff func(attempt int) time.Duration
 
-	ReadTimeout           time.Duration
-	WriteTimeout          time.Duration
-	ContextTimeoutEnabled bool
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	ContextTimeoutEnabled      bool
+	DrainOnContextTimeout      bool
+	ContextTimeoutDrainTimeout time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
@@ -231,7 +233,9 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
-		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      opt.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      opt.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: opt.ContextTimeoutDrainTimeout,
 
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,
@@ -286,7 +290,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
-		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      opt.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      opt.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: opt.ContextTimeoutDrainTimeout,
 
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,
@@ -353,7 +359,9 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
-		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      opt.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      opt.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: opt.ContextTimeoutDrainTimeout,
 
 		PoolFIFO:           opt.PoolFIFO,
 		PoolSize:           opt.PoolSize,
