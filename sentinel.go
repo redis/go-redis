@@ -578,6 +578,20 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
+	// Registered first (at construction), so onClose.run's LIFO order invokes it LAST —
+	// after any lazily-registered autopipeliner drain hook. The drain needs MasterAddr
+	// (hence a live failover client) to dial a replacement conn for accepted-but-unsent
+	// work; tearing the failover client down here first would make MasterAddr return
+	// pool.ErrClosed and fail those replayable commands. See onCloseHooks.run.
+	//
+	// Registered BEFORE the pools exist, not after: with MinIdleConns > 0 the main
+	// pool starts dialing as soon as it is created, and masterReplicaDialer then
+	// builds the failover's Sentinel client and pubsub. If a later construction
+	// step panics, the panic-cleanup defer below closes rdb, whose onClose hooks
+	// must already include this one — otherwise those discovery resources outlive
+	// the client nobody will ever hold (Copilot on #4002).
+	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
+
 	// Close a partially-built client if any construction step below panics before
 	// this constructor returns. Mirrors NewClient: the pools (and their MinIdleConns
 	// dialing goroutines) are created below, and a later step can panic — a pipeline
@@ -638,13 +652,6 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// for the identical standalone setup). The pipeline pool is nil when not
 	// configured.
 	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
-
-	// Registered first (at construction), so onClose.run's LIFO order invokes it LAST —
-	// after any lazily-registered autopipeliner drain hook. The drain needs MasterAddr
-	// (hence a live failover client) to dial a replacement conn for accepted-but-unsent
-	// work; tearing the failover client down here first would make MasterAddr return
-	// pool.ErrClosed and fail those replayable commands. See onCloseHooks.run.
-	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
