@@ -2551,6 +2551,66 @@ func TestFullDuplexReaderPanicRecovers(t *testing.T) {
 	}
 }
 
+// fdRedisErrWriter returns a redis-typed error from Write, simulating a user
+// io.Writer that fails (not panics) while a RawWriteToCmd streams the raw reply
+// on the FD reader goroutine. isRedisError is true for this error, so the reader
+// must classify it as session-fatal by the command TYPE — the payload is unread
+// and the socket desynced — rather than mistaking it for a benign server reply.
+type fdRedisErrWriter struct{}
+
+func (fdRedisErrWriter) Write(p []byte) (int, error) {
+	return 0, proto.RedisError("ERR sink boom")
+}
+
+// TestFullDuplexReaderRawSinkErrorRecovers is the non-panic sibling of
+// TestFullDuplexReaderPanicRecovers: a RawWriteToCmd whose writer RETURNS a
+// redis-typed error mid-stream must fail the session (the raw reply is
+// half-streamed, so the socket is desynced) instead of settling inline and
+// advancing the reader over leftover bytes. The value is large so the reply spans
+// multiple read/write cycles and the first failed Write leaves payload unread. The
+// engine must recover on a fresh session and read correct replies afterward.
+func TestFullDuplexReaderRawSinkErrorRecovers(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := c.Set(ctx, "fd:rsink:k", strings.Repeat("x", 1<<20), 0).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	cmd := NewRawWriteToCmd(ctx, fdRedisErrWriter{}, "get", "fd:rsink:k")
+	f := ap.Submit(ctx, cmd)
+	done := make(chan struct{})
+	go func() { _ = f.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("raw command never settled after a sink write error")
+	}
+	if cmd.Err() == nil {
+		t.Fatal("expected an error after the sink write failed, got nil")
+	}
+	// The engine must recover AND read correct replies on the fresh session: a
+	// subsequent GET must return exactly what was stored, proving no leftover bytes
+	// from the abandoned raw reply were misread as a later command's reply.
+	if err := ap.Set(ctx, "fd:rsink:after", "sentinel-value", 0).Err(); err != nil {
+		t.Fatalf("engine did not recover after the sink error: %v", err)
+	}
+	if got, err := ap.Get(ctx, "fd:rsink:after").Result(); err != nil || got != "sentinel-value" {
+		t.Fatalf("post-recovery GET = %q, err=%v; want %q (reply desync?)", got, err, "sentinel-value")
+	}
+}
+
 // fdNoopHook is a passthrough ProcessHook whose only effect is to make the FD
 // engine host each command (hookCount > 0), so every completed command has a
 // hookDone channel — a double-complete would then double-close it (panic).
@@ -4587,5 +4647,79 @@ func TestFullDuplexSpillsToMainPoolWhenPipelinePoolFull(t *testing.T) {
 	}
 	if g := mainHook.gets.Load(); g < 1 {
 		t.Fatalf("FD lease did not spill to the main pool (main-pool gets=%d)", g)
+	}
+}
+
+// TestFullDuplexSpillsToMainPoolOnPipelineDialError pins the spill-on-dial-error
+// fix (codex on #4002): the FD lease acquires from the pipeline pool with TryGet,
+// which DIALS when the pool has no idle conn. A transient dial failure there is not
+// saturation (ErrPoolTryFull/ErrPoolExhausted), so the previous allow-list surfaced
+// it as a lease error and failed the accepted backlog even with a healthy main pool.
+// The spill is now a deny-list: everything except a cancelled ctx or a closed pool
+// spills. Here the pipeline pool's dialer always errors while the main pool is
+// healthy, so the accepted commands must spill and complete.
+//
+// Red-check: restore the allow-list (spill only on ErrPoolTryFull/ErrPoolExhausted)
+// -> TryGet's dial error returns fdLeaseErr and Set below fails instead of spilling.
+func TestFullDuplexSpillsToMainPoolOnPipelineDialError(t *testing.T) {
+	ctx := context.Background()
+
+	c := NewClient(&Options{
+		Addr:                    ":6379",
+		Protocol:                3,
+		PipelinePoolSize:        1,
+		PoolSize:                8,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+	})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	// Swap the pipeline pool for one whose dialer always fails, BEFORE the engine
+	// leases (the engine reads loadPipelinePool live on first command). A raw pool
+	// with a plain failing dialer does a single dial attempt — no root-level retry
+	// wrapper — so TryGet returns the dial error at once. The main pool keeps its
+	// real dialer.
+	orig := c.pipelinePool
+	failPool := pool.NewConnPool(&pool.Options{
+		Dialer:             func(context.Context) (net.Conn, error) { return nil, errors.New("pipeline dial boom") },
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		MinIdleConns:       0,
+		PoolTimeout:        100 * time.Millisecond,
+		DialTimeout:        time.Second,
+		ConnMaxIdleTime:    -1,
+	})
+	c.pipelinePool = &pipelinePoolRef{pool: failPool, name: "fd-faildial-pipe"}
+	t.Cleanup(func() {
+		_ = failPool.Close()
+		if orig != nil {
+			_ = orig.pool.Close()
+		}
+	})
+
+	// Detect the spill: a Get on the MAIN pool by the FD lease.
+	mainHook := &fdCountHook{}
+	c.connPool.AddPoolHook(mainHook)
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	// The engine leases lazily on the first command; the pipeline pool's dial fails,
+	// so the lease must spill to the healthy main pool and the command must succeed,
+	// not fail with the dial error.
+	if err := ap.Set(ctx, "fd:faildial:k", "v", 0).Err(); err != nil {
+		t.Fatalf("FD command failed instead of spilling on a pipeline dial error: %v", err)
+	}
+	if v, err := ap.Get(ctx, "fd:faildial:k").Result(); err != nil || v != "v" {
+		t.Fatalf("FD get after dial-error spill: v=%q err=%v", v, err)
+	}
+	if g := mainHook.gets.Load(); g < 1 {
+		t.Fatalf("FD lease did not spill to the main pool on a pipeline dial error (main-pool gets=%d)", g)
 	}
 }

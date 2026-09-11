@@ -71,7 +71,19 @@ var errFDPushDrainFailed = errors.New("redis: autopipeline: full-duplex push dra
 // and shift every later reply. Any other error is fatal only when it is not a Redis
 // error (a real transport or protocol failure). A plain Redis error is a real reply
 // and is handled inline.
-func fdReplyIsFatal(e error) bool {
+//
+// A *RawWriteToCmd is the exception: it streams the raw reply — INCLUDING a
+// server error line — straight to the caller's io.Writer and returns nil for a
+// server reply, so a non-nil error from its readReply is never a server reply.
+// It is a sink or socket failure mid-frame, which leaves the payload unread and
+// the socket desynced. That is session-fatal even when the sink error itself
+// implements redis.Error (isRedisError would otherwise call it a benign reply,
+// advance the reader, and let the next command read the leftover bytes). Classify
+// by the command type, not the error, for this one streaming Cmder.
+func fdReplyIsFatal(cmd Cmder, e error) bool {
+	if _, ok := cmd.(*RawWriteToCmd); ok {
+		return true
+	}
 	return errors.Is(e, errFDPushDrainFailed) || !isRedisError(e)
 }
 
@@ -1345,18 +1357,29 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// per-round-trip pipeline borrow, a spilled FD session holds the main-pool conn for
 	// its whole lifetime (until idle/maxHold); that is the accepted cost of not
 	// stranding the backlog. TryGet (non-blocking) so a saturated pipeline pool spills
-	// at once instead of stalling up to PoolTimeout. Spill on saturation
-	// (ErrPoolTryFull / ErrPoolExhausted) or a pipeline-conn init failure (the main
-	// pool may have an idle conn); NOT on a non-saturation error (ctx cancelled, pool
-	// closed) — the main pool would fail the same way. Acquire under ap.ctx (not bg) so
-	// a Close cancelling ap.ctx returns at once instead of waiting out PoolTimeout;
-	// init and session I/O stay on bg so accepted commands still complete during Close.
+	// at once instead of stalling up to PoolTimeout.
+	//
+	// Spill on ANY acquisition failure EXCEPT a hard stop — saturation (ErrPoolTryFull
+	// / ErrPoolExhausted) AND a transient DIAL error while the pipeline pool is growing
+	// a connection (TryGet dials when the pool has no idle conn), plus a pipeline-conn
+	// init failure below. Only a cancelled ap.ctx (Close) or a closed pool surface as
+	// fdLeaseErr, because the main pool would fail the same way; every other error may
+	// clear on the main pool, which can hand back an idle conn or dial cleanly, so it
+	// must not fail the accepted backlog (codex on #4002 — a deny-list, not an
+	// allow-list: a dial error is not saturation but must still spill). Acquire under
+	// ap.ctx (not bg) so a Close cancelling ap.ctx returns at once instead of waiting
+	// out PoolTimeout; init and session I/O stay on bg so accepted commands still
+	// complete during Close.
 	if ref := fd.client.loadPipelinePool(); ref != nil {
 		spill := false
 		cn, aerr = ref.pool.TryGet(fd.ap.ctx)
 		if aerr != nil {
 			cn = nil
-			if !errors.Is(aerr, pool.ErrPoolTryFull) && !errors.Is(aerr, pool.ErrPoolExhausted) {
+			if errors.Is(aerr, pool.ErrClosed) ||
+				errors.Is(aerr, context.Canceled) ||
+				errors.Is(aerr, context.DeadlineExceeded) {
+				// Hard stop: the main pool cannot do better (closed pool, or the caller/
+				// Close cancelled the acquire ctx). Surface it rather than spill.
 				return carry, fdLeaseErr, aerr
 			}
 			spill = true
@@ -1473,7 +1496,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					}
 					return req.cmd.readReply(rd)
 				})
-				if e != nil && fdReplyIsFatal(e) {
+				if e != nil && fdReplyIsFatal(req.cmd, e) {
 					// Connection/protocol error, OR a push-drain desync (fatal even when it
 					// wraps a Redis-typed cause — see fdReplyIsFatal): stop; the unread tail
 					// stays in the deque and becomes the unacked recovery set for replay.

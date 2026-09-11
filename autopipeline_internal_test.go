@@ -575,24 +575,37 @@ func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
 // the unread frame in the stream, shifting every later reply (FIFO desync). This
 // pins the %v->%w wrap against re-opening that hole.
 func TestFDReplyIsFatalPushDrain(t *testing.T) {
+	ctx := context.Background()
 	redisErr := proto.RedisError("WRONGTYPE Operation against a key holding the wrong kind of value")
 	loading := proto.RedisError("LOADING Redis is loading the dataset in memory")
 
+	// The ordinary reply path classifies by the error; a *RawWriteToCmd classifies
+	// by the command type (any non-nil error is a sink/socket failure — see
+	// fdReplyIsFatal). Use a plain StringCmd for the error-driven cases.
+	plain := NewStringCmd(ctx, "get", "k")
+	raw := NewRawWriteToCmd(ctx, nil, "get", "k")
+
 	cases := []struct {
 		name  string
+		cmd   Cmder
 		err   error
 		fatal bool
 	}{
-		{"transport error stops the session", io.EOF, true},
-		{"plain redis reply is not fatal", redisErr, false},
-		{"drain wrapping a redis error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, redisErr), true},
-		{"drain wrapping a retryable redis error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, loading), true},
-		{"drain wrapping a transport error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, io.EOF), true},
+		{"transport error stops the session", plain, io.EOF, true},
+		{"plain redis reply is not fatal", plain, redisErr, false},
+		{"drain wrapping a redis error is fatal", plain, fmt.Errorf("%w: %w", errFDPushDrainFailed, redisErr), true},
+		{"drain wrapping a retryable redis error is fatal", plain, fmt.Errorf("%w: %w", errFDPushDrainFailed, loading), true},
+		{"drain wrapping a transport error is fatal", plain, fmt.Errorf("%w: %w", errFDPushDrainFailed, io.EOF), true},
+		// A RawWriteToCmd streams the raw reply to the caller's io.Writer, so a
+		// non-nil error is a sink/socket failure with the payload unread — fatal
+		// even when the sink error itself is redis-typed (isRedisError == true).
+		{"raw-write redis-typed sink error is fatal", raw, redisErr, true},
+		{"raw-write transport sink error is fatal", raw, io.EOF, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := fdReplyIsFatal(tc.err); got != tc.fatal {
-				t.Fatalf("fdReplyIsFatal(%v) = %v, want %v", tc.err, got, tc.fatal)
+			if got := fdReplyIsFatal(tc.cmd, tc.err); got != tc.fatal {
+				t.Fatalf("fdReplyIsFatal(%T, %v) = %v, want %v", tc.cmd, tc.err, got, tc.fatal)
 			}
 		})
 	}

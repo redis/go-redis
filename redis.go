@@ -1427,15 +1427,18 @@ func (c *baseClient) withPipelineConn(
 	// (not via withConn, which would call Limiter.Allow()/ReportResult() a second
 	// time on top of the outer pair above — the #3959 double-count, which could
 	// also spuriously reject the spill); the outer Allow accounts this op and the
-	// deferred ReportResult reports it once. Spill on:
-	//   - pool saturation: ErrPoolTimeout (its short PoolTimeout elapsed) or
-	//     ErrPoolExhausted (a per-pool MaxActiveConns cap; defensive, since
-	//     pipelinePoolOptions resets MaxActiveConns to 0), and
-	//   - a pipeline-conn init failure (e.g. a fresh dial refused with maxclients)
-	//     — the main pool may have an idle conn and avoid it.
-	// Do NOT spill on a non-saturation error (ctx cancelled, pool closed): the main
-	// pool would fail the same way. Spilled pipelines run with the regular buffer
-	// sizes (a throughput detail).
+	// deferred ReportResult reports it once.
+	//
+	// Spill on EVERY acquisition failure EXCEPT a hard stop — a closed pool
+	// (pool.ErrClosed) or a cancelled/expired acquire ctx (context.Canceled/
+	// DeadlineExceeded) — because there the main pool would fail the same way. This
+	// is a deny-list, not an allow-list: TryGet also DIALS when the pipeline pool
+	// has no idle conn, and a transient dial failure there is neither ErrPoolTryFull
+	// nor ErrPoolExhausted, so an allow-list would surface it and fail the pipeline
+	// even though the main pool has an idle conn or could dial cleanly. Saturation
+	// (ErrPoolTryFull/ErrPoolExhausted), a dial error, and a pipeline-conn init
+	// failure all spill; the main pool may hand back an idle conn and avoid it.
+	// Spilled pipelines run with the regular buffer sizes (a throughput detail).
 	//
 	// TryGet, not Get: on a saturated pipeline pool TryGet returns ErrPoolTryFull
 	// AT ONCE (no PoolTimeout wait, and it is not counted as a pool timeout), so the
@@ -1445,7 +1448,11 @@ func (c *baseClient) withPipelineConn(
 	cn, retErr = pipelinePool.TryGet(ctx)
 	if retErr != nil {
 		cn = nil
-		if !errors.Is(retErr, pool.ErrPoolTryFull) && !errors.Is(retErr, pool.ErrPoolExhausted) {
+		if errors.Is(retErr, pool.ErrClosed) ||
+			errors.Is(retErr, context.Canceled) ||
+			errors.Is(retErr, context.DeadlineExceeded) {
+			// Hard stop: the main pool cannot do better (closed pool, or the caller
+			// cancelled/expired the acquire ctx). Surface it rather than spill.
 			return retErr
 		}
 		spill = true
