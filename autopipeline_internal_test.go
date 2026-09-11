@@ -1855,10 +1855,14 @@ func TestBlockingSetCoversEveryReadTimeoutHelper(t *testing.T) {
 			t.Errorf("isBlockingCmd(%q) = false, want true", name)
 		}
 	}
+	// TS.READ carries two fixed positionals (key, timestamp) before its option
+	// section, and isBlockingCmd deliberately scans only past them (see
+	// TSReadWithArgs and TestBlockingDetectionTSReadKeyNamedBlock) — so the
+	// fixture must include the timestamp, as the real encoder does.
 	byArg := [][]interface{}{
 		{"xread", "BLOCK", 0, "STREAMS", "s", "$"},
 		{"xreadgroup", "GROUP", "g", "c", "BLOCK", 0, "STREAMS", "s", ">"},
-		{"ts.read", "k", "BLOCK", 0},
+		{"ts.read", "k", "$", "BLOCK", 0, 1},
 	}
 	for _, args := range byArg {
 		if !isBlockingCmd(NewCmd(ctx, args...)) {
@@ -1867,7 +1871,7 @@ func TestBlockingSetCoversEveryReadTimeoutHelper(t *testing.T) {
 	}
 	// The non-blocking forms of the arg-driven commands must stay batched.
 	for _, args := range [][]interface{}{
-		{"ts.read", "k", "COUNT", 5},
+		{"ts.read", "k", "$", "MAX_COUNT", 5},
 		{"xread", "COUNT", 10, "STREAMS", "s", "0"},
 	} {
 		if isBlockingCmd(NewCmd(ctx, args...)) {
