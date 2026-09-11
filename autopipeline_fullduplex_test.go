@@ -4049,7 +4049,14 @@ func TestFDFlushReqsAbortsChunksOnErrConnUnusable(t *testing.T) {
 
 // fdDrainErrProcessor is a custom (non-*push.Processor) PushNotificationProcessor
 // whose drain returns a caller-supplied error.
-type fdDrainErrProcessor struct{ err error }
+type fdDrainErrProcessor struct {
+	err error
+	// calls, when non-nil, counts ProcessPendingNotifications invocations so a
+	// test can assert whether the release drain handed the processor any work.
+	// The release drain runs synchronously on the releasing goroutine, so a
+	// plain counter is race-free here.
+	calls *int
+}
 
 func (fdDrainErrProcessor) GetHandler(string) push.NotificationHandler { return nil }
 func (fdDrainErrProcessor) RegisterHandler(string, push.NotificationHandler, bool) error {
@@ -4057,6 +4064,9 @@ func (fdDrainErrProcessor) RegisterHandler(string, push.NotificationHandler, boo
 }
 func (fdDrainErrProcessor) UnregisterHandler(string) error { return nil }
 func (p fdDrainErrProcessor) ProcessPendingNotifications(context.Context, push.NotificationHandlerContext, *proto.Reader) error {
+	if p.calls != nil {
+		*p.calls++
+	}
 	return p.err
 }
 
@@ -4067,6 +4077,16 @@ func (p fdDrainErrProcessor) ProcessPendingNotifications(context.Context, push.N
 // error, and isBadConn returns false for a (non-readonly, non-moved) redis.Error.
 // A drain error must make the conn unusable so it is Removed regardless.
 //
+// The push frame is pulled into the reader buffer first: the release drain hands
+// a custom processor work only when real bytes are BUFFERED (see
+// peekAndProcessPushNotifications and .claude/specs/push.md) — bare socket
+// readability can be a zero-RESP-byte TLS control record, and a custom
+// processor's blocking loop handed that times out and retires a healthy conn.
+// With the frame buffered the processor runs, its error propagates, and the
+// Remove-on-any-drain-error rule is what this test pins.
+// TestReleaseConnKeepsCustomProcessorConnOnBareReadiness covers the unbuffered
+// side of that gate.
+//
 // Red-check: restore the `if isBadConn(err, ...) { Remove; return }` guard -> the
 // redis.Error drain error is not isBadConn, so the conn is Put (puts=1, removes=0).
 func TestReleaseConnRemovesConnAfterCustomDrainError(t *testing.T) {
@@ -4075,8 +4095,6 @@ func TestReleaseConnRemovesConnAfterCustomDrainError(t *testing.T) {
 	defer client.Close()
 
 	cn := pool.NewConn(client)
-	// A push frame so MaybeHasData() and PeekReplyType() see a RespPush, routing to
-	// the custom processor (redis.go peeks the type, then calls it).
 	if _, err := server.Write([]byte(">1\r\n$3\r\nfoo\r\n")); err != nil {
 		t.Fatalf("write push frame: %v", err)
 	}
@@ -4087,20 +4105,85 @@ func TestReleaseConnRemovesConnAfterCustomDrainError(t *testing.T) {
 	if !cn.MaybeHasData() {
 		t.Fatal("push frame never became readable")
 	}
+	// Buffer the frame without consuming it: PeekReplyType reads the type byte
+	// into the bufio buffer and leaves it there.
+	if err := cn.WithReader(context.Background(), time.Second, func(rd *proto.Reader) error {
+		_, err := rd.PeekReplyType()
+		return err
+	}); err != nil {
+		t.Fatalf("buffering push frame: %v", err)
+	}
+	if !cn.HasBufferedData() {
+		t.Fatal("push frame not buffered after peek")
+	}
 
+	calls := 0
 	cp := &releaseRecordingPool{}
 	c := &baseClient{
 		opt:           &Options{Addr: "127.0.0.1:6379", Protocol: 3},
 		connPool:      cp,
-		pushProcessor: fdDrainErrProcessor{err: fdFakeRedisErr{}},
+		pushProcessor: fdDrainErrProcessor{err: fdFakeRedisErr{}, calls: &calls},
 	}
 	// err=nil so the first guard (isBadConn/errConnUnusable on the op error) does
 	// not fire; the drain error alone must drive removal.
 	c.releaseConn(context.Background(), cn, nil)
 
+	if calls != 1 {
+		t.Fatalf("custom processor invoked %d times; want 1 (a buffered push must reach it)", calls)
+	}
 	if cp.removes != 1 || cp.puts != 0 {
 		t.Fatalf("a custom release-drain error must remove, not re-pool, the conn: removes=%d puts=%d",
 			cp.removes, cp.puts)
+	}
+}
+
+// TestReleaseConnKeepsCustomProcessorConnOnBareReadiness pins the other side of
+// the release drain's custom-processor gate (#3989, .claude/specs/push.md): when
+// the socket is readable but NOTHING is buffered, a custom processor is not
+// invoked and the conn is re-pooled intact. Readability alone can be a
+// zero-RESP-byte TLS control record; a custom processor's blocking loop handed
+// that would time out on an empty read, and the caller would retire a healthy
+// connection. The frame stays in the socket for the next reply read, the
+// session recycle, or the MaxStaleness backstop. Only the built-in processor,
+// which treats an empty probe as benign, drains on bare readiness.
+func TestReleaseConnKeepsCustomProcessorConnOnBareReadiness(t *testing.T) {
+	server, client := newIdleTCPConnPair(t)
+	defer server.Close()
+	defer client.Close()
+
+	cn := pool.NewConn(client)
+	if _, err := server.Write([]byte(">1\r\n$3\r\nfoo\r\n")); err != nil {
+		t.Fatalf("write push frame: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !cn.MaybeHasData() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !cn.MaybeHasData() {
+		t.Fatal("push frame never became readable")
+	}
+	if cn.HasBufferedData() {
+		t.Fatal("precondition: nothing may be buffered yet")
+	}
+
+	calls := 0
+	cp := &releaseRecordingPool{}
+	c := &baseClient{
+		opt:           &Options{Addr: "127.0.0.1:6379", Protocol: 3},
+		connPool:      cp,
+		pushProcessor: fdDrainErrProcessor{err: fdFakeRedisErr{}, calls: &calls},
+	}
+	c.releaseConn(context.Background(), cn, nil)
+
+	if calls != 0 {
+		t.Fatalf("custom processor invoked %d times on bare readiness; want 0", calls)
+	}
+	if cp.puts != 1 || cp.removes != 0 {
+		t.Fatalf("bare readiness with a custom processor must re-pool the conn intact: puts=%d removes=%d",
+			cp.puts, cp.removes)
+	}
+	if cn.HasBufferedData() {
+		t.Fatal("nothing may have been consumed from the socket")
 	}
 }
 
