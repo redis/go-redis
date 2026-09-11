@@ -1556,6 +1556,14 @@ func (c *baseClient) processWithRetry(
 	ctx context.Context, cmd Cmder, capture *cscFetchCapture, state *processState, startAttempt int,
 ) error {
 	var lastConn *pool.Conn
+	if state != nil {
+		// Keep a connection an earlier stage already attributed to this command
+		// (processCached: the coalesced fetch's session conn) when this loop never
+		// reaches one, e.g. the re-run fails to acquire a pooled connection. The
+		// duration metric then names the last server that saw the command rather
+		// than none.
+		lastConn = state.lastConn
+	}
 
 	var lastErr error
 	maxRetries := c.opt.MaxRetries
@@ -1608,10 +1616,7 @@ func (c *baseClient) processWithRetry(
 		// (NoRetry guards against a SECOND execution of a possibly-written command).
 		if err == nil || !retry || (cmd.NoRetry() && !forced) {
 			if err != nil {
-				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-					errorType, statusCode, isInternal := classifyCommandError(err)
-					errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
-				}
+				recordCommandError(ctx, err, lastConn, totalAttempts-1)
 			}
 			return err
 		}
@@ -1620,12 +1625,23 @@ func (c *baseClient) processWithRetry(
 	}
 
 	// Record error metric for exhausted retries
-	if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-		errorType, statusCode, isInternal := classifyCommandError(lastErr)
-		errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
-	}
+	recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
 
 	return lastErr
+}
+
+// recordCommandError emits the native error metric for a command's terminal
+// failure: err classified, the connection that served the last attempt (nil when
+// none did), and the retries spent (attempts beyond the first). Every exit that
+// ends a command with an error shares it: the two in processWithRetry and the
+// exhausted-budget return in processCached.
+func recordCommandError(ctx context.Context, err error, cn *pool.Conn, retries int) {
+	errorCallback := pool.GetMetricErrorCallback()
+	if errorCallback == nil {
+		return
+	}
+	errorType, statusCode, isInternal := classifyCommandError(err)
+	errorCallback(ctx, errorType, cn, statusCode, isInternal, retries)
 }
 
 // classifyCommandError classifies an error for metrics reporting.

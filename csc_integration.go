@@ -1524,10 +1524,39 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 			// coalesced attempt shows up in retry_attempts and the error callback, and
 			// the re-run does not get MaxRetries+1 fresh attempts on top of the one
 			// already spent (codex on #3989; needs the explicit-start plumbing from the
-			// full-duplex autopipeline branch, now merged). processWithRetry clamps to
-			// MaxRetries, so this can never disable the re-run itself.
+			// full-duplex autopipeline branch, now merged).
 			if served != nil {
 				startAttempt++
+				// Record it on state too, not only through processWithRetry: two exits
+				// below never reach that loop — the exhausted-budget return here and
+				// the takeover-hit return after the re-Reserve — and without this they
+				// reported the attempts seeded before the fetch and a nil connection
+				// for a request that did reach one (codex on #4002). processWithRetry
+				// overwrites both on its first iteration, and keeps lastConn when the
+				// re-run never acquires a connection.
+				if state != nil {
+					state.attempts = startAttempt
+					state.lastConn = served
+				}
+				// Budget check. The command has now spent startAttempt of its
+				// MaxRetries+1 attempts; when that was the last one (an FD attempt plus
+				// this coalesced one with MaxRetries=1, or any coalesced session failure
+				// with retries disabled), a re-run would execute it once more:
+				// processWithRetry clamps startAttempt back into its loop so a caller can
+				// never disable execution, which here is an attempt over budget (codex on
+				// #4002). Stop with the coalescer's cause instead — the same raw error
+				// processWithRetry returns when its own loop runs out — and emit the error
+				// metric the skipped re-run would have (settleErr leaves that to the
+				// re-run so a re-run that succeeds is not flagged).
+				if startAttempt > c.opt.MaxRetries {
+					cause := err
+					if sessErr.err != nil {
+						cause = sessErr.err
+					}
+					cmd.SetErr(cause)
+					recordCommandError(ctx, cause, served, startAttempt-1)
+					return cause
+				}
 			}
 			token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
 			if !shouldFetch {
