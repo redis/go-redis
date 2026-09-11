@@ -37,6 +37,11 @@ type PubSub struct {
 	closed bool
 	exit   chan struct{}
 
+	// stickyErr is set when PubSub is constructed in a failed state (e.g. Ring
+	// shard lookup failure). Subsequent operations return this error instead of
+	// panicking at construction time.
+	stickyErr error
+
 	cmd *Cmd
 
 	chOnce sync.Once
@@ -74,6 +79,9 @@ func (c *PubSub) connWithLock(ctx context.Context) (*pool.Conn, error) {
 func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, error) {
 	if c.closed {
 		return nil, pool.ErrClosed
+	}
+	if c.stickyErr != nil {
+		return nil, c.stickyErr
 	}
 	if c.cn != nil {
 		return c.cn, nil
@@ -567,16 +575,40 @@ func (c *PubSub) getContext() context.Context {
 // is blocked full for 1 minute the message is dropped.
 // Receive* APIs can not be used after channel is created.
 //
+// If the PubSub was created with a sticky error (e.g. Ring subscribe on empty
+// ring or shard lookup failure), or if Channel is called after
+// ChannelWithSubscriptions, a warning is logged and an already-closed channel is
+// returned.
+//
 // go-redis periodically sends ping messages to test connection health
 // and re-subscribes if ping can not received for 1 minute.
 func (c *PubSub) Channel(opts ...ChannelOption) <-chan *Message {
+	c.mu.Lock()
+	if c.stickyErr != nil && !c.closed {
+		err := c.stickyErr
+		c.mu.Unlock()
+		internal.Logger.Printf(context.Background(),
+			"redis: Channel returning closed channel due to sticky error: %s", err)
+		ch := make(chan *Message)
+		close(ch)
+		return ch
+	}
+	c.mu.Unlock()
+
 	c.chOnce.Do(func() {
 		c.msgCh = newChannel(c, opts...)
 		c.msgCh.initMsgChan()
 	})
 	if c.msgCh == nil {
-		err := fmt.Errorf("redis: Channel can't be called after ChannelWithSubscriptions")
-		panic(err)
+		// Already using ChannelWithSubscriptions — return a closed channel
+		// instead of panicking so callers can recover (issue #3761).
+		// Use Background: getContext reads c.cmd which the other channel's
+		// Receive loop may write concurrently (data race under -race).
+		internal.Logger.Printf(context.Background(),
+			"redis: Channel can't be called after ChannelWithSubscriptions")
+		ch := make(chan *Message)
+		close(ch)
+		return ch
 	}
 	return c.msgCh.msgCh
 }
@@ -593,15 +625,39 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 // *Subscription or *Message. Subscription messages can be used to detect
 // reconnections.
 //
+// If the PubSub was created with a sticky error (e.g. Ring subscribe on empty
+// ring or shard lookup failure), or if ChannelWithSubscriptions is called after
+// Channel or ChannelSize, a warning is logged and an already-closed channel is
+// returned.
+//
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
 func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interface{} {
+	c.mu.Lock()
+	if c.stickyErr != nil && !c.closed {
+		err := c.stickyErr
+		c.mu.Unlock()
+		internal.Logger.Printf(context.Background(),
+			"redis: ChannelWithSubscriptions returning closed channel due to sticky error: %s", err)
+		ch := make(chan interface{})
+		close(ch)
+		return ch
+	}
+	c.mu.Unlock()
+
 	c.chOnce.Do(func() {
 		c.allCh = newChannel(c, opts...)
 		c.allCh.initAllChan()
 	})
 	if c.allCh == nil {
-		err := fmt.Errorf("redis: ChannelWithSubscriptions can't be called after Channel")
-		panic(err)
+		// Already using Channel — return a closed channel instead of panicking
+		// so callers can recover (issue #3761).
+		// Use Background: getContext reads c.cmd which the other channel's
+		// Receive loop may write concurrently (data race under -race).
+		internal.Logger.Printf(context.Background(),
+			"redis: ChannelWithSubscriptions can't be called after Channel")
+		ch := make(chan interface{})
+		close(ch)
+		return ch
 	}
 	return c.allCh.allCh
 }
