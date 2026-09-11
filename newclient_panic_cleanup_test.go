@@ -131,3 +131,59 @@ func TestNewClientPanicCleanupSurvivesNilPool(t *testing.T) {
 		t.Fatalf("cleanup replaced the construction panic (typed-nil pool nil-deref?): recovered=%v (%T)", recovered, recovered)
 	}
 }
+
+// TestNewFailoverClientPanicClosesPartialClient pins that NewFailoverClient, like
+// NewClient, tears down a partially-built client when a construction step panics
+// AFTER the main and pub/sub pools are created. An out-of-range PipelinePoolSize
+// makes buildPipelinePool fail at that point; the deferred cleanup must Close the
+// partial client (so its pools/dialing goroutines do not leak) without itself
+// nil-derefing, and the original construction error must still surface. MinIdleConns
+// is 0 so the panic precedes any dialing and the sentinel addrs are never contacted.
+func TestNewFailoverClientPanicClosesPartialClient(t *testing.T) {
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		NewFailoverClient(&FailoverOptions{
+			MasterName:       "mymaster",
+			SentinelAddrs:    []string{"127.0.0.1:26379"}, // never contacted: panic precedes dialing
+			PipelinePoolSize: math.MaxInt32 + 1,           // overflows int32 in buildPipelinePool
+			MinIdleConns:     0,
+		})
+	}()
+	if recovered == nil {
+		t.Fatal("expected NewFailoverClient to panic on an out-of-range PipelinePoolSize")
+	}
+	err, ok := recovered.(error)
+	if !ok || !strings.Contains(err.Error(), "failed to create pipeline connection pool") {
+		t.Fatalf("cleanup replaced the construction panic (partial failover Close nil-deref?): recovered=%v (%T)", recovered, recovered)
+	}
+}
+
+// TestNewFailoverClientPanicCleanupSurvivesNilPool is the NewFailoverClient twin
+// of TestNewClientPanicCleanupSurvivesNilPool, pinning the specific bug where the
+// failover constructor assigned newConnPool's typed-nil straight into the
+// pool.Pooler field. An out-of-range PoolSize makes newConnPool return (nil, err),
+// so the field must stay a plain nil (not a typed-nil interface) — otherwise
+// closeResources' `connPool != nil` guard passes and the panic-cleanup defer
+// nil-derefs inside ConnPool.Close, replacing the intended "failed to create
+// connection pool" panic. MinIdleConns is 0 and the sentinel addrs are never
+// contacted: the panic precedes any dialing.
+func TestNewFailoverClientPanicCleanupSurvivesNilPool(t *testing.T) {
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		NewFailoverClient(&FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: []string{"127.0.0.1:26379"}, // never contacted: panic precedes dialing
+			PoolSize:      math.MaxInt32 + 1,           // overflows int32 in newConnPool
+			MinIdleConns:  0,
+		})
+	}()
+	if recovered == nil {
+		t.Fatal("expected NewFailoverClient to panic on an out-of-range PoolSize")
+	}
+	err, ok := recovered.(error)
+	if !ok || !strings.Contains(err.Error(), "failed to create connection pool") {
+		t.Fatalf("cleanup replaced the construction panic (typed-nil connPool nil-deref?): recovered=%v (%T)", recovered, recovered)
+	}
+}

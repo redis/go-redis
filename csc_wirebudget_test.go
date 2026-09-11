@@ -43,22 +43,36 @@ func TestCSCMissCoalescerWireBudget(t *testing.T) {
 	}
 }
 
-// bigBinArg is a command argument whose serialized size is large but which
-// cmdApproxBytes charges only ~8 bytes for (the BinaryMarshaler default branch).
-type bigBinArg struct{ n int }
+// driftingBinArg is a command argument whose serialized size is larger than the
+// wire-budget estimate charged for it. cmdApproxBytes sizes a BinaryMarshaler by
+// calling MarshalBinary once, BEFORE serialization; proto.Writer then calls it
+// again to produce the wire. A marshaler whose output grows between those two
+// calls is the undercount path that remains now that cmdApproxBytes sizes
+// marshaled args exactly (#4002), so this returns a small first result (the
+// sizing call) and n bytes after that (the write).
+type driftingBinArg struct {
+	n     int
+	calls int
+}
 
-func (a bigBinArg) MarshalBinary() ([]byte, error) { return make([]byte, a.n), nil }
+func (a *driftingBinArg) MarshalBinary() ([]byte, error) {
+	a.calls++
+	if a.calls == 1 {
+		return make([]byte, 8), nil
+	}
+	return make([]byte, a.n), nil
+}
 
 // TestCSCMissCoalescerReconcilesWireBudget pins the fix for the under-counted wire
-// budget: cmdApproxBytes charges ~8 bytes for a variable-size non-string/[]byte arg
-// (BinaryMarshaler, net.IP, *string, ...), so the pre-serialization reserve can
-// undercount a large miss and let the in-flight budget drift past
+// budget: cmdApproxBytes is charged BEFORE serialization and is still an estimate
+// (see driftingBinArg for the case that survives exact marshaler sizing), so the
+// pre-serialization reserve can let the in-flight budget drift past
 // cscMissWireBudgetBytes. reconcileWireBytes corrects the counter to the ACTUAL
 // serialized size and keeps req.reserved in lockstep so settle() releases exactly
 // once.
 func TestCSCMissCoalescerReconcilesWireBudget(t *testing.T) {
 	ctx := context.Background()
-	cmd := NewCmd(ctx, "set", "k", bigBinArg{4096})
+	cmd := NewCmd(ctx, "set", "k", &driftingBinArg{n: 4096})
 
 	estimate := cmdApproxBytes(cmd)
 	var buf bytes.Buffer
@@ -140,7 +154,7 @@ func TestCSCMissCoalescerCancelIfStopping(t *testing.T) {
 // pre-serialize gate and then blow the budget while every wire stays queued.
 func TestCSCMissCoalescerShedsWhenActualOverBudget(t *testing.T) {
 	ctx := context.Background()
-	cmd := NewCmd(ctx, "set", "k", bigBinArg{4096})
+	cmd := NewCmd(ctx, "set", "k", &driftingBinArg{n: 4096})
 	estimate := cmdApproxBytes(cmd)
 	var buf bytes.Buffer
 	if err := writeCmd(proto.NewWriter(&buf), cmd); err != nil {

@@ -156,6 +156,65 @@ func TestClusterPipelinePoolSizePropagates(t *testing.T) {
 	}
 }
 
+// TestClusterPipelinePoolWidensDials locks the round-9 fix. ClusterOptions.init
+// must NOT pre-normalize MaxConcurrentDials. If it did, the per-node init would
+// mark the unset value explicit, and the pipeline pool would take the node
+// PoolSize as its dial cap instead of widening to PipelinePoolSize. That
+// serializes pipeline dials when the pipeline pool is larger than the node pool.
+func TestClusterPipelinePoolWidensDials(t *testing.T) {
+	co := &ClusterOptions{
+		Addrs:            []string{"127.0.0.1:0"},
+		PoolSize:         2,
+		PipelinePoolSize: 8,
+		// MaxConcurrentDials is left unset on purpose.
+	}
+	co.init()
+	if co.MaxConcurrentDials != 0 {
+		t.Fatalf("ClusterOptions.init pre-normalized MaxConcurrentDials to %d; it must stay 0 "+
+			"so the per-node init does not mark it explicit", co.MaxConcurrentDials)
+	}
+
+	// Build one node's options the way NewClusterClient does, then init them like
+	// NewClient does.
+	nodeOpt := co.clientOptions()
+	nodeOpt.init()
+	if nodeOpt.maxConcurrentDialsSet {
+		t.Fatal("node maxConcurrentDialsSet is true for an unset MaxConcurrentDials; " +
+			"the pipeline pool would not widen its dial cap")
+	}
+
+	po := pipelinePoolOptions(nodeOpt)
+	if po.MaxConcurrentDials != 8 {
+		t.Fatalf("pipeline MaxConcurrentDials = %d, want 8 (PipelinePoolSize); a cluster must "+
+			"widen pipeline dials, not cap them at the node PoolSize", po.MaxConcurrentDials)
+	}
+}
+
+// TestReusedOptionsPreserveUnsetDials locks the round-10 fix. A caller may reuse
+// one *Options across more than one NewClient call. The first init normalizes an
+// unset MaxConcurrentDials to PoolSize. A second init must not then mark it
+// explicit, because that would stop the second client's pipeline pool from
+// widening its dial cap.
+func TestReusedOptionsPreserveUnsetDials(t *testing.T) {
+	opt := &Options{Addr: "127.0.0.1:0", PoolSize: 1, PipelinePoolSize: 8}
+
+	opt.init() // first construction
+	if opt.maxConcurrentDialsSet {
+		t.Fatal("first init marked an unset MaxConcurrentDials explicit")
+	}
+
+	opt.init() // second construction reusing the same *Options
+	if opt.maxConcurrentDialsSet {
+		t.Fatal("second init on a reused *Options marked MaxConcurrentDials explicit; " +
+			"the pipeline pool would stop widening its dial cap")
+	}
+
+	if po := pipelinePoolOptions(opt); po.MaxConcurrentDials != 8 {
+		t.Fatalf("pipeline MaxConcurrentDials = %d after reuse, want 8 (PipelinePoolSize)",
+			po.MaxConcurrentDials)
+	}
+}
+
 // TestFailoverPipelinePoolCreated: NewFailoverClient builds its pools in its
 // own constructor (it duplicated — and drifted from — NewClient's creation
 // logic once before), so pin the always-on rule and the opt-out there too.

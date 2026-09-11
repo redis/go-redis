@@ -79,20 +79,22 @@ const (
 	cscMissWireBudgetBytes = 8 * cscMissBatchBytes // 8 MiB
 	// cscMissMaxConcurrentSerialize caps how many fetch calls may hold a wire
 	// snapshot mid-serialization at once. reserveWireBytes gates on cmdApproxBytes,
-	// which UNDERCOUNTS a variable-size arg, so a concurrent burst of large misses
-	// can all pass the byte reservation and each allocate its full wireBuf BEFORE
-	// reconcileWireBytes sheds — a transient set of multi-MiB snapshots the budget
-	// never sees, which can exhaust memory even though none stay queued. Bounding the
-	// concurrent set to budget/batch caps the COUNT of coexisting snapshots, not their
-	// bytes: when Args() sizes its encoded form accurately each snapshot is about
-	// batch-sized, so the peak is ~O(budget). A single command whose encoded form far
-	// exceeds cmdApproxBytes' estimate (e.g. an encoding.BinaryMarshaler returning
-	// hundreds of MB) makes that one snapshot arbitrarily large, so the true worst-case
-	// transient peak is cap x (largest single serialized command), NOT O(budget) — a
-	// hard per-request byte ceiling enforced during writeCmd is a focused follow-up. A
-	// caller that cannot get a slot promptly sheds to the pooled path rather than block.
-	// Serialization is CPU-only and brief, so normal small-command bursts pass without
-	// shedding.
+	// an ESTIMATE taken before serialization. It sizes string, []byte, *string and
+	// BinaryMarshaler args exactly, but can still undercount: a marshaler whose
+	// output differs between the sizing call and writeCmd's own MarshalBinary call,
+	// or a numeric/time arg whose text exceeds the fixed 8-byte fallback. A
+	// concurrent burst of such misses can all pass the byte reservation and each
+	// allocate its full wireBuf BEFORE reconcileWireBytes sheds — a transient set of
+	// snapshots the budget never sees, which can exhaust memory even though none
+	// stay queued. Bounding the concurrent set to budget/batch caps the COUNT of
+	// coexisting snapshots, not their bytes: when the estimate is accurate each
+	// snapshot is about batch-sized, so the peak is ~O(budget). A single command
+	// whose encoded form far exceeds its estimate makes that one snapshot
+	// arbitrarily large, so the true worst-case transient peak is cap x (largest
+	// single serialized command), NOT O(budget) — a hard per-request byte ceiling
+	// enforced during writeCmd is a focused follow-up. A caller that cannot get a
+	// slot promptly sheds to the pooled path rather than block. Serialization is
+	// CPU-only and brief, so normal small-command bursts pass without shedding.
 	cscMissMaxConcurrentSerialize = cscMissWireBudgetBytes / cscMissBatchBytes // 8
 )
 
@@ -433,12 +435,14 @@ func (mc *cscMissCoalescer) noteSerializing() {
 // reconcileWireBytes corrects req's reservation to the ACTUAL serialized size once
 // req.wire is built, and reports whether the request still fits the budget. The
 // reservation is charged from cmdApproxBytes BEFORE serialization (so an
-// over-budget miss never allocates the wire), but that estimate charges only ~8
-// bytes for a variable-size non-string/[]byte arg (a BinaryMarshaler, net.IP,
-// *string, ...), which serializes its full bytes. Without a recheck, N concurrent
-// such misses each reserve a few bytes, all pass the pre-serialize gate, and then
-// charging their true size drifts the in-flight total far past
-// cscMissWireBudgetBytes while every snapshot stays queued.
+// over-budget miss never allocates the wire). That estimate sizes string, []byte,
+// *string and BinaryMarshaler args exactly, but it is still an estimate: a
+// marshaler whose output differs between the sizing call and writeCmd's own
+// MarshalBinary call, or a numeric/time arg whose text exceeds the fixed 8-byte
+// fallback, serializes larger than charged. Without a recheck, N concurrent such
+// misses all pass the pre-serialize gate, and then charging their true size drifts
+// the in-flight total past cscMissWireBudgetBytes while every snapshot stays
+// queued.
 //
 // Returns true (keep) when the actual size fits: the delta is charged and
 // req.reserved advanced to actual, so settle() releases exactly once. Returns
@@ -543,10 +547,11 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	// see that select). mc.stop stays the unconditional shutdown signal.
 	wctx := mc.c.context(ctx)
 	// Bound the number of callers serializing a wire snapshot AT ONCE before
-	// allocating this one: reserveWireBytes above gates on cmdApproxBytes, which
-	// undercounts variable-size args, so a concurrent burst can all pass it and each
-	// allocate a full multi-MiB wireBuf before reconcileWireBytes sheds — a transient
-	// set the byte budget never sees (#3965 F3). The slot is held ONLY across
+	// allocating this one: reserveWireBytes above gates on cmdApproxBytes, an
+	// estimate that can still undercount (see reconcileWireBytes), so a concurrent
+	// burst can all pass it and each allocate a full multi-MiB wireBuf before
+	// reconcileWireBytes sheds — a transient set the byte budget never sees (#3965
+	// F3). The slot is held ONLY across
 	// writeCmd+reconcile and released before the enqueue send below, so it never
 	// couples to queue backpressure. A caller that cannot get a slot sheds to the
 	// pooled path (the !enqueued defer releases the byte reservation).
@@ -581,7 +586,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	}
 	req.wire = wireBuf.Bytes()
 	// Reconcile the reservation to the real serialized size now that the wire exists:
-	// cmdApproxBytes can undercount a large variable-size arg (see reconcileWireBytes).
+	// cmdApproxBytes is an estimate and can still undercount (see reconcileWireBytes).
 	// If the true size would push the in-flight total over budget, shed to the pooled
 	// path instead of enqueueing an over-budget snapshot (the !enqueued defer releases
 	// the estimate). Without this, concurrent undercounted misses all pass the

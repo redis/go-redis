@@ -1397,35 +1397,54 @@ const cscDrainProbeReadCap = 50 * time.Microsecond
 const cscDrainCustomErrCap = 8
 
 // processCached runs the Get-Reserve-Fulfill lifecycle for a cacheable command.
-// Only invoked after process has verified that CSC is active and cmd is
+// The caller (process) first makes sure that CSC is active and that cmd is
 // eligible.
-func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *processState) error {
+//
+// startAttempt is the number of attempts already spent before this call. It is
+// not zero only on the full-duplex divert (retryOnNormalConn) of a cacheable
+// command. Such a command spent its first attempt on the FD socket and got a
+// retryable reply. Give startAttempt to every processWithRetry fallback and to
+// the fetch. If you do not, a diverted cache miss runs MaxRetries+1 retries
+// after the FD attempt. That is one attempt too many. A cache HIT does no network
+// attempt and returns before the retry loop, so startAttempt does not affect its
+// retry BUDGET — but it still seeds the reported attempt COUNT (see below) so a
+// diverted hit reports the FD attempt it already spent, not zero.
+func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+
+	// Seed the reported attempt count for the OTel duration metric. A cache hit
+	// returns below without entering processWithRetry's loop (which is what sets
+	// state.attempts), so without this a diverted hit (startAttempt>0) would report
+	// zero attempts, hiding the FD socket attempt it already spent. A miss falls
+	// through to processWithRetry, whose loop overwrites this.
+	if state != nil {
+		state.attempts = startAttempt
 	}
 
 	// Once the drainer has stopped (owner Close, or the owner dropped without
 	// Close), no invalidations flow — a surviving clone must not serve stale hits.
 	if a := c.cscActive; a != nil && !a.Load() {
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
 	rawKey, ok := buildCacheKey(cmd)
 	if !ok {
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
 	redisKeys := extractRedisKeys(cmd)
 	if len(redisKeys) == 0 {
 		// Without a key list we cannot react to invalidations for this command.
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
 	keyPrefix := c.cscKeyPrefix
 	if keyPrefix == "" {
 		// A successfully attached client always has a namespace. Fail closed if
 		// an incomplete custom baseClient reaches this path.
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 	key := cscNamespacedKey(keyPrefix, rawKey)
 	nsRedisKeys := make([]string, len(redisKeys))
@@ -1495,11 +1514,50 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 			// nothing, so connection blips and wire-budget sheds left the key uncached
 			// and later readers missed).
 			//
-			// TODO(convergence): the re-run starts its retry metrics at attempt 0, so
-			// the coalesced attempt is missing from retry_attempts. Fix by starting the
-			// re-run at attempt 1 via the explicit-start plumbing (processStartingAt)
-			// once the full-duplex autopipeline branch, which introduces it, is on this
-			// branch. See #3989 review thread on coalescer attempt counting.
+			// Carry the coalesced attempt into the re-run's accounting. served is
+			// non-nil exactly when the request reached a session connection (the
+			// writer attributes every request of a batch to its conn before the
+			// write; a pre-queue shed or a session that never acquired a conn leaves
+			// it nil), which is the same "one attempt on that conn" rule the success
+			// branch below applies. processWithRetry seeds both its reported attempt
+			// count and its retry-budget position from startAttempt, so the failed
+			// coalesced attempt shows up in retry_attempts and the error callback, and
+			// the re-run does not get MaxRetries+1 fresh attempts on top of the one
+			// already spent (codex on #3989; needs the explicit-start plumbing from the
+			// full-duplex autopipeline branch, now merged).
+			if served != nil {
+				startAttempt++
+				// Record it on state too, not only through processWithRetry: two exits
+				// below never reach that loop — the exhausted-budget return here and
+				// the takeover-hit return after the re-Reserve — and without this they
+				// reported the attempts seeded before the fetch and a nil connection
+				// for a request that did reach one (codex on #4002). processWithRetry
+				// overwrites both on its first iteration, and keeps lastConn when the
+				// re-run never acquires a connection.
+				if state != nil {
+					state.attempts = startAttempt
+					state.lastConn = served
+				}
+				// Budget check. The command has now spent startAttempt of its
+				// MaxRetries+1 attempts; when that was the last one (an FD attempt plus
+				// this coalesced one with MaxRetries=1, or any coalesced session failure
+				// with retries disabled), a re-run would execute it once more:
+				// processWithRetry clamps startAttempt back into its loop so a caller can
+				// never disable execution, which here is an attempt over budget (codex on
+				// #4002). Stop with the coalescer's cause instead — the same raw error
+				// processWithRetry returns when its own loop runs out — and emit the error
+				// metric the skipped re-run would have (settleErr leaves that to the
+				// re-run so a re-run that succeeds is not flagged).
+				if startAttempt > c.opt.MaxRetries {
+					cause := err
+					if sessErr.err != nil {
+						cause = sessErr.err
+					}
+					cmd.SetErr(cause)
+					recordCommandError(ctx, cause, served, startAttempt-1)
+					return cause
+				}
+			}
 			token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
 			if !shouldFetch {
 				// Another waiter won the re-Reserve race and is fetching. WAIT on it
@@ -1549,7 +1607,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		}()
 	}
 
-	err := c.processWithRetry(ctx, cmd, capture, state)
+	err := c.processWithRetry(ctx, cmd, capture, state, startAttempt)
 
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel

@@ -833,9 +833,12 @@ var _ = Describe("isLoopback", func() {
 	)
 })
 
-// TestOnCloseHooks_RunInRegistrationOrder verifies that hooks registered under
-// distinct ids are all invoked on run() in the order they were registered.
-func TestOnCloseHooks_RunInRegistrationOrder(t *testing.T) {
+// TestOnCloseHooks_RunInReverseRegistrationOrder verifies that hooks are invoked in
+// REVERSE registration order (LIFO): a hook registered later is a consumer of state an
+// earlier registration provides, so it must run first. Concretely, an autopipeliner
+// drain (registered lazily) must run before the Sentinel failover teardown (registered
+// at construction) so the drain can still resolve the master address. See onCloseHooks.run.
+func TestOnCloseHooks_RunInReverseRegistrationOrder(t *testing.T) {
 	h := &onCloseHooks{}
 	var calls []string
 
@@ -846,9 +849,9 @@ func TestOnCloseHooks_RunInRegistrationOrder(t *testing.T) {
 	if err := h.run(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []string{"a", "b", "c"}
+	want := []string{"c", "b", "a"}
 	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("run order = %v, want %v", calls, want)
+		t.Fatalf("run order = %v, want %v (LIFO)", calls, want)
 	}
 }
 
@@ -880,6 +883,42 @@ func TestOnCloseHooks_RegisterSameIDReplaces(t *testing.T) {
 	}
 	if got := lastSeen.Load(); got != iterations-1 {
 		t.Fatalf("last-registered callback not invoked: lastSeen = %d, want %d", got, iterations-1)
+	}
+}
+
+// TestOnCloseHooks_RegisterAfterRunIsRejected pins the contract the cluster FD
+// router's per-node evict hook relies on: once run has taken its snapshot the
+// owner is closing, and a callback registered from then on would never fire —
+// so register must report false and store nothing, instead of silently
+// accepting a hook that leaks whatever it was meant to clean up (cursor bugbot
+// on #4002: a node client closing between a child's publication and its evict
+// hook's registration left the child in the router map for good).
+func TestOnCloseHooks_RegisterAfterRunIsRejected(t *testing.T) {
+	h := &onCloseHooks{}
+	var early, late atomic.Int32
+
+	if !h.register("early", func() error { early.Add(1); return nil }) {
+		t.Fatal("register before run must report true")
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := early.Load(); got != 1 {
+		t.Fatalf("early hook invoked %d times, want 1", got)
+	}
+
+	if h.register("late", func() error { late.Add(1); return nil }) {
+		t.Fatal("register after run must report false: the owner is closing and the hook would never fire")
+	}
+	if _, stored := h.hooks["late"]; stored {
+		t.Fatal("a rejected registration must not be stored")
+	}
+	// A second run (Close is idempotent at the owner level) must not surface it.
+	if err := h.run(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := late.Load(); got != 0 {
+		t.Fatalf("late hook invoked %d times, want 0", got)
 	}
 }
 
@@ -929,7 +968,8 @@ func TestOnCloseHooks_Unregister(t *testing.T) {
 }
 
 // TestOnCloseHooks_AllRunOnError confirms every hook is invoked even if an
-// earlier one returns an error, and that the first error is returned.
+// earlier one returns an error, and that the first error in INVOCATION order (LIFO) is
+// returned. "b" runs before "a" under LIFO, so its error is the first non-nil one.
 func TestOnCloseHooks_AllRunOnError(t *testing.T) {
 	h := &onCloseHooks{}
 	var called [3]bool
@@ -940,9 +980,10 @@ func TestOnCloseHooks_AllRunOnError(t *testing.T) {
 	h.register("b", func() error { called[1] = true; return errSecond })
 	h.register("c", func() error { called[2] = true; return nil })
 
+	// Invocation order is c, b, a (LIFO); the first non-nil error encountered is errSecond.
 	err := h.run()
-	if err != errFirst {
-		t.Fatalf("run() err = %v, want %v", err, errFirst)
+	if err != errSecond {
+		t.Fatalf("run() err = %v, want %v", err, errSecond)
 	}
 	for i, c := range called {
 		if !c {

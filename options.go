@@ -189,16 +189,21 @@ type Options struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
-	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline connections.
-	// If set to a value > 0, a separate connection pool will be created specifically for
-	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
-	// this buffer size.
+	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline
+	// connections — the dedicated pipeline pool that serves Pipeline, AutoPipeline
+	// and AsyncAutoPipeline. That pool always exists (see PipelinePoolSize); this
+	// field only sizes its read buffers.
 	//
 	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
 	// throughput) while keeping regular command buffers small (to save memory).
 	//
-	// If not set (0), pipeline operations will use the regular connection pool with
-	// ReadBufferSize buffers.
+	// If not set (0), the pipeline pool's read buffer is the larger of
+	// ReadBufferSize and DefaultPipelineBufferSize (128 KiB). The pipeline pool is
+	// always created and a pipeline uses it whenever it has a free turn; when it
+	// is saturated the pipeline spills to the regular pool without waiting (a
+	// non-blocking TryGet), and that connection has the regular ReadBufferSize.
+	// Size the pipeline pool (PipelinePoolSize) for the pipeline concurrency you
+	// expect if every pipeline must get this buffer.
 	//
 	// Recommended: 64–128 KiB for high-throughput pipelining. The benefit here is
 	// on the READ side: a batch's replies arrive as one large stream, and a bigger
@@ -221,35 +226,40 @@ type Options struct {
 	//   })
 	//
 	// Memory impact: With PoolSize=100 and PipelinePoolSize=10:
-	//   - Without pipeline pool: 100 conns × 128 KiB = 12.8 MB (if all use 128 KiB buffers)
-	//   - With pipeline pool: (100 × 32 KiB) + (10 × 128 KiB) = 4.5 MB (~65% savings)
+	//   - Raising ReadBufferSize to 128 KiB instead: 100 conns × 128 KiB = 12.8 MB
+	//   - Leaving it at 32 KiB, pipeline pool at its 128 KiB default:
+	//     (100 × 32 KiB) + (10 × 128 KiB) = 4.5 MB (~65% savings)
 	//
-	// default: 0 (use ReadBufferSize)
+	// default: 0 (the larger of ReadBufferSize and DefaultPipelineBufferSize)
 	PipelineReadBufferSize int
 
-	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline connections.
-	// If set to a value > 0, a separate connection pool will be created specifically for
-	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
-	// this buffer size.
+	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline
+	// connections — the dedicated pipeline pool that serves Pipeline, AutoPipeline
+	// and AsyncAutoPipeline. That pool always exists (see PipelinePoolSize); this
+	// field only sizes its write buffers.
 	//
 	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
 	// throughput) while keeping regular command buffers small (to save memory).
 	//
-	// If not set (0), pipeline operations will use the regular connection pool with
-	// WriteBufferSize buffers.
+	// If not set (0), the pipeline pool's write buffer is the larger of
+	// WriteBufferSize and DefaultPipelineBufferSize (128 KiB). As with the read
+	// buffer, a pipeline that finds the pipeline pool saturated spills to the
+	// regular pool without waiting and then writes through the regular
+	// WriteBufferSize; size PipelinePoolSize for your pipeline concurrency if
+	// every pipeline must get this buffer.
 	//
 	// Recommended: 64–128 KiB for high-throughput pipelining (size to roughly
 	// MaxBatchSize × average-command-bytes). Throughput plateaus past ~64 KiB and
 	// gains nothing beyond ~128 KiB; very large buffers (≥512 KiB) can regress it.
 	// See PipelineReadBufferSize for the full rationale.
 	//
-	// default: 0 (use WriteBufferSize)
+	// default: 0 (the larger of WriteBufferSize and DefaultPipelineBufferSize)
 	PipelineWriteBufferSize int
 
 	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
 	// Setting this alone still sizes the (now always-created) dedicated pipeline
 	// pool; its buffers default to the larger of the regular buffer size and
-	// DefaultPipelineBufferSize (64 KiB), unless PipelineReadBufferSize /
+	// DefaultPipelineBufferSize (128 KiB), unless PipelineReadBufferSize /
 	// PipelineWriteBufferSize are set.
 	//
 	// Pipelining typically needs fewer connections than regular operations because
@@ -261,9 +271,11 @@ type Options struct {
 	// for main-pool connections. It never pre-dials (MinIdleConns is forced
 	// to 0 on it), so the size is a cap on burst capacity, not a standing
 	// footprint: an unused pipeline pool holds zero connections. A burst of
-	// concurrent pipelines wider than the cap spills to the main pool after a
-	// short wait (DefaultPipelinePoolTimeout) rather than queueing for the full
-	// PoolTimeout. Its connections use DefaultPipelineBufferSize buffers unless
+	// concurrent pipelines wider than the cap spills to the main pool IMMEDIATELY
+	// (a non-blocking TryGet on the pipeline pool) rather than waiting a grace
+	// period — so a saturated pipeline pool never adds latency before falling back,
+	// and DefaultPipelinePoolTimeout does not gate that spill. Its connections use
+	// DefaultPipelineBufferSize buffers unless
 	// the pipeline buffer sizes are set explicitly. It does not inherit
 	// MaxActiveConns: rather than the ~2x total ceiling that inheriting it
 	// verbatim would allow, the pipeline pool adds at most PipelinePoolSize
@@ -310,6 +322,21 @@ type Options struct {
 	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
+
+	// maxConcurrentDialsSet records whether MaxConcurrentDials was set explicitly
+	// by the caller (>0) BEFORE init() normalized it. init() rewrites a 0 to
+	// PoolSize, which makes an explicit MaxConcurrentDials==PoolSize afterward
+	// indistinguishable from the default; pipelinePoolOptions consults this to
+	// preserve an explicit dial cap for the pipeline pool instead of expanding it.
+	maxConcurrentDialsSet bool
+
+	// maxConcurrentDialsInit latches maxConcurrentDialsSet on the first init().
+	// A caller may reuse one *Options across more than one NewClient call. The
+	// first init() normalizes an unset MaxConcurrentDials (0) to PoolSize, so a
+	// second init() would recompute maxConcurrentDialsSet from the normalized value
+	// and wrongly mark it explicit, which stops the pipeline pool from widening its
+	// dial cap. The latch preserves the first decision. Clones copy both flags.
+	maxConcurrentDialsInit bool
 
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
@@ -581,22 +608,39 @@ const DefaultPipelinePoolSize = 10
 // (the larger of this and the regular buffer size is used). Pipeline
 // connections move whole batches per round trip, so they earn bigger buffers
 // than regular per-command traffic: measured on the autopipeline engine,
-// throughput plateaus around 64 KiB and gains nothing past ~128 KiB, while
-// very large buffers (>=512 KiB) can regress it.
-const DefaultPipelineBufferSize = 64 * 1024
-
-// DefaultPipelinePoolTimeout bounds how long a pipeline waits for a pipeline-pool
-// connection before spilling to the main pool. The pipeline pool is burst
-// capacity, so when every one of its connections is busy a further pipeline
-// should fall back to the main pool promptly rather than queue for the full
-// (main) PoolTimeout, which can be tens of seconds. It is deliberately short:
-// staying under it costs a little extra latency on a saturated pipeline pool
-// (the spill), never correctness. See pipelinePoolOptions / withPipelineConn.
+// throughput plateaus around 64 KiB and gains nothing past ~128 KiB for
+// TYPICAL (small-command) traffic, while very large buffers (>=512 KiB) can
+// regress it.
 //
-// Note: PoolTimeout is also the budget for a connection's drainer handoff
-// (maintnotifications), so a pipeline connection that needs a handoff gets this
-// short budget rather than the main pool's — acceptable because pipeline
-// connections are disposable burst capacity that a burst can spill past anyway.
+// Set to 128 KiB anyway: the extra headroom is not about typical-traffic
+// throughput but about full-duplex's large-payload backpressure guardrail
+// (see MaxBatchBytes's default) — more bufio headroom before a write() to a
+// slow-draining peer blocks widens the margin before that guardrail's cap is
+// reached. The aggregate memory cost stays negligible because the pool this
+// backs holds few connections: the dedicated pipeline pool never pre-dials
+// (DefaultPipelinePoolSize, MinIdleConns forced to 0), and full-duplex holds
+// exactly one connection per node regardless of pool size.
+const DefaultPipelineBufferSize = 128 * 1024
+
+// DefaultPipelinePoolTimeout is the dedicated pipeline pool's PoolTimeout
+// (pipelinePoolOptions caps the pipeline clone's PoolTimeout at this value but honors
+// a caller's SHORTER PoolTimeout). It does NOT gate the spill to the main pool:
+// withPipelineConn acquires with a non-blocking TryGet, so a burst wider than the
+// pipeline pool's cap spills to the main pool IMMEDIATELY (see the pipeline-pool note
+// in Options and withPipelineConn), never waiting this timeout, and the spilled op
+// then uses the MAIN pool's own PoolTimeout, not this one.
+//
+// It currently has NO other live effect either. Every acquisition against the
+// dedicated pipeline pool — withPipelineConn's per-round-trip borrow above, and
+// the full-duplex engine's own session lease (autopipeline_fullduplex.go) — uses
+// TryGet, never the blocking Get. TryGet's non-wait branch returns ErrPoolTryFull
+// at once for BOTH a saturated pool turn and an active maintnotifications drainer
+// claim, before waitForDrainer or this deadline is ever consulted (see
+// ConnPool.getConn/waitTurn in internal/pool). A previous version of this doc
+// claimed a residual drainer-handoff budget; that was inaccurate (codex on #4002)
+// — there is no code path that currently waits out this value. It is kept short
+// anyway in case a future acquisition path, or a caller that obtains the pool via
+// getPipelinePool's exported pool.Pooler interface, uses the blocking Get.
 const DefaultPipelinePoolTimeout = 100 * time.Millisecond
 
 func (opt *Options) init() {
@@ -670,6 +714,15 @@ func (opt *Options) init() {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
 	}
 
+	// Record explicit-vs-default BEFORE normalizing (a 0 becomes PoolSize below),
+	// so pipelinePoolOptions can tell an explicit MaxConcurrentDials==PoolSize from
+	// the default. Latch on the FIRST init only: a caller may reuse one *Options
+	// across NewClient calls, and a second init() would see the already-normalized
+	// value and wrongly mark it explicit. Clones copy the latched flags.
+	if !opt.maxConcurrentDialsInit {
+		opt.maxConcurrentDialsSet = opt.MaxConcurrentDials > 0
+		opt.maxConcurrentDialsInit = true
+	}
 	if opt.MaxConcurrentDials <= 0 {
 		opt.MaxConcurrentDials = opt.PoolSize
 	} else if opt.MaxConcurrentDials > opt.PoolSize {

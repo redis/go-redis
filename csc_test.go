@@ -844,7 +844,7 @@ func TestProcessCached_HitHonorsCanceledContext(t *testing.T) {
 	}
 	cancel()
 
-	if err := c.processCached(ctx, cmd, nil); !errors.Is(err, context.Canceled) {
+	if err := c.processCached(ctx, cmd, nil, 0); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cached hit with canceled context: got %v, want context.Canceled", err)
 	}
 }
@@ -868,12 +868,228 @@ func TestProcessCached_NilHitIsTerminal(t *testing.T) {
 		t.Fatal("failed to seed negative cache entry")
 	}
 
-	if err := c.processCached(ctx, cmd, nil); err != Nil {
+	if err := c.processCached(ctx, cmd, nil, 0); err != Nil {
 		t.Fatalf("negative cache hit: got %v, want redis.Nil", err)
 	}
 	if cache.Len() != 1 {
 		t.Fatal("a valid redis.Nil cache hit must not be deleted")
 	}
+}
+
+// TestProcessCached_CoalescerBailCarriesAttempt pins the convergence follow-up
+// from codex on #3989 ("Count the failed coalesced attempt in retry metrics"):
+// when a coalesced miss reached a session connection and then failed with a
+// session/transport error, the pooled re-run must start at attempt 1, so the
+// coalesced attempt is counted in state.attempts (the OTel duration metric)
+// and consumes one unit of retry budget — instead of processWithRetry
+// restarting from zero and reporting one attempt for an operation that made
+// two. A bail that never reached a session (a pre-queue shed) carries nothing.
+//
+// Deterministic: the "session" is a goroutine that dequeues the request,
+// attributes it to a connection (as the writer does before the write) and
+// settles it with a session error; the re-run then fails at once on a pooler
+// whose Get always errors (non-retryable), so processWithRetry runs exactly
+// one iteration. MaxRetries=1 keeps the seed visible (processWithRetry clamps
+// startAttempt to MaxRetries): 2 attempts when the coalesced attempt reached a
+// conn, 1 otherwise.
+// TestProcessCached_CoalescerBailCarriesAttempt pins the accounting of a coalesced
+// miss that reached a session connection and then failed with a session error
+// (codex on #3989 and #4002). That attempt counts against MaxRetries+1 and is
+// visible in the OTel state on every exit: the pooled re-run (seeded from
+// startAttempt), the exhausted-budget return (no re-run: it would be one attempt
+// over budget), and the takeover-hit return (another waiter re-fetched the key
+// while this one was failing). A pre-queue shed reached no connection and carries
+// nothing.
+func TestProcessCached_CoalescerBailCarriesAttempt(t *testing.T) {
+	type fixture struct {
+		c      *baseClient
+		mc     *cscMissCoalescer
+		cache  *LocalCache
+		pooler *erroringPooler
+	}
+	newFixture := func(maxRetries int) fixture {
+		cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+		pooler := &erroringPooler{}
+		c := &baseClient{
+			opt:          &Options{Protocol: 3, MaxRetries: maxRetries},
+			csc:          cache,
+			cscKeyPrefix: cscNamespacePrefix(0, ""),
+			connPool:     pooler,
+		}
+		mc := &cscMissCoalescer{c: c, ch: make(chan *cscMissReq, 1), stop: make(chan struct{})}
+		c.cscMissCoalescer.Store(mc)
+		return fixture{c: c, mc: mc, cache: cache, pooler: pooler}
+	}
+	sessionConn := func(t *testing.T) *pool.Conn {
+		t.Helper()
+		server, client := net.Pipe()
+		t.Cleanup(func() { server.Close(); client.Close() })
+		return pool.NewConn(client)
+	}
+	// run drives processCached from startAttempt and returns the command, the
+	// OTel state, and the error.
+	run := func(t *testing.T, c *baseClient, startAttempt int) (*StringCmd, processState, error) {
+		t.Helper()
+		ctx := context.Background()
+		cmd := NewStringCmd(ctx, "get", "k")
+		var state processState
+		done := make(chan error, 1)
+		go func() { done <- c.processCached(ctx, cmd, &state, startAttempt) }()
+		select {
+		case err := <-done:
+			return cmd, state, err
+		case <-time.After(5 * time.Second):
+			t.Fatal("processCached did not return")
+			return nil, state, nil
+		}
+	}
+	sessErr := errors.New("csc test: session read failed")
+	// failOnSession plays the coalescer session: dequeue the request, attribute it
+	// to cn (the writer does this for a whole batch before the write), fail it.
+	failOnSession := func(mc *cscMissCoalescer, cn *pool.Conn) {
+		go func() {
+			req := <-mc.ch
+			req.servedBy = cn
+			mc.settleErr(req, sessErr)
+		}()
+	}
+
+	t.Run("reached_session_conn_counts", func(t *testing.T) {
+		f := newFixture(1)
+		cn := sessionConn(t)
+		failOnSession(f.mc, cn)
+		_, state, err := run(t, f.c, 0)
+		if err == nil {
+			t.Fatal("processCached succeeded; the erroring pooler must fail the re-run")
+		}
+		if state.attempts != 2 {
+			t.Fatalf("state.attempts = %d; want 2 (the coalesced attempt on the session conn "+
+				"plus the pooled re-run)", state.attempts)
+		}
+		if f.pooler.gets.Load() == 0 {
+			t.Fatal("1 of 2 attempts spent: the re-run must reach the pool")
+		}
+		// The re-run never acquired a connection, so the last one that saw the
+		// command is the session conn; processWithRetry keeps it, not nil.
+		if state.lastConn != cn {
+			t.Fatalf("state.lastConn = %v; want the session conn", state.lastConn)
+		}
+	})
+
+	t.Run("pre_queue_shed_carries_nothing", func(t *testing.T) {
+		f := newFixture(1)
+		// Saturate the wire budget so fetch sheds before queueing: served == nil.
+		f.mc.wireBytes.Store(cscMissWireBudgetBytes)
+		_, state, err := run(t, f.c, 0)
+		if err == nil {
+			t.Fatal("processCached succeeded; the erroring pooler must fail the re-run")
+		}
+		if state.attempts != 1 {
+			t.Fatalf("state.attempts = %d; want 1 (a shed never reached a connection)", state.attempts)
+		}
+	})
+
+	// The coalesced attempt spends the last of the budget: no re-run. Two shapes —
+	// retries disabled from a fresh start, and the FD divert's startAttempt=1 with
+	// MaxRetries=1 (codex on #4002: three executions on a two-attempt budget).
+	for _, tc := range []struct {
+		name              string
+		maxRetries, start int
+	}{
+		{"budget_exhausted_no_retries", 0, 0},
+		{"budget_exhausted_after_fd_attempt", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(tc.maxRetries)
+			cn := sessionConn(t)
+			type errCall struct {
+				cn      *pool.Conn
+				retries int
+			}
+			var (
+				callsMu sync.Mutex
+				calls   []errCall
+			)
+			pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+				Error: func(_ context.Context, _ string, cn *pool.Conn, _ string, _ bool, retries int) {
+					callsMu.Lock()
+					calls = append(calls, errCall{cn, retries})
+					callsMu.Unlock()
+				},
+			})
+			t.Cleanup(func() { pool.SetAllMetricCallbacks(nil) })
+			failOnSession(f.mc, cn)
+			cmd, state, err := run(t, f.c, tc.start)
+			if err != sessErr {
+				t.Fatalf("err = %v; want the session cause %v itself, unwrapped like "+
+					"processWithRetry's own exhaustion return", err, sessErr)
+			}
+			if cmd.Err() != sessErr {
+				t.Fatalf("cmd.Err() = %v; want %v", cmd.Err(), sessErr)
+			}
+			if got := f.pooler.gets.Load(); got != 0 {
+				t.Fatalf("pool Get called %d times; want 0: the budget is spent, a re-run "+
+					"would be one attempt too many", got)
+			}
+			want := tc.start + 1
+			if state.attempts != want {
+				t.Fatalf("state.attempts = %d; want %d", state.attempts, want)
+			}
+			if state.lastConn != cn {
+				t.Fatalf("state.lastConn = %v; want the session conn", state.lastConn)
+			}
+			callsMu.Lock()
+			defer callsMu.Unlock()
+			if len(calls) != 1 || calls[0].cn != cn || calls[0].retries != want-1 {
+				t.Fatalf("error metric calls = %+v; want exactly one on the session conn "+
+					"with retries=%d (the skipped re-run's emission)", calls, want-1)
+			}
+		})
+	}
+
+	// Takeover hit: while this request was failing, another waiter re-reserved the
+	// key and fulfilled it, so the re-Reserve loses and the value comes from the
+	// cache with no re-run. The coalesced attempt must still be reported.
+	t.Run("takeover_hit_reports_attempt", func(t *testing.T) {
+		f := newFixture(1)
+		cn := sessionConn(t)
+		rival := make(chan error, 1)
+		go func() {
+			req := <-f.mc.ch
+			req.servedBy = cn
+			// settleErr split open so a rival fits between its cancel and its wake:
+			// cancel this reservation, let "another waiter" reserve and fulfill the
+			// key, then fail this request with the tagged session error.
+			f.cache.Cancel(req.cacheKey, req.token)
+			tok, ok := f.cache.Reserve(req.cacheKey, []string{cscNamespacedKey(f.c.cscKeyPrefix, "k")})
+			if !ok || !f.cache.FulfillOwned(req.cacheKey, tok, 0, []byte("$1\r\nv\r\n")) {
+				rival <- errors.New("rival reserve/fulfill failed")
+			} else {
+				rival <- nil
+			}
+			f.mc.settle(req, cscSessionError{sessErr})
+		}()
+		cmd, state, err := run(t, f.c, 0)
+		if rerr := <-rival; rerr != nil {
+			t.Fatalf("precondition: %v", rerr)
+		}
+		if err != nil {
+			t.Fatalf("processCached: %v; want the rival's cached value", err)
+		}
+		if got := cmd.Val(); got != "v" {
+			t.Fatalf("cmd.Val() = %q; want the rival's value", got)
+		}
+		if got := f.pooler.gets.Load(); got != 0 {
+			t.Fatalf("pool Get called %d times; want 0: a takeover hit needs no re-run", got)
+		}
+		if state.attempts != 1 {
+			t.Fatalf("state.attempts = %d; want 1 (the coalesced attempt on the session conn)",
+				state.attempts)
+		}
+		if state.lastConn != cn {
+			t.Fatalf("state.lastConn = %v; want the session conn", state.lastConn)
+		}
+	})
 }
 
 func TestProcessCached_RecordsCacheHitDuration(t *testing.T) {

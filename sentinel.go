@@ -578,6 +578,36 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
+	// Registered first (at construction), so onClose.run's LIFO order invokes it LAST —
+	// after any lazily-registered autopipeliner drain hook. The drain needs MasterAddr
+	// (hence a live failover client) to dial a replacement conn for accepted-but-unsent
+	// work; tearing the failover client down here first would make MasterAddr return
+	// pool.ErrClosed and fail those replayable commands. See onCloseHooks.run.
+	//
+	// Registered BEFORE the pools exist, not after: with MinIdleConns > 0 the main
+	// pool starts dialing as soon as it is created, and masterReplicaDialer then
+	// builds the failover's Sentinel client and pubsub. If a later construction
+	// step panics, the panic-cleanup defer below closes rdb, whose onClose hooks
+	// must already include this one — otherwise those discovery resources outlive
+	// the client nobody will ever hold (Copilot on #4002).
+	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
+
+	// Close a partially-built client if any construction step below panics before
+	// this constructor returns. Mirrors NewClient: the pools (and their MinIdleConns
+	// dialing goroutines) are created below, and a later step can panic — a pipeline
+	// pool whose PipelinePoolSize overflows int32, otel registration, or a push
+	// processor rejecting handler registration. The panic propagates to the caller
+	// (which may recover it), but rdb is never returned, so without this its pools
+	// would leak with no reference left to Close them. Close is nil-safe for a
+	// partially-built client and this defer does not recover, so the panic still
+	// surfaces.
+	built := false
+	defer func() {
+		if !built {
+			_ = rdb.Close()
+		}
+	}()
+
 	// Initialize push notification processor using shared helper
 	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
@@ -587,15 +617,25 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	mainPoolName := opt.Addr + "_" + uniqueID
 	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
 
-	var err error
-	rdb.connPool, err = newConnPool(opt, rdb.dialHook, mainPoolName)
+	// Assign the pool fields only AFTER the error check, mirroring NewClient.
+	// newConnPool returns a nil *pool.ConnPool on error, and assigning that
+	// straight to the pool.Pooler interface field would leave a typed-nil
+	// interface that closeResources treats as present (its != nil check passes),
+	// so the panic-cleanup defer above would nil-deref inside ConnPool.Close and
+	// replace the intended "failed to create connection pool" panic. A local var
+	// keeps the field nil on failure. (pubSubPool is a concrete *pool.PubSubPool
+	// whose nil is caught correctly by the != nil check, but assign it the same
+	// way to keep this constructor identical to NewClient.)
+	connPool, err := newConnPool(opt, rdb.dialHook, mainPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
-	rdb.pubSubPool, err = newPubSubPool(opt, rdb.dialHook, pubsubPoolName)
+	rdb.connPool = connPool
+	pubSubPool, err := newPubSubPool(opt, rdb.dialHook, pubsubPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
+	rdb.pubSubPool = pubSubPool
 
 	// Create the dedicated pipeline pool unconditionally, mirroring NewClient
 	// via the shared buildPipelinePool helper. PipelinePoolSize < 0 opts out.
@@ -612,8 +652,6 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// for the identical standalone setup). The pipeline pool is nil when not
 	// configured.
 	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
-
-	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
@@ -634,6 +672,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	failover.mu.Unlock()
 
+	built = true
 	return rdb
 }
 
@@ -904,11 +943,20 @@ type sentinelFailover struct {
 	masterAddr string
 	sentinel   *SentinelClient
 	pubsub     *PubSub
+	// closed is set by Close (under mu). Once set, MasterAddr and replicaAddrs
+	// refuse to create a new SentinelClient/pubsub and return pool.ErrClosed.
+	// Close runs as an onClose hook, which fires BEFORE a pool-sharing wrapper's
+	// autopipeliner drain hook (registration order); that drain may dial through
+	// masterReplicaDialer, and without this flag the dial would rebuild the
+	// sentinel client + pubsub after the only cleanup had already run, leaking
+	// them past the pool teardown.
+	closed bool
 }
 
 func (c *sentinelFailover) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.closed = true
 	if c.sentinel != nil {
 		return c.closeSentinel()
 	}
@@ -986,6 +1034,11 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		} else {
 			return addr, nil
 		}
+	}
+
+	// Closed: do not rebuild the sentinel client (see sentinelFailover.closed).
+	if c.closed {
+		return "", pool.ErrClosed
 	}
 
 	// short circuit if no sentinels configured
@@ -1090,6 +1143,11 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 			// setSentinel if it finds disconnected replicas.
 			_ = c.closeSentinel()
 		}
+	}
+
+	// Closed: do not rebuild the sentinel client (see sentinelFailover.closed).
+	if c.closed {
+		return nil, pool.ErrClosed
 	}
 
 	var sentinelReachable bool

@@ -3641,6 +3641,39 @@ func TestAutoPipelineClientLevelOptionsApply(t *testing.T) {
 	}
 }
 
+// TestAutoPipelineMaxBatchBytesDefaultsToGuardrail pins that an unset (or
+// explicitly zero) MaxBatchBytes resolves to the 128 KiB full-duplex deadlock
+// guardrail (see the field's GoDoc), not to "unbounded" — the previous
+// behavior. Checked via both preset constructors and the actual resolved
+// config on a constructed autopipeliner, since MaxBatchSize's own default is
+// applied redundantly in three places and MaxBatchBytes now mirrors that.
+func TestAutoPipelineMaxBatchBytesDefaultsToGuardrail(t *testing.T) {
+	const want = 128 * 1024
+
+	if got := redis.DefaultAutoPipelineOptions().MaxBatchBytes; got != want {
+		t.Errorf("DefaultAutoPipelineOptions().MaxBatchBytes = %d, want %d", got, want)
+	}
+	if got := redis.DefaultBlockingAutoPipelineOptions().MaxBatchBytes; got != want {
+		t.Errorf("DefaultBlockingAutoPipelineOptions().MaxBatchBytes = %d, want %d", got, want)
+	}
+
+	c := redis.NewClient(&redis.Options{
+		Addr: apTestAddr(),
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
+			MaxBatchSize: 50, // leave MaxBatchBytes at its zero value
+		},
+	})
+	defer c.Close()
+
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ap.Config().MaxBatchBytes; got != want {
+		t.Fatalf("resolved MaxBatchBytes = %d, want %d (zero must default to the guardrail, not stay unbounded)", got, want)
+	}
+}
+
 // TestAsyncAutoPipelineBlockingCommand covers the readTimeout diversion on the
 // DEFERRED face: BLPOP must bypass the batch (it would stall a whole pipeline)
 // and still deliver its result through the usual accessors.
@@ -4560,7 +4593,10 @@ func TestAutoPipelineMaxBatchBytes(t *testing.T) {
 			t.Fatalf("capped run had a %d-command batch (%v) — cap not enforced", maxBatch, capped)
 		}
 
-		uncapped := run(0)
+		// 0 no longer means "uncapped" (it now gets the 128 KiB default
+		// guardrail — see MaxBatchBytes's GoDoc); opt out explicitly with a
+		// value comfortably above this run's total payload (10 x 64 KiB).
+		uncapped := run(10 * 1024 * 1024)
 		utotal := 0
 		for _, n := range uncapped {
 			utotal += n
