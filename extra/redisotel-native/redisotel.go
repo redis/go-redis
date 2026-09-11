@@ -37,6 +37,14 @@ const (
 	// Stream metrics
 	MetricStreamLag = "redis.client.stream.lag"
 
+	// MultiDB (Active-Active failover) metrics
+	MetricMultiDBFailovers             = "redis.client.multidb.failovers"
+	MetricMultiDBFailoverDuration      = "redis.client.multidb.failover.duration"
+	MetricMultiDBActiveDatabaseChanges = "redis.client.multidb.active_database.changes"
+	MetricMultiDBCircuitStateChanges   = "redis.client.multidb.circuit_breaker.state_changes"
+	MetricMultiDBHealthChecks          = "redis.client.multidb.health_checks"
+	MetricMultiDBHealthCheckDuration   = "redis.client.multidb.health_check.duration"
+
 	// Special pool names
 	PoolNameMain   = "main"
 	PoolNamePubSub = "pubsub"
@@ -158,6 +166,9 @@ func (o *ObservabilityInstance) configToInternal(cfg *Config) config {
 	}
 	if cfg.MetricGroups&MetricGroupFlagStream != 0 {
 		enabledGroups[MetricGroupStream] = true
+	}
+	if cfg.MetricGroups&MetricGroupFlagMultiDB != 0 {
+		enabledGroups[MetricGroupMultiDB] = true
 	}
 
 	return config{
@@ -337,6 +348,72 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 	}
 
+	// MultiDB (Active-Active failover). The durations share the operation
+	// duration buckets: a failover or a health check spans the same range
+	// (sub-millisecond to seconds) as a command.
+	var multiDBFailovers, multiDBActiveDatabaseChanges, multiDBCircuitStateChanges, multiDBHealthChecks metric.Int64Counter
+	var multiDBFailoverDuration, multiDBHealthCheckDuration metric.Float64Histogram
+	if cfg.isMetricGroupEnabled(MetricGroupMultiDB) {
+		var durationOpts []metric.Float64HistogramOption
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			durationOpts = append(durationOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsOperationDuration...),
+			)
+		}
+		multiDBFailovers, err = meter.Int64Counter(
+			MetricMultiDBFailovers,
+			metric.WithDescription("Number of MultiDB failovers from one member database to another"),
+			metric.WithUnit("{failover}"),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multidb failovers metric: %w", err)
+		}
+		multiDBFailoverDuration, err = meter.Float64Histogram(
+			MetricMultiDBFailoverDuration,
+			append(durationOpts,
+				metric.WithDescription("Wall time of a MultiDB failover"),
+				metric.WithUnit("s"),
+			)...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multidb failover duration histogram: %w", err)
+		}
+		multiDBActiveDatabaseChanges, err = meter.Int64Counter(
+			MetricMultiDBActiveDatabaseChanges,
+			metric.WithDescription("Number of MultiDB active database changes (failover, fallback or manual selection)"),
+			metric.WithUnit("{change}"),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multidb active database changes metric: %w", err)
+		}
+		multiDBCircuitStateChanges, err = meter.Int64Counter(
+			MetricMultiDBCircuitStateChanges,
+			metric.WithDescription("Number of MultiDB member circuit breaker state transitions"),
+			metric.WithUnit("{transition}"),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multidb circuit breaker state changes metric: %w", err)
+		}
+		multiDBHealthChecks, err = meter.Int64Counter(
+			MetricMultiDBHealthChecks,
+			metric.WithDescription("Number of MultiDB member health checks, by outcome"),
+			metric.WithUnit("{check}"),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multidb health checks metric: %w", err)
+		}
+		multiDBHealthCheckDuration, err = meter.Float64Histogram(
+			MetricMultiDBHealthCheckDuration,
+			append(durationOpts,
+				metric.WithDescription("Wall time of a MultiDB member health check"),
+				metric.WithUnit("s"),
+			)...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multidb health check duration histogram: %w", err)
+		}
+	}
+
 	// Create recorder
 	recorder := &metricsRecorder{
 		operationDuration:        operationDuration,
@@ -351,7 +428,15 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		connectionPendingReqs:    connectionPendingReqs,
 		pubsubMessages:           pubsubMessages,
 		streamLag:                streamLag,
-		cfg:                      &cfg,
+
+		multiDBFailovers:             multiDBFailovers,
+		multiDBFailoverDuration:      multiDBFailoverDuration,
+		multiDBActiveDatabaseChanges: multiDBActiveDatabaseChanges,
+		multiDBCircuitStateChanges:   multiDBCircuitStateChanges,
+		multiDBHealthChecks:          multiDBHealthChecks,
+		multiDBHealthCheckDuration:   multiDBHealthCheckDuration,
+
+		cfg: &cfg,
 	}
 
 	return recorder, nil

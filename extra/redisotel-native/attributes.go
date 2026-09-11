@@ -47,6 +47,16 @@ const (
 
 	// Notification attributes
 	AttrRedisClientConnectionNotification = "redis.client.connection.notification"
+
+	// MultiDB (Active-Active failover) attributes. Databases are identified
+	// by the host-only FQDN the client reports for a member.
+	AttrRedisClientMultiDBDatabase           = "redis.client.multidb.database"
+	AttrRedisClientMultiDBFromDatabase       = "redis.client.multidb.from_database"
+	AttrRedisClientMultiDBToDatabase         = "redis.client.multidb.to_database"
+	AttrRedisClientMultiDBFailoverReason     = "redis.client.multidb.failover.reason"
+	AttrRedisClientMultiDBCircuitFromState   = "redis.client.multidb.circuit_breaker.from_state"
+	AttrRedisClientMultiDBCircuitToState     = "redis.client.multidb.circuit_breaker.to_state"
+	AttrRedisClientMultiDBHealthCheckSuccess = "redis.client.multidb.health_check.success"
 )
 
 // Connection state values
