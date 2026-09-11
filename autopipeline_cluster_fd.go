@@ -4,11 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"sync"
 	"time"
-
-	"github.com/redis/go-redis/v9/internal"
 )
 
 // clusterFDRouter runs the ordered full-duplex autopipeline natively on a
@@ -55,12 +52,6 @@ type clusterFDRouter struct {
 	// the stale-child sweep and the hook itself drop children entries while the
 	// registration on the node client stays live.
 	evictHooks map[*Client]struct{}
-	// hostWg tracks the per-command parent hook-host goroutines (hostParentHook).
-	// close waits it after the children have drained, so the parent's Close does
-	// not return while a cluster-level ProcessHook is still running post-next.
-	// Add happens under mu with closed false; close sets closed under mu before
-	// waiting, so no Add can race the Wait.
-	hostWg sync.WaitGroup
 }
 
 // clusterFDRouterEvictID is the onClose registry id of this router's evict
@@ -178,89 +169,10 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		cmd.SetErr(nil)
 		b = child.fd.submit(ctx, cmd)
 	}
-	// The child's engine hosts only the NODE client's hook chain; run the parent
-	// (ClusterClient) chain around the command too, as the half-duplex cluster face
-	// does around every batch. No-op without cluster-level hooks.
-	b = r.hostParentHook(ctx, cmd, b)
 	if !r.blocking {
 		cmd.setReady(b)
 	}
 	return AutoFuture{cmd: cmd, batch: b}
-}
-
-// hostParentHook runs the PARENT (ClusterClient) process-hook chain around a
-// command already submitted to a node child's FD engine, on its own goroutine —
-// fdEngine.hostHook's shape, one level up. Without it cluster-level hooks (those
-// registered through ClusterClient.AddHook or the parent AutoPipeliner.AddHook,
-// which the half-duplex cluster face runs around every batch) never saw a
-// full-duplex command: the router submits straight to the child engine, whose
-// host runs only the node client's chain (Copilot on #4002).
-//
-// Same contract as the node host: the command is on the wire before the chain
-// starts; next() blocks until the child batch completes, so an observing hook
-// spans the real write→reply latency and a hook that rewrites the result is
-// honored before the waiter wakes; a hook that short-circuits does not stop the
-// command (already sent) but its verdict still lands on cmd; a panicking hook is
-// recovered, fails the command, and still wakes the waiter. The returned batch
-// is what the caller hands out: it completes only after the chain has returned.
-// A submit-time rejection (completedBatch: nothing executed) starts no host, as
-// on the standalone path, and neither does a submit racing close.
-func (r *clusterFDRouter) hostParentHook(ctx context.Context, cmd Cmder, inner *apBatch) *apBatch {
-	if inner == completedBatch || r.parent.pipeliner.hookCount() == 0 {
-		return inner
-	}
-	r.mu.RLock()
-	if r.closed {
-		// close already snapshotted and is (or will be) waiting hostWg; the child
-		// still completes inner, so the caller is not stranded — only the parent
-		// chain is skipped for this one racing command.
-		r.mu.RUnlock()
-		return inner
-	}
-	r.hostWg.Add(1)
-	r.mu.RUnlock()
-
-	outer := newAPBatch()
-	go func() {
-		defer r.hostWg.Done()
-		// This goroutine is outer's executor: a hook reading its own command after
-		// next() (cmd.Err(), a documented pattern) must get the just-executed view
-		// instead of blocking on outer.done, which only this goroutine closes.
-		outer.dispGid.Store(curGoroutineID())
-		awaited := false
-		await := func() {
-			if !awaited {
-				<-inner.done
-				awaited = true
-				// The blocking face's child batch is pooled (single waiter: us).
-				putFDBlockingBatch(inner)
-			}
-		}
-		defer func() {
-			if rec := recover(); rec != nil {
-				// The command is on the wire and the reader will still write into
-				// cmd: await that before releasing the caller (happens-before for the
-				// caller's reads), then fail the command unless it already carries an
-				// error and wake the waiter.
-				await()
-				if cmd.rawErr() == nil {
-					fdSetErrSafe(cmd, fmt.Errorf("redis: autopipeline: panic in cluster full-duplex process hook: %v", rec))
-				}
-				internal.Logger.Printf(ctx, "autopipeline: recovered cluster full-duplex hook panic: %v\n%s", rec, debug.Stack())
-				outer.close()
-			}
-		}()
-		err := r.parent.pipeliner.withProcessHook(ctx, cmd, func(context.Context, Cmder) error {
-			await()
-			return cmd.rawErr() // direct read: cmd.Err() would await outer, which this goroutine closes
-		})
-		// A short-circuiting hook never called next: the command still executes, so
-		// await the child before releasing the caller.
-		await()
-		fdSetErrSafe(cmd, err) // honor a hook that rewrote / short-circuited the result
-		outer.close()
-	}()
-	return outer
 }
 
 // rejectClosed mirrors the parent AutoPipeliner's closed-submit contract: fail
@@ -487,10 +399,5 @@ func (r *clusterFDRouter) close() error {
 			firstErr = cerr
 		}
 	}
-	// Every child has drained (each accepted command's inner batch is complete),
-	// so the parent hook hosts are unblocking; wait for their post-next hook
-	// bodies before reporting closed. Safe against a racing Add: closed was set
-	// under mu above and hostParentHook only Adds under mu while it is false.
-	r.hostWg.Wait()
 	return firstErr
 }

@@ -162,3 +162,29 @@ These are documented gaps, tracked as follow-ups, not fixed in the current PR.
   is still emitted, so error telemetry is intact; only the duration sample is missing.
   Emitting it needs a submit-time start anchor carried on `fdReq` through every terminal
   path (and a choice of anchor semantics — submit vs first-write), so it is a follow-up.
+
+- **Cluster-level process hooks on the cluster FD fast path.** On a `ClusterClient`,
+  native full-duplex routes each command straight to the owning node child's FD engine,
+  whose host runs the NODE client's process-hook chain. Hooks registered directly on the
+  `ClusterClient` (its own `AddHook`, or the parent `AutoPipeliner.AddHook`, which
+  delegates to it) do NOT run on this path, unlike the half-duplex cluster face, which
+  runs them via `withProcessPipelineHook`. This does not affect the common
+  instrumentation case: `redisotel` tracing and metrics attach per node through
+  `OnNewNode` (node-level `AddHook`), so they run on the FD path already; operation
+  duration/error metrics go through the global recorder the FD reader already emits.
+  Only a process hook a caller registers directly on the `ClusterClient` is skipped —
+  register it per node via `OnNewNode` to have it run under FD. A round of hosting the
+  parent chain around each FD command was tried and reverted: the extra completion gate
+  it introduced deadlocked against the off-pipe retry's executor guard (codex P1 on
+  #4002). Composing the parent chain into the node engine's single host is the follow-up.
+
+- **Cluster FD connection-error carries stay on the origin node.** When a node child's
+  FD session hits a CONNECTION error, `fd.run` replays the unacked tail on a fresh
+  connection from that same node client's fixed-address pool (bounded by the cluster's
+  `MaxRedirects`). A reply-level redirect (MOVED/ASK) already re-resolves through
+  `cc.process`, but a connection error does not: if topology GC has closed or replaced
+  that master, the accepted commands exhaust their budget with `ErrClosed`/a dial error
+  instead of routing to the replacement. Re-resolving recovered connection-error carries
+  through the parent cluster path (preserving the sent/`NoRetry` guard) needs the
+  `fdConnErr` branch of the recovery loop restructured, so it is a follow-up (codex P2
+  on #4002).
