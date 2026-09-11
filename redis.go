@@ -309,14 +309,28 @@ type onCloseHooks struct {
 	mu    sync.Mutex
 	order []string
 	hooks map[string]func() error
+	// ran is set once run has taken its snapshot: the owner is closing (or
+	// closed), so a callback registered from here on would never be invoked.
+	// register reports that instead of silently accepting the registration.
+	ran bool
 }
 
 // register adds or replaces the callback associated with id. Re-registering
 // an existing id overwrites the previous callback in place; new ids are
 // appended to the invocation order.
-func (h *onCloseHooks) register(id string, fn func() error) {
+//
+// It returns false, and registers nothing, once run has already taken its
+// snapshot: the owner is closing, so the callback could never fire. A caller
+// that registers lazily against a possibly-closing owner (the cluster FD
+// router's per-node evict hook) must treat false as "already closed" and do
+// the callback's work itself, or it is left holding state the close will
+// never clean up (cursor bugbot on #4002).
+func (h *onCloseHooks) register(id string, fn func() error) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.ran {
+		return false
+	}
 	if h.hooks == nil {
 		h.hooks = make(map[string]func() error)
 	}
@@ -324,6 +338,7 @@ func (h *onCloseHooks) register(id string, fn func() error) {
 		h.order = append(h.order, id)
 	}
 	h.hooks[id] = fn
+	return true
 }
 
 // unregister removes the callback associated with id, if any. Used by
@@ -363,6 +378,8 @@ func (h *onCloseHooks) run() error {
 		return nil
 	}
 	h.mu.Lock()
+	// From here on a late register would never be invoked; make it say so.
+	h.ran = true
 	fns := make([]func() error, 0, len(h.order))
 	for i := len(h.order) - 1; i >= 0; i-- {
 		if fn := h.hooks[h.order[i]]; fn != nil {

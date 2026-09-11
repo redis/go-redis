@@ -741,6 +741,14 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		// (the cancel paths below) must not leak a host goroutine. The Add happens under
 		// the gate, so it is ordered before the shutdown drain's WLock and run()'s
 		// hostWg.Wait never races an Add on a zero counter.
+		//
+		// The readiness gate (setReady, stamped by the caller after we return) is
+		// deliberately NOT installed here first: it would change nothing for a hook
+		// on the host goroutine, which is the batch's executor and whose result
+		// accessors never block (await's executor guard — blocking there would
+		// self-deadlock, since only the host closes b.done). A pre-next read on the
+		// host is the not-yet-executed view whether or not the gate is set; the
+		// FullDuplex contract forbids it (see the FullDuplex field doc).
 		if hookDone != nil {
 			fd.hostWg.Add(1)
 			go fd.hostHook(ctx, cmd, b, hookDone)

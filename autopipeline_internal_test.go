@@ -2399,6 +2399,115 @@ func TestCmdApproxBytesSafeRecoversArgsPanic(t *testing.T) {
 	}
 }
 
+// TestEnqueueSizingPanicDoesNotWedgeStripe pins the half-duplex enqueue sizing
+// fix (cursor bugbot + codex on #4002): with MaxBatchBytes on by default,
+// enqueue sizes every command, and sizing runs user code (cmd.Args() on a
+// custom Cmder, MarshalBinary on a BinaryMarshaler arg). It used to run under
+// the stripe mutex, so a panic there left the stripe locked forever: every
+// later enqueue on it parked and Close could only time out. Sizing now runs
+// before the lock, panic-safely, and fails just that command.
+//
+// Red-check: move the sizing back under st.mu.Lock (or call cmdApproxBytes
+// there) -> the panic escapes enqueue with the stripe still locked, and the
+// TryLock below fails.
+func TestEnqueueSizingPanicDoesNotWedgeStripe(t *testing.T) {
+	client := NewClient(&Options{Addr: "localhost:1"}) // never dialed
+	t.Cleanup(func() { _ = client.Close() })
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{}, true)
+	if err != nil {
+		t.Fatalf("newAutoPipeliner: %v", err)
+	}
+	t.Cleanup(func() { _ = ap.Close() })
+	if ap.config.MaxBatchBytes <= 0 {
+		t.Fatal("precondition: MaxBatchBytes must default on, or enqueue never sizes")
+	}
+
+	cmd := panicArgsCmd{NewStatusCmd(context.Background(), "get", "k")}
+	var escaped interface{}
+	var batch *apBatch
+	func() {
+		defer func() { escaped = recover() }()
+		batch = ap.enqueue(cmd)
+	}()
+	if escaped != nil {
+		t.Fatalf("sizing panic escaped enqueue (stripe left locked): %v", escaped)
+	}
+	if batch != completedBatch {
+		t.Fatal("a command that panics while sizing must be failed and dropped (completedBatch), not queued")
+	}
+	if !errors.Is(cmd.Err(), errFDPanicRecovered) {
+		t.Fatalf("cmd.Err() = %v; want it to wrap errFDPanicRecovered", cmd.Err())
+	}
+	// Every stripe must still be lockable and empty: nothing may hold a mutex
+	// after the panic, and the poisoned command must not have been queued.
+	// TryLock never blocks, so a wedged stripe fails here instead of hanging.
+	for i, s := range ap.shards {
+		for j := range s.stripes {
+			st := &s.stripes[j]
+			if !st.mu.TryLock() {
+				t.Fatalf("shard %d stripe %d mutex still held after a sizing panic", i, j)
+			}
+			st.mu.Unlock()
+			if st.queueLen.Load() != 0 || st.queueBytes.Load() != 0 {
+				t.Fatalf("shard %d stripe %d queued the panicking command: len=%d bytes=%d",
+					i, j, st.queueLen.Load(), st.queueBytes.Load())
+			}
+		}
+	}
+}
+
+// TestIsHImportCmdMatchesRawByName pins codex on #4002: HIMPORT submitted as a
+// raw command (NewCmd/NewStatusCmd(ctx, "himport", ...)) carries no himportCmder
+// marker but rides the same connection-session state as the managed form, so the
+// full-duplex divert must recognise it by name too — otherwise a raw HIMPORT SET
+// could land on a session whose PREPARE never ran ("no such fieldset").
+func TestIsHImportCmdMatchesRawByName(t *testing.T) {
+	ctx := context.Background()
+	if !isHImportCmd(NewHImportPrepareCmd(ctx, "fs", "f1")) {
+		t.Fatal("managed HIMPORT PREPARE must be detected (marker)")
+	}
+	for _, raw := range []Cmder{
+		NewStatusCmd(ctx, "himport", "prepare", "fs", "f1"),
+		NewCmd(ctx, "HIMPORT", "set", "k", "fs", "v1"), // Name() lower-cases
+		NewIntCmd(ctx, "himport", "discardall"),
+	} {
+		if !isHImportCmd(raw) {
+			t.Fatalf("raw %v must be detected by name", raw.Args())
+		}
+	}
+	for _, other := range []Cmder{
+		NewStatusCmd(ctx, "hset", "k", "f", "v"),
+		NewCmd(ctx, "himportx", "prepare"),
+	} {
+		if isHImportCmd(other) {
+			t.Fatalf("%v must not be treated as HIMPORT", other.Args())
+		}
+	}
+}
+
+// TestAutoPipelineOptionsMaxBatchBytesDefaultContract pins the documented
+// MaxBatchBytes contract (codex on #4002): only 0 selects the 128 KiB default;
+// a negative value is rejected by Validate instead of being coerced — the field
+// doc used to promise "unset/<=0 gets this default", which Validate never did.
+func TestAutoPipelineOptionsMaxBatchBytesDefaultContract(t *testing.T) {
+	if err := (&AutoPipelineOptions{MaxBatchBytes: -1}).Validate(); err == nil {
+		t.Fatal("Validate must reject a negative MaxBatchBytes")
+	}
+	client := NewClient(&Options{Addr: "localhost:1"}) // never dialed
+	t.Cleanup(func() { _ = client.Close() })
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{MaxBatchBytes: 0}, true)
+	if err != nil {
+		t.Fatalf("newAutoPipeliner with MaxBatchBytes=0: %v", err)
+	}
+	t.Cleanup(func() { _ = ap.Close() })
+	if got := ap.Config().MaxBatchBytes; got != 128*1024 {
+		t.Fatalf("MaxBatchBytes=0 resolved to %d, want the 128 KiB default", got)
+	}
+	if _, err := newAutoPipeliner(client, &AutoPipelineOptions{MaxBatchBytes: -1}, true); err == nil {
+		t.Fatal("newAutoPipeliner must surface Validate's rejection of a negative MaxBatchBytes")
+	}
+}
+
 // fdMarshaledArg is a large custom Cmder argument type marshaled through
 // proto.Writer's encoding.BinaryMarshaler case (the same case a large
 // application-defined argument type would use).

@@ -46,6 +46,19 @@ type clusterFDRouter struct {
 	mu       sync.RWMutex
 	closed   bool
 	children map[*Client]*AutoPipeliner
+	// evictHooks records every node client this router registered a
+	// clusterFDRouterEvict close hook on (see getOrCreateChild), so close can
+	// unregister them. Guarded by mu. Tracked separately from children because
+	// the stale-child sweep and the hook itself drop children entries while the
+	// registration on the node client stays live.
+	evictHooks map[*Client]struct{}
+}
+
+// clusterFDRouterEvictID is the onClose registry id of this router's evict
+// hook on node client nc. Deterministic per (router, node) so a re-register
+// replaces rather than accumulates, and so close can address it.
+func clusterFDRouterEvictID(r *clusterFDRouter, nc *Client) string {
+	return fmt.Sprintf("clusterFDRouterEvict#%p#%p", r, nc)
 }
 
 func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipelineOptions, blocking bool) *clusterFDRouter {
@@ -283,27 +296,43 @@ func (r *clusterFDRouter) getOrCreateChild(nc *Client) (*AutoPipeliner, bool) {
 	if cached := r.children[nc]; cached != nil && !cached.IsClosed() {
 		child = cached
 	} else {
+		// Prune THIS node's entry the moment nc itself closes (topology GC, or
+		// any other Close), instead of relying solely on the sweep above: that
+		// sweep only runs when some OTHER node's cache miss takes this same
+		// write-lock path, so a cluster whose live submits only ever hit
+		// already-cached nodes would never prune a removed node's entry (cursor
+		// bugbot on #4002 — a gap in the sweep it sits next to). nc.onClose is
+		// the same registry AutoPipelineWithOptions above already wired the
+		// child's own drain to.
+		//
+		// Register BEFORE publishing the child, and under r.mu. The hook takes
+		// r.mu, so a node close racing this section resolves one of two ways:
+		// its run snapshot was taken before this register, in which case
+		// register reports false (the hook would never fire) and the node is
+		// already closed — discard the child and divert; or the snapshot comes
+		// later and the hook blocks on r.mu until this store is published, then
+		// deletes it. Registering after the unlock left a window where the
+		// close ran in between and the entry stayed for the router's life
+		// (cursor bugbot on #4002). The id is deterministic per (router, node),
+		// so a rebuild for this node replaces the same closure.
+		if !nc.onClose.register(clusterFDRouterEvictID(r, nc), func() error {
+			r.mu.Lock()
+			delete(r.children, nc)
+			delete(r.evictHooks, nc)
+			r.mu.Unlock()
+			return nil
+		}) {
+			r.mu.Unlock()
+			_ = child.Close()
+			return nil, false
+		}
+		if r.evictHooks == nil {
+			r.evictHooks = make(map[*Client]struct{})
+		}
+		r.evictHooks[nc] = struct{}{}
 		r.children[nc] = child
 	}
 	r.mu.Unlock()
-
-	// Prune THIS node's entry the moment nc itself closes (topology GC, or any
-	// other Close), instead of relying solely on the sweep above: that sweep
-	// only runs when some OTHER node's cache miss takes this same write-lock
-	// path, so a cluster whose live submits only ever hit already-cached
-	// nodes would never prune a removed node's entry (cursor bugbot on
-	// #4002 — a gap in the sweep it sits next to). nc.onClose is the same
-	// registry AutoPipelineWithOptions above already wired the child's own
-	// drain to, so this event is proven to fire reliably. Idempotent: the id
-	// is deterministic per (router, node), so re-registering on every rebuild
-	// for this node just replaces the same closure; concurrent callers racing
-	// here register the same content harmlessly.
-	nc.onClose.register(fmt.Sprintf("clusterFDRouterEvict#%p#%p", r, nc), func() error {
-		r.mu.Lock()
-		delete(r.children, nc)
-		r.mu.Unlock()
-		return nil
-	})
 	return child, false
 }
 
@@ -337,7 +366,23 @@ func (r *clusterFDRouter) close() error {
 		children = append(children, ch)
 	}
 	r.children = make(map[*Client]*AutoPipeliner)
+	// Detach this router's evict hooks from every node client it registered on
+	// — not just the nodes still in children (the sweep and the hook itself drop
+	// entries while the registration stays live). Left registered, each hook
+	// keeps the closed router, and through parent the AutoPipeliner and its
+	// clusterReprocess closure, reachable until that node client itself closes,
+	// and a cluster that cycles autopipeliners accumulates one per cycle per
+	// node (codex + cursor bugbot on #4002). Snapshot under the lock, unregister
+	// outside it: unregister takes only the registry's own mutex.
+	hooked := make([]*Client, 0, len(r.evictHooks))
+	for nc := range r.evictHooks {
+		hooked = append(hooked, nc)
+	}
+	r.evictHooks = nil
 	r.mu.Unlock()
+	for _, nc := range hooked {
+		nc.onClose.unregister(clusterFDRouterEvictID(r, nc))
+	}
 
 	var firstErr error
 	for _, ch := range children {

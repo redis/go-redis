@@ -451,6 +451,64 @@ func TestClusterFullDuplexEvictsChildOnNodeClose(t *testing.T) {
 // effective state. Pure construction check: no live cluster required (the gate
 // reads cc.opt synchronously, and the half-duplex AP dials nothing until a
 // command is submitted).
+// TestClusterFDRouterCloseUnregistersEvictHooks pins that closing a cluster FD
+// router detaches the per-node evict hooks getOrCreateChild registered on each
+// node client's onClose registry — for every node it ever registered on, not
+// only those still in children (the stale-child sweep and the hook itself drop
+// children entries while the registration stays live). Left registered, each
+// hook kept the closed router, and through parent the AutoPipeliner and its
+// clusterReprocess closure, reachable until the node client itself closed,
+// accumulating one per autopipeliner create/close cycle per node (codex +
+// cursor bugbot on #4002). No server: the registry and router state are driven
+// directly, the way getOrCreateChild's publish step leaves them.
+func TestClusterFDRouterCloseUnregistersEvictHooks(t *testing.T) {
+	nodeA := NewClient(&Options{Addr: "localhost:1"}) // never dialed
+	nodeB := NewClient(&Options{Addr: "localhost:1"})
+	t.Cleanup(func() { _ = nodeA.Close(); _ = nodeB.Close() })
+
+	r := &clusterFDRouter{children: make(map[*Client]*AutoPipeliner)}
+	for _, nc := range []*Client{nodeA, nodeB} {
+		nc := nc
+		if !nc.onClose.register(clusterFDRouterEvictID(r, nc), func() error {
+			r.mu.Lock()
+			delete(r.children, nc)
+			delete(r.evictHooks, nc)
+			r.mu.Unlock()
+			return nil
+		}) {
+			t.Fatal("register on a live node client must succeed")
+		}
+		if r.evictHooks == nil {
+			r.evictHooks = make(map[*Client]struct{})
+		}
+		r.evictHooks[nc] = struct{}{}
+	}
+	// Neither node has a children entry (as after the sweep dropped them); the
+	// registrations must be detached regardless.
+	hasHook := func(nc *Client) bool {
+		nc.onClose.mu.Lock()
+		defer nc.onClose.mu.Unlock()
+		_, ok := nc.onClose.hooks[clusterFDRouterEvictID(r, nc)]
+		return ok
+	}
+	if !hasHook(nodeA) || !hasHook(nodeB) {
+		t.Fatal("precondition: both node clients must hold this router's evict hook")
+	}
+
+	if err := r.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if hasHook(nodeA) || hasHook(nodeB) {
+		t.Fatal("close must unregister the router's evict hook from every node client it registered on")
+	}
+	r.mu.Lock()
+	tracked := len(r.evictHooks)
+	r.mu.Unlock()
+	if tracked != 0 {
+		t.Fatalf("evictHooks still tracks %d node clients after close", tracked)
+	}
+}
+
 func TestClusterFullDuplexGatedOffForReplicaRouting(t *testing.T) {
 	addrs := []string{"127.0.0.1:16600"}
 	cases := []struct {

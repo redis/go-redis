@@ -886,6 +886,42 @@ func TestOnCloseHooks_RegisterSameIDReplaces(t *testing.T) {
 	}
 }
 
+// TestOnCloseHooks_RegisterAfterRunIsRejected pins the contract the cluster FD
+// router's per-node evict hook relies on: once run has taken its snapshot the
+// owner is closing, and a callback registered from then on would never fire —
+// so register must report false and store nothing, instead of silently
+// accepting a hook that leaks whatever it was meant to clean up (cursor bugbot
+// on #4002: a node client closing between a child's publication and its evict
+// hook's registration left the child in the router map for good).
+func TestOnCloseHooks_RegisterAfterRunIsRejected(t *testing.T) {
+	h := &onCloseHooks{}
+	var early, late atomic.Int32
+
+	if !h.register("early", func() error { early.Add(1); return nil }) {
+		t.Fatal("register before run must report true")
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := early.Load(); got != 1 {
+		t.Fatalf("early hook invoked %d times, want 1", got)
+	}
+
+	if h.register("late", func() error { late.Add(1); return nil }) {
+		t.Fatal("register after run must report false: the owner is closing and the hook would never fire")
+	}
+	if _, stored := h.hooks["late"]; stored {
+		t.Fatal("a rejected registration must not be stored")
+	}
+	// A second run (Close is idempotent at the owner level) must not surface it.
+	if err := h.run(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := late.Load(); got != 0 {
+		t.Fatalf("late hook invoked %d times, want 0", got)
+	}
+}
+
 // TestOnCloseHooks_DistinctIDsCoexist guarantees the dedup behavior does not
 // discard hooks from other callers: registering new ids must never drop
 // previously registered ids.

@@ -189,16 +189,17 @@ type Options struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
-	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline connections.
-	// If set to a value > 0, a separate connection pool will be created specifically for
-	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
-	// this buffer size.
+	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline
+	// connections — the dedicated pipeline pool that serves Pipeline, AutoPipeline
+	// and AsyncAutoPipeline. That pool always exists (see PipelinePoolSize); this
+	// field only sizes its read buffers.
 	//
 	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
 	// throughput) while keeping regular command buffers small (to save memory).
 	//
-	// If not set (0), pipeline operations will use the regular connection pool with
-	// ReadBufferSize buffers.
+	// If not set (0), the pipeline pool's read buffer is the larger of
+	// ReadBufferSize and DefaultPipelineBufferSize (128 KiB). Pipelines never fall
+	// back to the regular pool or its buffer size.
 	//
 	// Recommended: 64–128 KiB for high-throughput pipelining. The benefit here is
 	// on the READ side: a batch's replies arrive as one large stream, and a bigger
@@ -221,29 +222,31 @@ type Options struct {
 	//   })
 	//
 	// Memory impact: With PoolSize=100 and PipelinePoolSize=10:
-	//   - Without pipeline pool: 100 conns × 128 KiB = 12.8 MB (if all use 128 KiB buffers)
-	//   - With pipeline pool: (100 × 32 KiB) + (10 × 128 KiB) = 4.5 MB (~65% savings)
+	//   - Raising ReadBufferSize to 128 KiB instead: 100 conns × 128 KiB = 12.8 MB
+	//   - Leaving it at 32 KiB, pipeline pool at its 128 KiB default:
+	//     (100 × 32 KiB) + (10 × 128 KiB) = 4.5 MB (~65% savings)
 	//
-	// default: 0 (use ReadBufferSize)
+	// default: 0 (the larger of ReadBufferSize and DefaultPipelineBufferSize)
 	PipelineReadBufferSize int
 
-	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline connections.
-	// If set to a value > 0, a separate connection pool will be created specifically for
-	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
-	// this buffer size.
+	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline
+	// connections — the dedicated pipeline pool that serves Pipeline, AutoPipeline
+	// and AsyncAutoPipeline. That pool always exists (see PipelinePoolSize); this
+	// field only sizes its write buffers.
 	//
 	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
 	// throughput) while keeping regular command buffers small (to save memory).
 	//
-	// If not set (0), pipeline operations will use the regular connection pool with
-	// WriteBufferSize buffers.
+	// If not set (0), the pipeline pool's write buffer is the larger of
+	// WriteBufferSize and DefaultPipelineBufferSize (128 KiB). Pipelines never fall
+	// back to the regular pool or its buffer size.
 	//
 	// Recommended: 64–128 KiB for high-throughput pipelining (size to roughly
 	// MaxBatchSize × average-command-bytes). Throughput plateaus past ~64 KiB and
 	// gains nothing beyond ~128 KiB; very large buffers (≥512 KiB) can regress it.
 	// See PipelineReadBufferSize for the full rationale.
 	//
-	// default: 0 (use WriteBufferSize)
+	// default: 0 (the larger of WriteBufferSize and DefaultPipelineBufferSize)
 	PipelineWriteBufferSize int
 
 	// PipelinePoolSize is the pool size for the separate pipeline connection pool.

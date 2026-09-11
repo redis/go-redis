@@ -39,11 +39,14 @@ type AutoPipelineOptions struct {
 	// huge burst (300 x 64KiB is ~19MB written down one connection before any
 	// reply is read — enough to stall a constrained link past its write
 	// deadline). Like MaxBatchSize it is a soft threshold, not a hard cap.
-	// The estimate counts string/[]byte argument lengths plus a small
-	// per-argument overhead.
+	// The estimate sizes string, []byte, *string and BinaryMarshaler arguments
+	// by their encoded length (other argument kinds by a small fixed size) plus
+	// a small per-argument overhead.
 	//
-	// Default: 128 KiB (unset/<=0 gets this default; there is no "unbounded"
-	// setting — pass a deliberately large value instead). This is a
+	// Default: 128 KiB. Only 0 selects the default; a negative value is
+	// rejected by Validate rather than silently coerced (the autopipeliner
+	// getters return that error). There is no "unbounded" setting — pass a
+	// deliberately large value instead. This is a
 	// full-duplex safety guardrail, not a throughput knob: with FullDuplex,
 	// the reader cannot start draining replies until the writer finishes
 	// flushing the WHOLE batch (see autopipeline_fullduplex.go), so a batch
@@ -147,9 +150,14 @@ type AutoPipelineOptions struct {
 	// half-duplex autopipeline. A hook that calls next and only OBSERVES the
 	// command (reads its result after next, optionally rewriting the returned
 	// error) is unaffected. But because the write is already queued when the host
-	// starts, a hook MUST NOT mutate the command — e.g. cmd.Args() — or set its
-	// result BEFORE calling next: that races the writer's serialization and the
-	// reader's completion. Mutate-before-next hooks must run on a plain client or
+	// starts, a hook MUST NOT mutate the command — e.g. cmd.Args() — set its
+	// result, or READ its result (cmd.Err(), cmd.Val(), cmd.String(), ...)
+	// BEFORE calling next: the write is already queued and the reader may be
+	// completing the command concurrently. On the hook-host goroutine the result
+	// accessors do not block (it is the batch's executor; blocking there would
+	// self-deadlock — see await), so a pre-next read is the not-yet-executed view
+	// racing the reader's write, not a wait for the result. Read results only
+	// after next returns. Mutate-before-next hooks must run on a plain client or
 	// the half-duplex autopipeline, where next() gates the write.
 	//
 	// A ProcessHook MUST NOT synchronously call Close (Client.Close or
@@ -1747,14 +1755,22 @@ var blockingCommands = map[string]struct{}{
 	"migrate": {},
 }
 
-// isHImportCmd reports whether cmd is a managed HIMPORT command
-// (PREPARE/SET/DISCARD/DISCARDALL). It uses the same predicate himportInjectedCmds
-// uses to spot HIMPORT in a batch (the himportCmder marker), so it stays in sync
-// with the injection path and covers every subcommand without a name switch. Used
-// only on the full-duplex path to divert HIMPORT off the shared pipe (see submit).
+// isHImportCmd reports whether cmd is an HIMPORT command
+// (PREPARE/SET/DISCARD/DISCARDALL): a managed one — the himportCmder marker, the
+// same predicate himportInjectedCmds uses to spot HIMPORT in a batch — OR a raw
+// one built with NewCmd/NewStatusCmd(ctx, "himport", ...), matched by name. The
+// raw form carries no marker, but it rides the same connection-session state (a
+// PREPARE registered on the physical connection) that the full-duplex writer
+// never injects, so after a session recycle, handoff or reconnect a raw HIMPORT
+// SET would land on a connection whose PREPARE never ran and fail with "no such
+// fieldset" (codex on #4002). Divert it off the shared pipe like the managed
+// form: Process runs it on a pooled connection, as a plain client would. Used
+// only on the full-duplex path (see submit).
 func isHImportCmd(cmd Cmder) bool {
-	_, ok := cmd.(himportCmder)
-	return ok
+	if _, ok := cmd.(himportCmder); ok {
+		return true
+	}
+	return cmd.Name() == "himport"
 }
 
 // isBlockingCmd reports whether cmd parks the connection. XREAD/XREADGROUP are
@@ -1869,13 +1885,15 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// command policies enabled (review finding by codex on #3942).
 	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
-		// Managed HIMPORT rides connection-session state (the registered PREPARE)
-		// that the full-duplex writer never injects, so an HIMPORT SET on the FD
-		// pipe can fail "no such fieldset". Divert it to the normal Process path,
-		// which injects the PREPARE (and updates the registry). The half-duplex
-		// sharded path injects inline (himportInjectedCmds) and stays on the pipeline.
-		// Cluster full-duplex (clusterFD) routes to per-node FD children whose
-		// engines have the same limitation, so divert there too.
+		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
+		// state (the registered PREPARE) that the full-duplex writer never injects,
+		// so an HIMPORT SET on the FD pipe can fail "no such fieldset". Divert it to
+		// the normal Process path, which injects the PREPARE for the managed form
+		// (and updates the registry) and runs a raw form on a pooled connection as a
+		// plain client would. The half-duplex sharded path injects inline
+		// (himportInjectedCmds) and stays on the pipeline. Cluster full-duplex
+		// (clusterFD) routes to per-node FD children whose engines have the same
+		// limitation, so divert there too.
 		((ap.fd != nil || ap.clusterFD != nil) && isHImportCmd(cmd))
 	if !diverted && ap.preflight != nil {
 		if err := ap.preflight(ctx, cmd); err != nil {
@@ -2078,6 +2096,24 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 		s = ap.shards[int((ap.next.Add(1)-1)%uint32(len(ap.shards)))]
 	}
 
+	// Size the command BEFORE taking the stripe lock, and panic-safely. Sizing
+	// runs user code — cmd.Args() on a custom Cmder, and MarshalBinary on a
+	// BinaryMarshaler argument — and MaxBatchBytes is on by default, so this is
+	// on every enqueue. A panic while holding st.mu would never reach
+	// st.mu.Unlock: the stripe stays locked, every later enqueue on it parks
+	// forever, and Close can only time out (cursor bugbot + codex on #4002).
+	// Outside the lock, a panic just fails this one command, exactly as the
+	// full-duplex serve loop does with the same helper; nothing was queued.
+	var cmdBytes int64
+	if ap.config.MaxBatchBytes > 0 {
+		n, err := cmdApproxBytesSafe(cmd)
+		if err != nil {
+			cmd.SetErr(err)
+			return completedBatch
+		}
+		cmdBytes = n
+	}
+
 	st := s.stripe()
 	st.mu.Lock()
 	// Re-check closed under the stripe lock (see Close): either we win the lock
@@ -2102,7 +2138,7 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	st.queue = append(st.queue, cmd)
 	st.queueLen.Store(int32(len(st.queue)))
 	if ap.config.MaxBatchBytes > 0 {
-		st.queueBytes.Add(cmdApproxBytes(cmd))
+		st.queueBytes.Add(cmdBytes)
 	}
 	st.mu.Unlock()
 
@@ -3328,20 +3364,23 @@ func cmdApproxBytes(cmd Cmder) int64 {
 	return n
 }
 
-// cmdApproxBytesSafe wraps cmdApproxBytes with a recover. cmd.Args() is user code
-// for a custom Cmder and can panic; the full-duplex serve loop sizes each command
-// there with no top-level recover, so a panic would kill the engine and strand
-// every in-flight and future command. On panic it returns a non-nil error wrapping
-// errFDPanicRecovered so the caller can fail and DROP just that command before any
-// batch bytes are written — the alternative (letting it reach writeBatch, whose
-// write-time recover then tears the session down and replays the batch) forces
-// at-least-once re-execution of the poisoned command's innocent batch-mates.
+// cmdApproxBytesSafe wraps cmdApproxBytes with a recover. Sizing runs user code
+// — cmd.Args() on a custom Cmder, MarshalBinary on a BinaryMarshaler argument —
+// and can panic. Two callers need that contained: the full-duplex serve loop,
+// which has no top-level recover (a panic would kill the engine and strand every
+// in-flight and future command), and the half-duplex enqueue, which sizes before
+// taking the stripe lock (a panic under that lock would leave it held forever).
+// On panic it returns a non-nil error wrapping errFDPanicRecovered so the caller
+// can fail and DROP just that command before anything is queued or written — the
+// alternative (letting it reach the write path, whose write-time recover tears
+// the session down and replays the batch) forces at-least-once re-execution of
+// the poisoned command's innocent batch-mates.
 func cmdApproxBytesSafe(cmd Cmder) (n int64, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%w: Args() sizing: %v", errFDPanicRecovered, r)
 			internal.Logger.Printf(context.Background(),
-				"autopipeline: recovered full-duplex Args() sizing panic: %v\n%s", r, debug.Stack())
+				"autopipeline: recovered Args() sizing panic: %v\n%s", r, debug.Stack())
 		}
 	}()
 	return cmdApproxBytes(cmd), nil
