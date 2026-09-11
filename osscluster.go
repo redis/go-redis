@@ -1568,6 +1568,20 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
+		if isNodeGoneError(lastErr) {
+			// Same as MOVED: the routed node is gone after failover
+			// (connection refused or a dial timeout). LazyReload coalesces
+			// concurrent CLUSTER SLOTS refreshes instead of blocking this
+			// goroutine on a sync Reload.
+			c.state.LazyReload()
+			node.MarkAsFailing()
+			node = nil
+			if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
+				continue
+			}
+			return lastErr
+		}
+
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
 			// First retry the same node.
 			if attempt == 0 {
