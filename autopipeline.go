@@ -1105,6 +1105,18 @@ func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...
 	return ap.pipeliner.Watch(ctx, fn, keys...)
 }
 
+// Monitor delegates to the typed command surface so MONITOR still takes the
+// direct, dedicated-connection path guarded by submit.
+func (ap *AutoPipeliner) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return monitor(ap.cmdable, ctx, ch)
+}
+
+// MonitorWithArgs delegates to the typed command surface so vendor-specific
+// MONITOR forms keep the same direct-path routing.
+func (ap *AutoPipeliner) MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	return monitor(ap.cmdable, ctx, ch, args...)
+}
+
 // Subscribe opens a pub/sub on the underlying client (not batched — pub/sub
 // needs a dedicated connection).
 func (ap *AutoPipeliner) Subscribe(ctx context.Context, channels ...string) *PubSub {
