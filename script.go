@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 )
@@ -23,6 +24,11 @@ var (
 	_ Scripter = (*Ring)(nil)
 	_ Scripter = (*ClusterClient)(nil)
 )
+
+// ErrScriptDigestMismatch is returned by Script.Load when SCRIPT LOAD answers
+// with a digest that differs from the SHA-1 computed by NewScript. The local
+// digest is kept so EVALSHA stays pinned to this script's source.
+var ErrScriptDigestMismatch = errors.New("redis: SCRIPT LOAD returned a digest that does not match the client-computed SHA-1")
 
 type Script struct {
 	src       string
@@ -60,11 +66,26 @@ func (s *Script) Hash() string {
 
 func (s *Script) Load(ctx context.Context, c Scripter) *StringCmd {
 	cmd := c.ScriptLoad(ctx, s.src)
-	if err := cmd.Err(); err == nil {
-		s.mu.Lock()
-		s.hash = cmd.Val()
-		s.mu.Unlock()
+	if err := cmd.Err(); err != nil {
+		return cmd
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.serverSHA {
+		// s.hash is SHA-1(s.src) computed in NewScript, and SCRIPT LOAD returns
+		// that same digest. A different value is a protocol violation; keeping
+		// the local one means EVALSHA stays pinned to this script instead of
+		// running whatever the server holds under the returned digest.
+		// Val is empty while the command is still queued in a pipeline.
+		if v := cmd.Val(); v != "" && v != s.hash {
+			cmd.SetErr(fmt.Errorf("%w: got %q, want %q", ErrScriptDigestMismatch, v, s.hash))
+		}
+		return cmd
+	}
+
+	s.hash = cmd.Val()
 	return cmd
 }
 
