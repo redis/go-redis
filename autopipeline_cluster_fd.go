@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -285,6 +286,24 @@ func (r *clusterFDRouter) getOrCreateChild(nc *Client) (*AutoPipeliner, bool) {
 		r.children[nc] = child
 	}
 	r.mu.Unlock()
+
+	// Prune THIS node's entry the moment nc itself closes (topology GC, or any
+	// other Close), instead of relying solely on the sweep above: that sweep
+	// only runs when some OTHER node's cache miss takes this same write-lock
+	// path, so a cluster whose live submits only ever hit already-cached
+	// nodes would never prune a removed node's entry (cursor bugbot on
+	// #4002 — a gap in the sweep it sits next to). nc.onClose is the same
+	// registry AutoPipelineWithOptions above already wired the child's own
+	// drain to, so this event is proven to fire reliably. Idempotent: the id
+	// is deterministic per (router, node), so re-registering on every rebuild
+	// for this node just replaces the same closure; concurrent callers racing
+	// here register the same content harmlessly.
+	nc.onClose.register(fmt.Sprintf("clusterFDRouterEvict#%p#%p", r, nc), func() error {
+		r.mu.Lock()
+		delete(r.children, nc)
+		r.mu.Unlock()
+		return nil
+	})
 	return child, false
 }
 

@@ -2395,6 +2395,47 @@ func TestCmdApproxBytesSafeRecoversArgsPanic(t *testing.T) {
 	}
 }
 
+// fdMarshaledArg is a large custom Cmder argument type marshaled through
+// proto.Writer's encoding.BinaryMarshaler case (the same case a large
+// application-defined argument type would use).
+type fdMarshaledArg struct{ payload []byte }
+
+func (a fdMarshaledArg) MarshalBinary() ([]byte, error) { return a.payload, nil }
+
+type fdBrokenMarshaledArg struct{}
+
+func (fdBrokenMarshaledArg) MarshalBinary() ([]byte, error) {
+	return nil, errors.New("boom: marshal failed")
+}
+
+// TestCmdApproxBytesAccountsForStringPointerAndBinaryMarshaler pins that a
+// *string or an encoding.BinaryMarshaler argument is sized by its ACTUAL
+// encoded length, not the untyped 8-byte fallback every other unrecognized
+// type gets. proto.Writer supports both (Writer.WriteArg): a large value
+// carried either way previously undercounted at 8 bytes regardless of size,
+// so several such args could coalesce past MaxBatchBytes and reopen the
+// large-payload write/reply deadlock the cap exists to bound (codex on
+// #4002). A BinaryMarshaler that errors is sized as deliberately large
+// rather than falling back to 8 bytes either — the command fails at write
+// time anyway, so isolating it into its own chunk is free.
+func TestCmdApproxBytesAccountsForStringPointerAndBinaryMarshaler(t *testing.T) {
+	ctx := context.Background()
+	big := strings.Repeat("x", 5*1024*1024) // 5 MiB
+
+	if n := cmdApproxBytes(NewStatusCmd(ctx, "echo", &big)); n < int64(len(big)) {
+		t.Fatalf("*string arg: cmdApproxBytes = %d, want >= %d (the string's own length)", n, len(big))
+	}
+
+	marshaled := fdMarshaledArg{payload: []byte(big)}
+	if n := cmdApproxBytes(NewStatusCmd(ctx, "echo", marshaled)); n < int64(len(big)) {
+		t.Fatalf("BinaryMarshaler arg: cmdApproxBytes = %d, want >= %d (the marshaled length)", n, len(big))
+	}
+
+	if n := cmdApproxBytes(NewStatusCmd(ctx, "echo", fdBrokenMarshaledArg{})); n < 1<<16 {
+		t.Fatalf("erroring BinaryMarshaler arg: cmdApproxBytes = %d, want a deliberately large fallback, not the untyped 8-byte default", n)
+	}
+}
+
 // A custom Cmder's NoRetry() runs on the same recover-less serve loop during the
 // retry-classification scan. fdFirstNoRetrySafe must report the panic (not crash)
 // so the caller declines to replay and fails the tail conservatively.

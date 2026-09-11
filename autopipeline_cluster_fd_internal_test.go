@@ -395,6 +395,53 @@ func TestClusterFullDuplexEvictsStaleChildOnRebuild(t *testing.T) {
 	}
 }
 
+// TestClusterFullDuplexEvictsChildOnNodeClose pins that a node's entry is
+// pruned from clusterFDRouter.children the moment the node's OWN *Client
+// closes — with NO further submit or rebuild needed. The sweep in
+// getOrCreateChild only runs when some OTHER node's cache miss takes the
+// write-lock path; a cluster whose live traffic only ever hits
+// already-cached nodes would never trigger it, so a node removed by
+// topology GC would sit retained forever (cursor bugbot on #4002, a gap in
+// the sweep-only fix).
+func TestClusterFullDuplexEvictsChildOnNodeClose(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	if err := ap.Set(ctx, "cfd:{nodeclose}:k", "1", 0).Err(); err != nil {
+		t.Fatalf("seed SET: %v", err)
+	}
+
+	ap.clusterFD.mu.RLock()
+	var nc *Client
+	for c := range ap.clusterFD.children {
+		nc = c
+	}
+	ap.clusterFD.mu.RUnlock()
+	if nc == nil {
+		t.Fatal("no FD child cached after seed SET")
+	}
+
+	// Close the NODE CLIENT itself (not its cached child) — this is exactly
+	// what clusterNodes.GC does to a removed node (osscluster.go).
+	if err := nc.Close(); err != nil {
+		t.Fatalf("nc.Close: %v", err)
+	}
+
+	ap.clusterFD.mu.RLock()
+	_, stillPresent := ap.clusterFD.children[nc]
+	ap.clusterFD.mu.RUnlock()
+	if stillPresent {
+		t.Error("node client's entry was not evicted immediately on its own Close")
+	}
+}
+
 // TestClusterFullDuplexGatedOffForReplicaRouting asserts the construction gate:
 // a ClusterClient configured for replica routing (ReadOnly / RouteByLatency /
 // RouteRandomly) must NOT engage cluster FD, because the router only routes to

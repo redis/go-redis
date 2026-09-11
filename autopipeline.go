@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"encoding"
 	"errors"
 	"fmt"
 	"io"
@@ -3285,6 +3286,13 @@ func (s *apShard) bytesFull() bool {
 // cap bounds burst size, it is not a protocol calculation.
 func cmdApproxBytes(cmd Cmder) int64 {
 	const perArgOverhead = 16
+	// unknownArgBytes stands in for an arg whose encoded size cannot be
+	// determined here (a BinaryMarshaler that errored). Deliberately large so
+	// such an arg isolates into its own chunk rather than silently
+	// undercounting and letting several of them coalesce past MaxBatchBytes —
+	// the same command would fail at write time anyway, so over-counting it
+	// here is free (codex on #4002).
+	const unknownArgBytes = 1 << 20
 	n := int64(0)
 	for _, a := range cmd.Args() {
 		switch v := a.(type) {
@@ -3292,6 +3300,26 @@ func cmdApproxBytes(cmd Cmder) int64 {
 			n += int64(len(v))
 		case []byte:
 			n += int64(len(v))
+		case *string:
+			// proto.Writer dereferences and writes *v (empty string for nil),
+			// same as the string case above — see Writer.WriteArg.
+			if v != nil {
+				n += int64(len(*v))
+			}
+		case encoding.BinaryMarshaler:
+			// proto.Writer's default arm marshals any other type through this
+			// interface (int/float/bool/time.Time/etc. all have their own,
+			// small, fixed-size case above and never reach here). A large
+			// custom Cmder argument marshaled through it must be sized by its
+			// actual encoded length, not the untyped 8-byte fallback below —
+			// that fallback previously let several large marshaled args
+			// coalesce past MaxBatchBytes and reopen the large-payload
+			// write/reply deadlock the cap exists to bound.
+			if b, err := v.MarshalBinary(); err == nil {
+				n += int64(len(b))
+			} else {
+				n += unknownArgBytes
+			}
 		default:
 			n += 8
 		}
