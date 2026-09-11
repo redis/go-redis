@@ -1096,11 +1096,12 @@ func getOrCreateAutoPipeliner(
 	// WithTimeout clone share onClose, so a per-slot constant id would overwrite one
 	// registration and leak its engine. ap.Close unregisters by this id. onClose is
 	// nil for cluster/ring (they pass a nil shared flag and have no clone-close leak).
+	registered := true
 	if onClose != nil {
 		id := fmt.Sprintf("%s#%d", closeHookBaseID, apCloseHookSeq.Add(1))
 		ap.closeHooks = onClose
 		ap.closeHookID = id
-		onClose.register(id, func() error {
+		registered = onClose.register(id, func() error {
 			// cancelAndDrain, not bare cancel: a pool-sharing wrapper's Close must WAIT
 			// for this engine's shutdown flush to finish before closeResources tears the
 			// shared pools down — cancel-and-return would let the pools close mid-flush
@@ -1115,11 +1116,20 @@ func getOrCreateAutoPipeliner(
 	// runs onClose (snapshotting its callbacks) without this slot's mutex, so it can
 	// pass the entry check above, snapshot the hooks, and miss the registration just
 	// made — leaving this freshly built engine's goroutines parked on already-closed
-	// pools forever. baseClient.Close sets sharedClosed BEFORE running onClose, so a
-	// close that already ran its hooks is visible here: cancel this engine, detach
-	// its (possibly-missed) hook, and refuse rather than cache a doomed instance.
-	if sharedClosed != nil && sharedClosed.Load() {
-		ap.cancel()
+	// pools forever. Two signals catch it: register reports false once run has taken
+	// its snapshot, and baseClient.Close sets sharedClosed BEFORE running onClose, so
+	// a close that has started — snapshot taken or not yet — shows in the flag.
+	//
+	// Either way the engine must be fully stopped before this returns, not merely
+	// cancelled and abandoned (cursor bugbot on #4002): closeResources is tearing the
+	// shared pools down, or is about to having missed the hook that would make it
+	// wait, so it cannot be relied on to wait for this engine. cancelAndDrain does
+	// the waiting here instead — the engine accepted no work (never published), so
+	// this is its flushers observing the cancel, bounded by the drainAll backstop;
+	// drainOnce makes it safe alongside a close that did snapshot the hook. Then
+	// detach the hook and refuse rather than cache a doomed instance.
+	if !registered || (sharedClosed != nil && sharedClosed.Load()) {
+		_ = ap.cancelAndDrain()
 		if onClose != nil {
 			onClose.unregister(ap.closeHookID)
 		}

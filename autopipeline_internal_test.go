@@ -2683,3 +2683,70 @@ func TestFullDuplexTuningValidatedOnlyWhenEnabled(t *testing.T) {
 		}
 	}
 }
+
+// TestGetOrCreateAutoPipelinerDrainsEngineLostToSharedClose pins the getter's
+// handling of a sharer Close that lands between its entry check and its close-hook
+// registration (cursor bugbot on #4002). The engine it just built must be fully
+// drained — not merely cancelled and left to exit against pools closeResources is
+// tearing down — and its hook detached, whether the close already snapshotted the
+// hooks (register refuses: the hook could never fire) or has only set the shared
+// flag so far (register accepts a hook the close's snapshot will then miss).
+//
+// Red-check: restore the bare ap.cancel() on the re-check path -> drainRuns stays 0.
+func TestGetOrCreateAutoPipelinerDrainsEngineLostToSharedClose(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hooksRan bool
+	}{
+		{"close_already_ran_hooks", true},
+		{"close_flag_set_hooks_not_yet_run", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := NewClient(&Options{Addr: "localhost:1"}) // never dialed
+			t.Cleanup(func() { _ = client.Close() })
+			var (
+				mu     sync.Mutex
+				slot   *AutoPipeliner
+				closed bool
+				shared atomic.Bool
+				hooks  onCloseHooks
+				built  *AutoPipeliner
+			)
+			build := func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+				ap, err := newAutoPipeliner(client, cfg, true)
+				if err != nil {
+					return nil, err
+				}
+				built = ap
+				// A sharer's Close lands here: the shared flag first (baseClient.Close),
+				// then maybe the hook snapshot (onClose.run), before the getter registers.
+				shared.Store(true)
+				if tc.hooksRan {
+					_ = hooks.run()
+				}
+				return ap, nil
+			}
+			ap, err := getOrCreateAutoPipeliner(&mu, &slot, &closed, &shared, &hooks, "test",
+				nil, DefaultAutoPipelineOptions, build)
+			if !errors.Is(err, ErrClosed) || ap != nil {
+				t.Fatalf("getOrCreateAutoPipeliner = (%v, %v); want (nil, ErrClosed)", ap, err)
+			}
+			if slot != nil {
+				t.Fatal("a doomed engine must not be cached in the slot")
+			}
+			if built == nil {
+				t.Fatal("precondition: build did not run")
+			}
+			if got := built.drainRuns.Load(); got != 1 {
+				t.Fatalf("drainRuns = %d; want 1: the lost engine must be drained before the "+
+					"getter returns, not just cancelled", got)
+			}
+			hooks.mu.Lock()
+			left := len(hooks.hooks)
+			hooks.mu.Unlock()
+			if left != 0 {
+				t.Fatalf("%d close hook(s) left registered for the refused engine", left)
+			}
+		})
+	}
+}
