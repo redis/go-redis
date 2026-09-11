@@ -1,5 +1,148 @@
 # Release Notes
 
+# 9.23.0-beta.1 (2026-09-11)
+
+This is a **beta** release. You can upgrade without changes to your code. The release adds three primary features:
+
+- An experimental **full-duplex mode** for the automatic pipeliner.
+- Refresh and miss-coalescing functions for client-side caching.
+- Better distribution of cluster reads under latency-based routing.
+
+The release also contains many stability fixes and robustness fixes.
+
+⚠️ This release changes one default behavior. Each `Client` (this includes failover clients and cluster node clients) now creates a small, dedicated **pipeline connection pool** ([#4002](https://github.com/redis/go-redis/pull/4002)). `Pipeline`, `TxPipeline`, and autopipeline operations use this pool. These operations do not compete with regular commands for main-pool connections. The pool supplies burst capacity only:
+
+- The pool does not dial a connection before the connection is necessary.
+- An unused pool holds zero connections. The idle cost is zero.
+- If the pool is full, an operation immediately uses the main pool.
+
+Set `PipelinePoolSize: -1` to get the previous single-pool behavior.
+
+## 🚀 Highlights
+
+### Full-Duplex Auto-Pipelining (Experimental)
+
+Set `AutoPipelineOptions.FullDuplex` to enable the full-duplex mode of the automatic pipeliner. The default mode sends one batch for each round trip. The full-duplex mode is different: the engine holds one pipeline-pool connection, and a writer goroutine and a reader goroutine move the ordered command stream in the two directions at the same time. On a link with high latency, each command completes in approximately one round-trip time (RTT) on a single connection. A test on a 50 ms WAN profile measured ~389k operations/s at 52 ms p50. The half-duplex ordered path measured ~207k operations/s at 116 ms.
+
+The mode operates on the two faces of a standalone `Client`: `AutoPipeline()` and `AsyncAutoPipeline()`. The mode also operates natively on a `ClusterClient` if the routing goes to masters only. A child engine for each master sends each command to the node that owns the command's slot. The engine obeys `MOVED` and `ASK` redirects and retryable replies (`LOADING`, `READONLY`, ...) through the usual cluster redirect procedure. If replica routing is set (`ReadOnly`, `RouteByLatency`, or `RouteRandomly`), the autopipeliner uses the half-duplex shard flushers, which obey the shard picker. `Config().FullDuplex` reports the mode that is in effect.
+
+These options tune the mode:
+
+- `FullDuplexWindow` — the maximum number of commands in flight (backpressure).
+- `FullDuplexIdleTimeout` and `FullDuplexMaxHold` — control when the engine returns the held connection to the pool. The pool hooks then do the re-authentication and the maintenance-notification handoffs.
+- `FullDuplexFastSubmit` — an optional fast submit path for many producers on low-RTT links.
+
+The full-duplex path supports blocking commands, `Options.Limiter` (one admission for each written batch), per-command hooks, OTel metrics, retry budgets (the client never sends a `NoRetry` command again after the command is on the wire), and seamless maintenance handoffs. The stream model causes these limits:
+
+- **A hook can monitor a command. A hook cannot stop a command.** A `ProcessHook` that returns without a call to `next` does not cancel the command on the full-duplex path. The command is already in the queue of the held connection, and the client sends it. Run policy hooks and kill-switch hooks on a plain client or on the half-duplex autopipeliner.
+- **The order guarantee does not include diverted commands.** The commands of one caller keep their order on the shared stream. The engine diverts some commands from the stream: blocking commands, connection-hostile commands, and managed `HIMPORT` commands. A diverted command has no order relation to the stream. On the async face, wait for the result of a diverted command before you submit a command that depends on it.
+- **The fast path does not use the client-side cache.** If CSC is enabled, a cacheable command on the full-duplex pipe does not read the cache and does not write to the cache. A subsequent change will correct this.
+- **The engine records a duration metric for each reply.** Some commands fail before they get to the reader: a lease failure, a limiter denial, retry exhaustion, or a close. These commands cause the error callback, but they do not cause an operation-duration sample.
+
+```go
+rdb := redis.NewClient(&redis.Options{
+	Addr: "localhost:6379",
+	AutoPipelineOptions: &redis.AutoPipelineOptions{
+		FullDuplex: true, // stream commands on one held connection, ~1 RTT each
+	},
+})
+defer rdb.Close()
+
+// Deferred face: calls return immediately; result accessors block until executed.
+ap, err := rdb.AsyncAutoPipeline()
+if err != nil {
+	panic(err)
+}
+cmds := make([]*redis.StatusCmd, 0, 1000)
+for i := 0; i < 1000; i++ {
+	cmds = append(cmds, ap.Set(ctx, fmt.Sprintf("key:%d", i), i, 0))
+}
+for _, cmd := range cmds {
+	if err := cmd.Err(); err != nil {
+		// handle error
+	}
+}
+
+// Or the blocking face — a drop-in Cmdable where each call blocks like a
+// plain client while concurrent callers share the full-duplex pipe:
+//	ap, err := rdb.AutoPipeline()
+//	val, err := ap.Get(ctx, "key").Result()
+```
+
+The [`example/autopipeline`](example/autopipeline) directory contains a runnable tour of all the autopipeliner faces.
+
+Two related defaults changed. `AutoPipelineOptions.MaxBatchBytes` now has a default of 128 KiB (before, the size had no limit). This default prevents a write/reply deadlock. It is not a throughput control. The buffers of the pipeline pool also have a default of 128 KiB.
+
+**Experimental:** the auto-pipelining APIs can change in a minor release.
+
+([#4002](https://github.com/redis/go-redis/pull/4002)) by [@ndyakov](https://github.com/ndyakov)
+
+### Client-Side Caching: Refresh-on-Invalidate and Miss Coalescing
+
+The release adds two functions to the experimental shared-tracking client-side cache. The functions have no effect unless CSC is enabled ([#3989](https://github.com/redis/go-redis/pull/3989)) by [@ndyakov](https://github.com/ndyakov):
+
+- **Refresh-on-invalidate** (`Options.ClientSideCacheRefreshOnInvalidate`): the client reads recently-read keys again in the background immediately after their invalidation push arrives. The next reader does not pay the cache miss. The client collects invalidated hot keys in a short window and reads them again on a pipelined connection. `ClientSideCacheRefreshRecencyWindow` sets which entries count as recently read. `ClientSideCacheInvalidationBatchWindow` collects invalidation-driven cache deletes into background batches; without it, the connection reader applies each delete inline.
+- **Miss coalescing** (`Options.ClientSideCacheCoalesceMisses`): the client pipelines concurrent cache-miss reads onto one tracked connection. Each miss keeps the caller's own per-key command. The client does not rewrite the commands to `MGET`, so the function is safe on a cluster. The client writes each reply to the cache with the tracking generation of the connection. The server can thus invalidate each entry.
+
+These options have the same requirement as the other CSC options: the built-in cache (`ClientSideCacheConfig`, or `ClientSideCache` set to a `*LocalCache`). The client ignores the options if a custom `Cache` implementation is set.
+
+### Better Distribution for Latency-Based Cluster Read Routing
+
+`RouteByLatency` selects the node with the strictly minimum latency. The latency measurement has noise: the value is the mean of ten pings, and the client refreshes it at most each 10 s. Thus all clients can select the same node from a set of nodes that have almost equal latency. A production system showed this problem: the GET rates across a five-replica set in one availability zone had a 590x spread.
+
+The new `ClusterOptions.RouteByLatencyTolerance` widens the selection to each node with a latency in the tolerance above the fastest node. The client distributes reads across these nodes with the round-robin procedure of the `ShardPicker`. A node in a different availability zone stays outside a sensible tolerance, so zone locality is kept. The default is zero, which keeps the strict-minimum behavior. The option is also on `FailoverOptions`, where it applies to clients from `NewFailoverClusterClient`. The plain `NewFailoverClient` does not support latency routing. ([#3973](https://github.com/redis/go-redis/pull/3973)) by [@jozenstar](https://github.com/jozenstar)
+
+The same work corrected a routing defect. The client recorded the nearest healthy node only when that node was also the fastest node overall. A node that fails fast (a refused connection fails fast, so this is frequent) thus hid each healthy node, and the client sent reads to the node that failed. The client now records the healthy minimum separately. ([#3994](https://github.com/redis/go-redis/pull/3994)) by [@jozenstar](https://github.com/jozenstar)
+
+## ✨ New Features
+
+- **Full-duplex auto-pipelining**: `AutoPipelineOptions.FullDuplex`, with `FullDuplexWindow` / `FullDuplexIdleTimeout` / `FullDuplexMaxHold` / `FullDuplexFastSubmit`. Available on standalone clients and cluster clients ([#4002](https://github.com/redis/go-redis/pull/4002)) by [@ndyakov](https://github.com/ndyakov)
+- **Dedicated pipeline pool by default**: `PipelinePoolSize` has a default of `DefaultPipelinePoolSize` (10) on each client. If the pool is full, an operation immediately uses the main pool. Set `-1` to disable the pool ([#4002](https://github.com/redis/go-redis/pull/4002), [#3959](https://github.com/redis/go-redis/pull/3959)) by [@ndyakov](https://github.com/ndyakov)
+- **CSC refresh-on-invalidate and miss coalescing**: `Options.ClientSideCacheRefreshOnInvalidate` (with `ClientSideCacheRefreshRecencyWindow` / `ClientSideCacheInvalidationBatchWindow`) and `Options.ClientSideCacheCoalesceMisses` ([#3989](https://github.com/redis/go-redis/pull/3989)) by [@ndyakov](https://github.com/ndyakov)
+- **`RouteByLatencyTolerance`**: distributes reads across nodes that have almost equal latency, on cluster clients and on `NewFailoverClusterClient` ([#3973](https://github.com/redis/go-redis/pull/3973)) by [@jozenstar](https://github.com/jozenstar)
+- **`AutoPipeliner.WaitClosed`**: blocks until the drain of the accepted commands completes, and returns the drain result. Use it in a wrapper that must not close shared pools while a flush is in progress ([#3998](https://github.com/redis/go-redis/pull/3998)) by [@ndyakov](https://github.com/ndyakov)
+- **`CMSInfo.CellSize`**: contains the cell-size field of `CMS.INFO` in Redis 8.12 ([#4010](https://github.com/redis/go-redis/pull/4010)) by [@elena-kolevska](https://github.com/elena-kolevska)
+
+## 🐛 Bug Fixes
+
+- **Cluster read routing**: the client records the nearest healthy node separately from the overall minimum. A node that fails fast does not hide the healthy nodes ([#3994](https://github.com/redis/go-redis/pull/3994)) by [@jozenstar](https://github.com/jozenstar)
+- **Probabilistic `*.INFO` forward compatibility**: the parsers for `BF.INFO` / `CF.INFO` / `CMS.INFO` / `TOPK.INFO` / `TDIGEST.INFO` skip unknown fields and do not return an error. Redis 8.12 adds `cell size` to `CMS.INFO` ([#4010](https://github.com/redis/go-redis/pull/4010)) by [@elena-kolevska](https://github.com/elena-kolevska)
+- **`NewClient` panic leak**: a panic during construction (for example, a maintnotifications failure in `ModeEnabled`) does not leak the connection pools that already exist. A typed-nil pool cannot hide the initial panic ([#4003](https://github.com/redis/go-redis/pull/4003)) by [@ndyakov](https://github.com/ndyakov). The same guards are applied to `NewFailoverClient` ([#4002](https://github.com/redis/go-redis/pull/4002))
+- **File-descriptor leak on rejected connections**: `Conn.Close` does the socket teardown and the unsubscribe/CSC callbacks when the connection is already `CLOSED`. Before, init and auth failures collected open descriptors. The transport now closes exactly one time for each socket generation (fixes [#3982](https://github.com/redis/go-redis/issues/3982)) ([#3985](https://github.com/redis/go-redis/pull/3985)) by [@ndyakov](https://github.com/ndyakov)
+- **Global logger races**: atomics protect the global `Logger` and `LogLevel`. The call-site attribution is correct again ([#3988](https://github.com/redis/go-redis/pull/3988)) by [@saddamr3e](https://github.com/saddamr3e)
+- **`Conn.onClose` data race**: the close hooks that init installs (`onClose` and `onCscClose`) are now atomic against a concurrent `Close` ([#3966](https://github.com/redis/go-redis/pull/3966)) by [@saddamr3e](https://github.com/saddamr3e)
+- **Reply-parser hardening**: the reply parsers accept zero-length entry arrays ([#3995](https://github.com/redis/go-redis/pull/3995)) by [@saddamr3e](https://github.com/saddamr3e). `FTHybridCmd` reads the full RESP3 map reply and does not desynchronize the connection ([#3956](https://github.com/redis/go-redis/pull/3956)) by [@saddamr3e](https://github.com/saddamr3e)
+- **`CLIENT INFO` forward compatibility**: the parser skips unknown client-flag characters. The full reply does not fail ([#3977](https://github.com/redis/go-redis/pull/3977)) by [@ndyakov](https://github.com/ndyakov)
+- **`GEOSEARCH` duplicate args**: the command does not send duplicate arguments ([#3955](https://github.com/redis/go-redis/pull/3955)) by [@mehmettokgoz](https://github.com/mehmettokgoz)
+- **`MSetEX` cluster routing**: the constructor sets the first-key position. Typed calls thus go to the correct slot ([#3984](https://github.com/redis/go-redis/pull/3984)) by [@shivamrustagi](https://github.com/shivamrustagi)
+- **Maintenance notifications**: the client does not do the endpoint DNS detection when the mode is disabled ([#3969](https://github.com/redis/go-redis/pull/3969)) by [@Phalanyx](https://github.com/Phalanyx)
+- **Autopipeliner `Close`**: a concurrent `Close` does not block (no re-entrant deadlock). `WaitClosed` supplies the drain result ([#3998](https://github.com/redis/go-redis/pull/3998)) by [@ndyakov](https://github.com/ndyakov)
+- **Buffered-push log noise**: the buffered-push-data notice in `isHealthyConn` shows only at the debug level. CSC invalidations do not fill the log ([#3948](https://github.com/redis/go-redis/pull/3948)) by [@ndyakov](https://github.com/ndyakov)
+- **Sentinel teardown order**: close hooks run in LIFO order. An autopipeliner drain thus completes before the Sentinel discovery stops. A closed failover client cannot create its Sentinel resources again from a late dial ([#4002](https://github.com/redis/go-redis/pull/4002)) by [@ndyakov](https://github.com/ndyakov)
+- **Pipeline desync containment**: if a pre-write push-notification drain fails, or if a command encoder panics, the client removes the connection. The client does not return a desynchronized connection to the pool. This applies to the shared `Pipeline`/`TxPipeline` path ([#4002](https://github.com/redis/go-redis/pull/4002)) by [@ndyakov](https://github.com/ndyakov)
+
+## ⚡ Performance
+
+- **Zero-copy scan**: `Scan` gets zero-copy semantics, and the RESP reader does not do unnecessary data conversions ([#3972](https://github.com/redis/go-redis/pull/3972)) by [@vlady-kotsev](https://github.com/vlady-kotsev)
+- **Autopipeline straggler hold**: the engine limits the hold on queued commands when the pipeline pool has a free connection. Uncached p95 decreased from 111 ms to 65 ms on a 50 ms link. Real-WAN uncached p99 decreased from 314 ms to 177 ms ([#3962](https://github.com/redis/go-redis/pull/3962)) by [@ndyakov](https://github.com/ndyakov)
+- **Full-duplex allocations**: a ring buffer holds the in-flight queue, and the blocking face uses a pool of batches. Allocations decreased from 770 B/op to 353 B/op at 2048 concurrent callers ([#3970](https://github.com/redis/go-redis/pull/3970), part of [#4002](https://github.com/redis/go-redis/pull/4002)) by [@ndyakov](https://github.com/ndyakov)
+
+## 🧪 Testing & Infrastructure
+
+- **Fast skip gates**: the tests do a TCP probe of each address before the `Ping` gate. This removes ~1.6 min of dial-retry waits in environments without the full stack ([#4001](https://github.com/redis/go-redis/pull/4001)) by [@ndyakov](https://github.com/ndyakov)
+- **Redis Enterprise coverage**: the autopipeline suites connect to the RE database and use the suite DB ([#3976](https://github.com/redis/go-redis/pull/3976), [#3975](https://github.com/redis/go-redis/pull/3975)). The timing assertions scale to the measured RTT ([#3978](https://github.com/redis/go-redis/pull/3978)). The `CLIENT INFO` tracking-flag assertion does not run behind the RE proxy ([#3981](https://github.com/redis/go-redis/pull/3981)) by [@ndyakov](https://github.com/ndyakov)
+- **Security policy**: send vulnerability reports to the Redis VDP ([#3949](https://github.com/redis/go-redis/pull/3949)) by [@ndyakov](https://github.com/ndyakov)
+
+## 👥 Contributors
+
+We thank all the contributors who worked on this release!
+
+[@elena-kolevska](https://github.com/elena-kolevska), [@jozenstar](https://github.com/jozenstar), [@mehmettokgoz](https://github.com/mehmettokgoz), [@ndyakov](https://github.com/ndyakov), [@Phalanyx](https://github.com/Phalanyx), [@saddamr3e](https://github.com/saddamr3e), [@shivamrustagi](https://github.com/shivamrustagi), [@vlady-kotsev](https://github.com/vlady-kotsev)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.22.0...v9.23.0-beta.1
+
 # 9.22.0 (2026-08-03)
 
 This is a minor release introducing two flagship (experimental) features — **client-side caching** and **automatic pipelining** — alongside support for Redis 8.10, new commands, and a large batch of stability and parser-robustness fixes. It consolidates everything shipped in 9.22.0-beta.1, so the notes below cover the full 9.21.0 → 9.22.0 upgrade.
