@@ -93,6 +93,9 @@ type AutoPipelineOptions struct {
 	// connection. On a fast link (loopback) prefer half-duplex — with no RTT to
 	// overlap, full-duplex only adds coordination overhead.
 	//
+	// Also honored by the full-duplex writer, where it is gated on in-flight
+	// depth so it never taxes low-concurrency callers (see fdAccumMinFor).
+	//
 	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1),
 	// single-shard face of a standalone *Client that has a pipeline pool — BOTH the
 	// deferred (AsyncAutoPipeline) and the blocking (AutoPipeline) face. A SINGLE
