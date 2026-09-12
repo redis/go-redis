@@ -506,13 +506,64 @@ func (f *fdInflight) takeRemaining() []fdReq {
 	return rem
 }
 
+// fdAccumMinFor returns the in-flight depth above which the full-duplex writer
+// will wait MaxFlushDelay for more commands before flushing (see the drain loop
+// in session).
+//
+// The writer's drain is non-blocking: it flushes whatever is already queued. At
+// low concurrency that is exactly right — a lone caller pays one round trip and
+// nothing waits on its behalf. Under load it is pathological: measured on a
+// 2-vCPU client at 1024 concurrent callers, the writer flushed ~4.6 commands per
+// batch and issued ~75k write syscalls/sec, saturating the CPU, while the
+// half-duplex path on the same connection batched ~460 commands per flush at
+// 130% CPU.
+//
+// Waiting unconditionally is not the answer either: a fixed delay armed on every
+// flush costs every low-concurrency command roughly a round trip (measured: 64
+// callers went from 130k ops/sec at p50 0.48ms to 41k at p50 1.59ms). That is the
+// same failure mode documented for the half-duplex path's old debounce timer,
+// which is why that path coalesces on expected-arrival count instead.
+//
+// So the wait is gated on in-flight depth: below accumMin the writer never waits
+// (low concurrency keeps its 1xRTT behaviour), above it the writer is
+// demonstrably syscall-bound and coalescing pays. Derived from the window rather
+// than hardcoded, so a caller who shrinks FullDuplexWindow also lowers the
+// threshold; floored at 64 so a small window cannot make it trivially easy to
+// trip.
+//
+// Measured with MaxFlushDelay=250us on a 2-vCPU client (64B GET/SET 70/30):
+//
+//	callers   unpatched          gated wait
+//	     64   130k, p50 0.48ms   134k, p50 0.45ms   (unchanged, as intended)
+//	    256   237k, 160% CPU     228k, 112% CPU     (same work, 30% less CPU)
+//	   1024   345k, p99 4.78ms   420k, p99 3.53ms   (+22% ops, -26% p99)
+//	   2048   308k, p99 10.1ms   386k, p99 7.19ms   (+25% ops, -29% p99)
+func fdAccumMinFor(window int) int {
+	const (
+		floor = 64
+		// 1/512 of the window: 128 at the default 65536, which is where the
+		// measurements above cross from "nothing to collect" into
+		// "syscall-bound".
+		shift = 9
+	)
+	if m := window >> shift; m > floor {
+		return m
+	}
+	return floor
+}
+
 type fdEngine struct {
 	ap       *AutoPipeliner
 	client   *Client
 	pool     pool.Pooler
 	ch       chan fdReq // MPSC ordered queue: many submitters -> the writer
 	maxBatch int
-	window   int           // max in-flight (written, unacked) before the writer waits
+	window   int // max in-flight (written, unacked) before the writer waits
+	// accumMin is the in-flight depth at which the writer is willing to wait
+	// MaxFlushDelay for more commands before flushing. Derived from the window
+	// so it scales with the configured pipeline depth instead of being a magic
+	// constant; see fdAccumMinFor.
+	accumMin int
 	idle     time.Duration // return the conn after this idle gap (0 = never)
 	maxHold  time.Duration // force a clean return at least this often (0 = never)
 
@@ -653,6 +704,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		ch:         make(chan fdReq, chCap),
 		maxBatch:   mb,
 		window:     w,
+		accumMin:   fdAccumMinFor(w),
 		idle:       idle,
 		maxHold:    maxHold,
 		retrySem:   make(chan struct{}, retryCap),
@@ -1682,6 +1734,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		// in-flight ring's min(maxBatch, window) cap.
 		scratch := make([]fdReq, 0, min(fd.maxBatch, fd.window))
 		byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
+		// Reused across drains so the accumulation wait allocates nothing on
+		// the hot path. Nil until the first wait actually happens.
+		var accumTimer *time.Timer
 	serve:
 		for {
 			// Backpressure: bound the in-flight (written-but-unacked) deque. Wait
@@ -1756,6 +1811,8 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				if room := fd.window - inflight.len(); room < limit {
 					limit = room
 				}
+				// At most one accumulation wait per batch.
+				accumWaited := false
 			drain:
 				for len(batch) < limit {
 					// Soft MaxBatchBytes cap (like the half-duplex path): stop
@@ -1780,6 +1837,43 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						}
 						batchBytes += rb
 					default:
+						// Nothing queued right now. Under load, flushing a handful of
+						// commands means paying batch and syscall overhead at
+						// per-command frequency, so wait MaxFlushDelay once for the
+						// rest of the wave. Gated on in-flight depth (see
+						// fdAccumMinFor): at low concurrency the queue is empty
+						// because there is genuinely nothing to send, and waiting
+						// there would cost every command a round trip. MaxFlushDelay
+						// defaults to 0, so this is opt-in and the default path is
+						// byte-for-byte unchanged.
+						if fd.ap.config.MaxFlushDelay > 0 && !accumWaited &&
+							len(batch) < fd.maxBatch && inflight.len() >= fd.accumMin {
+							accumWaited = true
+							if accumTimer == nil {
+								accumTimer = time.NewTimer(fd.ap.config.MaxFlushDelay)
+							} else {
+								accumTimer.Reset(fd.ap.config.MaxFlushDelay)
+							}
+							select {
+							case ra := <-fd.ch:
+								if !accumTimer.Stop() {
+									<-accumTimer.C
+								}
+								batch = append(batch, ra)
+								rba, sizeErrA := cmdApproxBytesSafe(ra.cmd)
+								if sizeErrA != nil {
+									// Same handling as the fast path above: fail and drop
+									// just this command, flush the good prefix.
+									fd.failReqs(batch[len(batch)-1:], sizeErrA)
+									batch = batch[:len(batch)-1]
+									break drain
+								}
+								batchBytes += rba
+								continue drain
+							case <-accumTimer.C:
+								break drain
+							}
+						}
 						break drain
 					}
 				}
