@@ -506,13 +506,64 @@ func (f *fdInflight) takeRemaining() []fdReq {
 	return rem
 }
 
+// fdAccumMinFor returns the in-flight depth above which the full-duplex writer
+// will wait MaxFlushDelay for more commands before flushing (see the drain loop
+// in session).
+//
+// The writer's drain is non-blocking: it flushes whatever is already queued. At
+// low concurrency that is exactly right — a lone caller pays one round trip and
+// nothing waits on its behalf. Under load it is pathological: measured on a
+// 2-vCPU client at 1024 concurrent callers, the writer flushed ~4.6 commands per
+// batch and issued ~75k write syscalls/sec, saturating the CPU, while the
+// half-duplex path on the same connection batched ~460 commands per flush at
+// 130% CPU.
+//
+// Waiting unconditionally is not the answer either: a fixed delay armed on every
+// flush costs every low-concurrency command roughly a round trip (measured: 64
+// callers went from 130k ops/sec at p50 0.48ms to 41k at p50 1.59ms). That is the
+// same failure mode documented for the half-duplex path's old debounce timer,
+// which is why that path coalesces on expected-arrival count instead.
+//
+// So the wait is gated on in-flight depth: below accumMin the writer never waits
+// (low concurrency keeps its 1xRTT behaviour), above it the writer is
+// demonstrably syscall-bound and coalescing pays. Derived from the window rather
+// than hardcoded, so a caller who shrinks FullDuplexWindow also lowers the
+// threshold; floored at 64 so a small window cannot make it trivially easy to
+// trip.
+//
+// Measured with MaxFlushDelay=250us on a 2-vCPU client (64B GET/SET 70/30):
+//
+//	callers   unpatched          gated wait
+//	     64   130k, p50 0.48ms   134k, p50 0.45ms   (unchanged, as intended)
+//	    256   237k, 160% CPU     228k, 112% CPU     (same work, 30% less CPU)
+//	   1024   345k, p99 4.78ms   420k, p99 3.53ms   (+22% ops, -26% p99)
+//	   2048   308k, p99 10.1ms   386k, p99 7.19ms   (+25% ops, -29% p99)
+func fdAccumMinFor(window int) int {
+	const (
+		floor = 64
+		// 1/512 of the window: 128 at the default 65536, which is where the
+		// measurements above cross from "nothing to collect" into
+		// "syscall-bound".
+		shift = 9
+	)
+	if m := window >> shift; m > floor {
+		return m
+	}
+	return floor
+}
+
 type fdEngine struct {
 	ap       *AutoPipeliner
 	client   *Client
 	pool     pool.Pooler
 	ch       chan fdReq // MPSC ordered queue: many submitters -> the writer
 	maxBatch int
-	window   int           // max in-flight (written, unacked) before the writer waits
+	window   int // max in-flight (written, unacked) before the writer waits
+	// accumMin is the in-flight depth at which the writer is willing to wait
+	// MaxFlushDelay for more commands before flushing. Derived from the window
+	// so it scales with the configured pipeline depth instead of being a magic
+	// constant; see fdAccumMinFor.
+	accumMin int
 	idle     time.Duration // return the conn after this idle gap (0 = never)
 	maxHold  time.Duration // force a clean return at least this often (0 = never)
 
@@ -653,6 +704,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		ch:         make(chan fdReq, chCap),
 		maxBatch:   mb,
 		window:     w,
+		accumMin:   fdAccumMinFor(w),
 		idle:       idle,
 		maxHold:    maxHold,
 		retrySem:   make(chan struct{}, retryCap),
@@ -1682,6 +1734,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		// in-flight ring's min(maxBatch, window) cap.
 		scratch := make([]fdReq, 0, min(fd.maxBatch, fd.window))
 		byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
+		// Reused across drains so the accumulation wait allocates nothing on
+		// the hot path. Nil until the first wait actually happens.
+		var accumTimer *time.Timer
 	serve:
 		for {
 			// Backpressure: bound the in-flight (written-but-unacked) deque. Wait
@@ -1756,6 +1811,11 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				if room := fd.window - inflight.len(); room < limit {
 					limit = room
 				}
+				// accumArmed:    the accumulation timer is running for this batch.
+				// accumExpired:  the window closed, so flush instead of re-waiting.
+				// accumMaxHold:  max-hold fired DURING the wait; its one-shot tick was
+				//                consumed here, so end the session after the flush.
+				accumArmed, accumExpired, accumMaxHold := false, false, false
 			drain:
 				for len(batch) < limit {
 					// Soft MaxBatchBytes cap (like the half-duplex path): stop
@@ -1780,6 +1840,84 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						}
 						batchBytes += rb
 					default:
+						// Nothing queued right now. Under load, flushing a handful of
+						// commands means paying batch and syscall overhead at
+						// per-command frequency, so wait MaxFlushDelay once for the
+						// rest of the wave. Gated on in-flight depth (see
+						// fdAccumMinFor): at low concurrency the queue is empty
+						// because there is genuinely nothing to send, and waiting
+						// there would cost every command a round trip. MaxFlushDelay
+						// defaults to 0, so this is opt-in and the default path is
+						// byte-for-byte unchanged.
+						if fd.ap.config.MaxFlushDelay > 0 && !accumExpired &&
+							len(batch) < fd.maxBatch && inflight.len() >= fd.accumMin {
+							// Arm ONCE per batch, then keep re-entering this select
+							// until the timer fires. Returning on the first arriving
+							// command would wait for AN ARRIVAL rather than accumulate
+							// to a deadline, which is a different (and near-useless)
+							// thing: measured 4.4 -> 7.9 commands per flush and +1%
+							// throughput, against 178 and +22% once the writer waits
+							// out the whole window.
+							if !accumArmed {
+								accumArmed = true
+								if accumTimer == nil {
+									accumTimer = time.NewTimer(fd.ap.config.MaxFlushDelay)
+								} else {
+									// Reset on an expired, undrained timer is the classic
+									// timer-reuse bug. Drain NON-BLOCKINGLY: whether a
+									// value is buffered depends on who won the previous
+									// select, so a plain <-accumTimer.C wedges the writer
+									// (and Close) forever in the case where the timer
+									// already lost the race and no value is pending.
+									if !accumTimer.Stop() {
+										select {
+										case <-accumTimer.C:
+										default:
+										}
+									}
+									accumTimer.Reset(fd.ap.config.MaxFlushDelay)
+								}
+							}
+							select {
+							case ra := <-fd.ch:
+								batch = append(batch, ra)
+								rba, sizeErrA := cmdApproxBytesSafe(ra.cmd)
+								if sizeErrA != nil {
+									// Same handling as the fast path above: fail and drop
+									// just this command, flush the good prefix.
+									fd.failReqs(batch[len(batch)-1:], sizeErrA)
+									batch = batch[:len(batch)-1]
+									break drain
+								}
+								batchBytes += rba
+								continue drain
+							case <-accumTimer.C:
+								accumExpired = true
+								break drain
+							case <-readerDone:
+								// Reader is gone. Stop waiting and flush the prefix
+								// already taken off fd.ch; the top of the serve loop
+								// re-observes readerDone (a closed channel, so the signal
+								// is not consumed here) and ends the session through the
+								// existing connection-error path, which recovers this
+								// batch through the carry/replay logic.
+								break drain
+							case <-fd.ap.ctx.Done():
+								// Close() is waiting on this writer. Flush what is in
+								// hand and let the serve loop take the graceful path;
+								// ctx.Done() is a closed channel, so nothing is consumed.
+								break drain
+							case <-maxC:
+								// Max-hold reached mid-wait. maxC comes from a ONE-SHOT
+								// time.Timer, so this receive consumes the only tick:
+								// record it and end the session after the flush rather
+								// than dropping it and holding the connection past its
+								// deadline. Without this case a MaxFlushDelay longer than
+								// FullDuplexMaxHold parks the writer beyond max-hold.
+								accumMaxHold = true
+								break drain
+							}
+						}
 						break drain
 					}
 				}
@@ -1788,6 +1926,17 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					break serve
 				}
 				resetIdle()
+				if accumMaxHold {
+					// Mirror the <-maxC arm of the serve select, whose tick the
+					// accumulation wait above consumed: idle when the pipe drained,
+					// recycle when work remains.
+					if inflight.empty() && len(fd.ch) == 0 {
+						result = fdIdle
+					} else {
+						result = fdRecycle
+					}
+					break serve
+				}
 			case <-readerDone:
 				break serve // reader hit a connection error (result stays fdConnErr)
 			case <-fd.ap.ctx.Done():
