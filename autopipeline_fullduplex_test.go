@@ -4723,3 +4723,167 @@ func TestFullDuplexSpillsToMainPoolOnPipelineDialError(t *testing.T) {
 		t.Fatalf("FD lease did not spill to the main pool on a pipeline dial error (main-pool gets=%d)", g)
 	}
 }
+
+// --- MaxFlushDelay on the full-duplex writer (the fdAccumMinFor gate) -------
+
+// TestFDAccumMinFor pins the in-flight threshold the writer uses to decide
+// whether waiting MaxFlushDelay is worthwhile. Pure function, no server, so
+// both sides of the gate are covered deterministically.
+func TestFDAccumMinFor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		window int
+		want   int
+	}{
+		// Below 64*512 the shift underflows the floor, so the floor wins: a
+		// caller who shrinks the window must not end up with a threshold so low
+		// that any trickle of traffic trips it.
+		{"zero", 0, 64},
+		{"tiny", 1, 64},
+		{"at-floor-boundary", 64 * 512, 64},
+		// Above it the threshold tracks the window, so enlarging the pipeline
+		// depth raises the bar in proportion.
+		{"default-window", fdDefaultWindow, fdDefaultWindow / 512},
+		{"double-default", 2 * fdDefaultWindow, 2 * fdDefaultWindow / 512},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fdAccumMinFor(tc.window); got != tc.want {
+				t.Fatalf("fdAccumMinFor(%d) = %d, want %d", tc.window, got, tc.want)
+			}
+		})
+	}
+	// The default must land at 128: that is the value the measurements in the
+	// fdAccumMinFor doc comment were taken at, so changing it invalidates them.
+	if got := fdAccumMinFor(fdDefaultWindow); got != 128 {
+		t.Fatalf("default threshold = %d, want 128", got)
+	}
+}
+
+// TestFullDuplexMaxFlushDelayNoWaitAtLowConcurrency is the load-gate contract,
+// and the regression test for the gate itself: with a single caller in flight
+// the writer must NOT wait MaxFlushDelay, so a lone command still costs ~1 RTT.
+// The delay is set far above any plausible round trip, so if the gate is ever
+// removed or its threshold drops to ~0, the command inherits the delay and the
+// deadline below fails. (Unguarded, this configuration measured 64 callers
+// dropping from 130k ops/s at p50 0.48ms to 41k at p50 1.59ms.)
+func TestFullDuplexMaxFlushDelayNoWaitAtLowConcurrency(t *testing.T) {
+	ctx := context.Background()
+
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	const delay = 400 * time.Millisecond
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:    true,
+		MaxFlushDelay: delay,
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	if err := ap.Set(ctx, "fd:accum:one", "v", 0).Err(); err != nil {
+		t.Fatalf("warm Set: %v", err)
+	}
+
+	// Several attempts rather than one: a single sample could be unlucky (GC,
+	// scheduler), but the gate either waits on every batch or on none of them.
+	const attempts = 5
+	var fast int
+	for i := 0; i < attempts; i++ {
+		start := time.Now()
+		if err := ap.Get(ctx, "fd:accum:one").Err(); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if time.Since(start) < delay/4 {
+			fast++
+		}
+	}
+	if fast <= attempts/2 {
+		t.Fatalf("only %d/%d single-caller commands beat %v; the in-flight gate "+
+			"is not keeping low concurrency off the accumulation wait",
+			fast, attempts, delay/4)
+	}
+}
+
+// TestFullDuplexMaxFlushDelayCorrectUnderLoad drives enough sustained
+// concurrency to push in-flight past fdAccumMinFor, so the accumulation wait is
+// genuinely armed and both of its arms -- a command arriving, and the timer
+// expiring -- are exercised. Instrumenting the drain loop while developing this
+// test recorded 260 arms across 702 queue-empty hits for this configuration, so
+// the path is reached rather than merely reachable.
+//
+// It asserts correctness through that path (every reply is the value that was
+// written, no errors, no stall) rather than an achieved batch size: commands
+// per flush is not observable from outside the engine without adding
+// instrumentation. The batching effect itself is quantified in the benchmark
+// numbers in the PR description.
+func TestFullDuplexMaxFlushDelayCorrectUnderLoad(t *testing.T) {
+	ctx := context.Background()
+
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		// 1024 keeps the threshold at the 64 floor while leaving the window well
+		// above it, so the gate trips on load rather than on the window
+		// backpressure gate.
+		FullDuplexWindow: 1024,
+		MaxFlushDelay:    2 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	const (
+		workers = 128
+		perWkr  = 40
+	)
+	for i := 0; i < workers; i++ {
+		if err := ap.Set(ctx, fmt.Sprintf("fd:accum:load:%d", i), fmt.Sprint(i), 0).Err(); err != nil {
+			t.Fatalf("prefill: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			key, want := fmt.Sprintf("fd:accum:load:%d", id), fmt.Sprint(id)
+			for j := 0; j < perWkr; j++ {
+				got, err := ap.Get(ctx, key).Result()
+				if err != nil {
+					errs <- fmt.Errorf("worker %d: %w", id, err)
+					return
+				}
+				if got != want {
+					errs <- fmt.Errorf("worker %d: got %q want %q", id, got, want)
+					return
+				}
+			}
+		}(i)
+	}
+
+	waited := make(chan struct{})
+	go func() { wg.Wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(30 * time.Second):
+		t.Fatal("load phase did not finish in 30s: the writer is stuck in the " +
+			"accumulation wait")
+	}
+	close(errs)
+	for err := range errs {
+		t.Fatalf("%v", err)
+	}
+}
