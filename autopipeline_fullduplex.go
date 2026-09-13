@@ -541,10 +541,26 @@ func (f *fdInflight) takeRemaining() []fdReq {
 func fdAccumMinFor(window int) int {
 	const (
 		floor = 64
-		// 1/512 of the window: 128 at the default 65536, which is where the
-		// measurements above cross from "nothing to collect" into
-		// "syscall-bound".
-		shift = 9
+		// 1/128 of the window: 512 at the default 65536.
+		//
+		// Measured on THIS engine, delayed over undelayed throughput (2 vCPU,
+		// 3 reps x 12 s): 0.93x at 128 concurrent callers, 1.07x at 256, 1.02x at
+		// 512, 1.08x at 1024, 1.12x at 2048. A 250us window collects too few
+		// commands at 128 to pay for itself. Raising the gate makes 128 callers
+		// 0.99x and keeps 1.09x / 1.13x at 1024 / 2048 -- at the cost of the 1.07x
+		// the old threshold captured at 256.
+		//
+		// The margin is far larger on the full-duplex slice-queue engine, where
+		// this same threshold costs 0.39x at 128 callers and 0.82x at 256: that
+		// engine is faster at a given concurrency, so per-command latency is
+		// smaller and the same 250us is a larger fraction of it.
+		//
+		// Mechanism: the wait always cuts CPU per op (6.65 -> 4.93 us at 128
+		// callers) but only raises THROUGHPUT when CPU is the binding constraint.
+		// Below the gate there is CPU headroom, so the writer idles out the window
+		// instead (CPU fell to 41% of 200% at 128 callers) and Little's law does
+		// the rest.
+		shift = 7
 	)
 	if m := window >> shift; m > floor {
 		return m
