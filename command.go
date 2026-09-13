@@ -235,6 +235,11 @@ type Cmder interface {
 	SetErr(error)
 	Err() error
 
+	// markStateRejected/isStateRejected flag a per-connection state command a
+	// pooled pipeline queued only to surface a rejection through Exec.
+	markStateRejected()
+	isStateRejected() bool
+
 	// setReady marks a command as asynchronously pending (autopipeline async
 	// faces); await blocks the public accessors until it has executed; rawErr
 	// reads the error without awaiting (internal execution path).
@@ -249,6 +254,20 @@ type Cmder interface {
 
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
+}
+
+// stateRejectedErr returns the pre-set guidance error of the first
+// state-rejected command in cmds (see Pipeline.rejectPooledState), or nil.
+// EVERY pipeline execution entry point must check it BEFORE dispatching:
+// otherwise the command runs on a borrowed connection and the server reply
+// overwrites the guidance error.
+func stateRejectedErr(cmds []Cmder) error {
+	for _, cmd := range cmds {
+		if cmd.isStateRejected() {
+			return cmd.Err()
+		}
+	}
+	return nil
 }
 
 func setCmdsErr(cmds []Cmder, e error) {
@@ -377,6 +396,9 @@ type baseCmd struct {
 	rawVal       interface{}
 	_readTimeout *time.Duration
 	cmdType      CmdType
+	// stateRejected marks a state command a pooled *Pipeline queued only to
+	// surface its rejection through Exec (see stateRejectedErr).
+	stateRejected bool
 	// slotCache memoizes the cluster slot once computed, so the cluster
 	// autopipeline shard router and the pipeline flush router don't each
 	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
@@ -553,6 +575,18 @@ func (cmd *baseCmd) Err() error {
 	return cmd.err
 }
 
+// markStateRejected / isStateRejected carry the "queued only to be rejected"
+// signal from a pooled *Pipeline to the pipeline executors (stateRejectedErr):
+// Exec surfaces the pre-set guidance error instead of sending the command to a
+// borrowed connection. Sticky pipelines never set it.
+func (cmd *baseCmd) markStateRejected() {
+	cmd.stateRejected = true
+}
+
+func (cmd *baseCmd) isStateRejected() bool {
+	return cmd.stateRejected
+}
+
 func (cmd *baseCmd) readTimeout() *time.Duration {
 	return cmd._readTimeout
 }
@@ -598,6 +632,9 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 		rawVal:       cmd.rawVal,
 		_readTimeout: readTimeout,
 		cmdType:      cmd.cmdType,
+		// A hook that rebuilds the command slice via Clone must not launder a
+		// queued pooled-state rejection into a sendable command.
+		stateRejected: cmd.stateRejected,
 	}
 }
 

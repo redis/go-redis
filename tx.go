@@ -148,6 +148,8 @@ func (c *Tx) Pipeline() Pipeliner {
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			return c.processPipelineHook(ctx, cmds)
 		},
+		// A Tx pins one connection until Close: state commands are safe here.
+		sticky: true,
 	}
 	pipe.init()
 	return &pipe
@@ -191,6 +193,8 @@ func (c *Tx) TxPipeline() Pipeliner {
 			}
 			return err
 		},
+		// A Tx pins one connection until Close: state commands are safe here.
+		sticky: true,
 	}
 	pipe.init()
 	return &pipe
