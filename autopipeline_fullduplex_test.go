@@ -4735,16 +4735,16 @@ func TestFDAccumMinFor(t *testing.T) {
 		window int
 		want   int
 	}{
-		// Below 64*512 the shift underflows the floor, so the floor wins: a
+		// Below 64*128 the shift underflows the floor, so the floor wins: a
 		// caller who shrinks the window must not end up with a threshold so low
 		// that any trickle of traffic trips it.
 		{"zero", 0, 64},
 		{"tiny", 1, 64},
-		{"at-floor-boundary", 64 * 512, 64},
+		{"at-floor-boundary", 64 * 128, 64},
 		// Above it the threshold tracks the window, so enlarging the pipeline
 		// depth raises the bar in proportion.
-		{"default-window", fdDefaultWindow, fdDefaultWindow / 512},
-		{"double-default", 2 * fdDefaultWindow, 2 * fdDefaultWindow / 512},
+		{"default-window", fdDefaultWindow, fdDefaultWindow / 128},
+		{"double-default", 2 * fdDefaultWindow, 2 * fdDefaultWindow / 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := fdAccumMinFor(tc.window); got != tc.want {
@@ -4752,10 +4752,11 @@ func TestFDAccumMinFor(t *testing.T) {
 			}
 		})
 	}
-	// The default must land at 128: that is the value the measurements in the
-	// fdAccumMinFor doc comment were taken at, so changing it invalidates them.
-	if got := fdAccumMinFor(fdDefaultWindow); got != 128 {
-		t.Fatalf("default threshold = %d, want 128", got)
+	// The default must land at 512: that is the value the measurements in
+	// the fdAccumMinFor doc comment were taken at, so changing it invalidates
+	// them.
+	if got := fdAccumMinFor(fdDefaultWindow); got != 512 {
+		t.Fatalf("default threshold = %d, want 512", got)
 	}
 }
 
