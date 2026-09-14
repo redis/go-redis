@@ -558,10 +558,14 @@ const fdAccumGrace = 30 * time.Microsecond
 func fdAccumMinFor(window int) int {
 	const (
 		floor = 64
-		// 1/512 of the window: 128 at the default 65536, which is where the
-		// measurements above cross from "nothing to collect" into
-		// "syscall-bound".
-		shift = 7
+		// 1/512 of the window: 128 at the default 65536. The right threshold
+		// depends on the SUBMIT MECHANISM, not only on the workload. With the
+		// channel submit path this same value measured -11.1% at 128 callers
+		// (0/3 paired passes won), which is why #4014 gates at window>>7; with
+		// the slice queue it measured +21.8% at 256 callers and +15.7% at 512
+		// (3/3 passes each) with no harm at 128 (+1.3%), because the queue
+		// takes a whole wave per lock instead of waking the writer per command.
+		shift = 9
 	)
 	if m := window >> shift; m > floor {
 		return m
