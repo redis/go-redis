@@ -477,9 +477,9 @@ func TestFullDuplexConfigDefaults(t *testing.T) {
 	// allocates its full capacity eagerly, so a window-sized queue would cost
 	// several MiB per engine up front; backpressure comes from the in-flight
 	// deque, which grows only with actual in-flight.
-	if want := 4096; cap(ap.fd.ch) != want {
+	if want := 4096; ap.fd.q.capacity() != want {
 		t.Fatalf("queue capacity %d, want %d (capped; window %d bounds in-flight, not the queue)",
-			cap(ap.fd.ch), want, fdDefaultWindow)
+			ap.fd.q.capacity(), want, fdDefaultWindow)
 	}
 	if ap.fd.window != fdDefaultWindow {
 		t.Fatalf("window %d, want default %d", ap.fd.window, fdDefaultWindow)
@@ -822,7 +822,7 @@ func TestFullDuplexBackpressure(t *testing.T) {
 }
 
 // TestFDShutdownFlushCompletesBetweenSessionsBacklog pins the Close contract for
-// work accepted while NO session holds a connection: a command sitting in fd.ch
+// work accepted while NO session holds a connection: a command sitting in the submit queue
 // (or an unacked carry) when Close wins the between-sessions race must be
 // EXECUTED via the normal pipeline path, not failed ErrClosed. Drives
 // shutdownFlush directly, which is what run()'s two shutdown sites call.
@@ -843,7 +843,7 @@ func TestFDShutdownFlushCompletesBetweenSessionsBacklog(t *testing.T) {
 		t.Fatal("full-duplex engine not active")
 	}
 
-	// Simulate the between-sessions Close: backlog queued in fd.ch (bypassing
+	// Simulate the between-sessions Close: backlog queued in the submit queue (bypassing
 	// submit — run() must not consume it, so this test does not race the engine's
 	// own loop; the queue is drained below by takeQueue inside shutdownFlush).
 	const n = 5
@@ -851,7 +851,7 @@ func TestFDShutdownFlushCompletesBetweenSessionsBacklog(t *testing.T) {
 	for i := 0; i < n; i++ {
 		cmd := NewStatusCmd(ctx, "set", fmt.Sprintf("fdsf:%d", i), fmt.Sprintf("v%d", i))
 		reqs[i] = fdReq{cmd: cmd, batch: newAPBatch()}
-		fd.ch <- reqs[i]
+		fd.q.push(reqs[i])
 	}
 	// carry: an unacked tail from a failed session that was never re-leased.
 	carryCmd := NewStatusCmd(ctx, "set", "fdsf:carry", "vc")
@@ -902,7 +902,7 @@ func (c *failWriteNetConn) Write(b []byte) (int, error) {
 // partially written carry: writeBatch pushes each chunk into the in-flight deque
 // BEFORE writing it, so when a multi-chunk carry write fails the un-written
 // suffix must be pushed too — otherwise those accepted commands are in neither
-// fd.ch nor the deque and their callers hang. Deterministic and dial-free.
+// the submit queue nor the deque and their callers hang. Deterministic and dial-free.
 // handoffSimHook stands in for the maintnotifications OnPut hook in tests that do
 // not wire up the full manager: a connection marked for handoff is taken out of
 // rotation on Put, so the FD writer's clean handoff recycle (which Puts the conn)
@@ -1123,7 +1123,7 @@ func TestFullDuplexCloseCompletesBacklogAfterConnKill(t *testing.T) {
 	}
 
 	// Burst far more than the window so a backlog builds behind the lagging reader
-	// (in fd.ch and the in-flight deque). Submit off-goroutine: backpressure blocks
+	// (in the submit queue and the in-flight deque). Submit off-goroutine: backpressure blocks
 	// ap.Set once full, and Close (ap.ctx cancel) releases it.
 	const N = 200
 	cmds := make([]*StatusCmd, N)
@@ -1610,7 +1610,7 @@ func TestFullDuplexNoGoroutineLeakOnClose(t *testing.T) {
 // (which shares the pools but not the original wrapper's cached autopipeliner) still
 // stops the ORIGINAL engine's goroutines. The clone's Close only sets the shared
 // apClosed flag and runs the shared onClose hooks; without the hook that cancels the
-// cached ap's context, run() would park on fd.ch forever (new submits are rejected,
+// cached ap's context, run() would park on the submit queue forever (new submits are rejected,
 // so nothing wakes it). The existing rejection test does not catch this because a
 // parked engine still refuses submits.
 func TestFullDuplexEngineReapedOnClonePoolClose(t *testing.T) {
@@ -2678,7 +2678,7 @@ func (l *fdRejectLimiter) ReportResult(_ error) {}
 
 // TestFullDuplexLimiterRejectFailsQueuedWork verifies that when the Limiter
 // denies chunk admission at write time (writeBatch), accepted commands
-// fail-fast with the limiter error instead of hanging in fd.ch until the
+// fail-fast with the limiter error instead of hanging in the submit queue until the
 // breaker closes.
 func TestFullDuplexLimiterRejectFailsQueuedWork(t *testing.T) {
 	ctx := context.Background()
@@ -2749,7 +2749,7 @@ func TestFullDuplexProcessReportsSubmitRejection(t *testing.T) {
 }
 
 // TestFullDuplexCloseFlushesBacklog verifies graceful Close executes the
-// accepted-but-unwritten fd.ch commands instead of failing them ErrClosed
+// accepted-but-unwritten queued commands instead of failing them ErrClosed
 // ("accepted ⇒ completes"). A burst is submitted and Close called immediately, so
 // some commands are still in the backlog when Close runs; none may be ErrClosed.
 func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
@@ -2777,7 +2777,7 @@ func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
 	}
 	for i, cmd := range cmds {
 		if errors.Is(cmd.Err(), ErrClosed) {
-			t.Fatalf("cmd %d came back ErrClosed — Close did not flush the accepted fd.ch backlog", i)
+			t.Fatalf("cmd %d came back ErrClosed — Close did not flush the accepted queue backlog", i)
 		}
 	}
 }
@@ -2785,7 +2785,7 @@ func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
 // TestFullDuplexLeaseFailureFailsBacklog verifies that when the engine cannot
 // lease a connection for a new session (fdLeaseErr, server down), accepted
 // commands fail-fast once the lease retries are exhausted instead of hanging in
-// fd.ch. Uses a dead address, so it needs no live server.
+// the submit queue. Uses a dead address, so it needs no live server.
 func TestFullDuplexLeaseFailureFailsBacklog(t *testing.T) {
 	ctx := context.Background()
 	c := NewClient(&Options{
@@ -3874,14 +3874,14 @@ func TestFDFailQueueRecoversMetricCallbackPanic(t *testing.T) {
 
 	ctx := context.Background()
 	const n = 3
-	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}, ch: make(chan fdReq, n)}
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}, q: newFDQueue(n)}
 	batches := make([]*apBatch, n)
 	for i := 0; i < n; i++ {
 		cmd := NewStatusCmd(ctx, "set", "k", "v")
 		b := newAPBatch()
 		cmd.setReady(b)
 		batches[i] = b
-		fd.ch <- fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1}
+		fd.q.push(fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1})
 	}
 
 	func() {

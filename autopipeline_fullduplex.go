@@ -538,28 +538,29 @@ func (f *fdInflight) takeRemaining() []fdReq {
 //	    256   237k, 160% CPU     228k, 112% CPU     (same work, 30% less CPU)
 //	   1024   345k, p99 4.78ms   420k, p99 3.53ms   (+22% ops, -26% p99)
 //	   2048   308k, p99 10.1ms   386k, p99 7.19ms   (+25% ops, -29% p99)
+//
+// fdAccumGrace is how long the writer waits for the batch to GROW before it
+// concludes nothing more is coming and flushes. MaxFlushDelay remains the hard
+// ceiling on total wait; this decides how quickly an idle queue is noticed.
+//
+// It is deliberately absolute rather than a fraction of MaxFlushDelay. Those
+// are different quantities: MaxFlushDelay is the caller's latency budget, while
+// this is a property of how commands arrive. Tying them would mean a generous
+// budget also made the writer slow to notice an idle queue -- re-introducing
+// the regression that treating the budget as a real maximum removes, and
+// preventing the budget from being raised to capture larger batches.
+//
+// 30us against a ~200us round trip: long enough that a busy writer keeps
+// re-arming and rides to the ceiling, short enough that a writer whose callers
+// are all blocked on replies gives up promptly instead of burning the budget.
+const fdAccumGrace = 30 * time.Microsecond
+
 func fdAccumMinFor(window int) int {
 	const (
 		floor = 64
-		// 1/128 of the window: 512 at the default 65536.
-		//
-		// Measured on THIS engine, delayed over undelayed throughput (2 vCPU,
-		// 3 reps x 12 s): 0.93x at 128 concurrent callers, 1.07x at 256, 1.02x at
-		// 512, 1.08x at 1024, 1.12x at 2048. A 250us window collects too few
-		// commands at 128 to pay for itself. Raising the gate makes 128 callers
-		// 0.99x and keeps 1.09x / 1.13x at 1024 / 2048 -- at the cost of the 1.07x
-		// the old threshold captured at 256.
-		//
-		// The margin is far larger on the full-duplex slice-queue engine, where
-		// this same threshold costs 0.39x at 128 callers and 0.82x at 256: that
-		// engine is faster at a given concurrency, so per-command latency is
-		// smaller and the same 250us is a larger fraction of it.
-		//
-		// Mechanism: the wait always cuts CPU per op (6.65 -> 4.93 us at 128
-		// callers) but only raises THROUGHPUT when CPU is the binding constraint.
-		// Below the gate there is CPU headroom, so the writer idles out the window
-		// instead (CPU fell to 41% of 200% at 128 callers) and Little's law does
-		// the rest.
+		// 1/512 of the window: 128 at the default 65536, which is where the
+		// measurements above cross from "nothing to collect" into
+		// "syscall-bound".
 		shift = 7
 	)
 	if m := window >> shift; m > floor {
@@ -572,7 +573,7 @@ type fdEngine struct {
 	ap       *AutoPipeliner
 	client   *Client
 	pool     pool.Pooler
-	ch       chan fdReq // MPSC ordered queue: many submitters -> the writer
+	q        *fdQueue // MPSC ordered queue: many submitters -> the writer (see fdQueue)
 	maxBatch int
 	window   int // max in-flight (written, unacked) before the writer waits
 	// accumMin is the in-flight depth at which the writer is willing to wait
@@ -717,7 +718,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		ap:         ap,
 		client:     client,
 		pool:       client.getPipelinePool(),
-		ch:         make(chan fdReq, chCap),
+		q:          newFDQueue(chCap),
 		maxBatch:   mb,
 		window:     w,
 		accumMin:   fdAccumMinFor(w),
@@ -802,53 +803,68 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	// wait is skipped. The queue-depth gate keeps this off once the channel bursts
 	// deep, so contended traffic takes the fair blocking select and the p99 tail is
 	// preserved. On a miss (or a full channel) it falls through to that select.
-	if fd.fastSubmit && len(fd.ch)*100 < cap(fd.ch)*fdFastSubmitGatePct {
-		select {
-		case fd.ch <- req:
-			fd.fastSubmitTake.Add(1) // test observability; single atomic on the (already RLock'd) fast path
+	// Enqueue. push is a mutex plus an append, so it cannot block unless the queue
+	// is at its bound: the blocking three-arm select the channel required is gone,
+	// and with it the reason FullDuplexFastSubmit existed (that option only skipped
+	// the same select). On a full queue, wait for the writer to take a wave.
+	for {
+		res := fd.q.push(req)
+		if res == fdPushOK {
+			if fd.fastSubmit {
+				fd.fastSubmitTake.Add(1) // kept for the existing test observability
+			}
+			// Accepted. Start the hook host ONLY now: a submission that is never admitted
+			// (the cancel paths below) must not leak a host goroutine. The Add happens under
+			// the gate, so it is ordered before the shutdown drain's WLock and run()'s
+			// hostWg.Wait never races an Add on a zero counter.
+			//
+			// The readiness gate (setReady, stamped by the caller after we return) is
+			// deliberately NOT installed here first: it would change nothing for a hook
+			// on the host goroutine, which is the batch's executor and whose result
+			// accessors never block (await's executor guard — blocking there would
+			// self-deadlock, since only the host closes b.done). A pre-next read on the
+			// host is the not-yet-executed view whether or not the gate is set; the
+			// FullDuplex contract forbids it (see the FullDuplex field doc).
 			if hookDone != nil {
 				fd.hostWg.Add(1)
 				go fd.hostHook(ctx, cmd, b, hookDone)
 			}
 			fd.submitMu.RUnlock()
 			return b
-		default:
 		}
-	}
-	select {
-	case fd.ch <- req:
-		// Accepted. Start the hook host ONLY now: a submission that is never admitted
-		// (the cancel paths below) must not leak a host goroutine. The Add happens under
-		// the gate, so it is ordered before the shutdown drain's WLock and run()'s
-		// hostWg.Wait never races an Add on a zero counter.
-		//
-		// The readiness gate (setReady, stamped by the caller after we return) is
-		// deliberately NOT installed here first: it would change nothing for a hook
-		// on the host goroutine, which is the batch's executor and whose result
-		// accessors never block (await's executor guard — blocking there would
-		// self-deadlock, since only the host closes b.done). A pre-next read on the
-		// host is the not-yet-executed view whether or not the gate is set; the
-		// FullDuplex contract forbids it (see the FullDuplex field doc).
-		if hookDone != nil {
-			fd.hostWg.Add(1)
-			go fd.hostHook(ctx, cmd, b, hookDone)
+		if res == fdPushClosed {
+			fd.submitMu.RUnlock()
+			putFDBlockingBatch(b) // recycle the unadmitted pooled batch (no-op if not pooled)
+			cmd.SetErr(ErrClosed)
+			return completedBatch
 		}
-		fd.submitMu.RUnlock()
-		return b
-	case <-ctx.Done():
-		// Caller's ctx expired while backpressured (window/channel full): honor it
-		// instead of blocking until room or Close (#3964). Not admitted and no host
-		// started, so this is a submit-time failure — return the completedBatch sentinel
-		// so raw Process(ctx,cmd) reports the ctx error.
-		fd.submitMu.RUnlock()
-		putFDBlockingBatch(b) // recycle the unadmitted pooled batch (no-op if not pooled)
-		cmd.SetErr(ctx.Err())
-		return completedBatch
-	case <-fd.ap.ctx.Done():
-		fd.submitMu.RUnlock()
-		putFDBlockingBatch(b) // recycle the unadmitted pooled batch (no-op if not pooled)
-		cmd.SetErr(ErrClosed)
-		return completedBatch
+		// Queue at its bound. Wait for the writer to take a wave, then retry. The
+		// release conditions are the same ones the blocking channel send had, so
+		// holding submitMu.RLock across this wait still cannot wedge the shutdown
+		// WLock.
+		select {
+		case <-fd.q.roomCh():
+			// Chain the signal: room is cap-1, so with several submitters blocked only
+			// one is released per take. Whoever wakes re-signals while space remains.
+			// Confined to this saturated path, so steady state pays nothing.
+			if fd.q.depth() < fd.q.capacity() {
+				fd.q.signalRoom()
+			}
+		case <-ctx.Done():
+			// Caller's ctx expired while backpressured (window/queue full): honor it
+			// instead of blocking until room or Close (#3964). Not admitted and no host
+			// started, so this is a submit-time failure — return the completedBatch sentinel
+			// so raw Process(ctx,cmd) reports the ctx error.
+			fd.submitMu.RUnlock()
+			putFDBlockingBatch(b) // recycle the unadmitted pooled batch (no-op if not pooled)
+			cmd.SetErr(ctx.Err())
+			return completedBatch
+		case <-fd.ap.ctx.Done():
+			fd.submitMu.RUnlock()
+			putFDBlockingBatch(b) // recycle the unadmitted pooled batch (no-op if not pooled)
+			cmd.SetErr(ErrClosed)
+			return completedBatch
+		}
 	}
 }
 
@@ -1179,12 +1195,25 @@ func (fd *fdEngine) run() {
 			// (fd.curInflight.Load, below) already ran for the prior iteration, and the
 			// next session re-stores before that read runs again, so this never races it.
 			fd.curInflight.Store(nil)
-			select {
-			case r := <-fd.ch:
-				carry = []fdReq{r}
-			case <-fd.ap.ctx.Done():
-				fd.shutdownFlush(bg, nil)
-				return
+			// Park for the first command of the next session. park() re-checks the
+			// queue under the same mutex a submitter needs in order to signal, so it
+			// returns false when work is already queued and a wake can never be lost.
+			for len(carry) == 0 {
+				carry = fd.q.takeInto(carry, 1)
+				if len(carry) > 0 {
+					break
+				}
+				if !fd.q.park(1) {
+					continue // work landed between the take and the park
+				}
+				select {
+				case <-fd.q.wakeCh():
+					fd.q.unpark()
+				case <-fd.ap.ctx.Done():
+					fd.q.unpark()
+					fd.shutdownFlush(bg, nil)
+					return
+				}
 			}
 		}
 		unacked, result, aerr := fd.attempt(bg, carry)
@@ -1834,140 +1863,181 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				result = fdRecycle
 				break serve
 			}
+			// Park for the next wave, then take it in ONE lock. park() asks the queue
+			// to wake this goroutine only once it holds minDepth commands, and returns
+			// false when that many are already queued, so no wake is lost and no
+			// arrival is missed. A channel could only express "wake me on the next
+			// arrival", which woke the writer once per command and re-entered its
+			// select ~112 times per 250 us window: that single select measured 3.25 s,
+			// 6.9% of all CPU, at ~450k ops/s.
+			var wakeC <-chan struct{}
+			if fd.q.park(1) {
+				wakeC = fd.q.wakeCh()
+			} else {
+				wakeC = fdQueueReady // work already queued: proceed without waiting
+			}
 			select {
-			case req := <-fd.ch:
-				batch := append(scratch[:0], req)
-				batchBytes, sizeErr := cmdApproxBytesSafe(req.cmd)
-				if sizeErr != nil {
-					// req.cmd.Args() panicked (custom Cmder) while sizing the batch, on
-					// this recover-less serve loop. Fail just that command and take the
-					// next: nothing was written and nothing is in flight, so dropping it
-					// here avoids letting it reach writeBatch, whose write-time recover
-					// would tear the whole session down and replay its batch-mates
-					// at-least-once. It is the only command in the batch, so skip the flush.
-					// Do not resetIdle: a dropped command is not session activity, and the
-					// idle timer firing normally is harmless.
-					fd.failReqs(batch, sizeErr)
-					continue
-				}
+			case <-wakeC:
+				fd.q.unpark()
 				// Cap this batch by the REMAINING window room, not just MaxBatchSize:
 				// the gate above only ensures in-flight < window before draining, so a
 				// window smaller than MaxBatchSize would let one drain blow through it
-				// (window=1, batch=200 → 200 in flight). The first command always goes
+				// (window=1, batch=200 -> 200 in flight). The first command always goes
 				// (room is >= 1 after the gate).
 				limit := fd.maxBatch
 				if room := fd.window - inflight.len(); room < limit {
 					limit = room
 				}
-				// accumArmed:    the accumulation timer is running for this batch.
-				// accumExpired:  the window closed, so flush instead of re-waiting.
-				// accumMaxHold:  max-hold fired DURING the wait; its one-shot tick was
-				//                consumed here, so end the session after the flush.
-				accumArmed, accumExpired, accumMaxHold := false, false, false
-			drain:
-				for len(batch) < limit {
-					// Soft MaxBatchBytes cap (like the half-duplex path): stop
-					// accumulating once the payload reaches the limit, so one flush
-					// cannot buffer an unbounded write. The first command is always
-					// included, so a lone oversized command still goes.
-					if byteLimit > 0 && batchBytes >= byteLimit {
-						break drain
+				if limit < 1 {
+					limit = 1
+				}
+				batch := fd.q.takeInto(scratch[:0], limit)
+				if len(batch) == 0 {
+					// Stale wake: a drain path (failQueue/backlog flush) emptied the
+					// queue between the signal and the take. Do not resetIdle — no
+					// session activity happened.
+					continue serve
+				}
+				// accumMaxHold: max-hold fired DURING the accumulation wait; its
+				// one-shot tick was consumed there, so end the session after the flush.
+				accumMaxHold := false
+				// Accumulate to the flush deadline. ONE park covers the whole window:
+				// park(need) asks to be woken only when the batch can be FILLED, and
+				// submitters below that depth stay silent, so a window costs one park
+				// and one wake instead of one per arriving command. The timer releases a
+				// wave that never reaches the threshold. Gated on in-flight depth (see
+				// fdAccumMinFor): at low concurrency the queue is empty because there is
+				// genuinely nothing to send, and waiting would cost every command a
+				// round trip. MaxFlushDelay defaults to 0, so this is opt-in.
+				if fd.ap.config.MaxFlushDelay > 0 && len(batch) < limit &&
+					len(batch) < fd.maxBatch && inflight.len() >= fd.accumMin {
+					// MaxFlushDelay is a MAXIMUM, so arm the timer for a short grace and
+					// re-arm it whenever the batch actually grows, bounded by accumCap.
+					// A wave that keeps arriving rides to the full cap (which is what
+					// earns the win at high concurrency); a wave that stops arriving
+					// flushes after the grace instead of idling out the whole window.
+					accumCap := time.Now().Add(fd.ap.config.MaxFlushDelay)
+					// The grace is ABSOLUTE, not a fraction of the budget: coupling them
+					// means a generous budget also makes the writer slow to notice an
+					// idle queue, which is the regression the budget is supposed to be
+					// safe from. Clamped so a tiny budget is still honoured.
+					accumGrace := fdAccumGrace
+					if accumGrace > fd.ap.config.MaxFlushDelay {
+						accumGrace = fd.ap.config.MaxFlushDelay
 					}
-					select {
-					case r := <-fd.ch:
-						batch = append(batch, r)
-						rb, sizeErr := cmdApproxBytesSafe(r.cmd)
-						if sizeErr != nil {
-							// r.cmd.Args() panicked while sizing. Fail just r, DROP it from
-							// the batch, and flush the good prefix accumulated so far. Failing
-							// it while leaving it in batch would double-complete it: writeBatch
-							// would push it into inflight and the reader would settle it again.
-							fd.failReqs(batch[len(batch)-1:], sizeErr)
-							batch = batch[:len(batch)-1]
-							break drain
-						}
-						batchBytes += rb
-					default:
-						// Nothing queued right now. Under load, flushing a handful of
-						// commands means paying batch and syscall overhead at
-						// per-command frequency, so wait MaxFlushDelay once for the
-						// rest of the wave. Gated on in-flight depth (see
-						// fdAccumMinFor): at low concurrency the queue is empty
-						// because there is genuinely nothing to send, and waiting
-						// there would cost every command a round trip. MaxFlushDelay
-						// defaults to 0, so this is opt-in and the default path is
-						// byte-for-byte unchanged.
-						if fd.ap.config.MaxFlushDelay > 0 && !accumExpired &&
-							len(batch) < fd.maxBatch && inflight.len() >= fd.accumMin {
-							// Arm ONCE per batch, then keep re-entering this select
-							// until the timer fires. Returning on the first arriving
-							// command would wait for AN ARRIVAL rather than accumulate
-							// to a deadline, which is a different (and near-useless)
-							// thing: measured 4.4 -> 7.9 commands per flush and +1%
-							// throughput, against 178 and +22% once the writer waits
-							// out the whole window.
-							if !accumArmed {
-								accumArmed = true
-								if accumTimer == nil {
-									accumTimer = time.NewTimer(fd.ap.config.MaxFlushDelay)
-								} else {
-									// Reset on an expired, undrained timer is the classic
-									// timer-reuse bug. Drain NON-BLOCKINGLY: whether a
-									// value is buffered depends on who won the previous
-									// select, so a plain <-accumTimer.C wedges the writer
-									// (and Close) forever in the case where the timer
-									// already lost the race and no value is pending.
-									if !accumTimer.Stop() {
-										select {
-										case <-accumTimer.C:
-										default:
-										}
-									}
-									accumTimer.Reset(fd.ap.config.MaxFlushDelay)
-								}
-							}
+					if accumGrace <= 0 {
+						accumGrace = time.Microsecond
+					}
+					if accumTimer == nil {
+						accumTimer = time.NewTimer(accumGrace)
+					} else {
+						// Reset on an expired, undrained timer is the classic timer-reuse
+						// bug. Drain NON-BLOCKINGLY: whether a value is buffered depends on
+						// who won the previous select, so a plain <-accumTimer.C wedges the
+						// writer (and Close) forever in the case where the timer already
+						// lost the race and no value is pending.
+						if !accumTimer.Stop() {
 							select {
-							case ra := <-fd.ch:
-								batch = append(batch, ra)
-								rba, sizeErrA := cmdApproxBytesSafe(ra.cmd)
-								if sizeErrA != nil {
-									// Same handling as the fast path above: fail and drop
-									// just this command, flush the good prefix.
-									fd.failReqs(batch[len(batch)-1:], sizeErrA)
-									batch = batch[:len(batch)-1]
-									break drain
-								}
-								batchBytes += rba
-								continue drain
 							case <-accumTimer.C:
-								accumExpired = true
-								break drain
-							case <-readerDone:
-								// Reader is gone. Stop waiting and flush the prefix
-								// already taken off fd.ch; the top of the serve loop
-								// re-observes readerDone (a closed channel, so the signal
-								// is not consumed here) and ends the session through the
-								// existing connection-error path, which recovers this
-								// batch through the carry/replay logic.
-								break drain
-							case <-fd.ap.ctx.Done():
-								// Close() is waiting on this writer. Flush what is in
-								// hand and let the serve loop take the graceful path;
-								// ctx.Done() is a closed channel, so nothing is consumed.
-								break drain
-							case <-maxC:
-								// Max-hold reached mid-wait. maxC comes from a ONE-SHOT
-								// time.Timer, so this receive consumes the only tick:
-								// record it and end the session after the flush rather
-								// than dropping it and holding the connection past its
-								// deadline. Without this case a MaxFlushDelay longer than
-								// FullDuplexMaxHold parks the writer beyond max-hold.
-								accumMaxHold = true
-								break drain
+							default:
 							}
 						}
-						break drain
+						accumTimer.Reset(accumGrace)
 					}
+				accum:
+					for len(batch) < limit {
+						need := limit - len(batch)
+						if !fd.q.park(need) {
+							batch = fd.q.takeInto(batch, need)
+							continue accum
+						}
+						select {
+						case <-fd.q.wakeCh():
+							fd.q.unpark()
+							grew := len(batch)
+							batch = fd.q.takeInto(batch, need)
+							if len(batch) > grew {
+								// Progress. Extend the grace, but never past the cap: that is
+								// what keeps MaxFlushDelay an upper bound on added latency.
+								rem := time.Until(accumCap)
+								if rem <= 0 {
+									break accum
+								}
+								d := accumGrace
+								if d > rem {
+									d = rem
+								}
+								if !accumTimer.Stop() {
+									select {
+									case <-accumTimer.C:
+									default:
+									}
+								}
+								accumTimer.Reset(d)
+							}
+						case <-accumTimer.C:
+							// Deadline reached. Sweep up anything that arrived below the
+							// wake threshold, then flush.
+							fd.q.unpark()
+							batch = fd.q.takeInto(batch, limit-len(batch))
+							break accum
+						case <-readerDone:
+							// Reader is gone. Stop waiting and flush the prefix already
+							// taken off the queue; the top of the serve loop re-observes
+							// readerDone (a closed channel, so the signal is not consumed
+							// here) and ends the session through the existing
+							// connection-error path, which recovers this batch through the
+							// carry/replay logic.
+							fd.q.unpark()
+							break accum
+						case <-fd.ap.ctx.Done():
+							// Close() is waiting on this writer. Flush what is in hand and
+							// let the serve loop take the graceful path; ctx.Done() is a
+							// closed channel, so nothing is consumed.
+							fd.q.unpark()
+							break accum
+						case <-maxC:
+							// Max-hold reached mid-wait. maxC comes from a ONE-SHOT
+							// time.Timer, so this receive consumes the only tick: record it
+							// and end the session after the flush rather than dropping it
+							// and holding the connection past its deadline. Without this
+							// case a MaxFlushDelay longer than FullDuplexMaxHold parks the
+							// writer beyond max-hold.
+							fd.q.unpark()
+							accumMaxHold = true
+							break accum
+						}
+					}
+				}
+				// Size the wave in ONE pass, applying MaxBatchSize and the soft
+				// MaxBatchBytes cap. cmd.Args() is user code running on this
+				// recover-less serve loop, so fdBatchEndSafe wraps each sizing call in a
+				// recover and reports the clean prefix plus the offending index.
+				end, bad, sizeErr := fdBatchEndSafe(batch, 0, limit, byteLimit)
+				if sizeErr != nil {
+					// A command's Args() panicked. Fail and DROP just that command, then
+					// flush the clean prefix: letting it reach writeBatch would trip that
+					// path's write-time recover, tearing down the whole session and
+					// replaying its batch-mates at-least-once.
+					fd.failReqs(batch[bad:bad+1], sizeErr)
+					rest := batch[bad+1:]
+					batch = batch[:bad]
+					// The suffix past the offender was already dequeued, so return it to
+					// the HEAD of the queue: it keeps its place in FIFO order and goes out
+					// in the next flush.
+					if len(rest) > 0 {
+						fd.q.pushFront(rest)
+					}
+					if len(batch) == 0 {
+						// Do not resetIdle: a dropped command is not session activity, and
+						// the idle timer firing normally is harmless.
+						continue serve
+					}
+				} else if end < len(batch) {
+					// The byte cap tripped mid-wave. Hand the untaken tail back to the
+					// head of the queue instead of buffering an unbounded write.
+					fd.q.pushFront(batch[end:])
+					batch = batch[:end]
 				}
 				if e := fd.writeBatch(bg, cn, inflight, batch); e != nil {
 					writeErr = e
@@ -1978,7 +2048,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// Mirror the <-maxC arm of the serve select, whose tick the
 					// accumulation wait above consumed: idle when the pipe drained,
 					// recycle when work remains.
-					if inflight.empty() && len(fd.ch) == 0 {
+					if inflight.empty() && fd.q.depth() == 0 {
 						result = fdIdle
 					} else {
 						result = fdRecycle
@@ -1994,7 +2064,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// Only return the conn when genuinely idle: nothing queued AND the
 				// in-flight drained. Otherwise the timer fired mid-stream (e.g. a long
 				// flush) — re-arm and keep the hot session.
-				if inflight.empty() && len(fd.ch) == 0 {
+				if inflight.empty() && fd.q.depth() == 0 {
 					result = fdIdle
 					break serve
 				}
@@ -2005,7 +2075,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// quiet engine with FullDuplexMaxHold < FullDuplexIdleTimeout would
 				// Get/Put-churn (and re-run the session hooks) every interval.
 				// With work pending, recycle to keep serving.
-				if inflight.empty() && len(fd.ch) == 0 {
+				if inflight.empty() && fd.q.depth() == 0 {
 					result = fdIdle
 				} else {
 					result = fdRecycle
@@ -2730,15 +2800,10 @@ func (fd *fdEngine) takeQueue() []fdReq {
 	fd.submitMu.Lock()
 	fd.closed = true
 	fd.submitMu.Unlock()
-	var reqs []fdReq
-	for {
-		select {
-		case r := <-fd.ch:
-			reqs = append(reqs, r)
-		default:
-			return reqs
-		}
-	}
+	// closeQueue rejects any push that slipped past the gate check, and releases
+	// submitters blocked on a full queue so they observe the closed state.
+	fd.q.closeQueue()
+	return fd.q.drainAll(nil)
 }
 
 // shutdownFlush is the between-sessions Close flush: accepted commands in carry
@@ -2926,30 +2991,28 @@ func (fd *fdEngine) failQueue(err error) {
 	var errorType, statusCode string
 	var isInternal bool
 	classified := false
-	for {
-		select {
-		case r := <-fd.ch:
-			// fdSetErrSafe: same hazard as failReqs — a panicking custom Cmder must
-			// not escape on the sole fd.run goroutine with no outer recover.
-			fdSetErrSafe(r.cmd, err)
-			if errorCallback != nil {
-				if !classified {
-					errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
-					classified = true
-				}
-				octx := r.ctx
-				if octx == nil {
-					octx = context.Background()
-				}
-				// Guarded per-req so a panicking callback still lets r.complete() run.
-				fd.emitMetricsGuarded(octx, func() {
-					errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
-				})
+	// drainAll takes the whole backlog under one lock, replacing the old
+	// drain-until-empty receive loop. The engine stays open, so a command
+	// submitted after this returns is queued normally.
+	for _, r := range fd.q.drainAll(nil) {
+		// fdSetErrSafe: same hazard as failReqs — a panicking custom Cmder must
+		// not escape on the sole fd.run goroutine with no outer recover.
+		fdSetErrSafe(r.cmd, err)
+		if errorCallback != nil {
+			if !classified {
+				errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
+				classified = true
 			}
-			r.complete()
-		default:
-			return
+			octx := r.ctx
+			if octx == nil {
+				octx = context.Background()
+			}
+			// Guarded per-req so a panicking callback still lets r.complete() run.
+			fd.emitMetricsGuarded(octx, func() {
+				errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
+			})
 		}
+		r.complete()
 	}
 }
 
@@ -2966,24 +3029,18 @@ func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, infl
 	fd.submitMu.Lock()
 	fd.closed = true
 	fd.submitMu.Unlock()
-	var backlog []fdReq
-	for {
-		select {
-		case r := <-fd.ch:
-			backlog = append(backlog, r)
-		default:
-			// Return the unwritten suffix OUT-OF-BAND (do not push it into inflight) so
-			// the caller can tell a live handoff (errFDConnMoving) from a dead-conn write
-			// error: on handoff it clean-recycles — drains the written prefix, Puts the
-			// conn for the OnPut maintenance handoff, and completes the never-sent suffix
-			// on another connection — instead of failing accepted work. The dead-conn
-			// paths inside writeCarryChunked already pushed their suffix into inflight and
-			// return an empty one here.
-			// nil maxC: this is the Close flush; a terminating Close bounds its own wait
-			// (fdCloseFlushWait) and outranks max-hold, which applies only to a LIVE session.
-			return fd.writeCarryChunked(bg, cn, inflight, backlog, readerDone, nil)
-		}
-	}
+	fd.q.closeQueue()
+	backlog := fd.q.drainAll(nil)
+	// Return the unwritten suffix OUT-OF-BAND (do not push it into inflight) so
+	// the caller can tell a live handoff (errFDConnMoving) from a dead-conn write
+	// error: on handoff it clean-recycles — drains the written prefix, Puts the
+	// conn for the OnPut maintenance handoff, and completes the never-sent suffix
+	// on another connection — instead of failing accepted work. The dead-conn
+	// paths inside writeCarryChunked already pushed their suffix into inflight and
+	// return an empty one here.
+	// nil maxC: this is the Close flush; a terminating Close bounds its own wait
+	// (fdCloseFlushWait) and outranks max-hold, which applies only to a LIVE session.
+	return fd.writeCarryChunked(bg, cn, inflight, backlog, readerDone, nil)
 }
 
 // sleepBackoff waits the retry backoff, interruptible by Close.

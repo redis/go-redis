@@ -3405,12 +3405,13 @@ func (ap *AutoPipeliner) Len() int {
 	for _, s := range ap.shards {
 		total += s.Len()
 	}
-	// Full-duplex accepts commands onto fd.ch instead of the shard queues, so
-	// include its backlog — otherwise Len() reports 0 while accepted commands are
-	// buffered behind a backpressured/stalled FD writer, and callers using Len()
-	// for monitoring or local backpressure lose the signal in FullDuplex mode.
+	// Full-duplex accepts commands onto its submit queue instead of the shard
+	// queues, so include that backlog — otherwise Len() reports 0 while accepted
+	// commands are buffered behind a backpressured/stalled FD writer, and callers
+	// using Len() for monitoring or local backpressure lose the signal in
+	// FullDuplex mode.
 	if ap.fd != nil {
-		total += len(ap.fd.ch)
+		total += ap.fd.q.depth()
 	}
 	// Cluster full-duplex accepts commands onto per-node FD children, not the
 	// shard queues; include their backlog for the same monitoring reason.
