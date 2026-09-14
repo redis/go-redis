@@ -3,8 +3,10 @@ package pubsub
 import (
 	"context"
 	"errors"
+	"net"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -525,6 +527,51 @@ func TestManagerSubscribeRollsBackFreshHandle(t *testing.T) {
 	}
 }
 
+// TestManagerSubscribeWriteFailureRollsBackFreshHandle is
+// TestManagerSubscribeRollsBackFreshHandle for the other failure leg:
+// the dial succeeds but the subscribe WRITE fails. The caller still gets
+// (nil, err), so the fresh handle's registration must be rolled back —
+// otherwise the reconnect replay would resubscribe channels nobody
+// drains and the manager could never go idle.
+func TestManagerSubscribeWriteFailureRollsBackFreshHandle(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig("node:6379")
+	// Dials hand out a conn whose server end is already closed: the dial
+	// itself succeeds, the subscribe write then fails.
+	deadDial := func(ctx context.Context, addr string) (*pool.Conn, error) {
+		client, server := net.Pipe()
+		_ = server.Close()
+		return pool.NewConn(client), nil
+	}
+	m := NewManager(
+		cfg,
+		deadDial,
+		func(cn *pool.Conn) error { return cn.Close() },
+		func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error { return nil },
+		testIsBadConn,
+		nil,
+	)
+	t.Cleanup(func() { _ = m.Close() })
+
+	h, err := m.Subscribe(ctx, "ch1")
+	if err == nil {
+		t.Fatal("Subscribe with failing write succeeded, want error")
+	}
+	if h != nil {
+		t.Fatal("Subscribe returned a handle alongside the error, want nil")
+	}
+
+	m.mu.Lock()
+	handles, subs := len(m.handles), len(m.subscribers)
+	m.mu.Unlock()
+	if handles != 0 || subs != 0 {
+		t.Fatalf("after rolled-back Subscribe: %d handles, %d subscriptions registered, want 0, 0", handles, subs)
+	}
+	if !m.CloseIfIdle() {
+		t.Fatal("manager not idle after rolled-back Subscribe")
+	}
+}
+
 // TestManagerHandoff pins the maintenance-notification reaction: a
 // connection marked for handoff (MOVING) makes the manager redirect to
 // the handoff endpoint on the next read and replay the subscriptions
@@ -611,6 +658,10 @@ func TestManagerPing(t *testing.T) {
 	}
 	fsc := srv.waitDial(t)
 	fsc.expectCmd(t, "ping")
+	// Answer it: pongs are correlated to pings FIFO, so an unanswered
+	// ping would misdirect the next pong (a real server answers every
+	// PING).
+	fsc.sendMessage(t, "pong", "")
 
 	h, err := m.Subscribe(ctx, "ch1")
 	if err != nil {
@@ -651,6 +702,31 @@ func TestManagerPing(t *testing.T) {
 		t.Fatalf("health pong delivered to a bystander: %#v", ev)
 	case <-time.After(50 * time.Millisecond):
 	}
+}
+
+// TestEmptyHandleCloseReleasesConn pins that closing a handle with no
+// subscriptions releases the shared connection it dialed via Ping: the
+// no-subscriber release must run even when Close's unsubscribe sweeps
+// have nothing to write, else the conn — and the health-check traffic
+// on it — would linger until the whole manager closes.
+func TestEmptyHandleCloseReleasesConn(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h := m.NewHandle()
+	if err := h.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "ping")
+	// Answer it like a real server would (pongs are correlated FIFO).
+	fsc.sendMessage(t, "pong", "")
+
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fsc.expectClosed(t)
 }
 
 // TestManagerSlowConsumerDrop pins the drop policy: with a handle's
@@ -901,9 +977,8 @@ func TestReconnectTimeoutAppliesAtRuntime(t *testing.T) {
 	// ReconnectTimeout — expires.
 	gate := make(chan struct{})
 	srv.setDialGate(gate)
-	// Release every parked dial on the way out: the read loop's own
-	// deadline-free reconnect parks at the gate holding the manager
-	// lock, which the cleanup's Close needs.
+	// Release every parked dial on the way out so the cleanup's Close
+	// isn't held up by a dial still waiting out its reconnect deadline.
 	defer close(gate)
 
 	fsc1.paused.Store(true)
@@ -915,6 +990,101 @@ func TestReconnectTimeoutAppliesAtRuntime(t *testing.T) {
 		// The gated dial was aborted by the reconnect deadline.
 	case <-time.After(5 * time.Second):
 		t.Fatal("reconnect not bounded by the updated ReconnectTimeout")
+	}
+}
+
+// TestCloseSubscribeRaceLeavesNoOrphan pins that Close detaches the
+// handle from all namespaces and marks it closed in one critical
+// section: a Subscribe racing Close must either land before the sweep
+// (and be removed by it) or observe the closed handle and fail — it
+// must never register on a dying handle, which would leave an orphan
+// registry entry nobody drains and keep the manager from going idle.
+func TestCloseSubscribeRaceLeavesNoOrphan(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	for i := range 200 {
+		// Every iteration redials (Close releases the idle conn): drain
+		// the dial channel so a full buffer can't block a dial mid-lock.
+	drain:
+		for {
+			select {
+			case <-srv.dialCh:
+			default:
+				break drain
+			}
+		}
+
+		h, err := m.Subscribe(ctx, "seed")
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = h.Subscribe(ctx, "raced")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = h.Close()
+		}()
+		wg.Wait()
+
+		m.mu.Lock()
+		orphans := len(m.subscribers)
+		m.mu.Unlock()
+		if orphans != 0 {
+			t.Fatalf("iteration %d: %d orphan registry entrie(s) survived Close", i, orphans)
+		}
+	}
+}
+
+// TestReadFailureReconnectBounded pins that the read loop's reconnect
+// after a broken read is bounded by ReconnectTimeout. That reconnect
+// dials while holding the manager lock, so an unbounded dial would
+// block Subscribe and Close for as long as the dialer takes: with the
+// dial gate shut, only the reconnect context's deadline can fail the
+// dial, and the failed reconnect fires the onReconnectFailure hook.
+func TestReadFailureReconnectBounded(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379")
+	cfg.ReconnectTimeout = 50 * time.Millisecond
+
+	hookFired := make(chan struct{}, 16)
+	m := newTestManagerReload(t, srv, cfg, func() {
+		select {
+		case hookFired <- struct{}{}:
+		default:
+		}
+	})
+
+	if _, err := m.Subscribe(ctx, "rb"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "rb")
+	fsc.sendConfirm(t, "subscribe", "rb", 1)
+
+	// Gate future dials shut, then break the conn: the manager's read
+	// fails, the read loop reconnects, and its dial parks at the gate
+	// until the reconnect deadline expires.
+	gate := make(chan struct{})
+	srv.setDialGate(gate)
+	// Release every parked dial on the way out so the cleanup's Close
+	// isn't held up by a dial still waiting out its reconnect deadline.
+	defer close(gate)
+	_ = fsc.conn.Close()
+
+	srv.waitGateHit(t)
+	select {
+	case <-hookFired:
+		// The gated dial was aborted by the reconnect deadline.
+	case <-time.After(5 * time.Second):
+		t.Fatal("read-failure reconnect not bounded by ReconnectTimeout")
 	}
 }
 
