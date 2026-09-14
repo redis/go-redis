@@ -181,12 +181,23 @@ type fdReq struct {
 	// ctx is the caller's submit context, kept so the per-command OTel metric can
 	// be recorded against it (span/baggage correlation), mirroring process().
 	ctx context.Context
-	// writtenAt is stamped at the command's FIRST flush to the wire and kept across
+	// writtenOff is stamped at the command's FIRST flush to the wire and kept across
 	// replays; the reader uses write→reply as the command's operation duration for
 	// the OTel metric. Anchoring on the first write (not the last replay) makes the
 	// duration span the whole retry sequence, matching the normal command path,
 	// instead of timing only the final attempt.
-	writtenAt time.Time
+	// writtenOff is nanoseconds since the engine epoch (fdEngine.epoch), or 0
+	// when the command has not been written yet. An int64 offset rather than a
+	// time.Time because time.Time is 24 bytes of a ~100 byte fdReq that is
+	// copied at least three times per command (into the queue, out of it with
+	// the wave, into the in-flight ring) -- runtime.duffcopy measured 4.5% of
+	// all CPU, 46% of it copying fdReq.
+	//
+	// The offset comes from now.Sub(epoch), so it inherits the MONOTONIC reading
+	// that time.Time carries and the duration metric stays immune to a
+	// wall-clock step mid-command. A UnixNano() would be 8 bytes too, but would
+	// lose exactly that.
+	writtenOff int64
 	// attempts counts how many times this command has been issued: 1 at submit,
 	// incremented on each connection-error replay of the carried tail. Fed to the
 	// OTel duration/error callbacks so a command that succeeded on a replacement
@@ -555,6 +566,26 @@ func (f *fdInflight) takeRemaining() []fdReq {
 // are all blocked on replies gives up promptly instead of burning the budget.
 const fdAccumGrace = 30 * time.Microsecond
 
+// sinceWritten is a command's operation duration: now minus its first write.
+// Both ends derive from the same monotonic epoch, so it is unaffected by
+// wall-clock adjustments. A zero offset means "never written" and yields 0.
+func (fd *fdEngine) sinceWritten(off int64) time.Duration {
+	if off == 0 {
+		return 0
+	}
+	return time.Since(fd.epoch) - time.Duration(off)
+}
+
+// writtenTime reconstructs the absolute first-write time for the retry path,
+// which reports it to the normal command pipeline. A zero offset yields the
+// zero Time, matching what an unwritten command carried before.
+func (fd *fdEngine) writtenTime(off int64) time.Time {
+	if off == 0 {
+		return time.Time{}
+	}
+	return fd.epoch.Add(time.Duration(off))
+}
+
 func fdAccumMinFor(window int) int {
 	const (
 		floor = 64
@@ -600,7 +631,9 @@ type fdEngine struct {
 	curConnSpilled atomic.Bool
 
 	submitMu sync.RWMutex // guards closed; RLock across the submit send, WLock to close the gate
-	closed   bool         // set once run() is tearing down; submit then rejects new work
+	// epoch anchors fdReq.writtenOff; set once when the engine is built.
+	epoch  time.Time
+	closed bool // set once run() is tearing down; submit then rejects new work
 
 	retryWg  sync.WaitGroup // tracks off-pipe retries diverted to the normal client path; run() waits it so Close does too
 	retrySem chan struct{}  // caps concurrent off-pipe retries at the window (see retryOnNormalConn)
@@ -703,9 +736,15 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		retryCap = 1
 	}
 	fd := &fdEngine{
-		ap:       ap,
-		client:   client,
-		pool:     client.getPipelinePool(),
+		ap:     ap,
+		client: client,
+		pool:   client.getPipelinePool(),
+		// Anchors every fdReq.writtenOff. Taken once here so the offsets carry a
+		// monotonic reading: with the zero Time, Sub would saturate (the wall
+		// clock is ~2000 years past it, far beyond a Duration's ~292-year range)
+		// and time.Since would fall back to the wall clock, which is exactly the
+		// property the offset exists to preserve.
+		epoch:    time.Now(),
 		q:        newFDQueue(chCap),
 		maxBatch: mb,
 		window:   w,
@@ -977,7 +1016,7 @@ func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error,
 				unregister := req.batch.enterNodeDispatch()
 				defer unregister()
 			}
-			cb(octx, time.Since(req.writtenAt), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
+			cb(octx, fd.sinceWritten(req.writtenOff), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
 		}
 		if e != nil {
 			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
@@ -1094,7 +1133,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		// (fdClient is the *Client behind it), so this is the same raw exec, but it
 		// starts the retry loop at startAttempt — 1 for a retryable reply that already
 		// spent an attempt on the FD socket, 0 for a redirect that did not execute.
-		// Pass req.writtenAt as the operation start so the duration metric spans the
+		// Pass the first-write time as the operation start so the metric spans the
 		// initial FD write, not just this diverted attempt (the attempt count already
 		// includes the FD attempt).
 		// Register this retry goroutine as the batch's executor for the call, mirroring
@@ -1108,7 +1147,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 			if req.batch != nil {
 				defer req.batch.enterNodeDispatch()()
 			}
-			return fd.reprocess(rctx, req.cmd, startAttempt, req.writtenAt)
+			return fd.reprocess(rctx, req.cmd, startAttempt, fd.writtenTime(req.writtenOff))
 		}()
 		// fdSetErrSafe: same custom-Cmder-panic hazard as the reader's reply path
 		// (see fdSetErrSafe's doc comment) — a panic here would otherwise reach the
@@ -2315,8 +2354,15 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	now := time.Now()
 	err = cn.WithWriter(bg, fd.client.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for i := range reqs {
-			if reqs[i].writtenAt.IsZero() {
-				reqs[i].writtenAt = now // first write anchors the duration; replays keep it
+			if reqs[i].writtenOff == 0 {
+				// First write anchors the duration; replays keep it. Floored at 1
+				// so a command written within a nanosecond of the epoch is not
+				// mistaken for "never written".
+				if off := int64(now.Sub(fd.epoch)); off > 0 {
+					reqs[i].writtenOff = off
+				} else {
+					reqs[i].writtenOff = 1
+				}
 			}
 			reqs[i].sent = true
 			written = i + 1 // reached this command this call (attempt-local; see refund defer)
@@ -2555,7 +2601,7 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 				// the suffix carry[end:] was never pushed. Push it too, or it sits in neither
 				// fd.ch nor inflight and its callers hang: on fdConnErr takeRemaining replays
 				// it, on Close the caller fails it. It is only ever settled via failReqs or
-				// replayed — never completed inline by the reader — so its zero writtenAt
+				// replayed — never completed inline by the reader — so its zero writtenOff
 				// never reaches the write→reply metric. carry[end:] was NEVER written, so
 				// refund its optimistic attempt bump here; the never-serialized tail of
 				// carry[i:end] (behind an encoder panic) is refunded by writeBatch itself, so
