@@ -3944,9 +3944,14 @@ func TestFDReportReplyMetricsDurationCallbackNoDeadlock(t *testing.T) {
 	cmd.SetVal("OK") // the "final result" the reader set before reporting
 	b := newAPBatch()
 	cmd.setReady(b) // cmd.Err()/cmd.String() now await b.done until it closes
-	req := fdReq{cmd: cmd, batch: b, attempts: 1, writtenAt: time.Now()}
+	// writtenOff is an offset from the engine epoch, so the engine below must
+	// carry one for the duration to come out positive.
+	req := fdReq{cmd: cmd, batch: b, attempts: 1, writtenOff: int64(time.Millisecond)}
 
-	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+	fd := &fdEngine{
+		client: &Client{baseClient: &baseClient{opt: &Options{}}},
+		epoch:  time.Now().Add(-time.Second),
+	}
 
 	done := make(chan struct{})
 	go func() {
