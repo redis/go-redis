@@ -127,3 +127,223 @@ func TestPingPongDelivery(t *testing.T) {
 		}
 	})
 }
+
+// expectPong drains events until a *Pong arrives and asserts its
+// payload.
+func expectPong(t *testing.T, events <-chan any, payload string) {
+	t.Helper()
+	if pong := waitForPong(t, events); pong.Payload != payload {
+		t.Fatalf("pong payload = %q, want %q", pong.Payload, payload)
+	}
+}
+
+// TestPingPongFIFOAttribution pins pong correlation: pongs answer pings
+// in FIFO order on the one connection, so each handle receives exactly
+// the pong of its own ping — never another handle's.
+func TestPingPongFIFOAttribution(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	a, err := m.Subscribe(ctx, "cha")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	b, err := m.Subscribe(ctx, "chb")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "cha")
+	fsc.expectCmd(t, "subscribe", "chb")
+
+	if err := a.Ping(ctx, "for-a"); err != nil {
+		t.Fatalf("Ping a: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "for-a")
+	if err := b.Ping(ctx, "for-b"); err != nil {
+		t.Fatalf("Ping b: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "for-b")
+
+	// The server answers in write order; each pong must reach only the
+	// handle whose ping it answers.
+	fsc.sendMessage(t, "pong", "for-a")
+	fsc.sendMessage(t, "pong", "for-b")
+	expectPong(t, a.Events(), "for-a")
+	expectPong(t, b.Events(), "for-b")
+
+	fsc.sendMessage(t, "message", "cha", "marker")
+	fsc.sendMessage(t, "message", "chb", "marker")
+	if n := pongsUntil(t, a.Events(), "marker"); n != 0 {
+		t.Fatalf("handle a saw %d extra pong(s), want 0", n)
+	}
+	if n := pongsUntil(t, b.Events(), "marker"); n != 0 {
+		t.Fatalf("handle b saw %d extra pong(s), want 0", n)
+	}
+}
+
+// TestPingPongSilentInterleaved pins that a silent ping between two
+// waited pings consumes its own pong without shifting attribution: the
+// handle sees its two pongs, in order, and never the silent one.
+func TestPingPongSilentInterleaved(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	if err := h.Ping(ctx, "one"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "one")
+	if err := h.PingSilent(ctx, "silent"); err != nil {
+		t.Fatalf("PingSilent: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "silent")
+	if err := h.Ping(ctx, "two"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "two")
+
+	fsc.sendMessage(t, "pong", "one")
+	fsc.sendMessage(t, "pong", "silent")
+	fsc.sendMessage(t, "pong", "two")
+	expectPong(t, h.Events(), "one")
+	expectPong(t, h.Events(), "two")
+
+	fsc.sendMessage(t, "message", "ch", "marker")
+	if n := pongsUntil(t, h.Events(), "marker"); n != 0 {
+		t.Fatalf("handle saw %d extra pong(s), want 0", n)
+	}
+}
+
+// TestPingPongReconnectFlush pins the reconnect flush: a pong wait whose
+// ping died with the connection is dropped, so it neither swallows nor
+// misdirects pongs on the replacement connection.
+func TestPingPongReconnectFlush(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	a, err := m.Subscribe(ctx, "cha")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	b, err := m.Subscribe(ctx, "chb")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "cha")
+	fsc1.expectCmd(t, "subscribe", "chb")
+
+	// a's ping is written but never answered: the server dies first.
+	if err := a.Ping(ctx, "lost"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc1.expectCmd(t, "ping", "lost")
+	_ = fsc1.conn.Close()
+
+	// The reconnect replays the registry on the new connection (one
+	// subscribe carrying both names, registry map order).
+	fsc2 := srv.waitDial(t)
+	if cmd := fsc2.waitCmd(t); cmd[0] != "subscribe" || len(cmd) != 3 {
+		t.Fatalf("replay command = %v, want subscribe with 2 names", cmd)
+	}
+
+	// Without the flush, a's stale head-of-queue entry would swallow
+	// the pong b is waiting for.
+	if err := b.Ping(ctx, "fresh"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc2.expectCmd(t, "ping", "fresh")
+	fsc2.sendMessage(t, "pong", "fresh")
+	expectPong(t, b.Events(), "fresh")
+
+	fsc2.sendMessage(t, "message", "cha", "marker")
+	if n := pongsUntil(t, a.Events(), "marker"); n != 0 {
+		t.Fatalf("handle a saw %d pong(s) after its wait died, want 0", n)
+	}
+}
+
+// TestPingPongClosedHandleSlot pins that closing a handle keeps its
+// queue slots in place: each slot still consumes its pong silently, so
+// attribution never shifts onto a later waiter.
+func TestPingPongClosedHandleSlot(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	a, err := m.Subscribe(ctx, "cha")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	b, err := m.Subscribe(ctx, "chb")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "cha")
+	fsc.expectCmd(t, "subscribe", "chb")
+
+	// a pings, then closes before the pong arrives.
+	if err := a.Ping(ctx, "for-a"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "for-a")
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "cha")
+
+	if err := b.Ping(ctx, "for-b"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "for-b")
+
+	// a's pong must be consumed by its (now empty) slot — if the slot
+	// were removed instead, b would receive "for-a" here.
+	fsc.sendMessage(t, "pong", "for-a")
+	fsc.sendMessage(t, "pong", "for-b")
+	expectPong(t, b.Events(), "for-b")
+}
+
+// TestClientSetNamePongDelivery pins that CLIENT SETNAME's +OK reply
+// parses as a pong and surfaces only on the handle that issued it.
+func TestClientSetNamePongDelivery(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	bystander := m.NewHandle().Events()
+
+	if err := h.ClientSetName(ctx, "conn-name"); err != nil {
+		t.Fatalf("ClientSetName: %v", err)
+	}
+	fsc.expectCmd(t, "client", "setname", "conn-name")
+	fsc.write(t, "+OK\r\n")
+	expectPong(t, h.Events(), "OK")
+
+	select {
+	case ev := <-bystander:
+		t.Fatalf("SETNAME reply delivered to a handle that did not ask: %#v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

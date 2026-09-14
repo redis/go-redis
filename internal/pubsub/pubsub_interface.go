@@ -74,6 +74,4 @@ type PubSubManagerer interface {
 	Close() error
 }
 
-var (
-	_ PubSubManagerer = (*Manager)(nil)
-)
+var _ PubSubManagerer = (*Manager)(nil)

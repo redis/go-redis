@@ -5,7 +5,6 @@ import (
 	"maps"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -36,11 +35,6 @@ type handle struct {
 	pump  pumpMode
 	msgCh chan *Message
 	allCh chan any
-
-	// wantPong counts pings (and CLIENT SETNAME writes, whose +OK parses
-	// as a pong) awaiting their reply: pongs are delivered only to
-	// handles that asked.
-	wantPong atomic.Int32
 
 	// Slow-consumer drop accounting (written only by the listen
 	// goroutine).
@@ -266,17 +260,12 @@ func (h *handle) Subscriptions() (channels, patterns, schannels []string) {
 }
 
 // Ping writes a PING on the shared connection; the pong surfaces on
-// this handle's Events (see wantPong).
+// this handle's Events (see Manager.pingPongQueue).
 func (h *handle) Ping(ctx context.Context, payload ...string) error {
 	if h.isClosed() {
 		return pool.ErrClosed
 	}
-	h.wantPong.Add(1)
-	if err := h.m.Ping(ctx, payload...); err != nil {
-		h.takePongWait()
-		return err
-	}
-	return nil
+	return h.m.ping(ctx, h, payload...)
 }
 
 // PingSilent writes a PING without marking the handle as awaiting the
@@ -294,33 +283,13 @@ func (h *handle) ClientSetName(ctx context.Context, name string) error {
 	if h.isClosed() {
 		return pool.ErrClosed
 	}
-	h.wantPong.Add(1)
-	if err := h.m.ClientSetName(ctx, name); err != nil {
-		h.takePongWait()
-		return err
-	}
-	return nil
+	return h.m.clientSetName(ctx, h, name)
 }
 
 func (h *handle) isClosed() bool {
 	h.m.mu.RLock()
 	defer h.m.mu.RUnlock()
 	return h.closed
-}
-
-// takePongWait atomically consumes one outstanding pong wait, reporting
-// whether there was one; a plain decrement could go negative and
-// permanently swallow the handle's next pong.
-func (h *handle) takePongWait() bool {
-	for {
-		n := h.wantPong.Load()
-		if n <= 0 {
-			return false
-		}
-		if h.wantPong.CompareAndSwap(n, n-1) {
-			return true
-		}
-	}
 }
 
 // Close unsubscribes the handle from everything and ends its delivery
@@ -330,10 +299,10 @@ func (h *handle) takePongWait() bool {
 func (h *handle) Close() error {
 	ctx := context.TODO()
 
-	h.m.mu.RLock()
-	closed := h.closed
-	h.m.mu.RUnlock()
-	if closed {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+
+	if h.closed {
 		select {
 		case <-h.m.done:
 			return nil
@@ -342,18 +311,15 @@ func (h *handle) Close() error {
 		}
 	}
 
-	err := h.Unsubscribe(ctx)
-	if perr := h.PUnsubscribe(ctx); err == nil {
+	err := h.m.handleUnsubscribeLocked(ctx, h, "unsubscribe")
+	if perr := h.m.handleUnsubscribeLocked(ctx, h, "punsubscribe"); err == nil {
 		err = perr
 	}
-	if serr := h.SUnsubscribe(ctx); err == nil {
+	if serr := h.m.handleUnsubscribeLocked(ctx, h, "sunsubscribe"); err == nil {
 		err = serr
 	}
 
-	h.m.mu.Lock()
 	h.closeLocked()
-	h.m.mu.Unlock()
-
 	return err
 }
 
@@ -366,6 +332,13 @@ func (h *handle) closeLocked() {
 	}
 	h.closed = true
 	delete(h.m.handles, h)
+	// Nil (don't remove) the handle's pong waits: each slot must still
+	// consume its pong or the queue desyncs for every other waiter.
+	for i, qh := range h.m.pingPongQueue {
+		if qh == h {
+			h.m.pingPongQueue[i] = nil
+		}
+	}
 	close(h.done)
 	close(h.events)
 }
