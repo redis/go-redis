@@ -8,6 +8,49 @@ import (
 	"time"
 )
 
+// TestPendingReconcilesWithHealthCheckDisabled pins that disabling the
+// health check does not disable subscription recovery: a subscribe
+// rejected with an error reply on a healthy connection is re-sent by
+// the dedicated resync loop (see Manager.resubscribe), the only Pending
+// reconciliation path once the health checker is parked.
+func TestPendingReconcilesWithHealthCheckDisabled(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379") // HealthCheckInterval -1: checker parked
+	cfg.PendingResyncFallback = 20 * time.Millisecond
+	m := newTestManager(t, srv, cfg)
+
+	if _, err := m.Subscribe(ctx, "denied"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "denied")
+	fsc.sendError(t, "NOPERM this user has no permissions")
+
+	// Still rejected: the resync keeps re-sending on its cadence.
+	fsc.expectCmd(t, "subscribe", "denied")
+	fsc.sendError(t, "NOPERM this user has no permissions")
+	fsc.expectCmd(t, "subscribe", "denied")
+	fsc.sendConfirm(t, "subscribe", "denied", 1)
+
+	// Confirmed: drain re-sends racing the confirmation, then require
+	// quiet — nothing is Pending, so the resync loop must write nothing.
+	drainDeadline := time.After(100 * time.Millisecond)
+drain:
+	for {
+		select {
+		case cmd := <-fsc.cmds:
+			if !slices.Equal(cmd, []string{"subscribe", "denied"}) {
+				t.Fatalf("unexpected command %v", cmd)
+			}
+			fsc.sendConfirm(t, "subscribe", "denied", 1)
+		case <-drainDeadline:
+			break drain
+		}
+	}
+	fsc.expectNoCmd(t, 100*time.Millisecond)
+}
+
 // TestSubscribeAfterFailedDialSelfHeals pins the wake-on-kept-
 // registration contract: a Subscribe on a caller-held handle whose dial
 // fails keeps its registration (see handleSubscribe) AND wakes the read
