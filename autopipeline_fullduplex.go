@@ -1534,6 +1534,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			}
 		}()
 		var buf []fdReq
+		var readErrsBuf []error // reused across read groups
 		for {
 			done = 0
 			var ok bool
@@ -1546,134 +1547,165 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// whole snapshot inside a single WithReader was measurably slower on
 			// loopback: it blocks on commands the writer has pushed but not yet
 			// flushed, collapsing writer/reader overlap.
-			for i := range buf {
-				req := buf[i]
-				e := cn.WithReader(bg, readTimeout, func(rd *proto.Reader) error {
-					// Drain RESP3 push frames buffered ahead of this reply so a push is
-					// never misread as the command's reply (FIFO misalign). PROPAGATE a
-					// drain error, do NOT log-and-continue: a custom PushNotificationProcessor
-					// can return after consuming only part of a frame, leaving the reader
-					// desynced, so reading this reply would shift every later reply. Fail the
-					// session instead (the shared pre-command drainer treats a custom-processor
-					// error as connection-fatal for the same reason); the unacked tail is
-					// replayable (errFDPushDrainFailed is in the replay predicate) and re-runs
-					// on a fresh connection rather than reading shifted bytes.
-					if perr := fd.client.processPendingPushNotificationWithReader(bg, cn, rd); perr != nil {
-						internal.Logger.Printf(bg, "autopipeline: full-duplex push drain: %v", perr)
-						return fmt.Errorf("%w: %w", errFDPushDrainFailed, perr)
+			// BATCHED READ: one WithReader per already-buffered GROUP of replies.
+			//
+			// The older per-reply WithReader re-armed the socket read deadline on
+			// every reply, which measured 5.85% of all CPU in SetReadDeadline plus
+			// 1.95% in deadline() at ~400k replies/s. Reading the WHOLE snapshot in
+			// one WithReader was tried before and was slower, because it blocks on
+			// commands the writer has pushed but not yet flushed. This cannot do
+			// that: after the first reply of a group it continues only while
+			// rd.Buffered() > 0, so it never waits on the socket inside a group.
+			for i := 0; i < len(buf); {
+				readErrs := readErrsBuf[:0]
+				grp := 0
+				ge := cn.WithReader(bg, readTimeout, func(rd *proto.Reader) error {
+					for i+grp < len(buf) {
+						// Same push-drain contract as before: a partial-frame drain
+						// desyncs the stream, so it is fatal for the session rather than
+						// logged and skipped.
+						if perr := fd.client.processPendingPushNotificationWithReader(bg, cn, rd); perr != nil {
+							internal.Logger.Printf(bg, "autopipeline: full-duplex push drain: %v", perr)
+							readErrs = append(readErrs, fmt.Errorf("%w: %w", errFDPushDrainFailed, perr))
+							grp++
+							return nil
+						}
+						err := buf[i+grp].cmd.readReply(rd)
+						readErrs = append(readErrs, err)
+						grp++
+						if err != nil {
+							// Stop the group on ANY error: reading further after a
+							// transport or protocol fault would consume shifted bytes.
+							return nil
+						}
+						if rd.Buffered() == 0 {
+							return nil
+						}
 					}
-					return req.cmd.readReply(rd)
+					return nil
 				})
-				if e != nil && fdReplyIsFatal(req.cmd, e) {
-					// Connection/protocol error, OR a push-drain desync (fatal even when it
-					// wraps a Redis-typed cause — see fdReplyIsFatal): stop; the unread tail
-					// stays in the deque and becomes the unacked recovery set for replay.
-					rerr = e
-					break
+				if grp == 0 {
+					// WithReader failed before any reply was read; attribute it to the
+					// head command so the existing fatal/divert logic still sees it.
+					readErrs = append(readErrs, ge)
+					grp = 1
 				}
-				// The reply landed (nil, or a reply-LEVEL Redis error / redirect — a
-				// server that answers is healthy, NOT a transport failure). If this req
-				// closes an admitted chunk, settle its Limiter obligation with success:
-				// exactly one ReportResult(nil) per Allow, on the reply side. Fires for
-				// both the inline completion below and the retryable-divert branch (the
-				// reply WAS read; the divert re-runs the command elsewhere under its own
-				// getConn Allow/Report pairing).
-				if req.limReport != nil {
-					req.limReport.settle(nil)
-				}
-				// A retryable Redis error or a redirect (MOVED/ASK) is NOT the caller's
-				// final answer: the FD conn is one fixed socket/node, so re-run the
-				// command on the client's NORMAL path, which routes redirects and applies
-				// the standard retry/backoff. Done off the reader goroutine so it does not
-				// stall other in-flight replies, and counted in `done` so the reader
-				// advances past it now. Per-caller ordering is NOT promised across this
-				// divert (same exception as the blocking-command divert).
-				if e != nil {
-					moved, ask, _ := isMovedError(e)
-					// Cluster full-duplex redirect: a MOVED/ASK is followable for EVERY
-					// command, including NoRetry ones (e.g. GetToBuffer, RawWriteTo). NoRetry
-					// guards against replaying a command whose partial response was already
-					// consumed, but a MOVED/ASK reply carries no payload — the command did
-					// NOT execute on this node — so there is nothing to replay, and the normal
-					// ClusterClient.process follows redirects for all commands before
-					// consulting NoRetry. So divert a redirect independent of the NoRetry gate
-					// below. reprocess re-routes MOVED to the target node (LazyReload) and
-					// follows ASK through cc.process's own loop (ASKING on the next hop),
-					// bounded by MaxRedirects; startAttempt is unused by the cluster reprocess
-					// (it re-runs the full loop from the base), so pass the redirect value (0).
-					// isMovedError/e here are reply-level only: a transport or protocol failure
-					// is !isRedisError and already broke the read loop via fdReplyIsFatal above.
-					//
-					// Standalone FD (redirectAware == false) cannot follow a MOVED/ASK (it
-					// neither re-routes to the target node nor sends ASKING), so it falls
-					// through to the inline settle and surfaces the redirect, as before.
-					if fd.redirectAware && (moved || ask) {
-						fd.retryOnNormalConn(req, retryStartAttempt(moved, ask))
-						done++
-						continue
+				readErrsBuf = readErrs
+				for k := 0; k < grp; k++ {
+					req := buf[i+k]
+					e := readErrs[k]
+					if e != nil && fdReplyIsFatal(req.cmd, e) {
+						// Connection/protocol error, OR a push-drain desync (fatal even when it
+						// wraps a Redis-typed cause — see fdReplyIsFatal): stop; the unread tail
+						// stays in the deque and becomes the unacked recovery set for replay.
+						rerr = e
+						break
 					}
-					// A RETRYABLE execution error (not a redirect) may have produced a
-					// partially consumed response, so it stays gated on NoRetry.
-					if !fdNoRetrySafe(req.cmd) {
-						// Cluster full-duplex: divert a retryable server reply
-						// (LOADING/READONLY/TRYAGAIN/CLUSTERDOWN/MASTERDOWN/NOREPLICAS/
-						// max-clients) to the redirect-aware ClusterClient. It consults NO
-						// FD-side budget and — the key difference from the standalone branch
-						// below — does NOT gate on the node client's MaxRetries: cluster node
-						// clients default MaxRetries to -1 (osscluster.go), which is <= 0, so a
-						// MaxRetries>0 gate would wrongly settle the reply inline and fail the
-						// caller instead of recovering it the way half-duplex does. cc.process
-						// owns the whole cluster retry budget; startAttempt is unused by the
-						// cluster reprocess. shouldRetry(e) here matches only reply-level Redis
-						// errors (see the fdReplyIsFatal note above).
-						if fd.redirectAware && shouldRetry(e, false) {
-							fd.retryOnNormalConn(req, retryStartAttempt(false, false))
+					// The reply landed (nil, or a reply-LEVEL Redis error / redirect — a
+					// server that answers is healthy, NOT a transport failure). If this req
+					// closes an admitted chunk, settle its Limiter obligation with success:
+					// exactly one ReportResult(nil) per Allow, on the reply side. Fires for
+					// both the inline completion below and the retryable-divert branch (the
+					// reply WAS read; the divert re-runs the command elsewhere under its own
+					// getConn Allow/Report pairing).
+					if req.limReport != nil {
+						req.limReport.settle(nil)
+					}
+					// A retryable Redis error or a redirect (MOVED/ASK) is NOT the caller's
+					// final answer: the FD conn is one fixed socket/node, so re-run the
+					// command on the client's NORMAL path, which routes redirects and applies
+					// the standard retry/backoff. Done off the reader goroutine so it does not
+					// stall other in-flight replies, and counted in `done` so the reader
+					// advances past it now. Per-caller ordering is NOT promised across this
+					// divert (same exception as the blocking-command divert).
+					if e != nil {
+						moved, ask, _ := isMovedError(e)
+						// Cluster full-duplex redirect: a MOVED/ASK is followable for EVERY
+						// command, including NoRetry ones (e.g. GetToBuffer, RawWriteTo). NoRetry
+						// guards against replaying a command whose partial response was already
+						// consumed, but a MOVED/ASK reply carries no payload — the command did
+						// NOT execute on this node — so there is nothing to replay, and the normal
+						// ClusterClient.process follows redirects for all commands before
+						// consulting NoRetry. So divert a redirect independent of the NoRetry gate
+						// below. reprocess re-routes MOVED to the target node (LazyReload) and
+						// follows ASK through cc.process's own loop (ASKING on the next hop),
+						// bounded by MaxRedirects; startAttempt is unused by the cluster reprocess
+						// (it re-runs the full loop from the base), so pass the redirect value (0).
+						// isMovedError/e here are reply-level only: a transport or protocol failure
+						// is !isRedisError and already broke the read loop via fdReplyIsFatal above.
+						//
+						// Standalone FD (redirectAware == false) cannot follow a MOVED/ASK (it
+						// neither re-routes to the target node nor sends ASKING), so it falls
+						// through to the inline settle and surfaces the redirect, as before.
+						if fd.redirectAware && (moved || ask) {
+							fd.retryOnNormalConn(req, retryStartAttempt(moved, ask))
 							done++
 							continue
 						}
-						// Standalone FD: divert a RETRYABLE reply only while retries are
-						// enabled AND the budget is not already spent. req.attempts counts FD
-						// attempts spent (1 at submit, +1 on each fdConnErr carry replay). Once
-						// it reaches MaxRetries+1 another execution would exceed the budget, so
-						// fall through to the inline settle, which surfaces the reply as the
-						// final error and reports the true attempt count. Without this guard the
-						// startAttempt clamp in processWithRetry would turn an exhausted budget
-						// into one more send.
-						if !moved && !ask &&
-							shouldRetry(e, false) &&
-							fd.client.opt.MaxRetries > 0 &&
-							req.attempts <= fd.client.opt.MaxRetries {
-							// The retryable reply executed on the FD socket, so the divert starts
-							// one attempt in; add req.attempts-1 for FD attempts already spent on
-							// carry replays so a carried-then-diverted command does not run the
-							// full loop from the base. The guard above keeps this within
-							// MaxRetries+1.
-							fd.retryOnNormalConn(req, retryStartAttempt(false, false)+req.attempts-1)
-							done++
-							continue
+						// A RETRYABLE execution error (not a redirect) may have produced a
+						// partially consumed response, so it stays gated on NoRetry.
+						if !fdNoRetrySafe(req.cmd) {
+							// Cluster full-duplex: divert a retryable server reply
+							// (LOADING/READONLY/TRYAGAIN/CLUSTERDOWN/MASTERDOWN/NOREPLICAS/
+							// max-clients) to the redirect-aware ClusterClient. It consults NO
+							// FD-side budget and — the key difference from the standalone branch
+							// below — does NOT gate on the node client's MaxRetries: cluster node
+							// clients default MaxRetries to -1 (osscluster.go), which is <= 0, so a
+							// MaxRetries>0 gate would wrongly settle the reply inline and fail the
+							// caller instead of recovering it the way half-duplex does. cc.process
+							// owns the whole cluster retry budget; startAttempt is unused by the
+							// cluster reprocess. shouldRetry(e) here matches only reply-level Redis
+							// errors (see the fdReplyIsFatal note above).
+							if fd.redirectAware && shouldRetry(e, false) {
+								fd.retryOnNormalConn(req, retryStartAttempt(false, false))
+								done++
+								continue
+							}
+							// Standalone FD: divert a RETRYABLE reply only while retries are
+							// enabled AND the budget is not already spent. req.attempts counts FD
+							// attempts spent (1 at submit, +1 on each fdConnErr carry replay). Once
+							// it reaches MaxRetries+1 another execution would exceed the budget, so
+							// fall through to the inline settle, which surfaces the reply as the
+							// final error and reports the true attempt count. Without this guard the
+							// startAttempt clamp in processWithRetry would turn an exhausted budget
+							// into one more send.
+							if !moved && !ask &&
+								shouldRetry(e, false) &&
+								fd.client.opt.MaxRetries > 0 &&
+								req.attempts <= fd.client.opt.MaxRetries {
+								// The retryable reply executed on the FD socket, so the divert starts
+								// one attempt in; add req.attempts-1 for FD attempts already spent on
+								// carry replays so a carried-then-diverted command does not run the
+								// full loop from the base. The guard above keeps this within
+								// MaxRetries+1.
+								fd.retryOnNormalConn(req, retryStartAttempt(false, false)+req.attempts-1)
+								done++
+								continue
+							}
 						}
 					}
+					fdSetErrSafe(req.cmd, e) // nil, a redirect (MOVED/ASK), or a non-retryable Redis error; panic-safe (see fdSetErrSafe)
+					// Per-command OTel duration (write→reply): the FD reader bypasses
+					// process, which is what normally emits it. Inline-completed commands
+					// only — a diverted command emits its own through process.
+					// req.ctx carries the caller's span for telemetry correlation
+					// (exemplars, context-scoped attrs); fall back to bg only when nil.
+					// Shared by the duration and error callbacks so both attribute to the
+					// request context, matching process().
+					octx := req.ctx
+					if octx == nil {
+						octx = bg
+					}
+					// Emit the per-command metric callbacks under a recover boundary (see
+					// reportReplyMetrics): they are user-settable, and an unrecovered panic
+					// here would reach the reader's session-failure recovery BEFORE this req
+					// is advanced, so recovery would re-own the already-consumed reply and
+					// replay it — a mutating command twice.
+					fd.reportReplyMetrics(octx, req, e, cn)
+					req.complete() // wake the caller, or hand off to the hook host
+					done++
 				}
-				fdSetErrSafe(req.cmd, e) // nil, a redirect (MOVED/ASK), or a non-retryable Redis error; panic-safe (see fdSetErrSafe)
-				// Per-command OTel duration (write→reply): the FD reader bypasses
-				// process, which is what normally emits it. Inline-completed commands
-				// only — a diverted command emits its own through process.
-				// req.ctx carries the caller's span for telemetry correlation
-				// (exemplars, context-scoped attrs); fall back to bg only when nil.
-				// Shared by the duration and error callbacks so both attribute to the
-				// request context, matching process().
-				octx := req.ctx
-				if octx == nil {
-					octx = bg
-				}
-				// Emit the per-command metric callbacks under a recover boundary (see
-				// reportReplyMetrics): they are user-settable, and an unrecovered panic
-				// here would reach the reader's session-failure recovery BEFORE this req
-				// is advanced, so recovery would re-own the already-consumed reply and
-				// replay it — a mutating command twice.
-				fd.reportReplyMetrics(octx, req, e, cn)
-				req.complete() // wake the caller, or hand off to the hook host
-				done++
+				i += grp
 			}
 			inflight.advance(done)
 			if rerr != nil {
