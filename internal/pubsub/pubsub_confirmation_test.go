@@ -357,3 +357,58 @@ func TestRetrySupersedesLostWaiter(t *testing.T) {
 		t.Fatalf("existing owner saw %d confirmation(s) from a stale retry waiter, want 0", n)
 	}
 }
+
+// TestFanoutClonesMessages pins per-destination independence: handles
+// sharing a channel receive their own message values (PayloadSlice
+// included), so one consumer's mutation can't corrupt another's.
+func TestFanoutClonesMessages(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	a, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe a: %v", err)
+	}
+	b, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe b: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	// A message whose payload is a slice (RESP3 array payload).
+	fsc.write(t, "*3\r\n$7\r\nmessage\r\n$2\r\nch\r\n*2\r\n$3\r\none\r\n$3\r\ntwo\r\n")
+
+	nextMessage := func(events <-chan any) *Message {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					t.Fatal("events closed while waiting for a message")
+				}
+				if msg, ok := ev.(*Message); ok {
+					return msg
+				}
+			case <-deadline:
+				t.Fatal("timed out waiting for a message")
+			}
+		}
+	}
+	ma := nextMessage(a.Events())
+	mb := nextMessage(b.Events())
+	if ma == mb {
+		t.Fatal("both handles received the same *Message instance")
+	}
+
+	// One consumer's mutation must stay its own.
+	ma.PayloadSlice[0] = "mutated"
+	ma.Payload = "mutated"
+	if mb.PayloadSlice[0] != "one" || mb.Payload != "" {
+		t.Fatalf("mutation leaked across handles: %+v", mb)
+	}
+}
