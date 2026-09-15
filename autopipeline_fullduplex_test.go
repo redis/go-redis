@@ -1370,31 +1370,27 @@ func TestFullDuplexCloseWhileBackpressured(t *testing.T) {
 	}
 }
 
-// TestFullDuplexFastSubmitCloseRace exercises the FullDuplexFastSubmit fast path
-// under a concurrent Close. The non-blocking fast send runs under the SAME submit
-// RLock as the blocking send, so a send can never win the race with the shutdown
-// drain (WLock + closed + drain), and the pooled blocking batch is recycled on
-// every reject path. Every caller must settle (no hang, no panic) with either a
-// served result or a shutdown/ctx error. Run under -race to catch any data race
-// on the fast path.
-func TestFullDuplexFastSubmitCloseRace(t *testing.T) {
+// TestFullDuplexSubmitCloseRace races concurrent submits against Close. The
+// queue push runs under the SAME submit RLock as the rest of the submit path, so
+// a push can never win the race with the shutdown drain (WLock + closed +
+// drain), and the pooled blocking batch is recycled on every reject path. Every
+// caller must settle (no hang, no panic) with either a served result or a
+// shutdown/ctx error. Run under -race to catch any data race on the submit path.
+func TestFullDuplexSubmitCloseRace(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	// Window 4096 -> chCap 4096 -> gate fires while len(ch) < 410. With G blocking
-	// submitters (each at most one outstanding) len(ch) <= G << 410, so the fast
-	// path is live for the whole run and genuinely races Close.
 	ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{
-		FullDuplex: true, FullDuplexFastSubmit: true, FullDuplexWindow: 4096, MaxBatchSize: 8,
+		FullDuplex: true, FullDuplexWindow: 4096, MaxBatchSize: 8,
 	})
 	if err != nil {
 		t.Fatalf("AutoPipelineWithOptions: %v", err)
 	}
-	if ap.fd == nil || !ap.fd.fastSubmit {
-		t.Fatal("fast-submit full-duplex engine not active")
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
 	}
 
 	const G, K = 16, 2000
@@ -1413,11 +1409,11 @@ func TestFullDuplexFastSubmitCloseRace(t *testing.T) {
 			}
 		}(g)
 	}
-	// Close while submitters are mid-flight so the fast send interleaves with the
+	// Close while submitters are mid-flight so the push interleaves with the
 	// shutdown drain.
 	time.Sleep(20 * time.Millisecond)
 	if err := ap.Close(); err != nil {
-		t.Fatalf("Close during fast-submit: %v", err)
+		t.Fatalf("Close during concurrent submit: %v", err)
 	}
 	doneCh := make(chan struct{})
 	go func() { wg.Wait(); close(doneCh) }()
@@ -1428,11 +1424,6 @@ func TestFullDuplexFastSubmitCloseRace(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&settled); got != int64(G*K) {
 		t.Fatalf("not all callers settled: %d/%d", got, G*K)
-	}
-	// Prove the fast path was actually exercised — otherwise this test would pass
-	// on the pre-existing blocking path alone and cover nothing.
-	if took := ap.fd.fastSubmitTake.Load(); took == 0 {
-		t.Fatal("fast-submit path was never taken — config did not exercise it")
 	}
 }
 
