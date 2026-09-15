@@ -729,6 +729,109 @@ func TestEmptyHandleCloseReleasesConn(t *testing.T) {
 	fsc.expectClosed(t)
 }
 
+// TestReadFailureNoSubscribersReleasesConn pins the no-subscriber leg
+// of reconnect: a connection kept alive only by a ping-only handle
+// (nothing registered) that breaks mid-read must be RELEASED, not left
+// assigned — a stale assignment would keep the read loop retrying the
+// dead socket forever, and a later Subscribe would write to the corpse
+// (at a possibly handoff-outdated address) instead of dialing fresh.
+// The wait below also crosses reconnect's no-subscriber branch with
+// m.conn already nil (retries after the release), pinning that it
+// tolerates having nothing to close.
+func TestReadFailureNoSubscribersReleasesConn(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	// A ping-only handle dials the shared connection without
+	// registering any subscription.
+	h := m.NewHandle()
+	if err := h.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "ping")
+	fsc1.sendMessage(t, "pong", "")
+	waitForPong(t, h.Events())
+
+	// Break the connection: the read loop's reconnect finds no
+	// subscribers and must release the dead conn instead of keeping it.
+	_ = fsc1.conn.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		m.mu.RLock()
+		released := m.conn == nil
+		m.mu.RUnlock()
+		if released {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dead connection stayed assigned after the no-subscriber reconnect")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// A later Subscribe must dial fresh rather than reuse the corpse.
+	if _, err := m.Subscribe(ctx, "ch1"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc2 := srv.waitDial(t)
+	fsc2.expectCmd(t, "subscribe", "ch1")
+}
+
+// TestHealthCheckPingDoesNotRedial pins that the health checker's PING
+// never dials: its conn snapshot and the ping run in separate critical
+// sections, so the last unsubscribe can release the connection in
+// between — a dialing ping would resurrect a connection with no
+// subscribers that nothing ever closes, and whose own later pings keep
+// it alive. The checker's ping (shouldDial false) must report
+// errPubSubNoConn instead, and still ping normally on a live conn.
+func TestHealthCheckPingDoesNotRedial(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	// The last handle's Close releases the shared connection.
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fsc.expectClosed(t)
+
+	// The health-check ping landing after the release (the racy
+	// interleaving this pins) must skip, not dial.
+	if err := m.ping(ctx, nil, false); !errors.Is(err, errPubSubNoConn) {
+		t.Fatalf("non-dialing ping on a released conn = %v, want errPubSubNoConn", err)
+	}
+	select {
+	case <-srv.dialCh:
+		t.Fatal("health-check ping dialed a new connection on an idle manager")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// With a live connection the health-check ping writes as before.
+	if _, err := m.Subscribe(ctx, "ch2"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc2 := srv.waitDial(t)
+	fsc2.expectCmd(t, "subscribe", "ch2")
+	if err := m.ping(ctx, nil, false); err != nil {
+		t.Fatalf("non-dialing ping with a live conn: %v", err)
+	}
+	fsc2.expectCmd(t, "ping")
+	// Answer it: the ping queued a nil pong slot that must consume its
+	// pong (FIFO discipline).
+	fsc2.sendMessage(t, "pong", "")
+}
+
 // TestManagerSlowConsumerDrop pins the drop policy: with a handle's
 // events buffer full and nobody consuming, further deliveries are
 // dropped without stalling the fan-out. A second handle on another

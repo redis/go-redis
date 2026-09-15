@@ -281,3 +281,49 @@ func TestPingWriteFailureDropsConn(t *testing.T) {
 		})
 	}
 }
+
+// TestPendingResyncSurvivesChurn pins retry liveness under unrelated
+// traffic: a rejected subscribe must still be re-sent even when other
+// handles write subscription commands more often than the resync
+// interval (each name carries its own retry deadline; writes must not
+// extend a manager-wide one).
+func TestPendingResyncSurvivesChurn(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379") // HealthCheckInterval -1: checker parked
+	cfg.PendingResyncFallback = 100 * time.Millisecond
+	m := newTestManager(t, srv, cfg)
+
+	if _, err := m.Subscribe(ctx, "bad"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "bad")
+	fsc.sendError(t, "NOPERM this user has no permissions") // stays Pending
+
+	c, err := m.Subscribe(ctx, "churn")
+	if err != nil {
+		t.Fatalf("Subscribe churn: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "churn")
+
+	// Churn faster than the resync interval; the re-send of "bad" must
+	// arrive anyway.
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case cmd := <-fsc.cmds:
+			if cmd[0] == "subscribe" && slices.Contains(cmd[1:], "bad") {
+				return
+			}
+		case <-tick.C:
+			if _, err := c.Subscribe(ctx, "churn"); err != nil {
+				t.Fatalf("churn subscribe: %v", err)
+			}
+		case <-deadline:
+			t.Fatal("pending subscribe was never re-sent under churn")
+		}
+	}
+}
