@@ -168,10 +168,13 @@ func (h *handle) deliverLocked(ev any) {
 	}
 }
 
-// deliverSubscriptionLocked delivers a subscription confirmation (see
+// deliverSubscriptionLocked delivers the handle its own copy of a
+// subscription confirmation: handles are independent consumers, and a
+// broadcast fan-out must not share one mutable value across them (see
 // deliverLocked).
 func (h *handle) deliverSubscriptionLocked(sub *Subscription) {
-	h.deliverLocked(sub)
+	c := *sub
+	h.deliverLocked(&c)
 }
 
 // deliverPongLocked delivers a pong; pongs are advisory, so a full

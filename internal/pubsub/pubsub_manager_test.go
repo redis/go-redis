@@ -1487,3 +1487,42 @@ func TestHandoffDropsStaleProtocolFrames(t *testing.T) {
 		t.Fatalf("resync re-sent %v, want subscribe with ch and ch2", resend)
 	}
 }
+
+// TestCloseIfIdleSparesLiveEmptyHandles pins that idleness means no
+// live handles, not just empty registries: a handle without
+// subscriptions (NewHandle, or fully unsubscribed) is an open
+// subscriber view that only its own Close may end.
+func TestCloseIfIdleSparesLiveEmptyHandles(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h := m.NewHandle()
+	if m.CloseIfIdle() {
+		t.Fatal("CloseIfIdle closed a manager with a live handle")
+	}
+
+	// The spared handle stays usable.
+	if _, err := h.Subscribe(ctx, "ch"); err != nil {
+		t.Fatalf("Subscribe on spared handle: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	// Unsubscribing everything empties the registries, but the handle
+	// is still open: the manager remains non-idle.
+	if err := h.Unsubscribe(ctx, "ch"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	if m.CloseIfIdle() {
+		t.Fatal("CloseIfIdle closed a manager with a live unsubscribed handle")
+	}
+
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !m.CloseIfIdle() {
+		t.Fatal("CloseIfIdle left a manager with no live handles open")
+	}
+}
