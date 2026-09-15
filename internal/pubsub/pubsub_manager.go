@@ -447,10 +447,9 @@ func (m *Manager) Close() error {
 	return m.closeNowLocked()
 }
 
-// CloseIfIdle closes the manager only when it has no subscriptions,
-// reporting whether it is closed afterwards. Check and close are atomic
-// under the manager lock, so a racing Subscribe either registers first
-// or observes pool.ErrClosed and retries with a fresh manager.
+// CloseIfIdle closes the manager only when it has no live handles —
+// and therefore no subscriptions — reporting whether it is closed
+// afterwards.
 func (m *Manager) CloseIfIdle() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -460,7 +459,7 @@ func (m *Manager) CloseIfIdle() bool {
 		return true
 	default:
 	}
-	if !m.noSubscribersLocked() {
+	if len(m.handles) > 0 || !m.noSubscribersLocked() {
 		return false
 	}
 	_ = m.closeNowLocked()
@@ -505,7 +504,7 @@ func (m *Manager) listen() {
 
 	var errCount int
 	for {
-		ev, err := m.receiveNext(ctx)
+		ev, cn, err := m.receiveNext(ctx)
 		if err != nil {
 			select {
 			case <-m.done:
@@ -526,8 +525,6 @@ func (m *Manager) listen() {
 					return
 				}
 			}
-			// Receive already attempted a reconnect; back off so a
-			// persistent failure doesn't spin.
 			if errCount > 0 {
 				time.Sleep(internal.RetryBackoff(errCount-1, minBackoff, maxBackoff))
 			}
@@ -537,17 +534,26 @@ func (m *Manager) listen() {
 		errCount = 0
 
 		// Confirmations mutate entry state (Pending → Subscribed) and
-		// pongs consume their queue entry, so both need the write lock;
-		// messages fan out read-only.
+		// pongs consume their queue entry, so both need the write lock —
+		// and both are settled only if their source is still the live
+		// connection, verified under the SAME lock: a reconnect landing
+		// between the read and this point must not have an old frame
+		// mark an unconfirmed name established or consume a replay
+		// waiter on the replacement's ledger. Messages fan out
+		// read-only, from any source (they are real deliveries).
 		switch ev := ev.(type) {
 		case *Subscription:
 			m.mu.Lock()
-			m.fanoutSubscriptionLocked(ev)
+			if m.conn == cn {
+				m.fanoutSubscriptionLocked(ev)
+			}
 			m.mu.Unlock()
 			continue
 		case *Pong:
 			m.mu.Lock()
-			m.fanoutPongLocked(ev)
+			if m.conn == cn {
+				m.fanoutPongLocked(ev)
+			}
 			m.mu.Unlock()
 			continue
 		}
@@ -683,11 +689,7 @@ func (m *Manager) consumeConfirmationLocked(kind, name string) (replyWaiter, boo
 }
 
 // retireWaitersLocked removes the given names from every outstanding
-// entry of the kind: their replies are presumed lost, and the retry
-// about to be written owns them from now on — a superseded waiter left
-// queued would be consumed by the retry's confirmation and shift the
-// attribution of every entry behind it. Callers must hold the WRITE
-// lock.
+// entry of the kind.
 func (m *Manager) retireWaitersLocked(kind string, names []string) {
 	for _, name := range names {
 		for i := 0; i < len(m.replyQueue); {
@@ -706,10 +708,7 @@ func (m *Manager) retireWaitersLocked(kind string, names []string) {
 	}
 }
 
-// consumeErrorReplyLocked settles an error reply: replies arrive in
-// write order, so the rejected command is the ledger head and its one
-// error frame replaces everything the entry was owed. Callers must hold
-// the WRITE lock.
+// consumeErrorReplyLocked settles an error reply.
 func (m *Manager) consumeErrorReplyLocked() {
 	if len(m.replyQueue) > 0 {
 		m.replyQueue = slices.Delete(m.replyQueue, 0, 1)
@@ -718,26 +717,40 @@ func (m *Manager) consumeErrorReplyLocked() {
 
 func (m *Manager) fanoutShardedMessageLocked(shardedMsg *Message) {
 	if sub := m.shardSubscribers[shardedMsg.Channel]; sub != nil {
-		for h := range sub.handles {
-			h.deliverLocked(shardedMsg)
-		}
+		deliverMessageLocked(sub.handles, shardedMsg)
 	}
 }
 
 func (m *Manager) fanoutMessageLocked(msg *Message) {
 	if sub := m.subscribers[msg.Channel]; sub != nil {
-		for h := range sub.handles {
-			h.deliverLocked(msg)
-		}
+		deliverMessageLocked(sub.handles, msg)
 	}
 }
 
 func (m *Manager) fanoutPatternMessageLocked(msg *Message) {
 	if sub := m.patternSubscribers[msg.Pattern]; sub != nil {
-		for h := range sub.handles {
-			h.deliverLocked(msg)
-		}
+		deliverMessageLocked(sub.handles, msg)
 	}
+}
+
+func deliverMessageLocked(hs map[*handle]struct{}, msg *Message) {
+	first := true
+	for h := range hs {
+		if first {
+			first = false
+			h.deliverLocked(msg)
+			continue
+		}
+		h.deliverLocked(cloneMessage(msg))
+	}
+}
+
+func cloneMessage(msg *Message) *Message {
+	c := *msg
+	if msg.PayloadSlice != nil {
+		c.PayloadSlice = slices.Clone(msg.PayloadSlice)
+	}
+	return &c
 }
 
 // fanoutErrorLocked routes an unattributable error reply to every
@@ -927,10 +940,6 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 		}
 	}
 
-	// Nothing to restore: release the connection (nobody is listening,
-	// and a handoff-updated cfg.Addr must not be shadowed by a stale
-	// conn) and stay disconnected, the next Subscribe redials. m.conn
-	// can be nil here: a nil cn passes the identity guard above.
 	if m.noSubscribersLocked() {
 		if m.conn != nil {
 			m.failReplyWaitersLocked(errPubSubNoConn)
@@ -979,9 +988,7 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 }
 
 // reconnectBounded is reconnect with ctx bounded by the configured
-// ReconnectTimeout: reconnect dials while holding m.mu, and an unbounded
-// dial would hold the lock hostage — blocking Subscribe, the health
-// checker and even Close — for as long as the injected dialer takes.
+// ReconnectTimeout.
 func (m *Manager) reconnectBounded(ctx context.Context, cn *pool.Conn, reason error) error {
 	m.mu.RLock()
 	reconnectTimeout := m.cfg.ReconnectTimeout
@@ -1247,7 +1254,9 @@ func (m *Manager) failReplyWaitersLocked(err error) {
 	m.replyQueue = nil
 }
 
-func (m *Manager) receive(ctx context.Context) (any, error) {
+// receive reads and parses one frame, returning it together with the
+// connection it was read from.
+func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 	// Snapshot the connection: reconnect may replace m.conn while this
 	// goroutine is blocked reading.
 	m.mu.RLock()
@@ -1255,10 +1264,8 @@ func (m *Manager) receive(ctx context.Context) (any, error) {
 	m.mu.RUnlock()
 
 	if cn == nil {
-		// Restore the connection; the caller's retry loop owns
-		// persistence.
 		_ = m.reconnectBounded(ctx, nil, errPubSubNoConn)
-		return nil, errPubSubNoConn
+		return nil, nil, errPubSubNoConn
 	}
 
 	var reply any
@@ -1278,7 +1285,7 @@ func (m *Manager) receive(ctx context.Context) (any, error) {
 		// means the conn is broken.
 		if m.isBadConn(err, false) {
 			_ = m.reconnectBounded(ctx, cn, err)
-			return nil, err
+			return nil, nil, err
 		}
 		// A RESP error reply leaves the connection healthy. It cannot be
 		// attributed to one subscriber, so it fans out to all of them
@@ -1297,46 +1304,24 @@ func (m *Manager) receive(ctx context.Context) (any, error) {
 		}
 		m.fanoutErrorLocked(err)
 		m.mu.Unlock()
-		return nil, nil
-	}
-
-	m.mu.RLock()
-	stale := m.conn != cn
-	m.mu.RUnlock()
-	if stale {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// A MOVING handoff (dispatched by processPush during the read) marked
 	// the connection: reconnect redirects to the handoff endpoint and
-	// replays there.
-	handedOff := cn.ShouldHandoff() || !cn.IsUsable()
-	if handedOff {
+	// replays there. The frame just read is still delivered — the
+	// routing in listen drops stateful frames whose source is no longer
+	// the live connection, so messages pass through and confirmations or
+	// pongs can't settle the replacement's replayed ledger.
+	if cn.ShouldHandoff() || !cn.IsUsable() {
 		_ = m.reconnectBounded(ctx, cn, errConnUnusable)
 	}
 
 	parsed, err := parsePubSubMessage(reply)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	if handedOff {
-		m.mu.RLock()
-		replaced := m.conn != cn
-		m.mu.RUnlock()
-		if replaced {
-			// The frame was read from the replaced connection. Messages
-			// are real deliveries and pass through; confirmations and
-			// pongs correlate with cn's dead ledger — settling them
-			// against the replacement's replayed ledger would mark names
-			// Subscribed that the new node never confirmed and shift
-			// every waiter behind them.
-			switch parsed.(type) {
-			case *Subscription, *Pong:
-				return nil, nil
-			}
-		}
-	}
 	// Record received-message telemetry.
 	switch v := parsed.(type) {
 	case *shardMessage:
@@ -1346,23 +1331,24 @@ func (m *Manager) receive(ctx context.Context) (any, error) {
 	case *Message:
 		otel.RecordPubSubMessage(ctx, cn, "received", v.Channel, false)
 	}
-	return parsed, nil
+	return parsed, cn, nil
 }
 
 // receiveNext blocks until a frame worth routing arrives (nil for an
-// error reply, already fanned out). Every frame feeds the health check.
-// Only the listen goroutine may call it.
-func (m *Manager) receiveNext(ctx context.Context) (any, error) {
-	reply, err := m.receive(ctx)
+// error reply, already fanned out), returning it with its source
+// connection. Every frame feeds the health check. Only the listen
+// goroutine may call it.
+func (m *Manager) receiveNext(ctx context.Context) (any, *pool.Conn, error) {
+	reply, cn, err := m.receive(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	select {
 	case m.pingCh <- struct{}{}:
 	default:
 	}
-	return reply, nil
+	return reply, cn, nil
 }
 
 // consumerSettings snapshots the settings a consumer-view pump is built
