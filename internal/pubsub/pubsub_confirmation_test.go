@@ -176,3 +176,134 @@ func TestUnsubscribeRaceConfirmationReachesNobody(t *testing.T) {
 		}
 	}
 }
+
+// TestEmptyPatternMessageRouting pins that pattern routing is driven by
+// the frame kind, not by a non-empty Pattern field: PSUBSCRIBE "" is a
+// valid subscription whose pmessage deliveries carry an empty pattern,
+// and they must reach the pattern subscriber — never the subscriber of
+// the empty channel, who gets its own message frame.
+func TestEmptyPatternMessageRouting(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	p, err := m.PSubscribe(ctx, "")
+	if err != nil {
+		t.Fatalf("PSubscribe: %v", err)
+	}
+	c, err := m.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "psubscribe", "")
+	fsc.expectCmd(t, "subscribe", "")
+
+	// PUBLISH "" ... fans out as a pmessage to the pattern subscriber
+	// and a message to the channel subscriber.
+	fsc.sendMessage(t, "pmessage", "", "", "via-pattern")
+	fsc.sendMessage(t, "message", "", "via-channel")
+
+	firstMessage := func(events <-chan any) *Message {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					t.Fatal("events closed while waiting for a message")
+				}
+				if msg, ok := ev.(*Message); ok {
+					return msg
+				}
+			case <-deadline:
+				t.Fatal("timed out waiting for a message")
+			}
+		}
+	}
+	if msg := firstMessage(p.Events()); msg.Payload != "via-pattern" {
+		t.Fatalf("pattern subscriber's first message = %q, want \"via-pattern\"", msg.Payload)
+	}
+	if msg := firstMessage(c.Events()); msg.Payload != "via-channel" {
+		t.Fatalf("channel subscriber's first message = %q, want \"via-channel\"", msg.Payload)
+	}
+}
+
+// TestUnsubscribeRaceDoesNotRequestReload pins that the topology-reload
+// heuristic consults the ledger: the confirmation of the manager's own
+// UNSUBSCRIBE finding subscribers again (a resubscribe raced it) is not
+// a slot migration and must not request a reload.
+func TestUnsubscribeRaceDoesNotRequestReload(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // no autoConfirm: the test answers by hand
+	reloads := make(chan struct{}, 16)
+	m := newTestManagerReload(t, srv, testConfig("node:6379"), func() {
+		select {
+		case reloads <- struct{}{}:
+		default:
+		}
+	})
+
+	a, err := m.Subscribe(ctx, "ch", "keep")
+	if err != nil {
+		t.Fatalf("Subscribe a: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch", "keep")
+	fsc.sendConfirm(t, "subscribe", "ch", 1)
+	fsc.sendConfirm(t, "subscribe", "keep", 2)
+	waitForConfirmation(t, a.Events(), "subscribe", "keep")
+
+	if err := a.Unsubscribe(ctx, "ch"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "ch")
+	b, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe b: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	fsc.sendConfirm(t, "unsubscribe", "ch", 1)
+	fsc.sendConfirm(t, "subscribe", "ch", 2)
+	// b's confirmation fences the earlier unsubscribe confirmation.
+	waitForConfirmation(t, b.Events(), "subscribe", "ch")
+
+	select {
+	case <-reloads:
+		t.Fatal("own unsubscribe confirmation requested a topology reload")
+	default:
+	}
+}
+
+// TestServerInitiatedUnsubscribeRequestsReload pins the positive half
+// of the heuristic: an UNMATCHED unsubscribe confirmation (answering no
+// write of ours) that still finds subscribers is a slot migration and
+// must request a reload.
+func TestServerInitiatedUnsubscribeRequestsReload(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	reloads := make(chan struct{}, 16)
+	m := newTestManagerReload(t, srv, testConfig("node:6379"), func() {
+		select {
+		case reloads <- struct{}{}:
+		default:
+		}
+	})
+
+	if _, err := m.SSubscribe(ctx, "{a}ch"); err != nil {
+		t.Fatalf("SSubscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "ssubscribe", "{a}ch")
+
+	// Server-initiated: no SUNSUBSCRIBE was written.
+	fsc.sendConfirm(t, "sunsubscribe", "{a}ch", 0)
+	select {
+	case <-reloads:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the reload request")
+	}
+}

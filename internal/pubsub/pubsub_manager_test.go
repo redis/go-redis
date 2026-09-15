@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1432,4 +1433,57 @@ func TestManagerClose(t *testing.T) {
 			t.Fatalf("Subscribe after CloseIfIdle = %v, want pool.ErrClosed", err)
 		}
 	})
+}
+
+// TestHandoffDropsStaleProtocolFrames pins that a frame read from a
+// handed-off connection is not settled against the replacement's
+// ledger: an in-flight subscribe confirmation from the old socket must
+// not mark a name Subscribed that the new node never confirmed (a later
+// rejection would then never be retried) nor consume a replay waiter.
+func TestHandoffDropsStaleProtocolFrames(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node-a:6379")
+	cfg.PendingResyncFallback = 50 * time.Millisecond
+	m := newTestManager(t, srv, cfg)
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "ch")
+	fsc1.sendConfirm(t, "subscribe", "ch", 1)
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	// ch2's confirmation is still in flight when the handoff lands.
+	if _, err := h.Subscribe(ctx, "ch2"); err != nil {
+		t.Fatalf("Subscribe ch2: %v", err)
+	}
+	fsc1.expectCmd(t, "subscribe", "ch2")
+	if err := fsc1.poolConn.MarkForHandoff("node-b:6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	fsc1.sendConfirm(t, "subscribe", "ch2", 2)
+
+	// The read loop reconnects to the handoff endpoint and replays the
+	// registry (one subscribe carrying both names, map order).
+	fsc2 := srv.waitDial(t)
+	if fsc2.addr != "node-b:6379" {
+		t.Fatalf("handoff dialed %q, want node-b:6379", fsc2.addr)
+	}
+	replay := fsc2.waitCmd(t)
+	if replay[0] != "subscribe" || len(replay) != 3 ||
+		!slices.Contains(replay[1:], "ch") || !slices.Contains(replay[1:], "ch2") {
+		t.Fatalf("replay command = %v, want subscribe with ch and ch2", replay)
+	}
+
+	// The new node rejects the replay: both names must stay Pending —
+	// the stale confirmation from the old socket must not have marked
+	// ch2 Subscribed — so the resync re-sends BOTH.
+	fsc2.sendError(t, "NOPERM this user has no permissions")
+	resend := fsc2.waitCmd(t)
+	if resend[0] != "subscribe" || !slices.Contains(resend[1:], "ch2") || !slices.Contains(resend[1:], "ch") {
+		t.Fatalf("resync re-sent %v, want subscribe with ch and ch2", resend)
+	}
 }

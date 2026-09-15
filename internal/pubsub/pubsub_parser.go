@@ -51,8 +51,10 @@ func pubSubString(reply []any, i int) (string, bool) {
 }
 
 // parsePubSubMessage converts a raw pub/sub reply (e.g. ["message",
-// channel, payload]) into a *Subscription, *Message, *shardMessage or
-// *Pong. Malformed frames are reported as errUnsupportedMessage /
+// channel, payload]) into a *Subscription, *Message, *shardMessage,
+// *patternMessage or *Pong. The wrapper types carry the frame kind:
+// routing must not infer it from Message fields (an empty Pattern is a
+// valid pattern, not a discriminator). Malformed frames are reported as errUnsupportedMessage /
 // errUnsupportedPayload, never panics: the caller is the manager's
 // listen goroutine, where a panic would crash the process.
 func parsePubSubMessage(reply any) (any, error) {
@@ -121,11 +123,11 @@ func parsePubSubMessage(reply any) (any, error) {
 			if !ok1 || !ok2 || !ok3 {
 				return nil, fmt.Errorf("%w: malformed %q frame", errUnsupportedMessage, kind)
 			}
-			return &Message{
+			return &patternMessage{&Message{
 				Pattern: pattern,
 				Channel: channel,
 				Payload: payload,
-			}, nil
+			}}, nil
 		case "pong":
 			payload, ok := pubSubString(reply, 1)
 			if !ok {
