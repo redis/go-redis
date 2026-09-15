@@ -307,3 +307,53 @@ func TestServerInitiatedUnsubscribeRequestsReload(t *testing.T) {
 		t.Fatal("timed out waiting for the reload request")
 	}
 }
+
+// TestRetrySupersedesLostWaiter pins waiter retirement: when a
+// confirmation is lost on a healthy connection and the resync re-sends
+// the name, the original write's waiter is retired — otherwise the
+// retry's confirmation would settle the stale original and leave the
+// retry's own waiter shifting the attribution of every confirmation
+// after it.
+func TestRetrySupersedesLostWaiter(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // no autoConfirm: the test answers by hand
+	cfg := testConfig("node:6379")
+	cfg.PendingResyncFallback = 100 * time.Millisecond
+	m := newTestManager(t, srv, cfg)
+
+	// x's confirmation never arrives; only the retry's does.
+	a, err := m.Subscribe(ctx, "x")
+	if err != nil {
+		t.Fatalf("Subscribe a: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "x")
+	fsc.expectCmd(t, "subscribe", "x") // the resync retry
+	fsc.sendConfirm(t, "subscribe", "x", 1)
+	waitForConfirmation(t, a.Events(), "subscribe", "x")
+
+	// Attribution behind the settled retry must be intact: each later
+	// subscriber still receives exactly its own confirmation.
+	b, err := m.Subscribe(ctx, "y")
+	if err != nil {
+		t.Fatalf("Subscribe b: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "y")
+	fsc.sendConfirm(t, "subscribe", "y", 2)
+	waitForConfirmation(t, b.Events(), "subscribe", "y")
+
+	c, err := m.Subscribe(ctx, "x")
+	if err != nil {
+		t.Fatalf("Subscribe c: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "x")
+	fsc.sendConfirm(t, "subscribe", "x", 2)
+	waitForConfirmation(t, c.Events(), "subscribe", "x")
+
+	// A surviving stale waiter would consume c's confirmation as the
+	// retry's broadcast reply, duplicating it to the existing owner.
+	fsc.sendMessage(t, "message", "x", "marker")
+	if n := subsUntil(t, a.Events(), "marker"); n != 0 {
+		t.Fatalf("existing owner saw %d confirmation(s) from a stale retry waiter, want 0", n)
+	}
+}

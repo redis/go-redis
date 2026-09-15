@@ -500,3 +500,48 @@ func TestClosedHandleCommandsDoNotDial(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+// TestConnReleaseFailsPongWaiters pins the one-reply-per-Ping contract
+// across a deliberate connection release: when the last subscription is
+// removed while another live handle awaits a pong, the release must
+// fail that wait with an error event — not strand it forever.
+func TestConnReleaseFailsPongWaiters(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	b, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	// a's ping is in flight when b removes the final subscription.
+	a := m.NewHandle()
+	if err := a.Ping(ctx, "lost"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "lost")
+	if err := b.Unsubscribe(ctx, "ch"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectClosed(t)
+
+	// The waiter is failed explicitly instead of waiting forever.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev, ok := <-a.Events():
+			if !ok {
+				t.Fatal("events closed while waiting for the failed-wait error")
+			}
+			if _, isErr := ev.(error); isErr {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out: the released connection's pong wait was never failed")
+		}
+	}
+}
