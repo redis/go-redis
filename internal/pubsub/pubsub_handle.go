@@ -260,12 +260,12 @@ func (h *handle) Subscriptions() (channels, patterns, schannels []string) {
 }
 
 // Ping writes a PING on the shared connection; the pong surfaces on
-// this handle's Events (see Manager.pingPongQueue).
+// this handle's Events (see Manager.replyQueue).
 func (h *handle) Ping(ctx context.Context, payload ...string) error {
 	if h.isClosed() {
 		return pool.ErrClosed
 	}
-	return h.m.ping(ctx, h, payload...)
+	return h.m.ping(ctx, h, true, payload...)
 }
 
 // PingSilent writes a PING without marking the handle as awaiting the
@@ -332,11 +332,11 @@ func (h *handle) closeLocked() {
 	}
 	h.closed = true
 	delete(h.m.handles, h)
-	// Nil (don't remove) the handle's pong waits: each slot must still
-	// consume its pong or the queue desyncs for every other waiter.
-	for i, qh := range h.m.pingPongQueue {
-		if qh == h {
-			h.m.pingPongQueue[i] = nil
+	// Nil (don't remove) the handle's pong waits: each entry must still
+	// consume its reply or attribution desyncs for every later waiter.
+	for i := range h.m.replyQueue {
+		if h.m.replyQueue[i].h == h {
+			h.m.replyQueue[i].h = nil
 		}
 	}
 	close(h.done)
