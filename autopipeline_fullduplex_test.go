@@ -473,13 +473,17 @@ func TestFullDuplexConfigDefaults(t *testing.T) {
 	if ap.fd.maxHold != fdDefaultMaxHold {
 		t.Fatalf("zero FullDuplexMaxHold resolved to %s, want default %s", ap.fd.maxHold, fdDefaultMaxHold)
 	}
-	// The submit queue is capped (min(window, 4096)): a buffered channel
-	// allocates its full capacity eagerly, so a window-sized queue would cost
-	// several MiB per engine up front; backpressure comes from the in-flight
-	// deque, which grows only with actual in-flight.
-	if want := 4096; cap(ap.fd.ch) != want {
-		t.Fatalf("queue capacity %d, want %d (capped; window %d bounds in-flight, not the queue)",
-			cap(ap.fd.ch), want, fdDefaultWindow)
+	// The submit queue is bounded by the WINDOW, not by a separate 4096 cap.
+	//
+	// That cap existed because the submit path was a buffered channel, which
+	// allocates its whole capacity eagerly. The slice queue starts at 64 entries
+	// and grows to the live depth, so a window-sized bound costs nothing up
+	// front — and the cap was bounding ADMISSION rather than memory: callers
+	// whose batch did not fit parked on a cap-1 room signal and were woken one
+	// at a time, which collapsed pipelined throughput at high caller counts.
+	if want := fdDefaultWindow; ap.fd.q.capacity() != want {
+		t.Fatalf("queue capacity %d, want %d (the window bounds the queue as well as in-flight)",
+			ap.fd.q.capacity(), want)
 	}
 	if ap.fd.window != fdDefaultWindow {
 		t.Fatalf("window %d, want default %d", ap.fd.window, fdDefaultWindow)
@@ -822,7 +826,7 @@ func TestFullDuplexBackpressure(t *testing.T) {
 }
 
 // TestFDShutdownFlushCompletesBetweenSessionsBacklog pins the Close contract for
-// work accepted while NO session holds a connection: a command sitting in fd.ch
+// work accepted while NO session holds a connection: a command sitting in the submit queue
 // (or an unacked carry) when Close wins the between-sessions race must be
 // EXECUTED via the normal pipeline path, not failed ErrClosed. Drives
 // shutdownFlush directly, which is what run()'s two shutdown sites call.
@@ -843,7 +847,7 @@ func TestFDShutdownFlushCompletesBetweenSessionsBacklog(t *testing.T) {
 		t.Fatal("full-duplex engine not active")
 	}
 
-	// Simulate the between-sessions Close: backlog queued in fd.ch (bypassing
+	// Simulate the between-sessions Close: backlog queued in the submit queue (bypassing
 	// submit — run() must not consume it, so this test does not race the engine's
 	// own loop; the queue is drained below by takeQueue inside shutdownFlush).
 	const n = 5
@@ -851,7 +855,7 @@ func TestFDShutdownFlushCompletesBetweenSessionsBacklog(t *testing.T) {
 	for i := 0; i < n; i++ {
 		cmd := NewStatusCmd(ctx, "set", fmt.Sprintf("fdsf:%d", i), fmt.Sprintf("v%d", i))
 		reqs[i] = fdReq{cmd: cmd, batch: newAPBatch()}
-		fd.ch <- reqs[i]
+		fd.q.push(reqs[i])
 	}
 	// carry: an unacked tail from a failed session that was never re-leased.
 	carryCmd := NewStatusCmd(ctx, "set", "fdsf:carry", "vc")
@@ -902,7 +906,7 @@ func (c *failWriteNetConn) Write(b []byte) (int, error) {
 // partially written carry: writeBatch pushes each chunk into the in-flight deque
 // BEFORE writing it, so when a multi-chunk carry write fails the un-written
 // suffix must be pushed too — otherwise those accepted commands are in neither
-// fd.ch nor the deque and their callers hang. Deterministic and dial-free.
+// the submit queue nor the deque and their callers hang. Deterministic and dial-free.
 // handoffSimHook stands in for the maintnotifications OnPut hook in tests that do
 // not wire up the full manager: a connection marked for handoff is taken out of
 // rotation on Put, so the FD writer's clean handoff recycle (which Puts the conn)
@@ -1123,7 +1127,7 @@ func TestFullDuplexCloseCompletesBacklogAfterConnKill(t *testing.T) {
 	}
 
 	// Burst far more than the window so a backlog builds behind the lagging reader
-	// (in fd.ch and the in-flight deque). Submit off-goroutine: backpressure blocks
+	// (in the submit queue and the in-flight deque). Submit off-goroutine: backpressure blocks
 	// ap.Set once full, and Close (ap.ctx cancel) releases it.
 	const N = 200
 	cmds := make([]*StatusCmd, N)
@@ -1370,31 +1374,27 @@ func TestFullDuplexCloseWhileBackpressured(t *testing.T) {
 	}
 }
 
-// TestFullDuplexFastSubmitCloseRace exercises the FullDuplexFastSubmit fast path
-// under a concurrent Close. The non-blocking fast send runs under the SAME submit
-// RLock as the blocking send, so a send can never win the race with the shutdown
-// drain (WLock + closed + drain), and the pooled blocking batch is recycled on
-// every reject path. Every caller must settle (no hang, no panic) with either a
-// served result or a shutdown/ctx error. Run under -race to catch any data race
-// on the fast path.
-func TestFullDuplexFastSubmitCloseRace(t *testing.T) {
+// TestFullDuplexSubmitCloseRace races concurrent submits against Close. The
+// queue push runs under the SAME submit RLock as the rest of the submit path, so
+// a push can never win the race with the shutdown drain (WLock + closed +
+// drain), and the pooled blocking batch is recycled on every reject path. Every
+// caller must settle (no hang, no panic) with either a served result or a
+// shutdown/ctx error. Run under -race to catch any data race on the submit path.
+func TestFullDuplexSubmitCloseRace(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	// Window 4096 -> chCap 4096 -> gate fires while len(ch) < 410. With G blocking
-	// submitters (each at most one outstanding) len(ch) <= G << 410, so the fast
-	// path is live for the whole run and genuinely races Close.
 	ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{
-		FullDuplex: true, FullDuplexFastSubmit: true, FullDuplexWindow: 4096, MaxBatchSize: 8,
+		FullDuplex: true, FullDuplexWindow: 4096, MaxBatchSize: 8,
 	})
 	if err != nil {
 		t.Fatalf("AutoPipelineWithOptions: %v", err)
 	}
-	if ap.fd == nil || !ap.fd.fastSubmit {
-		t.Fatal("fast-submit full-duplex engine not active")
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
 	}
 
 	const G, K = 16, 2000
@@ -1413,11 +1413,11 @@ func TestFullDuplexFastSubmitCloseRace(t *testing.T) {
 			}
 		}(g)
 	}
-	// Close while submitters are mid-flight so the fast send interleaves with the
+	// Close while submitters are mid-flight so the push interleaves with the
 	// shutdown drain.
 	time.Sleep(20 * time.Millisecond)
 	if err := ap.Close(); err != nil {
-		t.Fatalf("Close during fast-submit: %v", err)
+		t.Fatalf("Close during concurrent submit: %v", err)
 	}
 	doneCh := make(chan struct{})
 	go func() { wg.Wait(); close(doneCh) }()
@@ -1428,11 +1428,6 @@ func TestFullDuplexFastSubmitCloseRace(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&settled); got != int64(G*K) {
 		t.Fatalf("not all callers settled: %d/%d", got, G*K)
-	}
-	// Prove the fast path was actually exercised — otherwise this test would pass
-	// on the pre-existing blocking path alone and cover nothing.
-	if took := ap.fd.fastSubmitTake.Load(); took == 0 {
-		t.Fatal("fast-submit path was never taken — config did not exercise it")
 	}
 }
 
@@ -1610,7 +1605,7 @@ func TestFullDuplexNoGoroutineLeakOnClose(t *testing.T) {
 // (which shares the pools but not the original wrapper's cached autopipeliner) still
 // stops the ORIGINAL engine's goroutines. The clone's Close only sets the shared
 // apClosed flag and runs the shared onClose hooks; without the hook that cancels the
-// cached ap's context, run() would park on fd.ch forever (new submits are rejected,
+// cached ap's context, run() would park on the submit queue forever (new submits are rejected,
 // so nothing wakes it). The existing rejection test does not catch this because a
 // parked engine still refuses submits.
 func TestFullDuplexEngineReapedOnClonePoolClose(t *testing.T) {
@@ -2678,7 +2673,7 @@ func (l *fdRejectLimiter) ReportResult(_ error) {}
 
 // TestFullDuplexLimiterRejectFailsQueuedWork verifies that when the Limiter
 // denies chunk admission at write time (writeBatch), accepted commands
-// fail-fast with the limiter error instead of hanging in fd.ch until the
+// fail-fast with the limiter error instead of hanging in the submit queue until the
 // breaker closes.
 func TestFullDuplexLimiterRejectFailsQueuedWork(t *testing.T) {
 	ctx := context.Background()
@@ -2749,7 +2744,7 @@ func TestFullDuplexProcessReportsSubmitRejection(t *testing.T) {
 }
 
 // TestFullDuplexCloseFlushesBacklog verifies graceful Close executes the
-// accepted-but-unwritten fd.ch commands instead of failing them ErrClosed
+// accepted-but-unwritten queued commands instead of failing them ErrClosed
 // ("accepted ⇒ completes"). A burst is submitted and Close called immediately, so
 // some commands are still in the backlog when Close runs; none may be ErrClosed.
 func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
@@ -2777,7 +2772,7 @@ func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
 	}
 	for i, cmd := range cmds {
 		if errors.Is(cmd.Err(), ErrClosed) {
-			t.Fatalf("cmd %d came back ErrClosed — Close did not flush the accepted fd.ch backlog", i)
+			t.Fatalf("cmd %d came back ErrClosed — Close did not flush the accepted queue backlog", i)
 		}
 	}
 }
@@ -2785,7 +2780,7 @@ func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
 // TestFullDuplexLeaseFailureFailsBacklog verifies that when the engine cannot
 // lease a connection for a new session (fdLeaseErr, server down), accepted
 // commands fail-fast once the lease retries are exhausted instead of hanging in
-// fd.ch. Uses a dead address, so it needs no live server.
+// the submit queue. Uses a dead address, so it needs no live server.
 func TestFullDuplexLeaseFailureFailsBacklog(t *testing.T) {
 	ctx := context.Background()
 	c := NewClient(&Options{
@@ -3874,14 +3869,14 @@ func TestFDFailQueueRecoversMetricCallbackPanic(t *testing.T) {
 
 	ctx := context.Background()
 	const n = 3
-	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}, ch: make(chan fdReq, n)}
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}, q: newFDQueue(n)}
 	batches := make([]*apBatch, n)
 	for i := 0; i < n; i++ {
 		cmd := NewStatusCmd(ctx, "set", "k", "v")
 		b := newAPBatch()
 		cmd.setReady(b)
 		batches[i] = b
-		fd.ch <- fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1}
+		fd.q.push(fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1})
 	}
 
 	func() {
@@ -3953,9 +3948,14 @@ func TestFDReportReplyMetricsDurationCallbackNoDeadlock(t *testing.T) {
 	cmd.SetVal("OK") // the "final result" the reader set before reporting
 	b := newAPBatch()
 	cmd.setReady(b) // cmd.Err()/cmd.String() now await b.done until it closes
-	req := fdReq{cmd: cmd, batch: b, attempts: 1, writtenAt: time.Now()}
+	// writtenOff is an offset from the engine epoch, so the engine below must
+	// carry one for the duration to come out positive.
+	req := fdReq{cmd: cmd, batch: b, attempts: 1, writtenOff: int64(time.Millisecond)}
 
-	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+	fd := &fdEngine{
+		client: &Client{baseClient: &baseClient{opt: &Options{}}},
+		epoch:  time.Now().Add(-time.Second),
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -4735,16 +4735,16 @@ func TestFDAccumMinFor(t *testing.T) {
 		window int
 		want   int
 	}{
-		// Below 64*128 the shift underflows the floor, so the floor wins: a
+		// Below 64*512 the shift underflows the floor, so the floor wins: a
 		// caller who shrinks the window must not end up with a threshold so low
 		// that any trickle of traffic trips it.
 		{"zero", 0, 64},
 		{"tiny", 1, 64},
-		{"at-floor-boundary", 64 * 128, 64},
+		{"at-floor-boundary", 64 * 512, 64},
 		// Above it the threshold tracks the window, so enlarging the pipeline
 		// depth raises the bar in proportion.
-		{"default-window", fdDefaultWindow, fdDefaultWindow / 128},
-		{"double-default", 2 * fdDefaultWindow, 2 * fdDefaultWindow / 128},
+		{"default-window", fdDefaultWindow, fdDefaultWindow / 512},
+		{"double-default", 2 * fdDefaultWindow, 2 * fdDefaultWindow / 512},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := fdAccumMinFor(tc.window); got != tc.want {
@@ -4752,11 +4752,13 @@ func TestFDAccumMinFor(t *testing.T) {
 			}
 		})
 	}
-	// The default must land at 512: that is the value the measurements in
-	// the fdAccumMinFor doc comment were taken at, so changing it invalidates
-	// them.
-	if got := fdAccumMinFor(fdDefaultWindow); got != 512 {
-		t.Fatalf("default threshold = %d, want 512", got)
+	// The default must land at 128: that is the value every queue-path
+	// measurement in the fdAccumMinFor doc comment was taken at, so changing it
+	// invalidates them. On the channel submit path the same 128 measured -11.1%
+	// at 128 callers, which is why #4014 uses a different shift — the threshold
+	// is mechanism-specific, and this pins THIS mechanism's.
+	if got := fdAccumMinFor(fdDefaultWindow); got != 128 {
+		t.Fatalf("default threshold = %d, want 128", got)
 	}
 }
 
