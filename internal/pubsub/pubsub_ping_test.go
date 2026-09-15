@@ -2,8 +2,11 @@ package pubsub
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // waitForPong drains events until a *Pong arrives, discarding other
@@ -457,4 +460,43 @@ func TestSubscribeErrorReplyKeepsPongAttribution(t *testing.T) {
 	fsc.sendMessage(t, "pong", "for-b")
 	expectPong(t, a.Events(), "for-a")
 	expectPong(t, b.Events(), "for-b")
+}
+
+// TestClosedHandleCommandsDoNotDial pins the closed-handle gate for the
+// pong-shaped commands: Ping, PingSilent and ClientSetName on a closed
+// handle fail with ErrClosed under the manager lock — the same lock
+// Close holds — and never redial the connection Close released.
+func TestClosedHandleCommandsDoNotDial(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	// Closing the last subscriber releases the shared connection.
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fsc.expectClosed(t)
+
+	if err := h.Ping(ctx); !errors.Is(err, pool.ErrClosed) {
+		t.Fatalf("Ping on closed handle = %v, want ErrClosed", err)
+	}
+	if err := h.PingSilent(ctx); !errors.Is(err, pool.ErrClosed) {
+		t.Fatalf("PingSilent on closed handle = %v, want ErrClosed", err)
+	}
+	if err := h.ClientSetName(ctx, "n"); !errors.Is(err, pool.ErrClosed) {
+		t.Fatalf("ClientSetName on closed handle = %v, want ErrClosed", err)
+	}
+	select {
+	case <-srv.dialCh:
+		t.Fatal("a closed handle's command dialed a new connection")
+	case <-time.After(100 * time.Millisecond):
+	}
 }
