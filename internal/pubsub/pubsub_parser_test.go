@@ -41,9 +41,9 @@ func TestParsePubSubMessage(t *testing.T) {
 			want:  &shardMessage{&Message{Channel: "ch1", Payload: "payload"}},
 		},
 		{
-			name:  "pmessage",
+			name:  "pmessage wraps the message for pattern routing",
 			reply: []any{"pmessage", "p.*", "p.one", "payload"},
-			want:  &Message{Pattern: "p.*", Channel: "p.one", Payload: "payload"},
+			want:  &patternMessage{&Message{Pattern: "p.*", Channel: "p.one", Payload: "payload"}},
 		},
 		{
 			name:  "pong as bare string",

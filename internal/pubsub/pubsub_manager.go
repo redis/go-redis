@@ -184,11 +184,12 @@ func (m *Manager) ClientSetName(ctx context.Context, name string) error {
 }
 
 func (m *Manager) clientSetName(ctx context.Context, h *handle, name string) error {
-	if h != nil && h.isClosed() {
-		return pool.ErrClosed
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if h != nil && h.closed {
+		return pool.ErrClosed
+	}
 
 	// A closed manager must not dial: the connection would leak.
 	select {
@@ -376,25 +377,32 @@ func (m *Manager) Ping(ctx context.Context, payload ...string) error {
 	return m.ping(ctx, nil, true, payload...)
 }
 
-// ping writes a PING; the pong is consumed by the queued slot (h, or
-// nil when nobody awaits it). shouldDial controls the no-connection
+// ping writes a PING gated on and awaited by h (nil: nobody awaits the
+// pong); see pingLocked.
+func (m *Manager) ping(ctx context.Context, h *handle, shouldDial bool, payload ...string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if h != nil && h.closed {
+		return pool.ErrClosed
+	}
+	return m.pingLocked(ctx, h, shouldDial, payload...)
+}
+
+// pingLocked writes a PING; the pong is consumed by waiter's ledger
+// entry (nil: nobody awaits it). Callers must hold m.mu and gate on the
+// issuing handle's closed state. shouldDial controls the no-connection
 // behavior: user-facing pings dial the shared connection on demand,
 // while the health checker's ping must report errPubSubNoConn instead —
 // its tick and this write run in separate critical sections, so the
 // last unsubscribe can release the connection in between, and a dialing
 // ping would resurrect a connection with no subscribers that nothing
 // ever closes (its own later pings would keep the zombie alive).
-func (m *Manager) ping(ctx context.Context, h *handle, shouldDial bool, payload ...string) error {
-	if h != nil && h.isClosed() {
-		return pool.ErrClosed
-	}
+func (m *Manager) pingLocked(ctx context.Context, waiter *handle, shouldDial bool, payload ...string) error {
 	args := []any{"ping"}
 	if len(payload) == 1 {
 		args = append(args, payload[0])
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	select {
 	case <-m.done:
@@ -418,7 +426,7 @@ func (m *Manager) ping(ctx context.Context, h *handle, shouldDial bool, payload 
 		}
 		return err
 	}
-	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, n: 1, h: h})
+	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, n: 1, h: waiter})
 	return nil
 }
 
@@ -546,12 +554,10 @@ func (m *Manager) listen() {
 		switch ev := ev.(type) {
 		case *shardMessage:
 			m.fanoutShardedMessageLocked(ev.Message)
+		case *patternMessage:
+			m.fanoutPatternMessageLocked(ev.Message)
 		case *Message:
-			if ev.Pattern != "" {
-				m.fanoutPatternMessageLocked(ev)
-			} else {
-				m.fanoutMessageLocked(ev)
-			}
+			m.fanoutMessageLocked(ev)
 		}
 		m.mu.RUnlock()
 	}
@@ -584,9 +590,11 @@ func (m *Manager) registryForKind(kind string) map[string]*subscription {
 // ledger entry is delivered only to the handle whose write it answers
 // (still registered, or nobody); broadcast (replay) and unsolicited
 // confirmations go to every registered owner. An unsubscribe
-// confirmation that still finds subscribers is server-initiated (a slot
-// migrated away): the reload hook fires so the re-route sweep restores
-// the subscription on the new owner.
+// confirmation that answers none of our writes (unmatched) and still
+// finds subscribers is server-initiated (a slot migrated away): the
+// reload hook fires so the re-route sweep restores the subscription on
+// the new owner. A matched one is the reply to our own unsubscribe —
+// finding subscribers again just means a resubscribe raced it.
 func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 	w, matched := m.consumeReplyLocked(sub.Kind)
 	registry := m.registryForKind(sub.Kind)
@@ -616,7 +624,7 @@ func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 		return
 	}
 
-	if entry != nil && len(entry.handles) > 0 && m.requestTopologyRefresh != nil {
+	if !matched && entry != nil && len(entry.handles) > 0 && m.requestTopologyRefresh != nil {
 		m.requestTopologyRefresh()
 	}
 }
@@ -1240,8 +1248,9 @@ func (m *Manager) receive(ctx context.Context) (any, error) {
 
 	// A MOVING handoff (dispatched by processPush during the read) marked
 	// the connection: reconnect redirects to the handoff endpoint and
-	// replays there. The frame just read is still delivered below.
-	if cn.ShouldHandoff() || !cn.IsUsable() {
+	// replays there.
+	handedOff := cn.ShouldHandoff() || !cn.IsUsable()
+	if handedOff {
 		_ = m.reconnectBounded(ctx, cn, errConnUnusable)
 	}
 
@@ -1249,10 +1258,30 @@ func (m *Manager) receive(ctx context.Context) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if handedOff {
+		m.mu.RLock()
+		replaced := m.conn != cn
+		m.mu.RUnlock()
+		if replaced {
+			// The frame was read from the replaced connection. Messages
+			// are real deliveries and pass through; confirmations and
+			// pongs correlate with cn's dead ledger — settling them
+			// against the replacement's replayed ledger would mark names
+			// Subscribed that the new node never confirmed and shift
+			// every waiter behind them.
+			switch parsed.(type) {
+			case *Subscription, *Pong:
+				return nil, nil
+			}
+		}
+	}
 	// Record received-message telemetry.
 	switch v := parsed.(type) {
 	case *shardMessage:
 		otel.RecordPubSubMessage(ctx, cn, "received", v.Channel, true)
+	case *patternMessage:
+		otel.RecordPubSubMessage(ctx, cn, "received", v.Channel, false)
 	case *Message:
 		otel.RecordPubSubMessage(ctx, cn, "received", v.Channel, false)
 	}
@@ -1331,6 +1360,11 @@ func isRedirectError(err error) bool {
 // shardMessage marks a Message delivered via sharded pub/sub, a
 // namespace separate from regular channels.
 type shardMessage struct{ *Message }
+
+// patternMessage marks a Message delivered via a pattern subscription:
+// the frame kind, not the Pattern field, is the routing discriminator
+// (the empty pattern is valid).
+type patternMessage struct{ *Message }
 
 // logThrottled logs at most once per interval (lastLog is owned and
 // synchronized by the caller), reporting whether it logged.

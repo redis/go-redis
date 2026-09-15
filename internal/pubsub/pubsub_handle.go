@@ -262,34 +262,26 @@ func (h *handle) Subscriptions() (channels, patterns, schannels []string) {
 // Ping writes a PING on the shared connection; the pong surfaces on
 // this handle's Events (see Manager.replyQueue).
 func (h *handle) Ping(ctx context.Context, payload ...string) error {
-	if h.isClosed() {
-		return pool.ErrClosed
-	}
 	return h.m.ping(ctx, h, true, payload...)
 }
 
 // PingSilent writes a PING without marking the handle as awaiting the
-// reply, so the pong never surfaces on this handle's Events.
+// reply, so the pong never surfaces on this handle's Events. The handle
+// still gates the write: a closed one must not dial.
 func (h *handle) PingSilent(ctx context.Context, payload ...string) error {
-	if h.isClosed() {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+
+	if h.closed {
 		return pool.ErrClosed
 	}
-	return h.m.Ping(ctx, payload...)
+	return h.m.pingLocked(ctx, nil, true, payload...)
 }
 
 // ClientSetName names the shared connection; the +OK reply surfaces on
 // this handle's Events as a pong.
 func (h *handle) ClientSetName(ctx context.Context, name string) error {
-	if h.isClosed() {
-		return pool.ErrClosed
-	}
 	return h.m.clientSetName(ctx, h, name)
-}
-
-func (h *handle) isClosed() bool {
-	h.m.mu.RLock()
-	defer h.m.mu.RUnlock()
-	return h.closed
 }
 
 // Close unsubscribes the handle from everything and ends its delivery
