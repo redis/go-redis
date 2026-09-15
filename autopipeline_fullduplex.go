@@ -588,10 +588,9 @@ type fdEngine struct {
 	idle     time.Duration // return the conn after this idle gap (0 = never)
 	maxHold  time.Duration // force a clean return at least this often (0 = never)
 
-	recycles       atomic.Int64               // clean returns (idle + max-hold); observability/tests
-	curInflight    atomic.Pointer[fdInflight] // current session's in-flight deque; test observability
-	curConn        atomic.Pointer[pool.Conn]  // current session's held conn; test observability (handoff)
-	fastSubmitTake atomic.Int64               // fast-path submits taken; test observability
+	recycles    atomic.Int64               // clean returns (idle + max-hold); observability/tests
+	curInflight atomic.Pointer[fdInflight] // current session's in-flight deque; test observability
+	curConn     atomic.Pointer[pool.Conn]  // current session's held conn; test observability (handoff)
 	// curConnSpilled is true while the current session holds a MAIN-pool connection —
 	// a spilled lease, or the no-dedicated-pool case where fd.pool IS the main pool.
 	// retryOnNormalConn must not block the reader on retrySem then: the session pins a
@@ -606,12 +605,6 @@ type fdEngine struct {
 	retryWg  sync.WaitGroup // tracks off-pipe retries diverted to the normal client path; run() waits it so Close does too
 	retrySem chan struct{}  // caps concurrent off-pipe retries at the window (see retryOnNormalConn)
 	hostWg   sync.WaitGroup // tracks per-command hook-host goroutines (see hostHook); run() waits it so Close does not return while a post-next ProcessHook is still running
-
-	// fastSubmit tries a non-blocking channel send before the blocking three-arm
-	// select in submit (from AutoPipelineOptions.FullDuplexFastSubmit). Gated on
-	// submit-queue depth (fdFastSubmitGatePct) so it only runs while the queue is
-	// shallow; a deep/bursting queue falls to the fair blocking select.
-	fastSubmit bool
 
 	// runPipeline runs a shutdown-flush chunk through the client's pipeline retry
 	// loop. Test seam: nil in production (flushReqs falls back to
@@ -654,15 +647,6 @@ func (fd *fdEngine) retryBudget() int {
 	}
 	return fd.client.opt.MaxRetries
 }
-
-// fdFastSubmitGatePct bounds fastSubmit to when the submit channel is below this
-// percent full. The non-blocking send cuts the submit-path selectgo cost, but
-// past saturation it would let producers that find room jump ahead of producers
-// blocked on a full channel, starving them and inflating p99. Gating on len(ch)
-// closes the fast path exactly as that backup starts, so contended traffic uses
-// the fair blocking select and the tail is preserved. 10% is the measured
-// tail-safe point (looser gates leave the tail elevated; see FD perf notes).
-const fdFastSubmitGatePct = 10
 
 func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	mb := ap.config.MaxBatchSize
@@ -719,17 +703,16 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		retryCap = 1
 	}
 	fd := &fdEngine{
-		ap:         ap,
-		client:     client,
-		pool:       client.getPipelinePool(),
-		q:          newFDQueue(chCap),
-		maxBatch:   mb,
-		window:     w,
-		accumMin:   fdAccumMinFor(w),
-		idle:       idle,
-		maxHold:    maxHold,
-		retrySem:   make(chan struct{}, retryCap),
-		fastSubmit: ap.config.FullDuplexFastSubmit,
+		ap:       ap,
+		client:   client,
+		pool:     client.getPipelinePool(),
+		q:        newFDQueue(chCap),
+		maxBatch: mb,
+		window:   w,
+		accumMin: fdAccumMinFor(w),
+		idle:     idle,
+		maxHold:  maxHold,
+		retrySem: make(chan struct{}, retryCap),
 	}
 	// Redirect/retry reprocess target. Default: the standalone client's own retry
 	// path (cannot follow a redirect). Cluster mode injects a redirect-aware
@@ -800,23 +783,18 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		// matching every other submit-time-rejection path.
 		return completedBatch
 	}
-	// Fast path (opt-in via FullDuplexFastSubmit): while the submit queue is
-	// shallow, a non-blocking send skips the blocking three-arm selectgo that
-	// dominates submit CPU at high producer counts. Admission is IDENTICAL to the
-	// blocking case below (same gate held, same host start, same return); only the
-	// wait is skipped. The queue-depth gate keeps this off once the channel bursts
-	// deep, so contended traffic takes the fair blocking select and the p99 tail is
-	// preserved. On a miss (or a full channel) it falls through to that select.
 	// Enqueue. push is a mutex plus an append, so it cannot block unless the queue
-	// is at its bound: the blocking three-arm select the channel required is gone,
-	// and with it the reason FullDuplexFastSubmit existed (that option only skipped
-	// the same select). On a full queue, wait for the writer to take a wave.
+	// is at its bound; there is no select to wait on. On a full queue, wait for the
+	// writer to take a wave.
+	//
+	// This is also why there is no fast-submit knob here. The channel this queue
+	// replaced needed a blocking three-arm select on every submit, and skipping it
+	// was worth enough throughput to justify an option that traded submit fairness
+	// for it. A mutex-plus-append has no such wait to skip, so every submit already
+	// takes the cheap path and the fairness trade is not on the table.
 	for {
 		res := fd.q.push(req)
 		if res == fdPushOK {
-			if fd.fastSubmit {
-				fd.fastSubmitTake.Add(1) // kept for the existing test observability
-			}
 			// Accepted. Start the hook host ONLY now: a submission that is never admitted
 			// (the cancel paths below) must not leak a host goroutine. The Add happens under
 			// the gate, so it is ordered before the shutdown drain's WLock and run()'s
