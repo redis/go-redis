@@ -137,7 +137,9 @@ func (c cmdable) Digest(ctx context.Context, key string) *DigestCmd {
 
 // Get Redis `GET key` command. It returns redis.Nil error when key does not exist.
 func (c cmdable) Get(ctx context.Context, key string) *StringCmd {
-	cmd := NewStringCmd(ctx, "get", key)
+	// One allocation, not two: the argument buffer rides inside the command.
+	// See command_inline_args.go.
+	cmd := newStringCmd2(ctx, "get", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -476,10 +478,11 @@ func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interfac
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
 func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
-	args := make([]interface{}, 3, 5)
-	args[0] = "set"
-	args[1] = key
-	args[2] = value
+	// The argument buffer rides inside the command (five slots, which is the
+	// longest form built below), so this costs one allocation rather than two.
+	// See command_inline_args.go.
+	cmd, args := newStatusCmdInline(ctx)
+	args = append(args, "set", key, value)
 	if expiration > 0 {
 		if usePrecise(expiration) {
 			args = append(args, "px", formatMs(ctx, expiration))
@@ -489,8 +492,8 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 	} else if expiration == KeepTTL {
 		args = append(args, "keepttl")
 	}
+	cmd.args = args
 
-	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
