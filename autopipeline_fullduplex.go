@@ -710,16 +710,24 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		maxHold = fdDefaultMaxHold
 	}
 	ap.config.FullDuplexMaxHold = maxHold
-	// The submit queue does not need window-sized storage. Backpressure comes from
-	// the in-flight deque, which grows only with ACTUAL in-flight, while a buffered
-	// channel allocates its full capacity up front: several MiB per engine at the
-	// default window, before any command is submitted. Cap the queue. Total
-	// outstanding stays bounded by cap+window, and submit just blocks a little earlier
-	// under a burst.
-	chCap := w
-	if chCap > 4096 {
-		chCap = 4096
-	}
+	// The submit queue is bounded by the window itself.
+	//
+	// It used to be capped at 4096 instead, because the submit path was a BUFFERED
+	// CHANNEL and a channel allocates its whole capacity up front: several MiB per
+	// engine at the default window, before a single command is submitted. The slice
+	// queue that replaced it starts at 64 entries and grows to the live depth, so
+	// that cost is gone and with it the reason for the cap.
+	//
+	// The cap was not free. It bounds ADMISSION, not memory: a caller whose batch
+	// does not fit parks on the queue's cap-1 room signal and is woken one at a
+	// time. With a 4096-slot queue, 4096 callers pipelining 10 commands each want
+	// 40960 slots — 10x the queue — so ~3700 of them serialize on that relay.
+	// Measured: 7,637 ops/s and a 5.1 s p50, against 1.6M ops/s and 25 ms once the
+	// bound is the window.
+	//
+	// Total outstanding is still bounded, now by 2*window (queue + in-flight), and
+	// the queue only ever occupies its live depth.
+	qCap := w
 	// The off-pipe retry bound is a GOROUTINE budget, not a memory window. Diverted
 	// retries serialize on the main pool's PoolSize connections, so slots beyond about
 	// 2x the pool only hold 8 KiB stacks and pool-wait turns. Sizing it to w (default
@@ -745,7 +753,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		// and time.Since would fall back to the wall clock, which is exactly the
 		// property the offset exists to preserve.
 		epoch:    time.Now(),
-		q:        newFDQueue(chCap),
+		q:        newFDQueue(qCap),
 		maxBatch: mb,
 		window:   w,
 		accumMin: fdAccumMinFor(w),
