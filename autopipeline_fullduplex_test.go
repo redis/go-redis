@@ -473,13 +473,17 @@ func TestFullDuplexConfigDefaults(t *testing.T) {
 	if ap.fd.maxHold != fdDefaultMaxHold {
 		t.Fatalf("zero FullDuplexMaxHold resolved to %s, want default %s", ap.fd.maxHold, fdDefaultMaxHold)
 	}
-	// The submit queue is capped (min(window, 4096)): a buffered channel
-	// allocates its full capacity eagerly, so a window-sized queue would cost
-	// several MiB per engine up front; backpressure comes from the in-flight
-	// deque, which grows only with actual in-flight.
-	if want := 4096; ap.fd.q.capacity() != want {
-		t.Fatalf("queue capacity %d, want %d (capped; window %d bounds in-flight, not the queue)",
-			ap.fd.q.capacity(), want, fdDefaultWindow)
+	// The submit queue is bounded by the WINDOW, not by a separate 4096 cap.
+	//
+	// That cap existed because the submit path was a buffered channel, which
+	// allocates its whole capacity eagerly. The slice queue starts at 64 entries
+	// and grows to the live depth, so a window-sized bound costs nothing up
+	// front — and the cap was bounding ADMISSION rather than memory: callers
+	// whose batch did not fit parked on a cap-1 room signal and were woken one
+	// at a time, which collapsed pipelined throughput at high caller counts.
+	if want := fdDefaultWindow; ap.fd.q.capacity() != want {
+		t.Fatalf("queue capacity %d, want %d (the window bounds the queue as well as in-flight)",
+			ap.fd.q.capacity(), want)
 	}
 	if ap.fd.window != fdDefaultWindow {
 		t.Fatalf("window %d, want default %d", ap.fd.window, fdDefaultWindow)
