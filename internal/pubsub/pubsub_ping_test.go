@@ -347,3 +347,114 @@ func TestClientSetNamePongDelivery(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// TestPingPongErrorReplySettlesWaiter pins that an error reply settles
+// the rejected PING's ledger entry: the stale waiter must not swallow
+// or misdirect the next pong.
+func TestPingPongErrorReplySettlesWaiter(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	a, err := m.Subscribe(ctx, "cha")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	b, err := m.Subscribe(ctx, "chb")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "cha")
+	fsc.expectCmd(t, "subscribe", "chb")
+
+	// a's ping is rejected; b's is answered.
+	if err := a.Ping(ctx, "for-a"); err != nil {
+		t.Fatalf("Ping a: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "for-a")
+	fsc.sendError(t, "NOPERM no permission to run 'ping'")
+
+	if err := b.Ping(ctx, "for-b"); err != nil {
+		t.Fatalf("Ping b: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "for-b")
+	fsc.sendMessage(t, "pong", "for-b")
+	expectPong(t, b.Events(), "for-b")
+
+	fsc.sendMessage(t, "message", "cha", "marker")
+	if n := pongsUntil(t, a.Events(), "marker"); n != 0 {
+		t.Fatalf("handle a saw %d pong(s) after its ping was rejected, want 0", n)
+	}
+}
+
+// TestPingPongErrorReplySilentSlot pins that a rejected silent ping
+// settles its own nil entry instead of leaking it (repeatedly rejected
+// health-check pings would otherwise grow the ledger forever and
+// swallow later pongs).
+func TestPingPongErrorReplySilentSlot(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	if err := h.PingSilent(ctx, "silent"); err != nil {
+		t.Fatalf("PingSilent: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "silent")
+	fsc.sendError(t, "NOPERM no permission to run 'ping'")
+
+	if err := h.Ping(ctx, "real"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "real")
+	fsc.sendMessage(t, "pong", "real")
+	expectPong(t, h.Events(), "real")
+}
+
+// TestSubscribeErrorReplyKeepsPongAttribution pins that subscribe
+// writes are ledgered too: a rejected SUBSCRIBE settles its own entry,
+// never a queued ping's.
+func TestSubscribeErrorReplyKeepsPongAttribution(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // no autoConfirm: the test answers by hand
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	a, err := m.Subscribe(ctx, "cha")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "cha")
+
+	b, err := m.Subscribe(ctx, "chb")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "chb")
+
+	if err := a.Ping(ctx, "for-a"); err != nil {
+		t.Fatalf("Ping a: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "for-a")
+	if err := b.Ping(ctx, "for-b"); err != nil {
+		t.Fatalf("Ping b: %v", err)
+	}
+	fsc.expectCmd(t, "ping", "for-b")
+
+	// cha is confirmed, chb's subscribe is rejected, both pings answered.
+	fsc.sendConfirm(t, "subscribe", "cha", 1)
+	fsc.sendError(t, "NOPERM no access to 'chb'")
+	fsc.sendMessage(t, "pong", "for-a")
+	fsc.sendMessage(t, "pong", "for-b")
+	expectPong(t, a.Events(), "for-a")
+	expectPong(t, b.Events(), "for-b")
+}

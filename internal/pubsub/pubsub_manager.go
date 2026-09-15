@@ -31,6 +31,10 @@ const (
 type subscription struct {
 	handles map[*handle]struct{}
 	state   subState
+	// sentAt is when the name's (re)subscribe was last written: a
+	// Pending name gets one resync interval from its own write before
+	// resubscribePending re-sends it.
+	sentAt time.Time
 }
 
 // Manager multiplexes every pub/sub subscription of one client over a
@@ -85,9 +89,28 @@ type Manager struct {
 	wakeResync chan struct{}
 	done       chan struct{}
 
-	// pingPongQueue correlates pong-shaped replies with the writes that
-	// caused them
-	pingPongQueue []*handle
+	// replyQueue is the reply ledger: every written command in write
+	// order, with the reply frames the server still owes it. Pongs are
+	// delivered to their entry's handle; an error reply settles the
+	// entry of the command it rejected.
+	replyQueue []replyWaiter
+}
+
+// replyKindPong marks a ledger entry whose reply is pong-shaped (PING,
+// CLIENT SETNAME).
+const replyKindPong = "pong"
+
+// replyWaiter is one written command's outstanding replies: PING and
+// CLIENT SETNAME owe one pong-shaped frame, subscribe-family commands
+// one confirmation per name. A rejected command answers with a single
+// error frame instead, settling the whole entry.
+type replyWaiter struct {
+	kind string  // replyKindPong, or the subscribe-family command
+	n    int     // reply frames still owed
+	h    *handle // the handle awaiting the reply (nil: nobody awaits it)
+	// broadcast marks a replay write (reconnect, pending resync): its
+	// confirmations go to every registered owner, not one handle.
+	broadcast bool
 }
 
 // NewManager creates a manager that multiplexes all subscriptions over
@@ -161,6 +184,9 @@ func (m *Manager) ClientSetName(ctx context.Context, name string) error {
 }
 
 func (m *Manager) clientSetName(ctx context.Context, h *handle, name string) error {
+	if h != nil && h.isClosed() {
+		return pool.ErrClosed
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -183,7 +209,7 @@ func (m *Manager) clientSetName(ctx context.Context, h *handle, name string) err
 		}
 		return err
 	}
-	m.pingPongQueue = append(m.pingPongQueue, h)
+	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, n: 1, h: h})
 	return nil
 }
 
@@ -269,7 +295,7 @@ func (m *Manager) handleSubscribe(ctx context.Context, h *handle, redisCommand s
 	}
 
 	if err == nil {
-		if err = m.subscribe(ctx, redisCommand, channels...); err != nil {
+		if err = m.subscribe(ctx, redisCommand, handle, false, channels...); err != nil {
 			// Partial write ⇒ desynced RESP stream: drop the connection
 			// so the reconnect replays the registry.
 			if m.conn != nil {
@@ -345,12 +371,23 @@ func (m *Manager) SUnsubscribe(ctx context.Context, channels ...string) error {
 }
 
 // Ping writes a PING on the shared connection, dialing it if needed;
-// the pong is consumed by its pingPongQueue slot (nil: nobody awaits it).
+// the pong is consumed by its replyQueue entry (nil: nobody awaits it).
 func (m *Manager) Ping(ctx context.Context, payload ...string) error {
-	return m.ping(ctx, nil, payload...)
+	return m.ping(ctx, nil, true, payload...)
 }
 
-func (m *Manager) ping(ctx context.Context, h *handle, payload ...string) error {
+// ping writes a PING; the pong is consumed by the queued slot (h, or
+// nil when nobody awaits it). shouldDial controls the no-connection
+// behavior: user-facing pings dial the shared connection on demand,
+// while the health checker's ping must report errPubSubNoConn instead —
+// its tick and this write run in separate critical sections, so the
+// last unsubscribe can release the connection in between, and a dialing
+// ping would resurrect a connection with no subscribers that nothing
+// ever closes (its own later pings would keep the zombie alive).
+func (m *Manager) ping(ctx context.Context, h *handle, shouldDial bool, payload ...string) error {
+	if h != nil && h.isClosed() {
+		return pool.ErrClosed
+	}
 	args := []any{"ping"}
 	if len(payload) == 1 {
 		args = append(args, payload[0])
@@ -365,8 +402,12 @@ func (m *Manager) ping(ctx context.Context, h *handle, payload ...string) error 
 	default:
 	}
 
-	if err := m.connectIdempotentLocked(ctx); err != nil && !errors.Is(err, errConnExists) {
-		return err
+	if shouldDial {
+		if err := m.connectIdempotentLocked(ctx); err != nil && !errors.Is(err, errConnExists) {
+			return err
+		}
+	} else if m.conn == nil {
+		return errPubSubNoConn
 	}
 	if err := m.writeArgs(ctx, args); err != nil {
 		// Partial write ⇒ desynced RESP stream: drop the connection so
@@ -377,7 +418,7 @@ func (m *Manager) ping(ctx context.Context, h *handle, payload ...string) error 
 		}
 		return err
 	}
-	m.pingPongQueue = append(m.pingPongQueue, h)
+	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, n: 1, h: h})
 	return nil
 }
 
@@ -436,7 +477,7 @@ func (m *Manager) closeNowLocked() error {
 	m.subscribers = make(map[string]*subscription)
 	m.patternSubscribers = make(map[string]*subscription)
 	m.shardSubscribers = make(map[string]*subscription)
-	m.pingPongQueue = nil
+	m.replyQueue = nil
 
 	return err
 }
@@ -537,13 +578,17 @@ func (m *Manager) registryForKind(kind string) map[string]*subscription {
 	return nil
 }
 
-// fanoutSubscriptionLocked routes a subscription confirmation to the
-// registered handles and settles the entry's state (a mutation — unlike
-// the message fan-outs, callers must hold the WRITE lock). An
-// unsubscribe confirmation that still finds subscribers is
-// server-initiated (a slot migrated away): the reload hook fires so the
-// re-route sweep restores the subscription on the new owner.
+// fanoutSubscriptionLocked routes a subscription confirmation and
+// settles the entry's state (a mutation — unlike the message fan-outs,
+// callers must hold the WRITE lock). A confirmation settling a targeted
+// ledger entry is delivered only to the handle whose write it answers
+// (still registered, or nobody); broadcast (replay) and unsolicited
+// confirmations go to every registered owner. An unsubscribe
+// confirmation that still finds subscribers is server-initiated (a slot
+// migrated away): the reload hook fires so the re-route sweep restores
+// the subscription on the new owner.
 func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
+	w, matched := m.consumeReplyLocked(sub.Kind)
 	registry := m.registryForKind(sub.Kind)
 	if registry == nil {
 		return
@@ -551,8 +596,14 @@ func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 
 	entry := registry[sub.Channel]
 	if entry != nil {
-		for h := range entry.handles {
-			h.deliverSubscriptionLocked(sub)
+		if matched && !w.broadcast {
+			if _, ok := entry.handles[w.h]; ok {
+				w.h.deliverSubscriptionLocked(sub)
+			}
+		} else { // Broadcast
+			for h := range entry.handles {
+				h.deliverSubscriptionLocked(sub)
+			}
 		}
 	}
 
@@ -570,21 +621,45 @@ func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 	}
 }
 
-// fanoutPongLocked delivers a pong to the handle whose write is at the
-// head of pingPongQueue: replies arrive in write order on the one
-// connection, so FIFO attribution is exact. A nil slot (silent ping, or
-// the writer closed) consumes the pong without delivering it. Callers
-// must hold the WRITE lock — the queue is mutated.
+// fanoutPongLocked delivers a pong to the oldest pong waiter: pongs
+// arrive in ping-write order, so per-kind FIFO attribution is exact. A
+// nil waiter (silent ping, or the writer closed) consumes the pong
+// without delivering it. Callers must hold the WRITE lock.
 func (m *Manager) fanoutPongLocked(pong *Pong) {
-	if len(m.pingPongQueue) == 0 {
-		return
+	if w, ok := m.consumeReplyLocked(replyKindPong); ok && w.h != nil {
+		w.h.deliverPongLocked(pong)
 	}
-	h := m.pingPongQueue[0]
-	// Nil out the slot: the backing array must not pin the handle.
-	m.pingPongQueue[0] = nil
-	m.pingPongQueue = m.pingPongQueue[1:]
-	if h != nil {
-		h.deliverPongLocked(pong)
+}
+
+// consumeReplyLocked settles one reply frame of the given kind against
+// the oldest ledger entry of that kind, returning a copy of the entry.
+// Non-matching entries are left alone so an unsolicited frame (e.g. a
+// server-initiated sunsubscribe) can't consume a foreign entry. Callers
+// must hold the WRITE lock.
+func (m *Manager) consumeReplyLocked(kind string) (replyWaiter, bool) {
+	for i := range m.replyQueue {
+		if m.replyQueue[i].kind != kind {
+			continue
+		}
+		w := m.replyQueue[i]
+		m.replyQueue[i].n--
+		if m.replyQueue[i].n <= 0 {
+			// Delete zeroes the vacated tail slot: the backing array
+			// must not pin the handle.
+			m.replyQueue = slices.Delete(m.replyQueue, i, i+1)
+		}
+		return w, true
+	}
+	return replyWaiter{}, false
+}
+
+// consumeErrorReplyLocked settles an error reply: replies arrive in
+// write order, so the rejected command is the ledger head and its one
+// error frame replaces everything the entry was owed. Callers must hold
+// the WRITE lock.
+func (m *Manager) consumeErrorReplyLocked() {
+	if len(m.replyQueue) > 0 {
+		m.replyQueue = slices.Delete(m.replyQueue, 0, 1)
 	}
 }
 
@@ -645,8 +720,6 @@ func (m *Manager) healthCheck() {
 			}
 		}
 
-		// Reset without draining is safe: with Go 1.23+ timer semantics
-		// a Reset never leaves a stale value in timer.C.
 		timer.Reset(interval)
 		select {
 		case <-m.pingCh:
@@ -655,21 +728,17 @@ func (m *Manager) healthCheck() {
 			m.resubscribePending(interval, pingTimeout)
 		case <-m.cfgChanged:
 		case <-timer.C:
-			// No conn means nothing to health-check: recovery is owned
-			// by the read loop (or the next Subscribe when idle).
-			m.mu.RLock()
-			cn := m.conn
-			m.mu.RUnlock()
-			if cn == nil {
-				continue
-			}
-
 			ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
-			pingErr := m.Ping(ctx)
+			pingErr := m.ping(ctx, nil, false)
 			cancel()
 
+			if errors.Is(pingErr, errPubSubNoConn) {
+				// No conn (possibly released since the tick started)
+				// means nothing to health-check
+				continue
+			}
 			if pingErr != nil {
-				// The failed ping already dropped the conn (see Ping);
+				// The failed ping already dropped the conn (see ping);
 				// nil cn = "restore unless someone already did".
 				_ = m.reconnectBounded(context.Background(), nil, pingErr)
 			} else {
@@ -805,8 +874,15 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 		}
 	}
 
-	// Nothing to restore: stay disconnected, the next Subscribe redials.
+	// Nothing to restore: release the connection (nobody is listening,
+	// and a handoff-updated cfg.Addr must not be shadowed by a stale
+	// conn) and stay disconnected, the next Subscribe redials. m.conn
+	// can be nil here: a nil cn passes the identity guard above.
 	if m.noSubscribersLocked() {
+		if m.conn != nil {
+			_ = m.closeConn(m.conn)
+			m.conn = nil
+		}
 		return errPubSubNoConn
 	}
 
@@ -868,8 +944,9 @@ func (m *Manager) reconnectBounded(ctx context.Context, cn *pool.Conn, reason er
 // current connection, dropping every entry back to Pending — a fresh
 // connection owes every confirmation. Callers must hold m.mu.
 func (m *Manager) resubscribeLocked(ctx context.Context) error {
-	// Queued pong waits died with the old connection
-	m.pingPongQueue = nil
+	// The ledger died with the old connection; the replay writes below
+	// enqueue fresh entries.
+	m.replyQueue = nil
 
 	for _, registry := range []map[string]*subscription{
 		m.subscribers, m.patternSubscribers, m.shardSubscribers,
@@ -881,16 +958,16 @@ func (m *Manager) resubscribeLocked(ctx context.Context) error {
 
 	var firstErr error
 	if len(m.subscribers) > 0 {
-		firstErr = m.subscribe(ctx, "subscribe", collectAllChannelNames(m.subscribers)...)
+		firstErr = m.subscribe(ctx, "subscribe", nil, true, collectAllChannelNames(m.subscribers)...)
 	}
 	if len(m.patternSubscribers) > 0 {
-		err := m.subscribe(ctx, "psubscribe", collectAllChannelNames(m.patternSubscribers)...)
+		err := m.subscribe(ctx, "psubscribe", nil, true, collectAllChannelNames(m.patternSubscribers)...)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	if len(m.shardSubscribers) > 0 {
-		err := m.subscribe(ctx, "ssubscribe", collectAllChannelNames(m.shardSubscribers)...)
+		err := m.subscribe(ctx, "ssubscribe", nil, true, collectAllChannelNames(m.shardSubscribers)...)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -912,8 +989,8 @@ func (m *Manager) resubscribePending(interval, pingTimeout time.Duration) {
 	if m.conn == nil || interval <= 0 || time.Since(m.lastPendingResync) < interval {
 		return
 	}
-	// Stamped even when nothing is pending: a fresh write gets one
-	// interval for its confirmation before being re-sent.
+	// The scan throttle only: per-name grace comes from each entry's
+	// sentAt, so unrelated subscribe traffic can't starve a retry.
 	m.lastPendingResync = time.Now()
 
 	ctx := context.Background()
@@ -929,14 +1006,14 @@ func (m *Manager) resubscribePending(interval, pingTimeout time.Duration) {
 	} {
 		var pending []string
 		for name, sub := range registry {
-			if sub.state == subStatePending {
+			if sub.state == subStatePending && time.Since(sub.sentAt) >= interval {
 				pending = append(pending, name)
 			}
 		}
 		if len(pending) == 0 {
 			continue
 		}
-		if err := m.subscribe(ctx, kind, pending...); err != nil {
+		if err := m.subscribe(ctx, kind, nil, true, pending...); err != nil {
 			// Partial write ⇒ desynced RESP stream: drop the connection
 			// so the reconnect replays the registry.
 			if m.conn != nil {
@@ -948,12 +1025,11 @@ func (m *Manager) resubscribePending(interval, pingTimeout time.Duration) {
 	}
 }
 
-// subscribe writes one (un)subscribe command carrying the given names.
-// Sharded commands are split into one command per hash slot: a cluster
-// server rejects slot-spanning SSUBSCRIBE with CROSSSLOT.
-func (m *Manager) subscribe(ctx context.Context, redisCommand string, channels ...string) error {
-	// Stamp the resync throttle
-	m.lastPendingResync = time.Now()
+// subscribe writes one (un)subscribe command carrying the given names,
+// ledgered for h (or every owner, when broadcast). Sharded commands are
+// split into one command per hash slot: a cluster server rejects
+// slot-spanning SSUBSCRIBE with CROSSSLOT.
+func (m *Manager) subscribe(ctx context.Context, redisCommand string, h *handle, broadcast bool, channels ...string) error {
 	switch redisCommand {
 	case "ssubscribe", "sunsubscribe":
 		// Write the slot groups in first-appearance order so
@@ -969,23 +1045,37 @@ func (m *Manager) subscribe(ctx context.Context, redisCommand string, channels .
 		}
 		var firstErr error
 		for _, slot := range order {
-			if err := m.writeSubscriptionCmd(ctx, redisCommand, bySlot[slot]); err != nil && firstErr == nil {
+			if err := m.writeSubscriptionCmd(ctx, redisCommand, bySlot[slot], h, broadcast); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
 		return firstErr
 	default:
-		return m.writeSubscriptionCmd(ctx, redisCommand, channels)
+		return m.writeSubscriptionCmd(ctx, redisCommand, channels, h, broadcast)
 	}
 }
 
-func (m *Manager) writeSubscriptionCmd(ctx context.Context, redisCommand string, names []string) error {
+func (m *Manager) writeSubscriptionCmd(ctx context.Context, redisCommand string, names []string, h *handle, broadcast bool) error {
 	args := make([]any, 0, 1+len(names))
 	args = append(args, redisCommand)
 	for _, name := range names {
 		args = append(args, name)
 	}
-	return m.writeArgs(ctx, args)
+	if err := m.writeArgs(ctx, args); err != nil {
+		return err
+	}
+	m.replyQueue = append(m.replyQueue, replyWaiter{kind: redisCommand, n: len(names), h: h, broadcast: broadcast})
+	switch redisCommand {
+	case "subscribe", "psubscribe", "ssubscribe":
+		registry := m.registryForKind(redisCommand)
+		now := time.Now()
+		for _, name := range names {
+			if sub := registry[name]; sub != nil {
+				sub.sentAt = now
+			}
+		}
+	}
+	return nil
 }
 
 // writeArgs writes one command fire-and-forget: replies arrive
@@ -1065,7 +1155,7 @@ func (m *Manager) handleUnsubscribeLocked(ctx context.Context, h *handle, redisC
 	}
 
 	if m.conn != nil && len(orphanOrder) > 0 {
-		if err := m.subscribe(ctx, redisCommand, orphanOrder...); err != nil {
+		if err := m.subscribe(ctx, redisCommand, nil, false, orphanOrder...); err != nil {
 			// Partial write ⇒ desynced RESP stream: drop the connection so
 			// the reconnect replays exactly what is still registered.
 			if m.conn != nil {
@@ -1131,9 +1221,13 @@ func (m *Manager) receive(ctx context.Context) (any, error) {
 		if isRedirectError(err) && m.requestTopologyRefresh != nil {
 			m.requestTopologyRefresh()
 		}
-		m.mu.RLock()
+		m.mu.Lock()
+		// Only the live connection's ledger may be settled.
+		if m.conn == cn {
+			m.consumeErrorReplyLocked()
+		}
 		m.fanoutErrorLocked(err)
-		m.mu.RUnlock()
+		m.mu.Unlock()
 		return nil, nil
 	}
 
