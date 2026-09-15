@@ -105,9 +105,11 @@ const replyKindPong = "pong"
 // one confirmation per name. A rejected command answers with a single
 // error frame instead, settling the whole entry.
 type replyWaiter struct {
-	kind string  // replyKindPong, or the subscribe-family command
-	n    int     // reply frames still owed
-	h    *handle // the handle awaiting the reply (nil: nobody awaits it)
+	kind string // replyKindPong, or the subscribe-family command
+	// names are the confirmations still owed, one per name written
+	// (nil for pong-shaped entries, which owe exactly one frame).
+	names []string
+	h     *handle // the handle awaiting the reply (nil: nobody awaits it)
 	// broadcast marks a replay write (reconnect, pending resync): its
 	// confirmations go to every registered owner, not one handle.
 	broadcast bool
@@ -210,7 +212,7 @@ func (m *Manager) clientSetName(ctx context.Context, h *handle, name string) err
 		}
 		return err
 	}
-	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, n: 1, h: h})
+	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, h: h})
 	return nil
 }
 
@@ -426,7 +428,7 @@ func (m *Manager) pingLocked(ctx context.Context, waiter *handle, shouldDial boo
 		}
 		return err
 	}
-	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, n: 1, h: waiter})
+	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, h: waiter})
 	return nil
 }
 
@@ -596,7 +598,7 @@ func (m *Manager) registryForKind(kind string) map[string]*subscription {
 // the new owner. A matched one is the reply to our own unsubscribe —
 // finding subscribers again just means a resubscribe raced it.
 func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
-	w, matched := m.consumeReplyLocked(sub.Kind)
+	w, matched := m.consumeConfirmationLocked(sub.Kind, sub.Channel)
 	registry := m.registryForKind(sub.Kind)
 	if registry == nil {
 		return
@@ -634,31 +636,74 @@ func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 // nil waiter (silent ping, or the writer closed) consumes the pong
 // without delivering it. Callers must hold the WRITE lock.
 func (m *Manager) fanoutPongLocked(pong *Pong) {
-	if w, ok := m.consumeReplyLocked(replyKindPong); ok && w.h != nil {
+	if w, ok := m.consumePongLocked(); ok && w.h != nil {
 		w.h.deliverPongLocked(pong)
 	}
 }
 
-// consumeReplyLocked settles one reply frame of the given kind against
-// the oldest ledger entry of that kind, returning a copy of the entry.
-// Non-matching entries are left alone so an unsolicited frame (e.g. a
-// server-initiated sunsubscribe) can't consume a foreign entry. Callers
-// must hold the WRITE lock.
-func (m *Manager) consumeReplyLocked(kind string) (replyWaiter, bool) {
+// consumePongLocked settles one pong-shaped frame against the oldest
+// pong entry, returning a copy of it. Callers must hold the WRITE lock.
+func (m *Manager) consumePongLocked() (replyWaiter, bool) {
 	for i := range m.replyQueue {
-		if m.replyQueue[i].kind != kind {
+		if m.replyQueue[i].kind != replyKindPong {
 			continue
 		}
 		w := m.replyQueue[i]
-		m.replyQueue[i].n--
-		if m.replyQueue[i].n <= 0 {
-			// Delete zeroes the vacated tail slot: the backing array
-			// must not pin the handle.
+		// Delete zeroes the vacated tail slot: the backing array must
+		// not pin the handle.
+		m.replyQueue = slices.Delete(m.replyQueue, i, i+1)
+		return w, true
+	}
+	return replyWaiter{}, false
+}
+
+// consumeConfirmationLocked settles one confirmation frame against the
+// oldest ledger entry of the same kind still owing that name, returning
+// a copy of the entry. Non-matching entries are left alone so an
+// unsolicited frame (e.g. a server-initiated sunsubscribe) can't
+// consume a foreign entry. Callers must hold the WRITE lock.
+func (m *Manager) consumeConfirmationLocked(kind, name string) (replyWaiter, bool) {
+	for i := range m.replyQueue {
+		e := &m.replyQueue[i]
+		if e.kind != kind {
+			continue
+		}
+		j := slices.Index(e.names, name)
+		if j < 0 {
+			continue
+		}
+		w := *e
+		e.names = slices.Delete(e.names, j, j+1)
+		if len(e.names) == 0 {
 			m.replyQueue = slices.Delete(m.replyQueue, i, i+1)
 		}
 		return w, true
 	}
 	return replyWaiter{}, false
+}
+
+// retireWaitersLocked removes the given names from every outstanding
+// entry of the kind: their replies are presumed lost, and the retry
+// about to be written owns them from now on — a superseded waiter left
+// queued would be consumed by the retry's confirmation and shift the
+// attribution of every entry behind it. Callers must hold the WRITE
+// lock.
+func (m *Manager) retireWaitersLocked(kind string, names []string) {
+	for _, name := range names {
+		for i := 0; i < len(m.replyQueue); {
+			e := &m.replyQueue[i]
+			if e.kind == kind {
+				if j := slices.Index(e.names, name); j >= 0 {
+					e.names = slices.Delete(e.names, j, j+1)
+					if len(e.names) == 0 {
+						m.replyQueue = slices.Delete(m.replyQueue, i, i+1)
+						continue
+					}
+				}
+			}
+			i++
+		}
+	}
 }
 
 // consumeErrorReplyLocked settles an error reply: replies arrive in
@@ -888,6 +933,7 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 	// can be nil here: a nil cn passes the identity guard above.
 	if m.noSubscribersLocked() {
 		if m.conn != nil {
+			m.failReplyWaitersLocked(errPubSubNoConn)
 			_ = m.closeConn(m.conn)
 			m.conn = nil
 		}
@@ -964,23 +1010,22 @@ func (m *Manager) resubscribeLocked(ctx context.Context) error {
 		}
 	}
 
-	var firstErr error
 	if len(m.subscribers) > 0 {
-		firstErr = m.subscribe(ctx, "subscribe", nil, true, collectAllChannelNames(m.subscribers)...)
+		if err := m.subscribe(ctx, "subscribe", nil, true, collectAllChannelNames(m.subscribers)...); err != nil {
+			return err
+		}
 	}
 	if len(m.patternSubscribers) > 0 {
-		err := m.subscribe(ctx, "psubscribe", nil, true, collectAllChannelNames(m.patternSubscribers)...)
-		if err != nil && firstErr == nil {
-			firstErr = err
+		if err := m.subscribe(ctx, "psubscribe", nil, true, collectAllChannelNames(m.patternSubscribers)...); err != nil {
+			return err
 		}
 	}
 	if len(m.shardSubscribers) > 0 {
-		err := m.subscribe(ctx, "ssubscribe", nil, true, collectAllChannelNames(m.shardSubscribers)...)
-		if err != nil && firstErr == nil {
-			firstErr = err
+		if err := m.subscribe(ctx, "ssubscribe", nil, true, collectAllChannelNames(m.shardSubscribers)...); err != nil {
+			return err
 		}
 	}
-	return firstErr
+	return nil
 }
 
 // resubscribePending re-sends every Pending subscription — written but
@@ -1021,6 +1066,9 @@ func (m *Manager) resubscribePending(interval, pingTimeout time.Duration) {
 		if len(pending) == 0 {
 			continue
 		}
+		// The originals' replies are presumed lost: retire their waiters
+		// so the retry's confirmations settle the retry's entry.
+		m.retireWaitersLocked(kind, pending)
 		if err := m.subscribe(ctx, kind, nil, true, pending...); err != nil {
 			// Partial write ⇒ desynced RESP stream: drop the connection
 			// so the reconnect replays the registry.
@@ -1051,13 +1099,12 @@ func (m *Manager) subscribe(ctx context.Context, redisCommand string, h *handle,
 			}
 			bySlot[slot] = append(bySlot[slot], channel)
 		}
-		var firstErr error
 		for _, slot := range order {
-			if err := m.writeSubscriptionCmd(ctx, redisCommand, bySlot[slot], h, broadcast); err != nil && firstErr == nil {
-				firstErr = err
+			if err := m.writeSubscriptionCmd(ctx, redisCommand, bySlot[slot], h, broadcast); err != nil {
+				return err
 			}
 		}
-		return firstErr
+		return nil
 	default:
 		return m.writeSubscriptionCmd(ctx, redisCommand, channels, h, broadcast)
 	}
@@ -1072,7 +1119,7 @@ func (m *Manager) writeSubscriptionCmd(ctx context.Context, redisCommand string,
 	if err := m.writeArgs(ctx, args); err != nil {
 		return err
 	}
-	m.replyQueue = append(m.replyQueue, replyWaiter{kind: redisCommand, n: len(names), h: h, broadcast: broadcast})
+	m.replyQueue = append(m.replyQueue, replyWaiter{kind: redisCommand, names: slices.Clone(names), h: h, broadcast: broadcast})
 	switch redisCommand {
 	case "subscribe", "psubscribe", "ssubscribe":
 		registry := m.registryForKind(redisCommand)
@@ -1180,10 +1227,24 @@ func (m *Manager) handleUnsubscribeLocked(ctx context.Context, h *handle, redisC
 	// conn through Ping or ClientSetName, and its Close must not leave
 	// the conn (and the health-check traffic on it) running.
 	if m.conn != nil && m.noSubscribersLocked() {
+		m.failReplyWaitersLocked(errPubSubNoConn)
 		_ = m.closeConn(m.conn)
 		m.conn = nil
 	}
 	return nil
+}
+
+// failReplyWaitersLocked settles every outstanding ledger entry when
+// the connection is deliberately released: the replies can no longer
+// arrive, so pong waiters get an error event instead of waiting
+// forever. Callers must hold m.mu.
+func (m *Manager) failReplyWaitersLocked(err error) {
+	for i := range m.replyQueue {
+		if m.replyQueue[i].kind == replyKindPong && m.replyQueue[i].h != nil {
+			m.replyQueue[i].h.deliverLocked(err)
+		}
+	}
+	m.replyQueue = nil
 }
 
 func (m *Manager) receive(ctx context.Context) (any, error) {
