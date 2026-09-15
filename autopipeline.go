@@ -3436,15 +3436,61 @@ func (ap *AutoPipeliner) calculateDelay(queueLen int) time.Duration {
 
 // Pipeline returns a new pipeline that uses the underlying pipeliner.
 // This allows you to create a traditional pipeline from an autopipeliner.
+//
+// On a FULL-DUPLEX autopipeliner the pipeline runs on the HELD connection
+// rather than taking one of its own: see fdPipelineExec. Without that, a
+// pipeline built from an autopipeliner would quietly leave the pipe, take a
+// pooled connection per Exec, and lose the coalescing that is the whole point
+// of the engine — measured at 150 active sockets and less than a third of the
+// throughput of the same commands submitted through the engine.
 func (ap *AutoPipeliner) Pipeline() Pipeliner {
+	if ap.fd != nil {
+		pipe := Pipeline{exec: pipelineExecer(ap.fdPipelineExec)}
+		pipe.init()
+		return &pipe
+	}
 	return ap.pipeliner.Pipeline()
+}
+
+// fdPipelineExec runs a whole pipeline through the full-duplex engine as one
+// contiguous batch, and falls back to a pooled pipeline when the batch cannot
+// ride the held connection.
+//
+// Contiguity is what makes this safe: FDPipelined admits the batch all-or-
+// nothing, so the commands occupy consecutive in-flight slots and their replies
+// come back in submit order. A pipeline's internal ordering therefore holds
+// exactly as it does on a dedicated connection.
+//
+// The fallback covers the cases the engine must divert — a blocking command, a
+// command with its own read timeout, anything the divert predicate claims, or a
+// batch larger than the whole submit queue. Those go to the ordinary pipeline
+// path, which is where they would have gone before this existed.
+func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error {
+	err := ap.FDPipelined(ctx, cmds)
+	switch {
+	case errors.Is(err, ErrFDPipelineDiverts),
+		errors.Is(err, ErrFDPipelineUnavailable),
+		errors.Is(err, ErrFDPipelineTooLarge):
+		// Not a command failure: the batch is simply not eligible. Clear the
+		// per-command errors FDPipelined may have stamped, then run it the
+		// ordinary way so the caller sees one authoritative outcome.
+		for _, cmd := range cmds {
+			cmd.SetErr(nil)
+		}
+		return ap.pipeliner.processPipelineHook(ctx, cmds)
+	default:
+		return err
+	}
 }
 
 // Pipelined executes a function in a pipeline context.
 // This is a convenience method that creates a pipeline, executes the function,
 // and returns the results.
+//
+// Uses Pipeline, so on a full-duplex autopipeliner this also runs on the held
+// connection rather than taking one of its own.
 func (ap *AutoPipeliner) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
-	return ap.pipeliner.Pipeline().Pipelined(ctx, fn)
+	return ap.Pipeline().Pipelined(ctx, fn)
 }
 
 // TxPipelined executes a function in a transaction pipeline context.
