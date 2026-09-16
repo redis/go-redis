@@ -80,7 +80,10 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 			return ErrFDPipelineDiverts
 		}
 	}
-	batches, err := ap.fd.submitBatch(ctx, cmds)
+	// The WHOLE batch goes to ONE engine, chosen from its first command. A
+	// pipeline split across engines would lose its internal order, which is the
+	// one thing a pipeline guarantees.
+	batches, err := ap.fdFor(cmds[0]).submitBatch(ctx, cmds)
 	if err != nil {
 		return err
 	}

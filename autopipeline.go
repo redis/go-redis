@@ -408,10 +408,16 @@ func (cfg *AutoPipelineOptions) Validate() error {
 		// half-duplex. contentSharded is exempt: that flag is set by the CLUSTER
 		// wiring (never by users), where the silent fallback IS the documented
 		// behavior, since the options type cannot see the client type.
-		if cfg.NumShards > 1 && !cfg.contentSharded {
-			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires NumShards<=1 "+
-				"(one held FIFO connection is a single stream); got %d", cfg.NumShards)
-		}
+		// NumShards>1 under FullDuplex means N engines, each holding its own
+		// connection, routed by key hash so per-key order still holds (see
+		// autopipeline_fd_shards.go). It is therefore no longer rejected here.
+		//
+		// This is one half of a TWO-SITED rule: the fdOn gate in
+		// newAutoPipeliner must relax with it. Relaxing only this check leaves
+		// full duplex silently OFF for NumShards>1 — commands fall through to
+		// the half-duplex shards, which are unordered, and a same-key
+		// write-then-read can read the stale value.
+		_ = cfg.contentSharded
 	}
 	if cfg.MaxConcurrentBatches > 1 && !cfg.Unordered {
 		return fmt.Errorf("redis: AutoPipelineOptions.MaxConcurrentBatches=%d requires Unordered:true "+
@@ -828,6 +834,12 @@ type AutoPipeliner struct {
 	// submit() streams on one held connection instead of the sharded batch queue
 	// and no shard flusher is started. See autopipeline_fullduplex.go.
 	fd *fdEngine
+	// fds holds every full-duplex engine when NumShards>1 puts several held
+	// connections behind one autopipeliner (see autopipeline_fd_shards.go).
+	// fds[0] is always fd, so every existing `ap.fd != nil` check still reads as
+	// "full duplex is on" and the single-engine path is unchanged.
+	fds  []*fdEngine
+	fdRR atomic.Uint32 // round-robin cursor, keyless commands only
 	// clusterFD, when non-nil, runs ordered full-duplex natively on a
 	// *ClusterClient by routing each command to a per-node FD child autopipeliner
 	// (one held connection per master). Mutually exclusive with fd and with the
@@ -1162,7 +1174,11 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// per command, and Submit is rejected there), as is cluster slot sharding
 	// (contentSharded: same-key commands always land in the same shard, so
 	// per-key order holds).
-	if config.NumShards > 1 && !config.Unordered && !blocking && !config.contentSharded {
+	// Full duplex is exempt for the SAME reason contentSharded is: its engines
+	// are chosen by key hash, so same-key commands always land on one wire and
+	// per-key order holds without an Unordered opt-in.
+	if config.NumShards > 1 && !config.Unordered && !blocking &&
+		!config.contentSharded && !config.FullDuplex {
 		return nil, fmt.Errorf(
 			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
@@ -1282,10 +1298,39 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// processBlocking Waits on the returned batch, as for a half-duplex enqueue.
 	var fdClient *Client
 	fdOn := false
-	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 && nShards == 1 {
+	// NOT gated on nShards: NumShards>1 selects several engines rather than
+	// disabling full duplex. This is the second half of the two-sited rule
+	// noted in Validate — while this line also required nShards==1, a
+	// NumShards>1 caller got half-duplex round-robin shards instead of the
+	// ordered engine it asked for, silently.
+	//
+	// Engines are flusherless, so nShards is forced to 1 below to keep
+	// enqueue's shard indexing safe; the engine count lives in ap.fds.
+	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 {
 		if c, ok := pipeliner.(*Client); ok && c.getPipelinePool() != nil {
 			fdOn, fdClient = true, c
 		}
+	}
+	if fdOn {
+		// Every engine holds one connection leased from the pipeline pool for
+		// as long as it runs, so more engines than that pool can hold would
+		// leave the surplus permanently spilling to the main pool — quietly
+		// competing with ordinary commands instead of pipelining. Fail loudly
+		// instead: the caller can raise PipelinePoolSize or ask for fewer
+		// engines. DefaultPipelinePoolSize is 10, so this bites at 11+.
+		if n := fdShardCount(config); n > 1 {
+			if pp := fdClient.getPipelinePool(); pp != nil && n > pp.Size() {
+				return nil, fmt.Errorf(
+					"redis: AutoPipelineOptions.NumShards=%d needs a pipeline pool of at "+
+						"least %d connections (each full-duplex engine holds one), but "+
+						"PipelinePoolSize gives %d; raise Options.PipelinePoolSize or lower "+
+						"NumShards", n, n, pp.Size())
+			}
+		}
+		// One flusherless shard, exactly as the single-engine path does: no
+		// half-duplex flusher runs and enqueue never does a %0, even though
+		// submit routes past it entirely.
+		nShards = 1
 	}
 	// Publish the EFFECTIVE full-duplex state, not the requested one: FullDuplex
 	// engages on a standalone *Client with a pipeline pool (fdOn) or on a
@@ -1341,9 +1386,18 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	}
 
 	if fdOn {
-		ap.fd = newFDEngine(ap, fdClient)
-		ap.wg.Add(1)
-		go ap.fd.run()
+		// NumShards>1 runs N engines on THIS client, each leasing its own
+		// connection from the pipeline pool. fds[0] is fd, so nothing
+		// downstream needs to know the difference when N==1.
+		n := fdShardCount(config)
+		ap.fds = make([]*fdEngine, 0, n)
+		for i := 0; i < n; i++ {
+			e := newFDEngine(ap, fdClient)
+			ap.fds = append(ap.fds, e)
+			ap.wg.Add(1)
+			go e.run()
+		}
+		ap.fd = ap.fds[0]
 	}
 	if clusterFDOn {
 		ap.clusterFD = newClusterFDRouter(ap, clusterFDCC, config, blocking)
@@ -1917,7 +1971,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// Ordered full-duplex: stream on one held connection. enqueue's async
 		// setReady is replicated here since we bypass it. ctx is threaded so a
 		// per-command process-hook host can parent its span correctly.
-		b := ap.fd.submit(ctx, cmd)
+		b := ap.fdFor(cmd).submit(ctx, cmd)
 		if !ap.blocking {
 			cmd.setReady(b)
 		}
@@ -3381,8 +3435,8 @@ func (ap *AutoPipeliner) Len() int {
 	// commands are buffered behind a backpressured/stalled FD writer, and callers
 	// using Len() for monitoring or local backpressure lose the signal in
 	// FullDuplex mode.
-	if ap.fd != nil {
-		total += ap.fd.q.depth()
+	for _, e := range ap.fds {
+		total += e.q.depth()
 	}
 	// Cluster full-duplex accepts commands onto per-node FD children, not the
 	// shard queues; include their backlog for the same monitoring reason.
