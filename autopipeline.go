@@ -408,10 +408,15 @@ func (cfg *AutoPipelineOptions) Validate() error {
 		// half-duplex. contentSharded is exempt: that flag is set by the CLUSTER
 		// wiring (never by users), where the silent fallback IS the documented
 		// behavior, since the options type cannot see the client type.
-		// SPIKE: NumShards>1 now means N engines, N held connections, routed by
-		// key hash so per-key order still holds. The rejection stays for the
-		// CLUSTER wiring's content-sharding, which sets contentSharded and means
-		// something different by NumShards.
+		// NumShards>1 under FullDuplex means N engines, each holding its own
+		// connection, routed by key hash so per-key order still holds (see
+		// autopipeline_fd_shards.go). It is therefore no longer rejected here.
+		//
+		// This is one half of a TWO-SITED rule: the fdOn gate in
+		// newAutoPipeliner must relax with it. Relaxing only this check leaves
+		// full duplex silently OFF for NumShards>1 — commands fall through to
+		// the half-duplex shards, which are unordered, and a same-key
+		// write-then-read can read the stale value.
 		_ = cfg.contentSharded
 	}
 	if cfg.MaxConcurrentBatches > 1 && !cfg.Unordered {
@@ -830,7 +835,7 @@ type AutoPipeliner struct {
 	// and no shard flusher is started. See autopipeline_fullduplex.go.
 	fd *fdEngine
 	// fds holds every full-duplex engine when NumShards>1 puts several held
-	// connections behind one autopipeliner (SPIKE: see autopipeline_fd_shards.go).
+	// connections behind one autopipeliner (see autopipeline_fd_shards.go).
 	// fds[0] is always fd, so every existing `ap.fd != nil` check still reads as
 	// "full duplex is on" and the single-engine path is unchanged.
 	fds  []*fdEngine
@@ -1169,9 +1174,9 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// per command, and Submit is rejected there), as is cluster slot sharding
 	// (contentSharded: same-key commands always land in the same shard, so
 	// per-key order holds).
-	// SPIKE: full duplex is exempt for the SAME reason contentSharded is — its
-	// engines are chosen by key hash, so same-key commands always land on one
-	// wire and per-key order holds without an Unordered opt-in.
+	// Full duplex is exempt for the SAME reason contentSharded is: its engines
+	// are chosen by key hash, so same-key commands always land on one wire and
+	// per-key order holds without an Unordered opt-in.
 	if config.NumShards > 1 && !config.Unordered && !blocking &&
 		!config.contentSharded && !config.FullDuplex {
 		return nil, fmt.Errorf(
@@ -1293,12 +1298,11 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// processBlocking Waits on the returned batch, as for a half-duplex enqueue.
 	var fdClient *Client
 	fdOn := false
-	// SPIKE: the nShards==1 term is gone. It was the real guard -- with
-	// NumShards>1 it silently turned full duplex OFF and fell back to
-	// half-duplex round-robin shards, which is unordered, so a same-key
-	// write-then-read broke. That is exactly what the Validate rejection
-	// existed to prevent, and removing that error without touching this line
-	// reproduced the bug it warned about.
+	// NOT gated on nShards: NumShards>1 selects several engines rather than
+	// disabling full duplex. This is the second half of the two-sited rule
+	// noted in Validate — while this line also required nShards==1, a
+	// NumShards>1 caller got half-duplex round-robin shards instead of the
+	// ordered engine it asked for, silently.
 	//
 	// Engines are flusherless, so nShards is forced to 1 below to keep
 	// enqueue's shard indexing safe; the engine count lives in ap.fds.
@@ -1308,6 +1312,21 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		}
 	}
 	if fdOn {
+		// Every engine holds one connection leased from the pipeline pool for
+		// as long as it runs, so more engines than that pool can hold would
+		// leave the surplus permanently spilling to the main pool — quietly
+		// competing with ordinary commands instead of pipelining. Fail loudly
+		// instead: the caller can raise PipelinePoolSize or ask for fewer
+		// engines. DefaultPipelinePoolSize is 10, so this bites at 11+.
+		if n := fdShardCount(config); n > 1 {
+			if pp := fdClient.getPipelinePool(); pp != nil && n > pp.Size() {
+				return nil, fmt.Errorf(
+					"redis: AutoPipelineOptions.NumShards=%d needs a pipeline pool of at "+
+						"least %d connections (each full-duplex engine holds one), but "+
+						"PipelinePoolSize gives %d; raise Options.PipelinePoolSize or lower "+
+						"NumShards", n, n, pp.Size())
+			}
+		}
 		// One flusherless shard, exactly as the single-engine path does: no
 		// half-duplex flusher runs and enqueue never does a %0, even though
 		// submit routes past it entirely.
@@ -1367,9 +1386,9 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	}
 
 	if fdOn {
-		// SPIKE: NumShards>1 runs N engines on THIS client, each leasing its own
-		// connection from the pipeline pool. fds[0] is fd so nothing downstream
-		// needs to know the difference when N==1.
+		// NumShards>1 runs N engines on THIS client, each leasing its own
+		// connection from the pipeline pool. fds[0] is fd, so nothing
+		// downstream needs to know the difference when N==1.
 		n := fdShardCount(config)
 		ap.fds = make([]*fdEngine, 0, n)
 		for i := 0; i < n; i++ {
