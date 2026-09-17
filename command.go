@@ -8465,10 +8465,8 @@ type MonitorCmd struct {
 // arguments for services that expose vendor-specific monitor command names.
 // Process the returned command with a client to open the monitor stream.
 func NewMonitorCmd(ctx context.Context, ch chan string, args ...interface{}) *MonitorCmd {
-	cmdArgs := make([]interface{}, 0, len(args))
-	for _, arg := range args {
-		cmdArgs = append(cmdArgs, arg)
-	}
+	cmdArgs := make([]interface{}, len(args))
+	copy(cmdArgs, args)
 
 	return &MonitorCmd{
 		baseCmd: baseCmd{
