@@ -206,10 +206,7 @@ func (m *Manager) clientSetName(ctx context.Context, h *handle, name string) err
 	if err := m.writeArgs(ctx, []any{"client", "setname", name}); err != nil {
 		// Partial write ⇒ desynced RESP stream: drop the connection for
 		// the reconnect replay (see Ping).
-		if m.conn != nil {
-			_ = m.closeConn(m.conn)
-			m.conn = nil
-		}
+		m.dropConnLocked(err)
 		return err
 	}
 	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, h: h})
@@ -301,10 +298,7 @@ func (m *Manager) handleSubscribe(ctx context.Context, h *handle, redisCommand s
 		if err = m.subscribe(ctx, redisCommand, handle, false, channels...); err != nil {
 			// Partial write ⇒ desynced RESP stream: drop the connection
 			// so the reconnect replays the registry.
-			if m.conn != nil {
-				_ = m.closeConn(m.conn)
-				m.conn = nil
-			}
+			m.dropConnLocked(err)
 			// The caller gets no handle, so a handle created by this call
 			// must not stay registered: it would be resubscribed by the
 			// replay with nobody to drain it, and would keep the manager
@@ -422,10 +416,7 @@ func (m *Manager) pingLocked(ctx context.Context, waiter *handle, shouldDial boo
 	if err := m.writeArgs(ctx, args); err != nil {
 		// Partial write ⇒ desynced RESP stream: drop the connection so
 		// the reconnect replays the registry.
-		if m.conn != nil {
-			_ = m.closeConn(m.conn)
-			m.conn = nil
-		}
+		m.dropConnLocked(err)
 		return err
 	}
 	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, h: waiter})
@@ -734,13 +725,7 @@ func (m *Manager) fanoutPatternMessageLocked(msg *Message) {
 }
 
 func deliverMessageLocked(hs map[*handle]struct{}, msg *Message) {
-	first := true
 	for h := range hs {
-		if first {
-			first = false
-			h.deliverLocked(msg)
-			continue
-		}
 		h.deliverLocked(cloneMessage(msg))
 	}
 }
@@ -891,8 +876,7 @@ func (m *Manager) connectIdempotentLocked(ctx context.Context) error {
 	}
 
 	if err := m.resubscribeLocked(ctx); err != nil {
-		_ = m.closeConn(m.conn)
-		m.conn = nil
+		m.dropConnLocked(err)
 		return err
 	}
 
@@ -941,11 +925,10 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 	}
 
 	if m.noSubscribersLocked() {
-		if m.conn != nil {
-			m.failReplyWaitersLocked(errPubSubNoConn)
-			_ = m.closeConn(m.conn)
-			m.conn = nil
-		}
+		// Settle waiters even with the conn already gone: a failed write
+		// can have dropped it while a ping-only handle still awaits its
+		// pong.
+		m.dropConnLocked(errPubSubNoConn)
 		return errPubSubNoConn
 	}
 
@@ -961,16 +944,13 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 		return err
 	}
 
-	if m.conn != nil {
-		_ = m.closeConn(m.conn)
-		m.conn = nil
-	}
+	// The old connection's outstanding replies die with it.
+	m.dropConnLocked(reason)
 
 	m.conn = newConn
 
 	if err := m.resubscribeLocked(ctx); err != nil {
-		_ = m.closeConn(m.conn)
-		m.conn = nil
+		m.dropConnLocked(err)
 
 		if m.requestTopologyRefresh != nil {
 			m.requestTopologyRefresh()
@@ -1079,10 +1059,7 @@ func (m *Manager) resubscribePending(interval, pingTimeout time.Duration) {
 		if err := m.subscribe(ctx, kind, nil, true, pending...); err != nil {
 			// Partial write ⇒ desynced RESP stream: drop the connection
 			// so the reconnect replays the registry.
-			if m.conn != nil {
-				_ = m.closeConn(m.conn)
-				m.conn = nil
-			}
+			m.dropConnLocked(err)
 			return
 		}
 	}
@@ -1220,10 +1197,7 @@ func (m *Manager) handleUnsubscribeLocked(ctx context.Context, h *handle, redisC
 		if err := m.subscribe(ctx, redisCommand, nil, false, orphanOrder...); err != nil {
 			// Partial write ⇒ desynced RESP stream: drop the connection so
 			// the reconnect replays exactly what is still registered.
-			if m.conn != nil {
-				_ = m.closeConn(m.conn)
-				m.conn = nil
-			}
+			m.dropConnLocked(err)
 			return err
 		}
 	}
@@ -1234,15 +1208,13 @@ func (m *Manager) handleUnsubscribeLocked(ctx context.Context, h *handle, redisC
 	// conn through Ping or ClientSetName, and its Close must not leave
 	// the conn (and the health-check traffic on it) running.
 	if m.conn != nil && m.noSubscribersLocked() {
-		m.failReplyWaitersLocked(errPubSubNoConn)
-		_ = m.closeConn(m.conn)
-		m.conn = nil
+		m.dropConnLocked(errPubSubNoConn)
 	}
 	return nil
 }
 
 // failReplyWaitersLocked settles every outstanding ledger entry when
-// the connection is deliberately released: the replies can no longer
+// the connection is dropped or released: the replies can no longer
 // arrive, so pong waiters get an error event instead of waiting
 // forever. Callers must hold m.mu.
 func (m *Manager) failReplyWaitersLocked(err error) {
@@ -1252,6 +1224,18 @@ func (m *Manager) failReplyWaitersLocked(err error) {
 		}
 	}
 	m.replyQueue = nil
+}
+
+// dropConnLocked settles the ledger and releases the connection: once
+// the conn is gone its outstanding replies can never arrive, and a
+// silent drop would strand pong waiters until a later connect wipes the
+// ledger. Callers must hold m.mu.
+func (m *Manager) dropConnLocked(err error) {
+	m.failReplyWaitersLocked(err)
+	if m.conn != nil {
+		_ = m.closeConn(m.conn)
+		m.conn = nil
+	}
 }
 
 // receive reads and parses one frame, returning it together with the
