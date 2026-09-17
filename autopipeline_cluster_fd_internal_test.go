@@ -32,6 +32,17 @@ func dialClusterFDTest(t *testing.T) *ClusterClient {
 		cc.Close()
 		t.Skipf("local cluster not reachable at %v: %v", clusterFDTestAddrs, err)
 	}
+	// Ping alone is insufficient: a Redis may answer on the cluster ports while
+	// the cluster is not formed (CLUSTERDOWN / cluster_state:fail), turning "no
+	// cluster available" into spurious failures. Gate on cluster_state:ok, same
+	// as skipIfClusterUnhealthy in the external autopipeline tests.
+	if info, err := cc.ClusterInfo(ctx).Result(); err != nil {
+		cc.Close()
+		t.Skipf("cluster not reachable (CLUSTER INFO): %v", err)
+	} else if !strings.Contains(info, "cluster_state:ok") {
+		cc.Close()
+		t.Skip("cluster not healthy (no cluster_state:ok)")
+	}
 	// Force a topology load so state.Masters is populated for the assertions.
 	if _, err := cc.state.ReloadOrGet(ctx); err != nil {
 		cc.Close()

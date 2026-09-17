@@ -1,0 +1,377 @@
+package pubsub
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"testing"
+	"time"
+)
+
+// TestPendingReconcilesWithHealthCheckDisabled pins that disabling the
+// health check does not disable subscription recovery: a subscribe
+// rejected with an error reply on a healthy connection is re-sent by
+// the dedicated resync loop (see Manager.resubscribe), the only Pending
+// reconciliation path once the health checker is parked.
+func TestPendingReconcilesWithHealthCheckDisabled(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379") // HealthCheckInterval -1: checker parked
+	cfg.PendingResyncFallback = 20 * time.Millisecond
+	m := newTestManager(t, srv, cfg)
+
+	if _, err := m.Subscribe(ctx, "denied"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "denied")
+	fsc.sendError(t, "NOPERM this user has no permissions")
+
+	// Still rejected: the resync keeps re-sending on its cadence.
+	fsc.expectCmd(t, "subscribe", "denied")
+	fsc.sendError(t, "NOPERM this user has no permissions")
+	fsc.expectCmd(t, "subscribe", "denied")
+	fsc.sendConfirm(t, "subscribe", "denied", 1)
+
+	// Confirmed: drain re-sends racing the confirmation, then require
+	// quiet — nothing is Pending, so the resync loop must write nothing.
+	drainDeadline := time.After(100 * time.Millisecond)
+drain:
+	for {
+		select {
+		case cmd := <-fsc.cmds:
+			if !slices.Equal(cmd, []string{"subscribe", "denied"}) {
+				t.Fatalf("unexpected command %v", cmd)
+			}
+			fsc.sendConfirm(t, "subscribe", "denied", 1)
+		case <-drainDeadline:
+			break drain
+		}
+	}
+	fsc.expectNoCmd(t, 100*time.Millisecond)
+}
+
+// TestSubscribeAfterFailedDialSelfHeals pins the wake-on-kept-
+// registration contract: a Subscribe on a caller-held handle whose dial
+// fails keeps its registration (see handleSubscribe) AND wakes the read
+// loop, whose reconnect cycle then retries the dial until the server is
+// back and replays the registry. Without the wake, the read loop —
+// parked idle after the previous unsubscribe released the connection —
+// would never run again, and the kept registration would never be
+// established (the health checker skips a nil conn, so nothing else
+// retries).
+func TestSubscribeAfterFailedDialSelfHeals(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "a")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "a")
+
+	// Unsubscribing the last name releases the connection; the read
+	// loop errors out of its blocked read and parks idle.
+	if err := h.Unsubscribe(ctx, "a"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectClosed(t)
+	// Give the read loop time to observe the closed conn and park; the
+	// fix must hold regardless (an unparked loop retries on its own),
+	// but the interesting regression case is the parked one.
+	time.Sleep(50 * time.Millisecond)
+
+	// Subscribe while the server is unreachable: the error surfaces to
+	// the caller, but the registration is kept for the reconnect
+	// replay.
+	dialErr := errors.New("server down")
+	srv.setDialErr(dialErr)
+	if _, err := h.Subscribe(ctx, "b"); !errors.Is(err, dialErr) {
+		t.Fatalf("Subscribe error = %v, want %v", err, dialErr)
+	}
+
+	// The server comes back. The woken read loop must redial on its own
+	// and replay the kept registration — no further user calls.
+	srv.setDialErr(nil)
+	fsc2 := srv.waitDial(t)
+	fsc2.expectCmd(t, "subscribe", "b")
+
+	// End to end: the replayed subscription delivers.
+	ch := h.Channel()
+	fsc2.sendMessage(t, "message", "b", "healed")
+	if msg := recvMsg(t, ch); msg.Payload != "healed" {
+		t.Fatalf("got %q, want \"healed\"", msg.Payload)
+	}
+}
+
+// TestRejectedSubscribeReconciles pins the Pending/Subscribed
+// reconciliation (see subscription): a subscribe the server rejects
+// answers with an error reply instead of a confirmation — writes are
+// fire-and-forget — so the name stays Pending and the health checker
+// re-sends it until the server accepts. Confirmed names are never
+// re-sent, and unsubscribing a Pending name stops its retries.
+func TestRejectedSubscribeReconciles(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379")
+	cfg.HealthCheckInterval = 10 * time.Millisecond
+	m := newTestManager(t, srv, cfg)
+
+	h, err := m.Subscribe(ctx, "ok")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ok")
+	fsc.sendConfirm(t, "subscribe", "ok", 1)
+
+	// The live health checker interleaves pings freely; only
+	// subscription commands are asserted.
+	waitCmdSkipPing := func() []string {
+		t.Helper()
+		for {
+			cmd := fsc.waitCmd(t)
+			if len(cmd) > 0 && cmd[0] == "ping" {
+				continue
+			}
+			return cmd
+		}
+	}
+	expectOnlyPings := func(d time.Duration) {
+		t.Helper()
+		deadline := time.After(d)
+		for {
+			select {
+			case cmd := <-fsc.cmds:
+				if len(cmd) == 0 || cmd[0] != "ping" {
+					t.Fatalf("unexpected command %v", cmd)
+				}
+			case <-deadline:
+				return
+			}
+		}
+	}
+
+	// The server rejects the subscribe: the name stays Pending and is
+	// re-sent — alone, without the confirmed one.
+	if _, err := h.Subscribe(ctx, "denied"); err != nil {
+		t.Fatalf("Subscribe denied: %v", err)
+	}
+	if got := waitCmdSkipPing(); !slices.Equal(got, []string{"subscribe", "denied"}) {
+		t.Fatalf("command = %v, want [subscribe denied]", got)
+	}
+	fsc.sendError(t, "NOPERM this user has no permissions")
+	if got := waitCmdSkipPing(); !slices.Equal(got, []string{"subscribe", "denied"}) {
+		t.Fatalf("resync sent %v, want [subscribe denied]", got)
+	}
+
+	// Still rejected: the retry keeps coming until the server accepts.
+	fsc.sendError(t, "NOPERM this user has no permissions")
+	if got := waitCmdSkipPing(); !slices.Equal(got, []string{"subscribe", "denied"}) {
+		t.Fatalf("resync sent %v, want [subscribe denied]", got)
+	}
+	fsc.sendConfirm(t, "subscribe", "denied", 2)
+
+	// Confirmed: drain re-sends racing the confirmation, then require
+	// quiet (~20 health cycles would re-send any surviving Pending).
+	drainDeadline := time.After(100 * time.Millisecond)
+drain:
+	for {
+		select {
+		case cmd := <-fsc.cmds:
+			if len(cmd) > 0 && cmd[0] == "ping" {
+				continue
+			}
+			if !slices.Equal(cmd, []string{"subscribe", "denied"}) {
+				t.Fatalf("unexpected command %v", cmd)
+			}
+		case <-drainDeadline:
+			break drain
+		}
+	}
+	expectOnlyPings(200 * time.Millisecond)
+
+	// End to end: the reconciled subscription delivers.
+	ch := h.Channel()
+	fsc.sendMessage(t, "message", "denied", "granted")
+	if msg := recvMsg(t, ch); msg.Payload != "granted" {
+		t.Fatalf("got %q, want \"granted\"", msg.Payload)
+	}
+
+	// Unsubscribing a Pending name stops its retries: the entry — and
+	// its state — dies with the last handle.
+	if _, err := h.Subscribe(ctx, "gone"); err != nil {
+		t.Fatalf("Subscribe gone: %v", err)
+	}
+	if got := waitCmdSkipPing(); !slices.Equal(got, []string{"subscribe", "gone"}) {
+		t.Fatalf("command = %v, want [subscribe gone]", got)
+	}
+	if err := h.Unsubscribe(ctx, "gone"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	// Re-sends may interleave until the unsubscribe lands.
+	for {
+		cmd := waitCmdSkipPing()
+		if slices.Equal(cmd, []string{"unsubscribe", "gone"}) {
+			break
+		}
+		if !slices.Equal(cmd, []string{"subscribe", "gone"}) {
+			t.Fatalf("unexpected command %v", cmd)
+		}
+	}
+	expectOnlyPings(200 * time.Millisecond)
+}
+
+// TestPingWriteFailureDropsConn pins the write-failure handling of the
+// non-subscription writers: a PING or CLIENT SETNAME that fails mid-write
+// may have partially reached the server, desyncing the RESP stream — the
+// connection must be dropped (like the subscribe/unsubscribe paths do)
+// so the read loop reconnects and replays the registry, instead of the
+// server parsing the next command as the truncated one's payload.
+func TestPingWriteFailureDropsConn(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(ctx context.Context, m *Manager) error
+	}{
+		{"Ping", func(ctx context.Context, m *Manager) error { return m.Ping(ctx) }},
+		{"ClientSetName", func(ctx context.Context, m *Manager) error { return m.ClientSetName(ctx, "n") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			srv := newFakeServer()
+			cfg := testConfig("node:6379")
+			cfg.WriteTimeout = 50 * time.Millisecond
+			m := newTestManager(t, srv, cfg)
+
+			if _, err := m.Subscribe(ctx, "a"); err != nil {
+				t.Fatalf("Subscribe: %v", err)
+			}
+			fsc1 := srv.waitDial(t)
+			fsc1.expectCmd(t, "subscribe", "a")
+			fsc1.sendConfirm(t, "subscribe", "a", 1)
+
+			// Park the pipe: the server's read loop checks paused only
+			// between frames, so its one in-flight read swallows the
+			// first write — the next write then blocks on the unread
+			// pipe until WriteTimeout and fails with a possibly
+			// half-written command on the wire.
+			fsc1.paused.Store(true)
+			var writeErr error
+			for range 3 {
+				if writeErr = tc.write(ctx, m); writeErr != nil {
+					break
+				}
+			}
+			if writeErr == nil {
+				t.Fatal("expected a write error")
+			}
+
+			// The failed write dropped the connection; the read loop
+			// reconnects and replays the registry.
+			fsc2 := srv.waitDial(t)
+			fsc2.expectCmd(t, "subscribe", "a")
+
+			// The replaced conn was closed; resume its read loop so it
+			// observes the close.
+			fsc1.paused.Store(false)
+			fsc1.expectClosed(t)
+		})
+	}
+}
+
+// TestPendingResyncSurvivesChurn pins retry liveness under unrelated
+// traffic: a rejected subscribe must still be re-sent even when other
+// handles write subscription commands more often than the resync
+// interval (each name carries its own retry deadline; writes must not
+// extend a manager-wide one).
+func TestPendingResyncSurvivesChurn(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379") // HealthCheckInterval -1: checker parked
+	cfg.PendingResyncFallback = 100 * time.Millisecond
+	m := newTestManager(t, srv, cfg)
+
+	if _, err := m.Subscribe(ctx, "bad"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "bad")
+	fsc.sendError(t, "NOPERM this user has no permissions") // stays Pending
+
+	c, err := m.Subscribe(ctx, "churn")
+	if err != nil {
+		t.Fatalf("Subscribe churn: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "churn")
+
+	// Churn faster than the resync interval; the re-send of "bad" must
+	// arrive anyway.
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case cmd := <-fsc.cmds:
+			if cmd[0] == "subscribe" && slices.Contains(cmd[1:], "bad") {
+				return
+			}
+		case <-tick.C:
+			if _, err := c.Subscribe(ctx, "churn"); err != nil {
+				t.Fatalf("churn subscribe: %v", err)
+			}
+		case <-deadline:
+			t.Fatal("pending subscribe was never re-sent under churn")
+		}
+	}
+}
+
+// TestSubscribeSkipsNamesCoveredByConnectReplay pins the fresh-connect
+// dedup: a Subscribe that has to dial replays every retained
+// registration, so its explicit write must carry only the names the
+// replay did not cover — a second write would draw a second
+// confirmation (duplicate events, two ledger entries).
+func TestSubscribeSkipsNamesCoveredByConnectReplay(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	// Seed a retained registration — what a failed connect leaves behind
+	// on a caller-held handle — without dialing.
+	h := m.NewHandle().(*handle)
+	m.mu.Lock()
+	h.channels["kept"] = struct{}{}
+	registerHandle(m.subscribers, "kept", h)
+	m.mu.Unlock()
+
+	// Subscribing to the retained name plus a new one dials fresh: the
+	// replay covers "kept", the explicit write only "new".
+	if _, err := h.Subscribe(ctx, "kept", "new"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "kept") // the connect replay
+	fsc.expectCmd(t, "subscribe", "new")  // the filtered explicit write
+	fsc.expectNoCmd(t, 100*time.Millisecond)
+
+	// Exactly one confirmation per name surfaces on Events.
+	seen := map[string]int{}
+	for range 2 {
+		sub, ok := recvEvent(t, h.Events()).(*Subscription)
+		if !ok || sub.Kind != "subscribe" {
+			t.Fatalf("event = %#v, want a subscribe confirmation", sub)
+		}
+		seen[sub.Channel]++
+	}
+	if seen["kept"] != 1 || seen["new"] != 1 {
+		t.Fatalf("confirmations = %v, want exactly one per name", seen)
+	}
+	select {
+	case ev := <-h.Events():
+		t.Fatalf("duplicate event after both confirmations: %#v", ev)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
