@@ -1,0 +1,8 @@
+{
+  "repo": "redis/go-redis",
+  "number": 3968,
+  "base": "master",
+  "head": "fix-issue-3761",
+  "fork": "VedantMadane/go-redis",
+  "title": "fix(pubsub): avoid panics on Channel conflict and Ring empty subscribe"
+}
