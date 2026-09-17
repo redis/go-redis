@@ -88,3 +88,10 @@ func TestNewMonitorCmd_CustomCommand(t *testing.T) {
 		t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
 	}
 }
+
+func TestNewMonitorCmd_CustomCommandIsKeyless(t *testing.T) {
+	cmd := NewMonitorCmd(context.Background(), make(chan string, 1), "IMONITOR", "node-1")
+	if got := cmdFirstKeyPosWithInfo(cmd, nil); got != 0 {
+		t.Fatalf("custom monitor first key pos = %d, want 0", got)
+	}
+}

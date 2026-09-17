@@ -1754,6 +1754,10 @@ func runsOutsidePipeline(name string) bool {
 	return ok
 }
 
+func runsOutsidePipelineCmd(cmd Cmder) bool {
+	return cmd.GetCmdType() == CmdTypeMonitor || runsOutsidePipeline(cmd.Name())
+}
+
 // blockingCommands are commands that park on the server until data arrives or
 // their own timeout expires. The TYPED helpers set a per-command read timeout
 // (see cmdable.BLPop), which submit already diverts on; a RAW Cmder built by
@@ -1905,7 +1909,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// fan-out and aggregation. Running the preflight first therefore rejected
 	// commands that would have worked — typed WAIT/WAITAOF on a cluster with
 	// command policies enabled (review finding by codex on #3942).
-	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
+	diverted := cmd.readTimeout() != nil || runsOutsidePipelineCmd(cmd) || isBlockingCmd(cmd) ||
 		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,

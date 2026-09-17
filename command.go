@@ -299,6 +299,10 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 // Uses CommandInfo.FirstKeyPos when available (via cache peek, no network call), falling
 // back to a hardcoded table. eval/evalsha variants are resolved from the runtime numkeys arg.
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
+	if cmd.GetCmdType() == CmdTypeMonitor {
+		return 0
+	}
+
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
 	}
