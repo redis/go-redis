@@ -327,3 +327,51 @@ func TestPendingResyncSurvivesChurn(t *testing.T) {
 		}
 	}
 }
+
+// TestSubscribeSkipsNamesCoveredByConnectReplay pins the fresh-connect
+// dedup: a Subscribe that has to dial replays every retained
+// registration, so its explicit write must carry only the names the
+// replay did not cover — a second write would draw a second
+// confirmation (duplicate events, two ledger entries).
+func TestSubscribeSkipsNamesCoveredByConnectReplay(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	// Seed a retained registration — what a failed connect leaves behind
+	// on a caller-held handle — without dialing.
+	h := m.NewHandle().(*handle)
+	m.mu.Lock()
+	h.channels["kept"] = struct{}{}
+	registerHandle(m.subscribers, "kept", h)
+	m.mu.Unlock()
+
+	// Subscribing to the retained name plus a new one dials fresh: the
+	// replay covers "kept", the explicit write only "new".
+	if _, err := h.Subscribe(ctx, "kept", "new"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "kept") // the connect replay
+	fsc.expectCmd(t, "subscribe", "new")  // the filtered explicit write
+	fsc.expectNoCmd(t, 100*time.Millisecond)
+
+	// Exactly one confirmation per name surfaces on Events.
+	seen := map[string]int{}
+	for range 2 {
+		sub, ok := recvEvent(t, h.Events()).(*Subscription)
+		if !ok || sub.Kind != "subscribe" {
+			t.Fatalf("event = %#v, want a subscribe confirmation", sub)
+		}
+		seen[sub.Channel]++
+	}
+	if seen["kept"] != 1 || seen["new"] != 1 {
+		t.Fatalf("confirmations = %v, want exactly one per name", seen)
+	}
+	select {
+	case ev := <-h.Events():
+		t.Fatalf("duplicate event after both confirmations: %#v", ev)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
