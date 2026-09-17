@@ -804,9 +804,6 @@ func (m *Manager) healthCheck() {
 		case <-timer.C:
 			select {
 			case <-m.pingCh:
-				// A frame arrived within the window — the connection is
-				// alive, no ping needed. It may have been an error reply
-				// rejecting a subscribe: reconcile Pending.
 				m.resubscribePending(interval, pingTimeout)
 				continue
 			default:
@@ -1327,15 +1324,13 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 			m.requestTopologyRefresh()
 		}
 		m.mu.Lock()
-		routed := false
-		// Only the live connection's ledger may be settled.
-		if m.conn == cn {
-			if w, ok := m.consumeErrorReplyLocked(); ok && !w.broadcast && w.h != nil {
-				w.h.deliverLocked(err)
-				routed = true
-			}
+		if m.conn != cn {
+			m.mu.Unlock()
+			return nil, nil, nil
 		}
-		if !routed {
+		if w, ok := m.consumeErrorReplyLocked(); ok && !w.broadcast && w.h != nil {
+			w.h.deliverLocked(err)
+		} else {
 			m.fanoutErrorLocked(err)
 		}
 		m.mu.Unlock()
