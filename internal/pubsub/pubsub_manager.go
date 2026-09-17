@@ -269,8 +269,24 @@ func (m *Manager) handleSubscribe(ctx context.Context, h *handle, redisCommand s
 	// registry in map order, while the explicit write below keeps
 	// confirmations in subscription order.
 	err := m.connectIdempotentLocked(ctx)
+	freshConn := err == nil
 	if errors.Is(err, errConnExists) {
 		err = nil
+	}
+
+	// A fresh dial's replay has just written every name registered so
+	// far; writing one again would draw a second confirmation (duplicate
+	// events, two ledger entries). The explicit write carries only the
+	// names the replay did not cover.
+	toWrite := channels
+	if freshConn {
+		registry := m.registryForKind(redisCommand)
+		toWrite = make([]string, 0, len(channels))
+		for _, name := range channels {
+			if _, ok := registry[name]; !ok {
+				toWrite = append(toWrite, name)
+			}
+		}
 	}
 
 	// Register even when the connect failed: the intent must survive for
@@ -295,18 +311,20 @@ func (m *Manager) handleSubscribe(ctx context.Context, h *handle, redisCommand s
 	}
 
 	if err == nil {
-		if err = m.subscribe(ctx, redisCommand, handle, false, channels...); err != nil {
-			// Partial write ⇒ desynced RESP stream: drop the connection
-			// so the reconnect replays the registry.
-			m.dropConnLocked(err)
-			// The caller gets no handle, so a handle created by this call
-			// must not stay registered: it would be resubscribed by the
-			// replay with nobody to drain it, and would keep the manager
-			// from ever going idle.
-			if h == nil {
-				m.rollbackSubscribeLocked(handle, redisCommand, channels)
+		if len(toWrite) > 0 {
+			if err = m.subscribe(ctx, redisCommand, handle, false, toWrite...); err != nil {
+				// Partial write ⇒ desynced RESP stream: drop the connection
+				// so the reconnect replays the registry.
+				m.dropConnLocked(err)
+				// The caller gets no handle, so a handle created by this call
+				// must not stay registered: it would be resubscribed by the
+				// replay with nobody to drain it, and would keep the manager
+				// from ever going idle.
+				if h == nil {
+					m.rollbackSubscribeLocked(handle, redisCommand, channels)
+				}
+				return nil, err
 			}
-			return nil, err
 		}
 	} else {
 		// A caller-held handle keeps its registration for the reconnect
@@ -699,11 +717,15 @@ func (m *Manager) retireWaitersLocked(kind string, names []string) {
 	}
 }
 
-// consumeErrorReplyLocked settles an error reply.
-func (m *Manager) consumeErrorReplyLocked() {
-	if len(m.replyQueue) > 0 {
-		m.replyQueue = slices.Delete(m.replyQueue, 0, 1)
+// consumeErrorReplyLocked settles an error reply against the oldest
+// ledger entry, returning it (ok = false: the ledger was empty).
+func (m *Manager) consumeErrorReplyLocked() (replyWaiter, bool) {
+	if len(m.replyQueue) == 0 {
+		return replyWaiter{}, false
 	}
+	w := m.replyQueue[0]
+	m.replyQueue = slices.Delete(m.replyQueue, 0, 1)
+	return w, true
 }
 
 func (m *Manager) fanoutShardedMessageLocked(shardedMsg *Message) {
@@ -746,11 +768,14 @@ func (m *Manager) fanoutErrorLocked(err error) {
 	}
 }
 
-// healthCheck pings the shared connection whenever it has been silent
-// for HealthCheckInterval (every received frame feeds m.pingCh, resetting
-// the clock), reconnects when the ping fails, and reconciles Pending
-// subscriptions. Settings are re-snapshot every cycle; interval <= 0
-// parks the loop until a config update revives it.
+// healthCheck pings the shared connection when a HealthCheckInterval
+// window passes without inbound traffic (every received frame feeds
+// m.pingCh), reconnects when the ping fails, and reconciles Pending
+// subscriptions. The checker wakes once per window — never per frame,
+// which under steady traffic would spin taking the manager lock — and
+// treats a fed pingCh as proof of life for the window that just
+// elapsed. Settings are re-snapshot every cycle; interval <= 0 parks
+// the loop until a config update revives it.
 func (m *Manager) healthCheck() {
 	timer := time.NewTimer(time.Minute)
 	timer.Stop()
@@ -773,12 +798,20 @@ func (m *Manager) healthCheck() {
 
 		timer.Reset(interval)
 		select {
-		case <-m.pingCh:
-			// A frame arrived — the connection is alive. It may be an
-			// error reply rejecting a subscribe: reconcile Pending.
-			m.resubscribePending(interval, pingTimeout)
 		case <-m.cfgChanged:
+		case <-m.done:
+			return
 		case <-timer.C:
+			select {
+			case <-m.pingCh:
+				// A frame arrived within the window — the connection is
+				// alive, no ping needed. It may have been an error reply
+				// rejecting a subscribe: reconcile Pending.
+				m.resubscribePending(interval, pingTimeout)
+				continue
+			default:
+			}
+
 			ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 			pingErr := m.ping(ctx, nil, false)
 			cancel()
@@ -795,8 +828,6 @@ func (m *Manager) healthCheck() {
 			} else {
 				m.resubscribePending(interval, pingTimeout)
 			}
-		case <-m.done:
-			return
 		}
 	}
 }
@@ -944,13 +975,18 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 		return err
 	}
 
-	// The old connection's outstanding replies die with it.
-	m.dropConnLocked(reason)
-
+	oldConn := m.conn
 	m.conn = newConn
+
+	// The old connection's outstanding replies die with the switch;
+	// settle them before the replay builds the fresh ledger.
+	m.failReplyWaitersLocked(reason)
 
 	if err := m.resubscribeLocked(ctx); err != nil {
 		m.dropConnLocked(err)
+		if oldConn != nil {
+			_ = m.closeConn(oldConn)
+		}
 
 		if m.requestTopologyRefresh != nil {
 			m.requestTopologyRefresh()
@@ -959,6 +995,13 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 			"pubsub: resubscribe failed (attempt %d, reconnecting due to: %v): %v",
 			m.reconnectAttempts, reason, err)
 		return err
+	}
+
+	// Retire the handoff source only now, with the replacement
+	// subscribed: closing it earlier would open a window with neither
+	// connection subscribed.
+	if oldConn != nil {
+		_ = m.closeConn(oldConn)
 	}
 
 	internal.Logger.Printf(ctx, "pubsub: reconnected (attempts: %d, due to: %v)", m.reconnectAttempts, reason)
@@ -1271,9 +1314,11 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 			_ = m.reconnectBounded(ctx, cn, err)
 			return nil, nil, err
 		}
-		// A RESP error reply leaves the connection healthy. It cannot be
-		// attributed to one subscriber, so it fans out to all of them
-		// (Receive surfaces it, the Channel pumps skip it). A rejected
+		// A RESP error reply leaves the connection healthy. When the
+		// ledger attributes it to the handle that issued the rejected
+		// command, only that handle receives it; replay (broadcast) and
+		// otherwise unowned entries fan out to every handle (Receive
+		// surfaces it, the Channel pumps skip it). A rejected
 		// (re)subscribe stays Pending and resubscribePending re-sends it.
 		internal.Logger.Printf(ctx, "pubsub: error reply on shared connection: %v", err)
 		// MOVED/ASK: the topology view is stale; the reload-driven sweep
@@ -1282,11 +1327,17 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 			m.requestTopologyRefresh()
 		}
 		m.mu.Lock()
+		routed := false
 		// Only the live connection's ledger may be settled.
 		if m.conn == cn {
-			m.consumeErrorReplyLocked()
+			if w, ok := m.consumeErrorReplyLocked(); ok && !w.broadcast && w.h != nil {
+				w.h.deliverLocked(err)
+				routed = true
+			}
 		}
-		m.fanoutErrorLocked(err)
+		if !routed {
+			m.fanoutErrorLocked(err)
+		}
 		m.mu.Unlock()
 		return nil, nil, nil
 	}

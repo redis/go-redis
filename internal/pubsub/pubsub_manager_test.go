@@ -345,32 +345,31 @@ func TestManagerReconnect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Subscribe: %v", err)
 		}
-		ch := h.Channel()
-		raw := m.NewHandle() // raw-events subscriber view
+		bystander := m.NewHandle()
 		fsc := srv.waitDial(t)
 		fsc.expectCmd(t, "subscribe", "ch1")
 
 		// A RESP error reply (e.g. NOPERM) is not treated as a broken
 		// connection: no redial, the stream keeps working, and — since
-		// it cannot be attributed to one subscriber — it is fanned out
-		// to every handle's events stream, where Receive surfaces it.
+		// the ledger attributes it to the rejected SUBSCRIBE — it is
+		// delivered only to the handle that issued it.
 		fsc.sendError(t, "NOPERM this user has no permissions")
 		select {
 		case fsc2 := <-srv.dialCh:
 			t.Fatalf("unexpected reconnect to %q after an error reply", fsc2.addr)
 		case <-time.After(100 * time.Millisecond):
 		}
+		if ev, ok := recvEvent(t, h.Events()).(error); !ok || !strings.Contains(ev.Error(), "NOPERM") {
+			t.Fatalf("event = %#v, want the NOPERM error reply", ev)
+		}
 		select {
-		case ev := <-raw.Events():
-			err, ok := ev.(error)
-			if !ok || !strings.Contains(err.Error(), "NOPERM") {
-				t.Fatalf("raw event = %#v, want the NOPERM error reply", ev)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for the error reply on Events")
+		case ev := <-bystander.Events():
+			t.Fatalf("another handle's command error delivered to a bystander: %#v", ev)
+		case <-time.After(100 * time.Millisecond):
 		}
 
 		// The message channel view skips the error and keeps delivering.
+		ch := h.Channel()
 		fsc.sendMessage(t, "message", "ch1", "still-alive")
 		if msg := recvMsg(t, ch); msg.Payload != "still-alive" {
 			t.Fatalf("got %q, want \"still-alive\"", msg.Payload)
