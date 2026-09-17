@@ -1525,3 +1525,52 @@ func TestCloseIfIdleSparesLiveEmptyHandles(t *testing.T) {
 		t.Fatal("CloseIfIdle left a manager with no live handles open")
 	}
 }
+
+// TestStaleConnErrorReplyDiscarded pins the stale-source guard in
+// receive: an error reply read from a connection the manager has
+// already retired — a foreground drop can land between the reader's
+// ReadReply and its routing lock — settles nothing and reaches no
+// handle, because the retired session's command fates are obsolete.
+func TestStaleConnErrorReplyDiscarded(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	bystander := m.NewHandle()
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "ch")
+	if sub, ok := recvEvent(t, h.Events()).(*Subscription); !ok || sub.Kind != "subscribe" {
+		t.Fatalf("event = %#v, want the subscribe confirmation", sub)
+	}
+
+	// Retire the connection out from under the blocked reader without
+	// closing the pipe: the error frame below then arrives from a conn
+	// that is no longer the manager's, exactly as when a drop lands
+	// between the reader's ReadReply and its routing lock.
+	m.mu.Lock()
+	m.conn = nil
+	m.mu.Unlock()
+
+	fsc1.sendError(t, "NOPERM this user has no permissions")
+
+	// The reader discards the stale error; its next receive sees no
+	// conn and reconnects with the replay.
+	fsc2 := srv.waitDial(t)
+	fsc2.expectCmd(t, "subscribe", "ch")
+
+	// The replay confirmation is h's next event — a fanned-out stale
+	// error would have preceded it.
+	if sub, ok := recvEvent(t, h.Events()).(*Subscription); !ok || sub.Kind != "subscribe" {
+		t.Fatalf("event = %#v, want the replay confirmation, not the stale error", sub)
+	}
+	select {
+	case ev := <-bystander.Events():
+		t.Fatalf("stale error delivered to a bystander: %#v", ev)
+	default:
+	}
+}
