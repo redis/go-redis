@@ -177,8 +177,10 @@ func (h *handle) deliverSubscriptionLocked(sub *Subscription) {
 	h.deliverLocked(&c)
 }
 
-// deliverPongLocked delivers a pong; pongs are advisory, so a full
-// buffer drops them without accounting.
+// deliverPongLocked delivers a pong; pongs are advisory (Ping promises
+// at most one pong on Events, not exactly one), so a full buffer drops
+// them without accounting. The pong's replyQueue entry is already
+// settled by then, so the ledger stays consistent either way.
 func (h *handle) deliverPongLocked(pong *Pong) {
 	if h.closed {
 		return
@@ -263,7 +265,8 @@ func (h *handle) Subscriptions() (channels, patterns, schannels []string) {
 }
 
 // Ping writes a PING on the shared connection; the pong surfaces on
-// this handle's Events (see Manager.replyQueue).
+// this handle's Events (see Manager.replyQueue), best-effort — it is
+// dropped if the buffer is full.
 func (h *handle) Ping(ctx context.Context, payload ...string) error {
 	return h.m.ping(ctx, h, true, payload...)
 }

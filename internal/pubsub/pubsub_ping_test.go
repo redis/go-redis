@@ -530,18 +530,109 @@ func TestConnReleaseFailsPongWaiters(t *testing.T) {
 	fsc.expectClosed(t)
 
 	// The waiter is failed explicitly instead of waiting forever.
+	expectErrorEvent(t, a.Events())
+}
+
+// expectErrorEvent drains events until an error event arrives,
+// discarding other events (confirmations, messages).
+func expectErrorEvent(t *testing.T, events <-chan any) {
+	t.Helper()
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
-		case ev, ok := <-a.Events():
+		case ev, ok := <-events:
 			if !ok {
-				t.Fatal("events closed while waiting for the failed-wait error")
+				t.Fatal("events closed while waiting for an error event")
 			}
 			if _, isErr := ev.(error); isErr {
 				return
 			}
 		case <-deadline:
-			t.Fatal("timed out: the released connection's pong wait was never failed")
+			t.Fatal("timed out waiting for an error event")
 		}
 	}
+}
+
+// TestWriteFailureFailsPongWaiters pins ledger settlement on a
+// write-failure drop: when a later command's failed write forces the
+// manager to drop the connection, an outstanding pong wait is failed
+// with an error event — not stranded until some future connect wipes
+// the ledger.
+func TestWriteFailureFailsPongWaiters(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	// A ping-only handle: nothing is registered, so no reconnect replay
+	// runs after the drop to settle the wait as a side effect.
+	h := m.NewHandle()
+	if err := h.Ping(ctx, "lost"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "ping", "lost")
+
+	// Pause the server's read loop; the pause takes effect after the
+	// pending read consumes one more frame, so a sacrificial ping arms
+	// it. The next write then blocks on the synchronous pipe and hits
+	// the write timeout.
+	fsc.paused.Store(true)
+	if err := m.Ping(ctx); err != nil {
+		t.Fatalf("arming ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping")
+	if err := h.Ping(ctx, "blocked"); err == nil {
+		t.Fatal("Ping with a blocked write succeeded, want error")
+	}
+
+	// The drop settles the first ping's wait with an error event.
+	expectErrorEvent(t, h.Events())
+
+	fsc.paused.Store(false)
+	fsc.expectClosed(t)
+
+	// With nothing subscribed, the drop must not trigger a redial.
+	select {
+	case <-srv.dialCh:
+		t.Fatal("the dropped ping-only connection was redialed")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestReconnectFailsDeadPongWaiters pins ledger settlement across a
+// reconnect: a pong wait whose connection died is failed with an error
+// event when the replacement takes over — its reply can never arrive —
+// and the fresh ledger attributes new pongs cleanly.
+func TestReconnectFailsDeadPongWaiters(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "ch")
+
+	// The ping is written but never answered: the server dies first.
+	if err := h.Ping(ctx, "lost"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc1.expectCmd(t, "ping", "lost")
+	_ = fsc1.conn.Close()
+
+	// The reconnect replays the registry and fails the dead wait.
+	fsc2 := srv.waitDial(t)
+	fsc2.expectCmd(t, "subscribe", "ch")
+	expectErrorEvent(t, h.Events())
+
+	// The replacement's ledger starts clean: a fresh ping gets its pong.
+	if err := h.Ping(ctx, "fresh"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	fsc2.expectCmd(t, "ping", "fresh")
+	fsc2.sendMessage(t, "pong", "fresh")
+	expectPong(t, h.Events(), "fresh")
 }

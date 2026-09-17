@@ -395,20 +395,3 @@ func recvEvent(t *testing.T, ch <-chan any) any {
 		return nil
 	}
 }
-
-// expectEventChanClosed drains ch until it closes or the timeout
-// expires.
-func expectEventChanClosed(t *testing.T, ch <-chan any) {
-	t.Helper()
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case _, ok := <-ch:
-			if !ok {
-				return
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for the event channel to close")
-		}
-	}
-}
