@@ -299,6 +299,10 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 // Uses CommandInfo.FirstKeyPos when available (via cache peek, no network call), falling
 // back to a hardcoded table. eval/evalsha variants are resolved from the runtime numkeys arg.
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
+	if cmd.GetCmdType() == CmdTypeMonitor {
+		return 0
+	}
+
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
 	}
@@ -8461,11 +8465,17 @@ type MonitorCmd struct {
 	mu     sync.Mutex
 }
 
-func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
+// NewMonitorCmd creates a monitor command with fully caller-specified command
+// arguments for services that expose vendor-specific monitor command names.
+// Process the returned command with a client to open the monitor stream.
+func NewMonitorCmd(ctx context.Context, ch chan string, args ...interface{}) *MonitorCmd {
+	cmdArgs := make([]interface{}, len(args))
+	copy(cmdArgs, args)
+
 	return &MonitorCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
-			args:    []interface{}{"monitor"},
+			args:    cmdArgs,
 			cmdType: CmdTypeMonitor,
 		},
 		ch:     ch,
@@ -8951,7 +8961,7 @@ func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
 func (cmd *MonitorCmd) Clone() Cmder {
 	// MonitorCmd cannot be safely cloned due to channels and goroutines
 	// Return a new MonitorCmd with the same channel
-	return newMonitorCmd(cmd.ctx, cmd.ch)
+	return NewMonitorCmd(cmd.ctx, cmd.ch, cmd.args...)
 }
 
 // ExtractCommandValue extracts the value from a command result using the fast enum-based approach
