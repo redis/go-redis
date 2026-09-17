@@ -62,7 +62,7 @@ func TestMonitorWithArgs_Args(t *testing.T) {
 }
 
 func TestMonitorCmdClone_PreservesArgs(t *testing.T) {
-	cmd := newMonitorCmd(context.Background(), make(chan string, 1), "127.0.0.1:6379")
+	cmd := monitor(captureCmdable(new(Cmder)), context.Background(), make(chan string, 1), "127.0.0.1:6379")
 
 	cloned, ok := cmd.Clone().(*MonitorCmd)
 	if !ok {
@@ -72,5 +72,19 @@ func TestMonitorCmdClone_PreservesArgs(t *testing.T) {
 	want := []interface{}{"monitor", "127.0.0.1:6379"}
 	if !reflect.DeepEqual(cloned.Args(), want) {
 		t.Errorf("clone args mismatch\n got: %#v\nwant: %#v", cloned.Args(), want)
+	}
+}
+
+func TestNewMonitorCmd_CustomCommand(t *testing.T) {
+	cmd := NewMonitorCmd(
+		context.Background(),
+		make(chan string, 1),
+		"IMONITOR",
+		"node-1",
+	)
+
+	want := []interface{}{"IMONITOR", "node-1"}
+	if !reflect.DeepEqual(cmd.Args(), want) {
+		t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
 	}
 }

@@ -915,7 +915,12 @@ See further: Redis MONITOR command: https://redis.io/commands/monitor
 // MONITOR stays off the shared cmdable surface so ordinary Pipeline values do
 // not inherit it through method promotion.
 func monitor(c cmdable, ctx context.Context, ch chan string, args ...string) *MonitorCmd {
-	cmd := newMonitorCmd(ctx, ch, args...)
+	cmdArgs := make([]interface{}, 0, 1+len(args))
+	cmdArgs = append(cmdArgs, "monitor")
+	for _, arg := range args {
+		cmdArgs = append(cmdArgs, arg)
+	}
+	cmd := NewMonitorCmd(ctx, ch, cmdArgs...)
 	_ = c(ctx, cmd)
 	return cmd
 }
