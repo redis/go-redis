@@ -35,8 +35,11 @@ type PubSuber interface {
 	// owns, one slice per namespace.
 	Subscriptions() (channels, patterns, schannels []string)
 
-	// Ping pings the subscriber's connection(s); exactly one pong per
+	// Ping pings the subscriber's connection(s); at most one pong per
 	// call surfaces on Events, however many connections were pinged.
+	// Like messages, a pong is dropped if the subscriber's buffer is
+	// full (see PubSubChanSize), so callers awaiting one should apply
+	// a timeout.
 	Ping(ctx context.Context, payload ...string) error
 	// PingSilent is Ping without the Events pong.
 	PingSilent(ctx context.Context, payload ...string) error
