@@ -113,7 +113,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 		}
 	}
 
-	if err != nil {
+	if err != nil && !isNilReply(err) {
 		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
 		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
@@ -176,7 +176,7 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	}
 
 	// Add error attributes if pipeline failed
-	if err != nil {
+	if err != nil && !isNilReply(err) {
 		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
 		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
@@ -186,6 +186,12 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 
 	// Record the histogram
 	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// isNilReply reports whether err is redis.Nil. An empty reply is a successful
+// command that returned no value, so it carries no error attributes.
+func isNilReply(err error) bool {
+	return errors.Is(err, redis.Nil)
 }
 
 // classifyError returns the error.type attribute value

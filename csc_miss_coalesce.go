@@ -480,17 +480,17 @@ func (mc *cscMissCoalescer) settle(req *cscMissReq, err error) {
 }
 
 // emitReplyErr records the native error metric for a settled REPLY error (e.g.
-// redis.Nil, WRONGTYPE) at the point the caller consumes it — the single
-// emission site for coalesced reply errors, giving parity with processWithRetry
-// on the uncoalesced path while staying exactly-once per operation. Excluded:
-// session errors and shed retries (processCached re-runs those through
-// processWithRetry, which emits its own outcome) and the cancellation branch (a
-// caller returning ctx.Err() already emitted its cancellation; emitting the late
-// reply too recorded two conflicting error types for one operation). Reading
-// req.servedBy is safe here: the caller's req.done receive is the
-// happens-before edge for that field.
+// WRONGTYPE) at the point the caller consumes it — the single emission site for
+// coalesced reply errors, giving parity with processWithRetry on the uncoalesced
+// path while staying exactly-once per operation. Excluded: a Nil reply (a
+// successful command with no value), session errors and shed retries
+// (processCached re-runs those through processWithRetry, which emits its own
+// outcome) and the cancellation branch (a caller returning ctx.Err() already
+// emitted its cancellation; emitting the late reply too recorded two
+// conflicting error types for one operation). Reading req.servedBy is safe
+// here: the caller's req.done receive is the happens-before edge for that field.
 func (mc *cscMissCoalescer) emitReplyErr(ctx context.Context, req *cscMissReq, err error) {
-	if err == nil || err == errCSCRetryUncached {
+	if err == nil || err == errCSCRetryUncached || isNilReply(err) {
 		return
 	}
 	var sessErr cscSessionError

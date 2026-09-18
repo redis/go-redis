@@ -1641,8 +1641,12 @@ func (c *baseClient) processWithRetry(
 // failure: err classified, the connection that served the last attempt (nil when
 // none did), and the retries spent (attempts beyond the first). Every exit that
 // ends a command with an error shares it: the two in processWithRetry and the
-// exhausted-budget return in processCached.
+// exhausted-budget return in processCached. A Nil reply is a successful command
+// with no value, so it never reaches the callback.
 func recordCommandError(ctx context.Context, err error, cn *pool.Conn, retries int) {
+	if isNilReply(err) {
+		return
+	}
 	errorCallback := pool.GetMetricErrorCallback()
 	if errorCallback == nil {
 		return
@@ -2115,7 +2119,7 @@ func (c *baseClient) generalProcessPipeline(
 				pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
 			}
 
-			if lastErr != nil {
+			if lastErr != nil && !isNilReply(lastErr) {
 				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 					errorType, statusCode, isInternal := classifyCommandError(lastErr)
 					errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
