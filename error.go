@@ -185,6 +185,11 @@ func isRedisError(err error) bool {
 	return errors.As(err, &protoRedisErr)
 }
 
+// isNilReply reports whether err is the Nil sentinel, even when wrapped.
+func isNilReply(err error) bool {
+	return errors.Is(err, Nil)
+}
+
 func isBadConn(err error, allowTimeout bool, addr string) bool {
 	if err == nil {
 		return false

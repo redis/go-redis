@@ -3803,6 +3803,32 @@ func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 	}
 }
 
+// TestFDReportReplyMetricsSkipsNilReply pins that a Nil reply — a successful
+// command with no value — is not counted as a client error by the reader's
+// per-reply error callback, while a real Redis error still is. Pure, no server.
+func TestFDReportReplyMetricsSkipsNilReply(t *testing.T) {
+	var calls atomic.Int64
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
+			calls.Add(1)
+		},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+	req := fdReq{cmd: NewStringCmd(context.Background(), "get", "k"), attempts: 1}
+
+	fd.reportReplyMetrics(context.Background(), req, Nil, nil)
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("error callback invoked %d times for Nil, want 0", got)
+	}
+
+	fd.reportReplyMetrics(context.Background(), req, proto.RedisError("WRONGTYPE Operation"), nil)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("error callback invoked %d times, want 1: a real Redis error must still be recorded", got)
+	}
+}
+
 // TestFDFailReqsRecoversMetricCallbackPanic pins that a panicking user MetricError
 // callback on the engine-goroutine failure path (failReqs, reached on lease
 // failure / retry exhaustion / Close) cannot abort settlement: every req must get
