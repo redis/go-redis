@@ -206,7 +206,7 @@ func (c cmdable) PExpireAt(ctx context.Context, key string, tm time.Time) *BoolC
 		ctx,
 		"pexpireat",
 		key,
-		tm.UnixNano()/int64(time.Millisecond),
+		tm.UnixMilli(),
 	)
 	_ = c(ctx, cmd)
 	return cmd

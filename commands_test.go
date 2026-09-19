@@ -1199,6 +1199,14 @@ var _ = Describe("Commands", func() {
 			Expect(pttl.Val()).To(BeNumerically("~", expiration, 100*time.Millisecond))
 		})
 
+		It("should PExpireAt beyond the nanosecond timestamp range", func() {
+			deadline := time.Date(2270, time.January, 2, 3, 4, 5, 123000000, time.UTC)
+			Expect(client.Set(ctx, "key", "hello", 0).Err()).NotTo(HaveOccurred())
+			Expect(client.PExpireAt(ctx, "key", deadline).Result()).To(BeTrue())
+			Expect(client.Get(ctx, "key").Result()).To(Equal("hello"))
+			Expect(client.Do(ctx, "PEXPIRETIME", "key").Result()).To(Equal(int64(9467204645123)))
+		})
+
 		It("should PExpireTime", func() {
 			// The command returns -1 if the key exists but has no associated expiration time.
 			// The command returns -2 if the key does not exist.
@@ -4066,6 +4074,16 @@ var _ = Describe("Commands", func() {
 			res, err := client.HPExpireAt(ctx, "myhash", time.Now().Add(10*time.Second), "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]int64{1, 1, -2}))
+		})
+
+		It("should HPExpireAt beyond the nanosecond timestamp range", Label("hash-expiration"), func() {
+			SkipBeforeRedisVersion("7.4", "requires hash field expiration")
+			deadline := time.Date(2270, time.January, 2, 3, 4, 5, 123000000, time.UTC)
+			Expect(client.HSet(ctx, "myhash", "key1", "hello", "key2", "world").Err()).NotTo(HaveOccurred())
+			Expect(client.HPExpireAt(ctx, "myhash", deadline, "key1").Result()).To(Equal([]int64{1}))
+			Expect(client.HPExpireAtWithArgs(ctx, "myhash", deadline, redis.HExpireArgs{NX: true}, "key2").Result()).To(Equal([]int64{1}))
+			Expect(client.HMGet(ctx, "myhash", "key1", "key2").Result()).To(Equal([]interface{}{"hello", "world"}))
+			Expect(client.HPExpireTime(ctx, "myhash", "key1", "key2").Result()).To(Equal([]int64{9467204645123, 9467204645123}))
 		})
 
 		It("should HPersist", Label("hash-expiration", "NonRedisEnterprise"), func() {
