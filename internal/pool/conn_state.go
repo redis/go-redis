@@ -263,6 +263,11 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 	sm.waiterCount.Add(1)
 	sm.mu.Unlock()
 
+	// Re-check now that the waiter is visible. A transition that happened
+	// between the fast path above and the enqueue found no waiter to notify,
+	// so without this the waiter would sleep until its context expires.
+	sm.notifyWaiters()
+
 	// Wait for state change or timeout
 	select {
 	case <-ctx.Done():

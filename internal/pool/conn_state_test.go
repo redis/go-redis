@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -123,6 +124,96 @@ func TestConnStateMachine_AwaitAndTransition_Timeout(t *testing.T) {
 	}
 	if err != context.DeadlineExceeded {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+// A background worker (re-auth, handoff) parks in AwaitAndTransition until the
+// connection is IDLE. Put hands connections back through the Release() hot
+// path, so that path must wake the parked waiter.
+func TestConnStateMachine_AwaitAndTransition_WokenByRelease(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	cn := NewConn(client)
+	sm := cn.GetStateMachine()
+	sm.Transition(StateInUse) // checked out by a command
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := sm.AwaitAndTransition(ctx, ValidFromIdle(), StateUnusable)
+		done <- err
+	}()
+
+	// Wait until the worker is parked in the queue.
+	deadline := time.Now().Add(2 * time.Second)
+	for sm.waiterCount.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("waiter was never enqueued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// The command finishes: Put's IN_USE -> IDLE.
+	if !cn.Release() {
+		t.Fatal("expected Release to transition IN_USE -> IDLE")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiter was not woken by Release: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiter still parked after Release")
+	}
+	if state := sm.GetState(); state != StateUnusable {
+		t.Errorf("expected state UNUSABLE, got %s", state)
+	}
+}
+
+// Release landing between the waiter's failed fast path and its enqueue: at
+// that moment there is no waiter to notify, so AwaitAndTransition must re-check
+// once the waiter is queued. Holding sm.mu keeps the worker in that window.
+func TestConnStateMachine_AwaitAndTransition_ReleaseBeforeEnqueue(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	cn := NewConn(client)
+	sm := cn.GetStateMachine()
+	sm.Transition(StateInUse) // checked out by a command
+
+	// The enqueue takes sm.mu: the worker fails its fast path and blocks here.
+	sm.mu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := sm.AwaitAndTransition(ctx, ValidFromIdle(), StateUnusable)
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // let the worker reach the enqueue
+
+	// The command finishes while no waiter is visible yet.
+	released := cn.Release()
+	sm.mu.Unlock() // the worker enqueues now, after the transition it waits for
+	if !released {
+		t.Fatal("expected Release to transition IN_USE -> IDLE")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiter enqueued after Release was never served: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiter still parked")
+	}
+	if state := sm.GetState(); state != StateUnusable {
+		t.Errorf("expected state UNUSABLE, got %s", state)
 	}
 }
 
