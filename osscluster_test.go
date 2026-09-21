@@ -1564,6 +1564,13 @@ var _ = Describe("ClusterClient", func() {
 				node.AddHook(&hook{
 					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
+							defer GinkgoRecover()
+							// skip the connection initialization: the node's
+							// pipeline-pool connection initializes lazily, and
+							// its handshake pipeline runs through this hook chain
+							if len(cmds) == 0 || cmds[0].Name() == "hello" || cmds[0].Name() == "client" {
+								return hook(ctx, cmds)
+							}
 							Expect(cmds).To(HaveLen(1))
 							cmdStr := cmds[0].String()
 
@@ -1659,6 +1666,13 @@ var _ = Describe("ClusterClient", func() {
 				node.AddHook(&hook{
 					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
+							defer GinkgoRecover()
+							// skip the connection initialization: the node's
+							// pipeline-pool connection initializes lazily, and
+							// its handshake pipeline runs through this hook chain
+							if len(cmds) == 0 || cmds[0].Name() == "hello" || cmds[0].Name() == "client" {
+								return hook(ctx, cmds)
+							}
 							Expect(cmds).To(HaveLen(3))
 							Expect(cmds[1].String()).To(Equal("ping: "))
 							mu.Lock()
@@ -1765,6 +1779,93 @@ var _ = Describe("ClusterClient", func() {
 
 			err = client.Close()
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		assertClusterClient()
+	})
+
+	Describe("ClusterClient with RouteByLatencyTolerance", func() {
+		BeforeEach(func() {
+			opt = redisClusterOptions()
+			opt.RouteByLatency = true
+			// Far wider than any intra-cluster spread, so every healthy node for a slot is a
+			// candidate and the per-slot rotation is the thing under test.
+			opt.RouteByLatencyTolerance = time.Second
+			client = cluster.newClusterClient(ctx, opt)
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.FlushDB(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ForEachSlave(ctx, func(ctx context.Context, slave *redis.Client) error {
+				Eventually(func() int64 {
+					return client.DBSize(ctx).Val()
+				}, 30*time.Second).Should(Equal(int64(0)))
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			err := client.ForEachSlave(ctx, func(ctx context.Context, slave *redis.Client) error {
+				return slave.ReadWrite(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.Close()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should read keys from distinct shards", func() {
+			// Discovered rather than hardcoded: keyN does not spread over the three masters
+			// (key2 and key3 both hash into 0-5460), and hardcoded keys would silently stop
+			// covering multiple shards if the slot ranges ever moved.
+			keys := make([]string, 0, 3)
+			slots := map[int64]string{}
+			masters := map[string]string{}
+
+			for i := 0; len(masters) < 3 && i < 100; i++ {
+				key := fmt.Sprintf("tolerance-key-%d", i)
+
+				nodes, err := client.Nodes(ctx, key)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(nodes).NotTo(BeEmpty())
+
+				master := nodes[0].Client.Options().Addr
+				if _, seen := masters[master]; seen {
+					continue
+				}
+				masters[master] = key
+
+				slot := client.ClusterKeySlot(ctx, key).Val()
+				Expect(slots).NotTo(HaveKey(slot))
+				slots[slot] = key
+				keys = append(keys, key)
+			}
+			Expect(masters).To(HaveLen(3), "could not find keys on three distinct masters: %v", masters)
+
+			for _, key := range keys {
+				Expect(client.Set(ctx, key, "VALUE-"+key, 0).Err()).NotTo(HaveOccurred())
+			}
+
+			// Reads go to whichever in-band node the rotation picks, including replicas that
+			// may not have caught up yet, so poll rather than failing on the first attempt.
+			for _, key := range keys {
+				Eventually(func() string {
+					return client.Get(ctx, key).Val()
+				}, 30*time.Second).Should(Equal("VALUE-" + key))
+			}
+
+			// Repeated reads must keep resolving to a usable node for every slot. This is what
+			// regressed when the rotation cursor was shared across slots.
+			for i := 0; i < 50; i++ {
+				for _, key := range keys {
+					Eventually(func() string {
+						return client.Get(ctx, key).Val()
+					}, 30*time.Second).Should(Equal("VALUE-" + key))
+				}
+			}
 		})
 
 		assertClusterClient()

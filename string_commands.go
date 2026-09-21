@@ -464,6 +464,7 @@ func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interfac
 	}
 
 	cmd := NewIntCmd(ctx, cmdArgs...)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }

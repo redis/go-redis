@@ -356,10 +356,13 @@ func TestHImportLazyReplay(t *testing.T) {
 	ctx := context.Background()
 
 	client := redis.NewClient(&redis.Options{
-		Addr:            srv.addr(),
-		Protocol:        2,
-		PoolSize:        1, // deterministic: every command runs on the same connection
-		DisableIdentity: true,
+		Addr:     srv.addr(),
+		Protocol: 2,
+		PoolSize: 1, // deterministic: every command runs on the same connection
+		// This file choreographs exact per-connection sequences (armed booms,
+		// session counts) on the MAIN pool; keep pipelines there too.
+		PipelinePoolSize: -1,
+		DisableIdentity:  true,
 	})
 	defer client.Close()
 
@@ -450,10 +453,13 @@ func TestHImportPipelineRecoversAfterSessionLoss(t *testing.T) {
 	ctx := context.Background()
 
 	client := redis.NewClient(&redis.Options{
-		Addr:            srv.addr(),
-		Protocol:        2,
-		PoolSize:        1,
-		DisableIdentity: true,
+		Addr:     srv.addr(),
+		Protocol: 2,
+		PoolSize: 1,
+		// This file choreographs exact per-connection sequences (armed booms,
+		// session counts) on the MAIN pool; keep pipelines there too.
+		PipelinePoolSize: -1,
+		DisableIdentity:  true,
 	})
 	defer client.Close()
 
@@ -500,11 +506,14 @@ func TestHImportPipelineReissueTransportErrorScoped(t *testing.T) {
 	ctx := context.Background()
 
 	client := redis.NewClient(&redis.Options{
-		Addr:            srv.addr(),
-		Protocol:        2,
-		PoolSize:        1,
-		MaxRetries:      -1,
-		DisableIdentity: true,
+		Addr:     srv.addr(),
+		Protocol: 2,
+		PoolSize: 1,
+		// This file choreographs exact per-connection sequences (armed booms,
+		// session counts) on the MAIN pool; keep pipelines there too.
+		PipelinePoolSize: -1,
+		MaxRetries:       -1,
+		DisableIdentity:  true,
 	})
 	defer client.Close()
 
@@ -553,10 +562,13 @@ func TestHImportTxSurfacesSessionLoss(t *testing.T) {
 	ctx := context.Background()
 
 	client := redis.NewClient(&redis.Options{
-		Addr:            srv.addr(),
-		Protocol:        2,
-		PoolSize:        1,
-		DisableIdentity: true,
+		Addr:     srv.addr(),
+		Protocol: 2,
+		PoolSize: 1,
+		// This file choreographs exact per-connection sequences (armed booms,
+		// session counts) on the MAIN pool; keep pipelines there too.
+		PipelinePoolSize: -1,
+		DisableIdentity:  true,
 	})
 	defer client.Close()
 
@@ -602,10 +614,13 @@ func TestHImportLazyDiscardPropagation(t *testing.T) {
 	ctx := context.Background()
 
 	client := redis.NewClient(&redis.Options{
-		Addr:            srv.addr(),
-		Protocol:        2,
-		PoolSize:        2,
-		DisableIdentity: true,
+		Addr:     srv.addr(),
+		Protocol: 2,
+		PoolSize: 2,
+		// This file choreographs exact per-connection sequences (armed booms,
+		// session counts) on the MAIN pool; keep pipelines there too.
+		PipelinePoolSize: -1,
+		DisableIdentity:  true,
 	})
 	defer client.Close()
 
@@ -708,8 +723,11 @@ func TestHImportRingFanOut(t *testing.T) {
 			"shard1": srv1.addr(),
 			"shard2": srv2.addr(),
 		},
-		PoolSize:        1,
-		DisableIdentity: true,
+		PoolSize: 1,
+		// This file choreographs exact per-connection sequences (armed booms,
+		// session counts) on the MAIN pool; keep pipelines there too.
+		PipelinePoolSize: -1,
+		DisableIdentity:  true,
 	})
 	defer ring.Close()
 
@@ -790,11 +808,14 @@ func TestHImportInjectedPrepareWithPushNotification(t *testing.T) {
 	ctx := context.Background()
 
 	client := redis.NewClient(&redis.Options{
-		Addr:            srv.addr(),
-		Protocol:        3,
-		PoolSize:        1,
-		MaxRetries:      -1, // fail BOOM fast; the injected PREPARE needs no retries
-		DisableIdentity: true,
+		Addr:     srv.addr(),
+		Protocol: 3,
+		PoolSize: 1,
+		// This file choreographs exact per-connection sequences (armed booms,
+		// session counts) on the MAIN pool; keep pipelines there too.
+		PipelinePoolSize: -1,
+		MaxRetries:       -1, // fail BOOM fast; the injected PREPARE needs no retries
+		DisableIdentity:  true,
 		// The mock is not a real cluster; keep maintenance-notification
 		// machinery out of the connection lifecycle.
 		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
@@ -847,6 +868,9 @@ func TestHImportPipelineInjectedReplyFailureStampsBatch(t *testing.T) {
 		Addr:     srv.addr(),
 		Protocol: 2,
 		PoolSize: 1,
+		// This file choreographs exact per-connection sequences (armed booms,
+		// session counts) on the MAIN pool; keep pipelines there too.
+		PipelinePoolSize: -1,
 		// Exhaust the budget on the first attempt: stamping must not
 		// depend on a later attempt reaching the read path.
 		MaxRetries:      -1,

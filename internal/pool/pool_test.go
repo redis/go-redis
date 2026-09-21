@@ -1918,6 +1918,53 @@ var _ = Describe("queuedNewConn", func() {
 	})
 })
 
+// TestTryGetReturnsTryFullWithoutCountingTimeout locks the finding-A fix. A
+// non-waiting acquire on a full pool returns ErrPoolTryFull, not ErrPoolTimeout.
+// It returns at once and does not wait out PoolTimeout. The pool does not count
+// it as a timeout. The pipeline pool needs this to spill to the main pool. The
+// spill does not change Stats.Timeouts or fire the POOL_TIMEOUT callback.
+func TestTryGetReturnsTryFullWithoutCountingTimeout(t *testing.T) {
+	connPool := pool.NewConnPool(&pool.Options{
+		Dialer:             dummyDialer,
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		PoolTimeout:        time.Second, // a long value on purpose: TryGet must not wait for it
+		DialTimeout:        time.Second,
+		ConnMaxIdleTime:    -1,
+	})
+	t.Cleanup(func() { _ = connPool.Close() })
+
+	ctx := context.Background()
+	cn, err := connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	cn.GetStateMachine().Transition(pool.StateInUse)
+	// Hold the only turn. Do not Put it back. Thus the pool has no free turn for
+	// TryGet.
+
+	start := time.Now()
+	spilled, err := connPool.TryGet(ctx)
+	elapsed := time.Since(start)
+	if spilled != nil {
+		t.Fatalf("TryGet on a full pool returned a connection, want none")
+	}
+	if !errors.Is(err, pool.ErrPoolTryFull) {
+		t.Fatalf("TryGet on a full pool: got %v, want ErrPoolTryFull", err)
+	}
+	if errors.Is(err, pool.ErrPoolTimeout) {
+		t.Fatal("TryGet returned ErrPoolTimeout; a non-wait must not masquerade as a timeout")
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("TryGet waited %v; it must return at once, not wait out PoolTimeout", elapsed)
+	}
+	if stats := connPool.Stats(); stats.Timeouts != 0 {
+		t.Fatalf("TryGet spill counted as a timeout: got Timeouts=%d, want 0", stats.Timeouts)
+	}
+
+	connPool.Put(ctx, cn)
+}
+
 func init() {
 	logging.Disable()
 }

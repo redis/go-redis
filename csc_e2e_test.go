@@ -321,6 +321,9 @@ func TestCSCNonZeroDBRejected(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 
 	ctx := context.Background()
+	if err := probeRedis(cscNativeAddr()); err != nil {
+		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
+	}
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
 	}
@@ -371,6 +374,9 @@ func TestCSCReadYourWrites(t *testing.T) {
 	t.Cleanup(func() { _ = mutator.Close() })
 
 	ctx := context.Background()
+	if err := probeRedis(cscNativeAddr()); err != nil {
+		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
+	}
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
 	}

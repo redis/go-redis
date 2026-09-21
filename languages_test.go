@@ -11,6 +11,9 @@ import (
 
 func newLanguagesTestClient(t *testing.T) *redis.Client {
 	t.Helper()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})

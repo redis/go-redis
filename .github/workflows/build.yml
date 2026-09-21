@@ -115,15 +115,26 @@ jobs:
           - "8.10.x" # Redis CE 8.10
         go-version:
           - "stable"
+        # One AutoPipeliner face per cell: the half-duplex blocking and async
+        # faces, and both with FullDuplex on (see newUniversalSubject in
+        # main_test.go). Cells run in parallel and a red one names the face.
+        subject:
+          - ap-blocking
+          - ap-async
+          - ap-fd-blocking
+          - ap-fd
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      # Replay the command integration suite through the AutoPipeliner Cmdable
-      # faces (blocking + async) so every command is verified to behave the same
-      # batched as on a plain client.
-      - name: Run command suite through AutoPipeliner faces
+      # Replay the command integration suite through one AutoPipeliner Cmdable
+      # face so every command is verified to behave the same batched as on a
+      # plain client. SUBJECTS reaches make through the environment (the action
+      # passes make-target as a single word).
+      - name: Run command suite through the ${{ matrix.subject }} face
         uses: ./.github/actions/run-tests
+        env:
+          SUBJECTS: ${{ matrix.subject }}
         with:
           go-version: ${{ matrix.go-version }}
           redis-version: ${{ matrix.redis-version }}

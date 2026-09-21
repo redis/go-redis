@@ -15,6 +15,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
@@ -305,7 +306,6 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(msg.Channel).To(Equal("foo"))
 		Expect(msg.Payload).To(Equal("hello"))
 		Expect(sub.Close()).NotTo(HaveOccurred())
-
 	})
 
 	It("should sentinel cluster client setname", func() {
@@ -440,18 +440,22 @@ func TestParseSentinelURL(t *testing.T) {
 		},
 		{
 			url: "rediss://localhost:6379/5?master_name=test",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5,
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5,
 				TLSConfig: &tls.Config{
 					ServerName: "localhost",
-				}},
+				},
+			},
 		},
 		{
 			url: "rediss://localhost:6379/5?master_name=test&skip_verify=true",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5,
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5,
 				TLSConfig: &tls.Config{
 					ServerName:         "localhost",
 					InsecureSkipVerify: true,
-				}},
+				},
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?master_name=test&db=2",
@@ -463,78 +467,108 @@ func TestParseSentinelURL(t *testing.T) {
 		},
 		{
 			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5},
+			o: &redis.FailoverOptions{
+				SentinelAddrs:    []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5,
+			},
 		},
 		{
 			url: "redis://:bar@localhost:6379/5?addr=localhost:6380",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				SentinelUsername: "", SentinelPassword: "bar", DB: 5},
+			o: &redis.FailoverOptions{
+				SentinelAddrs:    []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "", SentinelPassword: "bar", DB: 5,
+			},
 		},
 		{
 			url: "redis://foo@localhost:6379/5?addr=localhost:6380",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				SentinelUsername: "foo", SentinelPassword: "", DB: 5},
+			o: &redis.FailoverOptions{
+				SentinelAddrs:    []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "", DB: 5,
+			},
 		},
 		{
 			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380&dial_timeout=3",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second},
+			o: &redis.FailoverOptions{
+				SentinelAddrs:    []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second,
+			},
 		},
 		{
 			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380&dial_timeout=3s",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second},
+			o: &redis.FailoverOptions{
+				SentinelAddrs:    []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second,
+			},
 		},
 		{
 			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380&dial_timeout=3ms",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Millisecond},
+			o: &redis.FailoverOptions{
+				SentinelAddrs:    []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Millisecond,
+			},
 		},
 		{
 			url: "redis://foo:bar@localhost:6379/5?addr=localhost:6380&dial_timeout=3&pool_fifo=true",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second, PoolFIFO: true},
+			o: &redis.FailoverOptions{
+				SentinelAddrs:    []string{"localhost:6380", "localhost:6379"},
+				SentinelUsername: "foo", SentinelPassword: "bar", DB: 5, DialTimeout: 3 * time.Second, PoolFIFO: true,
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=3&pool_fifo=false",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				DB: 5, DialTimeout: 3 * time.Second, PoolFIFO: false},
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB:            5, DialTimeout: 3 * time.Second, PoolFIFO: false,
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=3&pool_fifo",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				DB: 5, DialTimeout: 3 * time.Second, PoolFIFO: false},
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB:            5, DialTimeout: 3 * time.Second, PoolFIFO: false,
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				DB: 5, DialTimeout: 0},
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB:            5, DialTimeout: 0,
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=0",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				DB: 5, DialTimeout: -1},
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB:            5, DialTimeout: -1,
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=-1",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				DB: 5, DialTimeout: -1},
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB:            5, DialTimeout: -1,
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=-2",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				DB: 5, DialTimeout: -1},
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB:            5, DialTimeout: -1,
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				DB: 5, DialTimeout: 0},
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB:            5, DialTimeout: 0,
+			},
 		},
 		{
 			url: "redis://localhost:6379/5?addr=localhost:6380&dial_timeout=0&abc=5",
-			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
-				DB: 5, DialTimeout: -1},
+			o: &redis.FailoverOptions{
+				SentinelAddrs: []string{"localhost:6380", "localhost:6379"},
+				DB:            5, DialTimeout: -1,
+			},
 			err: errors.New("redis: unexpected option: abc"),
 		},
 		{
@@ -1004,5 +1038,47 @@ func TestSentinelFailover_ReplicaAddrs_NoReplicas(t *testing.T) {
 
 	if !failover.HasSentinel() {
 		t.Fatal("sentinel was closed after second ReplicaAddrs call")
+	}
+}
+
+// TestSentinelFailover_ClosedDoesNotRebuildSentinel pins the closed guard: after
+// Close, MasterAddr and RandomReplicaAddr must return ErrClosed WITHOUT running
+// the sentinel discovery fan-out (which would dial and rebuild the sentinel
+// client + pubsub). Without the guard the fan-out runs against the unreachable
+// address and returns an "all sentinels ... unreachable" error instead — so the
+// error value is the oracle. No sentinel infrastructure is needed.
+//
+// This is the failover leg of the autopipeliner shared-pool close: the failover
+// Close hook runs before a pool-sharing wrapper's drain hook, and that drain may
+// dial through masterReplicaDialer; the guard stops the dial from resurrecting
+// sentinel resources after their only cleanup has run.
+func TestSentinelFailover_ClosedDoesNotRebuildSentinel(t *testing.T) {
+	ctx := context.Background()
+	// Port 1 is reserved/unlistened: a connection attempt fails immediately, so a
+	// fan-out that wrongly runs fails fast rather than hanging the test.
+	unreachable := []string{"127.0.0.1:1"}
+
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    "closed-guard-test",
+		SentinelAddrs: unreachable,
+		DialTimeout:   500 * time.Millisecond,
+	}, unreachable)
+
+	if err := failover.Close(); err != nil {
+		t.Fatalf("Close with no sentinel: %v", err)
+	}
+
+	if _, err := failover.MasterAddr(ctx); !errors.Is(err, redis.ErrClosed) {
+		t.Fatalf("MasterAddr after Close: want ErrClosed, got %v", err)
+	}
+	if _, err := failover.RandomReplicaAddr(ctx); !errors.Is(err, redis.ErrClosed) {
+		t.Fatalf("RandomReplicaAddr after Close: want ErrClosed, got %v", err)
+	}
+	if failover.HasSentinel() {
+		t.Fatal("sentinel client was rebuilt after Close")
+	}
+	// Close must stay idempotent once closed.
+	if err := failover.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }

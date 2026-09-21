@@ -176,15 +176,18 @@ func TestPipelinePoolStats(t *testing.T) {
 	t.Log("PoolStats includes pipeline pool stats correctly")
 }
 
-// TestNoPipelinePoolStats verifies that PoolStats works without pipeline pool
+// TestNoPipelinePoolStats verifies that PoolStats works without pipeline pool.
+// The pool is now created by default, so having none requires the explicit
+// opt-out (PipelinePoolSize < 0).
 func TestNoPipelinePoolStats(t *testing.T) {
 	ctx := context.Background()
 
-	// Create client WITHOUT custom pipeline buffer sizes
+	// Opt out of the dedicated pipeline pool: pipelines run on the main pool.
 	client := redis.NewClient(&redis.Options{
-		Addr:            apTestAddr(),
-		ReadBufferSize:  64 * 1024, // 64 KiB for all connections
-		WriteBufferSize: 64 * 1024, // 64 KiB for all connections
+		Addr:             apTestAddr(),
+		ReadBufferSize:   64 * 1024, // 64 KiB for all connections
+		WriteBufferSize:  64 * 1024, // 64 KiB for all connections
+		PipelinePoolSize: -1,
 	})
 	defer client.Close()
 	skipWithoutRedis(t, ctx, client)

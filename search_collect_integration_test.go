@@ -41,6 +41,9 @@ func TestFTAggregateCollect_Integration(t *testing.T) {
 	// REDIS_VERSION env variable (whose float form cannot tell 8.10 from 8.1
 	// and defaults when unset).
 	probeCtx := context.Background()
+	if err := probeRedis(collectTestAddr()); err != nil {
+		t.Skipf("redis not reachable at %s: %v", collectTestAddr(), err)
+	}
 	probe := redis.NewClient(&redis.Options{Addr: collectTestAddr()})
 	t.Cleanup(func() { _ = probe.Close() })
 	if err := probe.Ping(probeCtx).Err(); err != nil {
