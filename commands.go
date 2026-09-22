@@ -911,8 +911,17 @@ Notes:
 - This runs concurrently in the background. Trigger via the Start and Stop functions
 See further: Redis MONITOR command: https://redis.io/commands/monitor
 */
+
 func (c cmdable) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
-	cmd := newMonitorCmd(ctx, ch)
+	cmd := NewMonitorCmd(ctx, ch, "monitor")
 	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Monitor shadows the promoted cmdable method so Pipeline does not queue
+// MONITOR without a dedicated connection.
+func (c *Pipeline) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	cmd := NewMonitorCmd(ctx, ch, "monitor")
+	cmd.SetErr(errors.New("redis: MONITOR is not supported on a pipeline; run it on a dedicated client.Conn()"))
 	return cmd
 }

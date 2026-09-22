@@ -4219,6 +4219,43 @@ func (h routeRecordingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) 
 // cxljs on the pool PR). It runs directly, like a blocking command. The
 // client points at a closed port so nothing real is shut down: only the
 // routing is asserted, via hooks that record which path each command took.
+func TestAutoPipelineCustomMonitorRunsOutsidePipeline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := ln.Addr().String()
+	ln.Close()
+
+	hook := routeRecordingHook{mu: &sync.Mutex{}, pipeline: map[string]bool{}, direct: map[string]bool{}}
+	client := redis.NewClient(&redis.Options{Addr: deadAddr, MaxRetries: -1})
+	defer client.Close()
+	client.AddHook(hook)
+
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  10,
+		MaxFlushDelay: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := redis.NewMonitorCmd(context.Background(), make(chan string, 1), "IMONITOR", "node-1")
+	if err := ap.Process(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Err()
+
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	if !hook.direct["imonitor"] {
+		t.Fatal("custom monitor did not take the direct (outside-pipeline) path")
+	}
+	if hook.pipeline["imonitor"] {
+		t.Fatal("custom monitor rode a pipeline batch")
+	}
+}
+
 func TestAutoPipelineShutdownRunsOutsidePipeline(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
