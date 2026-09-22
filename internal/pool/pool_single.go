@@ -56,6 +56,13 @@ func (p *SingleConnPool) Get(_ context.Context) (*Conn, error) {
 	return p.cn, nil
 }
 
+func (p *SingleConnPool) ProcessOnPut(ctx context.Context, cn *Conn) (bool, bool, error) {
+	if processor, ok := p.pool.(PoolHookProcessor); ok {
+		return processor.ProcessOnPut(ctx, cn)
+	}
+	return true, false, nil
+}
+
 func (p *SingleConnPool) Put(_ context.Context, cn *Conn) {
 	if p.cn == nil {
 		return

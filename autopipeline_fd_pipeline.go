@@ -245,7 +245,7 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeR
 				return fdPipeResult{}, ErrFDPipelineDiverts
 			}
 		}
-		if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) ||
+		if isMonitorCmd(ctx, cmd) || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) ||
 			isBlockingCmd(cmd) || isHImportCmd(cmd) {
 			return fdPipeResult{}, ErrFDPipelineDiverts
 		}

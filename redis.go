@@ -1365,6 +1365,18 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 func (c *baseClient) withConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) error {
+	return c.withConnMode(ctx, fn, false)
+}
+
+func (c *baseClient) withConnNoRelease(
+	ctx context.Context, fn func(context.Context, *pool.Conn) error,
+) error {
+	return c.withConnMode(ctx, fn, true)
+}
+
+func (c *baseClient) withConnMode(
+	ctx context.Context, fn func(context.Context, *pool.Conn) error, holdConn bool,
+) error {
 	cn, err := c.getConn(ctx)
 	if err != nil {
 		return err
@@ -1380,6 +1392,29 @@ func (c *baseClient) withConn(
 			fnErr = fmt.Errorf("%w: panic: %v", errConnUnusable, r)
 			c.releaseConn(ctx, cn, fnErr)
 			panic(r)
+		}
+		if holdConn && errors.Is(fnErr, errMonitorHandoff) {
+			if c.opt.Limiter != nil {
+				c.opt.Limiter.ReportResult(fnErr)
+			}
+			if releaser, ok := c.connPool.(interface {
+				ReleaseHandoff(context.Context, *pool.Conn)
+			}); ok {
+				releaser.ReleaseHandoff(ctx, cn)
+			} else {
+				c.connPool.Put(ctx, cn)
+			}
+			return
+		}
+		if fnErr == nil && holdConn {
+			if c.opt.Limiter != nil {
+				c.opt.Limiter.ReportResult(nil)
+			}
+			// The monitor reader owns the connection, but the sticky pool must
+			// retain it so the registered Close callback can release it to the
+			// parent pool when the stream ends.
+			c.connPool.Put(ctx, cn)
+			return
 		}
 		c.releaseConn(ctx, cn, fnErr)
 	}()
@@ -1556,6 +1591,17 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	return c.processStartingAt(ctx, cmd, 0, time.Time{})
 }
 
+type suppressMonitorMetricsKey struct{}
+
+func suppressMonitorMetrics(ctx context.Context) context.Context {
+	return context.WithValue(ctx, suppressMonitorMetricsKey{}, true)
+}
+
+func monitorMetricsSuppressed(ctx context.Context) bool {
+	suppressed, _ := ctx.Value(suppressMonitorMetricsKey{}).(bool)
+	return suppressed
+}
+
 // processStartingAt runs cmd like process() but starts the retry loop at
 // startAttempt. The full-duplex divert (retryOnNormalConn) passes 1 for a command
 // that already spent its initial attempt on the FD socket and came back with a
@@ -1568,6 +1614,9 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 // already includes the FD attempt). A zero start defaults to now, so the normal
 // path measures from here.
 func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAttempt int, start time.Time) error {
+	if monitorMetricsSuppressed(ctx) {
+		return c.processCommand(ctx, cmd, nil, startAttempt)
+	}
 	opDurationCallback := otel.GetOperationDurationCallback()
 	if opDurationCallback == nil {
 		return c.processCommand(ctx, cmd, nil, startAttempt)
@@ -1588,6 +1637,10 @@ type processState struct {
 }
 
 func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
+	if err := commandConstructorErr(cmd); err != nil {
+		return err
+	}
+
 	// Reject commands that would make one pooled connection diverge from CSC's
 	// tracking or database assumptions. Pipelines mirror this guard below.
 	if err := c.cscCommandError(cmd); err != nil {
@@ -1645,6 +1698,9 @@ func (c *baseClient) processWithRetry(
 		retry, forced, cn, err := c._process(ctx, cmd, attempt, capture)
 		if cn != nil {
 			lastConn = cn
+			if monitor := cmd.monitorCommand(); monitor != nil {
+				monitor.setLastConn(cn)
+			}
 		}
 		if state != nil {
 			state.attempts = totalAttempts
@@ -1691,6 +1747,9 @@ func (c *baseClient) processWithRetry(
 // ends a command with an error shares it: the two in processWithRetry and the
 // exhausted-budget return in processCached.
 func recordCommandError(ctx context.Context, err error, cn *pool.Conn, retries int) {
+	if monitorMetricsSuppressed(ctx) {
+		return
+	}
 	errorCallback := pool.GetMetricErrorCallback()
 	if errorCallback == nil {
 		return
@@ -1786,8 +1845,17 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 	// reject (a custom push-processor sentinel) and even for a NoRetry command (whose
 	// gate guards a SECOND execution, not a first).
 	var forceRetry atomic.Bool
-	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+	withConn := c.withConn
+	if cmd.GetCmdType() == CmdTypeMonitor {
+		withConn = c.withConnNoRelease
+	}
+	if err := withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
+		if monitor := cmd.monitorCommand(); monitor != nil {
+			if !monitor.setActiveConn(func() error { return c.closeMonitorConn(cn) }) {
+				return errors.New("redis: monitor command is already active or stopped")
+			}
+		}
 		// Process any pending push notifications before executing the command. A
 		// non-nil error means the drain may have stopped mid-frame (a fragmented
 		// push straddling its hard read cap), leaving the reader desynced. Do NOT
@@ -1807,6 +1875,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 			// not written yet, so replay is clean.
 			forceRetry.Store(true)
 			return err
+		}
+		if isMonitorCmd(ctx, cmd) {
+			if err := c.processMonitorHandoff(ctx, cn); err != nil {
+				return err
+			}
 		}
 
 		// HIMPORT bookkeeping: pending discards for this session and the
@@ -1844,7 +1917,14 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				return origRead(proto.NewReaderSize(bytes.NewReader(raw), len(raw)+1))
 			}
 		}
-		readErr := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
+		readTimeout := c.cmdTimeout(cmd)
+		if isMonitorCmd(ctx, cmd) {
+			readTimeout = c.opt.ReadTimeout
+			if timeout := cmd.readTimeout(); timeout != nil {
+				readTimeout = *timeout
+			}
+		}
+		readErr := cn.WithReader(c.context(ctx), readTimeout, func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
@@ -1859,6 +1939,23 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 				}
+			}
+			if isMonitorCmd(ctx, cmd) {
+				if err := c.processMonitorHandoff(ctx, cn); err != nil {
+					return err
+				}
+				ack, err := rd.ReadReply()
+				if err != nil {
+					return err
+				}
+				ackText, ok := ack.(string)
+				if !ok {
+					return fmt.Errorf("redis: monitor setup returned %T, want string", ack)
+				}
+				monitor := cmd.monitorCommand()
+				return cn.WithReaderNoDeadline(func(rd *proto.Reader) error {
+					return monitor.readReplyWithInitial(rd, ackText)
+				})
 			}
 			err := readReplyFunc(rd)
 			// Assert the command type before touching the error: the
@@ -1924,6 +2021,9 @@ func (c *baseClient) retryBackoff(attempt int) time.Duration {
 }
 
 func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
+	if cmd.GetCmdType() == CmdTypeMonitor {
+		return 0
+	}
 	if timeout := cmd.readTimeout(); timeout != nil {
 		t := *timeout
 		if t == 0 {
@@ -2751,6 +2851,7 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
 	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
+	conn.pushProcessor = c.pushProcessor
 	// A sticky client does not serve cache hits, but a new pool connection first
 	// initialized through it may later be reused by the parent. Share the
 	// successful-attachment signal so that connection is tracked exactly when
@@ -2772,9 +2873,105 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 }
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
+	if isMonitorCmd(ctx, cmd) {
+		err := c.processMonitor(ctx, cmd)
+		cmd.SetErr(err)
+		return err
+	}
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
+}
+
+func (c *Client) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	cmd := NewMonitorCmd(ctx, ch, "monitor")
+	err := c.processMonitor(ctx, cmd)
+	cmd.SetErr(err)
+	return cmd
+}
+
+func (c *Client) processMonitor(ctx context.Context, cmd Cmder) error {
+	return c.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
+		return c.processMonitorWith(ctx, cmd, false)
+	})
+}
+
+func (c *Client) processMonitorNoHook(ctx context.Context, cmd Cmder) error {
+	return c.processMonitorWith(ctx, cmd, false)
+}
+
+func (c *Client) processMonitorWith(ctx context.Context, cmd Cmder, useHook bool) (retErr error) {
+	if err := commandConstructorErr(cmd); err != nil {
+		return err
+	}
+	monitor := cmd.monitorCommand()
+	if monitor == nil {
+		err := errors.New("redis: monitor command has no MonitorCmd owner")
+		cmd.SetErr(err)
+		return err
+	}
+	monitor.setLastConn(nil)
+	operationStart := time.Now()
+	opDurationCallback := otel.GetOperationDurationCallback()
+	opAttempts := 0
+	defer func() {
+		if opDurationCallback != nil {
+			opDurationCallback(ctx, time.Since(operationStart), cmd, opAttempts, retErr, monitor.lastConnValue(), c.opt.DB)
+		}
+		if retErr != nil {
+			recordCommandError(ctx, retErr, monitor.lastConnValue(), max(opAttempts-1, 0))
+		}
+	}()
+	maxRetries := c.opt.MaxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if monitor.stopped() {
+			return nil
+		}
+		if attempt > 0 {
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				cmd.SetErr(err)
+				return err
+			}
+		}
+		cmd.SetErr(nil)
+		opAttempts++
+		lastErr = func() (err error) {
+			conn := c.EphemeralConn()
+			conn.opt = c.cloneOpt()
+			conn.opt.MaxRetries = 0
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					monitor.close()
+					panic(recovered)
+				}
+			}()
+			attemptCtx := suppressMonitorMetrics(ctx)
+			if useHook {
+				err = conn.Process(attemptCtx, cmd)
+			} else {
+				err = conn.process(attemptCtx, cmd)
+				cmd.SetErr(err)
+			}
+			if errors.Is(err, errMonitorHandoff) {
+				monitor.clearCloseConn()
+				_ = conn.baseClient.closeMonitorPoolAfterHandoff()
+			} else if err != nil {
+				monitor.close()
+			}
+			return err
+		}()
+		if lastErr == nil || monitor.stopped() {
+			return nil
+		}
+		if !shouldRetry(lastErr, true) {
+			return lastErr
+		}
+	}
+	return lastErr
 }
 
 // Options returns read-only *Options that were used to create the client.
@@ -3086,6 +3283,11 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin, himpor
 }
 
 func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
+	if isMonitorCmd(ctx, cmd) {
+		if sticky, ok := c.connPool.(*pool.StickyConnPool); ok {
+			sticky.DiscardOnClose()
+		}
+	}
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
@@ -3501,6 +3703,38 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 
 // processPendingPushNotificationWithReader processes all pending push notifications on a connection
 // This method should be called by the client in WithReader before reading the reply
+func (c *baseClient) processMonitorHandoff(ctx context.Context, cn *pool.Conn) error {
+	if !cn.ShouldHandoff() {
+		return nil
+	}
+	processor, ok := c.connPool.(pool.PoolHookProcessor)
+	if !ok {
+		return fmt.Errorf("redis: monitor connection marked for handoff: %w", net.ErrClosed)
+	}
+	shouldPool, shouldRemove, err := processor.ProcessOnPut(ctx, cn)
+	if err != nil {
+		return err
+	}
+	if shouldRemove || !shouldPool {
+		return fmt.Errorf("redis: monitor connection handoff rejected: %w", net.ErrClosed)
+	}
+	return errMonitorHandoff
+}
+
+func (c *baseClient) closeMonitorConn(cn *pool.Conn) error {
+	if sticky, ok := c.connPool.(*pool.StickyConnPool); ok {
+		return sticky.CloseConnAndPool(cn)
+	}
+	return cn.Close()
+}
+
+func (c *baseClient) closeMonitorPoolAfterHandoff() error {
+	if sticky, ok := c.connPool.(*pool.StickyConnPool); ok {
+		return sticky.Close()
+	}
+	return nil
+}
+
 func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
 	// if we have the reader, we don't need to check for data on the socket, we are waiting
 	// for either a reply or a push notification, so we can block until we get a reply or reach the timeout

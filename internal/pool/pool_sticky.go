@@ -124,6 +124,52 @@ func (p *StickyConnPool) DiscardOnClose() {
 	p.discardOnClose = true
 }
 
+func (p *StickyConnPool) ProcessOnPut(ctx context.Context, cn *Conn) (bool, bool, error) {
+	if processor, ok := p.pool.(PoolHookProcessor); ok {
+		return processor.ProcessOnPut(ctx, cn)
+	}
+	return true, false, nil
+}
+
+// ReleaseHandoff returns a connection already accepted by the parent handoff worker directly to the parent pool.
+func (p *StickyConnPool) ReleaseHandoff(ctx context.Context, cn *Conn) {
+	if releaser, ok := p.pool.(interface {
+		ReleaseHandoff(context.Context, *Conn)
+	}); ok {
+		releaser.ReleaseHandoff(ctx, cn)
+	} else {
+		p.pool.Put(ctx, cn)
+	}
+	p.ResetAfterHandoff()
+}
+
+// CloseConnAndPool closes a checked-out connection and releases the sticky
+// pool's ownership, including the parent pool turn.
+func (p *StickyConnPool) CloseConnAndPool(cn *Conn) error {
+	err := cn.Close()
+	if p.state.Load() == stateInited {
+		func() {
+			defer func() { _ = recover() }()
+			select {
+			case p.ch <- cn:
+			default:
+			}
+		}()
+	}
+	if closeErr := p.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+// ResetAfterHandoff makes the sticky owner ready to borrow a replacement
+// connection after its previous connection was transferred to the parent pool.
+func (p *StickyConnPool) ResetAfterHandoff() {
+	if p.state.CompareAndSwap(stateInited, stateDefault) {
+		p._badConnError.Store(BadConnError{wrapped: nil})
+	}
+}
+
 func (p *StickyConnPool) Put(ctx context.Context, cn *Conn) {
 	defer func() {
 		if recover() != nil {

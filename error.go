@@ -86,9 +86,14 @@ func isTimeoutError(err error) (isTimeout bool, hasTimeoutFlag bool) {
 	return false, false
 }
 
+var errMonitorHandoff = errors.New("redis: monitor connection handed off")
+
 func shouldRetry(err error, retryTimeout bool) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, errMonitorHandoff) {
+		return true
 	}
 
 	// Check for EOF errors (works with wrapped errors)
@@ -192,6 +197,9 @@ func isRedisError(err error) bool {
 
 func isBadConn(err error, allowTimeout bool, addr string) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, errMonitorHandoff) {
 		return false
 	}
 

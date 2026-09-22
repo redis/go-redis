@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -80,6 +81,12 @@ func (c *Tx) init() {
 }
 
 func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
+	if isMonitorCmd(ctx, cmd) {
+		c.watchArmed = false
+		if sticky, ok := c.connPool.(*pool.StickyConnPool); ok {
+			sticky.DiscardOnClose()
+		}
+	}
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
