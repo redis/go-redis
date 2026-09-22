@@ -87,6 +87,13 @@ func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 
 // BatchProcess queues multiple cmds for later execution.
 func (c *Pipeline) BatchProcess(ctx context.Context, cmd ...Cmder) error {
+	for _, queued := range cmd {
+		if _, ok := queued.(*MonitorCmd); ok {
+			err := errors.New("redis: MONITOR is not supported on a pipeline; run it on a dedicated client.Conn()")
+			queued.SetErr(err)
+			return err
+		}
+	}
 	c.cmds = append(c.cmds, cmd...)
 	return nil
 }

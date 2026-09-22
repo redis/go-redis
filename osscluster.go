@@ -1499,12 +1499,19 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
+	// Preserve constructor errors before routing, which reads command arguments.
+	if err := cmd.rawErr(); err != nil {
+		return err
+	}
+
 	slot := c.cmdSlot(cmd, -1)
 	var node *clusterNode
 	var moved bool
 	var ask bool
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		cmd.SetErr(nil)
+
 		// MOVED and ASK responses are not transient errors that require retry delay; they
 		// should be attempted immediately.
 		if attempt > 0 && !moved && !ask {
@@ -1925,6 +1932,9 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 	// instead of rejecting: they work fine on their own connection (review
 	// finding by codex on #3942).
 	ap.setMustDivert(func(ctx context.Context, cmd Cmder) bool {
+		if isMonitorCmd(ctx, cmd) {
+			return true
+		}
 		if c.cmdInfoResolver == nil {
 			return false
 		}
