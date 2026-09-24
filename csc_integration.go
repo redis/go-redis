@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/util"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -1352,10 +1353,113 @@ func (c *baseClient) stopCSCRefresherAndCoalescer() {
 	h.workersStopOnce.Do(body)
 }
 
+// cscGet reads a cached value, skipping the defensive copy when the cache is
+// the built-in one.
+//
+// LocalCache.Get copies because Cache is a public interface whose []byte
+// return a third-party implementation's caller may retain. The built-in read
+// path does not retain it: every caller hands the bytes straight to
+// applyCachedReply, which decodes and drops them. Pairing the built-in cache
+// with the built-in read path is therefore the one place the copy is provably
+// unnecessary -- the same "only the built-in *LocalCache" gate miss coalescing
+// already uses.
+//
+// The returned slice must not be retained or mutated.
+func (c *baseClient) cscGet(ctx context.Context, key string) ([]byte, bool) {
+	if lc, ok := c.csc.(*LocalCache); ok {
+		return lc.getShared(ctx, key)
+	}
+	return c.csc.Get(ctx, key)
+}
+
 // applyCachedReply populates cmd from a previously captured raw RESP reply by
 // replaying it through the command's own readReply.
+//
+// The generic path allocates a bytes.Reader and a proto.Reader (with its bufio
+// buffer) per hit, then re-parses. applyCachedFast skips both for the two
+// reply shapes that dominate the cacheable command set.
 func applyCachedReply(cmd Cmder, raw []byte) error {
+	if err, done := applyCachedFast(cmd, raw); done {
+		return err
+	}
 	return cmd.readReply(proto.NewReaderSize(bytes.NewReader(raw), len(raw)+1))
+}
+
+// applyCachedFast decodes the simple single-frame replies directly into the
+// command, returning done=false for anything it does not fully recognise so
+// the caller falls back to the generic reader.
+//
+// Only shapes whose decoded value is an immutable Go string are handled:
+// a blob string into *StringCmd (get, getrange, hget, ...) and a status into
+// *StatusCmd (type). Container replies -- mget, hgetall, smembers, zrange and
+// the rest of the allow-list -- keep re-parsing, deliberately: their decoded
+// form is a slice or map, and handing the same one to two callers would let
+// either mutate what the other reads, and the cached entry with it. For those,
+// re-parsing IS the defensive copy.
+//
+// raw must not be retained: it aliases the cache entry's value (see
+// LocalCache.getShared). Everything produced here is a fresh string.
+func applyCachedFast(cmd Cmder, raw []byte) (err error, done bool) {
+	if len(raw) < 3 || raw[len(raw)-2] != '\r' || raw[len(raw)-1] != '\n' {
+		return nil, false
+	}
+	switch raw[0] {
+	case proto.RespNil: // RESP3 null: "_\r\n"
+		if len(raw) != 3 {
+			return nil, false
+		}
+		switch c := cmd.(type) {
+		case *StringCmd:
+			c.SetVal("")
+			return Nil, true
+		case *StatusCmd:
+			c.SetVal("")
+			return Nil, true
+		}
+		return nil, false
+
+	case proto.RespStatus: // "+OK\r\n"
+		c, ok := cmd.(*StatusCmd)
+		if !ok {
+			return nil, false
+		}
+		// Single frame only: a CR before the terminator would mean more than
+		// one line, which this path does not handle.
+		if bytes.IndexByte(raw[:len(raw)-2], '\r') >= 0 {
+			return nil, false
+		}
+		c.SetVal(string(raw[1 : len(raw)-2]))
+		return nil, true
+
+	case proto.RespString: // "$5\r\nhello\r\n", or "$-1\r\n" for RESP2 null
+		c, ok := cmd.(*StringCmd)
+		if !ok {
+			return nil, false
+		}
+		i := bytes.IndexByte(raw, '\r')
+		if i < 1 || i+1 >= len(raw) || raw[i+1] != '\n' {
+			return nil, false
+		}
+		n, perr := util.ParseInt(raw[1:i], 10, 64)
+		if perr != nil {
+			return nil, false
+		}
+		if n < 0 { // RESP2 null bulk string
+			if i+2 != len(raw) {
+				return nil, false
+			}
+			c.SetVal("")
+			return Nil, true
+		}
+		// Payload must be exactly n bytes followed by the trailing CRLF.
+		start := i + 2
+		if int64(len(raw)) != int64(start)+n+2 {
+			return nil, false
+		}
+		c.SetVal(string(raw[start : start+int(n)]))
+		return nil, true
+	}
+	return nil, false
 }
 
 // classifyCachedReply reports the same error applyCachedReply would, without a
@@ -1453,7 +1557,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	}
 
 	// Serve hits straight from the cache.
-	if data, ok := c.csc.Get(ctx, key); ok {
+	if data, ok := c.cscGet(ctx, key); ok {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1475,7 +1579,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
 		// Another goroutine is fetching; Get below waits until it completes.
-		if data, ok := c.csc.Get(ctx, key); ok {
+		if data, ok := c.cscGet(ctx, key); ok {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -1567,7 +1671,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 				// one hot key into a pool stampede mid-recovery — defeating the
 				// coalescing this path exists for. Same shape (and 2x-RTT churn
 				// tradeoff) as the first-Reserve loser path above.
-				if data, ok := c.csc.Get(ctx, key); ok {
+				if data, ok := c.cscGet(ctx, key); ok {
 					if err := ctx.Err(); err != nil {
 						return err
 					}

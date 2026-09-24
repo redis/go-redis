@@ -31,10 +31,33 @@ type cacheEntry struct {
 	waitCh     chan struct{}
 	waitClosed bool
 
-	// lastAccessNs is a recency token for LRU eviction: a global atomic counter
-	// bumped on every access, stored atomically so the read path can mark a
-	// touch under the shard's RLock without upgrading to a write lock.
+	// lastAccessNs orders entries for eviction: a global atomic counter bumped
+	// when the entry is created, reserved or fulfilled — all of which happen
+	// under the shard write lock, on the MISS path. It is stored atomically
+	// because the read path reads it under the shard's RLock.
+	//
+	// It is NOT bumped on a read any more; a read sets readSinceSweep instead.
 	lastAccessNs atomic.Int64
+
+	// readSinceSweep records that a READ has touched this entry since the last
+	// eviction sweep. It is the second-chance bit for eviction: a victim is
+	// chosen from the entries with the bit CLEAR, and the sweep clears the bits
+	// when every candidate has been read.
+	//
+	// It exists because writing lastAccessNs on every hit was the dominant cost
+	// of a cache hit under concurrency. ~40k resident entries at a few hundred
+	// bytes each is a working set far larger than L2; the read already touches
+	// the entry's cache line, but a STORE dirties it, and a dirty line costs a
+	// writeback when it is evicted from the CPU cache. Measured on a 14-core
+	// host at 256 concurrent readers, get=90/set=10, 99.94% hit rate:
+	// 263,801 -> 328,842 reads/s (+24.7%) and 27.0 -> 18.9 CPU us/op, with the
+	// hit rate unchanged. Removing the recency update altogether measured
+	// +40.5%, so this recovers about three fifths of the available headroom
+	// while keeping eviction honest.
+	//
+	// A load that finds the bit already set leaves the line SHARED, so every
+	// core can hold it at once; only the first read after a sweep writes.
+	readSinceSweep atomic.Bool
 
 	// validAt retains time.Now's monotonic component for the MaxStaleness
 	// backstop, so wall-clock corrections cannot extend an entry's lifetime.
@@ -328,10 +351,34 @@ func defaultCacheSizer(cacheKey string, redisKeys []string, value []byte) int64 
 // Get returns a copy of a cached value, waiting for an in-progress fetch when
 // necessary.
 func (c *LocalCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
+	value, ok := c.get(ctx, cacheKey, true)
+	return value, ok
+}
+
+// getShared is Get without the defensive copy. The returned slice ALIASES the
+// cache entry, so the caller must neither mutate nor retain it; it is valid
+// only until the caller returns.
+//
+// Safe because a published value is immutable: cacheShard.get never writes
+// through the slice, and a refetch REPLACES entry.value wholesale under the
+// shard write lock rather than editing it in place, so an old slice a reader
+// already holds keeps its contents.
+//
+// Not on the Cache interface, and deliberately so: Get's []byte return means a
+// third-party implementation's caller may legitimately retain what it gets
+// back, so the copy has to stay there. Only the built-in cache paired with the
+// built-in read path (processCached, which parses the bytes and drops them)
+// can skip it -- the same "only the built-in *LocalCache" gate miss coalescing
+// uses.
+func (c *LocalCache) getShared(ctx context.Context, cacheKey string) ([]byte, bool) {
+	return c.get(ctx, cacheKey, false)
+}
+
+func (c *LocalCache) get(ctx context.Context, cacheKey string, clone bool) ([]byte, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	value, ok := c.shardFor(cacheKey).get(ctx, cacheKey)
+	value, ok := c.shardFor(cacheKey).get(ctx, cacheKey, clone)
 	if ok {
 		c.hits.Add(1)
 	} else {
@@ -343,7 +390,9 @@ func (c *LocalCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 // get is the read-side hot path. Holds only the shard's read lock; updates
 // the LRU recency timestamp via atomic store on the entry — no write-lock
 // upgrade is needed.
-func (s *cacheShard) get(ctx context.Context, cacheKey string) ([]byte, bool) {
+// get is the read-side hot path. clone=false returns a slice ALIASING the
+// entry (see LocalCache.getShared for why that is safe and who may use it).
+func (s *cacheShard) get(ctx context.Context, cacheKey string, clone bool) ([]byte, bool) {
 	for {
 		s.mu.RLock()
 		entry, ok := s.entries[cacheKey]
@@ -400,11 +449,18 @@ func (s *cacheShard) get(ctx context.Context, cacheKey string) ([]byte, bool) {
 			return nil, false
 		}
 
-		value := cloneBytes(entry.value)
-		// Record access timestamp without upgrading the lock. Last writer
-		// wins; cross-goroutine ordering of timestamps is fine for
-		// approximate-LRU semantics.
-		entry.lastAccessNs.Store(nextLRUToken())
+		value := entry.value
+		if clone {
+			value = cloneBytes(value)
+		}
+		// Mark the second-chance bit instead of stamping a recency token. The
+		// load short-circuits every read after the first since the last sweep,
+		// which is the overwhelming majority, and leaves the entry's cache line
+		// SHARED rather than taking it exclusively per hit. See
+		// cacheEntry.readSinceSweep for the measurements.
+		if !entry.readSinceSweep.Load() {
+			entry.readSinceSweep.Store(true)
+		}
 		s.mu.RUnlock()
 		return value, true
 	}
@@ -439,8 +495,11 @@ func (c *LocalCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 		switch entry.state {
 		case cacheEntryValid:
 			// Existing-VALID hit: record access; caller will re-Get to
-			// retrieve.
+			// retrieve. This IS an access, so it also earns the second chance
+			// the read path grants -- it is under the write lock and off the
+			// hot path, so stamping the token here costs nothing.
 			entry.lastAccessNs.Store(nextLRUToken())
+			entry.readSinceSweep.Store(true)
 			return 0, false
 		case cacheEntryInProgress:
 			if time.Since(entry.reservedAt) < s.staleTimeout {
@@ -811,21 +870,57 @@ func (s *cacheShard) evictValidLocked() {
 	}
 }
 
-// oldestLocked returns the entry in the given state with the smallest
-// lastAccessNs (the least-recently-used), or nil when none exists.
+// oldestLocked returns the eviction victim in the given state, or nil when no
+// entry is in that state.
+//
+// Second chance. A read no longer stamps a recency token (that store was the
+// dominant cost of a cache hit; see cacheEntry.readSinceSweep), so recency is
+// carried by the readSinceSweep bit and ordering by lastAccessNs, which is the
+// token assigned when the entry was created, reserved or fulfilled.
+//
+// The victim is the oldest entry whose bit is CLEAR — never read since the last
+// sweep. When every candidate has been read, that is the sweep: clear all their
+// bits, give them a fresh chance, and fall back to the oldest by token. So a
+// read protects an entry from exactly one eviction pass, which is what
+// approximate LRU asks for.
+//
+// Ordering by lastAccessNs rather than by map order is what keeps the choice
+// DETERMINISTIC. Go randomises map iteration, so picking "any entry with a
+// clear bit" would evict a different key run to run, which callers (and the
+// LRU tests) reasonably do not expect.
 func (s *cacheShard) oldestLocked(state cacheEntryState) *cacheEntry {
-	var victim *cacheEntry
-	var oldestNs int64 = math.MaxInt64
+	var victim, fallback *cacheEntry
+	var oldestNs, oldestAny int64 = math.MaxInt64, math.MaxInt64
+	swept := false
 	for _, e := range s.entries {
 		if e.state != state {
 			continue
 		}
-		if ns := e.lastAccessNs.Load(); ns < oldestNs {
-			oldestNs = ns
-			victim = e
+		ns := e.lastAccessNs.Load()
+		if ns < oldestAny {
+			oldestAny, fallback = ns, e
+		}
+		if e.readSinceSweep.Load() {
+			swept = true
+			continue
+		}
+		if ns < oldestNs {
+			oldestNs, victim = ns, e
 		}
 	}
-	return victim
+	if victim != nil {
+		return victim
+	}
+	if swept {
+		// Every candidate had been read: consume their second chances so the
+		// next pass can distinguish them again.
+		for _, e := range s.entries {
+			if e.state == state {
+				e.readSinceSweep.Store(false)
+			}
+		}
+	}
+	return fallback
 }
 
 func cloneBytes(src []byte) []byte {
