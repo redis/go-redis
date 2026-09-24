@@ -1533,24 +1533,25 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
-	rawKey, ok := buildCacheKey(cmd)
-	if !ok {
-		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
-	}
-
 	redisKeys := extractRedisKeys(cmd)
 	if len(redisKeys) == 0 {
 		// Without a key list we cannot react to invalidations for this command.
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
+	// Read the namespace BEFORE building the key: the key is now built with
+	// the namespace already in it, in one allocation, so the prefix has to be
+	// known first. Both checks are cheap and neither depends on the other.
 	keyPrefix := c.cscKeyPrefix
 	if keyPrefix == "" {
 		// A successfully attached client always has a namespace. Fail closed if
 		// an incomplete custom baseClient reaches this path.
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
-	key := cscNamespacedKey(keyPrefix, rawKey)
+	key, ok := buildCacheKeyNS(cmd, keyPrefix)
+	if !ok {
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+	}
 	nsRedisKeys := make([]string, len(redisKeys))
 	for i, k := range redisKeys {
 		nsRedisKeys[i] = cscNamespacedKey(keyPrefix, k)
