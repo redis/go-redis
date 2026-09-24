@@ -458,7 +458,17 @@ func (s *cacheShard) get(ctx context.Context, cacheKey string, clone bool) ([]by
 		// which is the overwhelming majority, and leaves the entry's cache line
 		// SHARED rather than taking it exclusively per hit. See
 		// cacheEntry.readSinceSweep for the measurements.
-		if !entry.readSinceSweep.Load() {
+		//
+		// The store is skipped entirely on a shard that is nowhere near its
+		// cap, because the bit is only ever read by eviction. That guard is
+		// not a micro-optimisation: the surviving store was still 9.7% of all
+		// CPU (15.24s of 157.84s, against 50ms for this Load). It stays hot
+		// under churn because invalidated entries are refetched constantly and
+		// every fresh entry's first read finds a clear bit, and each such
+		// store invalidates, across every core, a line the readers hold
+		// SHARED. len(s.entries) is safe to read here: writers hold the write
+		// lock, and this path holds the read lock.
+		if !entry.readSinceSweep.Load() && s.nearCapacityLocked() {
 			entry.readSinceSweep.Store(true)
 		}
 		s.mu.RUnlock()
@@ -828,6 +838,24 @@ func (s *cacheShard) closeWaitersLocked(entry *cacheEntry) {
 		close(entry.waitCh)
 		entry.waitClosed = true
 	}
+}
+
+// nearCapacityLocked reports whether this shard is close enough to its cap
+// that an eviction could plausibly happen soon.
+//
+// The second-chance bit only ever matters as an eviction input. A shard well
+// below its cap will not evict, so marking reads there is pure cost; the
+// measurement is in cacheShard.get, at the call site. The threshold is
+// deliberately loose (three quarters) so the bit is already being maintained
+// by the time eviction actually starts choosing victims.
+func (s *cacheShard) nearCapacityLocked() bool {
+	if s.maxEntries > 0 && len(s.entries)*4 >= s.maxEntries*3 {
+		return true
+	}
+	if s.maxMemoryBytes > 0 && s.usedBytes*4 >= s.maxMemoryBytes*3 {
+		return true
+	}
+	return false
 }
 
 func (s *cacheShard) overCapacityLocked() bool {
