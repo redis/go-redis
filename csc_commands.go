@@ -138,9 +138,8 @@ func isSubscribeCmd(cmd Cmder) bool {
 // used as a collision-free canonical cache key. ok is false when the writer
 // cannot marshal the arguments, in which case the caller must skip caching
 // rather than bucket the command under an empty key.
-func buildCacheKey(cmd Cmder) (string, bool) {
-	return buildCacheKeyNS(cmd, "")
-}
+// (The un-namespaced form is only needed by tests; it lives in
+// csc_cachekey_test.go so production code has a single entry point.)
 
 // cacheKeyScratch is the reusable buffer+writer pair buildCacheKeyNS encodes
 // into. Building a cache key was the single largest allocator on the cached
