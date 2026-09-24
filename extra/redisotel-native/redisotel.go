@@ -168,6 +168,7 @@ func (o *ObservabilityInstance) configToInternal(cfg *Config) config {
 		excludeCommands:                 cfg.ExcludeCommands,
 		hidePubSubChannelNames:          cfg.HidePubSubChannelNames,
 		hideStreamNames:                 cfg.HideStreamNames,
+		recordNilErrors:                 cfg.RecordNilErrors,
 		histAggregation:                 cfg.HistogramAggregation,
 		bucketsOperationDuration:        cfg.BucketsOperationDuration,
 		bucketsStreamProcessingDuration: cfg.BucketsStreamLag,

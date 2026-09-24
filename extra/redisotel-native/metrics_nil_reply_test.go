@@ -54,3 +54,63 @@ func TestOperationDurationSkipsNilReplyAttributes(t *testing.T) {
 		t.Fatalf("Recorded %d data points, expected 1", points)
 	}
 }
+
+// TestRecordErrorNilReply verifies RecordError drops the NIL error type by
+// default, records it with WithRecordNilErrors, and always records real errors.
+func TestRecordErrorNilReply(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		recordNil bool
+		want      map[string]int64
+	}{
+		{name: "default", recordNil: false, want: map[string]int64{"WRONGTYPE": 1}},
+		{name: "record nil", recordNil: true, want: map[string]int64{"WRONGTYPE": 1, "NIL": 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			reader := metric.NewManualReader()
+			meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
+			defer func() {
+				_ = meterProvider.Shutdown(ctx)
+			}()
+
+			counter, err := meterProvider.Meter("test").Int64Counter(MetricClientErrors)
+			if err != nil {
+				t.Fatalf("Failed to create counter: %v", err)
+			}
+			recorder := &metricsRecorder{
+				clientErrors: counter,
+				cfg:          &config{recordNilErrors: tc.recordNil},
+			}
+
+			recorder.RecordError(ctx, "NIL", nil, "NIL", false, 0)
+			recorder.RecordError(ctx, "WRONGTYPE", nil, "WRONGTYPE", false, 0)
+
+			var rm metricdata.ResourceMetrics
+			if err := reader.Collect(ctx, &rm); err != nil {
+				t.Fatalf("Failed to collect metrics: %v", err)
+			}
+
+			got := map[string]int64{}
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					if m.Name != MetricClientErrors {
+						continue
+					}
+					for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+						errorType, _ := dp.Attributes.Value(AttrErrorType)
+						got[errorType.AsString()] += dp.Value
+					}
+				}
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("Recorded %v, expected %v", got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Fatalf("Recorded %v, expected %v", got, tc.want)
+				}
+			}
+		})
+	}
+}

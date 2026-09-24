@@ -113,7 +113,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 		}
 	}
 
-	if err != nil && !isNilReply(err) {
+	if err != nil && !r.skipNilReply(err) {
 		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
 		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
@@ -176,7 +176,7 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	}
 
 	// Add error attributes if pipeline failed
-	if err != nil && !isNilReply(err) {
+	if err != nil && !r.skipNilReply(err) {
 		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
 		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
@@ -188,10 +188,17 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
-// isNilReply reports whether err is redis.Nil. An empty reply is a successful
-// command that returned no value, so it carries no error attributes.
-func isNilReply(err error) bool {
-	return errors.Is(err, redis.Nil)
+// errorTypeNil is the errorType the client reports for a redis.Nil reply.
+const errorTypeNil = "NIL"
+
+// skipNilReply reports whether err is redis.Nil and Nil replies are not
+// recorded as errors. A Nil reply is a successful command with no value.
+func (r *metricsRecorder) skipNilReply(err error) bool {
+	return !r.recordNilErrors() && errors.Is(err, redis.Nil)
+}
+
+func (r *metricsRecorder) recordNilErrors() bool {
+	return r.cfg != nil && r.cfg.recordNilErrors
 }
 
 // classifyError returns the error.type attribute value
@@ -390,6 +397,10 @@ func getErrorCategory(err error) string {
 func getErrorCategoryFromString(errStr string) string {
 	if errStr == "" {
 		return ""
+	}
+
+	if errStr == errorTypeNil {
+		return "nil"
 	}
 
 	errLower := strings.ToLower(errStr)
@@ -595,6 +606,9 @@ func (r *metricsRecorder) RecordError(
 	retryAttempts int,
 ) {
 	if r.clientErrors == nil {
+		return
+	}
+	if errorType == errorTypeNil && !r.recordNilErrors() {
 		return
 	}
 

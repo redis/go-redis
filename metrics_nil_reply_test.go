@@ -10,54 +10,37 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-// TestRecordCommandErrorSkipsNilReply pins that a Nil reply (GET on a missing key)
-// never reaches the native error callback. Nil matches no classification case, so
-// before the guard every cache miss was counted as an UNKNOWN internal client error.
-func TestRecordCommandErrorSkipsNilReply(t *testing.T) {
+// TestClassifyCommandErrorNilReply pins that a Nil reply (GET on a missing key)
+// gets its own NIL type, so the recorder can drop it. Before, Nil matched no case
+// and every cache miss was counted as an UNKNOWN internal client error.
+func TestClassifyCommandErrorNilReply(t *testing.T) {
+	for _, err := range []error{Nil, fmt.Errorf("hook: %w", Nil)} {
+		errorType, statusCode, isInternal := classifyCommandError(err)
+		if errorType != "NIL" || statusCode != "NIL" || isInternal {
+			t.Fatalf("classifyCommandError(%v) = %q, %q, %v, want NIL, NIL, false", err, errorType, statusCode, isInternal)
+		}
+	}
+
+	errorType, _, _ := classifyCommandError(proto.RedisError("WRONGTYPE Operation"))
+	if errorType != "WRONGTYPE" {
+		t.Fatalf("errorType = %q, want WRONGTYPE", errorType)
+	}
+}
+
+// TestPipelineNilReplyErrorType is the pipeline twin: generalProcessPipeline
+// reports the first command's error, so a batch led by a miss emitted one UNKNOWN
+// error per Exec. Needs a server — the error surfaces only from a real reply.
+func TestPipelineNilReplyErrorType(t *testing.T) {
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
 	var calls atomic.Int64
 	var gotType atomic.Value
 	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
 		Error: func(_ context.Context, errorType string, _ *pool.Conn, _ string, _ bool, _ int) {
 			calls.Add(1)
 			gotType.Store(errorType)
-		},
-	})
-	defer pool.SetAllMetricCallbacks(nil)
-
-	ctx := context.Background()
-
-	recordCommandError(ctx, Nil, nil, 0)
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("error callback invoked %d times for Nil, want 0 (an empty reply is not a failure)", got)
-	}
-
-	// A hook may wrap the command error, so the guard unwraps rather than comparing.
-	recordCommandError(ctx, fmt.Errorf("hook: %w", Nil), nil, 0)
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("error callback invoked %d times for a wrapped Nil, want 0", got)
-	}
-
-	recordCommandError(ctx, proto.RedisError("WRONGTYPE Operation"), nil, 0)
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("error callback invoked %d times, want 1: a real Redis error must still be recorded", got)
-	}
-	if got := gotType.Load(); got != "WRONGTYPE" {
-		t.Fatalf("errorType = %v, want WRONGTYPE", got)
-	}
-}
-
-// TestPipelineNilReplySkipsErrorMetric is the pipeline twin: generalProcessPipeline
-// reports the first command's error, so a batch led by a miss emitted one UNKNOWN
-// error per Exec. Needs a server — the error surfaces only from a real reply.
-func TestPipelineNilReplySkipsErrorMetric(t *testing.T) {
-	if err := probeRedis(internalTestRedisAddr()); err != nil {
-		t.Skipf("no redis: %v", err)
-	}
-
-	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
-			calls.Add(1)
 		},
 	})
 	defer pool.SetAllMetricCallbacks(nil)
@@ -77,7 +60,10 @@ func TestPipelineNilReplySkipsErrorMetric(t *testing.T) {
 	if _, err := pipe.Exec(ctx); err != Nil {
 		t.Fatalf("Exec err = %v, want Nil", err)
 	}
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("error callback invoked %d times for a pipelined miss, want 0", got)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("error callback invoked %d times for a pipelined miss, want 1", got)
+	}
+	if got := gotType.Load(); got != "NIL" {
+		t.Fatalf("errorType = %v, want NIL", got)
 	}
 }

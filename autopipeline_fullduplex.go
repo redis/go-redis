@@ -913,7 +913,7 @@ func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error,
 			}
 			cb(octx, time.Since(req.writtenAt), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
 		}
-		if e != nil && !isNilReply(e) {
+		if e != nil {
 			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 				errorType, statusCode, isInternal := classifyCommandError(e)
 				errorCallback(octx, errorType, cn, statusCode, isInternal, req.attempts-1)

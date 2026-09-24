@@ -3803,14 +3803,16 @@ func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 	}
 }
 
-// TestFDReportReplyMetricsSkipsNilReply pins that a Nil reply — a successful
-// command with no value — is not counted as a client error by the reader's
-// per-reply error callback, while a real Redis error still is. Pure, no server.
-func TestFDReportReplyMetricsSkipsNilReply(t *testing.T) {
-	var calls atomic.Int64
+// TestFDReportReplyMetricsNilReplyType pins that the reader's per-reply error
+// callback reports a Nil reply as NIL, not as an UNKNOWN internal error, so the
+// recorder can drop it. Pure, no server.
+func TestFDReportReplyMetricsNilReplyType(t *testing.T) {
+	var gotType atomic.Value
+	var gotInternal atomic.Bool
 	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
-			calls.Add(1)
+		Error: func(_ context.Context, errorType string, _ *pool.Conn, _ string, isInternal bool, _ int) {
+			gotType.Store(errorType)
+			gotInternal.Store(isInternal)
 		},
 	})
 	defer pool.SetAllMetricCallbacks(nil)
@@ -3819,13 +3821,8 @@ func TestFDReportReplyMetricsSkipsNilReply(t *testing.T) {
 	req := fdReq{cmd: NewStringCmd(context.Background(), "get", "k"), attempts: 1}
 
 	fd.reportReplyMetrics(context.Background(), req, Nil, nil)
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("error callback invoked %d times for Nil, want 0", got)
-	}
-
-	fd.reportReplyMetrics(context.Background(), req, proto.RedisError("WRONGTYPE Operation"), nil)
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("error callback invoked %d times, want 1: a real Redis error must still be recorded", got)
+	if got := gotType.Load(); got != "NIL" || gotInternal.Load() {
+		t.Fatalf("errorType = %v, internal = %v, want NIL, false", got, gotInternal.Load())
 	}
 }
 
