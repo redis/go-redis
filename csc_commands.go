@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -137,17 +138,67 @@ func isSubscribeCmd(cmd Cmder) bool {
 // used as a collision-free canonical cache key. ok is false when the writer
 // cannot marshal the arguments, in which case the caller must skip caching
 // rather than bucket the command under an empty key.
-func buildCacheKey(cmd Cmder) (string, bool) {
+// (The un-namespaced form is only needed by tests; it lives in
+// csc_cachekey_test.go so production code has a single entry point.)
+
+// cacheKeyScratch is the reusable buffer+writer pair buildCacheKeyNS encodes
+// into. Building a cache key was the single largest allocator on the cached
+// read path -- 32% of all bytes allocated -- because every call heap-allocated
+// a bytes.Buffer, a proto.Writer (which itself allocates two 64-byte scratch
+// slices), grew the buffer, and then copied it out with String(). Only the
+// final String() is inherent: the key is retained, the scratch is not.
+type cacheKeyScratch struct {
+	buf bytes.Buffer
+	wr  *proto.Writer
+}
+
+var cacheKeyScratchPool = sync.Pool{
+	New: func() any {
+		s := &cacheKeyScratch{}
+		s.wr = proto.NewWriter(&s.buf)
+		return s
+	},
+}
+
+// buildCacheKeyNS renders cmd's RESP encoding prefixed by ns, in ONE
+// allocation (the returned string).
+//
+// Fusing the namespace in matters as much as pooling: the caller used to take
+// this function's result and then do prefix+key, a second full copy of every
+// cache key on every cached read. Writing the prefix into the buffer first
+// makes the single String() produce the namespaced key directly, and the
+// suffix after ns is still exactly the wire encoding -- which the refresher
+// relies on when it slices the namespace back off to re-issue the command.
+func buildCacheKeyNS(cmd Cmder, ns string) (string, bool) {
 	args := cmd.Args()
 	if len(args) == 0 {
 		return "", false
 	}
-	var buf bytes.Buffer
-	if err := proto.NewWriter(&buf).WriteArgs(args); err != nil {
+	s := cacheKeyScratchPool.Get().(*cacheKeyScratch)
+	defer func() {
+		// Drop an oversized buffer instead of pooling it, so one huge command
+		// does not pin that capacity for the process lifetime.
+		if s.buf.Cap() > cacheKeyScratchMaxCap {
+			return
+		}
+		s.buf.Reset()
+		cacheKeyScratchPool.Put(s)
+	}()
+	s.buf.Reset()
+	s.buf.WriteString(ns)
+	// The pooled writer targets s.buf for its whole life; Reset here only
+	// guards against a zero-value scratch reaching this path.
+	if s.wr == nil {
+		s.wr = proto.NewWriter(&s.buf)
+	}
+	if err := s.wr.WriteArgs(args); err != nil {
 		return "", false
 	}
-	return buf.String(), true
+	return s.buf.String(), true
 }
+
+// cacheKeyScratchMaxCap bounds the buffer capacity kept in the pool.
+const cacheKeyScratchMaxCap = 64 << 10
 
 // keyArg renders the key argument at pos exactly as proto.Writer sends it to
 // the server, so invalidation lookups match the key names in the server's
