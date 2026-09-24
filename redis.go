@@ -1664,7 +1664,7 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	// A Nil reply is a successful command with no value. It gets its own type so
 	// the recorder can tell it apart from a real failure.
 	if errors.Is(err, Nil) {
-		return "NIL", "NIL", false
+		return ErrorTypeNil, ErrorTypeNil, false
 	}
 
 	errStr := err.Error()

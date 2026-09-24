@@ -188,9 +188,6 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
-// errorTypeNil is the errorType the client reports for a redis.Nil reply.
-const errorTypeNil = "NIL"
-
 // skipNilReply reports whether err is redis.Nil and Nil replies are not
 // recorded as errors. A Nil reply is a successful command with no value.
 func (r *metricsRecorder) skipNilReply(err error) bool {
@@ -206,6 +203,10 @@ func (r *metricsRecorder) recordNilErrors() bool {
 func classifyError(err error) string {
 	if err == nil {
 		return ""
+	}
+
+	if errors.Is(err, redis.Nil) {
+		return redis.ErrorTypeNil
 	}
 
 	// Timeout errors
@@ -322,6 +323,10 @@ func extractRedisErrorPrefix(err error) string {
 		return ""
 	}
 
+	if errors.Is(err, redis.Nil) {
+		return redis.ErrorTypeNil
+	}
+
 	errStr := err.Error()
 
 	// Redis errors typically start with an uppercase prefix
@@ -377,6 +382,10 @@ func getErrorCategory(err error) string {
 		return ""
 	}
 
+	if errors.Is(err, redis.Nil) {
+		return redis.ErrorTypeNil
+	}
+
 	errStr := err.Error()
 
 	// For actual errors, also check error types
@@ -399,8 +408,8 @@ func getErrorCategoryFromString(errStr string) string {
 		return ""
 	}
 
-	if errStr == errorTypeNil {
-		return "nil"
+	if errStr == redis.ErrorTypeNil {
+		return redis.ErrorTypeNil
 	}
 
 	errLower := strings.ToLower(errStr)
@@ -608,7 +617,7 @@ func (r *metricsRecorder) RecordError(
 	if r.clientErrors == nil {
 		return
 	}
-	if errorType == errorTypeNil && !r.recordNilErrors() {
+	if errorType == redis.ErrorTypeNil && !r.recordNilErrors() {
 		return
 	}
 
