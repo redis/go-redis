@@ -361,39 +361,40 @@ func (b *cscInvalBatcher) apply(items []cscInvalItem) {
 	cur := b.epoch.Load()
 	lc, canRefresh := cache.(*LocalCache)
 	canRefresh = canRefresh && refresh != nil
-	var hot []cscRefreshTarget
+	// Group the batch and apply it in ONE pass over the shards: each shard
+	// lock is taken once for the whole batch rather than once per key. The
+	// per-key semantics (fetch-order guard, recency horizon, target
+	// collection) are unchanged.
+	keys := make([]string, 0, len(items))
+	sinces := make([]int64, 0, len(items))
+	snaps := make([]uint64, 0, len(items))
 	for _, it := range items {
 		// Stale epoch: enqueued before a full cache Flush that superseded it
 		// (see drop()); applying it would only evict a post-flush repopulation.
 		if it.epoch != cur {
 			continue
 		}
-		k := it.key
-		if !canRefresh {
-			if lc != nil {
-				// *LocalCache with refresh OFF: still honor the fetch-order guard, or a
-				// delayed invalidation would delete a value refetched during the batch
-				// window (fetchSeq > fetchSnap) — a spurious miss that can also cancel an
-				// in-progress fetch and wake waiters as duplicates. Use the sequence-aware
-				// deletion path and discard any collected refresh targets (refresh is off).
-				_ = lc.deleteByRedisKeyCollectingHot(k, cscInvalNoHorizon, it.fetchSnap, nil)
-			} else {
-				// Non-*LocalCache: no per-entry fetch sequence to compare; plain delete.
-				cache.DeleteByRedisKey(k)
-			}
-			continue
-		}
-		// Use the horizon snapshotted at ENQUEUE, not a live load: a batch-window
-		// delay advances the live horizon and would chill keys that were hot when
-		// the invalidation arrived (see cscInvalItem.sinceToken). An item enqueued
-		// with no refresh binding carries cscInvalNoHorizon; the binding that
-		// exists NOW (a client attached in between) supplies the live horizon, which
-		// is a real recency test — never horizon 0, which would mark every entry hot.
 		since := it.sinceToken
-		if since == cscInvalNoHorizon {
+		if canRefresh && since == cscInvalNoHorizon {
 			since = refresh.sinceToken.Load()
 		}
-		hot = lc.deleteByRedisKeyCollectingHot(k, since, it.fetchSnap, hot[:0])
+		keys = append(keys, it.key)
+		sinces = append(sinces, since)
+		snaps = append(snaps, it.fetchSnap)
+	}
+	if len(keys) == 0 {
+		return
+	}
+	if lc == nil {
+		// Non-*LocalCache: no per-entry fetch sequence to compare; plain deletes.
+		for _, k := range keys {
+			cache.DeleteByRedisKey(k)
+		}
+		return
+	}
+	var hot []cscRefreshTarget
+	hot, _ = lc.deleteManyByRedisKeyCollectingHot(keys, sinces, snaps, hot)
+	if canRefresh {
 		for i := range hot {
 			refresh.offer(hot[i])
 		}

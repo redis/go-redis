@@ -290,6 +290,94 @@ type cacheShard struct {
 	staleTimeout   time.Duration
 }
 
+// collectHotAndDeleteBatch applies a whole invalidation batch under ONE
+// acquisition of this shard's lock.
+//
+// The per-key work is identical to collectHotAndDelete; only the locking
+// granularity changes. The caller loops shards on the outside and keys on the
+// inside, so a batch of N costs 16 lock acquisitions instead of 16*N -- which
+// is what let the single batcher worker fall permanently behind a 20k/sec
+// invalidation stream and leave the cache serving stale entries.
+//
+// keys and the parallel guards are indexed together: sinceTokens[i] and
+// fetchSnaps[i] belong to keys[i].
+//
+// matched[i] is set when this shard removed something for keys[i]. The caller
+// ORs it across shards, because one redis key can appear in several shards: a
+// multi-key entry is filed under its CACHE key's shard, so each of its redis
+// keys is indexed wherever that entry lives. Per-key match tracking is what
+// keeps the no-op deletion count equal to the single-key path's.
+func (s *cacheShard) collectHotAndDeleteBatch(keys []string, sinceTokens []int64, fetchSnaps []uint64, dst []cscRefreshTarget, matched []bool) ([]cscRefreshTarget, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	removed := 0
+	for i, redisKey := range keys {
+		cacheKeys, ok := s.byRedisKey[redisKey]
+		if !ok {
+			continue
+		}
+		sinceToken, fetchSnap := sinceTokens[i], fetchSnaps[i]
+		toRemove := make([]string, 0, len(cacheKeys))
+		for cacheKey := range cacheKeys {
+			toRemove = append(toRemove, cacheKey)
+		}
+		for _, cacheKey := range toRemove {
+			entry, exists := s.entries[cacheKey]
+			if exists && entry.fetchSeq > fetchSnap {
+				continue
+			}
+			if exists && entry.state == cacheEntryValid && entry.lastAccessNs.Load() > sinceToken {
+				ks := make([]string, len(entry.redisKeys))
+				copy(ks, entry.redisKeys)
+				dst = append(dst, cscRefreshTarget{
+					cacheKey:  cacheKey,
+					redisKeys: ks,
+					accessNs:  entry.lastAccessNs.Load(),
+					valBytes:  len(entry.value),
+				})
+			}
+			if s.removeEntryLocked(cacheKey) {
+				matched[i] = true
+				removed++
+			}
+		}
+	}
+	return dst, removed
+}
+
+// deleteManyByRedisKeyCollectingHot is the cache-level batch entry point: one
+// pass over the shards, every key of the batch handled under each shard's
+// single lock.
+func (c *LocalCache) deleteManyByRedisKeyCollectingHot(keys []string, sinceTokens []int64, fetchSnaps []uint64, dst []cscRefreshTarget) ([]cscRefreshTarget, int) {
+	if len(keys) == 0 {
+		return dst, 0
+	}
+	removed := 0
+	matched := make([]bool, len(keys))
+	for i := range c.shards {
+		var n int
+		dst, n = c.shards[i].collectHotAndDeleteBatch(keys, sinceTokens, fetchSnaps, dst, matched)
+		removed += n
+	}
+	// Applied-delete accounting, per KEY, exactly as the single-key path does
+	// it: every key is one deletion, and a key that removed nothing is one
+	// no-op. Deriving the no-op count from the batch total instead would
+	// undercount -- a batch where one key matched and nine did not would
+	// record zero no-ops rather than nine.
+	c.deletions.Add(uint64(len(keys)))
+	noop := 0
+	for _, ok := range matched {
+		if !ok {
+			noop++
+		}
+	}
+	if noop > 0 {
+		c.deletionsNoop.Add(uint64(noop))
+	}
+	return dst, removed
+}
+
 // shardFor returns the shard responsible for cacheKey.
 func (c *LocalCache) shardFor(cacheKey string) *cacheShard {
 	if c.shardCount == 1 {
