@@ -4605,7 +4605,7 @@ func TestRefreshRepublishDoesNotRenewDemand(t *testing.T) {
 
 	// One refresh cycle: collect the hot target (captures the reader-access token and
 	// deletes the entry), republish a fresh value, restore the captured token.
-	targets := lc.deleteByRedisKeyCollectingHot(rk, lc.LRUClock()-1, ^uint64(0), nil)
+	targets := lc.deleteByRedisKeyCollectingHot(rk, cscInvalNoHorizon, ^uint64(0), nil)
 	if len(targets) != 1 {
 		t.Fatalf("want 1 hot target, got %d", len(targets))
 	}

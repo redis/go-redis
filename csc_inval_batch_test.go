@@ -119,14 +119,15 @@ func TestInvalBatcherEnqueueAtStampsSuppliedFetchSnap(t *testing.T) {
 	}
 }
 
-// TestInvalBatcherRefreshAttachUsesLiveHorizon pins the recency gate across a
-// refresh ATTACH: an item enqueued while the batcher had no refresh binding must
-// not be applied as "horizon 0" once a binding appears before apply (setRefreshQueue
-// repoints the batcher, then stop-drains it). Horizon 0 would mark every valid
-// entry hot and refetch cold keys — the loop the horizon exists to prevent. The
-// item carries cscInvalNoHorizon and apply falls back to the live horizon, so a
-// COLD entry is deleted but NOT offered, while a hot one still is.
-func TestInvalBatcherRefreshAttachUsesLiveHorizon(t *testing.T) {
+// TestInvalBatcherRefreshAttachAppliesUnderNewBinding pins the refresh ATTACH
+// path: an item enqueued while the batcher had no refresh binding must still be
+// applied once a binding appears before apply (setRefreshQueue repoints the
+// batcher, then stop-drains it), rather than being dropped on the floor.
+//
+// It used to also pin a recency gate — the cold entry was deleted but NOT
+// offered for refetch. That gate is gone: every invalidated Valid entry is now
+// a refetch target, so both keys are offered and the assertion below says so.
+func TestInvalBatcherRefreshAttachAppliesUnderNewBinding(t *testing.T) {
 	lc := NewLocalCache(CacheConfig{MaxEntries: 64})
 	mkValid := func(cacheKey, redisKey string) {
 		tok, fetch := lc.Reserve(cacheKey, []string{redisKey})
@@ -159,7 +160,7 @@ func TestInvalBatcherRefreshAttachUsesLiveHorizon(t *testing.T) {
 	// entry, and the batcher is repointed at its queue (as setRefreshQueue does
 	// before the stop-drain).
 	q := &cscRefreshQueue{ch: make(chan cscRefreshTarget, 8)}
-	q.sinceToken.Store(lc.LRUClock())
+	q.sinceToken.Store(cscInvalNoHorizon)
 	b.refresh.Store(q)
 
 	// Hot control: read after the horizon, enqueued with a real snapshot.
@@ -183,13 +184,21 @@ func TestInvalBatcherRefreshAttachUsesLiveHorizon(t *testing.T) {
 	if _, ok := lc.Get(ctx, "ck:hot"); ok {
 		t.Fatal("hot entry not deleted")
 	}
-	// ... but only the hot one is offered for refetch. Without the sentinel the
-	// cold item would apply with horizon 0 and be offered too (len == 2).
-	if n := len(q.ch); n != 1 {
-		t.Fatalf("refresh targets offered = %d, want 1 (hot only); cold key must not be refetched", n)
+	// ... and BOTH are offered for refetch. There is no recency horizon any
+	// more: every invalidated Valid entry is a refetch target, so the cold
+	// entry is offered exactly like the hot one. This assertion used to be
+	// "hot only", which is what the bounded window bought; the remaining point
+	// of this test is that items enqueued BEFORE the attach still apply under
+	// the newly bound queue rather than being dropped.
+	if n := len(q.ch); n != 2 {
+		t.Fatalf("refresh targets offered = %d, want 2 (both, refresh-everything)", n)
 	}
-	if got := <-q.ch; got.cacheKey != "ck:hot" {
-		t.Fatalf("offered target = %q, want ck:hot", got.cacheKey)
+	got := map[string]bool{}
+	for len(q.ch) > 0 {
+		got[(<-q.ch).cacheKey] = true
+	}
+	if !got["ck:hot"] || !got["ck:cold"] {
+		t.Fatalf("offered targets = %v, want both ck:hot and ck:cold", got)
 	}
 }
 
@@ -544,7 +553,7 @@ func TestInvalBatcherSizeCapGuardKeepsRefreshed(t *testing.T) {
 	b := newTestBatcher(lc, batchMax*2, time.Hour)
 	b.batchMax = batchMax // per-batcher, set before the worker starts (no global race)
 	q := &cscRefreshQueue{ch: make(chan cscRefreshTarget, 64)}
-	q.sinceToken.Store(lc.LRUClock()) // seed the horizon so the entry reads as hot
+	q.sinceToken.Store(cscInvalNoHorizon) // seed the horizon so the entry reads as hot
 	b.refresh.Store(q)
 
 	mkValid("ck:hot", "rk:hot") // the target entry, read after the horizon
@@ -626,7 +635,7 @@ func TestInvalBatcherDedupKeepsLatestFetchSnap(t *testing.T) {
 	// window never fires; only the stop-drain applies (which dedups ch in order).
 	b := newTestBatcher(lc, 64, time.Hour)
 	q := &cscRefreshQueue{ch: make(chan cscRefreshTarget, 64)}
-	q.sinceToken.Store(lc.LRUClock())
+	q.sinceToken.Store(cscInvalNoHorizon)
 	b.refresh.Store(q)
 
 	mkValid("ck:hot", "rk") // original entry
