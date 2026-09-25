@@ -1601,6 +1601,12 @@ func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...
 	return ap.pipeliner.Watch(ctx, fn, keys...)
 }
 
+// Monitor delegates to the typed command surface so MONITOR still takes the
+// direct, dedicated-connection path guarded by submit.
+func (ap *AutoPipeliner) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return ap.cmdable.Monitor(ctx, ch)
+}
+
 // Subscribe opens a pub/sub on the underlying client (not batched — pub/sub
 // needs a dedicated connection).
 func (ap *AutoPipeliner) Subscribe(ctx context.Context, channels ...string) *PubSub {
@@ -1740,6 +1746,10 @@ var outsidePipelineCommands = map[string]struct{}{
 func runsOutsidePipeline(name string) bool {
 	_, ok := outsidePipelineCommands[name]
 	return ok
+}
+
+func runsOutsidePipelineCmd(cmd Cmder) bool {
+	return cmd.GetCmdType() == CmdTypeMonitor || runsOutsidePipeline(cmd.Name())
 }
 
 // blockingCommands are commands that park on the server until data arrives or
@@ -1893,7 +1903,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// fan-out and aggregation. Running the preflight first therefore rejected
 	// commands that would have worked — typed WAIT/WAITAOF on a cluster with
 	// command policies enabled (review finding by codex on #3942).
-	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
+	diverted := cmd.readTimeout() != nil || runsOutsidePipelineCmd(cmd) || isBlockingCmd(cmd) ||
 		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,
