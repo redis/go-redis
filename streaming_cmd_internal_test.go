@@ -145,4 +145,40 @@ func TestStreamingCmdCallbackError(t *testing.T) {
 	if s, err := rd.ReadString(); err != nil || s != "OK" {
 		t.Fatalf("follow-up reply: %q, %v (stream misaligned after callback error)", s, err)
 	}
+	// entriesCount must not include the entry whose callback failed.
+	if cmd.entriesCount != 2 {
+		t.Fatalf("entriesCount = %d, want 2 (the failed 3rd entry must not be counted)", cmd.entriesCount)
+	}
+}
+
+// A StreamingCmd callback error is a reply-level outcome, not a transport
+// failure: ReadChunked always drains the rest of the reply before readReply
+// returns, so the connection is not desynchronized. isRedisError (consulted
+// by isBadConn, pipeline-abort, and full-duplex fdReplyIsFatal gates
+// throughout the client) must treat it as connection-safe, or a callback
+// erroring on one entry would get the socket removed from the pool and, in
+// full-duplex mode, abort unrelated in-flight commands sharing it.
+func TestStreamingCmdCallbackErrorIsConnSafe(t *testing.T) {
+	wire := clientListWire(t, false, 3) + "+OK\r\n"
+	rd := proto.NewReader(strings.NewReader(wire))
+
+	sentinel := errors.New("business logic stop")
+	cmd := NewStreamingCmd(context.Background(), "\n", func(segment []byte) error {
+		return sentinel
+	}, 0, "client", "list")
+
+	err := cmd.readReply(rd)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("readReply err = %v, want wrapping sentinel", err)
+	}
+	if !isRedisError(err) {
+		t.Fatalf("isRedisError(err) = false, want true (must not be treated as a transport failure)")
+	}
+	if isBadConn(err, false, "127.0.0.1:6379") {
+		t.Fatalf("isBadConn(err) = true, want false (ReadChunked already drained the reply)")
+	}
+	// The stream must still be aligned on the next reply.
+	if s, e := rd.ReadString(); e != nil || s != "OK" {
+		t.Fatalf("follow-up reply: %q, %v (stream misaligned)", s, e)
+	}
 }

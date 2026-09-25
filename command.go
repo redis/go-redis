@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -8152,6 +8153,10 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 // defaultStreamingCmdChunk is the default read-chunk size for StreamingCmd
 const defaultStreamingCmdChunk = 4 * 1024
 
+// errStreamingCallback wraps an error returned by a StreamingCmd's
+// entry/parse/fn callback.
+var errStreamingCallback = errors.New("redis: streaming callback error")
+
 // StreamingCmd streams a bulk-string (RESP2)
 // or verbatim-string (RESP3) reply to a callback.
 //
@@ -8245,7 +8250,7 @@ func (cmd *StreamingCmd) readReply(rd *proto.Reader) error {
 	buf := make([]byte, cmd.bufferSize)
 	emit := func(entry []byte) error {
 		if err := cmd.fn(entry); err != nil {
-			return err
+			return fmt.Errorf("%w: %w", errStreamingCallback, err)
 		}
 		cmd.entriesCount++
 		return nil
