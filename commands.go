@@ -192,6 +192,7 @@ type Cmdable interface {
 	ClientKill(ctx context.Context, ipPort string) *StatusCmd
 	ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
 	ClientList(ctx context.Context) *StringCmd
+	ClientListStreaming(ctx context.Context, fn func(*ClientInfo) error) *StreamingCmd
 	ClientInfo(ctx context.Context) *ClientInfoCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientUnpause(ctx context.Context) *BoolCmd
@@ -512,6 +513,21 @@ func (c cmdable) ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
 
 func (c cmdable) ClientList(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "client", "list")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClientListStreaming executes CLIENT LIST and streams each parsed entry to fn
+func (c cmdable) ClientListStreaming(ctx context.Context, fn func(*ClientInfo) error) *StreamingCmd {
+	cmd := NewStreamingCmd(
+		ctx,
+		"\n",
+		StreamingParser(func(line []byte) (*ClientInfo, error) {
+			return parseClientInfo(strings.TrimSpace(string(line)))
+		}, fn),
+		0,
+		"client",
+		"list")
 	_ = c(ctx, cmd)
 	return cmd
 }

@@ -182,7 +182,10 @@ func isRedisError(err error) bool {
 	}
 	// Also check for proto.RedisError specifically
 	var protoRedisErr proto.RedisError
-	return errors.As(err, &protoRedisErr)
+	if errors.As(err, &protoRedisErr) {
+		return true
+	}
+	return errors.Is(err, errStreamingCallback)
 }
 
 func isBadConn(err error, allowTimeout bool, addr string) bool {
