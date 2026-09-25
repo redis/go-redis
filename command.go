@@ -8241,10 +8241,14 @@ func (cmd *StreamingCmd) Clone() Cmder {
 }
 
 func (cmd *StreamingCmd) readReply(rd *proto.Reader) error {
+	cmd.entriesCount = 0
 	buf := make([]byte, cmd.bufferSize)
 	emit := func(entry []byte) error {
+		if err := cmd.fn(entry); err != nil {
+			return err
+		}
 		cmd.entriesCount++
-		return cmd.fn(entry)
+		return nil
 	}
 
 	if len(cmd.delimiter) == 0 {
