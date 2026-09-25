@@ -70,6 +70,9 @@ var _ = Describe("CmdString", func() {
 			"sentinel set mymaster down-after-milliseconds 5000 auth-pass <redacted>"),
 		Entry("", []interface{}{"sentinel", "set", "mymaster", "auth-user", "alice"},
 			"sentinel set mymaster auth-user alice"),
+		// rename-command takes two values, which shifts the option parity.
+		Entry("", []interface{}{"sentinel", "set", "mymaster", "rename-command", "CONFIG", "cfg", "auth-pass", "s3cret"},
+			"sentinel set mymaster rename-command CONFIG cfg auth-pass <redacted>"),
 		Entry("", []interface{}{"get", "key"}, "get key"),
 		Entry("", []interface{}{"set", "auth", "value"}, "set auth value"),
 	)

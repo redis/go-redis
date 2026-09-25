@@ -156,8 +156,13 @@ func secretArgs(args []interface{}) []bool {
 
 	case equalFoldArg(args, 0, "sentinel") && equalFoldArg(args, 1, "set"):
 		// SENTINEL SET <master> option value [option value ...]; auth-pass holds
-		// the monitored master's password.
+		// the monitored master's password. Every option takes one value except
+		// rename-command <oldname> <newname>, which takes two.
 		for i := 3; i+1 < len(args); i += 2 {
+			if equalFoldArg(args, i, "rename-command") {
+				i++
+				continue
+			}
 			if equalFoldArg(args, i, "auth-pass") {
 				mark(i + 1)
 			}
