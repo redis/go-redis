@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -163,6 +164,7 @@ const (
 	CmdTypeUint
 	CmdTypeUintSlice
 	CmdTypeAREntrySlice
+	CmdTypeStreaming
 )
 
 type (
@@ -8143,6 +8145,143 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
+}
+
+//------------------------------------------------------------------------------
+
+// defaultStreamingCmdChunk is the default read-chunk size for StreamingCmd
+const defaultStreamingCmdChunk = 4 * 1024
+
+// StreamingCmd streams a bulk-string (RESP2)
+// or verbatim-string (RESP3) reply to a callback.
+//
+// The callback's segment []byte is backed by an internal buffer that is
+// reused and overwritten on every call (like bufio.Scanner.Bytes()). It is
+// only valid for the duration of the call; copy it (e.g. string(segment))
+// if it needs to outlive the callback.
+type StreamingCmd struct {
+	baseCmd
+
+	delimiter    []byte
+	fn           func(segment []byte) error
+	entriesCount int
+	bufferSize   int
+}
+
+var _ Cmder = (*StreamingCmd)(nil)
+
+// NewStreamingCmd creates a StreamingCmd that splits the reply on delimiter.
+//
+// fn is called with a reused buffer; see the StreamingCmd doc comment for
+// the copy-before-retaining contract.
+func NewStreamingCmd(
+	ctx context.Context,
+	delimiter string,
+	fn func(entry []byte) error,
+	bufferSize int,
+	args ...any) *StreamingCmd {
+	if bufferSize <= 0 {
+		bufferSize = defaultStreamingCmdChunk
+	}
+	return &StreamingCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeStreaming,
+		},
+		delimiter:  []byte(delimiter),
+		fn:         fn,
+		bufferSize: bufferSize,
+	}
+}
+
+// StreamingParser adapts a []byte-parsing function into the fn callback
+// NewStreamingCmd expects.
+func StreamingParser[T any](parse func(entry []byte) (T, error), fn func(T) error) func([]byte) error {
+	return func(entry []byte) error {
+		v, err := parse(entry)
+		if err != nil {
+			return err
+		}
+		return fn(v)
+	}
+}
+
+func (cmd *StreamingCmd) SetVal(n int) {
+	cmd.entriesCount = n
+}
+
+func (cmd *StreamingCmd) Val() int {
+	cmd.await()
+	return cmd.entriesCount
+}
+
+func (cmd *StreamingCmd) Result() (int, error) {
+	cmd.await()
+	return cmd.entriesCount, cmd.err
+}
+
+func (cmd *StreamingCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.entriesCount)
+}
+
+func (cmd *StreamingCmd) NoRetry() bool {
+	return true
+}
+
+func (cmd *StreamingCmd) Clone() Cmder {
+	return &StreamingCmd{
+		baseCmd:      cmd.cloneBaseCmd(),
+		delimiter:    cmd.delimiter,
+		fn:           cmd.fn,
+		entriesCount: cmd.entriesCount,
+		bufferSize:   cmd.bufferSize,
+	}
+}
+
+func (cmd *StreamingCmd) readReply(rd *proto.Reader) error {
+	buf := make([]byte, cmd.bufferSize)
+	emit := func(entry []byte) error {
+		cmd.entriesCount++
+		return cmd.fn(entry)
+	}
+
+	if len(cmd.delimiter) == 0 {
+		_, err := rd.ReadChunked(buf, emit)
+		return err
+	}
+
+	var pending []byte
+	if _, err := rd.ReadChunked(
+		buf,
+		func(chunk []byte) error {
+			if len(pending) > 0 {
+				pending = append(pending, chunk...)
+				chunk = pending
+			}
+			for {
+				i := bytes.Index(chunk, cmd.delimiter)
+				if i < 0 {
+					break
+				}
+				if err := emit(chunk[:i]); err != nil {
+					return err
+				}
+				chunk = chunk[i+len(cmd.delimiter):]
+			}
+
+			pending = append(pending[:0], chunk...)
+			return nil
+		},
+	); err != nil {
+		return err
+	}
+
+	if len(pending) > 0 {
+		return emit(pending)
+	}
+	return nil
 }
 
 // -------------------------------------------
