@@ -3803,6 +3803,29 @@ func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 	}
 }
 
+// TestFDReportReplyMetricsNilReplyType pins that the reader's per-reply error
+// callback reports a Nil reply as NIL, not as an UNKNOWN internal error, so the
+// recorder can drop it. Pure, no server.
+func TestFDReportReplyMetricsNilReplyType(t *testing.T) {
+	var gotType atomic.Value
+	var gotInternal atomic.Bool
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		Error: func(_ context.Context, errorType string, _ *pool.Conn, _ string, isInternal bool, _ int) {
+			gotType.Store(errorType)
+			gotInternal.Store(isInternal)
+		},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+	req := fdReq{cmd: NewStringCmd(context.Background(), "get", "k"), attempts: 1}
+
+	fd.reportReplyMetrics(context.Background(), req, Nil, nil)
+	if got := gotType.Load(); got != "NIL" || gotInternal.Load() {
+		t.Fatalf("errorType = %v, internal = %v, want NIL, false", got, gotInternal.Load())
+	}
+}
+
 // TestFDFailReqsRecoversMetricCallbackPanic pins that a panicking user MetricError
 // callback on the engine-goroutine failure path (failReqs, reached on lease
 // failure / retry exhaustion / Close) cannot abort settlement: every req must get
