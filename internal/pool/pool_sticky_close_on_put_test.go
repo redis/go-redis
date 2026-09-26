@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-// stubPooler records removals; Get hands out a fixed conn.
+// stubPooler records puts and removals; Get hands out a fixed conn.
 type stubPooler struct {
 	cn      *Conn
+	put     bool
 	removed bool
 }
 
@@ -18,7 +19,7 @@ func (s *stubPooler) CloseConn(context.Context, *Conn, string, string) error {
 	return nil
 }
 func (s *stubPooler) Get(context.Context) (*Conn, error) { return s.cn, nil }
-func (s *stubPooler) Put(context.Context, *Conn)         {}
+func (s *stubPooler) Put(context.Context, *Conn)         { s.put = true }
 func (s *stubPooler) Remove(_ context.Context, _ *Conn, _ error) {
 	s.removed = true
 }
@@ -68,5 +69,37 @@ func TestStickyConnPoolPutHonorsCloseOnPut(t *testing.T) {
 	}
 	if !stub.removed {
 		t.Error("underlying connection must be removed from the parent pool")
+	}
+}
+
+// A sticky pool configured with DiscardOnClose must remove its connection from
+// the parent on Close instead of returning it: a dedicated Conn carries session
+// state (AUTH, SELECT, ...) that the next pooled caller must not inherit.
+func TestStickyConnPoolDiscardOnClose(t *testing.T) {
+	ctx := context.Background()
+	for _, discard := range []bool{false, true} {
+		client, server := net.Pipe()
+
+		stub := &stubPooler{cn: NewConn(client)}
+		p := NewStickyConnPool(stub)
+		if discard {
+			p.DiscardOnClose()
+		}
+
+		cn, err := p.Get(ctx)
+		if err != nil {
+			t.Fatalf("discard=%v: get: %v", discard, err)
+		}
+		p.Put(ctx, cn)
+		if err := p.Close(); err != nil {
+			t.Fatalf("discard=%v: close: %v", discard, err)
+		}
+
+		if stub.removed != discard || stub.put == discard {
+			t.Errorf("discard=%v: removed=%v put=%v", discard, stub.removed, stub.put)
+		}
+
+		client.Close()
+		server.Close()
 	}
 }

@@ -2644,12 +2644,18 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) Conn() *Conn {
-	// Share the HIMPORT fieldset registry: the sticky pool borrows
-	// connections from this client's pool, so fieldsets prepared on them
-	// stay valid after the connections are returned.
-	conn := newConn(c.opt, c.baseClient.newStickyConnPool(), &c.hooksMixin, c.himport)
-	// A sticky client does not serve cache hits, but a new pool connection first
-	// initialized through it may later be reused by the parent. Share the
+	sticky := c.baseClient.newStickyConnPool()
+	// A Conn exists to carry session state (AUTH, SELECT, CLIENT SETNAME,
+	// CLIENT TRACKING, RESET, ...) that cannot be undone on release, so its
+	// connection is closed rather than returned to the pool, where it would
+	// serve unrelated callers under that state.
+	sticky.DiscardOnClose()
+	// Share the HIMPORT fieldset registry: the sticky pool borrows a
+	// connection from this client's pool, so the fieldsets already prepared
+	// on it by the parent stay valid.
+	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
+	// A sticky client does not serve cache hits, but a pool connection first
+	// initialized through it is set up like the parent's. Share the
 	// successful-attachment signal so that connection is tracked exactly when
 	// the parent's CSC is active.
 	conn.baseClient.cscActive = c.baseClient.cscActive
@@ -2933,7 +2939,9 @@ func (c *Client) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 
 // Conn represents a single Redis connection rather than a pool of connections.
 // Prefer running commands from Client unless there is a specific need
-// for a continuous single Redis connection.
+// for a continuous single Redis connection. Close releases the underlying
+// connection instead of returning it to the pool: the session state set on
+// it (AUTH, SELECT, CLIENT SETNAME, ...) must not leak to other callers.
 type Conn struct {
 	baseClient
 	cmdable
