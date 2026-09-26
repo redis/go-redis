@@ -2292,11 +2292,34 @@ func (c *Client) Close() error {
 	return firstErr
 }
 
+// Conn returns a Conn that runs every command on a single connection borrowed
+// from this client's pool. Close returns that connection to the pool, so any
+// session state left on it (AUTH, SELECT, CLIENT SETNAME, CLIENT TRACKING, ...)
+// is still there for the next pooled caller. Use DisposableConn when the Conn
+// changes session state.
 func (c *Client) Conn() *Conn {
+	return c.conn(false)
+}
+
+// DisposableConn is Conn, except Close discards the underlying connection
+// instead of returning it to the pool. Session state a Conn sets (AUTH,
+// SELECT, CLIENT SETNAME, CLIENT TRACKING, RESET, ...) cannot be undone
+// generically on release, so a connection that carried it must not go on to
+// serve unrelated callers. The cost is one dial per DisposableConn lifetime;
+// Get still reuses an idle pooled connection.
+func (c *Client) DisposableConn() *Conn {
+	return c.conn(true)
+}
+
+func (c *Client) conn(discardOnClose bool) *Conn {
+	sticky := c.baseClient.newStickyConnPool()
+	if discardOnClose {
+		sticky.DiscardOnClose()
+	}
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
-	conn := newConn(c.opt, c.baseClient.newStickyConnPool(), &c.hooksMixin, c.himport)
+	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
 	// A sticky client does not serve cache hits, but a new pool connection first
 	// initialized through it may later be reused by the parent. Share the
 	// successful-attachment signal so that connection is tracked exactly when

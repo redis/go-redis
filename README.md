@@ -634,7 +634,10 @@ them, while a raw `Do(ctx, "himport", "prepare", ...)` bypasses that
 entirely, with no replay, recovery, or discard propagation.
 
 For session-scoped work without a typed API, hold a dedicated connection
-(`client.Conn()`) for its whole lifetime and close it afterwards.
+(`client.DisposableConn()`) for its whole lifetime and close it afterwards.
+`client.Conn()` is also a dedicated connection, but `Close` returns it to the
+pool with whatever session state is left on it, so it only suits commands that
+leave the connection as they found it.
 
 ## Typed Errors
 
