@@ -445,6 +445,11 @@ type Options struct {
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
 
+	// Client-side caching is eventually consistent. A cached value may be
+	// stale until its invalidation arrives, and reads are not guaranteed to
+	// be monotonic: a value observed through an uncached path can be newer
+	// than one a subsequent cached read returns. Applications that require
+	// monotonic reads must not rely on the cache for ordering.
 	// ClientSideCacheConfig enables client-side caching when non-nil. Together
 	// with ClientSideCache it is the on/off switch for the feature: leave both
 	// nil to disable CSC, set either one to enable it. If ClientSideCache is also set, it
@@ -568,6 +573,15 @@ type Options struct {
 	// the connection reader. 0 (default) applies invalidations inline. Set it no
 	// larger than the cache MaxStaleness: deferring a delete by up to the window
 	// lets a reader see the pre-invalidation value for up to that long.
+	//
+	// Deferring a delete also defers ORDERING. A caller that reads the key
+	// through a non-cached path -- for example when a miss is shed to the
+	// pooled path -- can observe a newer value than the one a concurrent
+	// in-flight fetch is about to publish, and a later cached read can then
+	// return the older value. Client-side caching is eventually consistent
+	// and does not guarantee monotonic reads; the window widens that envelope,
+	// because a published value stays readable until its invalidation is
+	// APPLIED rather than observed.
 	//
 	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
 	// to a *LocalCache), like ClientSideCacheCoalesceMisses: the batcher's
