@@ -245,6 +245,26 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("should not return a Conn's session state to the pool", Label("NonRedisEnterprise"), func() {
+		opt := redisOptions()
+		opt.PoolSize = 1
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		conn := db.Conn()
+		Expect(conn.Select(ctx, 1).Err()).NotTo(HaveOccurred())
+		Expect(conn.Close()).NotTo(HaveOccurred())
+
+		// With a single pool slot, a connection handed back by Close would
+		// serve this command and report db=1.
+		info, err := db.ClientInfo(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.DB).To(Equal(0))
+	})
+
 	It("should client PROTO 2", func() {
 		opt := redisOptions()
 		opt.Protocol = 2
