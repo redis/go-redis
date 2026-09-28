@@ -251,6 +251,7 @@ type Cmdable interface {
 	TimeseriesCmdable
 	JSONCmdable
 	VectorSetCmdable
+	BlessCmdable
 }
 
 type StatefulCmdable interface {
