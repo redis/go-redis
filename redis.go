@@ -1661,6 +1661,12 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 		return "", "", false
 	}
 
+	// A Nil reply is a successful command with no value. It gets its own type so
+	// the recorder can tell it apart from a real failure.
+	if errors.Is(err, Nil) {
+		return ErrorTypeNil, ErrorTypeNil, false
+	}
+
 	errStr := err.Error()
 
 	// Check for timeout errors
