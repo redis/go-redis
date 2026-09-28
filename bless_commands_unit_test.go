@@ -62,7 +62,7 @@ func TestBlessScan_Args(t *testing.T) {
 	tests := []struct {
 		name   string
 		cursor uint64
-		count  uint64
+		count  int64
 		want   []any
 	}{
 		{
@@ -75,7 +75,7 @@ func TestBlessScan_Args(t *testing.T) {
 			name:   "with_count",
 			cursor: 10,
 			count:  100,
-			want:   []interface{}{"bless", "scan", uint64(10), "NO-EVICT", "count", uint64(100)},
+			want:   []any{"bless", "scan", uint64(10), "NO-EVICT", "count", int64(100)},
 		},
 	}
 
