@@ -30,8 +30,13 @@ import (
 // rather than a silent fallback to the pooled pipeline path: a caller asking for
 // this wants the commands on the FD wire, and quietly running them somewhere
 // else would be measured (or relied upon) as something it is not.
+//
+// Batch submission is STANDALONE ONLY. A full-duplex autopipeliner on a
+// ClusterClient reports Config().FullDuplex true but runs one engine per node,
+// and a pipeline can span nodes, so it gets this error and its Pipeline() keeps
+// using the cluster pipeline, as it did before FD batches existed.
 var ErrFDPipelineUnavailable = errors.New(
-	"redis: FDPipelined requires an autopipeliner with FullDuplex enabled")
+	"redis: FDPipelined requires a full-duplex autopipeliner on a standalone Client")
 
 // ErrFDPipelineDiverts is returned when a batch contains a command the engine
 // cannot stream (blocking, per-command read timeout, runs-outside-pipeline,
@@ -43,7 +48,13 @@ var ErrFDPipelineDiverts = errors.New(
 
 // FDPipelined submits cmds as one contiguous batch on the full-duplex
 // connection and blocks until every reply has landed. It returns the first
-// command error, ignoring Nil the way Pipeline.Exec does.
+// command error, Nil included, the same as Pipeline.Exec.
+//
+// Two differences from an ordinary pipeline. Retryable replies (LOADING and
+// the like) are not retried here; Pipeline() retries the whole batch on top of
+// this, see fdPipelineExec. And once the batch is admitted, ctx no longer bounds
+// the wait: the commands share the held connection with other callers, so they
+// cannot be abandoned mid-stream. ReadTimeout still bounds each reply.
 //
 // Compared with the two shapes that already exist:
 //
@@ -87,7 +98,7 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 	if batches == nil {
 		// Submit-time rejection (closed, or ctx expired while backpressured).
 		// Every command carries its own error; report the first.
-		return firstCmdErr(cmds)
+		return cmdsFirstErr(cmds)
 	}
 	// Mirror submit()'s contract on the deferred face: the batch is installed on
 	// the command so its result accessors self-gate, which matters for a caller
@@ -102,22 +113,11 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 		// AutoFuture.Wait carries the executor-goroutine self-deadlock guard, so
 		// waiting through it rather than on batch.done keeps a pipeline hook that
 		// calls this from behaving differently than it does elsewhere.
-		if werr := (AutoFuture{cmd: cmd, batch: batches[i]}).Wait(); werr != nil &&
-			!errors.Is(werr, Nil) && first == nil {
+		if werr := (AutoFuture{cmd: cmd, batch: batches[i]}).Wait(); werr != nil && first == nil {
 			first = werr
 		}
 	}
 	return first
-}
-
-// firstCmdErr reports the first non-Nil error across cmds.
-func firstCmdErr(cmds []Cmder) error {
-	for _, cmd := range cmds {
-		if err := cmd.Err(); err != nil && !errors.Is(err, Nil) {
-			return err
-		}
-	}
-	return nil
 }
 
 // submitBatch enqueues cmds as one contiguous run and returns their completion
@@ -159,7 +159,7 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 			hd = make(chan struct{})
 			hookDones[i] = hd
 		}
-		reqs[i] = fdReq{cmd: cmd, batch: b, hookDone: hd, ctx: ctx, attempts: 1}
+		reqs[i] = fdReq{cmd: cmd, batch: b, hookDone: hd, ctx: ctx, attempts: 1, pipelined: true}
 	}
 
 	fd.submitMu.RLock()
