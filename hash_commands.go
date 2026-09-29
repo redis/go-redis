@@ -392,7 +392,7 @@ func (c cmdable) HExpireAtWithArgs(ctx context.Context, key string, tm time.Time
 //
 // [HExpireAt Documentation]: https://redis.io/commands/hexpireat/
 func (c cmdable) HPExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond), "FIELDS", len(fields)}
+	args := []interface{}{"HPEXPIREAT", key, tm.UnixMilli(), "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -403,7 +403,7 @@ func (c cmdable) HPExpireAt(ctx context.Context, key string, tm time.Time, field
 }
 
 func (c cmdable) HPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond)}
+	args := []interface{}{"HPEXPIREAT", key, tm.UnixMilli()}
 
 	// only if one argument is true, we can add it to the args
 	// if more than one argument is true, it will cause an error
