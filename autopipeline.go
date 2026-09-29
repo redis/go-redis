@@ -208,6 +208,11 @@ type AutoPipelineOptions struct {
 	// memory until a stalled peer makes in-flight grow. Only used when FullDuplex is
 	// set; 0 means the default (65536, covering ~50ms links at ~1.3M ops/s) and a
 	// negative value is rejected by Validate.
+	//
+	// The window is PER ENGINE. With NumShards > 1 each full-duplex engine gets
+	// its own window and submit queue of this size, so the client-wide bound is
+	// NumShards × FullDuplexWindow in flight, plus as many queued. Size it for
+	// one wire; to cap the total, divide by NumShards.
 	FullDuplexWindow int
 
 	// FullDuplexIdleTimeout is how long the held full-duplex connection may sit
