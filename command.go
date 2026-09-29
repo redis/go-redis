@@ -11,6 +11,7 @@ import (
 	"net"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2619,6 +2620,9 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 			itemLen, err := rd.ReadArrayLen()
 			if err != nil {
 				return err
+			}
+			if itemLen < 1 {
+				return fmt.Errorf("redis: got %d elements in map-string-slice-interface entry, expected at least 1", itemLen)
 			}
 
 			key, err := rd.ReadString()
@@ -5447,13 +5451,7 @@ const maxCommandInfoDepth = 16
 const maxCommandInfoPrealloc = 1024
 
 func commandInfoPrealloc(n int) int {
-	if n > maxCommandInfoPrealloc {
-		return maxCommandInfoPrealloc
-	}
-	if n < 0 {
-		return 0
-	}
-	return n
+	return min(max(n, 0), maxCommandInfoPrealloc)
 }
 
 // peekCommandInfoReplyType unwraps RESP3 attributes within the parser's depth
@@ -5593,6 +5591,27 @@ func readCommandInfoCollectionLen(rd *proto.Reader) (int, bool, error) {
 		}
 		return 0, false, nil
 	}
+}
+
+// readCommandInfoStrings drains the entire collection even if an item is malformed.
+func readCommandInfoStrings(rd *proto.Reader) ([]string, bool, error) {
+	n, valid, err := readCommandInfoCollectionLen(rd)
+	if err != nil || !valid {
+		return nil, false, err
+	}
+	values := make([]string, 0, commandInfoPrealloc(n))
+	for range n {
+		value, ok, err := readCommandInfoString(rd)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			valid = false
+			continue
+		}
+		values = append(values, value)
+	}
+	return values, valid, nil
 }
 
 // readCommandInfoMapLen accepts RESP3 maps and RESP2 field/value arrays.
@@ -5777,28 +5796,13 @@ func readCommandInfoEntryAtDepth(
 		valid = false
 	}
 
-	flagLen, flagsOK, err := readCommandInfoCollectionLen(rd)
+	var flagsOK bool
+	cmdInfo.Flags, flagsOK, err = readCommandInfoStrings(rd)
 	if err != nil {
 		return err
 	}
 	valid = valid && flagsOK
-	if flagsOK {
-		cmdInfo.Flags = make([]string, 0, commandInfoPrealloc(flagLen))
-		for f := 0; f < flagLen; f++ {
-			s, fieldOK, err := readCommandInfoString(rd)
-			if err != nil {
-				return err
-			}
-			if !fieldOK {
-				valid = false
-				continue
-			}
-			if !cmdInfo.ReadOnly && s == "readonly" {
-				cmdInfo.ReadOnly = true
-			}
-			cmdInfo.Flags = append(cmdInfo.Flags, s)
-		}
-	}
+	cmdInfo.ReadOnly = slices.Contains(cmdInfo.Flags, "readonly")
 
 	firstKeyPos, firstKeyOK, err := readCommandInfoInt(rd)
 	if err != nil {
@@ -5825,58 +5829,29 @@ func readCommandInfoEntryAtDepth(
 	}
 
 	if nn >= numArgRedis6 {
-		aclFlagLen, aclFlagsOK, err := readCommandInfoCollectionLen(rd)
+		var aclFlagsOK bool
+		cmdInfo.ACLFlags, aclFlagsOK, err = readCommandInfoStrings(rd)
 		if err != nil {
 			return err
 		}
 		valid = valid && aclFlagsOK
-		if aclFlagsOK {
-			cmdInfo.ACLFlags = make([]string, 0, commandInfoPrealloc(aclFlagLen))
-			for f := 0; f < aclFlagLen; f++ {
-				s, fieldOK, err := readCommandInfoString(rd)
-				if err != nil {
-					return err
-				}
-				if !fieldOK {
-					valid = false
-					continue
-				}
-				cmdInfo.ACLFlags = append(cmdInfo.ACLFlags, s)
-			}
-		}
 	}
 
 	if nn >= numArgRedis7 {
 		// The 8th argument is an array of tips.
-		tipsLen, tipsOK, err := readCommandInfoCollectionLen(rd)
+		var tipsOK bool
+		cmdInfo.Tips, tipsOK, err = readCommandInfoStrings(rd)
 		if err != nil {
 			return err
 		}
 		valid = valid && tipsOK
-		rawTips := make(map[string]string, commandInfoPrealloc(tipsLen))
-		if tipsOK {
-			cmdInfo.Tips = make([]string, 0, commandInfoPrealloc(tipsLen))
-			if cmdInfo.ReadOnly {
-				rawTips[routing.ReadOnlyCMD] = ""
-			}
-			for f := 0; f < tipsLen; f++ {
-				tip, fieldOK, err := readCommandInfoString(rd)
-				if err != nil {
-					return err
-				}
-				if !fieldOK {
-					valid = false
-					continue
-				}
-				cmdInfo.Tips = append(cmdInfo.Tips, tip)
-
-				k, v, hasValue := strings.Cut(tip, ":")
-				if !hasValue {
-					rawTips[tip] = ""
-				} else {
-					rawTips[k] = v
-				}
-			}
+		rawTips := make(map[string]string, len(cmdInfo.Tips)+1)
+		if cmdInfo.ReadOnly {
+			rawTips[routing.ReadOnlyCMD] = ""
+		}
+		for _, tip := range cmdInfo.Tips {
+			key, value, _ := strings.Cut(tip, ":")
+			rawTips[key] = value
 		}
 
 		// The 9th argument is the key specifications.
@@ -5967,26 +5942,12 @@ func readKeySpec(rd *proto.Reader) (KeySpec, bool, error) {
 				valid = false
 			}
 			seenFlags = true
-			fn, flagsOK, err := readCommandInfoCollectionLen(rd)
+			var flagsOK bool
+			ks.Flags, flagsOK, err = readCommandInfoStrings(rd)
 			if err != nil {
 				return ks, false, err
 			}
-			if !flagsOK {
-				valid = false
-				continue
-			}
-			ks.Flags = make([]string, 0, commandInfoPrealloc(fn))
-			for f := 0; f < fn; f++ {
-				flag, flagOK, err := readCommandInfoString(rd)
-				if err != nil {
-					return ks, false, err
-				}
-				if !flagOK {
-					valid = false
-					continue
-				}
-				ks.Flags = append(ks.Flags, flag)
-			}
+			valid = valid && flagsOK
 		case "begin_search":
 			if seenBeginSearch {
 				valid = false
@@ -6193,17 +6154,10 @@ func (cmd *CommandsInfoCmd) Clone() Cmder {
 			val[k] = cloneCommandInfo(v)
 		}
 	}
-	var legacyRecords map[string]struct{}
-	if cmd.legacyRecords != nil {
-		legacyRecords = make(map[string]struct{}, len(cmd.legacyRecords))
-		for name := range cmd.legacyRecords {
-			legacyRecords[name] = struct{}{}
-		}
-	}
 	return &CommandsInfoCmd{
 		baseCmd:       cmd.cloneBaseCmd(),
 		val:           val,
-		legacyRecords: legacyRecords,
+		legacyRecords: maps.Clone(cmd.legacyRecords),
 	}
 }
 

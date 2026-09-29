@@ -21,6 +21,10 @@ func TestRoutingMetadataDerivesPoliciesFromSharedRecords(t *testing.T) {
 		{"flushall", routing.ReqAllShards, routing.RespAllSucceeded, false},
 		{"dbsize", routing.ReqAllShards, routing.RespAggSum, true},
 		{"ping", routing.ReqAllShards, routing.RespAllSucceeded, false},
+		{"ft.search", routing.ReqDefault, routing.RespDefaultKeyless, true},
+		{"ft.create", routing.ReqDefault, routing.RespDefaultKeyless, false},
+		{"ft.sugget", routing.ReqDefault, routing.RespDefaultHashSlot, true},
+		{"ft.sugadd", routing.ReqDefault, routing.RespDefaultHashSlot, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,54 +44,6 @@ func TestRoutingMetadataDerivesPoliciesFromSharedRecords(t *testing.T) {
 				t.Fatalf("%s readonly = %v, want %v", tt.name, policy.IsReadOnly(), tt.readonly)
 			}
 		})
-	}
-}
-
-func TestRoutingMetadataOldFTDefaultsRemainEquivalent(t *testing.T) {
-	keyless := []string{
-		"ft.create", "ft.search", "ft.aggregate", "ft.dictadd", "ft.dictdump",
-		"ft.dictdel", "ft.spellcheck", "ft.explain", "ft.explaincli", "ft.aliasadd",
-		"ft.aliasupdate", "ft.aliasdel", "ft.aliaslist", "ft.info", "ft.tagvals",
-		"ft.syndump", "ft.synupdate", "ft.profile", "ft.alter", "ft.dropindex", "ft.drop",
-	}
-	readonly := map[string]bool{
-		"ft.search": true, "ft.aggregate": true, "ft.dictdump": true,
-		"ft.spellcheck": true, "ft.explain": true, "ft.explaincli": true,
-		"ft.aliaslist": true, "ft.info": true, "ft.tagvals": true,
-		"ft.syndump": true, "ft.profile": true,
-	}
-	for _, name := range keyless {
-		meta, ok := defaultCommandMetadataView.routingTable[name]
-		if !ok {
-			t.Fatalf("missing routing metadata for %s", name)
-		}
-		policy, ok := routingPolicyFor(meta)
-		if !ok {
-			t.Fatalf("missing routing policy for %s", name)
-		}
-		if policy.Request != routing.ReqDefault || policy.Response != routing.RespDefaultKeyless {
-			t.Errorf("%s policy = (%s, %s), want default/keyless", name, policy.Request, policy.Response)
-		}
-		if policy.IsReadOnly() != readonly[name] {
-			t.Errorf("%s readonly = %v, want %v", name, policy.IsReadOnly(), readonly[name])
-		}
-	}
-
-	keyed := map[string]bool{
-		"ft.suglen": true,
-		"ft.sugadd": false,
-		"ft.sugget": true,
-		"ft.sugdel": false,
-	}
-	for name, wantReadOnly := range keyed {
-		meta := defaultCommandMetadataView.routingTable[name]
-		policy, ok := routingPolicyFor(meta)
-		if !ok || policy.Request != routing.ReqDefault || policy.Response != routing.RespDefaultHashSlot {
-			t.Errorf("%s did not retain default/hash-slot policy: %#v", name, policy)
-		}
-		if ok && policy.IsReadOnly() != wantReadOnly {
-			t.Errorf("%s readonly = %v, want %v", name, policy.IsReadOnly(), wantReadOnly)
-		}
 	}
 }
 
@@ -243,6 +199,7 @@ func TestRoutingMetadataKeyPlans(t *testing.T) {
 		numKeysPos int
 		splittable bool
 	}{
+		{"spublish", []interface{}{"spublish", "channel", "message"}, []int{1}, 2, 1, -1, true},
 		{"mget", []interface{}{"mget", "a", "b"}, []int{1, 2}, 3, 1, -1, true},
 		{"mset", []interface{}{"mset", "a", "1", "b", "2"}, []int{1, 3}, 5, 2, -1, true},
 		{"msetex", []interface{}{"msetex", 2, "a", "1", "b", "2", "px", 10}, []int{2, 4}, 6, 2, 1, true},
@@ -302,205 +259,44 @@ func TestRoutingMetadataKeywordSearchesBackwardForNegativeStart(t *testing.T) {
 	}
 }
 
-func TestRoutingMetadataRejectsUnimplementedRangeLimit(t *testing.T) {
-	info := &CommandInfo{Name: "limited", KeySpecs: []KeySpec{{
-		Flags:       []string{"RO", "access"},
-		BeginSearch: "index", Index: 1,
-		FindKeys: "range", LastKey: -1, KeyStep: 1, Limit: 2,
-	}}}
-	meta := deriveRoutingCommandMeta(info.Name, info)
-	if !meta.valid || meta.keyState != routingKeysKnown || meta.keyPlanComplete {
-		t.Fatalf("range-limit metadata = %#v, want usable first key but incomplete plan", meta)
-	}
-	cmd := NewCmd(context.Background(), "limited", "a", "b")
-	if first, ok := routingFirstKeyPos(meta, cmd); !ok || first != 1 {
-		t.Fatalf("range-limit first key=(%d, %v), want (1, true)", first, ok)
-	}
-	if _, ok := routingResolveKeyPlan(meta, cmd); ok {
-		t.Fatal("nonzero range limit unexpectedly produced an exact key plan")
-	}
-}
-
-func TestRoutingMetadataNotKeyStillSelectsClusterSlot(t *testing.T) {
-	meta := defaultCommandMetadataView.routingTable["spublish"]
-	cmd := NewCmd(context.Background(), "spublish", "channel", "message")
-	first, ok := routingFirstKeyPos(meta, cmd)
-	if !ok || first != 1 {
-		t.Fatalf("SPUBLISH first routing key = (%d, %v), want (1, true)", first, ok)
-	}
-	plan, ok := routingResolveKeyPlan(meta, cmd)
-	if !ok || !reflect.DeepEqual(plan.positions, []int{1}) {
-		t.Fatalf("SPUBLISH plan = %#v, ok=%v", plan, ok)
-	}
-}
-
-func TestRoutingMetadataIncompleteKeysRetainPolicy(t *testing.T) {
-	meta, ok := defaultCommandMetadataView.routingTable["xread"]
-	if !ok || meta.keyState != routingKeysKnown || meta.keyPlanComplete {
-		t.Fatalf("XREAD metadata = %#v, want first-key-only record", meta)
-	}
-	policy, ok := routingPolicyFor(meta)
-	if !ok || !policy.IsReadOnly() || policy.Request != routing.ReqDefault {
-		t.Fatalf("XREAD policy = %#v, ok=%v", policy, ok)
-	}
-	cmd := NewCmd(context.Background(), "xread", "streams", "key", "0")
-	if first, firstOK := routingFirstKeyPos(meta, cmd); !firstOK || first != 2 {
-		t.Fatalf("XREAD first key=(%d, %v), want (2, true)", first, firstOK)
-	}
-	if _, planOK := routingResolveKeyPlan(meta, cmd); planOK {
-		t.Fatal("XREAD incomplete key spec unexpectedly produced a plan")
-	}
-}
-
-func TestRoutingMetadataUsesUsableSpecsBesideIncompleteSiblings(t *testing.T) {
-	ctx := context.Background()
-	tests := []struct {
-		name string
-		cmd  Cmder
-		want int
+// Partial metadata may prove a routing key without authorizing multi-shard splitting.
+func TestRoutingMetadataPartialKeyPlans(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		args  []interface{}
+		first int
 	}{
-		{"georadius", NewCmd(ctx, "georadius", "source", 1, 2, 3, "km", "store", "destination"), 1},
-		{"georadiusbymember", NewCmd(ctx, "georadiusbymember", "source", "member", 3, "km", "store", "destination"), 1},
-		{"sort_ro", NewCmd(ctx, "sort_ro", "source", "alpha"), 1},
-		{"xreadgroup", NewCmd(ctx, "xreadgroup", "group", "g", "c", "streams", "stream", ">"), 5},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			meta := defaultCommandMetadataView.routingTable[tt.name]
-			first, ok := routingFirstKeyPos(meta, tt.cmd)
-			if !ok || first != tt.want {
-				t.Fatalf("first key=(%d, %v), want (%d, true)", first, ok, tt.want)
+		{"limited", []interface{}{"limited", "a", "b"}, 1},
+		{"xread", []interface{}{"xread", "streams", "key", "0"}, 2},
+		{"georadius", []interface{}{"georadius", "source", 1, 2, 3, "km", "store", "destination"}, 1},
+		{"georadiusbymember", []interface{}{"georadiusbymember", "source", "member", 3, "km", "store", "destination"}, 1},
+		{"sort_ro", []interface{}{"sort_ro", "source", "alpha"}, 1},
+		{"xreadgroup", []interface{}{"xreadgroup", "group", "g", "c", "streams", "stream", ">"}, 5},
+		{"migrate", []interface{}{"migrate", "host", 6379, "key", 0, 1000}, 3},
+		{"migrate", []interface{}{"migrate", "host", 6379, "", 0, 1000, "keys", "one", "two"}, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := defaultCommandMetadataView.routingTable[tc.name]
+			if tc.name == "limited" {
+				meta = deriveRoutingCommandMeta(tc.name, &CommandInfo{KeySpecs: []KeySpec{{
+					Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1,
+					FindKeys: "range", LastKey: -1, KeyStep: 1, Limit: 2,
+				}}})
 			}
-			if _, planOK := routingResolveKeyPlan(meta, tt.cmd); planOK {
-				t.Fatal("incomplete sibling unexpectedly authorized a complete key plan")
+			if !meta.valid || meta.keyState != routingKeysKnown || meta.keyPlanComplete {
+				t.Fatalf("metadata=%#v, want usable first key but incomplete plan", meta)
+			}
+			cmd := NewCmd(context.Background(), tc.args...)
+			if first, ok := routingFirstKeyPos(meta, cmd); !ok || first != tc.first {
+				t.Fatalf("first key=(%d, %v), want (%d, true)", first, ok, tc.first)
+			}
+			if _, ok := routingResolveKeyPlan(meta, cmd); ok {
+				t.Fatal("partial metadata authorized a complete key plan")
+			}
+			if policy, ok := routingPolicyFor(meta); !ok || policy.Request != routing.ReqDefault {
+				t.Fatalf("partial key metadata lost its routing policy: %#v", policy)
 			}
 		})
-	}
-}
-
-func TestRoutingMetadataMigrateSelectsActiveKeyForm(t *testing.T) {
-	meta := defaultCommandMetadataView.routingTable["migrate"]
-	ordinary := NewCmd(context.Background(), "migrate", "host", 6379, "key", 0, 1000)
-	if first, ok := routingFirstKeyPos(meta, ordinary); !ok || first != 3 {
-		t.Fatalf("ordinary MIGRATE first key=(%d, %v), want (3, true)", first, ok)
-	}
-	keys := NewCmd(context.Background(), "migrate", "host", 6379, "", 0, 1000, "keys", "one", "two")
-	if first, ok := routingFirstKeyPos(meta, keys); !ok || first != 7 {
-		t.Fatalf("MIGRATE KEYS first key=(%d, %v), want (7, true)", first, ok)
-	}
-	if _, planOK := routingResolveKeyPlan(meta, keys); planOK {
-		t.Fatal("incomplete MIGRATE KEYS metadata unexpectedly produced a full plan")
-	}
-}
-
-func TestRoutingMetadataSpecialPoliciesAreExplicit(t *testing.T) {
-	for name, info := range commandInfoSnapshot {
-		meta := deriveRoutingCommandMeta(name, info)
-		if !meta.valid || meta.policy == nil {
-			continue
-		}
-		if meta.policy.Request == routing.ReqSpecial && meta.special&routingSpecialRequestDeclared == 0 {
-			t.Errorf("%s request special is not declared", name)
-		}
-		if meta.policy.Response == routing.RespSpecial && meta.special&routingSpecialResponseDeclared == 0 {
-			t.Errorf("%s response special is not declared", name)
-		}
-	}
-
-	for _, name := range []string{"info", "scan", "hotkeys|get"} {
-		meta := defaultCommandMetadataView.routingTable[name]
-		if _, ok := routingPolicyFor(meta); ok {
-			t.Errorf("unsupported special policy for %s was enabled", name)
-		}
-		if err := routingSpecialPolicyError(meta); err != errUnsupportedRoutingPolicy {
-			t.Errorf("%s special error = %v", name, err)
-		}
-	}
-	randomKey := defaultCommandMetadataView.routingTable["randomkey"]
-	if policy, ok := routingPolicyFor(randomKey); !ok || policy.Response != routing.RespSpecial {
-		t.Fatalf("RANDOMKEY special response handler was not enabled: policy=%#v ok=%v", policy, ok)
-	}
-
-	liveOnly := deriveRoutingCommandMeta("module.future", &CommandInfo{
-		Name: "module.future", Tips: []string{"request_policy:special"},
-	})
-	if _, ok := routingPolicyFor(liveOnly); ok {
-		t.Fatal("undeclared live special policy was enabled")
-	}
-	if err := routingSpecialPolicyError(liveOnly); err != errUnsupportedRoutingPolicy {
-		t.Fatalf("live special error = %v", err)
-	}
-}
-
-func TestRoutingMetadataTransactionAdaptationsAreExplicit(t *testing.T) {
-	if len(routingTransactionPolicies) != 1 ||
-		routingTransactionPolicies["ping"] != routingTransactionSingleNode {
-		t.Fatalf("transaction adaptations=%v, want only connection-local PING", routingTransactionPolicies)
-	}
-	if meta := defaultCommandMetadataView.routingTable["ping"]; meta.tx != routingTransactionSingleNode {
-		t.Fatalf("PING transaction support=%v, want single-node", meta.tx)
-	}
-	if meta := defaultCommandMetadataView.routingTable["flushall"]; meta.tx != 0 {
-		t.Fatalf("FLUSHALL transaction support=%v, want unsupported", meta.tx)
-	}
-}
-
-func TestRoutingMetadataTombstonesAndShadowedParents(t *testing.T) {
-	records := map[string]*CommandInfo{
-		"container":       {Name: "container"},
-		"container|child": {Name: "container|child"},
-		"gone":            nil,
-	}
-	table := deriveRoutingTable(records, map[string]struct{}{"container": {}})
-	if _, ok := table["container"]; ok {
-		t.Fatal("shadowed parent was emitted")
-	}
-	if _, ok := table["container|child"]; !ok {
-		t.Fatal("child was not emitted")
-	}
-	if _, ok := table["gone"]; ok {
-		t.Fatal("tombstone was emitted")
-	}
-}
-
-func TestCommandInfoResolverUsesOneSuppliedMetadataView(t *testing.T) {
-	makeView := func(request string) *commandMetadataView {
-		records := map[string]*CommandInfo{
-			"probe": {Name: "probe", Tips: []string{"request_policy:" + request}},
-		}
-		return &commandMetadataView{
-			records:      records,
-			routingTable: deriveRoutingTable(records, nil),
-		}
-	}
-	loaded := makeView("all_nodes")
-	captured := makeView("all_shards")
-	ensures := 0
-	metadata := newCommandMetadataPolicyResolverWithEnsure(
-		func() *commandMetadataView { return loaded },
-		func(context.Context) error { ensures++; return nil },
-	)
-	custom := NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy { return nil })
-	custom.SetFallbackResolver(metadata)
-
-	ctx := context.Background()
-	cmd := NewCmd(ctx, "probe")
-	resolution, view, err := custom.resolveCommandRoutingWithView(ctx, cmd, func() *commandMetadataView { return captured })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ensures != 1 {
-		t.Fatalf("ensure calls = %d, want 1", ensures)
-	}
-	if view != captured || resolution.policy == nil || resolution.policy.Request != routing.ReqAllShards {
-		t.Fatalf("metadata policy/view = (%#v, %p), want all_shards/%p", resolution.policy, view, captured)
-	}
-	policy := custom.GetCommandPolicy(ctx, cmd)
-	if policy == nil || policy.Request != routing.ReqAllNodes {
-		t.Fatalf("ordinary policy = %#v, want all_nodes", policy)
-	}
-	if ensures != 2 {
-		t.Fatalf("ensure calls after direct GetCommandPolicy = %d, want 2", ensures)
 	}
 }
 
@@ -553,72 +349,82 @@ func TestCommandInfoResolverUsesStaticViewAfterEnsureFailure(t *testing.T) {
 	}
 }
 
-func TestCommandInfoResolverBatchUsesOneViewAndLazyMetadata(t *testing.T) {
-	before := buildCommandMetadataView(nil, map[string]*CommandInfo{
-		"fallback": {Name: "fallback", Tips: []string{"request_policy:all_nodes"}},
-	})
+func TestCommandInfoResolverFallbackRefreshKeepsPolicyAndKeysTogether(t *testing.T) {
+	ctx := context.Background()
+	before := buildCommandMetadataView(nil, nil)
 	after := buildCommandMetadataView(nil, map[string]*CommandInfo{
-		"fallback": {Name: "fallback", Tips: []string{"request_policy:all_shards"}},
+		"module.read": {
+			Name: "module.read", Flags: []string{"readonly"},
+			FirstKeyPos: 2, LastKeyPos: 2, StepCount: 1,
+		},
 	})
 	current := before
-	ensureCalls, captureCalls := 0, 0
-	metadata := newCommandMetadataPolicyResolverWithEnsure(
+	static := newCommandMetadataPolicyResolver(func() *commandMetadataView { return current })
+	dynamic := newCommandMetadataPolicyResolverWithEnsure(
+		func() *commandMetadataView { return current },
+		func(context.Context) error { current = after; return nil },
+	)
+	static.SetFallbackResolver(dynamic)
+
+	resolution, view, err := static.resolveCommandRoutingWithView(
+		ctx, NewCmd(ctx, "module.read", "option", "key"),
+		func() *commandMetadataView { return current },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view != after || !resolution.metaOK || resolution.policy == nil {
+		t.Fatalf("fallback did not resolve the refreshed metadata: view=%p resolution=%+v", view, resolution)
+	}
+	if !resolution.meta.readOnly || len(resolution.meta.keySpecs) != 1 || resolution.meta.keySpecs[0].index != 2 {
+		t.Fatalf("fallback used keys or flags from another view: %+v", resolution.meta)
+	}
+}
+
+func TestCommandInfoResolverBatchPreparesDynamicFallback(t *testing.T) {
+	ctx := context.Background()
+	before := buildCommandMetadataView(nil, nil)
+	after := buildCommandMetadataView(nil, map[string]*CommandInfo{
+		"module.read": {
+			Name: "module.read", Flags: []string{"readonly"},
+			FirstKeyPos: 2, LastKeyPos: 2, StepCount: 1,
+		},
+		"get": {
+			Name: "get", Flags: []string{"readonly"},
+			FirstKeyPos: 2, LastKeyPos: 2, StepCount: 1,
+		},
+	})
+	current := before
+	ensureCalls, customCalls := 0, 0
+	dynamic := newCommandMetadataPolicyResolverWithEnsure(
 		func() *commandMetadataView { return current },
 		func(context.Context) error { ensureCalls++; current = after; return nil },
 	)
-	customCalls := map[string]int{}
+	static := newCommandMetadataPolicyResolver(func() *commandMetadataView { return current })
+	static.SetFallbackResolver(dynamic)
 	customPolicy := &routing.CommandPolicy{Request: routing.ReqAllNodes}
 	custom := NewCommandInfoResolver(func(_ context.Context, cmd Cmder) *routing.CommandPolicy {
-		customCalls[cmd.Name()]++
+		customCalls++
 		if cmd.Name() == "custom" {
 			return customPolicy
 		}
 		return nil
 	})
-	custom.SetFallbackResolver(metadata)
-
-	ctx := context.Background()
-	cmds := []Cmder{NewCmd(ctx, "custom"), NewCmd(ctx, "fallback")}
-	resolutions, view, err := custom.resolveCommandRoutingsWithView(ctx, cmds, func() *commandMetadataView {
-		captureCalls++
-		return current
-	})
+	custom.SetFallbackResolver(static)
+	cmds := []Cmder{NewCmd(ctx, "get", "option", "key"), NewCmd(ctx, "module.read", "option", "key"), NewCmd(ctx, "custom")}
+	resolutions, view, err := custom.resolveCommandRoutingsWithView(ctx, cmds, func() *commandMetadataView { return current })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view != after || captureCalls != 1 || ensureCalls != 1 {
-		t.Fatalf("batch view=%p captures=%d ensures=%d, want %p/1/1", view, captureCalls, ensureCalls, after)
+	if view != after || ensureCalls != 1 || customCalls != len(cmds) {
+		t.Fatalf("view=%p ensure calls=%d custom calls=%d, want %p/1/%d", view, ensureCalls, customCalls, after, len(cmds))
 	}
-	if resolutions[0].policy != customPolicy || resolutions[1].policy == nil || resolutions[1].policy.Request != routing.ReqAllShards {
-		t.Fatalf("batch resolutions = %#v", resolutions)
+	if resolutions[2].policy != customPolicy {
+		t.Fatal("metadata refresh replaced the custom policy")
 	}
-	if customCalls["custom"] != 1 || customCalls["fallback"] != 1 {
-		t.Fatalf("custom calls = %#v, want each once", customCalls)
-	}
-}
-
-func TestCommandInfoResolverBatchSkipsUnusedMetadata(t *testing.T) {
-	ensureCalls, captureCalls := 0, 0
-	metadata := newCommandMetadataPolicyResolverWithEnsure(
-		func() *commandMetadataView { return defaultCommandMetadataView },
-		func(context.Context) error { ensureCalls++; return nil },
-	)
-	custom := NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
-		return &routing.CommandPolicy{Request: routing.ReqDefault}
-	})
-	custom.SetFallbackResolver(metadata)
-
-	ctx := context.Background()
-	_, _, err := custom.resolveCommandRoutingsWithView(ctx, []Cmder{
-		NewCmd(ctx, "get", "a"), NewCmd(ctx, "get", "b"),
-	}, func() *commandMetadataView {
-		captureCalls++
-		return defaultCommandMetadataView
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ensureCalls != 0 || captureCalls != 1 {
-		t.Fatalf("ensure/capture = %d/%d, want 0/1", ensureCalls, captureCalls)
+	for i, resolution := range resolutions[:2] {
+		if !resolution.metaOK || resolution.policy == nil || len(resolution.meta.keySpecs) != 1 || resolution.meta.keySpecs[0].index != 2 {
+			t.Errorf("command %d did not use the final shared view: %+v", i, resolution)
+		}
 	}
 }

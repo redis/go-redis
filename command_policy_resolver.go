@@ -276,13 +276,8 @@ func (r *commandInfoResolver) resolveCommandRoutingWithView(
 	var firstErr error
 	var resolution commandRoutingResolution
 	var view *commandMetadataView
-	metaResolved := false
 	resolveMeta := func() {
-		if metaResolved || view == nil {
-			return
-		}
 		resolution.meta, resolution.metaOK = routingLookupMeta(view, cmd)
-		metaResolved = true
 	}
 	for current := r; current != nil; current = current.fallBackResolver {
 		// A resolver without a function terminates the chain.
@@ -372,81 +367,91 @@ func (r *commandInfoResolver) resolveCommandRoutingsWithView(
 	cmds []Cmder,
 	fallbackView func() *commandMetadataView,
 ) ([]commandRoutingResolution, *commandMetadataView, error) {
-	type pendingResolution struct {
+	// Cache custom answers so a live refresh can restart metadata resolution
+	// without invoking application callbacks a second time.
+	type customLookup struct {
 		resolver *commandInfoResolver
 		index    int
 	}
-
+	customAnswers := make(map[customLookup]*routing.CommandPolicy)
+	ensured := make(map[*commandInfoResolver]struct{})
 	resolutions := make([]commandRoutingResolution, len(cmds))
-	pending := make([]pendingResolution, 0, len(cmds))
-	ensureResolvers := make([]*commandInfoResolver, 0, 1)
-	ensureSeen := make(map[*commandInfoResolver]struct{})
-
-	// First determine whether any command needs live metadata.
-	for i, cmd := range cmds {
-		for current := r; current != nil; current = current.fallBackResolver {
-			if current.resolveFunc == nil {
-				break
-			}
-			if current.metadataView != nil {
-				pending = append(pending, pendingResolution{resolver: current, index: i})
-				if current.metadataEnsure != nil {
-					if _, seen := ensureSeen[current]; !seen {
-						ensureSeen[current] = struct{}{}
-						ensureResolvers = append(ensureResolvers, current)
-					}
-				}
-				break
-			}
-			if policy := current.resolveFunc(ctx, cmd); policy != nil {
-				resolutions[i].policy = policy
-				break
-			}
-		}
-	}
-
 	var firstErr error
-	for _, resolver := range ensureResolvers {
-		if err := resolver.metadataEnsure(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-
 	var view *commandMetadataView
-	if fallbackView != nil {
-		view = fallbackView()
-	}
-	if view == nil && len(pending) > 0 {
-		view = pending[0].resolver.metadataView()
-	}
-	for i, cmd := range cmds {
-		resolutions[i].meta, resolutions[i].metaOK = routingLookupMeta(view, cmd)
-	}
-
-	// Resume unresolved chains in the captured view without another ensure.
-	for _, item := range pending {
-		cmd := cmds[item.index]
-		for current := item.resolver; current != nil; current = current.fallBackResolver {
-			if current.resolveFunc == nil {
-				break
-			}
-			var policy *routing.CommandPolicy
-			if current.metadataView != nil {
-				if resolutions[item.index].metaOK {
-					policy, _ = routingPolicyFor(resolutions[item.index].meta)
-				}
-			} else {
-				policy = current.resolveFunc(ctx, cmd)
-			}
-			if policy != nil {
-				resolutions[item.index].policy = policy
-				resolutions[item.index].policyFromMetadata = current.metadataView != nil
-				break
+	captureView := func(resolver *commandInfoResolver) *commandMetadataView {
+		if fallbackView != nil {
+			if v := fallbackView(); v != nil {
+				return v
 			}
 		}
+		if resolver != nil {
+			return resolver.metadataView()
+		}
+		return nil
 	}
 
-	return resolutions, view, firstErr
+	for {
+		restart := false
+		for i, cmd := range cmds {
+			resolution := commandRoutingResolution{}
+			for current := r; current != nil; current = current.fallBackResolver {
+				if current.resolveFunc == nil {
+					break
+				}
+				if current.metadataView != nil {
+					if _, done := ensured[current]; !done && current.metadataEnsure != nil {
+						ensured[current] = struct{}{}
+						if err := current.metadataEnsure(ctx); err != nil && firstErr == nil {
+							firstErr = err
+						}
+						next := captureView(current)
+						restart = view != nil && view != next
+						view = next
+						if restart {
+							// Earlier commands must use the same refreshed keys and
+							// policies as the command that reached this fallback.
+							break
+						}
+					}
+					if view == nil {
+						view = captureView(current)
+					}
+					resolution.meta, resolution.metaOK = routingLookupMeta(view, cmd)
+					if resolution.metaOK {
+						resolution.policy, _ = routingPolicyFor(resolution.meta)
+						resolution.policyFromMetadata = resolution.policy != nil
+					}
+				} else {
+					key := customLookup{resolver: current, index: i}
+					policy, known := customAnswers[key]
+					if !known {
+						policy = current.resolveFunc(ctx, cmd)
+						customAnswers[key] = policy
+					}
+					resolution.policy = policy
+				}
+				if resolution.policy != nil {
+					break
+				}
+			}
+			if restart {
+				break
+			}
+			resolutions[i] = resolution
+		}
+		if restart {
+			continue
+		}
+		if view == nil {
+			view = captureView(nil)
+		}
+		for i, cmd := range cmds {
+			if !resolutions[i].policyFromMetadata {
+				resolutions[i].meta, resolutions[i].metaOK = routingLookupMeta(view, cmd)
+			}
+		}
+		return resolutions, view, firstErr
+	}
 }
 
 func (r *commandInfoResolver) commandPolicyInView(

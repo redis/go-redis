@@ -204,14 +204,21 @@ func BenchmarkAutoPipelineSubmit(b *testing.B) {
 	b.ReportMetric(float64(count)/b.Elapsed().Seconds(), "ops/sec")
 }
 
-// clusterBenchAddrs is the local osscluster (docker-compose `cluster` profile,
-// formed with `redis-cli --cluster create ... --cluster-replicas 1`).
+// clusterBenchAddrs is the local osscluster (docker-compose `cluster` profile).
 var clusterBenchAddrs = []string{"127.0.0.1:16600", "127.0.0.1:16601", "127.0.0.1:16602"}
 
 func newClusterBenchClient(b *testing.B) *redis.ClusterClient {
 	b.Helper()
+	ctx := context.Background()
+	if clusterBench == nil {
+		scenario := newClusterScenario()
+		if err := configureClusterTopology(ctx, scenario); err != nil {
+			b.Fatal(err)
+		}
+		clusterBench = scenario
+	}
 	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: clusterBenchAddrs, PoolSize: 500})
-	if err := c.Ping(context.Background()).Err(); err != nil {
+	if err := c.Ping(ctx).Err(); err != nil {
 		c.Close()
 		b.Skipf("cluster not reachable on %v: %v", clusterBenchAddrs, err)
 	}

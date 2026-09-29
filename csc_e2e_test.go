@@ -2,8 +2,10 @@ package redis_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -322,6 +324,9 @@ func TestCSCNonZeroDBRejected(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 
 	ctx := context.Background()
+	if err := probeRedis(cscNativeAddr()); err != nil {
+		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
+	}
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
 	}
@@ -368,6 +373,9 @@ func newTrackedCSCClient(t *testing.T) (c, mutator *redis.Client, cache *redis.L
 	t.Cleanup(func() { _ = mutator.Close() })
 
 	ctx := context.Background()
+	if err := probeRedis(cscNativeAddr()); err != nil {
+		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
+	}
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
 	}
@@ -498,166 +506,153 @@ func TestCSCMultiKeyInvalidationNonFirstKey(t *testing.T) {
 	}
 }
 
-// Guards the JSON.MGET dont_cache override: the server tracks only its
-// first key, so re-enabling caching would serve stale data here.
-func TestCSCJSONMGetNonFirstKeyStaysFresh(t *testing.T) {
-	c, mutator, cache := newTrackedCSCClient(t)
-	ctx := context.Background()
-
-	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
-	k1, k2 := "csc-jmk1:"+nonce, "csc-jmk2:"+nonce
-	t.Cleanup(func() { _ = mutator.Del(context.Background(), k1, k2).Err() })
-	if err := mutator.Do(ctx, "json.set", k1, "$", `{"x":1}`).Err(); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
-			t.Skipf("ReJSON not available: %v", err)
-		}
-		t.Fatalf("JSON.SET %s: %v", k1, err)
+func TestCSCModuleReadsCacheAndInvalidate(t *testing.T) {
+	cases := []struct {
+		name   string
+		seed   []interface{}
+		read   []interface{}
+		mutate []interface{}
+	}{
+		{"timeseries", []interface{}{"TS.ADD", "", 1, 10}, []interface{}{"TS.GET", ""}, []interface{}{"TS.ADD", "", 2, 20}},
+		{"probabilistic", []interface{}{"BF.RESERVE", "", 0.01, 100}, []interface{}{"BF.EXISTS", "", "member"}, []interface{}{"BF.ADD", "", "member"}},
+		{"query engine", []interface{}{"FT.SUGADD", "", "alpha", 1}, []interface{}{"FT.SUGGET", "", "al"}, []interface{}{"FT.SUGADD", "", "alpine", 1}},
 	}
-	if err := mutator.Do(ctx, "json.set", k2, "$", `{"x":2}`).Err(); err != nil {
-		t.Fatalf("JSON.SET %s: %v", k2, err)
-	}
-
-	mget := func() string {
-		v, err := c.Do(ctx, "json.mget", k1, k2, "$.x").Result()
-		if err != nil {
-			t.Fatalf("JSON.MGET: %v", err)
-		}
-		return fmt.Sprint(v)
-	}
-
-	before := mget()
-	mget() // a second read would come from the cache if it were cacheable
-
-	if n := cache.Len(); n != 0 {
-		t.Fatalf("JSON.MGET populated the cache (len=%d) — its dont_cache override is gone", n)
-	}
-
-	// The server sends no invalidation for the second key.
-	if err := mutator.Do(ctx, "json.set", k2, "$", `{"x":9}`).Err(); err != nil {
-		t.Fatalf("JSON.SET mutate %s: %v", k2, err)
-	}
-
-	after := mget()
-	if after == before {
-		t.Fatalf("JSON.MGET reply did not change after mutating the second key: %q — it is being served from a cache no invalidation can evict", after)
-	}
-}
-
-// Guards the TS.NRANGE dont_cache override: the server registers no
-// tracking for its series, so re-enabling caching would serve stale data.
-func TestCSCTSNRangeStaysFresh(t *testing.T) {
-	c, mutator, cache := newTrackedCSCClient(t)
-	ctx := context.Background()
-
-	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
-	s1, s2 := "csc-tsn1:"+nonce, "csc-tsn2:"+nonce
-	t.Cleanup(func() { _ = mutator.Del(context.Background(), s1, s2).Err() })
-	if err := mutator.Do(ctx, "ts.create", s1).Err(); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
-			t.Skipf("RedisTimeSeries not available: %v", err)
-		}
-		t.Fatalf("TS.CREATE %s: %v", s1, err)
-	}
-	if err := mutator.Do(ctx, "ts.create", s2).Err(); err != nil {
-		t.Fatalf("TS.CREATE %s: %v", s2, err)
-	}
-
-	nrange := func() string {
-		v, err := c.Do(ctx, "ts.nrange", 2, s1, s2, "-", "+").Result()
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
-				t.Skipf("TS.NRANGE not available (requires TimeSeries >= 8.10): %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, mutator, cache := newTrackedCSCClient(t)
+			ctx := context.Background()
+			key := "csc-module:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			for _, args := range [][]interface{}{tc.seed, tc.read, tc.mutate} {
+				args[1] = key
 			}
-			t.Fatalf("TS.NRANGE: %v", err)
-		}
-		return fmt.Sprint(v)
-	}
-
-	before := nrange()
-	nrange() // a second read would come from the cache if it were cacheable
-	if n := cache.Len(); n != 0 {
-		t.Fatalf("TS.NRANGE populated the cache (len=%d) — its dont_cache override is gone", n)
-	}
-
-	// The server sends no invalidation for this write.
-	if err := mutator.Do(ctx, "ts.add", s2, 1, 1).Err(); err != nil {
-		t.Fatalf("TS.ADD: %v", err)
-	}
-	if after := nrange(); after == before {
-		t.Fatalf("TS.NRANGE reply did not change after TS.ADD: %q — served from a cache no invalidation can evict", after)
-	}
-}
-
-// Guards the XINFO STREAM/GROUPS dont_cache overrides: group mutations do
-// not signal the stream key.
-func TestCSCXInfoGroupStateStaysFresh(t *testing.T) {
-	c, mutator, cache := newTrackedCSCClient(t)
-	ctx := context.Background()
-
-	key := "csc-xinfo:" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	t.Cleanup(func() { _ = mutator.Del(context.Background(), key).Err() })
-	if err := mutator.XAdd(ctx, &redis.XAddArgs{Stream: key, Values: map[string]interface{}{"f": "v"}}).Err(); err != nil {
-		t.Fatalf("XADD: %v", err)
-	}
-
-	groups := func() int64 {
-		info, err := c.XInfoStream(ctx, key).Result()
-		if err != nil {
-			t.Fatalf("XINFO STREAM: %v", err)
-		}
-		return info.Groups
-	}
-
-	if got := groups(); got != 0 {
-		t.Fatalf("fresh stream reports %d groups, want 0", got)
-	}
-	groups() // a second read would come from the cache if it were cacheable
-	if n := cache.Len(); n != 0 {
-		t.Fatalf("XINFO STREAM populated the cache (len=%d) — its dont_cache override is gone", n)
-	}
-
-	// Group creation sends no invalidation.
-	if err := mutator.XGroupCreate(ctx, key, "g", "$").Err(); err != nil {
-		t.Fatalf("XGROUP CREATE: %v", err)
-	}
-	if got := groups(); got != 1 {
-		t.Fatalf("XINFO STREAM reports %d groups after XGROUP CREATE, want 1 — served from a cache no invalidation can evict", got)
+			t.Cleanup(func() { _ = mutator.Del(context.Background(), key).Err() })
+			if err := mutator.Do(ctx, tc.seed...).Err(); err != nil {
+				if strings.Contains(err.Error(), "unknown command") {
+					t.Skipf("module unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			read := func() interface{} {
+				t.Helper()
+				value, err := c.Do(ctx, tc.read...).Result()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			before := read()
+			driveUntilCached(t, cache, func() { read() })
+			if hit := read(); !reflect.DeepEqual(hit, before) {
+				t.Fatalf("cached reply = %v, want %v", hit, before)
+			}
+			if err := mutator.Do(ctx, tc.mutate...).Err(); err != nil {
+				t.Fatal(err)
+			}
+			driveUntilEvicted(t, c, cache)
+			fresh := read()
+			want, err := mutator.Do(ctx, tc.read...).Result()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reflect.DeepEqual(fresh, before) || !reflect.DeepEqual(fresh, want) {
+				t.Fatalf("post-invalidation reply = %v, want %v (previously %v)", fresh, want, before)
+			}
+		})
 	}
 }
 
-// Guards the MEMORY USAGE dont_cache override: a key's memory usage changes
-// on mutations that never signal the key (XGROUP CREATE), so re-enabling
-// caching would serve stale usage forever.
-func TestCSCMemoryUsageStaysFresh(t *testing.T) {
+func TestCSCServerErrorsAreNotCached(t *testing.T) {
 	c, mutator, cache := newTrackedCSCClient(t)
 	ctx := context.Background()
-
-	key := "csc-memuse:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	key := "csc-error:" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	t.Cleanup(func() { _ = mutator.Del(context.Background(), key).Err() })
-	if err := mutator.XAdd(ctx, &redis.XAddArgs{Stream: key, Values: map[string]interface{}{"f": "v"}}).Err(); err != nil {
-		t.Fatalf("XADD: %v", err)
+	if err := mutator.RPush(ctx, key, "value").Err(); err != nil {
+		t.Fatal(err)
 	}
-
-	usage := func() int64 {
-		n, err := c.MemoryUsage(ctx, key).Result()
-		if err != nil {
-			t.Fatalf("MEMORY USAGE: %v", err)
+	for range 2 {
+		err := c.Get(ctx, key).Err()
+		var redisErr redis.Error
+		if !errors.As(err, &redisErr) || !strings.HasPrefix(err.Error(), "WRONGTYPE") {
+			t.Fatalf("GET must preserve the Redis WRONGTYPE error, got %v", err)
 		}
-		return n
+		if cache.Len() != 0 {
+			t.Fatal("server error was stored in the cache")
+		}
 	}
+}
 
-	before := usage()
-	usage() // a second read would come from the cache if it were cacheable
-	if n := cache.Len(); n != 0 {
-		t.Fatalf("MEMORY USAGE populated the cache (len=%d) — its dont_cache override is gone", n)
-	}
-
-	// Grow the key's group metadata: the server sends no invalidation for it.
-	if err := mutator.XGroupCreate(ctx, key, "g", "$").Err(); err != nil {
-		t.Fatalf("XGROUP CREATE: %v", err)
-	}
-	if after := usage(); after == before {
-		t.Fatalf("MEMORY USAGE did not change after XGROUP CREATE (%d) — served from a cache no invalidation can evict", after)
+// These writes do not invalidate every key used by the read. The metadata
+// corrections must keep replies out of the cache even after repeated reads.
+func TestCSCUntrackedReadsStayFresh(t *testing.T) {
+	ctx := context.Background()
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
+	k1, k2 := "csc-untracked-1:"+nonce, "csc-untracked-2:"+nonce
+	for _, tc := range []struct {
+		name   string
+		seed   [][]interface{}
+		read   func(*redis.Client) redis.Cmder
+		mutate []interface{}
+	}{
+		{
+			"json.mget second key",
+			[][]interface{}{
+				{"json.set", k1, "$", `{"x":1}`}, {"json.set", k2, "$", `{"x":2}`},
+			},
+			func(c *redis.Client) redis.Cmder { return c.Do(ctx, "json.mget", k1, k2, "$.x") },
+			[]interface{}{"json.set", k2, "$", `{"x":9}`},
+		},
+		{
+			"ts.nrange second key",
+			[][]interface{}{{"ts.create", k1}, {"ts.create", k2}},
+			func(c *redis.Client) redis.Cmder { return c.Do(ctx, "ts.nrange", 2, k1, k2, "-", "+") },
+			[]interface{}{"ts.add", k2, 1, 1},
+		},
+		{
+			"xinfo stream group state",
+			[][]interface{}{{"xadd", k1, "*", "f", "v"}},
+			func(c *redis.Client) redis.Cmder { return c.XInfoStream(ctx, k1) },
+			[]interface{}{"xgroup", "create", k1, "g", "$"},
+		},
+		{
+			"memory usage group state",
+			[][]interface{}{{"xadd", k1, "*", "f", "v"}},
+			func(c *redis.Client) redis.Cmder { return c.MemoryUsage(ctx, k1) },
+			[]interface{}{"xgroup", "create", k1, "g", "$"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, mutator, cache := newTrackedCSCClient(t)
+			t.Cleanup(func() { _ = mutator.Del(context.Background(), k1, k2).Err() })
+			check := func(err error) {
+				t.Helper()
+				if err != nil {
+					if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+						t.Skipf("command unavailable: %v", err)
+					}
+					t.Fatal(err)
+				}
+			}
+			for _, args := range tc.seed {
+				check(mutator.Do(ctx, args...).Err())
+			}
+			read := func(client *redis.Client) interface{} {
+				t.Helper()
+				value, err := redis.ExtractCommandValue(tc.read(client))
+				check(err)
+				return value
+			}
+			before := read(c)
+			read(c) // A repeat must also reach Redis.
+			if n := cache.Len(); n != 0 {
+				t.Fatalf("untracked read populated the cache (len=%d)", n)
+			}
+			check(mutator.Do(ctx, tc.mutate...).Err())
+			after, want := read(c), read(mutator)
+			// TS.NRANGE represents absent samples as NaN, which is unequal to itself.
+			if fmt.Sprint(after) == fmt.Sprint(before) || fmt.Sprint(after) != fmt.Sprint(want) {
+				t.Fatalf("reply after mutation=%v, want %v (previously %v)", after, want, before)
+			}
+		})
 	}
 }
 

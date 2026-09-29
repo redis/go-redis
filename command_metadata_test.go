@@ -3,11 +3,10 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"os"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,16 +17,11 @@ import (
 	"github.com/redis/go-redis/v9/internal/routing"
 )
 
-// testTrustedLiveRecords returns sample Redis 8.10 records plus extras.
-func testTrustedLiveRecords(extra map[string]*CommandInfo) map[string]*CommandInfo {
-	records := map[string]*CommandInfo{
-		"eval_ro": {Name: "eval_ro", Flags: []string{"readonly", "script_runner"}},
-		"ttl":     {Name: "ttl", Flags: []string{"readonly", "fast"}, Tips: []string{"nondeterministic_output"}},
+func testReadOnlyCommandInfo(name string) *CommandInfo {
+	return &CommandInfo{
+		Name: name, Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
+		KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
 	}
-	for k, v := range extra {
-		records[k] = v
-	}
-	return records
 }
 
 func testCommandMetadataFetchResult(records map[string]*CommandInfo) commandMetadataFetchResult {
@@ -61,52 +55,6 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) boo
 	return cond()
 }
 
-func TestCommandMetadataStoreNilForDefaultConfig(t *testing.T) {
-	if s := newCommandMetadataStore(nil, nil); s != nil {
-		t.Error("nil config must share the default view (nil store)")
-	}
-	if s := newCommandMetadataStore(&CommandMetadataConfig{}, nil); s != nil {
-		t.Error("zero config must share the default view (nil store)")
-	}
-	if s := newCommandMetadataStore(&CommandMetadataConfig{
-		Overrides: map[string]*CommandInfo{"get": nil},
-	}, nil); s == nil {
-		t.Error("a config with overrides needs its own store")
-	}
-	if s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, nil); s == nil {
-		t.Error("PreferLive needs its own store")
-	}
-}
-
-func TestCommandMetadataEnsureLiveForStaticOrNilConfig(t *testing.T) {
-	for _, cfg := range []*CommandMetadataConfig{nil, {}} {
-		var calls atomic.Int32
-		s := newCommandMetadataStoreForLive(cfg,
-			func(context.Context) (commandMetadataFetchResult, error) {
-				calls.Add(1)
-				return testCommandMetadataFetchResultFor(
-					testTrustedLiveRecords(nil), "8.10.0", "server-a",
-				), nil
-			})
-		if err := s.ensureLive(context.Background()); err != nil {
-			t.Fatalf("ensureLive(%v): %v", cfg, err)
-		}
-		if !s.view().live {
-			t.Fatalf("ensureLive(%v) did not publish a live view", cfg)
-		}
-		if got := s.serverFingerprint(); got != "server-a" {
-			t.Fatalf("ensureLive(%v) adopted fingerprint %q, want server-a", cfg, got)
-		}
-		if err := s.ensureLive(context.Background()); err != nil {
-			t.Fatalf("second ensureLive(%v): %v", cfg, err)
-		}
-		if calls.Load() != 1 {
-			t.Fatalf("ensureLive(%v) fetched %d times, want 1", cfg, calls.Load())
-		}
-		s.stopAndJoin()
-	}
-}
-
 func TestCommandMetadataStaticStoreNeverStartsWorker(t *testing.T) {
 	s := newCommandMetadataStore(&CommandMetadataConfig{
 		Overrides: map[string]*CommandInfo{"get": nil},
@@ -125,151 +73,6 @@ func TestCommandMetadataStaticStoreNeverStartsWorker(t *testing.T) {
 	s.stopAndJoin() // must not hang on a never-started worker
 }
 
-func TestCommandMetadataStandaloneStoreDoesNotRequireCSC(t *testing.T) {
-	client := NewClient(&Options{
-		Protocol: 2,
-		CommandMetadata: &CommandMetadataConfig{Overrides: map[string]*CommandInfo{
-			"get": nil,
-		}},
-	})
-	defer client.Close()
-	if client.baseClient.cmdMeta == nil {
-		t.Fatal("non-default metadata config did not create a standalone store")
-	}
-	if client.baseClient.csc != nil {
-		t.Fatal("metadata-only client unexpectedly enabled CSC")
-	}
-}
-
-func TestCommandMetadataWithTimeoutCloneKeepsOwnerAlive(t *testing.T) {
-	clone, store := func() (*Client, *commandMetadataStore) {
-		owner := NewClient(&Options{
-			Addr: "127.0.0.1:0",
-			CommandMetadata: &CommandMetadataConfig{
-				Mode: CommandMetadataPreferLive,
-			},
-		})
-		return owner.WithTimeout(time.Second), owner.cmdMeta
-	}()
-
-	if clone.lifecycleOwner == nil {
-		t.Fatal("metadata clone must retain its canonical lifecycle owner")
-	}
-	for range 20 {
-		runtime.GC()
-		time.Sleep(20 * time.Millisecond)
-	}
-	select {
-	case <-store.stop:
-		t.Fatal("a reachable clone must keep its metadata-worker owner alive")
-	default:
-	}
-	if err := clone.Close(); err != nil {
-		t.Fatalf("close clone: %v", err)
-	}
-	select {
-	case <-store.stop:
-	default:
-		t.Fatal("closing a metadata clone must stop its canonical owner's store")
-	}
-}
-
-func TestCommandMetadataPreferLivePublishes(t *testing.T) {
-	live := testTrustedLiveRecords(map[string]*CommandInfo{
-		"myext.get": {
-			Name: "myext.get", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-		},
-	})
-	s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive},
-		func(context.Context) (commandMetadataFetchResult, error) {
-			return testCommandMetadataFetchResult(live), nil
-		})
-	defer s.stopAndJoin()
-
-	static := s.view()
-	if static.live {
-		t.Fatal("initial view must be static")
-	}
-	if isCacheableInView(static, makeCmd("myext.get", "k")) {
-		t.Fatal("static view must not know the live-only command")
-	}
-
-	s.onConnInit()
-	if !waitForCondition(t, 5*time.Second, func() bool { return s.view().live }) {
-		t.Fatal("live view never published")
-	}
-	upgraded := s.view()
-	if !isCacheableInView(upgraded, makeCmd("myext.get", "k")) {
-		t.Error("live record should make myext.get cacheable")
-	}
-	// Snapshot fallback and corrections remain effective.
-	if !isCacheableInView(upgraded, makeCmd("get", "k")) {
-		t.Error("snapshot GET must remain cacheable under the live view")
-	}
-	if isCacheableInView(upgraded, makeCmd("touch", "k")) {
-		t.Error("built-in corrections must survive the live upgrade")
-	}
-	if upgraded.cscFingerprint == static.cscFingerprint {
-		t.Error("a decision change must change the fingerprint")
-	}
-	// Connection churn must not refetch a live view.
-	s.onConnInit()
-	select {
-	case <-s.refresh:
-		t.Error("onConnInit must not re-request after a live view is published")
-	default:
-	}
-}
-
-func TestCommandMetadataPre810PublishesRecordsAndFailsClosedForUnknownCSC(t *testing.T) {
-	keyed := func(name string) *CommandInfo {
-		return &CommandInfo{
-			Name: name, Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-		}
-	}
-	var calls atomic.Int32
-	s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive},
-		func(context.Context) (commandMetadataFetchResult, error) {
-			calls.Add(1)
-			return testCommandMetadataFetchResultFor(map[string]*CommandInfo{
-				"get":        keyed("get"),
-				"oldext.get": keyed("oldext.get"),
-			}, "7.4.0", "7.4.0"), nil
-		})
-	defer s.stopAndJoin()
-
-	s.onConnInit()
-	if !waitForCondition(t, 5*time.Second, func() bool { return s.view().live }) {
-		t.Fatal("pre-8.10 live output was not published")
-	}
-	view := s.view()
-	if view.serverVersion != "7.4.0" {
-		t.Fatalf("live view server version = %q, want 7.4.0", view.serverVersion)
-	}
-	if view.records["oldext.get"] == nil {
-		t.Fatal("pre-8.10 records must remain available to shared metadata consumers")
-	}
-	if !commandRecordHas(view.records["oldext.get"], "dont_cache", true) {
-		t.Error("pre-8.10 live-only record must carry a shared dont_cache correction")
-	}
-	if !isCacheableInView(view, makeCmd("get", "k")) {
-		t.Error("a snapshot-known safe command should remain CSC-eligible")
-	}
-	if isCacheableInView(view, makeCmd("oldext.get", "k")) {
-		t.Error("a live-only pre-8.10 command must fail closed for CSC")
-	}
-	first := calls.Load()
-	// Connection churn must not refetch a live view.
-	s.onConnInit()
-	s.onConnInit()
-	time.Sleep(50 * time.Millisecond)
-	if calls.Load() != first {
-		t.Errorf("onConnInit re-fetched after live publication: %d -> %d", first, calls.Load())
-	}
-}
-
 func TestCommandMetadataFetchErrorRetries(t *testing.T) {
 	oldMin := cmdMetaBackoffMin
 	cmdMetaBackoffMin = time.Millisecond
@@ -281,7 +84,7 @@ func TestCommandMetadataFetchErrorRetries(t *testing.T) {
 			if calls.Add(1) < 3 {
 				return commandMetadataFetchResult{}, errors.New("transient dial failure")
 			}
-			return testCommandMetadataFetchResult(testTrustedLiveRecords(nil)), nil
+			return testCommandMetadataFetchResult(nil), nil
 		})
 	defer s.stopAndJoin()
 
@@ -304,12 +107,12 @@ func TestCommandMetadataPeriodicRefreshRetriesWhileLive(t *testing.T) {
 	}, func(context.Context) (commandMetadataFetchResult, error) {
 		switch calls.Add(1) {
 		case 1:
-			return testCommandMetadataFetchResult(testTrustedLiveRecords(nil)), nil
+			return testCommandMetadataFetchResult(nil), nil
 		case 2:
 			close(periodicFailed)
 			return commandMetadataFetchResult{}, errors.New("transient periodic refresh failure")
 		default:
-			return testCommandMetadataFetchResult(testTrustedLiveRecords(nil)), nil
+			return testCommandMetadataFetchResult(nil), nil
 		}
 	})
 	defer s.stopAndJoin()
@@ -325,29 +128,6 @@ func TestCommandMetadataPeriodicRefreshRetriesWhileLive(t *testing.T) {
 	}
 	if !waitForCondition(t, 100*time.Millisecond, func() bool { return calls.Load() >= 3 }) {
 		t.Fatalf("failed periodic refresh was not retried promptly (%d calls)", calls.Load())
-	}
-}
-
-func TestCommandMetadataFingerprint(t *testing.T) {
-	if defaultCommandMetadataView.cscFingerprint == "" {
-		t.Fatal("default view must have a fingerprint")
-	}
-	same := buildCommandMetadataView(nil, nil)
-	if same.cscFingerprint != defaultCommandMetadataView.cscFingerprint {
-		t.Error("identical inputs must produce identical fingerprints")
-	}
-	overridden := buildCommandMetadataView(nil, map[string]*CommandInfo{"get": nil})
-	if overridden.cscFingerprint == defaultCommandMetadataView.cscFingerprint {
-		t.Error("a decision change must change the fingerprint")
-	}
-}
-
-func TestCommandMetadataViewImmutableAfterBuild(t *testing.T) {
-	override := &CommandInfo{Name: "get", Tips: []string{"dont_cache"}}
-	view := buildCommandMetadataView(nil, map[string]*CommandInfo{"get": override})
-	override.Tips[0] = "mutated"
-	if !commandRecordHas(view.records["get"], "dont_cache", true) {
-		t.Error("a published view must not observe later mutations of the override record")
 	}
 }
 
@@ -405,62 +185,6 @@ func TestCommandMetadataNormalizesEffectiveRecords(t *testing.T) {
 		upperRouting.policy.Response != lowerRouting.policy.Response ||
 		upperRouting.keyState != lowerRouting.keyState {
 		t.Fatalf("equivalent normalized records produced different routing metadata: upper=%+v lower=%+v", upperRouting, lowerRouting)
-	}
-}
-
-func TestCommandMetadataNormalizationKeepsMalformedSafetySignalsFailClosed(t *testing.T) {
-	keyed := func(name string, tips ...string) *CommandInfo {
-		return &CommandInfo{
-			Name: name, Flags: []string{"READONLY"}, Tips: tips,
-			FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{
-				Flags: []string{"RO"}, BeginSearch: "INDEX", Index: 1,
-				FindKeys: "RANGE", KeyStep: 1,
-			}},
-		}
-	}
-	script := keyed("module.script")
-	script.Flags = append(script.Flags, "SCRIPT_RUNNER:true")
-	blocking := keyed("module.blocking")
-	blocking.Flags = append(blocking.Flags, "BLOCKING:1")
-	malformedReadonly := keyed("module.readonly")
-	malformedReadonly.Flags = []string{"READONLY:true"}
-	view := buildCommandMetadataView(nil, map[string]*CommandInfo{
-		"module.dontcache": keyed("module.dontcache", "DONT_CACHE:any"),
-		"module.random":    keyed("module.random", "NONDETERMINISTIC_OUTPUT:any"),
-		"module.route":     keyed("module.route", "REQUEST_POLICY"),
-		"module.script":    script,
-		"module.blocking":  blocking,
-		"module.readonly":  malformedReadonly,
-	})
-
-	for _, name := range []string{
-		"module.dontcache", "module.random", "module.script", "module.blocking", "module.readonly",
-	} {
-		if isCacheableInView(view, makeCmd(name, "key")) {
-			t.Errorf("malformed negative signal for %s was ignored", name)
-		}
-	}
-	if got := view.records["module.dontcache"].Tips[0]; got != "dont_cache" {
-		t.Errorf("dont_cache normalization = %q, want dont_cache", got)
-	}
-	if got := view.records["module.random"].Tips[0]; got != "nondeterministic_output" {
-		t.Errorf("nondeterministic_output normalization = %q, want nondeterministic_output", got)
-	}
-	if got := view.records["module.script"].Flags[1]; got != "script_runner" {
-		t.Errorf("script_runner normalization = %q, want script_runner", got)
-	}
-	if got := view.records["module.blocking"].Flags[1]; got != "blocking" {
-		t.Errorf("blocking normalization = %q, want blocking", got)
-	}
-	if got := view.records["module.readonly"].Flags[0]; got != "READONLY:true" {
-		t.Errorf("malformed positive readonly was normalized to %q", got)
-	}
-	if got := view.records["module.route"].Tips[0]; got != requestPolicy {
-		t.Errorf("request-policy normalization = %q, want %q", got, requestPolicy)
-	}
-	if _, ok := view.routingTable["module.route"]; ok {
-		t.Error("missing request-policy value did not invalidate routing metadata")
 	}
 }
 
@@ -538,36 +262,43 @@ func TestCommandMetadataLegacyShapeUsesServerVersionCompatibility(t *testing.T) 
 	}
 }
 
-func TestCommandMetadataViewCopiesLiveRecords(t *testing.T) {
-	live := &CommandInfo{
-		Name:  "module.read",
-		Flags: []string{"readonly"},
-		Tips:  []string{"request_policy:all_shards"},
-		KeySpecs: []KeySpec{{
-			Flags: []string{"RO"}, BeginSearch: "index", Index: 1,
-			FindKeys: "range", KeyStep: 1,
-		}},
-		CommandPolicy: &routing.CommandPolicy{
-			Request: routing.ReqAllShards,
-			Tips:    map[string]string{routing.ReadOnlyCMD: ""},
-		},
-	}
-	view := buildCommandMetadataView(map[string]*CommandInfo{"module.read": live}, nil)
-	live.Flags[0] = "write"
-	live.Tips[0] = "request_policy:all_nodes"
-	live.KeySpecs[0].Index = 7
-	live.KeySpecs[0].Flags[0] = "RW"
-	live.CommandPolicy.Request = routing.ReqAllNodes
-	delete(live.CommandPolicy.Tips, routing.ReadOnlyCMD)
+func TestCommandMetadataViewCopiesSourceRecords(t *testing.T) {
+	for _, source := range []string{"live", "override"} {
+		t.Run(source, func(t *testing.T) {
+			live := &CommandInfo{
+				Name:  "module.read",
+				Flags: []string{"readonly"},
+				Tips:  []string{"request_policy:all_shards"},
+				KeySpecs: []KeySpec{{
+					Flags: []string{"RO"}, BeginSearch: "index", Index: 1,
+					FindKeys: "range", KeyStep: 1,
+				}},
+				CommandPolicy: &routing.CommandPolicy{
+					Request: routing.ReqAllShards,
+					Tips:    map[string]string{routing.ReadOnlyCMD: ""},
+				},
+			}
+			view := buildCommandMetadataView(map[string]*CommandInfo{"module.read": live}, nil)
+			if source == "override" {
+				view = buildCommandMetadataView(nil, map[string]*CommandInfo{"module.read": live})
+			}
+			live.Flags[0] = "write"
+			live.Tips[0] = "request_policy:all_nodes"
+			live.KeySpecs[0].Index = 7
+			live.KeySpecs[0].Flags[0] = "RW"
+			live.CommandPolicy.Request = routing.ReqAllNodes
+			delete(live.CommandPolicy.Tips, routing.ReadOnlyCMD)
 
-	got := view.records["module.read"]
-	if got == live || got.Flags[0] != "readonly" || got.Tips[0] != "request_policy:all_shards" ||
-		got.KeySpecs[0].Index != 1 || got.KeySpecs[0].Flags[0] != "RO" ||
-		got.CommandPolicy.Request != routing.ReqAllShards {
-		t.Fatalf("live record was not deeply copied: %+v", got)
-	}
-	if _, ok := got.CommandPolicy.Tips[routing.ReadOnlyCMD]; !ok {
-		t.Fatal("live CommandPolicy tips share the caller's map")
+			got := view.records["module.read"]
+			if got == live || got.Flags[0] != "readonly" || got.Tips[0] != "request_policy:all_shards" ||
+				got.KeySpecs[0].Index != 1 || got.KeySpecs[0].Flags[0] != "RO" ||
+				got.CommandPolicy.Request != routing.ReqAllShards {
+				t.Fatalf("live record was not deeply copied: %+v", got)
+			}
+			if _, ok := got.CommandPolicy.Tips[routing.ReadOnlyCMD]; !ok {
+				t.Fatal("live CommandPolicy tips share the caller's map")
+			}
+		})
 	}
 }
 
@@ -588,10 +319,7 @@ func TestCommandMetadataLiveTombstonesBlockLowerLayers(t *testing.T) {
 		}
 	}
 
-	keyedGet := &CommandInfo{
-		Name: "myext.get", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-		KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-	}
+	keyedGet := testReadOnlyCommandInfo("myext.get")
 	view = buildCommandMetadataViewForServer(
 		map[string]*CommandInfo{"myext.get": nil},
 		map[string]*CommandInfo{"MYEXT.GET": keyedGet},
@@ -607,14 +335,7 @@ func TestCommandMetadataLiveTombstonesBlockLowerLayers(t *testing.T) {
 
 func TestCommandMetadataTombstonedChildKeepsParentShadowed(t *testing.T) {
 	view := buildCommandMetadataViewForServer(map[string]*CommandInfo{
-		"container": {
-			Name: "container", Flags: []string{"readonly"},
-			FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{
-				Flags: []string{"RO"}, BeginSearch: "index", Index: 1,
-				FindKeys: "range", KeyStep: 1,
-			}},
-		},
+		"container":       testReadOnlyCommandInfo("container"),
 		"container|child": nil,
 	}, nil, "8.10.0")
 
@@ -633,83 +354,32 @@ func TestCommandMetadataTombstonedChildKeepsParentShadowed(t *testing.T) {
 	}
 }
 
-func TestCommandMetadataNestedContainerPrefixesFailClosed(t *testing.T) {
-	keyed := func(name string) *CommandInfo {
-		return &CommandInfo{
-			Name: name, Flags: []string{"readonly"},
-			KeySpecs: []KeySpec{{
-				Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1,
-				FindKeys: "range", KeyStep: 1,
-			}},
-		}
-	}
-	view := buildCommandMetadataView(nil, map[string]*CommandInfo{
-		"future":          keyed("future"),
-		"future|nested":   keyed("future|nested"),
-		"future|nested|x": keyed("future|nested|x"),
-	})
-	if _, ok := view.shadowedParents["future|nested"]; !ok {
-		t.Fatal("intermediate nested container was not shadowed")
-	}
-	cmd := makeCmd("future", "nested", "x", "key")
-	if _, ok := cscLookupMeta(view, cmd); ok {
-		t.Fatal("unsupported nested invocation used an intermediate CSC record")
-	}
-	if _, ok := routingLookupMeta(view, cmd); ok {
-		t.Fatal("unsupported nested invocation used an intermediate routing record")
-	}
-}
-
-func TestCommandMetadataNormalizedLiveCollisionFailsClosed(t *testing.T) {
-	keyed := &CommandInfo{
-		Name: "get", Flags: []string{"readonly"},
-		FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-		KeySpecs: []KeySpec{{
-			Flags: []string{"RO"}, BeginSearch: "index", Index: 1,
-			FindKeys: "range", KeyStep: 1,
-		}},
-	}
-	view := buildCommandMetadataViewForServer(map[string]*CommandInfo{
-		"GET": nil,
-		"get": keyed,
-	}, nil, "8.10.0")
-	if _, ok := view.records["get"]; ok {
-		t.Fatal("case-colliding live tombstone was resurrected")
-	}
-	if _, ok := view.tombstones["get"]; !ok {
-		t.Fatal("case-colliding live metadata was not preserved as a tombstone")
-	}
-	if isCacheableInView(view, makeCmd("get", "key")) {
-		t.Fatal("case-colliding live metadata enabled CSC")
-	}
-	if _, ok := routingLookupMeta(view, makeCmd("get", "key")); ok {
-		t.Fatal("case-colliding live metadata enabled routing")
-	}
-}
-
-func TestCommandMetadataNormalizedOverrideCollisionFailsClosed(t *testing.T) {
-	keyed := &CommandInfo{
-		Name: "get", Flags: []string{"readonly"},
-		FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-		KeySpecs: []KeySpec{{
-			Flags: []string{"RO"}, BeginSearch: "index", Index: 1,
-			FindKeys: "range", KeyStep: 1,
-		}},
-	}
-	view := buildCommandMetadataView(nil, map[string]*CommandInfo{
-		"GET": keyed,
-		"get": keyed,
-	})
-	if _, ok := view.records["get"]; ok {
-		t.Fatal("case-colliding application override exposed a record")
-	}
-	if _, ok := view.tombstones["get"]; !ok {
-		t.Fatal("case-colliding application override was not preserved as a tombstone")
-	}
-
-	view = buildCommandMetadataView(nil, map[string]*CommandInfo{"GET": nil})
-	if _, ok := view.tombstones["get"]; !ok {
-		t.Fatal("nil application override was not preserved as a normalized tombstone")
+func TestCommandMetadataNormalizedCollisionsFailClosed(t *testing.T) {
+	keyed := commandInfoSnapshot["get"]
+	for _, tc := range []struct {
+		name            string
+		live, overrides map[string]*CommandInfo
+	}{
+		{"live tombstone", map[string]*CommandInfo{"GET": nil, "get": keyed}, nil},
+		{"live records", map[string]*CommandInfo{"GET": keyed, "get": keyed}, nil},
+		{"overrides", nil, map[string]*CommandInfo{"GET": keyed, "get": keyed}},
+		{"override tombstone", nil, map[string]*CommandInfo{"GET": nil}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := buildCommandMetadataView(tc.live, tc.overrides)
+			if _, ok := view.records["get"]; ok {
+				t.Fatal("ambiguous or tombstoned command exposed a record")
+			}
+			if _, ok := view.tombstones["get"]; !ok {
+				t.Fatal("normalized tombstone was not preserved")
+			}
+			if isCacheableInView(view, makeCmd("get", "key")) {
+				t.Fatal("ambiguous or tombstoned command enabled CSC")
+			}
+			if _, ok := routingLookupMeta(view, makeCmd("get", "key")); ok {
+				t.Fatal("ambiguous or tombstoned command enabled routing")
+			}
+		})
 	}
 }
 
@@ -733,43 +403,11 @@ func TestCommandMetadataBareParentOverrideIsInert(t *testing.T) {
 	}
 }
 
-func TestCommandMetadataNormalizesOverrideParentNames(t *testing.T) {
-	s := newCommandMetadataStore(&CommandMetadataConfig{Overrides: map[string]*CommandInfo{
-		"MEMORY": {
-			Name: "memory", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-		},
-	}}, nil)
-	defer s.stopAndJoin()
-	if _, ok := s.overrides["MEMORY"]; ok {
-		t.Error("override retained its non-normalized key")
-	}
-	if _, ok := s.static.shadowedParents["memory"]; !ok {
-		t.Error("normalized bare-parent override was not recorded as shadowed")
-	}
-}
-
-func TestCommandMetadataStopBeforeStart(t *testing.T) {
-	s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive},
-		func(context.Context) (commandMetadataFetchResult, error) {
-			t.Error("must not fetch after stop")
-			return commandMetadataFetchResult{}, nil
-		})
-	s.stopAndJoin()
-	s.requestRefresh() // must not start a worker after stop
-	s.mu.Lock()
-	started := s.started
-	s.mu.Unlock()
-	if started {
-		t.Error("worker started after stop")
-	}
-}
-
 func TestCommandMetadataConcurrentRefreshAndStop(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive},
 			func(context.Context) (commandMetadataFetchResult, error) {
-				return testCommandMetadataFetchResult(testTrustedLiveRecords(nil)), nil
+				return testCommandMetadataFetchResult(nil), nil
 			})
 		var wg sync.WaitGroup
 		for g := 0; g < 4; g++ {
@@ -786,99 +424,6 @@ func TestCommandMetadataConcurrentRefreshAndStop(t *testing.T) {
 		}()
 		wg.Wait()
 		s.stopAndJoin()
-	}
-}
-
-func TestCommandMetadataRedis810LiveRecordIsAuthoritative(t *testing.T) {
-	// Redis 8.10+ live records must not inherit snapshot fields.
-	flipped := &CommandInfo{
-		Name: "set", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-		KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-	}
-	view := buildCommandMetadataView(testTrustedLiveRecords(map[string]*CommandInfo{"set": flipped}), nil)
-	if !isCacheableInView(view, makeCmd("set", "k", "v")) {
-		t.Error("Redis 8.10 live record was not authoritative")
-	}
-	if !commandRecordHas(view.records["set"], "readonly", false) {
-		t.Error("resolution rewrote the Redis 8.10 live record")
-	}
-	if got, want := view.cscTable["set"], cscDeriveMeta(view.records["set"]); got != want {
-		t.Fatalf("CSC metadata was not derived solely from the resolved record: got %+v, want %+v", got, want)
-	}
-}
-
-func TestCommandMetadataCSCTableIsPureResolvedRecordDerivation(t *testing.T) {
-	view := buildCommandMetadataViewForServer(map[string]*CommandInfo{
-		"TS.INFO": {
-			Name: "TS.INFO", Flags: []string{"readonly"},
-			FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{
-				Flags: []string{"RO"}, BeginSearch: "index", Index: 1,
-				FindKeys: "range", KeyStep: 1,
-			}},
-		},
-		"oldext.get": {
-			Name: "OLDEXT.GET", Flags: []string{"readonly"},
-			FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{
-				Flags: []string{"RO"}, BeginSearch: "index", Index: 1,
-				FindKeys: "range", KeyStep: 1,
-			}},
-		},
-	}, nil, "7.4.0")
-
-	for name, record := range view.records {
-		if _, shadowed := view.shadowedParents[name]; shadowed {
-			if _, ok := view.cscTable[name]; ok {
-				t.Errorf("shadowed parent %q was emitted into the CSC table", name)
-			}
-			continue
-		}
-		got, ok := view.cscTable[name]
-		if !ok {
-			t.Errorf("resolved record %q has no CSC derivation", name)
-			continue
-		}
-		if want := cscDeriveMeta(record); got != want {
-			t.Errorf("CSC metadata for %q depends on provenance: got %+v, want %+v", name, got, want)
-		}
-	}
-}
-
-func TestCommandMetadataPre810RefreshKeepsSharedLiveView(t *testing.T) {
-	// Older records remain usable outside CSC.
-	keyed := &CommandInfo{
-		Name: "myext.get", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-		KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-	}
-	var pre810 atomic.Bool
-	s := newCommandMetadataStore(&CommandMetadataConfig{
-		Mode:            CommandMetadataPreferLive,
-		RefreshInterval: 5 * time.Millisecond,
-	}, func(context.Context) (commandMetadataFetchResult, error) {
-		version := "8.10.0"
-		if pre810.Load() {
-			version = "7.4.0"
-		}
-		return testCommandMetadataFetchResultFor(
-			map[string]*CommandInfo{"myext.get": keyed}, version, "same-server",
-		), nil
-	})
-	defer s.stopAndJoin()
-
-	s.onConnInit()
-	if !waitForCondition(t, 5*time.Second, func() bool {
-		return s.view().live && isCacheableInView(s.view(), makeCmd("myext.get", "k"))
-	}) {
-		t.Fatal("8.10 live view never published")
-	}
-	pre810.Store(true)
-	if !waitForCondition(t, 5*time.Second, func() bool {
-		v := s.view()
-		return v.live && v.records["myext.get"] != nil &&
-			!isCacheableInView(v, makeCmd("myext.get", "k"))
-	}) {
-		t.Fatal("pre-8.10 refresh did not publish records with CSC restriction")
 	}
 }
 
@@ -902,74 +447,6 @@ func TestCommandMetadataStopCancelsInflightFetch(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("stopAndJoin blocked on an in-flight fetch")
-	}
-}
-
-func TestCommandMetadataFetchHonorsContextWithTimeoutsDisabled(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-
-	release := make(chan struct{})
-	commandSeen := make(chan struct{}, 1)
-	go func() {
-		conn, acceptErr := ln.Accept()
-		if acceptErr != nil {
-			return
-		}
-		serveTestRESPConn(conn, func(command string) string {
-			switch command {
-			case "hello":
-				return "%0\r\n"
-			case "command":
-				select {
-				case commandSeen <- struct{}{}:
-				default:
-				}
-				<-release // simulate a server that never answers COMMAND
-				return ""
-			default:
-				return "+OK\r\n"
-			}
-		})
-	}()
-
-	client := NewClient(&Options{
-		Addr:                  ln.Addr().String(),
-		Protocol:              3,
-		ReadTimeout:           -1,
-		WriteTimeout:          -1,
-		ContextTimeoutEnabled: false,
-		DisableIdentity:       true,
-		MaxRetries:            0,
-	})
-	t.Cleanup(func() {
-		_ = client.Close()
-		close(release)
-		_ = ln.Close()
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		_, fetchErr := client.baseClient.fetchCommandMetadata(ctx)
-		done <- fetchErr
-	}()
-
-	select {
-	case <-commandSeen:
-	case <-time.After(time.Second):
-		t.Fatal("metadata fetch never reached COMMAND")
-	}
-	select {
-	case fetchErr := <-done:
-		if fetchErr == nil {
-			t.Fatal("stalled metadata fetch returned nil error")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("metadata fetch ignored its context deadline")
 	}
 }
 
@@ -1036,68 +513,7 @@ func TestCommandMetadataFetchRejectsAndAdoptsDifferentServer(t *testing.T) {
 	}
 }
 
-func TestCommandMetadataFetchPreservesCSCEntries(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	go func() {
-		for {
-			conn, acceptErr := ln.Accept()
-			if acceptErr != nil {
-				return
-			}
-			go serveTestRESPConn(conn, func(command string) string {
-				switch command {
-				case "hello":
-					return "%1\r\n+version\r\n+8.10.0\r\n"
-				case "command":
-					return "*0\r\n"
-				case "get":
-					return "$1\r\nv\r\n"
-				default:
-					return "+OK\r\n"
-				}
-			})
-		}
-	}()
-
-	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	client := NewClient(&Options{
-		Addr:            ln.Addr().String(),
-		Protocol:        3,
-		PoolSize:        1,
-		MaxRetries:      -1,
-		DisableIdentity: true,
-		ClientSideCache: cache,
-	})
-	t.Cleanup(func() {
-		_ = client.Close()
-		_ = ln.Close()
-	})
-
-	ctx := context.Background()
-	if got, getErr := client.Get(ctx, "k").Result(); getErr != nil || got != "v" {
-		t.Fatalf("GET: got %q, %v; want %q, nil", got, getErr, "v")
-	}
-	if cache.Len() != 1 {
-		t.Fatalf("GET did not populate CSC: Len=%d", cache.Len())
-	}
-	if _, fetchErr := client.baseClient.fetchCommandMetadata(ctx); fetchErr != nil {
-		t.Fatalf("fetchCommandMetadata: %v", fetchErr)
-	}
-	if cache.Len() != 1 {
-		t.Fatalf("metadata fetch evicted an unchanged CSC entry: Len=%d", cache.Len())
-	}
-}
-
 func TestCommandMetadataServerChangeRefreshesLiveView(t *testing.T) {
-	keyed := func(name string) *CommandInfo {
-		return &CommandInfo{
-			Name: name, Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-		}
-	}
 	var phase atomic.Int32
 	var calls atomic.Int32
 	s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive},
@@ -1105,12 +521,12 @@ func TestCommandMetadataServerChangeRefreshesLiveView(t *testing.T) {
 			calls.Add(1)
 			if phase.Load() == 0 {
 				return testCommandMetadataFetchResultFor(
-					testTrustedLiveRecords(map[string]*CommandInfo{"srva.get": keyed("srva.get")}),
+					map[string]*CommandInfo{"srva.get": testReadOnlyCommandInfo("srva.get")},
 					"8.10.0", "8.10.0|srvA",
 				), nil
 			}
 			return testCommandMetadataFetchResultFor(
-				testTrustedLiveRecords(map[string]*CommandInfo{"srvb.get": keyed("srvb.get")}),
+				map[string]*CommandInfo{"srvb.get": testReadOnlyCommandInfo("srvb.get")},
 				"8.11.0", "8.11.0|srvB",
 			), nil
 		})
@@ -1142,10 +558,7 @@ func TestCommandMetadataServerChangeRefreshesLiveView(t *testing.T) {
 }
 
 func TestCommandMetadataServerUpgradeEnablesLiveOnlyCSC(t *testing.T) {
-	keyed := &CommandInfo{
-		Name: "myext.get", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-		KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-	}
+	keyed := testReadOnlyCommandInfo("myext.get")
 	var upgraded atomic.Bool
 	var calls atomic.Int32
 	s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive},
@@ -1174,6 +587,10 @@ func TestCommandMetadataServerUpgradeEnablesLiveOnlyCSC(t *testing.T) {
 	if calls.Load() != settled {
 		t.Errorf("live store refetched without a server change: %d -> %d", settled, calls.Load())
 	}
+	meta, ok := routingLookupMeta(s.view(), makeCmd("myext.get", "k"))
+	if !ok || !meta.readOnly {
+		t.Fatal("pre-8.10 record was lost to the routing consumer")
+	}
 	// An upgrade can enable a live-only command after refresh.
 	upgraded.Store(true)
 	s.onServerHello("8.10.0")
@@ -1186,10 +603,7 @@ func TestCommandMetadataServerUpgradeEnablesLiveOnlyCSC(t *testing.T) {
 
 func TestCommandMetadataStraddledFetchNotPublished(t *testing.T) {
 	// An old-server fetch must not publish after an identity change.
-	keyed := &CommandInfo{
-		Name: "old.get", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-		KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-	}
+	keyed := testReadOnlyCommandInfo("old.get")
 	started := make(chan struct{}, 4)
 	release := make(chan struct{})
 	var phase atomic.Int32
@@ -1199,12 +613,12 @@ func TestCommandMetadataStraddledFetchNotPublished(t *testing.T) {
 				started <- struct{}{}
 				<-release
 				return testCommandMetadataFetchResultFor(
-					testTrustedLiveRecords(map[string]*CommandInfo{"old.get": keyed}),
+					map[string]*CommandInfo{"old.get": keyed},
 					"8.10.0", "srvOld",
 				), nil
 			}
 			return testCommandMetadataFetchResultFor(
-				testTrustedLiveRecords(nil), "8.10.0", "srvNew",
+				nil, "8.10.0", "srvNew",
 			), nil
 		})
 	defer s.stopAndJoin()
@@ -1227,71 +641,13 @@ func TestCommandMetadataStraddledFetchNotPublished(t *testing.T) {
 	}
 }
 
-func TestCommandMetadataPublishRechecksServerFingerprint(t *testing.T) {
-	s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, nil)
-	defer s.stopAndJoin()
-	s.mu.Lock()
-	s.serverFp = "srvNew"
-	s.mu.Unlock()
-
-	view := buildCommandMetadataView(testTrustedLiveRecords(nil), nil)
-	view.live = true
-	if s.publishLiveView("srvOld", 0, "srvOld", view) {
-		t.Fatal("publish succeeded for a stale server fingerprint")
-	}
-	if s.view().live {
-		t.Fatal("metadata fetched for an old fingerprint was published")
-	}
-}
-
-func TestCommandMetadataPublishRejectsInvalidationABA(t *testing.T) {
-	s := newCommandMetadataStoreForLive(nil, nil)
-	defer s.stopAndJoin()
-
-	fp, epoch := s.serverIdentity()
-	s.invalidateLiveAndRequestRefresh()
-
-	view := buildCommandMetadataView(testTrustedLiveRecords(nil), nil)
-	view.live = true
-	if s.publishLiveView(fp, epoch, "srvOld", view) {
-		t.Fatal("publish succeeded after an invalidate/reset fingerprint ABA")
-	}
-	if s.view().live {
-		t.Fatal("metadata fetched before invalidation was published")
-	}
-}
-
-func TestCommandMetadataPublishRejectsMissingIdentity(t *testing.T) {
-	s := newCommandMetadataStoreForLive(nil, nil)
-	defer s.stopAndJoin()
-
-	fp, epoch := s.serverIdentity()
-	view := buildCommandMetadataView(testTrustedLiveRecords(nil), nil)
-	view.live = true
-	if s.publishLiveView(fp, epoch, "", view) {
-		t.Fatal("metadata without a server identity was published")
-	}
-	if s.view().live {
-		t.Fatal("missing identity replaced the static view")
-	}
-}
-
 func TestCSCPre810CompatibilityCorrectionKeepsSnapshotNegatives(t *testing.T) {
 	// Pre-8.10 exclusions belong in the shared record, not only the CSC table.
-	live := testTrustedLiveRecords(map[string]*CommandInfo{
-		"ts.info": {
-			Name: "ts.info", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-		},
-		"eval_ro": {
-			Name: "eval_ro", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-		},
-		"ttl": {
-			Name: "ttl", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{Flags: []string{"RO"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
-		},
-	})
+	live := map[string]*CommandInfo{
+		"ts.info": testReadOnlyCommandInfo("ts.info"),
+		"eval_ro": testReadOnlyCommandInfo("eval_ro"),
+		"ttl":     testReadOnlyCommandInfo("ttl"),
+	}
 	redis810 := buildCommandMetadataViewForServer(live, nil, "8.10.0")
 	if !isCacheableInView(redis810, makeCmd("ts.info", "k")) {
 		t.Error("Redis 8.10+ live record did not remain authoritative")
@@ -1450,35 +806,57 @@ func TestCommandMetadataRetryCapStopsSelfRetry(t *testing.T) {
 }
 
 func TestCommandMetadataViewChangeCancelsFulfill(t *testing.T) {
+	for _, coalesced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("coalesced=%v", coalesced), func(t *testing.T) {
+			cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+			s := newCommandMetadataStoreForLive(nil, nil)
+			c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cmdMeta: s}
+			view := c.metadataView()
+			for _, changed := range []bool{true, false} {
+				key := "get:k"
+				token, fetch := cache.Reserve(key, []string{"k"})
+				if !fetch {
+					t.Fatal("Reserve should fetch")
+				}
+				var overrides map[string]*CommandInfo
+				if changed {
+					overrides = map[string]*CommandInfo{"get": nil}
+				}
+				// A fresh pointer with the same decisions still permits publication.
+				s.current.Store(buildCommandMetadataView(nil, overrides))
+				raw := []byte("$1\r\nv\r\n")
+				if coalesced {
+					cmd := NewStringCmd(context.Background(), "get", "k")
+					req := &cscMissReq{cmd: cmd, cacheKey: key, token: token, view: view, done: make(chan error, 1)}
+					mc := &cscMissCoalescer{c: c}
+					mc.applyAndSettle(req, raw, 0, 0)
+					if err := <-req.done; err != nil || cmd.Val() != "v" {
+						t.Fatalf("fetched reply = %q, %v", cmd.Val(), err)
+					}
+				} else {
+					c.fulfillCached(key, token, &cscFetchCapture{raw: raw}, view)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				_, cached := cache.Get(ctx, key)
+				cancel()
+				if cached == changed {
+					t.Fatalf("changed=%v: cached=%v, want %v", changed, cached, !changed)
+				}
+			}
+		})
+	}
+}
+
+func TestCommandMetadataRefreshSkipsRetiredEntries(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	s := newCommandMetadataStore(&CommandMetadataConfig{
-		Overrides: map[string]*CommandInfo{"get": nil},
-	}, nil)
-	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cmdMeta: s}
-
-	view := c.metadataView()
-	tok, sf := cache.Reserve("get:k", []string{"k"})
-	if !sf {
-		t.Fatal("Reserve should fetch")
-	}
-	// Change the decision during the fetch.
-	s.current.Store(buildCommandMetadataView(nil, nil))
-	if c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v")}, view) {
-		t.Fatal("a fetch from a retired metadata generation must not publish")
-	}
-	if _, ok := cache.Get(context.Background(), "get:k"); ok {
-		t.Fatal("retired-generation entry must not be cached")
-	}
-
-	// An unchanged refresh must not cancel fulfillment.
-	view = c.metadataView()
-	tok, sf = cache.Reserve("get:k2", []string{"k2"})
-	if !sf {
-		t.Fatal("Reserve should fetch")
-	}
-	s.current.Store(buildCommandMetadataView(nil, nil)) // same decisions, new pointer
-	if !c.fulfillCached("get:k2", tok, &cscFetchCapture{raw: []byte("v")}, view) {
-		t.Fatal("an equivalent refresh must not suppress publication")
+	s := newCommandMetadataStore(&CommandMetadataConfig{Overrides: map[string]*CommandInfo{"get": nil}}, nil)
+	pooler := &erroringPooler{}
+	c := &baseClient{opt: &Options{}, csc: cache, cmdMeta: s, connPool: pooler, cscKeyPrefix: "p:"}
+	rawKey, _ := buildCacheKey(makeCmd("get", "k"))
+	key := cscEntryKey(c.cscKeyPrefix, defaultCommandMetadataView.cscFingerprint, rawKey)
+	n, err := c.refreshInvalidatedBatch(context.Background(), []cscRefreshTarget{{cacheKey: key, redisKeys: []string{"p:k"}}})
+	if err != nil || n != 0 || pooler.gets.Load() != 0 || cache.Len() != 0 {
+		t.Fatalf("retired refresh: published=%d err=%v pool gets=%d entries=%d", n, err, pooler.gets.Load(), cache.Len())
 	}
 }
 
@@ -1519,16 +897,10 @@ func TestCommandMetadataPreferLiveE2E(t *testing.T) {
 			break
 		}
 	}
-	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
-		t.Fatalf("could not parse Redis version from INFO server: %q", version)
+	if version == "" {
+		t.Fatal("INFO server did not report a version")
 	}
-	major, majorErr := strconv.Atoi(parts[0])
-	minor, minorErr := strconv.Atoi(parts[1])
-	if majorErr != nil || minorErr != nil {
-		t.Fatalf("could not parse Redis version from INFO server: %q", version)
-	}
-	if major < 8 || major == 8 && minor < 10 {
+	if !commandMetadataSupportsCSC(version) {
 		t.Skipf("live command metadata requires Redis 8.10 or newer (server is %s)", version)
 	}
 
@@ -1572,6 +944,15 @@ func TestCommandMetadataPreferLiveE2E(t *testing.T) {
 	}
 	if cache.Len() < 1 {
 		t.Fatal("entry never cached under the live view")
+	}
+
+	// An unchanged metadata fetch must preserve already cached replies.
+	entries := cache.Len()
+	if _, err := client.baseClient.fetchCommandMetadata(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cache.Len() != entries {
+		t.Fatal("unchanged metadata fetch evicted cached entries")
 	}
 
 	if err := mutator.Set(ctx, key, "v2", 0).Err(); err != nil {

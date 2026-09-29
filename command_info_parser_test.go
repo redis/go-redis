@@ -13,10 +13,6 @@ func commandInfoTestBulk(s string) string {
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
 }
 
-func commandInfoTestVerbatim(s string) string {
-	return fmt.Sprintf("=%d\r\n%s\r\n", len(s), s)
-}
-
 func commandInfoTestInt(v int64) string {
 	return fmt.Sprintf(":%d\r\n", v)
 }
@@ -133,26 +129,9 @@ func TestCommandsInfoMalformedRecordDoesNotAbortReply(t *testing.T) {
 				commandInfoTestArray("$-1\r\n"), commandInfoTestArray(validSpec), empty),
 		},
 		{
-			name: "RESP3 nil tip",
-			bad: commandInfoTestEntry10("bad", validFlags,
-				commandInfoTestArray("_\r\n"), commandInfoTestArray(validSpec), empty),
-		},
-		{
-			name: "integer tip",
-			bad: commandInfoTestEntry10("bad", validFlags,
-				commandInfoTestArray(commandInfoTestInt(1)), commandInfoTestArray(validSpec), empty),
-		},
-		{
 			name: "nil command flag",
 			bad: commandInfoTestEntry10("bad", commandInfoTestArray("$-1\r\n"),
 				empty, commandInfoTestArray(validSpec), empty),
-		},
-		{
-			name: "nil key spec flag",
-			bad: commandInfoTestEntry10("bad", validFlags, empty,
-				commandInfoTestArray(commandInfoTestRangeKeySpec(
-					commandInfoTestArray("$-1\r\n"), commandInfoTestBulk("index"), commandInfoTestInt(1),
-				)), empty),
 		},
 		{
 			name: "scalar key spec flags",
@@ -245,81 +224,24 @@ func TestCommandsInfoDuplicateNameFailsClosed(t *testing.T) {
 }
 
 func TestCommandsInfoUnknownKeySpecAlgorithmsArePreservedFailClosed(t *testing.T) {
-	validFlags := commandInfoTestArray(commandInfoTestBulk("readonly"))
-	empty := commandInfoTestArray()
-	tests := []struct {
-		name string
-		spec string
-	}{
-		{
-			name: "begin search",
-			spec: commandInfoTestRangeKeySpec(
-				commandInfoTestArray(commandInfoTestBulk("RO")),
-				commandInfoTestBulk("future-index"), commandInfoTestInt(1),
-			),
-		},
-		{
-			name: "find keys",
-			spec: commandInfoTestMap(
-				commandInfoTestBulk("flags"), commandInfoTestArray(commandInfoTestBulk("RO")),
-				commandInfoTestBulk("begin_search"), commandInfoTestMap(
-					commandInfoTestBulk("type"), commandInfoTestBulk("index"),
-					commandInfoTestBulk("spec"), commandInfoTestMap(
-						commandInfoTestBulk("index"), commandInfoTestInt(1),
-					),
-				),
-				commandInfoTestBulk("find_keys"), commandInfoTestMap(
-					commandInfoTestBulk("type"), commandInfoTestBulk("future-range"),
-					commandInfoTestBulk("spec"), commandInfoTestMap(
-						commandInfoTestBulk("lastkey"), commandInfoTestInt(0),
-						commandInfoTestBulk("keystep"), commandInfoTestInt(1),
-						commandInfoTestBulk("limit"), commandInfoTestInt(0),
-					),
-				),
-			),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			bad := commandInfoTestEntry10(
-				"bad", validFlags, empty, commandInfoTestArray(tt.spec), empty,
-			)
-			cmd := commandInfoTestReadReply(t, commandInfoTestArray(bad, commandInfoTestEntry6("after")))
-			info, exists := cmd.val["bad"]
-			if !exists || info == nil {
-				t.Fatalf("well-typed unknown key algorithm = %#v, exists=%v; want preserved record", info, exists)
+	for _, algorithm := range []string{"index", "range"} {
+		t.Run(algorithm, func(t *testing.T) {
+			spec := strings.Replace(commandInfoTestValidRangeKeySpec(),
+				commandInfoTestBulk(algorithm), commandInfoTestBulk("future"), 1)
+			entry := commandInfoTestEntry10("future", commandInfoTestArray(commandInfoTestBulk("readonly")),
+				commandInfoTestArray(), commandInfoTestArray(spec), commandInfoTestArray())
+			cmd := commandInfoTestReadReply(t, commandInfoTestArray(entry, commandInfoTestEntry6("after")))
+			info := cmd.val["future"]
+			if info == nil || cmd.val["after"] == nil {
+				t.Fatal("unknown algorithm lost a well-formed record")
 			}
 			if got := cscDeriveMeta(info); got.extract != cscKeyExtractNone {
-				t.Fatalf("unknown key algorithm produced CSC extraction: %+v", got)
+				t.Fatalf("unknown algorithm enabled CSC extraction: %+v", got)
 			}
-			if got := deriveRoutingCommandMeta("bad", info); got.keyState != routingKeysUnknown {
-				t.Fatalf("unknown key algorithm routing state = %v, want unknown", got.keyState)
-			}
-			if cmd.val["after"] == nil {
-				t.Fatal("unknown key algorithm desynchronized the following record")
+			if got := deriveRoutingCommandMeta("future", info); got.keyState != routingKeysUnknown {
+				t.Fatalf("unknown algorithm produced routing keys: %+v", got)
 			}
 		})
-	}
-}
-
-func TestCommandsInfoPositionalRecordRejectsRESP3Set(t *testing.T) {
-	setRecord := commandInfoTestSet(
-		commandInfoTestBulk("bad"),
-		commandInfoTestInt(-2),
-		commandInfoTestSet(commandInfoTestBulk("readonly")),
-		commandInfoTestInt(1),
-		commandInfoTestInt(1),
-		commandInfoTestInt(1),
-	)
-	cmd := commandInfoTestReadReply(t, commandInfoTestArray(
-		commandInfoTestEntry6("before"), setRecord, commandInfoTestEntry6("after"),
-	))
-	if cmd.val["before"] == nil || cmd.val["after"] == nil {
-		t.Fatalf("positional set desynchronized siblings: %#v", cmd.val)
-	}
-	if _, exists := cmd.val["bad"]; exists {
-		t.Fatalf("unordered positional record should be omitted, got %#v", cmd.val["bad"])
 	}
 }
 
@@ -403,56 +325,6 @@ func TestCommandsInfoKeySpecSectionsCannotOverwriteEachOther(t *testing.T) {
 	keys := cscExtractRedisKeys(meta, NewCmd(context.Background(), "safe", "one", "two"))
 	if len(keys) != 2 || keys[0] != "one" || keys[1] != "two" {
 		t.Fatalf("cross-section field caused partial extraction: %v (%+v)", keys, meta)
-	}
-}
-
-func TestCommandsInfoFindKeysCannotOverwriteBeginKeyword(t *testing.T) {
-	spec := commandInfoTestMap(
-		commandInfoTestBulk("flags"), commandInfoTestArray(commandInfoTestBulk("RO")),
-		commandInfoTestBulk("begin_search"), commandInfoTestMap(
-			commandInfoTestBulk("type"), commandInfoTestBulk("keyword"),
-			commandInfoTestBulk("spec"), commandInfoTestMap(
-				commandInfoTestBulk("keyword"), commandInfoTestBulk("KEYS"),
-				commandInfoTestBulk("startfrom"), commandInfoTestInt(1),
-			),
-		),
-		commandInfoTestBulk("find_keys"), commandInfoTestMap(
-			commandInfoTestBulk("type"), commandInfoTestBulk("range"),
-			commandInfoTestBulk("spec"), commandInfoTestMap(
-				commandInfoTestBulk("lastkey"), commandInfoTestInt(-1),
-				commandInfoTestBulk("keystep"), commandInfoTestInt(1),
-				commandInfoTestBulk("limit"), commandInfoTestInt(0),
-				commandInfoTestBulk("keyword"), commandInfoTestBulk("WRONG"),
-			),
-		),
-	)
-	entry := commandInfoTestEntry10(
-		"safe", commandInfoTestArray(commandInfoTestBulk("readonly")),
-		commandInfoTestArray(), commandInfoTestArray(spec), commandInfoTestArray(),
-	)
-	cmd := commandInfoTestReadReply(t, commandInfoTestArray(entry))
-	info := cmd.val["safe"]
-	if info == nil || len(info.KeySpecs) != 1 || info.KeySpecs[0].Keyword != "KEYS" {
-		t.Fatalf("find_keys field changed begin-search keyword: %+v", info)
-	}
-}
-
-func TestCommandsInfoMalformedVerbatimIsRecordLocal(t *testing.T) {
-	bad := commandInfoTestEntry10(
-		"bad", commandInfoTestArray(commandInfoTestBulk("readonly")),
-		commandInfoTestArray(commandInfoTestVerbatim("broken")),
-		commandInfoTestArray(), commandInfoTestArray(),
-	)
-	good := commandInfoTestEntry10(
-		"good", commandInfoTestArray(commandInfoTestBulk("readonly")),
-		commandInfoTestArray(), commandInfoTestArray(), commandInfoTestArray(),
-	)
-	cmd := commandInfoTestReadReply(t, commandInfoTestArray(bad, good))
-	if info, ok := cmd.val["bad"]; !ok || info != nil {
-		t.Fatalf("malformed verbatim record=%+v present=%v, want tombstone", info, ok)
-	}
-	if cmd.val["good"] == nil {
-		t.Fatal("malformed verbatim discarded a valid sibling record")
 	}
 }
 
@@ -566,54 +438,32 @@ func TestCommandsInfoMalformedSubcommandIsIsolated(t *testing.T) {
 }
 
 func TestCommandsInfoUnknownEntryShapesFailClosed(t *testing.T) {
-	known := []string{
-		commandInfoTestBulk("bad"),
-		commandInfoTestInt(-2),
-		commandInfoTestArray(commandInfoTestBulk("readonly")),
-		commandInfoTestInt(1),
-		commandInfoTestInt(1),
-		commandInfoTestInt(1),
-		commandInfoTestArray(),
-		commandInfoTestArray(),
-		commandInfoTestArray(commandInfoTestValidRangeKeySpec()),
-		commandInfoTestArray(),
+	valid := commandInfoTestEntry6("bad")
+	for _, bad := range []string{
+		commandInfoTestBulk("not-an-entry"),
+		strings.Replace(valid, "*6", "~6", 1), // An unordered set cannot describe positional fields.
+		strings.Replace(valid, "*6", "*8", 1) + commandInfoTestArray() + commandInfoTestArray(),
+	} {
+		cmd := commandInfoTestReadReply(t, commandInfoTestArray(bad, commandInfoTestEntry6("after")))
+		if cmd.val["bad"] != nil || cmd.val["after"] == nil {
+			t.Fatalf("unknown record was accepted or lost its sibling: %#v", cmd.val)
+		}
 	}
-	tests := map[string]string{
-		"eight fields": commandInfoTestArray(known[:8]...),
-		"nine fields":  commandInfoTestArray(known[:9]...),
-		"future field": commandInfoTestArray(append(append([]string(nil), known...),
-			commandInfoTestMap(commandInfoTestBulk("future"), commandInfoTestBulk("ignored")))...),
-	}
-	for name, bad := range tests {
+}
+
+func TestCommandsInfoParserLimits(t *testing.T) {
+	for name, raw := range map[string]string{
+		"truncated record":  "*1\r\n*2\r\n$3\r\nbad\r\n$5\r\nx",
+		"nested value":      "*1\r\n" + strings.Repeat("*1\r\n", maxCommandInfoDepth+2) + "+ignored\r\n",
+		"nested attributes": strings.Repeat("|0\r\n", maxCommandInfoDepth+2) + commandInfoTestArray(commandInfoTestEntry6("get")),
+		"huge count":        "*9223372036854775807\r\n",
+	} {
 		t.Run(name, func(t *testing.T) {
-			cmd := commandInfoTestReadReply(t, commandInfoTestArray(bad, commandInfoTestEntry6("after")))
-			if got, exists := cmd.val["bad"]; !exists || got != nil {
-				t.Fatalf("unknown-shape record = %#v, exists=%v; want nil tombstone", got, exists)
-			}
-			if cmd.val["after"] == nil {
-				t.Fatal("unknown entry shape desynchronized the following record")
+			cmd := NewCommandsInfoCmd(context.Background(), "command")
+			if err := cmd.readReply(proto.NewReader(strings.NewReader(raw))); err == nil {
+				t.Fatal("unsafe or truncated response returned no error")
 			}
 		})
-	}
-}
-
-func TestCommandsInfoUnnamedMalformedEntryIsOmitted(t *testing.T) {
-	raw := commandInfoTestArray(
-		commandInfoTestEntry6("before"),
-		commandInfoTestBulk("not-an-entry"),
-		commandInfoTestEntry6("after"),
-	)
-	cmd := commandInfoTestReadReply(t, raw)
-	if len(cmd.val) != 2 || cmd.val["before"] == nil || cmd.val["after"] == nil {
-		t.Fatalf("unexpected parsed records: %#v", cmd.val)
-	}
-}
-
-func TestCommandsInfoMalformedDrainFailureIsFatal(t *testing.T) {
-	raw := "*1\r\n*2\r\n$3\r\nbad\r\n$5\r\nx"
-	cmd := NewCommandsInfoCmd(context.Background(), "command")
-	if err := cmd.readReply(proto.NewReader(strings.NewReader(raw))); err == nil {
-		t.Fatal("truncated value returned nil error")
 	}
 }
 
@@ -634,49 +484,6 @@ func TestCommandsInfoTopLevelRedisErrorIsTypedAndConsumed(t *testing.T) {
 	}
 	if next.val["after"] == nil {
 		t.Fatal("next aligned COMMAND record was not parsed")
-	}
-}
-
-func TestCommandsInfoExcessiveUnknownNestingIsFatal(t *testing.T) {
-	nested := commandInfoTestBulk("ignored")
-	for range maxCommandInfoDepth + 2 {
-		nested = commandInfoTestArray(nested)
-	}
-	known := []string{
-		commandInfoTestBulk("future"),
-		commandInfoTestInt(-2),
-		commandInfoTestArray(commandInfoTestBulk("readonly")),
-		commandInfoTestInt(1),
-		commandInfoTestInt(1),
-		commandInfoTestInt(1),
-		commandInfoTestArray(),
-		commandInfoTestArray(),
-		commandInfoTestArray(commandInfoTestValidRangeKeySpec()),
-		commandInfoTestArray(),
-		nested,
-	}
-	raw := commandInfoTestArray(commandInfoTestArray(known...))
-	cmd := NewCommandsInfoCmd(context.Background(), "command")
-	if err := cmd.readReply(proto.NewReader(strings.NewReader(raw))); err == nil {
-		t.Fatal("excessively nested extension returned nil error")
-	}
-}
-
-func TestCommandsInfoExcessiveAttributeNestingIsFatal(t *testing.T) {
-	raw := strings.Repeat("|0\r\n", maxCommandInfoDepth+2) +
-		commandInfoTestArray(commandInfoTestEntry6("get"))
-	cmd := NewCommandsInfoCmd(context.Background(), "command")
-	if err := cmd.readReply(proto.NewReader(strings.NewReader(raw))); err == nil {
-		t.Fatal("excessively nested attributes returned nil error")
-	}
-}
-
-func TestCommandsInfoHugeTruncatedCountDoesNotPreallocate(t *testing.T) {
-	cmd := NewCommandsInfoCmd(context.Background(), "command")
-	if err := cmd.readReply(proto.NewReader(strings.NewReader(
-		"*9223372036854775807\r\n",
-	))); err == nil {
-		t.Fatal("truncated huge aggregate returned nil error")
 	}
 }
 

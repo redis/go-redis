@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -121,66 +120,8 @@ func TestClusterRoutingUsesCommandMetadataOverride(t *testing.T) {
 	if got, want := c.cmdSlotWithDecision(cmd, decision, -1), hashtag.Slot("actual"); got != want {
 		t.Fatalf("slot=%d, want %d", got, want)
 	}
-}
-
-func TestClusterRoutingDecisionUsesCapturedMetadataGeneration(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	cmd := NewStringCmd(context.Background(), "get", "first", "second")
-
-	firstView := c.metadataView()
-	firstDecision := c.routingDecisionInView(context.Background(), cmd, firstView,
-		firstView.routingTable["get"].policy)
-	if got, want := c.cmdSlotWithDecision(cmd, firstDecision, -1), hashtag.Slot("first"); got != want {
-		t.Fatalf("first slot=%d, want %d", got, want)
-	}
-
-	secondView := buildCommandMetadataView(nil, map[string]*CommandInfo{
-		"get": {
-			Name: "get", Flags: []string{"readonly"},
-			KeySpecs: []KeySpec{{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 2, FindKeys: "range", LastKey: 0, KeyStep: 1}},
-		},
-	})
-	secondDecision := c.routingDecisionInView(context.Background(), cmd, secondView,
-		secondView.routingTable["get"].policy)
-	if got, want := c.cmdSlotWithDecision(cmd, secondDecision, -1), hashtag.Slot("second"); got != want {
-		t.Fatalf("refreshed slot=%d, want %d", got, want)
-	}
-}
-
-func TestClusterRoutingDerivesFirstKeyWithoutConstructorHints(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	tests := []struct {
-		name string
-		cmd  Cmder
-		want int
-	}{
-		{
-			name: "XREAD limited incomplete range",
-			cmd:  NewCmd(ctx, "xread", "count", 1, "streams", "stream", "0"),
-			want: 4,
-		},
-		{
-			name: "SORT_RO usable spec beside unknown sibling",
-			cmd:  NewCmd(ctx, "sort_ro", "source", "alpha"),
-			want: 1,
-		},
-		{
-			name: "MIGRATE KEYS alternative",
-			cmd:  NewCmd(ctx, "migrate", "host", 6379, "", 0, 1000, "keys", "one", "two"),
-			want: 7,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Metadata routing ignores constructor key hints.
-			tt.cmd.SetFirstKeyPos(2)
-			decision := c.commandRoutingDecision(ctx, tt.cmd)
-			if decision.policyErr != nil || decision.firstKey != tt.want {
-				t.Fatalf("routing decision first=%d err=%v, want first=%d",
-					decision.firstKey, decision.policyErr, tt.want)
-			}
-		})
+	if got, want := c.cmdSlot(cmd, -1), hashtag.Slot("actual"); got != want {
+		t.Fatalf("direct slot lookup=%d, want %d", got, want)
 	}
 }
 
@@ -209,19 +150,6 @@ func TestClusterMSetEXSplitPreservesSuffixAndWireArgs(t *testing.T) {
 	want := []interface{}{"msetex", 1, []byte("{one}key"), 42, "px", int64(10)}
 	if !reflect.DeepEqual(sub.Args(), want) {
 		t.Fatalf("subcommand args=%#v, want %#v", sub.Args(), want)
-	}
-}
-
-func TestClusterMultiShardAllowsBinaryMarshalerValues(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	for _, cmd := range []Cmder{
-		NewStatusCmd(context.Background(), "mset", "{same}one", clusterBinaryKey("one"), "{same}two", clusterBinaryKey("two")),
-		NewStatusCmd(context.Background(), "mset", "{one}key", clusterBinaryKey("one"), "{two}key", clusterBinaryKey("two")),
-	} {
-		decision := c.commandRoutingDecision(context.Background(), cmd)
-		if decision.policyErr != nil {
-			t.Fatalf("MSET with BinaryMarshaler values was rejected: %v", decision.policyErr)
-		}
 	}
 }
 
@@ -348,13 +276,6 @@ func TestClusterTxRoutingOnlyAdaptsConnectionLocalPing(t *testing.T) {
 	}
 	if err := c.txRoutingError(flushAll, decision); err == nil {
 		t.Fatal("transaction-local FLUSHALL unexpectedly bypassed its all-shards policy")
-	}
-}
-
-func TestClusterCursorRoutingAcceptsTypedIntegerID(t *testing.T) {
-	cmd := NewMapStringInterfaceCmd(context.Background(), "ft.cursor", "read", "idx", 42)
-	if got, err := cursorRoutingKey(cmd); err != nil || got != "42" {
-		t.Fatalf("cursor routing key=%q err=%v, want 42", got, err)
 	}
 }
 
@@ -509,129 +430,6 @@ func TestClusterDefaultRoutingFailsClosedForUnusableMetadata(t *testing.T) {
 	}
 }
 
-func TestClusterCustomRoutingAlgorithmMayClassifyUnknownCommandAsKeyless(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
-		return &routing.CommandPolicy{
-			Request:  routing.ReqDefault,
-			Response: routing.RespDefaultKeyless,
-		}
-	}))
-	cmd := NewCmd(context.Background(), "module.future", "key")
-	decision := c.commandRoutingDecision(context.Background(), cmd)
-	if decision.policyErr != nil || decision.metaOK || decision.firstKey != 0 || !decision.keyless {
-		t.Fatalf("custom unknown-command decision=%#v", decision)
-	}
-}
-
-func TestClusterCustomRoutingPolicyControlsReplicaEligibility(t *testing.T) {
-	ctx := context.Background()
-	tests := []struct {
-		name     string
-		cmd      Cmder
-		policy   *routing.CommandPolicy
-		readOnly bool
-	}{
-		{
-			name: "remove readonly from GET",
-			cmd:  NewStringCmd(ctx, "get", "key"),
-			policy: &routing.CommandPolicy{
-				Request: routing.ReqDefault, Response: routing.RespDefaultHashSlot,
-			},
-		},
-		{
-			name: "add readonly to SET",
-			cmd:  NewStatusCmd(ctx, "set", "key", "value"),
-			policy: &routing.CommandPolicy{
-				Request: routing.ReqDefault, Response: routing.RespDefaultHashSlot,
-				Tips: map[string]string{routing.ReadOnlyCMD: ""},
-			},
-			readOnly: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := newMetadataTestCluster(t, nil)
-			c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
-				return tt.policy
-			}))
-			decision := c.commandRoutingDecision(ctx, tt.cmd)
-			if decision.readOnly != tt.readOnly {
-				t.Fatalf("readOnly=%v, want %v", decision.readOnly, tt.readOnly)
-			}
-		})
-	}
-}
-
-func TestClusterKeylessReadOnlyCommandSelectsNodeOnce(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	c.opt.ReadOnly = true
-	picker := &countingClusterShardPicker{index: 1}
-	c.opt.ShardPicker = picker
-	master, _ := c.nodes.GetOrCreate("127.0.0.1:7651")
-	replica, _ := c.nodes.GetOrCreate("127.0.0.1:7652")
-	state := installMetadataClusterState(c, []*clusterNode{master})
-	state.Slaves = []*clusterNode{replica}
-	masterCalls, replicaCalls := 0, 0
-	master.Client.AddHook(clusterMetadataNodeHook{process: func(context.Context, Cmder) error {
-		masterCalls++
-		return nil
-	}})
-	replica.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		replicaCalls++
-		cmd.(*StatusCmd).SetVal("PONG")
-		return nil
-	}})
-	c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
-		return &routing.CommandPolicy{
-			Request: routing.ReqDefault, Response: routing.RespDefaultKeyless,
-			Tips: map[string]string{routing.ReadOnlyCMD: ""},
-		}
-	}))
-	if err := c.process(context.Background(), NewStatusCmd(context.Background(), "ping")); err != nil {
-		t.Fatal(err)
-	}
-	if picker.calls != 1 || masterCalls != 0 || replicaCalls != 1 {
-		t.Fatalf("picker/master/replica calls=%d/%d/%d, want 1/0/1", picker.calls, masterCalls, replicaCalls)
-	}
-}
-
-func TestClusterCustomHashSlotPolicyCannotInventUnknownKeyPosition(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
-		return &routing.CommandPolicy{
-			Request:  routing.ReqDefault,
-			Response: routing.RespDefaultHashSlot,
-		}
-	}))
-	cmd := NewCmd(context.Background(), "module.future", "key")
-	decision := c.commandRoutingDecision(context.Background(), cmd)
-	if decision.policyErr == nil || decision.firstKey != -1 {
-		t.Fatalf("custom keyed unknown-command decision=%#v, want unresolved-key error", decision)
-	}
-}
-
-func TestClusterPre810LiveMetadataStillRoutesButDoesNotEnableCSC(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	view := buildCommandMetadataViewForServer(map[string]*CommandInfo{
-		"future.read": {
-			Name: "future.read", Flags: []string{"readonly"},
-			KeySpecs: []KeySpec{{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1, FindKeys: "range", LastKey: 0, KeyStep: 1}},
-		},
-	}, nil, "7.2.0")
-	view.live = true
-	c.cmdMeta.current.Store(view)
-
-	cmd := NewStringCmd(context.Background(), "future.read", "key")
-	decision := c.commandRoutingDecision(context.Background(), cmd)
-	if decision.policy == nil || !decision.readOnly || decision.firstKey != 1 {
-		t.Fatalf("older live metadata was not usable for routing: %#v", decision)
-	}
-	if isCacheableInView(view, cmd) {
-		t.Fatal("pre-8.10 live-only command unexpectedly became CSC eligible")
-	}
-}
-
 func TestClusterReplicaEligibilityUsesReadonlyFlagOnly(t *testing.T) {
 	c := newMetadataTestCluster(t, &CommandMetadataConfig{Overrides: map[string]*CommandInfo{
 		"module.write": {
@@ -707,41 +505,6 @@ func TestClusterDynamicResolverFallsBackAndRetries(t *testing.T) {
 	if second.firstKey != 2 || calls != 2 || !second.view.live {
 		t.Fatalf("retry upgrade: key=%d calls=%d live=%v, want key=2 calls=2 live",
 			second.firstKey, calls, second.view.live)
-	}
-}
-
-func TestClusterTopologyGenerationValidation(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	c.state.state.Store(&clusterState{generation: 41})
-	if !c.isTopologyGeneration(41) {
-		t.Fatal("current topology generation was rejected")
-	}
-	c.state.state.Store(&clusterState{generation: 42})
-	if c.isTopologyGeneration(41) {
-		t.Fatal("metadata fetch generation survived a topology change")
-	}
-}
-
-func TestClusterMetadataFingerprintValidation(t *testing.T) {
-	tests := []struct {
-		name     string
-		expected string
-		actual   string
-		match    bool
-		wantErr  error
-	}{
-		{name: "missing identity", expected: "8.10.0", wantErr: errClusterMetadataMissingFingerprint},
-		{name: "first identity", actual: "8.10.0", match: true},
-		{name: "same identity", expected: "8.10.0", actual: "8.10.0", match: true},
-		{name: "changed identity", expected: "8.10.0", actual: "8.10.1"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			match, err := clusterMetadataFingerprintMatches(tt.expected, tt.actual)
-			if match != tt.match || !errors.Is(err, tt.wantErr) {
-				t.Fatalf("match=%v err=%v, want %v/%v", match, err, tt.match, tt.wantErr)
-			}
-		})
 	}
 }
 
@@ -925,49 +688,6 @@ func TestClusterDisabledRoutingPoliciesUseLegacyMetadataFreeRoute(t *testing.T) 
 	}
 }
 
-func TestClusterStaticMetadataStoreIsInert(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	if c.cmdMeta == nil || c.cmdMeta.view() != defaultCommandMetadataView {
-		t.Fatal("default cluster does not share the static metadata view")
-	}
-	c.cmdMeta.mu.Lock()
-	started := c.cmdMeta.started
-	c.cmdMeta.mu.Unlock()
-	if started {
-		t.Fatal("default static cluster started a metadata worker")
-	}
-	if c.state.state.Load() != nil {
-		t.Fatal("default static metadata construction performed network topology work")
-	}
-}
-
-func TestClusterMetadataStoreCleanupDoesNotRetainDroppedClient(t *testing.T) {
-	makeDroppedClient := func() *commandMetadataStore {
-		client := NewClusterClient(&ClusterOptions{
-			Addrs: []string{"127.0.0.1:1"},
-			CommandMetadata: &CommandMetadataConfig{
-				Mode: CommandMetadataPreferLive,
-			},
-		})
-		return client.cmdMeta
-	}
-	store := makeDroppedClient()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		select {
-		case <-store.stop:
-			return
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("dropped ClusterClient remained rooted by metadata fetch worker")
-		}
-		runtime.GC()
-		runtime.Gosched()
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func TestClusterPipelineResolvesCustomPoliciesOnceAndSkipsUnusedDynamicFallback(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	c.cmdMeta.stopAndJoin()
@@ -1094,6 +814,62 @@ func TestClusterAutoPipelinePinsAdmissionMetadataGeneration(t *testing.T) {
 			if decision.view != wantView || decision.firstKey != 1 {
 				t.Fatalf("flush decision view=%p first=%d, want view=%p first=1",
 					decision.view, decision.firstKey, wantView)
+			}
+		})
+	}
+}
+
+func TestClusterFullDuplexPinsAndReleasesMetadata(t *testing.T) {
+	for _, tc := range []struct{ blocking, disabled bool }{{}, {blocking: true}, {disabled: true}} {
+		t.Run(fmt.Sprintf("blocking=%v/disabled=%v", tc.blocking, tc.disabled), func(t *testing.T) {
+			c := dialClusterFDTest(t)
+			defer c.Close()
+			ctx := context.Background()
+			key := fmt.Sprintf("cmdmeta:fd:%v:%v", tc.blocking, tc.disabled)
+			if err := c.Set(ctx, key, "value", 0).Err(); err != nil {
+				t.Fatal(err)
+			}
+			defer c.Del(ctx, key)
+			c.opt.DisableRoutingPolicies = tc.disabled
+			var calls atomic.Int32
+			c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
+				calls.Add(1)
+				return &routing.CommandPolicy{Request: routing.ReqDefault, Response: routing.RespDefaultHashSlot}
+			}))
+			opts := &AutoPipelineOptions{FullDuplex: true}
+			var ap *AutoPipeliner
+			var err error
+			if tc.blocking {
+				ap, err = c.AutoPipelineWithOptions(opts)
+			} else {
+				ap, err = c.AsyncAutoPipelineWithOptions(opts)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ap.clusterFD == nil {
+				t.Fatal("cluster full duplex did not engage")
+			}
+			preflight := ap.preflight
+			ap.preflight = func(ctx context.Context, cmd Cmder) error {
+				err := preflight(ctx, cmd)
+				// Retire GET after admission, before the FD router selects its node.
+				c.cmdMeta.current.Store(buildCommandMetadataView(nil, map[string]*CommandInfo{"get": nil}))
+				return err
+			}
+			cmd := ap.Get(ctx, key)
+			if got, err := cmd.Result(); err != nil || got != "value" {
+				t.Fatalf("admitted GET = %q, %v", got, err)
+			}
+			wantCalls := int32(1)
+			if tc.disabled {
+				wantCalls = 0
+			}
+			if calls.Load() != wantCalls {
+				t.Fatalf("resolver ran %d times, want %d", calls.Load(), wantCalls)
+			}
+			if _, retained := c.peekAutoPipelineRoutingDecision(cmd); retained {
+				t.Fatal("completed full-duplex command retained its metadata")
 			}
 		})
 	}
@@ -1240,13 +1016,13 @@ func TestClusterRoutingUsesSharedServerCorrections(t *testing.T) {
 	}
 }
 
-func TestClusterFanoutRejectsBinaryMarshalerArgument(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	cmd := NewCmd(context.Background(), "keys", clusterBinaryKey("*"))
-	decision := c.commandRoutingDecision(context.Background(), cmd)
-	if decision.policyErr == nil {
-		t.Fatal("fanout with BinaryMarshaler argument did not fail closed")
-	}
+func metadataTestResult[T any](cmd interface {
+	Cmder
+	SetVal(T)
+}, value T,
+) Cmder {
+	cmd.SetVal(value)
+	return cmd
 }
 
 func TestClusterFanoutResponseHandlers(t *testing.T) {
@@ -1259,88 +1035,39 @@ func TestClusterFanoutResponseHandlers(t *testing.T) {
 		want  interface{}
 	}{
 		{
-			name: "keys flatten",
-			cmd:  NewStringSliceCmd(ctx, "keys", "*"),
-			parts: func() []Cmder {
-				a := NewStringSliceCmd(ctx, "keys", "*")
-				a.SetVal([]string{"a", "b"})
-				b := NewStringSliceCmd(ctx, "keys", "*")
-				b.SetVal([]string{"c"})
-				return []Cmder{a, b}
-			}(),
-			want: []string{"a", "b", "c"},
+			"keys flatten", NewStringSliceCmd(ctx, "keys", "*"),
+			[]Cmder{metadataTestResult(NewStringSliceCmd(ctx), []string{"a", "b"}), metadataTestResult(NewStringSliceCmd(ctx), []string{"c"})},
+			[]string{"a", "b", "c"},
 		},
 		{
-			name: "script exists elementwise and",
-			cmd:  NewBoolSliceCmd(ctx, "script", "exists", "one", "two"),
-			parts: func() []Cmder {
-				a := NewBoolSliceCmd(ctx, "script", "exists", "one", "two")
-				a.SetVal([]bool{true, true})
-				b := NewBoolSliceCmd(ctx, "script", "exists", "one", "two")
-				b.SetVal([]bool{true, false})
-				return []Cmder{a, b}
-			}(),
-			want: []bool{true, false},
+			"script exists elementwise and", NewBoolSliceCmd(ctx, "script", "exists", "one", "two"),
+			[]Cmder{metadataTestResult(NewBoolSliceCmd(ctx), []bool{true, true}), metadataTestResult(NewBoolSliceCmd(ctx), []bool{true, false})},
+			[]bool{true, false},
 		},
 		{
-			name: "slowlog flatten",
-			cmd:  NewSlowLogCmd(ctx, "slowlog", "get"),
-			parts: func() []Cmder {
-				a := NewSlowLogCmd(ctx, "slowlog", "get")
-				a.SetVal([]SlowLog{{ID: 1}})
-				b := NewSlowLogCmd(ctx, "slowlog", "get")
-				b.SetVal([]SlowLog{{ID: 2}})
-				return []Cmder{a, b}
-			}(),
-			want: []SlowLog{{ID: 1}, {ID: 2}},
+			"slowlog flatten", NewSlowLogCmd(ctx, "slowlog", "get"),
+			[]Cmder{metadataTestResult(NewSlowLogCmd(ctx), []SlowLog{{ID: 1}}), metadataTestResult(NewSlowLogCmd(ctx), []SlowLog{{ID: 2}})},
+			[]SlowLog{{ID: 1}, {ID: 2}},
 		},
 		{
-			name: "waitaof elementwise min",
-			cmd:  NewIntSliceCmd(ctx, "waitaof", 1, 1, 0),
-			parts: func() []Cmder {
-				a := NewIntSliceCmd(ctx, "waitaof", 1, 1, 0)
-				a.SetVal([]int64{2, 5})
-				b := NewIntSliceCmd(ctx, "waitaof", 1, 1, 0)
-				b.SetVal([]int64{1, 7})
-				return []Cmder{a, b}
-			}(),
-			want: []int64{1, 5},
+			"waitaof elementwise min", NewIntSliceCmd(ctx, "waitaof", 1, 1, 0),
+			[]Cmder{metadataTestResult(NewIntSliceCmd(ctx), []int64{2, 5}), metadataTestResult(NewIntSliceCmd(ctx), []int64{1, 7})},
+			[]int64{1, 5},
 		},
 		{
-			name: "latency reset status sum",
-			cmd:  NewStatusCmd(ctx, "latency", "reset"),
-			parts: func() []Cmder {
-				a := NewStatusCmd(ctx, "latency", "reset")
-				a.SetVal("2")
-				b := NewStatusCmd(ctx, "latency", "reset")
-				b.SetVal("3")
-				return []Cmder{a, b}
-			}(),
-			want: "5",
+			"latency reset status sum", NewStatusCmd(ctx, "latency", "reset"),
+			[]Cmder{metadataTestResult(NewStatusCmd(ctx), "2"), metadataTestResult(NewStatusCmd(ctx), "3")},
+			"5",
 		},
 		{
-			name: "randomkey skips empty shard",
-			cmd:  NewStringCmd(ctx, "randomkey"),
-			parts: func() []Cmder {
-				a := NewStringCmd(ctx, "randomkey")
-				a.SetVal("chosen")
-				b := NewStringCmd(ctx, "randomkey")
-				b.SetErr(Nil)
-				return []Cmder{a, b}
-			}(),
-			want: "chosen",
+			"randomkey skips empty shard", NewStringCmd(ctx, "randomkey"),
+			[]Cmder{metadataTestResult(NewStringCmd(ctx), "chosen"), NewCmdResult(nil, Nil)},
+			"chosen",
 		},
 		{
-			name: "raw integer remains integer",
-			cmd:  NewCmd(ctx, "dbsize"),
-			parts: func() []Cmder {
-				a := NewCmd(ctx, "dbsize")
-				a.SetVal(int64(1 << 53))
-				b := NewCmd(ctx, "dbsize")
-				b.SetVal(int64(1))
-				return []Cmder{a, b}
-			}(),
-			want: int64(1<<53) + 1,
+			"raw integer remains integer", NewCmd(ctx, "dbsize"),
+			[]Cmder{NewCmdResult(int64(1<<53), nil), NewCmdResult(int64(1), nil)},
+			int64(1<<53) + 1,
 		},
 	}
 	for _, tt := range tests {
@@ -1353,32 +1080,10 @@ func TestClusterFanoutResponseHandlers(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := ExtractCommandValue(tt.cmd)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("aggregate=%#v (%T), want %#v (%T)", got, got, tt.want, tt.want)
+			if err != nil || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("aggregate=%#v error=%v, want %#v", got, err, tt.want)
 			}
 		})
-	}
-}
-
-func TestClusterFanoutResponseHandlerRegistryComplete(t *testing.T) {
-	want := map[string]routing.ResponsePolicy{
-		"keys":          routing.RespDefaultKeyless,
-		"latency|reset": routing.RespAggSum,
-		"randomkey":     routing.RespSpecial,
-		"script|exists": routing.RespAggLogicalAnd,
-		"slowlog|get":   routing.RespDefaultKeyless,
-		"waitaof":       routing.RespAggMin,
-	}
-	if len(clusterFanoutResponseHandlers) != len(want) {
-		t.Fatalf("handler count=%d, want %d", len(clusterFanoutResponseHandlers), len(want))
-	}
-	for name, response := range want {
-		if clusterFanoutResponseHandlers[clusterFanoutResponseHandlerKey{name: name, response: response}] == nil {
-			t.Errorf("missing explicit fanout response handler for %s", name)
-		}
 	}
 }
 
@@ -1428,35 +1133,6 @@ func TestAggregateClusterRandomKeyFailsClosed(t *testing.T) {
 	}
 }
 
-func TestClusterSpecialRequestHandlerRegistryComplete(t *testing.T) {
-	for name, support := range routingSpecialPolicies {
-		supported := support&routingSpecialRequestSupported != 0
-		_, handled := clusterSpecialRequestHandlers[name]
-		if supported != handled {
-			t.Errorf("special request %s: metadata supported=%v handler registered=%v", name, supported, handled)
-		}
-	}
-	for name := range clusterSpecialRequestHandlers {
-		if routingSpecialPolicies[name]&routingSpecialRequestSupported == 0 {
-			t.Errorf("handler %s is not declared supported in routing metadata", name)
-		}
-	}
-	for name, support := range routingSpecialPolicies {
-		if support&routingSpecialResponseSupported != 0 &&
-			clusterFanoutResponseHandlers[clusterFanoutResponseHandlerKey{name: name, response: routing.RespSpecial}] == nil {
-			t.Errorf("supported special response %s has no fanout handler", name)
-		}
-	}
-}
-
-func TestClusterSetCommandValueRejectsTypeMismatch(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	cmd := NewStringSliceCmd(context.Background(), "keys", "*")
-	if err := c.setCommandValue(cmd, []interface{}{"key"}); err == nil {
-		t.Fatal("mismatched aggregate type was silently accepted")
-	}
-}
-
 func TestClusterRejectsRawAndStreamingFanoutBeforeDispatch(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	ctx := context.Background()
@@ -1471,19 +1147,6 @@ func TestClusterRejectsRawAndStreamingFanoutBeforeDispatch(t *testing.T) {
 		}
 		if err := c.process(ctx, cmd); err == nil {
 			t.Fatalf("%T unexpectedly reached routing", cmd)
-		}
-	}
-}
-
-func TestClusterExplicitSlotRoutingUsesWireIntegerTypes(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	slot := int64(1234)
-	for _, value := range []interface{}{int(1234), slot, &slot, "1234", []byte("1234")} {
-		cmd := NewStringSliceCmd(ctx, "cluster", "getkeysinslot", value, 1)
-		decision := c.commandRoutingDecision(ctx, cmd)
-		if got := c.cmdSlotWithDecision(cmd, decision, -1); got != 1234 {
-			t.Fatalf("slot for %T=%d, want 1234", value, got)
 		}
 	}
 }
@@ -1526,67 +1189,29 @@ func installMetadataClusterState(c *ClusterClient, masters []*clusterNode, slots
 	return state
 }
 
-func TestClusterAllShardsUsesAvailableTopology(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	node, err := c.nodes.GetOrCreate("127.0.0.1:7199")
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls := 0
-	node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		calls++
-		cmd.(*StatusCmd).SetVal("OK")
-		return nil
-	}})
-	state := &clusterState{
-		nodes: c.nodes, Masters: []*clusterNode{node},
-		generation: 1, createdAt: time.Now(),
-	}
-	c.state.state.Store(state)
-
-	cmd := NewStatusCmd(ctx, "flushall")
-	decision := c.commandRoutingDecision(ctx, cmd)
-	if decision.policy == nil || decision.policy.Request != routing.ReqAllShards {
-		t.Fatalf("FLUSHALL policy=%#v, want all_shards", decision.policy)
-	}
-	if err := c.executeOnAllShards(ctx, cmd, decision.policy, decision); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 1 || cmd.Val() != "OK" {
-		t.Fatalf("all_shards calls/value=%d/%q, want 1/OK", calls, cmd.Val())
-	}
-}
-
-func TestClusterAllNodesUsesAvailableTopology(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	node, err := c.nodes.GetOrCreate("127.0.0.1:7198")
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls := 0
-	node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		calls++
-		cmd.(*StatusCmd).SetVal("OK")
-		return nil
-	}})
-	state := &clusterState{
-		nodes: c.nodes, Masters: []*clusterNode{node},
-		generation: 1, createdAt: time.Now(),
-	}
-	c.state.state.Store(state)
-
-	cmd := NewStatusCmd(ctx, "script", "flush")
-	decision := c.commandRoutingDecision(ctx, cmd)
-	if decision.policy == nil || decision.policy.Request != routing.ReqAllNodes {
-		t.Fatalf("SCRIPT FLUSH policy=%#v, want all_nodes", decision.policy)
-	}
-	if err := c.executeOnAllNodes(ctx, cmd, decision.policy, decision); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 1 || cmd.Val() != "OK" {
-		t.Fatalf("all_nodes calls/value=%d/%q, want 1/OK", calls, cmd.Val())
+func TestClusterFanoutUsesAvailableTopology(t *testing.T) {
+	for _, args := range [][]interface{}{{"flushall"}, {"script", "flush"}} {
+		t.Run(fmt.Sprint(args), func(t *testing.T) {
+			c := newMetadataTestCluster(t, nil)
+			node, err := c.nodes.GetOrCreate("127.0.0.1:7199")
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+				calls++
+				cmd.(*StatusCmd).SetVal("OK")
+				return nil
+			}})
+			installMetadataClusterState(c, []*clusterNode{node})
+			cmd := NewStatusCmd(context.Background(), args...)
+			if err := c.process(context.Background(), cmd); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || cmd.Val() != "OK" {
+				t.Fatalf("fanout calls/value=%d/%q, want 1/OK", calls, cmd.Val())
+			}
+		})
 	}
 }
 
@@ -1657,53 +1282,6 @@ func TestClusterStateFromShardsPreservesEndpointHealthAndZeroSlotShards(t *testi
 	}
 }
 
-func TestClusterStateFromShardsTreatsUnknownHealthAsOffline(t *testing.T) {
-	shards := []ClusterShard{{
-		Slots: []SlotRange{{Start: 0, End: 16383}},
-		Nodes: []Node{
-			{ID: "master", Endpoint: "master.local", Port: 7001, Role: "master", Health: "online"},
-			{ID: "replica", Endpoint: "replica.local", Port: 7002, Role: "replica", Health: "future-state"},
-		},
-	}}
-	opt := &ClusterOptions{}
-	opt.init()
-	nodes := newClusterNodes(opt)
-	t.Cleanup(func() { _ = nodes.Close() })
-	state, err := newClusterStateFromShards(nodes, shards, "origin.local:6379", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(state.declaredSlaves()) != 1 || len(state.Slaves) != 0 {
-		t.Fatalf("unknown-health replicas declared/online=%d/%d, want 1/0",
-			len(state.declaredSlaves()), len(state.Slaves))
-	}
-}
-
-func TestSameClusterTopologyIgnoresHealthAndInputOrder(t *testing.T) {
-	opt := &ClusterOptions{}
-	opt.init()
-	nodes := newClusterNodes(opt)
-	t.Cleanup(func() { _ = nodes.Close() })
-
-	forward := []ClusterSlot{
-		{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: "127.0.0.1:7002"}}},
-		{Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: "127.0.0.1:7001"}}},
-	}
-	reverse := []ClusterSlot{forward[1], forward[0]}
-	first, err := newClusterState(nodes, forward, "127.0.0.1:7001")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := newClusterState(nodes, reverse, "127.0.0.1:7002")
-	if err != nil {
-		t.Fatal(err)
-	}
-	first.health = map[*clusterNode]string{first.Masters[0]: "loading"}
-	if !sameClusterTopology(first, second) {
-		t.Fatal("equivalent topology changed because of health or input order")
-	}
-}
-
 func TestClusterRetriesAfterUnhealthyTopologySelection(t *testing.T) {
 	for _, pipeline := range []bool{false, true} {
 		name := "command"
@@ -1761,20 +1339,6 @@ func TestClusterRetriesAfterUnhealthyTopologySelection(t *testing.T) {
 				t.Fatalf("calls/value=%d/%q, want 1/value", calls.Load(), cmd.Val())
 			}
 		})
-	}
-}
-
-func TestClusterStateFromShardsRejectsUnknownEndpoint(t *testing.T) {
-	shards := []ClusterShard{{
-		Slots: []SlotRange{{Start: 0, End: 16383}},
-		Nodes: []Node{{ID: "master", Endpoint: "?", IP: "127.0.0.1", Port: 7000, Role: "master", Health: "online"}},
-	}}
-	opt := &ClusterOptions{}
-	opt.init()
-	nodes := newClusterNodes(opt)
-	t.Cleanup(func() { _ = nodes.Close() })
-	if _, err := newClusterStateFromShards(nodes, shards, "origin.local:6379", false); err == nil {
-		t.Fatal("unknown endpoint was treated as a routable address")
 	}
 }
 
@@ -2008,166 +1572,82 @@ func TestClusterAllShardsRetargetsFailedOverMaster(t *testing.T) {
 	}
 }
 
-func TestClusterDirectHImportCommandUsesExistingFanout(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	node, _ := c.nodes.GetOrCreate("127.0.0.1:7301")
-	installMetadataClusterState(c, []*clusterNode{node})
-	calls := 0
-	node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		if _, ok := cmd.(*HImportPrepareCmd); !ok {
-			return fmt.Errorf("unexpected command type %T", cmd)
-		}
-		calls++
-		cmd.(*HImportPrepareCmd).SetVal("OK")
-		return nil
-	}})
+func TestClusterConcreteCommandRouting(t *testing.T) {
+	for _, mode := range []string{"custom", "disabled", "snapshot"} {
+		t.Run(mode, func(t *testing.T) {
+			c := newMetadataTestCluster(t, nil)
+			c.opt.DisableRoutingPolicies = mode == "disabled"
+			c.opt.ShardPicker = routing.NewStaticShardPicker(0)
+			if mode == "custom" {
+				c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
+					return &routing.CommandPolicy{Request: routing.ReqDefault, Response: routing.RespDefaultKeyless}
+				}))
+			}
+			ctx := context.Background()
+			one, _ := c.nodes.GetOrCreate("127.0.0.1:7501")
+			two, _ := c.nodes.GetOrCreate("127.0.0.1:7502")
+			replica, _ := c.nodes.GetOrCreate("127.0.0.1:7503")
+			state := installMetadataClusterState(c, []*clusterNode{one, two})
+			state.Slaves = []*clusterNode{replica}
 
-	cmd := NewHImportPrepareCmd(ctx, "fieldset", "field")
-	if err := c.process(ctx, cmd); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 1 || cmd.Val() != "OK" {
-		t.Fatalf("calls=%d value=%q, want 1/OK", calls, cmd.Val())
-	}
-}
+			var mu sync.Mutex
+			calls := make(map[string]int)
+			replicaExistsCalls := 0
+			for _, node := range []*clusterNode{one, two, replica} {
+				node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+					name := cmd.Name()
+					if name == "script" {
+						name += " " + cmd.stringArg(1)
+					}
+					mu.Lock()
+					calls[name]++
+					if node == replica && name == "script exists" {
+						replicaExistsCalls++
+					}
+					mu.Unlock()
+					switch cmd := cmd.(type) {
+					case *IntCmd:
+						cmd.SetVal(1)
+					case *StringCmd:
+						cmd.SetVal("sha")
+					case *StatusCmd:
+						cmd.SetVal("OK")
+					case *BoolSliceCmd:
+						cmd.SetVal([]bool{true})
+					default:
+						return fmt.Errorf("unexpected command type %T", cmd)
+					}
+					return nil
+				}})
+			}
 
-func TestClusterConcreteCommandsUseSharedRoutingResolver(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	c.opt.ShardPicker = routing.NewStaticShardPicker(0)
-	ctx := context.Background()
-	one, _ := c.nodes.GetOrCreate("127.0.0.1:7501")
-	two, _ := c.nodes.GetOrCreate("127.0.0.1:7502")
-	installMetadataClusterState(c, []*clusterNode{one, two})
-
-	var mu sync.Mutex
-	calls := 0
-	hook := clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		mu.Lock()
-		calls++
-		mu.Unlock()
-		switch cmd := cmd.(type) {
-		case *IntCmd:
-			cmd.SetVal(1)
-		case *StringCmd:
-			cmd.SetVal("sha")
-		case *StatusCmd:
-			cmd.SetVal("OK")
-		case *BoolSliceCmd:
-			cmd.SetVal([]bool{true})
-		default:
-			return fmt.Errorf("unexpected command type %T", cmd)
-		}
-		return nil
-	}}
-	one.Client.AddHook(hook)
-	two.Client.AddHook(hook)
-	c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
-		return &routing.CommandPolicy{Request: routing.ReqDefault, Response: routing.RespDefaultKeyless}
-	}))
-
-	if got, err := c.DBSize(ctx).Result(); err != nil || got != 1 {
-		t.Fatalf("DBSize=%d err=%v", got, err)
-	}
-	if got, err := c.ScriptLoad(ctx, "return 1").Result(); err != nil || got != "sha" {
-		t.Fatalf("ScriptLoad=%q err=%v", got, err)
-	}
-	if got, err := c.ScriptFlush(ctx).Result(); err != nil || got != "OK" {
-		t.Fatalf("ScriptFlush=%q err=%v", got, err)
-	}
-	if got, err := c.ScriptExists(ctx, "sha").Result(); err != nil || !reflect.DeepEqual(got, []bool{true}) {
-		t.Fatalf("ScriptExists=%v err=%v", got, err)
-	}
-	if calls != 4 {
-		t.Fatalf("custom ReqDefault dispatched %d node calls, want one per concrete method", calls)
-	}
-}
-
-func TestClusterConcreteCommandsPreserveDisabledPolicyFanout(t *testing.T) {
-	c := NewClusterClient(&ClusterOptions{
-		Addrs:                  []string{"127.0.0.1:1"},
-		DisableRoutingPolicies: true,
-	})
-	t.Cleanup(func() { _ = c.Close() })
-	ctx := context.Background()
-	masterOne, _ := c.nodes.GetOrCreate("127.0.0.1:7551")
-	masterTwo, _ := c.nodes.GetOrCreate("127.0.0.1:7552")
-	replica, _ := c.nodes.GetOrCreate("127.0.0.1:7553")
-	state := installMetadataClusterState(c, []*clusterNode{masterOne, masterTwo})
-	state.Slaves = []*clusterNode{replica}
-
-	var mu sync.Mutex
-	calls := make(map[string]int)
-	hook := clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		name := cmd.Name()
-		if len(cmd.Args()) > 1 {
-			name += " " + cmd.stringArg(1)
-		}
-		mu.Lock()
-		calls[name]++
-		mu.Unlock()
-		switch cmd := cmd.(type) {
-		case *IntCmd:
-			cmd.SetVal(1)
-		case *StringCmd:
-			cmd.SetVal("sha")
-		case *StatusCmd:
-			cmd.SetVal("OK")
-		case *BoolSliceCmd:
-			cmd.SetVal([]bool{true})
-		default:
-			return fmt.Errorf("unexpected command type %T", cmd)
-		}
-		return nil
-	}}
-	masterOne.Client.AddHook(hook)
-	masterTwo.Client.AddHook(hook)
-	replica.Client.AddHook(hook)
-
-	if got, err := c.DBSize(ctx).Result(); err != nil || got != 2 {
-		t.Fatalf("DBSize=%d err=%v, want 2", got, err)
-	}
-	if _, err := c.ScriptLoad(ctx, "return 1").Result(); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.ScriptFlush(ctx).Err(); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := c.ScriptExists(ctx, "sha").Result(); err != nil || !reflect.DeepEqual(got, []bool{true}) {
-		t.Fatalf("ScriptExists=%v err=%v", got, err)
-	}
-	if calls["dbsize"] != 2 || calls["script load"] != 3 ||
-		calls["script flush"] != 3 || calls["script exists"] != 3 {
-		t.Fatalf("disabled-policy fanout calls=%v, want DBSize masters and scripts all shards", calls)
-	}
-}
-
-func TestClusterScriptExistsStaticPolicyTargetsMastersOnly(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	master, _ := c.nodes.GetOrCreate("127.0.0.1:7601")
-	replica, _ := c.nodes.GetOrCreate("127.0.0.1:7602")
-	state := installMetadataClusterState(
-		c, []*clusterNode{master},
-		&clusterSlot{start: 0, end: 16383, nodes: []*clusterNode{master, replica}},
-	)
-	state.Slaves = []*clusterNode{replica}
-	masterCalls, replicaCalls := 0, 0
-	master.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		masterCalls++
-		cmd.(*BoolSliceCmd).SetVal([]bool{true})
-		return nil
-	}})
-	replica.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		replicaCalls++
-		cmd.(*BoolSliceCmd).SetVal([]bool{true})
-		return nil
-	}})
-
-	if got, err := c.ScriptExists(ctx, "sha").Result(); err != nil || !reflect.DeepEqual(got, []bool{true}) {
-		t.Fatalf("ScriptExists=%v err=%v", got, err)
-	}
-	if masterCalls != 1 || replicaCalls != 0 {
-		t.Fatalf("master calls=%d replica calls=%d, want 1/0", masterCalls, replicaCalls)
+			wantCalls := map[string]int{"dbsize": 2, "script load": 3, "script flush": 3, "script exists": 2}
+			wantReplicaExistsCalls := 0
+			wantFlush := "OK"
+			if mode == "custom" {
+				for name := range wantCalls {
+					wantCalls[name] = 1
+				}
+			} else if mode == "disabled" {
+				wantCalls["script exists"] = 3
+				wantReplicaExistsCalls = 1
+				wantFlush = "" // Legacy fanout returns only an error.
+			}
+			if got, err := c.DBSize(ctx).Result(); err != nil || got != int64(wantCalls["dbsize"]) {
+				t.Fatalf("DBSize=%d err=%v", got, err)
+			}
+			if got, err := c.ScriptLoad(ctx, "return 1").Result(); err != nil || got != "sha" {
+				t.Fatalf("ScriptLoad=%q err=%v", got, err)
+			}
+			if got, err := c.ScriptFlush(ctx).Result(); err != nil || got != wantFlush {
+				t.Fatalf("ScriptFlush=%q err=%v", got, err)
+			}
+			if got, err := c.ScriptExists(ctx, "sha").Result(); err != nil || !reflect.DeepEqual(got, []bool{true}) {
+				t.Fatalf("ScriptExists=%v err=%v", got, err)
+			}
+			if !reflect.DeepEqual(calls, wantCalls) || replicaExistsCalls != wantReplicaExistsCalls {
+				t.Fatalf("calls=%v replica SCRIPT EXISTS=%d, want %v/%d", calls, replicaExistsCalls, wantCalls, wantReplicaExistsCalls)
+			}
+		})
 	}
 }

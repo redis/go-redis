@@ -46,12 +46,8 @@ var clusterFanoutResponseHandlers = map[clusterFanoutResponseHandlerKey]clusterF
 type clusterSpecialRequestHandler func(*ClusterClient, context.Context, Cmder, *clusterNode, clusterRoutingDecision) error
 
 var clusterSpecialRequestHandlers = map[string]clusterSpecialRequestHandler{
-	"ft.cursor|del": func(c *ClusterClient, ctx context.Context, cmd Cmder, node *clusterNode, decision clusterRoutingDecision) error {
-		return c.executeCursorCommand(ctx, cmd, node, decision)
-	},
-	"ft.cursor|read": func(c *ClusterClient, ctx context.Context, cmd Cmder, node *clusterNode, decision clusterRoutingDecision) error {
-		return c.executeCursorCommand(ctx, cmd, node, decision)
-	},
+	"ft.cursor|del":  (*ClusterClient).executeCursorCommand,
+	"ft.cursor|read": (*ClusterClient).executeCursorCommand,
 }
 
 // slotResult represents the result of executing a command on a specific slot
@@ -86,7 +82,7 @@ func (c *ClusterClient) routeAndRun(
 		return decision.policyErr
 	}
 	if policy == nil {
-		return c.executeDefault(ctx, cmd, policy, node, decision)
+		return node.Client.Process(ctx, cmd)
 	}
 	switch policy.Request {
 	case routing.ReqAllNodes:
@@ -98,19 +94,8 @@ func (c *ClusterClient) routeAndRun(
 	case routing.ReqSpecial:
 		return c.executeSpecialCommand(ctx, cmd, policy, node, decision)
 	default:
-		return c.executeDefault(ctx, cmd, policy, node, decision)
+		return node.Client.Process(ctx, cmd)
 	}
-}
-
-// executeDefault handles standard command routing based on keys
-func (c *ClusterClient) executeDefault(
-	ctx context.Context,
-	cmd Cmder,
-	policy *routing.CommandPolicy,
-	node *clusterNode,
-	decision clusterRoutingDecision,
-) error {
-	return node.Client.Process(ctx, cmd)
 }
 
 // executeOnAllNodes executes command on all nodes (masters and replicas)

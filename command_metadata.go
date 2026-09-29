@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,7 +58,8 @@ type CommandMetadataConfig struct {
 	Overrides map[string]*CommandInfo
 
 	// RefreshInterval periodically refreshes live metadata with jitter.
-	// Zero fetches it only once.
+	// Zero disables periodic refresh; detected server or topology changes
+	// still trigger a refresh.
 	RefreshInterval time.Duration
 }
 
@@ -78,7 +80,6 @@ type commandMetadataView struct {
 
 	// CSC and routing derive separate decisions from the shared records.
 	cscTable     map[string]cscCommandMeta
-	cscParents   map[string]struct{}
 	routingTable map[string]routingCommandMeta
 
 	// cscFingerprint identifies the eligibility decisions. It is part of
@@ -184,14 +185,8 @@ func buildCommandMetadataViewForServerWithLegacy(
 		legacyLive[internal.ToLower(name)] = struct{}{}
 	}
 	liveSupportsCSC := commandMetadataSupportsCSC(serverVersion)
-	liveNames := make([]string, 0, len(live))
-	for name := range live {
-		liveNames = append(liveNames, name)
-	}
-	sort.Strings(liveNames)
-	seenLive := make(map[string]struct{}, len(liveNames))
-	for _, name := range liveNames {
-		info := live[name]
+	seenLive := make(map[string]struct{}, len(live))
+	for name, info := range live {
 		lower := internal.ToLower(name)
 		// Tombstoned children still prevent their parent from shadowing them.
 		markParent(lower)
@@ -237,14 +232,8 @@ func buildCommandMetadataViewForServerWithLegacy(
 		records[name] = rec
 	}
 
-	overrideNames := make([]string, 0, len(overrides))
-	for name := range overrides {
-		overrideNames = append(overrideNames, name)
-	}
-	sort.Strings(overrideNames)
-	seenOverrides := make(map[string]struct{}, len(overrideNames))
-	for _, name := range overrideNames {
-		info := overrides[name]
+	seenOverrides := make(map[string]struct{}, len(overrides))
+	for name, info := range overrides {
 		lower := internal.ToLower(name)
 		markParent(lower)
 		if _, duplicate := seenOverrides[lower]; duplicate {
@@ -284,7 +273,6 @@ func buildCommandMetadataViewForServerWithLegacy(
 		subcommandParents: parents,
 		shadowedParents:   shadowedParents,
 		cscTable:          table,
-		cscParents:        parents,
 		routingTable:      deriveRoutingTable(records, shadowedParents),
 		cscFingerprint:    cscTableFingerprint(table),
 		serverVersion:     serverVersion,
@@ -412,10 +400,8 @@ func normalizeCommandMetadataTip(tip string) string {
 
 func normalizeCommandMetadataEnum(value string, known ...string) string {
 	lower := internal.ToLower(value)
-	for _, candidate := range known {
-		if lower == candidate {
-			return candidate
-		}
+	if slices.Contains(known, lower) {
+		return lower
 	}
 	return value
 }
@@ -495,14 +481,7 @@ func classifyCommandMetadataKeySpecFlags(flags []string) commandMetadataKeySpecF
 
 func appendCommandMetadataTokens(tokens []string, additions ...string) []string {
 	for _, addition := range additions {
-		found := false
-		for _, token := range tokens {
-			if token == addition {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(tokens, addition) {
 			tokens = append(tokens, addition)
 		}
 	}
@@ -513,20 +492,9 @@ func removeCommandMetadataTokens(tokens []string, removals ...string) []string {
 	if len(removals) == 0 {
 		return tokens
 	}
-	kept := tokens[:0]
-	for _, token := range tokens {
-		remove := false
-		for _, candidate := range removals {
-			if token == candidate {
-				remove = true
-				break
-			}
-		}
-		if !remove {
-			kept = append(kept, token)
-		}
-	}
-	return kept
+	return slices.DeleteFunc(tokens, func(token string) bool {
+		return slices.Contains(removals, token)
+	})
 }
 
 // cloneCommandInfo deep-copies a record so the copy can be mutated or
@@ -544,14 +512,7 @@ func cloneCommandInfo(info *CommandInfo) *CommandInfo {
 		}
 	}
 	if info.CommandPolicy != nil {
-		policy := *info.CommandPolicy
-		if info.CommandPolicy.Tips != nil {
-			policy.Tips = make(map[string]string, len(info.CommandPolicy.Tips))
-			for key, value := range info.CommandPolicy.Tips {
-				policy.Tips[key] = value
-			}
-		}
-		cp.CommandPolicy = &policy
+		cp.CommandPolicy = cloneRoutingPolicy(info.CommandPolicy)
 	}
 	return &cp
 }
@@ -652,14 +613,7 @@ func newCommandMetadataStoreWithLiveRequirement(
 	var overrides map[string]*CommandInfo
 	if len(cfg.Overrides) > 0 {
 		overrides = make(map[string]*CommandInfo, len(cfg.Overrides))
-		// Sort before normalization for deterministic case-collision handling.
-		names := make([]string, 0, len(cfg.Overrides))
-		for name := range cfg.Overrides {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			info := cfg.Overrides[name]
+		for name, info := range cfg.Overrides {
 			name = internal.ToLower(name)
 			if _, duplicate := overrides[name]; duplicate {
 				// Tombstone ambiguous case-colliding overrides.
@@ -1009,12 +963,7 @@ func commandRecordHas(info *CommandInfo, token string, inTips bool) bool {
 	if inTips {
 		list = info.Tips
 	}
-	for _, v := range list {
-		if v == token {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, token)
 }
 
 // cmdMetaJitter spreads periodic refreshes by +-10% to avoid synchronized

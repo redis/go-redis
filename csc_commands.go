@@ -296,7 +296,7 @@ func cscLookupMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bool) 
 		return cscCommandMeta{}, false
 	}
 	name := cmd.Name()
-	if _, ok := view.cscParents[name]; ok {
+	if _, ok := view.subcommandParents[name]; ok {
 		if len(args) > 1 {
 			if !cscWireFaithfulText(args[1]) {
 				return cscCommandMeta{}, false

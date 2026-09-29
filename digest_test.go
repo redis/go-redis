@@ -30,6 +30,9 @@ func TestDigestBasic(t *testing.T) {
 	skipIfRedisBelow84(t)
 
 	ctx := context.Background()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
@@ -74,6 +77,9 @@ func TestSetIFDEQWithDigest(t *testing.T) {
 	skipIfRedisBelow84(t)
 
 	ctx := context.Background()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
@@ -138,6 +144,9 @@ func TestSetIFDNEWithDigest(t *testing.T) {
 	skipIfRedisBelow84(t)
 
 	ctx := context.Background()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
@@ -202,6 +211,9 @@ func TestDelExArgsWithDigest(t *testing.T) {
 	skipIfRedisBelow84(t)
 
 	ctx := context.Background()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
@@ -267,6 +279,9 @@ func TestDigestHelperMatchesRedis(t *testing.T) {
 	skipIfRedisBelow84(t)
 
 	ctx := context.Background()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
@@ -326,6 +341,9 @@ func TestDigestBytesHelperMatchesRedis(t *testing.T) {
 	skipIfRedisBelow84(t)
 
 	ctx := context.Background()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
@@ -382,6 +400,9 @@ func TestDigestHelperWithSetIFDEQ(t *testing.T) {
 	skipIfRedisBelow84(t)
 
 	ctx := context.Background()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
@@ -439,6 +460,9 @@ func TestDigestHelperWithDelExArgs(t *testing.T) {
 	skipIfRedisBelow84(t)
 
 	ctx := context.Background()
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})

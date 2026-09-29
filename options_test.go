@@ -607,8 +607,8 @@ func TestNewClientSkipsEndpointDetectWhenMaintDisabled(t *testing.T) {
 }
 
 func TestClientSideCacheRESP2Warning(t *testing.T) {
-	origLogger := internal.Logger
-	defer func() { internal.Logger = origLogger }()
+	origLogger := internal.Logger.Load()
+	defer func() { internal.Logger.Store(origLogger) }()
 
 	cases := []struct {
 		name     string
@@ -640,7 +640,7 @@ func TestClientSideCacheRESP2Warning(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := &capturingLogger{}
-			internal.Logger = logger
+			internal.Logger.Store(logger)
 
 			tc.opt.init()
 
