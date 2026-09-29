@@ -229,11 +229,14 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 		// see if we should skip this notification
 		notificationName, err := rd.PeekPushNotificationName()
 		if err != nil {
-			// Name too long to peek: still consume the frame below so it isn't
-			// misread as a reply.
-			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) {
-				break
-			}
+			// The frame is a CONFIRMED push (peeked above) but its name cannot
+			// be peeked: too long, or a non-string / malformed name. Fall
+			// through to ReadReply to CONSUME it. Breaking here would leave the
+			// push at the buffer head for the caller's reply read to eat as the
+			// command value (reply shift). Only the too-long case was handled
+			// before, so any other peek error desynced the connection. This
+			// matches the built-in Processor path. A genuine mid-frame read
+			// error surfaces at ReadReply below.
 		} else if willHandleNotificationInClient(notificationName) {
 			break
 		}
