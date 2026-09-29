@@ -21,6 +21,27 @@ package redis
 // back-to-back as futures on the deferred face, on two engines with no ordering
 // between them, which is a silent behaviour change on a released face.
 //
+// ORDER IS PER FIRST KEY, NOT PER COMMAND STREAM. A single engine keeps the
+// whole submit order; N engines keep only the order of commands that share a
+// first key. A command that touches other keys after its first one (COPY,
+// RENAME, SMOVE, LMOVE, MSET, DEL/UNLINK/EXISTS with several keys, the
+// *STORE family, EVAL with several keys) is routed by its first key only. So
+// `Copy(src, dst)` followed by `Get(dst)` can run in either order: they may be
+// on different engines. Cluster sharding never meets this case because Redis
+// Cluster rejects multi-key commands across slots (CROSSSLOT); a standalone
+// server accepts them. Callers that chain such commands should await the
+// first future before submitting the dependent one, or keep NumShards at 1.
+//
+// For comparison, rueidis spreads keyed commands over its standalone wires at
+// random (mux.go slotfn, 4 wires by default on 4+ cores) and orders nothing
+// across them; its Do is synchronous, so there are no in-flight futures to
+// reorder. Only a DoMulti batch shares one wire.
+//
+// This is an opt-in: before this change, NumShards>1 never ran more than one
+// full-duplex engine, so every existing caller keeps the single ordered stream
+// and only a caller that raises NumShards on a full-duplex autopipeliner
+// accepts per-first-key order.
+//
 // The cost of that choice is measurable and worth stating: pinning a caller to
 // one engine means an unlucky key waits behind that engine's queue while
 // another sits idle. At eight wires and 4096 callers this shows up as a wider
@@ -60,33 +81,33 @@ func (ap *AutoPipeliner) fdFor(cmd Cmder) *fdEngine {
 	}
 	// Keyed commands hash to a stable engine so per-key order holds. Keyless
 	// ones have no order to preserve, so they round-robin and keep the engines
-	// evenly loaded.
-	if k := cmdFirstKeyFor(cmd); k != "" {
+	// evenly loaded. Modulo on uint32: converting to int first goes negative
+	// on 32-bit platforms and panics as a slice index.
+	n := uint32(len(ap.fds))
+	if k, ok := cmdFirstKeyFor(cmd); ok {
 		h := fnv.New32a()
 		_, _ = h.Write([]byte(k))
-		return ap.fds[int(h.Sum32())%len(ap.fds)]
+		return ap.fds[h.Sum32()%n]
 	}
-	return ap.fds[int(ap.fdRR.Add(1))%len(ap.fds)]
+	return ap.fds[(ap.fdRR.Add(1)-1)%n]
 }
 
-// cmdFirstKeyFor returns the command's first key, or "" when it has none.
+// cmdFirstKeyFor returns the command's first key and whether it has one.
 //
 // Uses the shared key-position logic rather than assuming args[1]: that handles
 // keyless commands, the static command table, and eval/evalsha variants whose
 // key position depends on the runtime numkeys argument. Passing a nil
 // CommandInfo keeps this synchronous and network-free, the same way the
 // client-side-cache path calls it.
-func cmdFirstKeyFor(cmd Cmder) string {
+//
+// The key is read with stringArg, as Ring does, so a []byte, *string or
+// numeric key hashes like the same key given as a string. The key position,
+// not the key text, decides whether the command is keyed, so an empty-string
+// key still routes by hash.
+func cmdFirstKeyFor(cmd Cmder) (string, bool) {
 	pos := cmdFirstKeyPosWithInfo(cmd, nil)
-	if pos <= 0 {
-		return ""
+	if pos <= 0 || pos >= len(cmd.Args()) {
+		return "", false
 	}
-	args := cmd.Args()
-	if pos >= len(args) {
-		return ""
-	}
-	if s, ok := args[pos].(string); ok {
-		return s
-	}
-	return ""
+	return cmd.stringArg(pos), true
 }
