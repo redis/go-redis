@@ -82,7 +82,12 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, er
 	if len(cmds) == 0 {
 		return 0, nil
 	}
-	if ap.fd == nil {
+	// A redirect-aware engine is a cluster node child. It is reachable (the
+	// child is the node client's cached async autopipeliner, which
+	// ForEachMaster hands out), but it follows MOVED/ASK by re-running ONE
+	// command off the pipe, which would let the rest of the pipeline run ahead
+	// of it. Such a batch keeps the node client's ordinary pipeline, as before.
+	if ap.fd == nil || ap.fd.redirectAware {
 		return 0, ErrFDPipelineUnavailable
 	}
 	// Refuse a batch containing anything that would leave the pipe. Checked for
