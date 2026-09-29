@@ -94,13 +94,48 @@ func (ap *AutoPipeliner) fdFor(cmd Cmder) *fdEngine {
 	// ones have no order to preserve, so they round-robin and keep the engines
 	// evenly loaded. Modulo on uint32: converting to int first goes negative
 	// on 32-bit platforms and panics as a slice index.
-	n := uint32(len(ap.fds))
 	if k, ok := cmdFirstKeyFor(cmd); ok {
-		h := fnv.New32a()
-		_, _ = h.Write([]byte(k))
-		return ap.fds[h.Sum32()%n]
+		return ap.fdForKey(k)
 	}
-	return ap.fds[(ap.fdRR.Add(1)-1)%n]
+	return ap.fds[(ap.fdRR.Add(1)-1)%uint32(len(ap.fds))]
+}
+
+// fdForKey is the engine a key hashes to. Multi-engine only.
+func (ap *AutoPipeliner) fdForKey(k string) *fdEngine {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(k))
+	return ap.fds[h.Sum32()%uint32(len(ap.fds))]
+}
+
+// fdForBatch picks the one engine a whole FD pipeline batch can ride, or
+// reports false when its keyed commands hash to different engines.
+//
+// A batch is contiguous on ONE wire, so it can only keep the per-first-key
+// order if every keyed command in it belongs to that wire: an earlier,
+// unawaited command for one of its keys went to that key's engine, and the
+// batch must queue behind it. Keyless commands are not ordered against
+// anything (see the header), so they ride along. A batch with no keyed
+// command takes the round-robin pick.
+func (ap *AutoPipeliner) fdForBatch(cmds []Cmder) (*fdEngine, bool) {
+	if len(ap.fds) <= 1 {
+		return ap.fd, true
+	}
+	var e *fdEngine
+	for _, cmd := range cmds {
+		k, ok := cmdFirstKeyFor(cmd)
+		if !ok {
+			continue
+		}
+		if pick := ap.fdForKey(k); e == nil {
+			e = pick
+		} else if pick != e {
+			return nil, false
+		}
+	}
+	if e == nil {
+		e = ap.fdFor(cmds[0])
+	}
+	return e, true
 }
 
 // cmdFirstKeyFor returns the command's first key and whether it has one.

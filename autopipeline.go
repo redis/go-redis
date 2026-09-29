@@ -277,7 +277,10 @@ type AutoPipelineOptions struct {
 	// DEL, EVAL/FCALL with several keys) and keyless commands (including
 	// FLUSHDB and SWAPDB) are not ordered against the rest; await the first
 	// future before submitting a dependent one, or keep NumShards at 1, which
-	// keeps the whole submit order. The pipeline pool must hold at least
+	// keeps the whole submit order. A Pipeline() rides the FD wire only when all
+	// its keyed commands hash to one engine; otherwise it runs as an ordinary
+	// pipeline on a pooled connection, not ordered against unawaited commands on
+	// the engines. The pipeline pool must hold at least
 	// NumShards connections for every full-duplex autopipeliner in use
 	// (construction checks this one). If full duplex cannot engage (no
 	// pipeline pool), the Unordered rule above applies.
@@ -3623,7 +3626,8 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 	switch {
 	case errors.Is(err, ErrFDPipelineDiverts),
 		errors.Is(err, ErrFDPipelineUnavailable),
-		errors.Is(err, ErrFDPipelineTooLarge):
+		errors.Is(err, ErrFDPipelineTooLarge),
+		errors.Is(err, ErrFDPipelineSpansEngines):
 		// Not a command failure: the batch is simply not eligible.
 		ineligible = true
 	case len(cmds) > 0 && remaining >= 0 && !cmdsContainNoRetry(cmds):

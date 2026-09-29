@@ -52,6 +52,14 @@ var ErrFDPipelineUnavailable = errors.New(
 var ErrFDPipelineDiverts = errors.New(
 	"redis: FDPipelined got a command that must be diverted off the full-duplex pipe")
 
+// ErrFDPipelineSpansEngines is returned when NumShards > 1 runs several
+// full-duplex engines and the batch's keyed commands hash to different ones.
+// The batch can only ride one wire, and keeping per-first-key order needs each
+// command on its own key's engine, so it is refused rather than split.
+// Pipeline() falls back to an ordinary pipeline for such a batch.
+var ErrFDPipelineSpansEngines = errors.New(
+	"redis: FDPipelined batch has keys on different full-duplex engines")
+
 // FDPipelined submits cmds as one contiguous batch on the full-duplex
 // connection and blocks until every reply has landed. It returns the first
 // command error, Nil included, the same as Pipeline.Exec.
@@ -239,10 +247,16 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeR
 			return fdPipeResult{}, ErrFDPipelineDiverts
 		}
 	}
-	// The WHOLE batch goes to ONE engine, chosen from its first command. A
-	// pipeline split across engines would lose its internal order, which is the
-	// one thing a pipeline guarantees.
-	batches, err := ap.fdFor(cmds[0]).submitBatch(ctx, cmds)
+	// The WHOLE batch goes to ONE engine: a pipeline split across engines would
+	// lose its internal order, which is the one thing a pipeline guarantees. That
+	// engine must also be the one every keyed command hashes to, or a command
+	// could run ahead of an earlier, unawaited command for the same key on that
+	// key's engine. A batch that spans engines is refused.
+	e, ok := ap.fdForBatch(cmds)
+	if !ok {
+		return fdPipeResult{}, ErrFDPipelineSpansEngines
+	}
+	batches, err := e.submitBatch(ctx, cmds)
 	if err != nil {
 		return fdPipeResult{}, err
 	}
