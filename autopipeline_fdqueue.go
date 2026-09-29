@@ -34,9 +34,18 @@ import "sync"
 // happens-before its next push), which is what the ordering contract actually
 // promises; cross-goroutine arrival order under saturation was never defined.
 type fdQueue struct {
-	mu  sync.Mutex
-	buf []fdReq
-	max int // bound; mirrors the old channel capacity
+	mu sync.Mutex
+	// buf[head:] is the live queue. takeInto advances head instead of shifting
+	// the remainder down, so a take costs O(batch) rather than O(queue depth):
+	// at a full default queue (65536) a shift moved ~6.8 MB under this lock per
+	// 200-command wave. The dead prefix is reclaimed when the queue empties, or
+	// by compaction once it is at least as long as the live part, so a
+	// compaction never copies more than was taken since the last one. Until
+	// then an append that outgrows buf grows it (doubling), so buf can reach
+	// about twice the live depth.
+	buf  []fdReq
+	head int
+	max  int // bound; mirrors the old channel capacity
 
 	// parked/wakeAt are the writer's standing request: it is asleep and wants a
 	// signal once the queue holds at least wakeAt entries. Only a submitter that
@@ -117,6 +126,30 @@ func (q *fdQueue) capacity() int {
 	return q.max
 }
 
+// live is the number of queued commands. Caller holds mu.
+func (q *fdQueue) live() int { return len(q.buf) - q.head }
+
+// compact moves the live queue to the front of buf and clears the vacated tail,
+// so no stale fdReq pins a Cmder. Caller holds mu.
+func (q *fdQueue) compact() {
+	if q.head == 0 {
+		return
+	}
+	n := copy(q.buf, q.buf[q.head:])
+	clear(q.buf[n:])
+	q.buf = q.buf[:n]
+	q.head = 0
+}
+
+// reserve compacts before an append that would outgrow buf, when the dead
+// prefix is long enough to pay for it; otherwise the append grows buf.
+// Caller holds mu.
+func (q *fdQueue) reserve(k int) {
+	if len(q.buf)+k > cap(q.buf) && q.head >= q.live() {
+		q.compact()
+	}
+}
+
 // signalRoom re-arms the cap-1 room signal. Called only by a submitter that just
 // woke from a full queue, to chain the wake to the next one waiting.
 func (q *fdQueue) signalRoom() {
@@ -142,12 +175,13 @@ func (q *fdQueue) push(req fdReq) fdPushResult {
 		q.mu.Unlock()
 		return fdPushClosed
 	}
-	if len(q.buf) >= q.max {
+	if q.live() >= q.max {
 		q.mu.Unlock()
 		return fdPushFull
 	}
+	q.reserve(1)
 	q.buf = append(q.buf, req)
-	signal := q.parked && len(q.buf) >= q.wakeAt
+	signal := q.parked && q.live() >= q.wakeAt
 	if signal {
 		q.parked = false // claim the wake: later arrivals in this wave stay silent
 	}
@@ -177,12 +211,13 @@ func (q *fdQueue) pushBatch(reqs []fdReq) fdPushResult {
 		q.mu.Unlock()
 		return fdPushClosed
 	}
-	if len(q.buf)+len(reqs) > q.max {
+	if q.live()+len(reqs) > q.max {
 		q.mu.Unlock()
 		return fdPushFull
 	}
+	q.reserve(len(reqs))
 	q.buf = append(q.buf, reqs...)
-	signal := q.parked && len(q.buf) >= q.wakeAt
+	signal := q.parked && q.live() >= q.wakeAt
 	if signal {
 		q.parked = false
 	}
@@ -209,15 +244,22 @@ func (q *fdQueue) pushFront(reqs []fdReq) {
 		return
 	}
 	q.mu.Lock()
-	q.buf = append(append(make([]fdReq, 0, len(reqs)+len(q.buf)), reqs...), q.buf...)
+	if q.head >= len(reqs) {
+		// The freed slots before head take them in place.
+		q.head -= len(reqs)
+		copy(q.buf[q.head:], reqs)
+	} else {
+		q.buf = append(append(make([]fdReq, 0, len(reqs)+q.live()), reqs...), q.buf[q.head:]...)
+		q.head = 0
+	}
 	q.mu.Unlock()
 }
 
 // takeInto moves up to max queued commands onto dst and returns the extended
-// slice: one lock and one bulk copy for the whole wave. Taking everything (the
-// common case) leaves nothing to shift down.
+// slice: one lock and one bulk copy for the whole wave, proportional to the
+// wave, not to what stays queued.
 //
-// The vacated slots are cleared, because the backing array outlives them and a
+// The taken slots are cleared, because the backing array outlives them and a
 // stale fdReq pins a Cmder, a context and an apBatch. That is 104 bytes per slot
 // of memclr, against the per-command lock and copy the channel charged.
 func (q *fdQueue) takeInto(dst []fdReq, max int) []fdReq {
@@ -225,7 +267,7 @@ func (q *fdQueue) takeInto(dst []fdReq, max int) []fdReq {
 		return dst
 	}
 	q.mu.Lock()
-	n := len(q.buf)
+	n := q.live()
 	if n == 0 {
 		q.mu.Unlock()
 		return dst
@@ -233,10 +275,15 @@ func (q *fdQueue) takeInto(dst []fdReq, max int) []fdReq {
 	if n > max {
 		n = max
 	}
-	dst = append(dst, q.buf[:n]...)
-	rest := copy(q.buf, q.buf[n:])
-	clear(q.buf[rest:])
-	q.buf = q.buf[:rest]
+	dst = append(dst, q.buf[q.head:q.head+n]...)
+	clear(q.buf[q.head : q.head+n])
+	q.head += n
+	switch {
+	case q.head == len(q.buf):
+		q.buf, q.head = q.buf[:0], 0 // empty: reuse from the start
+	case q.head >= q.live():
+		q.compact()
+	}
 	q.parked = false // we are awake; stop submitters from signalling
 	q.mu.Unlock()
 	// Release anyone blocked on a full queue. Non-blocking on a cap-1 channel, so
@@ -264,7 +311,7 @@ func (q *fdQueue) park(minDepth int) bool {
 		minDepth = 1
 	}
 	q.mu.Lock()
-	if q.closed || len(q.buf) >= minDepth {
+	if q.closed || q.live() >= minDepth {
 		q.parked = false
 		q.mu.Unlock()
 		return false
@@ -292,7 +339,7 @@ func (q *fdQueue) depth() int {
 		return 0
 	}
 	q.mu.Lock()
-	n := len(q.buf)
+	n := q.live()
 	q.mu.Unlock()
 	return n
 }
@@ -305,9 +352,9 @@ func (q *fdQueue) drainAll(dst []fdReq) []fdReq {
 		return dst
 	}
 	q.mu.Lock()
-	dst = append(dst, q.buf...)
+	dst = append(dst, q.buf[q.head:]...)
 	clear(q.buf)
-	q.buf = q.buf[:0]
+	q.buf, q.head = q.buf[:0], 0
 	q.parked = false
 	q.mu.Unlock()
 	select {
