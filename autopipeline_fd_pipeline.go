@@ -71,11 +71,19 @@ var ErrFDPipelineDiverts = errors.New(
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
+	_, err := ap.fdPipelined(ctx, cmds)
+	return err
+}
+
+// fdPipelined is FDPipelined that also reports how many times the engine
+// issued the batch: 1, plus one per connection-error replay (the highest
+// attempt count across its commands). 0 when nothing was admitted.
+func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, error) {
 	if len(cmds) == 0 {
-		return nil
+		return 0, nil
 	}
 	if ap.fd == nil {
-		return ErrFDPipelineUnavailable
+		return 0, ErrFDPipelineUnavailable
 	}
 	// Refuse a batch containing anything that would leave the pipe. Checked for
 	// EVERY command before anything is submitted, so the call either goes as one
@@ -83,22 +91,22 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 	// diverted command complete out of order relative to its neighbours.
 	for _, cmd := range cmds {
 		if cmd == nil {
-			return ErrFDPipelineDiverts
+			return 0, ErrFDPipelineDiverts
 		}
 		if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) ||
 			isBlockingCmd(cmd) || isHImportCmd(cmd) ||
 			(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) {
-			return ErrFDPipelineDiverts
+			return 0, ErrFDPipelineDiverts
 		}
 	}
 	batches, err := ap.fd.submitBatch(ctx, cmds)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if batches == nil {
 		// Submit-time rejection (closed, or ctx expired while backpressured).
 		// Every command carries its own error; report the first.
-		return cmdsFirstErr(cmds)
+		return 0, cmdsFirstErr(cmds)
 	}
 	// Mirror submit()'s contract on the deferred face: the batch is installed on
 	// the command so its result accessors self-gate, which matters for a caller
@@ -109,6 +117,7 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 		}
 	}
 	var first error
+	attempts := 1
 	for i, cmd := range cmds {
 		// AutoFuture.Wait carries the executor-goroutine self-deadlock guard, so
 		// waiting through it rather than on batch.done keeps a pipeline hook that
@@ -116,8 +125,12 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 		if werr := (AutoFuture{cmd: cmd, batch: batches[i]}).Wait(); werr != nil && first == nil {
 			first = werr
 		}
+		// Wait returned, so the reader's stamp is visible.
+		if a := batches[i].fdAttempts; a > attempts {
+			attempts = a
+		}
 	}
-	return first
+	return attempts, first
 }
 
 // submitBatch enqueues cmds as one contiguous run and returns their completion
