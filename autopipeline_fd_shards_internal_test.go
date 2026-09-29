@@ -40,6 +40,15 @@ func TestFDForRoutesKeyFormsTogether(t *testing.T) {
 		}
 	}
 
+	// A raw FCALL routes by its declared key, not by the function name, so it
+	// shares an engine with a plain read of that key.
+	for i := 0; i < 200; i++ {
+		k := "fdfcall:" + itoa(i)
+		if ap.fdFor(NewCmd(ctx, "fcall", "myfn", "1", k)) != ap.fdFor(NewCmd(ctx, "get", k)) {
+			t.Fatalf("raw FCALL on %q picked a different engine than GET %q", k, k)
+		}
+	}
+
 	first := ap.fdFor(NewCmd(ctx, "get", ""))
 	for i := 0; i < 16; i++ {
 		if ap.fdFor(NewCmd(ctx, "set", "", "v")) != first {
