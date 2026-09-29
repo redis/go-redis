@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -383,6 +384,39 @@ func TestClusterMissingMetadataUsesLegacyKeyHints(t *testing.T) {
 	if raw.policyErr != nil || raw.firstKey != 1 {
 		t.Fatalf("raw unknown command decision=%#v, want legacy first key 1", raw)
 	}
+	keyless := c.commandRoutingDecision(ctx, NewCmd(ctx, "module.future"))
+	if keyless.policyErr != nil || !keyless.keyless || keyless.naturalSlot != -1 {
+		t.Fatalf("argument-free unknown command decision=%#v, want keyless fallback", keyless)
+	}
+}
+
+func TestClusterRejectsUnrenderableHintedKeys(t *testing.T) {
+	ctx := context.Background()
+	c := newMetadataTestCluster(t, nil)
+	installMetadataClusterState(c, nil)
+	for _, mode := range []string{"single", "pipeline", "transaction first", "transaction last"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd := NewCmd(ctx, "module.future", clusterBinaryKey("{other}key"))
+			cmd.SetFirstKeyPos(1)
+			var err error
+			if mode == "single" {
+				err = c.Process(ctx, cmd)
+			} else {
+				pipe := c.Pipeline()
+				if mode != "pipeline" {
+					pipe = c.TxPipeline()
+				}
+				if mode == "transaction last" {
+					pipe.Get(ctx, "{known}key")
+				}
+				_ = pipe.Process(ctx, cmd)
+				_, err = pipe.Exec(ctx)
+			}
+			if err == nil || !strings.Contains(err.Error(), "cannot reproduce the routing key") || cmd.Err() != err {
+				t.Fatalf("error=%v command error=%v, want routing error before dispatch", err, cmd.Err())
+			}
+		})
+	}
 }
 
 func TestClusterDefaultRoutingFailsClosedForUnusableMetadata(t *testing.T) {
@@ -546,6 +580,46 @@ func TestClusterTransactionChecksEveryMetadataKey(t *testing.T) {
 			}
 			if len(got) != tt.wantSlots {
 				t.Fatalf("slots=%d, want %d", len(got), tt.wantSlots)
+			}
+		})
+	}
+}
+
+func TestClusterStreamTransactionKeyPlans(t *testing.T) {
+	ctx := context.Background()
+	c := newMetadataTestCluster(t, nil)
+	for _, tc := range []struct {
+		name  string
+		cmd   Cmder
+		slots int // zero means the invocation cannot prove its keys
+	}{
+		{"single", makeCmd("xread", "streams", "{one}a", "0"), 1},
+		{"same slot", makeCmd("xread", "count", 1, []byte("STREAMS"), "{one}a", []byte("{one}b"), "0", "0"), 1},
+		{"cross slot", makeCmd("xread", "streams", "{one}a", "{two}b", "0", "0"), 2},
+		{"group", makeCmd("xreadgroup", "group", "g", "c", "streams", "{one}a", "{one}b", ">", ">"), 1},
+		{"group cross slot", makeCmd("xreadgroup", "group", "g", "c", "streams", "{one}a", "{two}b", ">", ">"), 2},
+		{"keyword names", makeCmd("xreadgroup", "count", 1, "group", "streams", "streams", "noack", "streams", "{one}a", "{one}b", ">", ">"), 1},
+		{"new options", makeCmd("xreadgroup", "group", "g", "c", "maxcount", 2, "maxsize", 4096, "claim", 100, "block", 1, "streams", "{one}a", ">"), 1},
+		{"no keys", makeCmd("xread", "streams"), 0},
+		{"missing ID", makeCmd("xread", "streams", "{one}a", "{one}b", "0"), 0},
+		{"unrenderable second key", makeCmd("xread", "streams", "{one}a", clusterBinaryKey("{two}b"), "0", "0"), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmds := []Cmder{tc.cmd}
+			got, err := c.slottedKeyedCommandsInRouting(ctx, cmds, c.resolvePipelineRouting(ctx, cmds))
+			if tc.slots == 0 {
+				if err == nil {
+					t.Fatal("invalid stream layout accepted")
+				}
+				return
+			}
+			if err != nil || len(got) != tc.slots || len(got[clusterKeySlot("{one}a")]) != 1 {
+				t.Fatalf("slots=%v error=%v, want %d slots including the first stream", got, err, tc.slots)
+			}
+			if tc.slots > 1 {
+				if err := c.processTxPipeline(ctx, wrapMultiExec(ctx, cmds)); !errors.Is(err, ErrCrossSlot) {
+					t.Fatalf("cross-slot transaction error=%v", err)
+				}
 			}
 		})
 	}

@@ -484,22 +484,43 @@ func keyArg(cmd Cmder, pos int) (string, bool) {
 // command already resolved to meta. nil = serve this call uncached; a
 // PARTIAL list is never returned.
 func cscExtractRedisKeys(meta cscCommandMeta, cmd Cmder) []string {
+	first, step, count := cscRedisKeyLayout(meta, cmd)
+	if count == 0 {
+		return nil
+	}
+	return cscCollectKeys(cmd, first, step, count)
+}
+
+// cscCanExtractRedisKeys applies the same invocation checks without allocating
+// the key slice that AutoPipeline's solo-dispatch gate does not need.
+func cscCanExtractRedisKeys(meta cscCommandMeta, cmd Cmder) bool {
+	first, step, count := cscRedisKeyLayout(meta, cmd)
+	for i := range count {
+		if _, ok := keyArg(cmd, first+i*step); !ok {
+			return false
+		}
+	}
+	return count > 0
+}
+
+// cscRedisKeyLayout returns first, step, and count; count zero means uncached.
+func cscRedisKeyLayout(meta cscCommandMeta, cmd Cmder) (int, int, int) {
 	switch meta.guard {
 	case cscInvocationGuardNone:
 	case cscInvocationGuardSortRONoByGet:
 		// BY/GET keys cannot be enumerated.
 		if sortROHasByGet(cmd) {
-			return nil
+			return 0, 0, 0
 		}
 	default:
 		// Unknown guards cannot prove a complete key list.
-		return nil
+		return 0, 0, 0
 	}
 	argsLen := len(cmd.Args())
 
 	switch meta.extract {
 	case cscKeyExtractNone:
-		return nil
+		return 0, 0, 0
 
 	case cscKeyExtractRange:
 		first, step := int(meta.firstKey), int(meta.step)
@@ -508,35 +529,35 @@ func cscExtractRedisKeys(meta cscCommandMeta, cmd Cmder) []string {
 			last = argsLen + last
 		}
 		if first <= 0 || step <= 0 || last < first || last >= argsLen {
-			return nil
+			return 0, 0, 0
 		}
-		return cscCollectKeys(cmd, first, step, (last-first)/step+1)
+		return first, step, (last-first)/step + 1
 
 	case cscKeyExtractKeynum:
 		nkPos := int(meta.numkeysAt)
 		if nkPos <= 0 || nkPos >= argsLen {
-			return nil
+			return 0, 0, 0
 		}
 		// numkeys decides which positions are keys: read it wire-faithfully.
 		raw, ok := keyArg(cmd, nkPos)
 		if !ok {
-			return nil
+			return 0, 0, 0
 		}
 		numKeys, err := strconv.Atoi(raw)
 		if err != nil || numKeys <= 0 {
-			return nil
+			return 0, 0, 0
 		}
 		first, step := int(meta.firstKey), int(meta.step)
-		if first <= 0 || step <= 0 {
-			return nil
+		if first <= 0 || first >= argsLen || step <= 0 {
+			return 0, 0, 0
 		}
 		// The count must fit the args; division avoids overflow for any step.
 		if numKeys > argsLen || (argsLen-1-first)/step < numKeys-1 {
-			return nil
+			return 0, 0, 0
 		}
-		return cscCollectKeys(cmd, first, step, numKeys)
+		return first, step, numKeys
 	}
-	return nil
+	return 0, 0, 0
 }
 
 // cscCollectKeys returns nil — never a partial list — if any key fails keyArg.

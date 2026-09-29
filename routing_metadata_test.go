@@ -293,10 +293,26 @@ func TestRoutingMetadataPartialKeyPlans(t *testing.T) {
 			if _, ok := routingResolveKeyPlan(meta, cmd); ok {
 				t.Fatal("partial metadata authorized a complete key plan")
 			}
+			_, txOK := routingResolveTransactionKeyPlan(meta, cmd)
+			if want := tc.name == "xread" || tc.name == "xreadgroup"; txOK != want {
+				t.Fatalf("transaction plan=%v, want %v", txOK, want)
+			}
 			if policy, ok := routingPolicyFor(meta); !ok || policy.Request != routing.ReqDefault {
 				t.Fatalf("partial key metadata lost its routing policy: %#v", policy)
 			}
 		})
+	}
+}
+
+func TestRoutingStreamAdaptationRejectsChangedMetadata(t *testing.T) {
+	for _, specs := range [][]KeySpec{
+		{{Flags: []string{"RO", "incomplete"}, BeginSearch: "index", Index: 2, FindKeys: "range", LastKey: -1, KeyStep: 1, Limit: 2}},
+		append(append([]KeySpec(nil), commandInfoSnapshot["xread"].KeySpecs...), KeySpec{BeginSearch: "unknown", FindKeys: "unknown"}),
+	} {
+		meta := deriveRoutingCommandMeta("xread", &CommandInfo{Name: "xread", KeySpecs: specs})
+		if _, ok := routingResolveTransactionKeyPlan(meta, makeCmd("xread", "streams", "key", "0")); ok {
+			t.Fatal("changed stream metadata authorized an incomplete transaction plan")
+		}
 	}
 }
 

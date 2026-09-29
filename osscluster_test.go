@@ -644,7 +644,6 @@ var _ = Describe("ClusterClient", func() {
 			var pipe *redis.Pipeline
 
 			assertPipeline := func(keys []string) {
-
 				It("should follow redirects", func() {
 					if !failover {
 						for _, key := range keys {
@@ -791,6 +790,41 @@ var _ = Describe("ClusterClient", func() {
 					pipe.Ping(ctx)
 					_, err := pipe.Exec(ctx)
 					Expect(err).To(Not(HaveOccurred()))
+				})
+
+				It("reads same-slot streams in transactions and follows MOVED", func() {
+					keys := []string{"stream-a{s}", "stream-b{s}"}
+					for _, key := range keys {
+						Expect(client.XAdd(ctx, &redis.XAddArgs{
+							Stream: key, ID: "1-0", Values: map[string]interface{}{"field": "value"},
+						}).Err()).NotTo(HaveOccurred())
+						Expect(client.XGroupCreate(ctx, key, "streams", "0").Err()).NotTo(HaveOccurred())
+					}
+					for _, redirect := range []bool{false, true} {
+						id := ">"
+						if redirect {
+							id = "0" // Read the pending entries again after redirecting.
+						}
+						if redirect && !failover {
+							Eventually(func() error { return client.SwapNodes(ctx, keys[0]) }, 30*time.Second).Should(Succeed())
+						}
+						read := pipe.XRead(ctx, &redis.XReadArgs{Streams: []string{keys[0], keys[1], "0", "0"}, Block: -1})
+						// Put GROUP after COUNT and use keyword-valued names.
+						group := redis.NewXStreamSliceCmd(ctx, "xreadgroup", "count", 1, "group", "streams", "streams",
+							"streams", keys[0], keys[1], id, id)
+						Expect(pipe.Process(ctx, group)).To(Succeed())
+						_, err := pipe.Exec(ctx)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(read.Val()).To(HaveLen(2))
+						for i, stream := range read.Val() {
+							Expect(stream.Stream).To(Equal(keys[i]))
+							Expect(stream.Messages).To(HaveLen(1))
+						}
+						Expect(group.Val()).To(HaveLen(2))
+						for _, stream := range group.Val() {
+							Expect(stream.Messages).To(HaveLen(1))
+						}
+					}
 				})
 
 				// doesn't fail when no commands are queued
@@ -3507,7 +3541,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 	})
 
-	var _ = Describe("ClusterClient ParseURL", func() {
+	_ = Describe("ClusterClient ParseURL", func() {
 		cases := []struct {
 			test string
 			url  string

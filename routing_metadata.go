@@ -50,6 +50,7 @@ type routingBeginSearch uint8
 const (
 	routingBeginIndex routingBeginSearch = iota
 	routingBeginKeyword
+	routingBeginStreams
 )
 
 type routingFindKeys uint8
@@ -209,6 +210,16 @@ func deriveRoutingCommandMeta(name string, info *CommandInfo) routingCommandMeta
 	}
 
 	meta.keyState, meta.keySpecs, meta.keyPlanComplete = deriveRoutingKeySpecs(info)
+	if len(info.KeySpecs) == 1 && len(meta.keySpecs) == 1 {
+		spec := &meta.keySpecs[0]
+		if spec.begin == routingBeginKeyword && strings.EqualFold(spec.keyword, "streams") &&
+			spec.find == routingFindRange && spec.lastKey == -1 && spec.step == 1 && spec.limit == 2 &&
+			(name == "xread" && spec.startFrom == 1 || name == "xreadgroup" && spec.startFrom == 4) {
+			// STREAMS may also be a group/consumer name. Parse options to find
+			// the real delimiter without changing the metadata's fan-out safety.
+			spec.begin = routingBeginStreams
+		}
+	}
 	if !respSet && meta.keyState == routingKeysKnown {
 		resp = routing.RespDefaultHashSlot
 	} else if !respSet && meta.keyState == routingKeysUnknown &&
@@ -485,6 +496,15 @@ func routingFirstKeyForSpec(spec routingKeySpec, cmd Cmder) (int, bool, bool) {
 	return layout.first, true, true
 }
 
+// routingResolveTransactionKeyPlan also accepts the known stream layout: all
+// keys can be checked for one slot, but keys and IDs cannot be split by fan-out.
+func routingResolveTransactionKeyPlan(meta routingCommandMeta, cmd Cmder) (routingKeyPlan, bool) {
+	if len(meta.keySpecs) == 1 && meta.keySpecs[0].begin == routingBeginStreams {
+		meta.keyPlanComplete = true
+	}
+	return routingResolveKeyPlan(meta, cmd)
+}
+
 // routingResolveKeyPlan returns all key positions or no plan.
 func routingResolveKeyPlan(meta routingCommandMeta, cmd Cmder) (routingKeyPlan, bool) {
 	plan := routingKeyPlan{numKeysPos: -1}
@@ -522,7 +542,7 @@ func routingResolveKeyPlan(meta routingCommandMeta, cmd Cmder) (routingKeyPlan, 
 		}
 		if len(meta.keySpecs) == 1 {
 			plan.keyArgsEnd, plan.step, plan.numKeysPos = keyArgsEnd, spec.step, numKeysPos
-			plan.splittable = true
+			plan.splittable = spec.limit == 0
 		}
 	}
 	sort.Ints(plan.positions)
@@ -563,11 +583,14 @@ func routingResolveKeySpecLayout(spec routingKeySpec, cmd Cmder) (routingKeySpec
 
 	switch spec.find {
 	case routingFindRange:
-		if spec.limit != 0 {
-			return layout, true, false
-		}
 		last := spec.lastKey
-		if last >= 0 {
+		if spec.limit != 0 {
+			remaining := argsLen - begin
+			if last != -1 || remaining <= 0 || remaining%spec.limit != 0 {
+				return layout, true, false
+			}
+			last = begin + remaining/spec.limit - 1
+		} else if last >= 0 {
 			last += begin
 		} else {
 			last += argsLen
@@ -623,6 +646,26 @@ func routingResolveKeySpecLayout(spec routingKeySpec, cmd Cmder) (routingKeySpec
 
 func routingBeginPosition(spec routingKeySpec, cmd Cmder) (int, bool, bool) {
 	switch spec.begin {
+	case routingBeginStreams:
+		// Match Redis's xreadGetKeys: option values are not delimiters.
+		for i := 1; i < len(cmd.Args()); i++ {
+			arg, ok := routingArgText(cmd, i)
+			if !ok {
+				return 0, true, false
+			}
+			switch internal.ToLower(arg) {
+			case "block", "count", "maxcount", "maxsize", "claim":
+				i++
+			case "group":
+				i += 2
+			case "noack":
+			case "streams":
+				return i + 1, true, i+1 < len(cmd.Args())
+			default:
+				return 0, true, false
+			}
+		}
+		return 0, true, false
 	case routingBeginIndex:
 		if spec.index <= 0 || spec.index >= len(cmd.Args()) {
 			return 0, true, false

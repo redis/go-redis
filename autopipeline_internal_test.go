@@ -2358,6 +2358,30 @@ func TestAutopipelineCSCEligibilityUsesMetadataOverrides(t *testing.T) {
 	}
 }
 
+func TestAutopipelineCSCEligibilityChecksInvocation(t *testing.T) {
+	active := &atomic.Bool{}
+	active.Store(true)
+	c := &baseClient{csc: NewLocalCache(CacheConfig{MaxEntries: 8}), cscActive: active}
+	for _, tc := range []struct {
+		cmd  Cmder
+		want bool
+	}{
+		{makeCmd("get", "key"), true},
+		{makeCmd("sort_ro", "key", "alpha"), true},
+		{makeCmd("sort_ro", "key", "BY", "weight_*"), false},
+		{makeCmd("sort_ro", "key", []byte("GET"), "object_*"), false},
+		{makeCmd("get"), false},
+		{makeCmd("mget", "key", clusterBinaryKey("other")), false},
+		{makeCmd("zdiff", 2, "one", "two"), true},
+		{makeCmd("zdiff", 3, "one", "two"), false},
+		{makeCmd("hget", "key", clusterBinaryKey("field")), false},
+	} {
+		if got := c.autopipelineCSCEligible(tc.cmd); got != tc.want {
+			t.Errorf("%v: eligible=%v, want %v", tc.cmd.Args(), got, tc.want)
+		}
+	}
+}
+
 // TestCloseLoserReturnsImmediatelyWaitClosedBlocks pins the Close/WaitClosed
 // split: a Close that loses the shutdown CAS returns immediately (so a
 // re-entrant Close from an in-flight dispatch cannot self-wait on the drain it

@@ -3136,7 +3136,7 @@ func (c *ClusterClient) slottedKeyedCommandsInRouting(
 		}
 		var positions []int
 		if decision.metaOK && decision.meta.keyState == routingKeysKnown {
-			plan, ok := routingResolveKeyPlan(decision.meta, cmd)
+			plan, ok := routingResolveTransactionKeyPlan(decision.meta, cmd)
 			if !ok {
 				return nil, fmt.Errorf(
 					"redis: cannot determine all key arguments for transaction command %s", cmd.Name(),
@@ -3778,6 +3778,10 @@ func (c *ClusterClient) routingDecisionWithMeta(
 		// Preserve raw module/proxy commands and explicit SetFirstKeyPos hints.
 		// A malformed known record remains unusable and never takes this path.
 		d.firstKey = cmdFirstKeyPosWithInfo(cmd, nil)
+		if cmd.firstKeyPos() == 0 && len(cmd.Args()) == 1 {
+			// An unknown command with no arguments has no key to encode.
+			d.firstKey = 0
+		}
 		d.keyless = d.firstKey == 0
 	} else if d.metadataState == routingMetadataMissing && policy.Request == routing.ReqDefault &&
 		cmd.firstKeyPos() != 0 {
@@ -3823,6 +3827,9 @@ func unsafeClusterFanoutCommand(cmd Cmder) bool {
 }
 
 func clusterRoutingPolicyError(d clusterRoutingDecision) error {
+	if d.firstKey > 0 && d.naturalSlot < 0 {
+		return fmt.Errorf("redis: cannot reproduce the routing key for command %s", d.name)
+	}
 	// Custom policies may route without metadata; default metadata routing may not.
 	if !d.metaOK && d.policy == nil {
 		switch d.metadataState {
@@ -3838,10 +3845,6 @@ func clusterRoutingPolicyError(d clusterRoutingDecision) error {
 	}
 	if effectivePolicy != nil && effectivePolicy.Request == routing.ReqDefault && d.firstKey < 0 {
 		return fmt.Errorf("redis: cannot determine the routing key for command %s", d.name)
-	}
-	if effectivePolicy != nil && effectivePolicy.Request == routing.ReqDefault &&
-		d.firstKey > 0 && d.naturalSlot < 0 {
-		return fmt.Errorf("redis: cannot reproduce the routing key for command %s", d.name)
 	}
 	if d.policy != nil && d.policy.Request == routing.ReqMultiShard &&
 		(!d.planOK || !d.plan.splittable || len(d.plan.positions) == 0) {
@@ -3980,8 +3983,7 @@ func cmdSlot(cmd Cmder, pos int, prefferedRandomSlot int) int {
 	}
 	firstKey, ok := routingArgText(cmd, pos)
 	if !ok {
-		// Route unknown wire encodings conservatively; Redis reports argument errors.
-		return prefferedRandomSlot
+		return -1
 	}
 	return clusterKeySlot(firstKey)
 }

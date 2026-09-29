@@ -1540,8 +1540,8 @@ func (c *baseClient) autopipelineCSCEligible(cmd Cmder) bool {
 	if !c.autopipelineCSCActive() {
 		return false
 	}
-	_, ok := cscEligibleMeta(c.metadataView(), cmd)
-	return ok
+	meta, ok := cscEligibleMeta(c.metadataView(), cmd)
+	return ok && commandArgsRepeatable(cmd) && cscCanExtractRedisKeys(meta, cmd)
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
