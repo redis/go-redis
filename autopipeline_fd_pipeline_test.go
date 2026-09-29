@@ -437,3 +437,27 @@ func TestFDPipelineExecRetryCountsFDReplays(t *testing.T) {
 		t.Fatal("the first write was never dropped; the test did not exercise the replay")
 	}
 }
+
+// A redirect-aware engine (a cluster node child, reachable as the node
+// client's cached async autopipeliner) follows MOVED/ASK by re-running one
+// command off the pipe. A pipeline must not ride it, or a redirected command
+// would run after the rest of its batch. It keeps the ordinary pipeline.
+func TestFDPipelineRefusesRedirectAwareEngine(t *testing.T) {
+	srv := newFDStateServer(t)
+	ap := fdPipelineTestAP(t, &Options{Addr: srv.addr()})
+	ap.fd.redirectAware = true // what the cluster router sets on its children
+
+	ctx := context.Background()
+	if err := ap.FDPipelined(ctx, []Cmder{NewStatusCmd(ctx, "set", "k", "v")}); !errors.Is(err, ErrFDPipelineUnavailable) {
+		t.Fatalf("FDPipelined on a redirect-aware engine: err=%v, want ErrFDPipelineUnavailable", err)
+	}
+	pipe := ap.Pipeline()
+	pipe.Set(ctx, "k", "v", 0)
+	get := pipe.Get(ctx, "k")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if v, err := get.Result(); err != nil || v != "v" {
+		t.Fatalf("get: v=%q err=%v", v, err)
+	}
+}
