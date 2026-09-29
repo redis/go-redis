@@ -262,6 +262,55 @@ func TestCommandMetadataLegacyShapeUsesServerVersionCompatibility(t *testing.T) 
 	}
 }
 
+func TestCommandMetadataLegacyRoutingPolicies(t *testing.T) {
+	for _, fields := range []int{6, 7, 10} {
+		t.Run(fmt.Sprint(fields), func(t *testing.T) {
+			var entries []string
+			for _, name := range []string{"dbsize", "flushall", "mget"} {
+				info := commandInfoSnapshot[name]
+				first, last, step := info.FirstKeyPos, info.LastKeyPos, info.StepCount
+				if name == "mget" {
+					first = 2 // Live positions must win over the snapshot's position 1.
+				}
+				entry := []string{
+					commandInfoTestBulk(name), commandInfoTestInt(int64(info.Arity)),
+					commandInfoTestArray(commandInfoTestBulk(info.Flags[0])),
+					commandInfoTestInt(int64(first)), commandInfoTestInt(int64(last)), commandInfoTestInt(int64(step)),
+				}
+				for len(entry) < fields {
+					entry = append(entry, commandInfoTestArray())
+				}
+				entries = append(entries, commandInfoTestArray(entry...))
+			}
+			parsed := commandInfoTestReadReply(t, commandInfoTestArray(entries...))
+			view := buildCommandMetadataViewForServerWithLegacy(parsed.Val(), nil, "6.2.0", parsed.legacyRecords)
+			for _, tc := range []struct {
+				name     string
+				request  routing.RequestPolicy
+				response routing.ResponsePolicy
+			}{
+				{"dbsize", routing.ReqAllShards, routing.RespAggSum},
+				{"flushall", routing.ReqAllShards, routing.RespAllSucceeded},
+				{"mget", routing.ReqMultiShard, routing.RespDefaultHashSlot},
+			} {
+				policy := view.routingTable[tc.name].policy
+				if fields == 10 {
+					// Modern records explicitly supply tips, even when empty.
+					if policy != nil && policy.Request != routing.ReqDefault {
+						t.Errorf("%s: snapshot policy replaced modern live tips: %+v", tc.name, policy)
+					}
+				} else if policy == nil || policy.Request != tc.request || policy.Response != tc.response {
+					t.Errorf("%s: policy=%+v, want %v/%v", tc.name, policy, tc.request, tc.response)
+				}
+			}
+			plan, ok := routingResolveKeyPlan(view.routingTable["mget"], makeCmd("mget", "prefix", "{a}k", "{b}k"))
+			if !ok || len(plan.positions) != 2 || plan.positions[0] != 2 || plan.positions[1] != 3 {
+				t.Fatalf("live key plan=%+v, ok=%v", plan, ok)
+			}
+		})
+	}
+}
+
 func TestCommandMetadataViewCopiesSourceRecords(t *testing.T) {
 	for _, source := range []string{"live", "override"} {
 		t.Run(source, func(t *testing.T) {
@@ -766,9 +815,10 @@ func TestHelloServerFingerprint(t *testing.T) {
 		"modules": []interface{}{
 			map[interface{}]interface{}{"name": "timeseries", "ver": int64(81000)},
 			map[string]interface{}{"name": "bf", "ver": int64(81000)},
+			[]interface{}{"name", "json", "ver", int64(81000)}, // RESP2
 		},
 	})
-	if fp != "8.10.0|bf:81000|timeseries:81000" {
+	if fp != "8.10.0|bf:81000|json:81000|timeseries:81000" {
 		t.Errorf("fingerprint = %q", fp)
 	}
 	if helloServerFingerprint(map[string]interface{}{}) != "" {

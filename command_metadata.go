@@ -310,7 +310,16 @@ func resolveLiveCommandMetadata(
 	legacy bool,
 ) *CommandInfo {
 	resolved := cloneCommandInfoForName(name, info)
-	_, snapshotKnown := commandInfoSnapshot[name]
+	snapshot, snapshotKnown := commandInfoSnapshot[name]
+	if legacy && snapshotKnown {
+		// Redis 5/6 COMMAND records cannot advertise routing policies. Keep
+		// the known policies while retaining the server's flags and key positions.
+		for _, tip := range snapshot.Tips {
+			if strings.HasPrefix(tip, requestPolicy+":") || strings.HasPrefix(tip, responsePolicy+":") {
+				resolved.Tips = appendCommandMetadataTokens(resolved.Tips, tip)
+			}
+		}
+	}
 	if !liveSupportsCSC {
 		if correction, ok := commandMetadataPre810Corrections[name]; ok {
 			resolved.Flags = appendCommandMetadataTokens(resolved.Flags, correction.flags...)
@@ -1014,6 +1023,18 @@ func helloServerFingerprint(reply map[string]interface{}) string {
 				names = append(names, fmt.Sprintf("%v:%v", mm["name"], mm["ver"]))
 			case map[string]interface{}:
 				names = append(names, fmt.Sprintf("%v:%v", mm["name"], mm["ver"]))
+			case []interface{}:
+				// HELLO 2 represents module maps as alternating key/value pairs.
+				var name, version interface{}
+				for i := 0; i+1 < len(mm); i += 2 {
+					switch mm[i] {
+					case "name":
+						name = mm[i+1]
+					case "ver":
+						version = mm[i+1]
+					}
+				}
+				names = append(names, fmt.Sprintf("%v:%v", name, version))
 			}
 		}
 		sort.Strings(names)
@@ -1068,6 +1089,7 @@ func (c *baseClient) fetchCommandMetadata(ctx context.Context) (commandMetadataF
 	// identity while this fetch is validating it; the parent connection init
 	// already owns onServerHello notifications.
 	fetchClient.cmdMeta = nil
+	fetchClient.opt.onServerHello = nil
 
 	helloCmd := NewMapStringInterfaceCmd(ctx, "hello")
 	infoCmd := NewCommandsInfoCmd(ctx, "command")

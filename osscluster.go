@@ -539,10 +539,11 @@ type clusterNode struct {
 	lastLatencyMeasurement atomic.Int64
 }
 
-func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress string) *clusterNode {
+func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress string, onServerHello func(string)) *clusterNode {
 	opt := clOpt.clientOptions()
 	opt.Addr = addr
 	opt.NodeAddress = nodeAddress
+	opt.onServerHello = onServerHello
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
 	}
@@ -674,6 +675,8 @@ func (n *clusterNode) Loading() bool {
 type clusterNodes struct {
 	opt *ClusterOptions
 
+	onServerHello func(string)
+
 	mu          sync.RWMutex
 	addrs       []string
 	nodes       map[string]*clusterNode
@@ -802,7 +805,7 @@ func (c *clusterNodes) GetOrCreateWithNodeAddress(addr, nodeAddress string) (*cl
 		return node, nil
 	}
 
-	node = newClusterNodeWithNodeAddress(c.opt, addr, nodeAddress)
+	node = newClusterNodeWithNodeAddress(c.opt, addr, nodeAddress, c.onServerHello)
 	for _, fn := range c.onNewNode {
 		fn(node.Client)
 	}
@@ -1327,8 +1330,8 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 	}
 
 	if closestNode != nil {
-		internal.Logger.Printf(context.TODO(), "redis: pings to all online shard nodes are failing, picking the closest candidate")
-		return closestNode, nil
+		internal.Logger.Printf(context.TODO(), "redis: pings to all online shard nodes are failing, picking a random candidate")
+		return c.slotRandomNode(slot)
 	}
 	return nil, errClusterTopologyUnhealthy
 }
@@ -1472,10 +1475,7 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 		return closestNode, nil
 	}
 
-	if closestNode != nil {
-		return closestNode, nil
-	}
-	return nil, errClusterTopologyUnhealthy
+	return c.slotRandomNode(slot)
 }
 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
@@ -1718,6 +1718,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		return metadata, err
 	})
 	runtime.AddCleanup(c, func(store *commandMetadataStore) { store.signalStop() }, c.cmdMeta)
+	c.nodes.onServerHello = c.cmdMeta.onServerHello
 	c.state.beforeReload = func(_, _ *clusterState) {
 		c.cmdMeta.beginParentSourceChange()
 	}
@@ -3769,7 +3770,7 @@ func (c *ClusterClient) routingDecisionWithMeta(
 	d.naturalSlot = c.cmdSlotWithPos(cmd, d.firstKey, -1)
 
 	d.policyErr = clusterRoutingPolicyError(d)
-	if d.policyErr == nil && clusterPolicyFansOut(d.policy) && unsafeClusterFanoutCommand(cmd, d) {
+	if d.policyErr == nil && clusterPolicyFansOut(d.policy) && unsafeClusterFanoutCommand(cmd) {
 		d.policyErr = fmt.Errorf(
 			"redis: cannot fan out streaming, raw, or non-repeatable command %q safely",
 			cmd.Name(),
@@ -3790,7 +3791,7 @@ func clusterPolicyFansOut(policy *routing.CommandPolicy) bool {
 	}
 }
 
-func unsafeClusterFanoutCommand(cmd Cmder, d clusterRoutingDecision) bool {
+func unsafeClusterFanoutCommand(cmd Cmder) bool {
 	if cmd.NoRetry() {
 		return true
 	}
@@ -3798,12 +3799,7 @@ func unsafeClusterFanoutCommand(cmd Cmder, d clusterRoutingDecision) bool {
 	case *RawCmd, *RawWriteToCmd:
 		return true
 	}
-	// Multi-shard commands reproduce only their proven key groups. Key
-	// positions were already checked by routingResolveKeyPlan; values are sent
-	// to exactly one shard and have the same retry semantics as ordinary writes.
-	if d.policy != nil && d.policy.Request == routing.ReqMultiShard {
-		return false
-	}
+	// Values may share a stateful marshaler across concurrent shard writes.
 	return !commandArgsRepeatable(cmd)
 }
 

@@ -1291,6 +1291,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			s.onConnInit()
 		}
 	}
+	if helloOK && c.opt.onServerHello != nil {
+		if reply, replyErr := helloCmd.Result(); replyErr == nil {
+			c.opt.onServerHello(helloServerFingerprint(reply))
+		}
+	}
 
 	return nil
 }

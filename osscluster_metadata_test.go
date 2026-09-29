@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -13,7 +14,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/routing"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 type clusterBinaryKey string
@@ -875,6 +878,92 @@ func TestClusterFullDuplexPinsAndReleasesMetadata(t *testing.T) {
 	}
 }
 
+func TestClusterMetadataRefreshesOnNodeReconnect(t *testing.T) {
+	for _, protocol := range []int{2, 3} {
+		t.Run(fmt.Sprintf("RESP%d", protocol), func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			var phase atomic.Int32
+			go func() {
+				for {
+					conn, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					go serveTestRESPConn(conn, func(command string) string {
+						switch command {
+						case "hello":
+							version := "8.10.0"
+							if phase.Load() > 0 {
+								version = "8.11.0"
+							}
+							mapHeader := "%2\r\n"
+							if protocol == 2 {
+								mapHeader = "*4\r\n"
+							}
+							return fmt.Sprintf("%s+version\r\n+%s\r\n+modules\r\n*1\r\n%s+name\r\n+test\r\n+ver\r\n:%d\r\n", mapHeader, version, mapHeader, phase.Load())
+						case "command":
+							return "*0\r\n"
+						case "ping":
+							return "+PONG\r\n"
+						default:
+							return "+OK\r\n"
+						}
+					})
+				}
+			}()
+			c := NewClusterClient(&ClusterOptions{
+				Addrs: []string{ln.Addr().String()}, Protocol: protocol, PoolSize: 1,
+				DisableIdentity:          true,
+				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+				CommandMetadata:          &CommandMetadataConfig{Mode: CommandMetadataPreferLive},
+				ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: ln.Addr().String()}}}}, nil
+				},
+			})
+			t.Cleanup(func() { _ = c.Close() })
+			ctx := context.Background()
+			if err := c.Ping(ctx).Err(); err != nil {
+				t.Fatal(err)
+			}
+			state, err := c.state.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			node := state.Masters[0].Client
+			for i, want := range []string{"8.10.0|test:0", "8.11.0|test:1", "8.11.0|test:2"} {
+				phase.Store(int32(i))
+				if err := node.connPool.(*pool.ConnPool).Filter(func(*pool.Conn) bool { return true }); err != nil {
+					t.Fatal(err)
+				}
+				if err := node.Ping(ctx).Err(); err != nil {
+					t.Fatal(err)
+				}
+				if !waitForCondition(t, 3*time.Second, func() bool {
+					return c.cmdMeta.view().live && c.cmdMeta.serverFingerprint() == want
+				}) {
+					t.Fatalf("reconnect %d: identity=%q, want %q", i, c.cmdMeta.serverFingerprint(), want)
+				}
+				if node.cmdMeta != nil {
+					t.Fatal("node owns a metadata store instead of notifying the parent")
+				}
+				if current, _ := c.state.Get(ctx); current != state {
+					t.Fatal("test unexpectedly changed the topology")
+				}
+			}
+			_ = node.Close()
+			select {
+			case <-c.cmdMeta.stop:
+				t.Fatal("closing a node stopped the parent metadata store")
+			default:
+			}
+		})
+	}
+}
+
 func TestClusterDynamicResolverRetiresLiveViewOnTopologyReload(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	c.cmdMeta.stopAndJoin()
@@ -1133,12 +1222,15 @@ func TestAggregateClusterRandomKeyFailsClosed(t *testing.T) {
 	}
 }
 
-func TestClusterRejectsRawAndStreamingFanoutBeforeDispatch(t *testing.T) {
+func TestClusterRejectsUnsafeFanoutBeforeDispatch(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	ctx := context.Background()
+	value := clusterBinaryKey("value")
 	tests := []Cmder{
 		NewRawCmd(ctx, "del", "{one}a", "{two}b"),
 		NewRawWriteToCmd(ctx, &bytes.Buffer{}, "keys", "*"),
+		NewStatusCmd(ctx, "mset", "{one}a", value, "{two}b", value),
+		NewIntCmd(ctx, "msetex", 2, "{one}a", value, "{two}b", value, "ex", 60),
 	}
 	for _, cmd := range tests {
 		decision := c.commandRoutingDecision(ctx, cmd)
