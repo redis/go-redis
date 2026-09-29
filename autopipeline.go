@@ -1345,6 +1345,13 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		// competing with ordinary commands instead of pipelining. Fail loudly
 		// instead: the caller can raise PipelinePoolSize or ask for fewer
 		// engines. DefaultPipelinePoolSize is 10, so this bites at 11+.
+		//
+		// The check is per autopipeliner. The blocking and async faces and
+		// WithTimeout clones each run their own engines on the SAME pipeline
+		// pool, so the pool must hold the sum of their NumShards; two faces at
+		// NumShards 8 pass here against a pool of 10, and the surplus spills.
+		// A client-wide engine count is a follow-up; until then size
+		// PipelinePoolSize for every full-duplex autopipeliner in use.
 		if n := fdShardCount(config); n > 1 {
 			if pp := fdClient.getPipelinePool(); pp != nil && n > pp.Size() {
 				return nil, fmt.Errorf(
