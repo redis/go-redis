@@ -856,6 +856,8 @@ func (c *clusterNodes) Random() (*clusterNode, error) {
 type clusterSlot struct {
 	start int
 	end   int
+	// Keep declared endpoints stable across health changes. Selection checks
+	// clusterState.nodeOnline before using a node.
 	nodes []*clusterNode
 
 	// Round-robin cursor over the nodes inside the RouteByLatencyTolerance band. Latency
@@ -1094,7 +1096,6 @@ func clusterSlotsFromShards(shards []ClusterShard, origin string, tlsEnabled boo
 			if err != nil {
 				return nil, fmt.Errorf("redis: invalid CLUSTER SHARDS node in shard %d: %w", shardIndex, err)
 			}
-			health := clusterShardNodeHealth(shardNode.Health)
 			node := ClusterNode{ID: shardNode.ID, Addr: addr}
 			switch strings.ToLower(shardNode.Role) {
 			case "master":
@@ -1103,9 +1104,7 @@ func clusterSlotsFromShards(shards []ClusterShard, origin string, tlsEnabled boo
 				}
 				master = &node
 			case "replica", "slave":
-				if health == "online" {
-					replicas = append(replicas, node)
-				}
+				replicas = append(replicas, node)
 			default:
 				return nil, fmt.Errorf(
 					"redis: CLUSTER SHARDS shard %d has unknown node role %q",
@@ -1236,6 +1235,26 @@ func isLoopback(host string) bool {
 	return false
 }
 
+// pickNode selects from this topology's online candidates, including zero-slot
+// shards. The node registry may also contain stale or unavailable endpoints.
+func (c *clusterState) pickNode(picker routing.ShardPicker, includeReplicas bool) (*clusterNode, error) {
+	total := len(c.Masters)
+	if includeReplicas {
+		total += len(c.Slaves)
+	}
+	if total == 0 {
+		if len(c.declaredMasters())+len(c.declaredSlaves()) > 0 {
+			return nil, errClusterTopologyUnhealthy
+		}
+		return nil, errClusterNoNodes
+	}
+	idx := picker.Next(total)
+	if idx < len(c.Masters) {
+		return c.Masters[idx], nil
+	}
+	return c.Slaves[idx-len(c.Masters)], nil
+}
+
 func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
 	nodes := c.slotNodes(slot)
 	if len(nodes) > 0 {
@@ -1244,14 +1263,14 @@ func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
 		}
 		return nodes[0], nil
 	}
-	return c.nodes.Random()
+	return c.pickNode(routing.RandomPicker{}, false)
 }
 
 func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 	nodes := c.slotNodes(slot)
 	switch len(nodes) {
 	case 0:
-		return c.nodes.Random()
+		return c.pickNode(routing.RandomPicker{}, true)
 	case 1:
 		return c.slotMasterNode(slot)
 	case 2:
@@ -1278,7 +1297,7 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 	nodes := c.slotNodes(slot)
 	if len(nodes) == 0 {
-		return c.nodes.Random()
+		return c.pickNode(routing.RandomPicker{}, true)
 	}
 
 	allNodesFailing := true
@@ -1343,7 +1362,7 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) (*clusterNode, error) {
 	entry := c.slotEntry(slot)
 	if entry == nil || len(entry.nodes) == 0 {
-		return c.nodes.Random()
+		return c.pickNode(routing.RandomPicker{}, true)
 	}
 	nodes := entry.nodes
 
@@ -1481,7 +1500,7 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
 	nodes := c.slotNodes(slot)
 	if len(nodes) == 0 {
-		return c.nodes.Random()
+		return c.pickNode(routing.RandomPicker{}, true)
 	}
 	if len(nodes) == 1 {
 		if !c.nodeOnline(nodes[0]) {
@@ -1506,7 +1525,7 @@ func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
 func (c *clusterState) slotShardPickerSlaveNode(slot int, shardPicker routing.ShardPicker) (*clusterNode, error) {
 	nodes := c.slotNodes(slot)
 	if len(nodes) == 0 {
-		return c.nodes.Random()
+		return c.pickNode(shardPicker, true)
 	}
 
 	// nodes[0] is master, nodes[1:] are slaves
@@ -4007,19 +4026,9 @@ func (c *ClusterClient) cmdNodeWithShardPickerAndDecision(
 	// For keyless commands (slot == -1), use ShardPicker to select a shard
 	// This respects the user's configured ShardPicker policy
 	if slot == -1 {
-		total := len(state.Masters)
 		includeReplicas := c.opt.ReadOnly && d.readOnly
-		if includeReplicas {
-			total += len(state.Slaves)
-		}
-		if total == 0 {
-			return nil, errClusterNoNodes
-		}
-		idx := shardPicker.Next(total)
-		if idx < len(state.Masters) {
-			return state.Masters[idx], nil
-		}
-		return state.Slaves[idx-len(state.Masters)], nil
+		node, err := state.pickNode(shardPicker, includeReplicas)
+		return node, c.noteTopologySelectionError(err)
 	}
 
 	if c.opt.ReadOnly && d.readOnly {

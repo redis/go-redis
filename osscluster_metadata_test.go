@@ -1474,11 +1474,8 @@ func TestClusterStateFromShardsPreservesEndpointHealthAndZeroSlotShards(t *testi
 			Nodes: []Node{{ID: "master-zero-slots", Endpoint: "zero.local", Port: 7003, Role: "master", Health: "online"}},
 		},
 	}
-	opt := &ClusterOptions{}
-	opt.init()
-	nodes := newClusterNodes(opt)
-	t.Cleanup(func() { _ = nodes.Close() })
-	state, err := newClusterStateFromShards(nodes, shards, "origin.local:6379", false)
+	c := newMetadataTestCluster(t, nil)
+	state, err := newClusterStateFromShards(c.nodes, shards, "origin.local:6379", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1488,9 +1485,78 @@ func TestClusterStateFromShardsPreservesEndpointHealthAndZeroSlotShards(t *testi
 	if len(state.declaredMasters()) != 2 || len(state.Masters) != 2 {
 		t.Fatalf("masters declared/online=%d/%d, want zero-slot master preserved", len(state.declaredMasters()), len(state.Masters))
 	}
-	if len(state.declaredSlaves()) != 1 || len(state.Slaves) != 0 || len(state.slots[0].nodes) != 1 {
-		t.Fatalf("loading replica declared/online/slot=%d/%d/%d, want 1/0/master-only",
+	if len(state.declaredSlaves()) != 1 || len(state.Slaves) != 0 || len(state.slots[0].nodes) != 2 {
+		t.Fatalf("loading replica declared/online/slot=%d/%d/%d, want 1/0/master-and-replica",
 			len(state.declaredSlaves()), len(state.Slaves), len(state.slots[0].nodes))
+	}
+	live := buildCommandMetadataView(nil, nil)
+	live.live = true
+	c.cmdMeta.current.Store(live)
+	c.state.state.Store(state)
+	c.state.load = func(context.Context) (*clusterState, error) {
+		return newClusterStateFromShards(c.nodes, shards, "origin.local:6379", false)
+	}
+	for _, health := range []string{"online", "fail", "loading", "online"} {
+		shards[0].Nodes[1].Health = health
+		if _, err := c.state.Reload(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if c.cmdMeta.view() != live {
+			t.Fatalf("replica health %q retired live metadata", health)
+		}
+	}
+	shards[0].Nodes[1].Endpoint = "replacement.local"
+	if _, err := c.state.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c.cmdMeta.view().live {
+		t.Fatal("replacing a replica endpoint did not retire live metadata")
+	}
+}
+
+func TestClusterKeylessSelectionRespectsTopologyHealth(t *testing.T) {
+	for _, health := range []string{"master", "replica", "neither"} {
+		t.Run(health, func(t *testing.T) {
+			c := newMetadataTestCluster(t, nil)
+			nodes := []Node{
+				{Endpoint: "master.local", Port: 6379, Role: "master", Health: "fail"},
+				{Endpoint: "replica.local", Port: 6379, Role: "replica", Health: "loading"},
+			}
+			for i := range nodes {
+				if nodes[i].Role == health {
+					nodes[i].Health = "online"
+				}
+			}
+			state, err := newClusterStateFromShards(c.nodes, []ClusterShard{{
+				Slots: []SlotRange{{Start: 0, End: 16383}}, Nodes: nodes,
+			}}, "master.local:6379", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, node := range state.slotNodes(0) {
+				node.loaded.Store(1) // Selection must use topology health, without a PING.
+			}
+			for name, selectNode := range map[string]func(int) (*clusterNode, error){
+				"master": state.slotMasterNode, "replica": state.slotSlaveNode,
+				"random": state.slotRandomNode, "closest": state.slotClosestNode,
+				"tolerance": func(slot int) (*clusterNode, error) { return state.slotNodeWithinLatency(slot, time.Millisecond) },
+				"picker": func(slot int) (*clusterNode, error) {
+					return state.slotShardPickerSlaveNode(slot, &routing.RoundRobinPicker{})
+				},
+			} {
+				// Exercise keyed, keyless, and unknown-slot selection.
+				for _, slot := range []int{-1, 0, 16384} {
+					node, err := selectNode(slot)
+					if health == "neither" || name == "master" && health != "master" {
+						if !errors.Is(err, errClusterTopologyUnhealthy) {
+							t.Fatalf("%s slot %d: node=%v error=%v, want unhealthy topology", name, slot, node, err)
+						}
+					} else if err != nil || node == nil || node.Client.opt.Addr != health+".local:6379" {
+						t.Fatalf("%s slot %d: node=%v error=%v, want online %s", name, slot, node, err, health)
+					}
+				}
+			}
+		})
 	}
 }
 

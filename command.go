@@ -5494,16 +5494,23 @@ func fitsInt8(v int64) bool {
 // These readers drain wrong-shaped values and return ok=false. Errors mean
 // framing or I/O failed, so parsing cannot safely continue.
 func readCommandInfoString(rd *proto.Reader) (string, bool, error) {
+	value, ok, err := readCommandInfoStringOrNil(rd)
+	if err == Nil {
+		return "", false, nil
+	}
+	return value, ok, err
+}
+
+// readCommandInfoStringOrNil preserves Nil so optional collection tokens can
+// be skipped without accepting other wrong-shaped values.
+func readCommandInfoStringOrNil(rd *proto.Reader) (string, bool, error) {
 	typ, _, err := peekCommandInfoReplyType(rd, 0)
 	if err != nil {
 		return "", false, err
 	}
 	switch typ {
-	case proto.RespStatus, proto.RespString, proto.RespVerbatim:
+	case proto.RespStatus, proto.RespString, proto.RespVerbatim, proto.RespNil:
 		s, err := rd.ReadString()
-		if err == Nil {
-			return "", false, nil
-		}
 		if errors.Is(err, proto.ErrInvalidVerbatimString) {
 			// The scalar was consumed, so sibling records remain aligned.
 			return "", false, nil
@@ -5593,7 +5600,8 @@ func readCommandInfoCollectionLen(rd *proto.Reader) (int, bool, error) {
 	}
 }
 
-// readCommandInfoStrings drains the entire collection even if an item is malformed.
+// readCommandInfoStrings skips null tokens and drains the entire collection
+// even if another item is malformed.
 func readCommandInfoStrings(rd *proto.Reader) ([]string, bool, error) {
 	n, valid, err := readCommandInfoCollectionLen(rd)
 	if err != nil || !valid {
@@ -5601,7 +5609,10 @@ func readCommandInfoStrings(rd *proto.Reader) ([]string, bool, error) {
 	}
 	values := make([]string, 0, commandInfoPrealloc(n))
 	for range n {
-		value, ok, err := readCommandInfoString(rd)
+		value, ok, err := readCommandInfoStringOrNil(rd)
+		if err == Nil {
+			continue
+		}
 		if err != nil {
 			return nil, false, err
 		}

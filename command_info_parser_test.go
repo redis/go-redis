@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -124,14 +125,24 @@ func TestCommandsInfoMalformedRecordDoesNotAbortReply(t *testing.T) {
 		bad  string
 	}{
 		{
-			name: "RESP2 nil tip",
+			name: "integer tip",
 			bad: commandInfoTestEntry10("bad", validFlags,
-				commandInfoTestArray("$-1\r\n"), commandInfoTestArray(validSpec), empty),
+				commandInfoTestArray(commandInfoTestInt(1)), commandInfoTestArray(validSpec), empty),
 		},
 		{
-			name: "nil command flag",
-			bad: commandInfoTestEntry10("bad", commandInfoTestArray("$-1\r\n"),
+			name: "integer command flag",
+			bad: commandInfoTestEntry10("bad", commandInfoTestArray(commandInfoTestInt(1)),
 				empty, commandInfoTestArray(validSpec), empty),
+		},
+		{
+			name: "null flags collection",
+			bad: commandInfoTestEntry10("bad", "$-1\r\n",
+				empty, commandInfoTestArray(validSpec), empty),
+		},
+		{
+			name: "null tips collection",
+			bad: commandInfoTestEntry10("bad", validFlags,
+				"_\r\n", commandInfoTestArray(validSpec), empty),
 		},
 		{
 			name: "scalar key spec flags",
@@ -183,12 +194,53 @@ func TestCommandsInfoMalformedRecordDoesNotAbortReply(t *testing.T) {
 	}
 }
 
+func TestCommandsInfoNilTokensAreSkipped(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		null       string
+		collection func(...string) string
+	}{
+		{"RESP2", "$-1\r\n", commandInfoTestArray},
+		{"RESP3", "_\r\n", commandInfoTestSet},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := func(null string) string {
+				collection := func(token string) string {
+					values := []string{commandInfoTestBulk(token)}
+					if null != "" {
+						values = []string{null, values[0], null}
+					}
+					return tc.collection(values...)
+				}
+				spec := commandInfoTestRangeKeySpec(collection("RO"), commandInfoTestBulk("index"), commandInfoTestInt(1))
+				return commandInfoTestArray(commandInfoTestBulk("optional"), commandInfoTestInt(2),
+					collection("readonly"), commandInfoTestInt(1), commandInfoTestInt(1), commandInfoTestInt(1),
+					collection("@read"), collection("request_policy:all_shards"), tc.collection(spec), tc.collection())
+			}
+			clean := commandInfoTestReadReply(t, commandInfoTestArray(entry(""))).val["optional"]
+			parsed := commandInfoTestReadReply(t, commandInfoTestArray(entry(tc.null), commandInfoTestEntry6("after")))
+			info := parsed.val["optional"]
+			if info == nil || !reflect.DeepEqual(info, clean) || parsed.val["after"] == nil {
+				t.Fatalf("null tokens changed metadata or lost the next record: got=%+v want=%+v", info, clean)
+			}
+			view := buildCommandMetadataViewForServer(parsed.val, nil, "8.10.0")
+			cmd := NewCmd(context.Background(), "optional", "key")
+			if _, ok := cscEligibleMeta(view, cmd); !ok {
+				t.Fatal("null tokens disabled otherwise valid CSC metadata")
+			}
+			if pos, ok := routingFirstKeyPos(view.routingTable["optional"], cmd); !ok || pos != 1 {
+				t.Fatalf("null tokens disabled valid routing metadata: key=%d ok=%v", pos, ok)
+			}
+		})
+	}
+}
+
 func TestCommandsInfoDuplicateNameFailsClosed(t *testing.T) {
 	valid := commandInfoTestEntry6("duplicate")
 	malformed := commandInfoTestEntry10(
 		"duplicate",
 		commandInfoTestArray(commandInfoTestBulk("readonly")),
-		commandInfoTestArray("_\r\n"),
+		commandInfoTestArray(commandInfoTestInt(1)),
 		commandInfoTestArray(commandInfoTestValidRangeKeySpec()),
 		commandInfoTestArray(),
 	)
@@ -436,7 +488,7 @@ func TestCommandsInfoMalformedSubcommandIsIsolated(t *testing.T) {
 	empty := commandInfoTestArray()
 	validFlags := commandInfoTestArray(commandInfoTestBulk("readonly"))
 	badChild := commandInfoTestEntry10(
-		"parent|bad", validFlags, commandInfoTestArray("_\r\n"),
+		"parent|bad", validFlags, commandInfoTestArray(commandInfoTestInt(1)),
 		commandInfoTestArray(commandInfoTestValidRangeKeySpec()), empty,
 	)
 	parent := commandInfoTestEntry10(
