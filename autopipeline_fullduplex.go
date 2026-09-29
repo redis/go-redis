@@ -1812,6 +1812,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// is advanced, so recovery would re-own the already-consumed reply and
 					// replay it — a mutating command twice.
 					fd.reportReplyMetrics(octx, req, e, cn)
+					if req.pipelined {
+						req.batch.fdAttempts = req.attempts // published by complete()
+					}
 					req.complete() // wake the caller, or hand off to the hook host
 					done++
 				}
