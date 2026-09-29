@@ -133,6 +133,31 @@ func TestFDShardsKeepsFullDuplexOn(t *testing.T) {
 	}
 }
 
+// Full duplex that cannot engage (no pipeline pool) falls back to round-robin
+// half-duplex shards, which do not keep submit order. The NumShards>1 ordering
+// check must then apply: the FullDuplex exemption follows the effective state,
+// not the requested one. Construction only, so no server is needed.
+func TestFDShardsFallbackStillNeedsUnordered(t *testing.T) {
+	cl := redis.NewClient(&redis.Options{
+		Addr:             "127.0.0.1:6379",
+		PipelinePoolSize: -1,
+	})
+	defer cl.Close()
+	ap, err := cl.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		FullDuplex:           true,
+		NumShards:            2,
+		MaxConcurrentBatches: 1,
+	})
+	if err == nil {
+		ap.Close()
+		t.Fatal("FullDuplex without a pipeline pool fell back to round-robin shards " +
+			"without the Unordered opt-in")
+	}
+	if !strings.Contains(err.Error(), "Unordered") {
+		t.Fatalf("error should name the Unordered opt-in, got: %v", err)
+	}
+}
+
 // More engines than the pipeline pool can hold must fail at construction rather
 // than leave the surplus spilling to the main pool for the client's lifetime.
 func TestFDShardsRejectsMoreEnginesThanPool(t *testing.T) {

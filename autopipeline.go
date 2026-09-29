@@ -1191,11 +1191,33 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// per command, and Submit is rejected there), as is cluster slot sharding
 	// (contentSharded: same-key commands always land in the same shard, so
 	// per-key order holds).
+	//
 	// Full duplex is exempt for the SAME reason contentSharded is: its engines
 	// are chosen by key hash, so same-key commands always land on one wire and
-	// per-key order holds without an Unordered opt-in.
+	// per-key order holds without an Unordered opt-in. The exemption follows
+	// the EFFECTIVE state (fdOn), not the requested FullDuplex: on a client
+	// without a pipeline pool full duplex does not engage, construction falls
+	// back to the round-robin shards below, and those need the opt-in.
+	//
+	// Ordered full-duplex: the ordered single-shard face on a standalone *Client
+	// with a pipeline pool, async or blocking. When on, submit() streams on one
+	// held connection and no shard flusher runs. The blocking face needs nothing
+	// extra: submit's fd branch skips setReady (the blocking contract) and
+	// processBlocking Waits on the returned batch, as for a half-duplex enqueue.
+	var fdClient *Client
+	fdOn := false
+	// NOT gated on nShards: NumShards>1 selects several engines rather than
+	// disabling full duplex. This is the second half of the two-sited rule
+	// noted in Validate — while this line also required nShards==1, a
+	// NumShards>1 caller got half-duplex round-robin shards instead of the
+	// ordered engine it asked for, silently.
+	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 {
+		if c, ok := pipeliner.(*Client); ok && c.getPipelinePool() != nil {
+			fdOn, fdClient = true, c
+		}
+	}
 	if config.NumShards > 1 && !config.Unordered && !blocking &&
-		!config.contentSharded && !config.FullDuplex {
+		!config.contentSharded && !fdOn {
 		return nil, fmt.Errorf(
 			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
@@ -1308,26 +1330,9 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		perShard = 1
 		remainder = 0
 	}
-	// Ordered full-duplex: the ordered single-shard face on a standalone *Client
-	// with a pipeline pool, async or blocking. When on, submit() streams on one
-	// held connection and no shard flusher runs. The blocking face needs nothing
-	// extra: submit's fd branch skips setReady (the blocking contract) and
-	// processBlocking Waits on the returned batch, as for a half-duplex enqueue.
-	var fdClient *Client
-	fdOn := false
-	// NOT gated on nShards: NumShards>1 selects several engines rather than
-	// disabling full duplex. This is the second half of the two-sited rule
-	// noted in Validate — while this line also required nShards==1, a
-	// NumShards>1 caller got half-duplex round-robin shards instead of the
-	// ordered engine it asked for, silently.
-	//
-	// Engines are flusherless, so nShards is forced to 1 below to keep
-	// enqueue's shard indexing safe; the engine count lives in ap.fds.
-	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 {
-		if c, ok := pipeliner.(*Client); ok && c.getPipelinePool() != nil {
-			fdOn, fdClient = true, c
-		}
-	}
+	// fdOn was decided above, before the ordering check. Engines are
+	// flusherless, so nShards is forced to 1 below to keep enqueue's shard
+	// indexing safe; the engine count lives in ap.fds.
 	if fdOn {
 		// Every engine holds one connection leased from the pipeline pool for
 		// as long as it runs, so more engines than that pool can hold would
