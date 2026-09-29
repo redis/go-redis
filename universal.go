@@ -70,8 +70,26 @@ type UniversalOptions struct {
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
 
-	ReadTimeout           time.Duration
-	WriteTimeout          time.Duration
+	// ReadTimeout for socket reads. If reached, commands will fail
+	// with a timeout instead of blocking. Supported values:
+	//
+	//	- `-1` - no timeout (block indefinitely).
+	//	- `-2` - disables SetReadDeadline calls completely.
+	//
+	// default: 5 seconds
+	ReadTimeout time.Duration
+
+	// WriteTimeout for socket writes. If reached, commands will fail
+	// with a timeout instead of blocking. Supported values:
+	//
+	//	- `-1` - no timeout (block indefinitely).
+	//	- `-2` - disables SetWriteDeadline calls completely.
+	//
+	// default: 5 seconds (same as ReadTimeout, which it follows when unset)
+	WriteTimeout time.Duration
+
+	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
+	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
 	ContextTimeoutEnabled bool
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
