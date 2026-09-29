@@ -3465,22 +3465,44 @@ func (ap *AutoPipeliner) Pipeline() Pipeliner {
 // command with its own read timeout, anything the divert predicate claims, or a
 // batch larger than the whole submit queue. Those go to the ordinary pipeline
 // path, which is where they would have gone before this existed.
+//
+// Two more cases keep ordinary pipeline semantics:
+//
+//   - ContextTimeoutEnabled: an ordinary pipeline bounds its socket I/O by the
+//     caller's ctx. The FD wait cannot abandon an admitted batch, so such a
+//     client keeps the pooled path.
+//   - A retryable reply (LOADING and the like) on the FIRST command: an
+//     ordinary pipeline retries the whole batch, in order. FDPipelined settles
+//     retryable replies inline, so the batch is re-run the ordinary way. A
+//     retryable reply on a later command is returned, as an ordinary pipeline
+//     does.
 func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error {
+	opt := ap.fd.client.opt
+	if opt.ContextTimeoutEnabled {
+		return ap.pipeliner.processPipelineHook(ctx, cmds)
+	}
 	err := ap.FDPipelined(ctx, cmds)
+	rerun := false
 	switch {
 	case errors.Is(err, ErrFDPipelineDiverts),
 		errors.Is(err, ErrFDPipelineUnavailable),
 		errors.Is(err, ErrFDPipelineTooLarge):
-		// Not a command failure: the batch is simply not eligible. Clear the
-		// per-command errors FDPipelined may have stamped, then run it the
-		// ordinary way so the caller sees one authoritative outcome.
-		for _, cmd := range cmds {
-			cmd.SetErr(nil)
+		// Not a command failure: the batch is simply not eligible.
+		rerun = true
+	case len(cmds) > 0 && opt.MaxRetries > 0:
+		if e := cmds[0].rawErr(); isRedisError(e) && shouldRetry(e, false) {
+			rerun = true
 		}
-		return ap.pipeliner.processPipelineHook(ctx, cmds)
-	default:
+	}
+	if !rerun {
 		return err
 	}
+	// Clear the per-command errors FDPipelined may have stamped, then run the
+	// batch the ordinary way so the caller sees one authoritative outcome.
+	for _, cmd := range cmds {
+		cmd.SetErr(nil)
+	}
+	return ap.pipeliner.processPipelineHook(ctx, cmds)
 }
 
 // Pipelined executes a function in a pipeline context.

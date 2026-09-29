@@ -231,6 +231,13 @@ type fdReq struct {
 	// never-sent NoRetry commands recovered from a dead connection's backlog, returning
 	// an error for a command the server never saw.
 	sent bool
+	// pipelined marks a command submitted as part of an FD pipeline batch
+	// (submitBatch). The reader settles its retryable replies inline instead of
+	// diverting them one by one: an individual retry would let later commands
+	// of the same pipeline run before it. fdPipelineExec retries the whole batch
+	// instead, the way an ordinary pipeline does. Next to sent, so it fits in
+	// existing padding and does not grow the struct.
+	pipelined bool
 	// limReport is the Limiter obligation for the WRITTEN chunk this req closes:
 	// non-nil ONLY on the LAST req of a chunk that Allow() admitted and writeBatch
 	// then wrote cleanly. It rides the in-flight deque so the reply-side outcome
@@ -1728,7 +1735,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						}
 						// A RETRYABLE execution error (not a redirect) may have produced a
 						// partially consumed response, so it stays gated on NoRetry.
-						if !fdNoRetrySafe(req.cmd) {
+						// A pipelined command is never diverted alone (see
+						// fdReq.pipelined); its reply settles inline below.
+						if !req.pipelined && !fdNoRetrySafe(req.cmd) {
 							// Cluster full-duplex: divert a retryable server reply
 							// (LOADING/READONLY/TRYAGAIN/CLUSTERDOWN/MASTERDOWN/NOREPLICAS/
 							// max-clients) to the redirect-aware ClusterClient. It consults NO
