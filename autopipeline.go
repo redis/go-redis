@@ -97,9 +97,11 @@ type AutoPipelineOptions struct {
 	// Also honored by the full-duplex writer, where it is gated on in-flight
 	// depth so it never taxes low-concurrency callers (see fdAccumMinFor).
 	//
-	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1),
-	// single-shard face of a standalone *Client that has a pipeline pool — BOTH the
-	// deferred (AsyncAutoPipeline) and the blocking (AutoPipeline) face. A SINGLE
+	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1) face of a
+	// standalone *Client that has a pipeline pool — BOTH the deferred
+	// (AsyncAutoPipeline) and the blocking (AutoPipeline) face. NumShards > 1
+	// runs that many full-duplex engines, each on its own held connection; see
+	// NumShards for the ordering that mode keeps. A SINGLE
 	// blocking caller gains nothing: it has one command in flight, so there is
 	// nothing to overlap, and it still pays the held connection and goroutine
 	// overhead; the win needs MANY concurrent blocking callers, whose commands then
@@ -265,6 +267,20 @@ type AutoPipelineOptions struct {
 	// max(NumShards, MaxConcurrentBatches) — and because shards flush
 	// concurrently, NumShards > 1 on the deferred (async) face requires
 	// Unordered: true (construction fails otherwise).
+	//
+	// With FullDuplex active on a standalone *Client, NumShards means something
+	// else: the number of full-duplex engines, each holding one pipeline-pool
+	// connection with its own window (see FullDuplexWindow). Commands are routed
+	// to an engine by a hash of their first key, so Unordered is not required,
+	// but order holds only between commands that share a first key. Commands
+	// that touch other keys after the first one (COPY, RENAME, MSET, multi-key
+	// DEL, EVAL/FCALL with several keys) and keyless commands (including
+	// FLUSHDB and SWAPDB) are not ordered against the rest; await the first
+	// future before submitting a dependent one, or keep NumShards at 1, which
+	// keeps the whole submit order. The pipeline pool must hold at least
+	// NumShards connections for every full-duplex autopipeliner in use
+	// (construction checks this one). If full duplex cannot engage (no
+	// pipeline pool), the Unordered rule above applies.
 	NumShards int
 
 	// MaxFlushDelay is the maximum delay after flushing before checking for more commands.
