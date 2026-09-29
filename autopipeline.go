@@ -492,6 +492,12 @@ type cmdableClient interface {
 // one goroutine wake-up apiece).
 type apBatch struct {
 	done chan struct{}
+	// fdAttempts is how many times the full-duplex engine issued a PIPELINED
+	// command (1, plus one per connection-error replay), stamped by the reader
+	// before it completes the command, so closing done publishes it. The
+	// pipeline retry reads it to charge those executions against MaxRetries.
+	// Zero on every other path.
+	fdAttempts int
 	// closed makes close() idempotent: on the async faces the dispatch closes
 	// the batch at the innermost exec seam (under the user hooks, so a hook
 	// reading a result after next() does not block on a channel its own
@@ -3490,7 +3496,11 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 		ap.pipeliner.hookCount() > 0 || otel.Enabled() {
 		return ap.pipeliner.processPipelineHook(ctx, cmds)
 	}
-	err := ap.FDPipelined(ctx, cmds)
+	used, err := ap.fdPipelined(ctx, cmds)
+	// An ordinary pipeline allows MaxRetries+1 executions. The FD engine may
+	// already have issued the batch more than once (a connection-error replay),
+	// so the re-run gets what is left.
+	remaining := opt.MaxRetries - used
 	ineligible, retry := false, false
 	switch {
 	case errors.Is(err, ErrFDPipelineDiverts),
@@ -3498,7 +3508,7 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 		errors.Is(err, ErrFDPipelineTooLarge):
 		// Not a command failure: the batch is simply not eligible.
 		ineligible = true
-	case len(cmds) > 0 && opt.MaxRetries > 0 && !cmdsContainNoRetry(cmds):
+	case len(cmds) > 0 && remaining >= 0 && !cmdsContainNoRetry(cmds):
 		if e := cmds[0].rawErr(); isRedisError(e) && shouldRetry(e, false) {
 			retry = true
 		}
@@ -3514,16 +3524,16 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 	if ineligible {
 		return ap.pipeliner.processPipelineHook(ctx, cmds)
 	}
-	// The FD attempt was the first of the MaxRetries+1 executions an ordinary
-	// pipeline allows, so the re-run gets one retry fewer, after the backoff an
-	// ordinary pipeline sleeps before its first retry. The hook chain is not
-	// involved: this path only runs when no hooks are installed (see above).
+	// The re-run runs remaining+1 times at most, so FD attempts plus re-runs
+	// never exceed MaxRetries+1, after the backoff an ordinary pipeline sleeps
+	// before its next retry. The hook chain is not involved: this path only
+	// runs when no hooks are installed (see above).
 	c := ap.fd.client
-	if serr := internal.Sleep(ctx, c.retryBackoff(1)); serr != nil {
+	if serr := internal.Sleep(ctx, c.retryBackoff(used)); serr != nil {
 		setCmdsErr(cmds, serr)
 		return serr
 	}
-	return c.processPipelineRetries(ctx, cmds, opt.MaxRetries-1)
+	return c.processPipelineRetries(ctx, cmds, remaining)
 }
 
 // Pipelined executes a function in a pipeline context.

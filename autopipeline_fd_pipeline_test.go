@@ -26,10 +26,13 @@ type fdStateServer struct {
 	mu       sync.Mutex
 	kv       map[string]string
 	loading  atomic.Int64 // SETs still to answer with -LOADING (not applied)
-	setCalls atomic.Int64 // SETs received, LOADING ones included
-	delay    time.Duration
-	wg       sync.WaitGroup
-	conns    []net.Conn
+	setCalls atomic.Int64 // SETs received, LOADING and dropped ones included
+	// dropFirst closes the connection on the first SET instead of replying,
+	// so the client sees the write land and the reply never arrive.
+	dropFirst atomic.Bool
+	delay     time.Duration
+	wg        sync.WaitGroup
+	conns     []net.Conn
 }
 
 func newFDStateServer(t *testing.T) *fdStateServer {
@@ -91,6 +94,9 @@ func (s *fdStateServer) serve(c net.Conn) {
 			reply = "*4\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:2\r\n"
 		case name == "set" && len(args) >= 3:
 			s.setCalls.Add(1)
+			if s.dropFirst.CompareAndSwap(true, false) {
+				return // closes c: the reply never arrives
+			}
 			if s.loading.Add(-1) >= 0 {
 				reply = "-LOADING Redis is loading the dataset in memory\r\n"
 				break
@@ -399,5 +405,35 @@ func TestFDPipelineExecRetryKeepsBudget(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "LOADING") {
 		t.Fatalf("Exec err=%v, want LOADING once the budget is spent", err)
+	}
+}
+
+// Executions the FD engine spends on its own connection-error replay count
+// against the same budget. Here the first write is lost (connection closed),
+// the engine replays the batch and gets LOADING: with MaxRetries:1 that is
+// both allowed executions, so there is no pooled re-run. The re-run used to
+// assume the FD engine had issued the batch exactly once.
+func TestFDPipelineExecRetryCountsFDReplays(t *testing.T) {
+	srv := newFDStateServer(t)
+	srv.dropFirst.Store(true)
+	srv.loading.Store(1)
+	ap := fdPipelineTestAP(t, &Options{
+		Addr: srv.addr(), MaxRetries: 1,
+		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond,
+	})
+
+	ctx := context.Background()
+	pipe := ap.Pipeline()
+	pipe.Set(ctx, "k", "v", 0)
+	pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	if n := srv.setCalls.Load(); n != 2 {
+		t.Fatalf("pipeline executed %d times with MaxRetries:1, want 2 (err=%v)", n, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "LOADING") {
+		t.Fatalf("Exec err=%v, want LOADING once the budget is spent", err)
+	}
+	if srv.dropFirst.Load() {
+		t.Fatal("the first write was never dropped; the test did not exercise the replay")
 	}
 }
