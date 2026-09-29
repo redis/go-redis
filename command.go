@@ -319,7 +319,9 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 	}
 
 	switch name {
-	case "eval", "evalsha", "eval_ro", "evalsha_ro":
+	// FCALL has the EVAL layout: name, function, numkeys, keys... The typed
+	// FCall sets its key position itself; this covers raw Do/Process calls.
+	case "eval", "evalsha", "eval_ro", "evalsha_ro", "fcall", "fcall_ro":
 		if cmd.stringArg(2) != "0" {
 			return 3
 		}
