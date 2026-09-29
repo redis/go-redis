@@ -463,3 +463,57 @@ func TestFDPipelineRefusesRedirectAwareEngine(t *testing.T) {
 		t.Fatalf("get: v=%q err=%v", v, err)
 	}
 }
+
+// With several engines, a batch may ride one only if every keyed command in it
+// hashes to that engine: an earlier, unawaited command for one of its keys went
+// to that key's engine, and the batch must queue behind it. The batch used to
+// ride its first command's engine, so a GET for another key could run ahead of
+// that key's pending SET. A spanning batch is refused, and Pipeline() runs it
+// as an ordinary pipeline.
+func TestFDPipelineMultiEngineStaysOnItsKeysEngine(t *testing.T) {
+	srv := newFDStateServer(t)
+	c := NewClient(&Options{Addr: srv.addr(), Protocol: 2, DisableIdentity: true, PipelinePoolSize: 4})
+	t.Cleanup(func() { _ = c.Close() })
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true, NumShards: 4, MaxConcurrentBatches: 1})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	t.Cleanup(func() { _ = ap.Close() })
+	if len(ap.fds) != 4 {
+		t.Fatalf("want 4 engines, got %d", len(ap.fds))
+	}
+	// Two keys on different engines.
+	a, b := "k0", ""
+	for i := 1; b == ""; i++ {
+		if k := "k" + itoa(i); ap.fdForKey(k) != ap.fdForKey(a) {
+			b = k
+		}
+	}
+
+	ctx := context.Background()
+	span := []Cmder{NewStatusCmd(ctx, "set", a, "1"), NewStringCmd(ctx, "get", b)}
+	if err := ap.FDPipelined(ctx, span); !errors.Is(err, ErrFDPipelineSpansEngines) {
+		t.Fatalf("batch over two engines: err=%v, want ErrFDPipelineSpansEngines", err)
+	}
+
+	// Same engine, plus a keyless command that may ride along: accepted.
+	get := NewStringCmd(ctx, "get", a)
+	if err := ap.FDPipelined(ctx, []Cmder{NewStatusCmd(ctx, "set", a, "v"), get, NewStatusCmd(ctx, "ping")}); err != nil {
+		t.Fatalf("batch on one engine: %v", err)
+	}
+	if v, err := get.Result(); err != nil || v != "v" {
+		t.Fatalf("get %s: v=%q err=%v", a, v, err)
+	}
+
+	// Pipeline() runs a spanning batch as an ordinary pipeline.
+	pipe := ap.Pipeline()
+	pipe.Set(ctx, a, "x", 0)
+	pipe.Set(ctx, b, "y", 0)
+	gb := pipe.Get(ctx, b)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec over two engines: %v", err)
+	}
+	if v, err := gb.Result(); err != nil || v != "y" {
+		t.Fatalf("get %s: v=%q err=%v", b, v, err)
+	}
+}
