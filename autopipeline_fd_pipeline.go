@@ -169,6 +169,14 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 			setCmdsErr(cmds, ErrClosed)
 			return nil, nil
 		}
+		// A done ctx is refused before admission, not only while waiting for
+		// room: once admitted the batch runs, and an ordinary pipeline rejects a
+		// canceled call before writing anything.
+		if cerr := ctx.Err(); cerr != nil {
+			fd.submitMu.RUnlock()
+			setCmdsErr(cmds, cerr)
+			return nil, nil
+		}
 		switch fd.q.pushBatch(reqs) {
 		case fdPushOK:
 			// Hosts start only after admission, so a rejected batch never leaks
