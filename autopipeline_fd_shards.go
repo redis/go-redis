@@ -32,6 +32,17 @@ package redis
 // server accepts them. Callers that chain such commands should await the
 // first future before submitting the dependent one, or keep NumShards at 1.
 //
+// Keyless commands are not ordered against anything either: they round-robin.
+// That includes commands that change state for every key (FLUSHDB, FLUSHALL,
+// SWAPDB, SCRIPT FLUSH, FUNCTION FLUSH/RESTORE), so `FlushDB()` followed by
+// `Get(k)` can run the GET first. The same rule applies: await the first
+// future, or keep NumShards at 1.
+//
+// Keys are read with stringArg, the same conversion Ring and the cluster slot
+// hash use, so all three route the same key the same way. It differs from the
+// wire bytes only for pathological key arguments (a nil key is written as ""
+// but read as "<nil>").
+//
 // For comparison, rueidis spreads keyed commands over its standalone wires at
 // random (mux.go slotfn, 4 wires by default on 4+ cores) and orders nothing
 // across them; its Do is synchronous, so there are no in-flight futures to
