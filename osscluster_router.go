@@ -1,12 +1,14 @@
 package redis
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -849,6 +851,15 @@ func aggregateClusterRandomKey(_ Cmder, cmds []Cmder) (interface{}, error) {
 }
 
 func aggregateClusterSlowLog(cmd Cmder, cmds []Cmder) (interface{}, error) {
+	count := int64(10)
+	if len(cmd.Args()) > 2 {
+		arg, ok := routingArgText(cmd, 2)
+		var err error
+		count, err = strconv.ParseInt(arg, 10, 64)
+		if !ok || err != nil || count < -1 {
+			return nil, fmt.Errorf("redis: invalid SLOWLOG GET count %q", arg)
+		}
+	}
 	if cmd.GetCmdType() == CmdTypeGeneric {
 		var result []interface{}
 		for _, shardCmd := range cmds {
@@ -860,7 +871,22 @@ func aggregateClusterSlowLog(cmd Cmder, cmds []Cmder) (interface{}, error) {
 			if !ok {
 				return nil, fanoutTypeError(cmd, value, "array of slowlog entries")
 			}
+			for _, entry := range entries {
+				fields, ok := entry.([]interface{})
+				if !ok || len(fields) < 2 {
+					return nil, fanoutTypeError(cmd, entry, "slowlog entry with a timestamp")
+				}
+				if _, ok := fields[1].(int64); !ok {
+					return nil, fanoutTypeError(cmd, fields[1], "int64 timestamp")
+				}
+			}
 			result = append(result, entries...)
+		}
+		slices.SortStableFunc(result, func(a, b interface{}) int {
+			return cmp.Compare(b.([]interface{})[1].(int64), a.([]interface{})[1].(int64))
+		})
+		if count >= 0 && count < int64(len(result)) {
+			result = result[:count]
 		}
 		return result, nil
 	}
@@ -876,6 +902,11 @@ func aggregateClusterSlowLog(cmd Cmder, cmds []Cmder) (interface{}, error) {
 			return nil, fanoutTypeError(cmd, value, "[]redis.SlowLog")
 		}
 		result = append(result, entries...)
+	}
+	// IDs are node-local. Preserve each node's order when timestamps tie.
+	slices.SortStableFunc(result, func(a, b SlowLog) int { return b.Time.Compare(a.Time) })
+	if count >= 0 && count < int64(len(result)) {
+		result = result[:count]
 	}
 	return result, nil
 }

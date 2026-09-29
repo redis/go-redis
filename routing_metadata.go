@@ -439,6 +439,12 @@ func routingFirstKeyPos(meta routingCommandMeta, cmd Cmder) (pos int, ok bool) {
 		}
 	}
 	if !matchedSpec {
+		// RedisJSON advertises MEMORY's key spec on the shared JSON.DEBUG
+		// record, although its HELP variant takes no key.
+		if meta.name == "json.debug" && len(cmd.Args()) == 2 {
+			child, ok := routingArgText(cmd, 1)
+			return 0, ok && strings.EqualFold(child, "help")
+		}
 		// An unmatched keyed form is not proven keyless.
 		return 0, false
 	}

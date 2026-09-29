@@ -881,47 +881,56 @@ func TestClusterFullDuplexPinsAndReleasesMetadata(t *testing.T) {
 func TestClusterMetadataRefreshesOnNodeReconnect(t *testing.T) {
 	for _, protocol := range []int{2, 3} {
 		t.Run(fmt.Sprintf("RESP%d", protocol), func(t *testing.T) {
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = ln.Close() })
-			var phase atomic.Int32
-			go func() {
-				for {
-					conn, err := ln.Accept()
-					if err != nil {
-						return
-					}
-					go serveTestRESPConn(conn, func(command string) string {
-						switch command {
-						case "hello":
-							version := "8.10.0"
-							if phase.Load() > 0 {
-								version = "8.11.0"
-							}
-							mapHeader := "%2\r\n"
-							if protocol == 2 {
-								mapHeader = "*4\r\n"
-							}
-							return fmt.Sprintf("%s+version\r\n+%s\r\n+modules\r\n*1\r\n%s+name\r\n+test\r\n+ver\r\n:%d\r\n", mapHeader, version, mapHeader, phase.Load())
-						case "command":
-							return "*0\r\n"
-						case "ping":
-							return "+PONG\r\n"
-						default:
-							return "+OK\r\n"
-						}
-					})
+			var phases, fetches [2]atomic.Int32
+			var addrs []string
+			for i := range phases {
+				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
 				}
-			}()
+				t.Cleanup(func() { _ = ln.Close() })
+				addrs = append(addrs, ln.Addr().String())
+				go func() {
+					for {
+						conn, err := ln.Accept()
+						if err != nil {
+							return
+						}
+						go serveTestRESPConn(conn, func(command string) string {
+							switch command {
+							case "hello":
+								phase := phases[i].Load()
+								version := "8.10.0"
+								if phase > 0 {
+									version = "8.11.0"
+								}
+								mapHeader := "%2\r\n"
+								if protocol == 2 {
+									mapHeader = "*4\r\n"
+								}
+								return fmt.Sprintf("%s+version\r\n+%s\r\n+modules\r\n*1\r\n%s+name\r\n+test\r\n+ver\r\n:%d\r\n", mapHeader, version, mapHeader, phase)
+							case "command":
+								fetches[i].Add(1)
+								return "*0\r\n"
+							case "ping":
+								return "+PONG\r\n"
+							default:
+								return "+OK\r\n"
+							}
+						})
+					}
+				}()
+			}
 			c := NewClusterClient(&ClusterOptions{
-				Addrs: []string{ln.Addr().String()}, Protocol: protocol, PoolSize: 1,
+				Addrs: addrs, Protocol: protocol, PoolSize: 1,
 				DisableIdentity:          true,
 				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 				CommandMetadata:          &CommandMetadataConfig{Mode: CommandMetadataPreferLive},
 				ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
-					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: ln.Addr().String()}}}}, nil
+					return []ClusterSlot{
+						{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: addrs[0]}}},
+						{Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: addrs[1]}}},
+					}, nil
 				},
 			})
 			t.Cleanup(func() { _ = c.Close() })
@@ -933,28 +942,53 @@ func TestClusterMetadataRefreshesOnNodeReconnect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			node := state.Masters[0].Client
-			for i, want := range []string{"8.10.0|test:0", "8.11.0|test:1", "8.11.0|test:2"} {
-				phase.Store(int32(i))
+			reconnect := func(i int) {
+				t.Helper()
+				clusterNode, err := c.nodes.GetOrCreate(addrs[i])
+				if err != nil {
+					t.Fatal(err)
+				}
+				node := clusterNode.Client
 				if err := node.connPool.(*pool.ConnPool).Filter(func(*pool.Conn) bool { return true }); err != nil {
 					t.Fatal(err)
 				}
 				if err := node.Ping(ctx).Err(); err != nil {
 					t.Fatal(err)
 				}
+				if node.cmdMeta != nil {
+					t.Fatal("node owns a metadata store instead of notifying the parent")
+				}
+			}
+			for i, want := range []string{"8.10.0|test:0", "8.11.0|test:1", "8.11.0|test:2"} {
+				if i > 0 {
+					previous := c.cmdMeta.view()
+					fp := c.cmdMeta.serverFingerprint()
+					before := fetches[1].Load()
+					phases[0].Store(int32(i))
+					reconnect(0)
+					if !waitForCondition(t, 3*time.Second, func() bool { return fetches[1].Load() > before }) {
+						t.Fatal("node change did not check the unchanged sibling")
+					}
+					// The sibling response must finish publication before checking the view.
+					c.cmdMeta.refreshMu.Lock()
+					retained := c.cmdMeta.view() == previous && c.cmdMeta.serverFingerprint() == fp
+					c.cmdMeta.refreshMu.Unlock()
+					if !retained {
+						t.Fatal("mixed cluster replaced metadata before the last sibling upgraded")
+					}
+					phases[1].Store(int32(i))
+					reconnect(1)
+				}
 				if !waitForCondition(t, 3*time.Second, func() bool {
 					return c.cmdMeta.view().live && c.cmdMeta.serverFingerprint() == want
 				}) {
 					t.Fatalf("reconnect %d: identity=%q, want %q", i, c.cmdMeta.serverFingerprint(), want)
 				}
-				if node.cmdMeta != nil {
-					t.Fatal("node owns a metadata store instead of notifying the parent")
-				}
 				if current, _ := c.state.Get(ctx); current != state {
 					t.Fatal("test unexpectedly changed the topology")
 				}
 			}
-			_ = node.Close()
+			_ = state.Masters[0].Client.Close()
 			select {
 			case <-c.cmdMeta.stop:
 				t.Fatal("closing a node stopped the parent metadata store")
@@ -1173,6 +1207,92 @@ func TestClusterFanoutResponseHandlers(t *testing.T) {
 				t.Fatalf("aggregate=%#v error=%v, want %#v", got, err, tt.want)
 			}
 		})
+	}
+}
+
+func TestClusterSlowLogGlobalOrderAndLimit(t *testing.T) {
+	c := newMetadataTestCluster(t, nil)
+	ctx := context.Background()
+	// IDs are node-local: the newer shard deliberately has lower IDs.
+	older, newer := make([]SlowLog, 6), make([]SlowLog, 6)
+	for i := range older {
+		older[i] = SlowLog{ID: int64(100 - i), Time: time.Unix(int64(100-i), 0)}
+		newer[i] = SlowLog{ID: int64(6 - i), Time: time.Unix(int64(200-i), 0)}
+	}
+	for _, tc := range []struct {
+		name  string
+		count interface{}
+		want  int
+	}{
+		{"default", nil, 10},
+		{"one", int64(1), 1},
+		{"bytes", []byte("2"), 2},
+		{"all", "-1", 12},
+		{"zero", 0, 0},
+		{"large", int64(1 << 40), 12},
+	} {
+		for _, raw := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/raw=%v", tc.name, raw), func(t *testing.T) {
+				args := []interface{}{"slowlog", "get"}
+				if tc.count != nil {
+					args = append(args, tc.count)
+				}
+				var cmd Cmder = NewSlowLogCmd(ctx, args...)
+				var parts []Cmder
+				var want interface{} = append(append([]SlowLog{}, newer...), older...)[:tc.want]
+				if raw {
+					cmd = NewCmd(ctx, args...)
+					var all []interface{}
+					for _, entries := range [][]SlowLog{older, newer} {
+						var values []interface{}
+						for _, entry := range entries {
+							values = append(values, []interface{}{entry.ID, entry.Time.Unix(), int64(1), []interface{}{"get", "key"}, "addr", "name"})
+						}
+						parts = append(parts, NewCmdResult(values, nil))
+						all = append(values, all...)
+					}
+					want = all[:tc.want]
+				} else {
+					parts = []Cmder{metadataTestResult(NewSlowLogCmd(ctx), older), metadataTestResult(NewSlowLogCmd(ctx), newer)}
+				}
+				decision := c.commandRoutingDecision(ctx, cmd)
+				if err := c.aggregateResponses(cmd, parts, decision.policy, decision); err != nil {
+					t.Fatal(err)
+				}
+				got, err := ExtractCommandValue(cmd)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("aggregate=%#v error=%v, want %#v", got, err, want)
+				}
+			})
+		}
+	}
+	for _, entry := range []interface{}{[]interface{}{int64(1)}, []interface{}{int64(1), "bad timestamp"}} {
+		cmd := NewCmd(ctx, "slowlog", "get")
+		if _, err := aggregateClusterSlowLog(cmd, []Cmder{NewCmdResult([]interface{}{entry}, nil)}); err == nil {
+			t.Fatalf("malformed slowlog entry accepted: %#v", entry)
+		}
+	}
+}
+
+func TestClusterJSONDebugKeylessHelp(t *testing.T) {
+	c := newMetadataTestCluster(t, nil)
+	ctx := context.Background()
+	for _, child := range []interface{}{"help", []byte("HELP")} {
+		d := c.commandRoutingDecision(ctx, NewCmd(ctx, "json.debug", child))
+		if d.policyErr != nil || !d.keyless || d.firstKey != 0 {
+			t.Fatalf("JSON.DEBUG HELP: keyless=%v firstKey=%d error=%v", d.keyless, d.firstKey, d.policyErr)
+		}
+	}
+	for _, args := range [][]interface{}{
+		{"json.debug", "memory"}, {"json.debug", "unknown"}, {"json.debug", "help", "extra"},
+	} {
+		if d := c.commandRoutingDecision(ctx, NewCmd(ctx, args...)); d.policyErr == nil {
+			t.Fatalf("%v unexpectedly accepted as keyless", args)
+		}
+	}
+	c = newMetadataTestCluster(t, &CommandMetadataConfig{Overrides: map[string]*CommandInfo{"json.debug": nil}})
+	if d := c.commandRoutingDecision(ctx, NewCmd(ctx, "json.debug", "help")); d.policyErr == nil {
+		t.Fatal("HELP bypassed the metadata tombstone")
 	}
 }
 

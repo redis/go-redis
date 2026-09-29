@@ -279,6 +279,9 @@ func TestCommandsInfoUnknownMetadataFieldsAreDrained(t *testing.T) {
 		commandInfoTestArray(spec),
 		commandInfoTestArray(),
 	)
+	entry = strings.Replace(entry, "*10\r\n", "*12\r\n", 1) +
+		commandInfoTestRESP3Map(commandInfoTestBulk("future"), commandInfoTestArray(commandInfoTestInt(1))) +
+		commandInfoTestBulk("ignored")
 	cmd := commandInfoTestReadReply(t, commandInfoTestArray(entry, commandInfoTestEntry6("after")))
 	info := cmd.val["extended"]
 	if info == nil {
@@ -289,6 +292,24 @@ func TestCommandsInfoUnknownMetadataFieldsAreDrained(t *testing.T) {
 	}
 	if cmd.val["after"] == nil {
 		t.Fatal("unknown nested field desynchronized the following record")
+	}
+}
+
+func TestCommandsInfoTrailingFieldsPreserveLiveMetadata(t *testing.T) {
+	entry := commandInfoTestEntry10("get", commandInfoTestArray(commandInfoTestBulk("readonly")),
+		commandInfoTestArray(), commandInfoTestArray(commandInfoTestValidRangeKeySpec()), commandInfoTestArray())
+	extended := strings.Replace(entry, "*10\r\n", "*11\r\n", 1) + commandInfoTestArray(commandInfoTestBulk("future"))
+	parsed := commandInfoTestReadReply(t, commandInfoTestArray(extended))
+	view := buildCommandMetadataViewForServer(parsed.val, nil, "8.10.0")
+	cmd := NewCmd(context.Background(), "get", "key")
+	if pos, ok := routingFirstKeyPos(view.routingTable["get"], cmd); !ok || pos != 1 {
+		t.Fatalf("extended live record lost routing metadata: key=%d ok=%v", pos, ok)
+	}
+	if _, ok := cscEligibleMeta(view, cmd); !ok {
+		t.Fatal("extended live record lost CSC eligibility")
+	}
+	if keys := cscExtractRedisKeys(view.cscTable["get"], cmd); len(keys) != 1 || keys[0] != "key" {
+		t.Fatalf("extended live record lost CSC metadata: keys=%v", keys)
 	}
 }
 

@@ -1718,7 +1718,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		return metadata, err
 	})
 	runtime.AddCleanup(c, func(store *commandMetadataStore) { store.signalStop() }, c.cmdMeta)
-	c.nodes.onServerHello = c.cmdMeta.onServerHello
+	c.nodes.onServerHello = c.cmdMeta.onClusterServerHello
 	c.state.beforeReload = func(_, _ *clusterState) {
 		c.cmdMeta.beginParentSourceChange()
 	}

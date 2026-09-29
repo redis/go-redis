@@ -5779,12 +5779,11 @@ func readCommandInfoEntryAtDepth(
 	}
 
 	cmdInfo := &CommandInfo{}
-	valid := nn <= numArgRedis7
 	nameOK := false
 	if cmdInfo.Name, nameOK, err = readCommandInfoString(rd); err != nil {
 		return err
 	}
-	valid = valid && nameOK && cmdInfo.Name != ""
+	valid := nameOK && cmdInfo.Name != ""
 
 	arity, arityOK, err := readCommandInfoInt(rd)
 	if err != nil {
@@ -5895,7 +5894,7 @@ func readCommandInfoEntryAtDepth(
 	}
 
 	if nn > numArgRedis7 {
-		// Drain future fields, but tombstone the unsupported record.
+		// Preserve the known prefix when Redis appends new metadata fields.
 		if err := discardCommandInfoValues(rd, nn-numArgRedis7); err != nil {
 			return err
 		}

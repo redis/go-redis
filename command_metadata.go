@@ -590,13 +590,14 @@ type commandMetadataStore struct {
 	fetchCtx    context.Context
 	fetchCancel context.CancelFunc
 
-	mu        sync.Mutex
-	refreshMu sync.Mutex
-	started   bool
-	refresh   chan struct{}
-	stop      chan struct{}
-	done      chan struct{}
-	stopOnce  sync.Once
+	mu          sync.Mutex
+	refreshMu   sync.Mutex
+	started     bool
+	refresh     chan struct{}
+	refreshLive atomic.Bool // A node identity observation also needs a live-view refresh.
+	stop        chan struct{}
+	done        chan struct{}
+	stopOnce    sync.Once
 
 	// serverFp identifies the current server. serverEpoch also rejects ABA
 	// changes during a refresh. Both are guarded by mu.
@@ -735,6 +736,20 @@ func (s *commandMetadataStore) onServerHello(fp string) {
 		s.onConnInit()
 		return
 	}
+	s.requestRefresh()
+}
+
+// onClusterServerHello schedules verification without adopting one node's
+// identity. The cluster fetch checks siblings before retiring the live view.
+func (s *commandMetadataStore) onClusterServerHello(fp string) {
+	if s == nil || s.mode != CommandMetadataPreferLive {
+		return
+	}
+	if fp == s.serverFingerprint() {
+		s.onConnInit()
+		return
+	}
+	s.refreshLive.Store(true)
 	s.requestRefresh()
 }
 
@@ -910,10 +925,10 @@ func (s *commandMetadataStore) run() {
 				return
 			default:
 			}
-			// Requests only drive the initial upgrade (a token queued by a
-			// conn init during the first fetch would otherwise fetch twice);
-			// drift after that is the periodic refresh's job.
-			if v := s.current.Load(); v != nil && v.live {
+			// Skip redundant connection-init requests, but verify node identity
+			// changes even while the cluster still has a live view.
+			verifyLive := s.refreshLive.Swap(false)
+			if v := s.current.Load(); !verifyLive && v != nil && v.live {
 				continue
 			}
 			attempt()
