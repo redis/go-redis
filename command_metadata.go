@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"math/rand"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -554,6 +556,16 @@ type commandMetadataFetchResult struct {
 	serverFingerprint string
 }
 
+func (m commandMetadataFetchResult) equal(other commandMetadataFetchResult) bool {
+	return m.serverVersion == other.serverVersion &&
+		m.serverFingerprint == other.serverFingerprint &&
+		maps.Equal(m.legacyRecords, other.legacyRecords) &&
+		maps.EqualFunc(m.records, other.records, func(a, b *CommandInfo) bool {
+			return reflect.DeepEqual(a, b)
+		})
+}
+
+// A successful fetch transfers ownership of its records to the store.
 type commandMetadataFetchFunc func(context.Context) (commandMetadataFetchResult, error)
 
 // commandMetadataStore publishes immutable views for one client. Its pointer
@@ -568,6 +580,10 @@ type commandMetadataStore struct {
 
 	// static is the initial and fallback view.
 	static *commandMetadataView
+
+	// lastFetch is the source of the last successfully published live view.
+	// It is immutable and guarded by refreshMu, like the refresh itself.
+	lastFetch commandMetadataFetchResult
 
 	// fetchCtx is cancelled by signalStop so Close never waits out an
 	// in-flight fetch's own timeout.
@@ -951,16 +967,22 @@ func (s *commandMetadataStore) refreshOnceLocked(parent context.Context) (err er
 		// Do not publish across a server change.
 		return fmt.Errorf("command metadata server changed during refresh")
 	}
-	view := buildCommandMetadataViewForServerWithLegacy(
-		metadata.records,
-		s.overrides,
-		metadata.serverVersion,
-		metadata.legacyRecords,
-	)
-	view.live = true
+	view := s.view()
+	if !view.live || !metadata.equal(s.lastFetch) {
+		view = buildCommandMetadataViewForServerWithLegacy(
+			metadata.records,
+			s.overrides,
+			metadata.serverVersion,
+			metadata.legacyRecords,
+		)
+		view.live = true
+	}
+	// Reusing a view must still validate the identity and epoch under the
+	// publication lock: either may have changed during the comparison.
 	if !s.publishLiveView(fpStart, epochStart, metadata.serverFingerprint, view) {
 		return fmt.Errorf("command metadata server changed during publication")
 	}
+	s.lastFetch = metadata
 	return nil
 }
 

@@ -43,6 +43,8 @@ View construction derives two consumer-specific tables from the same resolved re
 
 The default `CommandMetadataStatic` mode uses the checked-in snapshot plus overrides and performs no metadata network request or background refresh. `CommandMetadataPreferLive` starts from that static view and atomically upgrades after a successful live fetch; an optional jittered `RefreshInterval` covers later server or module changes. A failed fetch leaves routing on the current safe view. `NewDynamicResolver` performs a synchronous live attempt only if resolution reaches that resolver, then uses the current static view on failure so the application command is not interrupted.
 
+A live refresh compares the fetched records, legacy provenance, server version, and fingerprint with the last successfully published input. Identical input reuses the current live view; changed input or a retired view triggers a full rebuild. Both paths validate the server identity and epoch under the publication lock. The store retains one immutable raw fetch result for this comparison, without changing the command hot path.
+
 Each command captures one view and carries one `clusterRoutingDecision`, including its natural slot, through slot selection, replica selection, fan-out, and aggregation. A regular user pipeline resolves custom policies once, prepares live metadata only if a command reaches a dynamic metadata resolver, captures one view for the batch, and reuses it for mapping and every retry. AutoPipeline instead pins a decision per admitted command because one merged batch can contain commands admitted on opposite sides of a refresh; flush and retry consume those admission-time decisions rather than recomputing their slots.
 
 ---

@@ -131,6 +131,117 @@ func TestCommandMetadataPeriodicRefreshRetriesWhileLive(t *testing.T) {
 	}
 }
 
+func TestCommandMetadataRefreshReusesUnchangedView(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*commandMetadataFetchResult)
+	}{
+		{name: "unchanged"},
+		{name: "routing only", change: func(m *commandMetadataFetchResult) {
+			m.records["dbsize"].Tips = []string{"request_policy:all_shards", "response_policy:agg_sum"}
+		}},
+		{name: "key spec", change: func(m *commandMetadataFetchResult) {
+			m.records["get"].KeySpecs[0].Index = 2
+		}},
+		{name: "tombstone", change: func(m *commandMetadataFetchResult) {
+			m.records["get"] = nil
+		}},
+		{name: "removed record", change: func(m *commandMetadataFetchResult) {
+			delete(m.records, "get")
+		}},
+		{name: "legacy provenance", change: func(m *commandMetadataFetchResult) {
+			m.legacyRecords = map[string]struct{}{"dbsize": {}}
+		}},
+		{name: "server version", change: func(m *commandMetadataFetchResult) {
+			m.serverVersion = "7.4.0"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			s := newCommandMetadataStoreForLive(nil, func(context.Context) (commandMetadataFetchResult, error) {
+				// Each fetch owns distinct records, as separately parsed replies do.
+				m := testCommandMetadataFetchResult(map[string]*CommandInfo{
+					"get":    testReadOnlyCommandInfo("get"),
+					"dbsize": {Name: "dbsize", Arity: 1, Flags: []string{"readonly"}},
+				})
+				if calls > 0 && tc.change != nil {
+					tc.change(&m)
+				}
+				calls++
+				return m, nil
+			})
+			defer s.stopAndJoin()
+			if err := s.ensureLive(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			first := s.view()
+			if err := s.refreshOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			second := s.view()
+			if changed := second != first; changed != (tc.change != nil) {
+				t.Fatalf("view changed = %v, want %v", changed, tc.change != nil)
+			}
+			if tc.name == "routing only" && first.cscFingerprint != second.cscFingerprint {
+				t.Fatal("routing-only fixture unexpectedly changed CSC eligibility")
+			}
+			if err := s.refreshOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if s.view() != second {
+				t.Fatal("identical refresh rebuilt the live view")
+			}
+		})
+	}
+}
+
+func TestCommandMetadataUnchangedRefreshValidatesIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*commandMetadataStore, *commandMetadataFetchResult)
+	}{
+		{"missing identity", func(_ *commandMetadataStore, m *commandMetadataFetchResult) {
+			m.serverFingerprint = ""
+		}},
+		{"different identity", func(_ *commandMetadataStore, m *commandMetadataFetchResult) {
+			m.serverFingerprint = "other-server"
+		}},
+		{"invalidated during fetch", func(s *commandMetadataStore, _ *commandMetadataFetchResult) {
+			s.invalidateLive()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var duringFetch func(*commandMetadataFetchResult)
+			s := newCommandMetadataStoreForLive(nil, func(context.Context) (commandMetadataFetchResult, error) {
+				m := testCommandMetadataFetchResult(map[string]*CommandInfo{"get": testReadOnlyCommandInfo("get")})
+				if duringFetch != nil {
+					duringFetch(&m)
+				}
+				return m, nil
+			})
+			defer s.stopAndJoin()
+			if err := s.ensureLive(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			duringFetch = func(m *commandMetadataFetchResult) { tc.change(s, m) }
+			if err := s.refreshOnce(context.Background()); err == nil {
+				t.Fatal("unchanged records bypassed identity validation")
+			}
+			previous := s.view()
+			duringFetch = nil
+			if err := s.refreshOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if !s.view().live {
+				t.Fatal("valid refresh did not restore live metadata")
+			}
+			if previous.live && s.view() != previous {
+				t.Fatal("rejected fetch replaced the last successful comparison input")
+			}
+		})
+	}
+}
+
 func TestCommandMetadataNormalizesEffectiveRecords(t *testing.T) {
 	upper := &CommandInfo{
 		Name:  "MODULE.GET",
