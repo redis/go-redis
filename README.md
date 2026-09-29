@@ -76,7 +76,7 @@ surface. The API is experimental and may change in a future release.
 
 - Redis commands except QUIT and SYNC.
 - Automatic connection pooling.
-- [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority) (experimental)
+- [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority---experimental-feature) (experimental)
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
 - [Automatic pipelining](#automatic-pipelining) (experimental) — batches concurrent
