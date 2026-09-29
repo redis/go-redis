@@ -1617,6 +1617,16 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			for i := 0; i < len(buf); {
 				readErrs := readErrsBuf[:0]
 				grp := 0
+				// The whole group reads under the one deadline WithReader arms
+				// here. Buffered() > 0 does not mean the next reply is complete: a
+				// partial frame still needs a socket read. armed lets the group
+				// stop once half the timeout is spent, so every reply starts with
+				// at least readTimeout/2 left instead of whatever earlier replies
+				// in the group did not use.
+				var armed time.Time
+				if readTimeout > 0 {
+					armed = time.Now()
+				}
 				ge := cn.WithReader(bg, readTimeout, func(rd *proto.Reader) error {
 					for i+grp < len(buf) {
 						// Same push-drain contract as before: a partial-frame drain
@@ -1638,6 +1648,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						}
 						if rd.Buffered() == 0 {
 							return nil
+						}
+						if readTimeout > 0 && time.Since(armed) > readTimeout/2 {
+							return nil // next WithReader re-arms a full deadline
 						}
 					}
 					return nil
@@ -1762,6 +1775,14 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					fd.reportReplyMetrics(octx, req, e, cn)
 					req.complete() // wake the caller, or hand off to the hook host
 					done++
+				}
+				// A fatal reply ends the whole snapshot, not only its group: the
+				// stream is desynced, so another WithReader would attach shifted
+				// bytes to later commands. Stopping here also keeps `done` a
+				// contiguous prefix, which advance(done) relies on to drop only
+				// completed commands.
+				if rerr != nil {
+					break
 				}
 				i += grp
 			}
