@@ -726,7 +726,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	// bound is the window.
 	//
 	// Total outstanding is still bounded, now by 2*window (queue + in-flight), and
-	// the queue only ever occupies its live depth.
+	// the queue's buffer stays within about twice its live depth (see fdQueue).
 	qCap := w
 	// The off-pipe retry bound is a GOROUTINE budget, not a memory window. Diverted
 	// retries serialize on the main pool's PoolSize connections, so slots beyond about
