@@ -82,6 +82,44 @@ func newMetadataTestCluster(t *testing.T, cfg *CommandMetadataConfig) *ClusterCl
 	return c
 }
 
+func TestClusterNodeCallbacksPrecedeLatencyProbes(t *testing.T) {
+	probed := make(chan *himportRegistry, 1)
+	opt := &ClusterOptions{RouteByLatency: true, NewClient: func(opt *Options) *Client {
+		client := NewClient(opt)
+		client.AddHook(clusterMetadataNodeHook{process: func(context.Context, Cmder) error {
+			select {
+			case probed <- client.himport:
+			default:
+			}
+			return nil
+		}})
+		return client
+	}}
+	opt.init()
+	nodes := newClusterNodes(opt)
+	t.Cleanup(func() { _ = nodes.Close() })
+	shared := newHImportRegistry()
+	nodes.OnNewNode(func(client *Client) {
+		select {
+		case <-probed:
+			t.Error("latency probe ran before node initialization completed")
+		case <-time.After(50 * time.Millisecond):
+		}
+		client.himport = shared
+	})
+	if _, err := nodes.GetOrCreate("127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case registry := <-probed:
+		if registry != shared {
+			t.Fatal("latency probe did not observe the shared registry")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("latency probe did not run")
+	}
+}
+
 func TestUniversalCommandMetadataPropagatesToClusterVariants(t *testing.T) {
 	cfg := &CommandMetadataConfig{Mode: CommandMetadataPreferLive}
 	opt := (&UniversalOptions{CommandMetadata: cfg}).Cluster()

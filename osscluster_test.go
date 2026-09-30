@@ -809,10 +809,10 @@ var _ = Describe("ClusterClient", func() {
 							Eventually(func() error { return client.SwapNodes(ctx, keys[0]) }, 30*time.Second).Should(Succeed())
 						}
 						read := pipe.XRead(ctx, &redis.XReadArgs{Streams: []string{keys[0], keys[1], "0", "0"}, Block: -1})
-						// Put GROUP after COUNT and use keyword-valued names.
-						group := redis.NewXStreamSliceCmd(ctx, "xreadgroup", "count", 1, "group", "streams", "streams",
-							"streams", keys[0], keys[1], id, id)
-						Expect(pipe.Process(ctx, group)).To(Succeed())
+						group := pipe.XReadGroup(ctx, &redis.XReadGroupArgs{
+							Group: "streams", Consumer: "streams", Count: 1,
+							Streams: []string{keys[0], keys[1], id, id}, Block: -1,
+						})
 						_, err := pipe.Exec(ctx)
 						Expect(err).NotTo(HaveOccurred())
 						Expect(read.Val()).To(HaveLen(2))

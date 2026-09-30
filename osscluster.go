@@ -549,10 +549,6 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 	}
 
 	node.latency.Store(unmeasuredNodeLatencyMicros)
-	if clOpt.RouteByLatency {
-		go node.updateLatency()
-	}
-
 	return &node
 }
 
@@ -808,6 +804,10 @@ func (c *clusterNodes) GetOrCreateWithNodeAddress(addr, nodeAddress string) (*cl
 	node = newClusterNodeWithNodeAddress(c.opt, addr, nodeAddress, c.onServerHello)
 	for _, fn := range c.onNewNode {
 		fn(node.Client)
+	}
+	// Callbacks initialize shared state and hooks before probes use the client.
+	if c.opt.RouteByLatency {
+		go node.updateLatency()
 	}
 
 	c.addrs = appendIfNotExist(c.addrs, addr)
