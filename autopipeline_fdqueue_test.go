@@ -28,16 +28,19 @@ func TestFDQueueFIFOModel(t *testing.T) {
 				} else if len(model) < 512 {
 					t.Fatalf("seed %d: push refused at depth %d", seed, len(model))
 				}
-			case r < 6: // a burst of pushes
-				for k := 1 + rng.Intn(40); k > 0; k-- {
-					if q.push(fdQueueTag(next)) != fdPushOK {
-						if len(model) < 512 {
-							t.Fatalf("seed %d: push refused at depth %d", seed, len(model))
-						}
-						break
+			case r < 6: // pushBatch
+				k := 1 + rng.Intn(40)
+				batch := make([]fdReq, k)
+				for i := range batch {
+					batch[i] = fdQueueTag(next + i)
+				}
+				if q.pushBatch(batch) == fdPushOK {
+					for i := 0; i < k; i++ {
+						model = append(model, next+i)
 					}
-					model = append(model, next)
-					next++
+					next += k
+				} else if len(model)+k <= 512 {
+					t.Fatalf("seed %d: pushBatch(%d) refused at depth %d", seed, k, len(model))
 				}
 			default: // take, maybe give some back
 				got := q.takeInto(nil, 1+rng.Intn(64))
@@ -87,8 +90,6 @@ func BenchmarkFDQueueDeepDrain(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		dst = q.takeInto(dst[:0], wave)
-		for _, r := range refill {
-			q.push(r)
-		}
+		q.pushBatch(refill)
 	}
 }

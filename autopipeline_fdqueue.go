@@ -16,7 +16,8 @@ import "sync"
 //
 // The slice costs one lock and one append per command on the producer side, and
 // ONE lock plus ONE bulk copy for the whole wave on the writer side — the
-// writer's per-command cost disappears.
+// writer's per-command cost disappears. pushBatch amortises the producer lock
+// across k commands as well.
 //
 // The structural win is not the copy, it is the parking. A channel can only
 // express "wake me on the next arrival", so an accumulating writer was woken
@@ -202,6 +203,42 @@ func (q *fdQueue) push(req fdReq) fdPushResult {
 	signal := q.parked && q.live() >= q.wakeAt
 	if signal {
 		q.parked = false // claim the wake: later arrivals in this wave stay silent
+	}
+	q.mu.Unlock()
+	if signal {
+		select {
+		case q.wake <- struct{}{}:
+		default:
+		}
+	}
+	return fdPushOK
+}
+
+// pushBatch enqueues reqs under a SINGLE lock, for callers that already hold a
+// run of commands (a pipeline, or a carry tail being returned to the queue).
+// All-or-nothing: a partial enqueue would split a pipeline across two flushes
+// and, worse, leave the caller unsure which half it owns.
+func (q *fdQueue) pushBatch(reqs []fdReq) fdPushResult {
+	if len(reqs) == 0 {
+		return fdPushOK
+	}
+	if q == nil {
+		return fdPushFull // see the nil-queue contract
+	}
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return fdPushClosed
+	}
+	if q.live()+len(reqs) > q.max {
+		q.mu.Unlock()
+		return fdPushFull
+	}
+	q.reserve(len(reqs))
+	q.buf = append(q.buf, reqs...)
+	signal := q.parked && q.live() >= q.wakeAt
+	if signal {
+		q.parked = false
 	}
 	q.mu.Unlock()
 	if signal {
