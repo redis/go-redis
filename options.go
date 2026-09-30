@@ -495,8 +495,12 @@ type Options struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
 
-	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
-	// their invalidation arrives, instead of waiting for a reader to miss.
+	// ClientSideCacheRefreshOnInvalidate re-fetches every cached entry of an
+	// invalidated key as soon as its invalidation arrives, instead of waiting for
+	// a reader to miss. It does not look at how recently the entry was read, so
+	// each invalidation of a cached key costs one background read: on a
+	// write-heavy keyspace that is refetch traffic across the whole resident
+	// cache, not only its hot part.
 	//
 	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
 	// to a *LocalCache), like the other CSC knobs: the refresher's hot-entry

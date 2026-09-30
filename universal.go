@@ -186,8 +186,9 @@ type UniversalOptions struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
 
-	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
-	// their invalidation arrives. See Options.ClientSideCacheRefreshOnInvalidate.
+	// ClientSideCacheRefreshOnInvalidate re-fetches every cached entry of an
+	// invalidated key as soon as its invalidation arrives, whether or not it was
+	// read recently. See Options.ClientSideCacheRefreshOnInvalidate.
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheRefreshOnInvalidate bool
