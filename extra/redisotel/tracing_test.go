@@ -661,6 +661,233 @@ func TestTracingHook_ProcessPipelineHook_LongCommands(t *testing.T) {
 	}
 }
 
+func TestWithSkipSpanIfNotRecording(t *testing.T) {
+	t.Run("dial: skips span when no parent and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		dialHook := hook.DialHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, nil
+		})
+		if _, err := dialHook(context.Background(), "tcp", "localhost:6379"); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, 0, len(imsb.GetSpans()))
+	})
+
+	t.Run("dial: creates span when parent is recording and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		ctx, parentSpan := provider.Tracer("test").Start(context.Background(), "parent")
+		dialHook := hook.DialHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, nil
+		})
+		if _, err := dialHook(ctx, "tcp", "localhost:6379"); err != nil {
+			t.Fatal(err)
+		}
+		parentSpan.End()
+
+		spans := imsb.GetSpans()
+		found := false
+		for _, s := range spans {
+			if s.Name == "redis.dial" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("expected dial span to be created when parent is recording")
+		}
+	})
+
+	t.Run("dial: skips span when parent is sampled out and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		sampledOutProvider := sdktrace.NewTracerProvider(
+			sdktrace.WithSyncer(imsb),
+			sdktrace.WithSampler(sdktrace.NeverSample()),
+		)
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(sampledOutProvider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		ctx, parentSpan := sampledOutProvider.Tracer("test").Start(context.Background(), "parent")
+		defer parentSpan.End()
+
+		dialHook := hook.DialHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, nil
+		})
+		if _, err := dialHook(ctx, "tcp", "localhost:6379"); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, 0, len(imsb.GetSpans()))
+	})
+
+	t.Run("process: skips span when no parent and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		cmd := redis.NewCmd(context.Background(), "ping")
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, 0, len(imsb.GetSpans()))
+	})
+
+	t.Run("process: creates span when parent is recording and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		ctx, parentSpan := provider.Tracer("test").Start(context.Background(), "parent")
+		cmd := redis.NewCmd(ctx, "ping")
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+		if err := processHook(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+		parentSpan.End()
+
+		spans := imsb.GetSpans()
+		found := false
+		for _, s := range spans {
+			if s.Name == "ping" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("expected ping span to be created when parent is recording")
+		}
+	})
+
+	t.Run("process: creates span when flag is false (default behavior preserved)", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(false),
+		)
+
+		cmd := redis.NewCmd(context.Background(), "ping")
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, 1, len(imsb.GetSpans()))
+	})
+
+	t.Run("process: skips span when parent is sampled out and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		sampledOutProvider := sdktrace.NewTracerProvider(
+			sdktrace.WithSyncer(imsb),
+			sdktrace.WithSampler(sdktrace.NeverSample()),
+		)
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(sampledOutProvider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		ctx, parentSpan := sampledOutProvider.Tracer("test").Start(context.Background(), "parent")
+		defer parentSpan.End()
+
+		cmd := redis.NewCmd(ctx, "ping")
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+		if err := processHook(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, 0, len(imsb.GetSpans()))
+	})
+
+	t.Run("pipeline: skips span when no parent and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		cmds := []redis.Cmder{
+			redis.NewCmd(context.Background(), "ping"),
+			redis.NewCmd(context.Background(), "get"),
+		}
+		processHook := hook.ProcessPipelineHook(func(ctx context.Context, cmds []redis.Cmder) error {
+			return nil
+		})
+		if err := processHook(context.Background(), cmds); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, 0, len(imsb.GetSpans()))
+	})
+
+	t.Run("pipeline: creates span when parent is recording and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		ctx, parentSpan := provider.Tracer("test").Start(context.Background(), "parent")
+		cmds := []redis.Cmder{
+			redis.NewCmd(ctx, "ping"),
+			redis.NewCmd(ctx, "get"),
+		}
+		processHook := hook.ProcessPipelineHook(func(ctx context.Context, cmds []redis.Cmder) error {
+			return nil
+		})
+		if err := processHook(ctx, cmds); err != nil {
+			t.Fatal(err)
+		}
+		parentSpan.End()
+
+		spans := imsb.GetSpans()
+		found := false
+		for _, s := range spans {
+			if strings.HasPrefix(s.Name, "redis.pipeline") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("expected pipeline span to be created when parent is recording")
+		}
+	})
+}
+
 func assertEqual(t *testing.T, expected, actual interface{}) {
 	t.Helper()
 	if expected != actual {

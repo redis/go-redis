@@ -92,6 +92,10 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 			return hook(ctx, network, addr)
 		}
 
+		if th.conf.skipSpanIfNotRecording && !trace.SpanFromContext(ctx).IsRecording() {
+			return hook(ctx, network, addr)
+		}
+
 		ctx, span := th.conf.tracer.Start(ctx, "redis.dial", th.spanOpts...)
 		defer span.End()
 
@@ -110,6 +114,10 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		// Check if the command should be filtered out
 		if th.conf.filterProcess != nil && th.conf.filterProcess(cmd) {
 			// If so, just call the next hook
+			return hook(ctx, cmd)
+		}
+
+		if th.conf.skipSpanIfNotRecording && !trace.SpanFromContext(ctx).IsRecording() {
 			return hook(ctx, cmd)
 		}
 
@@ -148,6 +156,10 @@ func (th *tracingHook) ProcessPipelineHook(
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 
 		if th.conf.filterProcessPipeline != nil && th.conf.filterProcessPipeline(cmds) {
+			return hook(ctx, cmds)
+		}
+
+		if th.conf.skipSpanIfNotRecording && !trace.SpanFromContext(ctx).IsRecording() {
 			return hook(ctx, cmds)
 		}
 
