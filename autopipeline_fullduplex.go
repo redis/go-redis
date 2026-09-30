@@ -87,6 +87,25 @@ func fdReplyIsFatal(cmd Cmder, e error) bool {
 	return errors.Is(e, errFDPushDrainFailed) || !isRedisError(e)
 }
 
+// fdReadReplySafe reads one reply, turning a panic in the decoder (e.g. a
+// RawWriteToCmd whose user io.Writer panics) into a fatal read error for that
+// command. The grouped reader parses several replies before completing any of
+// them, so a panic escaping to the goroutine's recover would skip completing
+// the replies already read in the same group, and session recovery would
+// replay them. As an error, it takes the fatal-reply path instead: the
+// replies before it complete, and recovery starts at this command, which is
+// what the per-reply loop did.
+func fdReadReplySafe(cmd Cmder, rd *proto.Reader) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(),
+				"autopipeline: recovered full-duplex reply decoder panic: %v\n%s", r, debug.Stack())
+			err = fmt.Errorf("%w: reply decoder: %v", errFDPanicRecovered, r)
+		}
+	}()
+	return cmd.readReply(rd)
+}
+
 // errFDRetryBudgetExhausted fails a carried command that has already spent its full
 // retry budget (attempts > MaxRetries) when Close routes the unacked tail to
 // shutdownFlush. The shutdown pipeline must not grant another MaxRetries+1
@@ -1638,7 +1657,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 							grp++
 							return nil
 						}
-						err := buf[i+grp].cmd.readReply(rd)
+						err := fdReadReplySafe(buf[i+grp].cmd, rd)
 						readErrs = append(readErrs, err)
 						grp++
 						if err != nil {

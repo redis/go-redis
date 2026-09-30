@@ -140,6 +140,25 @@ func (q *fdQueue) compact() {
 	q.head = 0
 }
 
+// fdQueueRetainCap bounds the backing array an EMPTY queue keeps. A burst (a
+// stalled peer backing the queue up to the window, 65536 by default) grows buf
+// to several MiB; keeping that for the life of an idle engine would pin the
+// burst's high-water memory. A queue that routinely runs deeper than this is
+// re-grown by append, which doubles, so the release is not paid per wave.
+const fdQueueRetainCap = 4096
+
+// resetEmpty starts an empty queue over from slot 0, releasing a backing
+// array a burst grew past fdQueueRetainCap. Caller holds mu and has already
+// cleared the slots.
+func (q *fdQueue) resetEmpty() {
+	if cap(q.buf) > fdQueueRetainCap {
+		q.buf = make([]fdReq, 0, 64)
+	} else {
+		q.buf = q.buf[:0]
+	}
+	q.head = 0
+}
+
 // reserve compacts before an append that would outgrow buf, when the dead
 // prefix is long enough to pay for it; otherwise the append grows buf.
 // Caller holds mu.
@@ -243,7 +262,7 @@ func (q *fdQueue) takeInto(dst []fdReq, max int) []fdReq {
 	q.head += n
 	switch {
 	case q.head == len(q.buf):
-		q.buf, q.head = q.buf[:0], 0 // empty: reuse from the start
+		q.resetEmpty()
 	case q.head >= q.live():
 		q.compact()
 	}
@@ -317,7 +336,7 @@ func (q *fdQueue) drainAll(dst []fdReq) []fdReq {
 	q.mu.Lock()
 	dst = append(dst, q.buf[q.head:]...)
 	clear(q.buf)
-	q.buf, q.head = q.buf[:0], 0
+	q.resetEmpty()
 	q.parked = false
 	q.mu.Unlock()
 	select {
