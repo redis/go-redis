@@ -498,6 +498,9 @@ type apBatch struct {
 	// pipeline retry reads it to charge those executions against MaxRetries.
 	// Zero on every other path.
 	fdAttempts int
+	// fdConn is the held connection that carried a PIPELINED command's reply,
+	// stamped with fdAttempts, for the pipeline duration metric.
+	fdConn *pool.Conn
 	// closed makes close() idempotent: on the async faces the dispatch closes
 	// the batch at the innermost exec seam (under the user hooks, so a hook
 	// reading a result after next() does not block on a channel its own
@@ -3452,7 +3455,7 @@ func (ap *AutoPipeliner) calculateDelay(queueLen int) time.Duration {
 // throughput of the same commands submitted through the engine.
 func (ap *AutoPipeliner) Pipeline() Pipeliner {
 	if ap.fd != nil {
-		pipe := Pipeline{exec: pipelineExecer(ap.fdPipelineExec)}
+		pipe := Pipeline{exec: pipelineExecer(ap.fdPipelineHooked)}
 		pipe.init()
 		return &pipe
 	}
@@ -3473,30 +3476,50 @@ func (ap *AutoPipeliner) Pipeline() Pipeliner {
 // batch larger than the whole submit queue. Those go to the ordinary pipeline
 // path, which is where they would have gone before this existed.
 //
-// More cases keep ordinary pipeline semantics:
+// fdPipelineExec is the TERMINAL of the client's ProcessPipelineHook chain
+// (see fdPipelineHooked), the place processPipeline takes in an ordinary
+// pipeline. So hooks wrap the whole execution, fallback and retry included,
+// exactly once, and the pooled paths below call the hookless processPipeline.
 //
-//   - ContextTimeoutEnabled: an ordinary pipeline bounds its socket I/O by the
-//     caller's ctx. The FD wait cannot abandon an admitted batch, so such a
-//     client keeps the pooled path.
-//   - Hooks, a Limiter, or an OTel recorder: an ordinary pipeline runs the
-//     ProcessPipelineHook chain, takes one Limiter decision for the whole
-//     batch, and records one pipeline duration. The FD path does none of these
-//     yet (it reports per command and admits per write chunk), so such a client
-//     keeps the pooled path. Any hook counts: a hook that passes the pipeline
-//     through cannot be told apart from one that wraps it.
+// On the FD path it records what an ordinary pipeline records: one pipeline
+// duration and, on failure, one pipeline-level error, instead of the reader's
+// per-command metrics.
+//
+// A Limiter is asked per WRITE CHUNK on the FD path, not once per batch: a
+// chunk can mix this batch with other callers' commands, so a batch longer
+// than MaxBatchSize (or MaxBatchBytes) can be partly admitted. An ordinary
+// pipeline makes one decision per attempt.
+//
+// Also:
+//
 //   - A retryable reply (LOADING and the like) on the FIRST command: an
 //     ordinary pipeline retries the whole batch, in order. FDPipelined settles
 //     retryable replies inline, so the batch is re-run the ordinary way, unless
 //     it holds a NoRetry command, which an ordinary pipeline does not retry
 //     either. A retryable reply on a later command is returned, as an ordinary
 //     pipeline does.
-func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error {
-	opt := ap.fd.client.opt
-	if opt.ContextTimeoutEnabled || opt.Limiter != nil ||
-		ap.pipeliner.hookCount() > 0 || otel.Enabled() {
+//
+// fdPipelineHooked is Pipeline().Exec on a full-duplex autopipeliner: the
+// client's pipeline hooks around fdPipelineExec.
+//
+// ContextTimeoutEnabled keeps the pooled path: an ordinary pipeline bounds its
+// socket I/O by the caller's ctx, and the FD wait cannot abandon an admitted
+// batch on a shared connection.
+func (ap *AutoPipeliner) fdPipelineHooked(ctx context.Context, cmds []Cmder) error {
+	c := ap.fd.client
+	if c.opt.ContextTimeoutEnabled {
 		return ap.pipeliner.processPipelineHook(ctx, cmds)
 	}
-	used, err := ap.fdPipelined(ctx, cmds)
+	return c.wrapPipelineHooks(ap.fdPipelineExec)(ctx, cmds)
+}
+
+func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error {
+	opt := ap.fd.client.opt
+	var start time.Time
+	if otel.GetPipelineOperationDurationCallback() != nil {
+		start = time.Now()
+	}
+	used, cn, err := ap.fdPipelined(ctx, cmds)
 	// An ordinary pipeline allows MaxRetries+1 executions. The FD engine may
 	// already have issued the batch more than once (a connection-error replay),
 	// so the re-run gets what is left.
@@ -3514,6 +3537,9 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 		}
 	}
 	if !ineligible && !retry {
+		if used > 0 { // admitted and run on the FD path
+			ap.fdPipelineMetrics(ctx, start, cmds, used, cn)
+		}
 		return err
 	}
 	// Clear the per-command errors FDPipelined may have stamped, then run the
@@ -3521,13 +3547,15 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 	for _, cmd := range cmds {
 		cmd.SetErr(nil)
 	}
+	// Hookless processPipeline: this is already the terminal of the hook
+	// chain. The pooled run records its own pipeline metric.
 	if ineligible {
-		return ap.pipeliner.processPipelineHook(ctx, cmds)
+		return ap.fd.client.processPipeline(ctx, cmds)
 	}
 	// The re-run runs remaining+1 times at most, so FD attempts plus re-runs
 	// never exceed MaxRetries+1, after the backoff an ordinary pipeline sleeps
-	// before its next retry. The hook chain is not involved: this path only
-	// runs when no hooks are installed (see above).
+	// before its next retry. Inside the hook chain, like generalProcessPipeline's
+	// own retries; the pooled run records the pipeline metric.
 	c := ap.fd.client
 	if serr := internal.Sleep(ctx, c.retryBackoff(used)); serr != nil {
 		setCmdsErr(cmds, serr)

@@ -3,6 +3,10 @@ package redis
 import (
 	"context"
 	"errors"
+	"time"
+
+	"github.com/redis/go-redis/v9/internal/otel"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // Batch submission on the full-duplex wire.
@@ -71,18 +75,88 @@ var ErrFDPipelineDiverts = errors.New(
 // The commands are still completed individually by the reader, so after this
 // returns each cmd carries its own result and error.
 //
+// Hooks and metrics match an ordinary pipeline: the client's
+// ProcessPipelineHook chain runs around the batch (per-command ProcessHooks do
+// not, as in an ordinary pipeline), and an OTel recorder gets one pipeline
+// duration and, on failure, one pipeline-level error rather than per-command
+// metrics. A Limiter is the exception: the FD writer asks it once per write
+// chunk, and a chunk can mix this batch with other callers' commands, so a
+// batch longer than MaxBatchSize (or MaxBatchBytes) can be partly admitted.
+//
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
-	_, err := ap.fdPipelined(ctx, cmds)
-	return err
+	if ap.fd == nil {
+		return ErrFDPipelineUnavailable
+	}
+	return ap.fd.client.wrapPipelineHooks(func(ctx context.Context, cmds []Cmder) error {
+		var start time.Time
+		if otel.GetPipelineOperationDurationCallback() != nil {
+			start = time.Now()
+		}
+		used, cn, err := ap.fdPipelined(ctx, cmds)
+		if used > 0 {
+			ap.fdPipelineMetrics(ctx, start, cmds, used, cn)
+		}
+		return err
+	})(ctx, cmds)
 }
 
-// fdPipelined is FDPipelined that also reports how many times the engine
-// issued the batch: 1, plus one per connection-error replay (the highest
-// attempt count across its commands). 0 when nothing was admitted.
-func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, error) {
+// wrapPipelineHooks folds the client's current hooks around next, in the same
+// order the hook state builds its pipeline chain, so next runs exactly where
+// processPipeline runs in an ordinary pipeline. It reads the live hook
+// snapshot, so a hook added after the autopipeliner was built is honored.
+func (hs *hooksMixin) wrapPipelineHooks(next ProcessPipelineHook) ProcessPipelineHook {
+	st := hs.state.Load()
+	for i := len(st.slice) - 1; i >= 0; i-- {
+		if wrapped := st.slice[i].ProcessPipelineHook(next); wrapped != nil {
+			next = wrapped
+		}
+	}
+	return next
+}
+
+// fdPipelineMetrics records an FD batch the way generalProcessPipeline records
+// an ordinary pipeline: one duration with the command count and attempts, and
+// one error when the pipeline as a whole failed. The reader skips its
+// per-command metrics for pipelined commands, so nothing is counted twice.
+func (ap *AutoPipeliner) fdPipelineMetrics(ctx context.Context, start time.Time, cmds []Cmder, attempts int, cn *pool.Conn) {
+	perr := fdPipelineLevelErr(cmds)
+	db := ap.fd.client.opt.DB
+	ap.fd.emitMetricsGuarded(ctx, func() {
+		if cb := otel.GetPipelineOperationDurationCallback(); cb != nil {
+			cb(ctx, time.Since(start), "PIPELINE", len(cmds), attempts, perr, cn, db)
+		}
+		if perr != nil {
+			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+				errorType, statusCode, isInternal := classifyCommandErrorGuarded(perr)
+				errorCallback(ctx, errorType, cn, statusCode, isInternal, attempts-1)
+			}
+		}
+	})
+}
+
+// fdPipelineLevelErr is the error an ordinary pipeline would report for the
+// batch: the first transport (non-Redis) error, else the first command's reply
+// error. pipelineReadCmds returns exactly that.
+func fdPipelineLevelErr(cmds []Cmder) error {
+	for _, cmd := range cmds {
+		if e := cmd.rawErr(); e != nil && !isRedisError(e) {
+			return e
+		}
+	}
+	if len(cmds) > 0 {
+		return cmds[0].rawErr()
+	}
+	return nil
+}
+
+// fdPipelined runs an eligible batch on the FD path and reports how many times
+// the engine issued it (1, plus one per connection-error replay: the highest
+// attempt count across its commands; 0 when nothing was admitted) and the held
+// connection its replies came back on.
+func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, *pool.Conn, error) {
 	if len(cmds) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	// A redirect-aware engine is a cluster node child. It is reachable (the
 	// child is the node client's cached async autopipeliner, which
@@ -90,7 +164,7 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, er
 	// command off the pipe, which would let the rest of the pipeline run ahead
 	// of it. Such a batch keeps the node client's ordinary pipeline, as before.
 	if ap.fd == nil || ap.fd.redirectAware {
-		return 0, ErrFDPipelineUnavailable
+		return 0, nil, ErrFDPipelineUnavailable
 	}
 	// Refuse a batch containing anything that would leave the pipe. Checked for
 	// EVERY command before anything is submitted, so the call either goes as one
@@ -98,12 +172,12 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, er
 	// diverted command complete out of order relative to its neighbours.
 	for _, cmd := range cmds {
 		if cmd == nil {
-			return 0, ErrFDPipelineDiverts
+			return 0, nil, ErrFDPipelineDiverts
 		}
 		if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) ||
 			isBlockingCmd(cmd) || isHImportCmd(cmd) ||
 			(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) {
-			return 0, ErrFDPipelineDiverts
+			return 0, nil, ErrFDPipelineDiverts
 		}
 		// A NoRetry command makes the whole batch unreplayable: an ordinary
 		// pipeline holding one retries nothing after a connection error. The FD
@@ -111,17 +185,17 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, er
 		// so the commands before it could run twice. Keep such a batch off the
 		// pipe.
 		if fdNoRetrySafe(cmd) {
-			return 0, ErrFDPipelineDiverts
+			return 0, nil, ErrFDPipelineDiverts
 		}
 	}
 	batches, err := ap.fd.submitBatch(ctx, cmds)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if batches == nil {
 		// Submit-time rejection (closed, or ctx expired while backpressured).
 		// Every command carries its own error; report the first.
-		return 0, cmdsFirstErr(cmds)
+		return 0, nil, cmdsFirstErr(cmds)
 	}
 	// Mirror submit()'s contract on the deferred face: the batch is installed on
 	// the command so its result accessors self-gate, which matters for a caller
@@ -132,6 +206,7 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, er
 		}
 	}
 	var first error
+	var cn *pool.Conn
 	attempts := 1
 	for i, cmd := range cmds {
 		// AutoFuture.Wait carries the executor-goroutine self-deadlock guard, so
@@ -144,8 +219,11 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, er
 		if a := batches[i].fdAttempts; a > attempts {
 			attempts = a
 		}
+		if c := batches[i].fdConn; c != nil {
+			cn = c
+		}
 	}
-	return attempts, first
+	return attempts, cn, first
 }
 
 // submitBatch enqueues cmds as one contiguous run and returns their completion
@@ -168,27 +246,16 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 		setCmdsErr(cmds, ErrClosed)
 		return nil, nil
 	}
-	// Hooks are per COMMAND on this engine (withProcessHook, not the batch
-	// pipeline hook), matching submit(): a batch submitted here is reported as N
-	// individual commands, exactly as if they had been submitted one by one.
-	hooked := fd.ap.pipeliner.hookCount() > 0
-
+	// No per-command ProcessHooks here: the batch runs inside the client's
+	// ProcessPipelineHook chain (FDPipelined, fdPipelineHooked), and an ordinary
+	// pipeline runs only that chain, not a ProcessHook per command.
 	reqs := make([]fdReq, len(cmds))
 	batches := make([]*apBatch, len(cmds))
-	var hookDones []chan struct{}
-	if hooked {
-		hookDones = make([]chan struct{}, len(cmds))
-	}
 	for i, cmd := range cmds {
 		b := newAPBatch() // never pooled: pooled batches are the blocking face's single-waiter signal
 		b.fdAttempts = 1  // the first issue; replays and the reader raise it
 		batches[i] = b
-		var hd chan struct{}
-		if hooked {
-			hd = make(chan struct{})
-			hookDones[i] = hd
-		}
-		reqs[i] = fdReq{cmd: cmd, batch: b, hookDone: hd, ctx: ctx, attempts: 1, pipelined: true}
+		reqs[i] = fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1, pipelined: true}
 	}
 
 	fd.submitMu.RLock()
@@ -208,15 +275,6 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 		}
 		switch fd.q.pushBatch(reqs) {
 		case fdPushOK:
-			// Hosts start only after admission, so a rejected batch never leaks
-			// goroutines. Under the gate, so the Add is ordered before the shutdown
-			// drain's WLock.
-			if hooked {
-				for i := range cmds {
-					fd.hostWg.Add(1)
-					go fd.hostHook(ctx, cmds[i], batches[i], hookDones[i])
-				}
-			}
 			fd.submitMu.RUnlock()
 			return batches, nil
 		case fdPushClosed:

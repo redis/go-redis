@@ -1800,9 +1800,13 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// here would reach the reader's session-failure recovery BEFORE this req
 					// is advanced, so recovery would re-own the already-consumed reply and
 					// replay it — a mutating command twice.
-					fd.reportReplyMetrics(octx, req, e, cn)
 					if req.pipelined {
+						// A pipelined command is measured with its batch, as in an
+						// ordinary pipeline (fdPipelineMetrics), not per command.
 						req.batch.fdAttempts = req.attempts // published by complete()
+						req.batch.fdConn = cn
+					} else {
+						fd.reportReplyMetrics(octx, req, e, cn)
 					}
 					req.complete() // wake the caller, or hand off to the hook host
 					done++
@@ -2856,7 +2860,9 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 			// reqs unsettled.
 			fdSetErrSafe(reqs[i].cmd, err)
 		}
-		if errorCallback != nil {
+		// A pipelined command's failure is reported once for its batch
+		// (fdPipelineMetrics), as an ordinary pipeline does.
+		if errorCallback != nil && !reqs[i].pipelined {
 			octx := reqs[i].ctx
 			if octx == nil {
 				octx = context.Background()
