@@ -123,7 +123,10 @@ func (ap *AutoPipeliner) fdPipelineMetrics(ctx context.Context, start time.Time,
 	perr := fdPipelineLevelErr(cmds)
 	db := ap.fd.client.opt.DB
 	ap.fd.emitMetricsGuarded(ctx, func() {
-		if cb := otel.GetPipelineOperationDurationCallback(); cb != nil {
+		// A zero start means no duration callback existed when the operation
+		// began (a recorder installed mid-flight). Record no duration then, as
+		// an ordinary pipeline does, rather than time.Since(time.Time{}).
+		if cb := otel.GetPipelineOperationDurationCallback(); cb != nil && !start.IsZero() {
 			cb(ctx, time.Since(start), "PIPELINE", len(cmds), attempts, perr, cn, db)
 		}
 		if perr != nil {
