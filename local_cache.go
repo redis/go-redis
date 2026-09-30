@@ -586,13 +586,23 @@ func (c *LocalCache) fulfill(cacheKey string, token, ownerConnID uint64, value [
 	}
 	s.closeWaitersLocked(entry)
 
-	s.evictIfNeededLocked()
+	// The entry just fulfilled is not a candidate in its own eviction pass. It
+	// is born with its second-chance bit clear, so in a warm shard (every
+	// resident entry read) it would be the only clear-bit candidate and be
+	// evicted right here: a memory-capped shard, where the value only goes
+	// over the cap now, could then admit nothing, and since a clear candidate
+	// always existed the sweep that resets the others never ran. Excluding it
+	// lets that sweep run and take the oldest entry instead.
+	s.evictIfNeededLocked(entry)
 	current, stillExists := s.entries[cacheKey]
 	return stillExists && current == entry && entry.state == cacheEntryValid
 }
 
-// restoreAccessToken resets a Valid entry's reader-access recency (lastAccessNs)
-// to accessNs, undoing the fresh token fulfill stamps. The refresh republish calls
+// restoreAccessToken resets a Valid entry's reader-access recency to what the
+// invalidated entry had: lastAccessNs to accessNs, undoing the fresh token
+// fulfill stamps, and the second-chance bit to read. Restoring the bit keeps a
+// refreshed hot key from becoming the first eviction victim merely because the
+// refresh republished it with a clear bit. The refresh republish calls
 // this so a background refresh does NOT count as a reader access: otherwise the
 // refreshed key stays above the refresh horizon and every later invalidation
 // refreshes it again even after all readers stop — a self-sustaining refetch loop
@@ -600,12 +610,13 @@ func (c *LocalCache) fulfill(cacheKey string, token, ownerConnID uint64, value [
 // call has its newer token overwritten, which only UNDER-refreshes that key (the
 // next reader refetches), never serves stale. No-op if the entry is gone or not
 // Valid.
-func (c *LocalCache) restoreAccessToken(cacheKey string, accessNs int64) {
+func (c *LocalCache) restoreAccessToken(cacheKey string, accessNs int64, read bool) {
 	s := c.shardFor(cacheKey)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry, ok := s.entries[cacheKey]; ok && entry.state == cacheEntryValid {
 		entry.lastAccessNs.Store(accessNs)
+		entry.readSinceSweep.Store(read)
 	}
 }
 
@@ -844,11 +855,14 @@ func (s *cacheShard) overCapacityLocked() bool {
 // well-sized caches) until under capacity. Used by Set/Fulfill: it prefers a
 // Valid victim but falls back to the oldest IN_PROGRESS placeholder to keep the
 // hard cap (that placeholder's Fulfill then fails and its waiters refetch).
-func (s *cacheShard) evictIfNeededLocked() {
+//
+// keep, when non-nil, is never chosen: it is the entry the caller just
+// published and must not evict in the same pass.
+func (s *cacheShard) evictIfNeededLocked(keep *cacheEntry) {
 	for s.overCapacityLocked() {
-		victim := s.oldestLocked(cacheEntryValid)
+		victim := s.oldestLocked(cacheEntryValid, keep)
 		if victim == nil {
-			victim = s.oldestLocked(cacheEntryInProgress)
+			victim = s.oldestLocked(cacheEntryInProgress, keep)
 		}
 		if victim == nil {
 			return
@@ -862,7 +876,7 @@ func (s *cacheShard) evictIfNeededLocked() {
 // peer's in-flight fetch.
 func (s *cacheShard) evictValidLocked() {
 	for s.overCapacityLocked() {
-		victim := s.oldestLocked(cacheEntryValid)
+		victim := s.oldestLocked(cacheEntryValid, nil)
 		if victim == nil {
 			return
 		}
@@ -871,7 +885,8 @@ func (s *cacheShard) evictValidLocked() {
 }
 
 // oldestLocked returns the eviction victim in the given state, or nil when no
-// entry is in that state.
+// entry is in that state. keep, when non-nil, is skipped entirely: it is
+// neither a victim nor part of the sweep.
 //
 // Second chance. A read no longer stamps a recency token (that store was the
 // dominant cost of a cache hit; see cacheEntry.readSinceSweep), so recency is
@@ -888,12 +903,12 @@ func (s *cacheShard) evictValidLocked() {
 // DETERMINISTIC. Go randomises map iteration, so picking "any entry with a
 // clear bit" would evict a different key run to run, which callers (and the
 // LRU tests) reasonably do not expect.
-func (s *cacheShard) oldestLocked(state cacheEntryState) *cacheEntry {
+func (s *cacheShard) oldestLocked(state cacheEntryState, keep *cacheEntry) *cacheEntry {
 	var victim, fallback *cacheEntry
 	var oldestNs, oldestAny int64 = math.MaxInt64, math.MaxInt64
 	swept := false
 	for _, e := range s.entries {
-		if e.state != state {
+		if e.state != state || e == keep {
 			continue
 		}
 		ns := e.lastAccessNs.Load()
@@ -915,7 +930,7 @@ func (s *cacheShard) oldestLocked(state cacheEntryState) *cacheEntry {
 		// Every candidate had been read: consume their second chances so the
 		// next pass can distinguish them again.
 		for _, e := range s.entries {
-			if e.state == state {
+			if e.state == state && e != keep {
 				e.readSinceSweep.Store(false)
 			}
 		}
