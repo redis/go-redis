@@ -89,7 +89,7 @@ type UniversalOptions struct {
 	WriteTimeout time.Duration
 
 	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
-	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
+	// See https://redis.io/docs/latest/develop/clients/go/produsage/#timeouts
 	ContextTimeoutEnabled bool
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
