@@ -200,109 +200,95 @@ func buildCacheKeyNS(cmd Cmder, ns string) (string, bool) {
 // cacheKeyScratchMaxCap bounds the buffer capacity kept in the pool.
 const cacheKeyScratchMaxCap = 64 << 10
 
-// keyArg renders the key argument at pos exactly as proto.Writer sends it to
-// the server, so invalidation lookups match the key names in the server's
-// "invalidate" pushes. Only types whose stringArg rendering is byte-identical
-// to the wire encoding are accepted (fmt.Sprint of any integer matches the
+// isWireKeyType reports whether a key argument of v's type renders, through
+// stringArg, exactly as proto.Writer sends it to the server, so invalidation
+// lookups match the key names in the server's "invalidate" pushes. Only
+// byte-identical types are accepted (fmt.Sprint of any integer matches the
 // writer's base-10 strconv output); for anything else — pointers, bools,
 // times, durations, floats, BinaryMarshaler values — the rendering can
 // diverge, the invalidation would never match, and the entry would be served
-// stale forever, so ok=false and the caller skips caching (see processCached).
-func keyArg(cmd Cmder, pos int) (string, bool) {
-	args := cmd.Args()
-	if pos < 0 || pos >= len(args) {
-		return "", false
-	}
-	switch args[pos].(type) {
+// stale forever, so the caller skips caching (see processCached).
+func isWireKeyType(v any) bool {
+	switch v.(type) {
 	case string, []byte,
 		int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64:
-		return cmd.stringArg(pos), true
+		return true
 	}
-	return "", false
+	return false
 }
 
-// extractRedisKeys returns the Redis key arguments from cmd. The result lets
-// the cache map incoming invalidations back to affected entries. Returns nil
-// (caller skips caching) when any key
-// argument cannot be rendered in its wire form (see keyArg).
-func extractRedisKeys(cmd Cmder) []string {
+// cscKeySpan returns the inclusive argument range [lo, hi] that holds cmd's
+// Redis keys. For every cacheable command shape the keys are contiguous.
+// ok is false when cmd has no key.
+func cscKeySpan(cmd Cmder) (lo, hi int, ok bool) {
 	firstKey := cmdFirstKeyPosWithInfo(cmd, nil)
 	if firstKey == 0 {
-		return nil
+		return 0, 0, false
 	}
-
 	argsLen := len(cmd.Args())
 	if firstKey >= argsLen {
-		return nil
+		return 0, 0, false
 	}
 
 	switch cmd.Name() {
 	// All remaining args from firstKeyPos are keys.
 	case "mget", "exists", "sdiff", "sinter", "sunion":
-		keys := make([]string, 0, argsLen-firstKey)
-		for i := firstKey; i < argsLen; i++ {
-			k, ok := keyArg(cmd, i)
-			if !ok {
-				return nil
-			}
-			keys = append(keys, k)
-		}
-		return keys
+		return firstKey, argsLen - 1, true
 
 	// Numkeys pattern: numkeys at args[1], keys from args[2].
 	case "sintercard", "zdiff", "zinter", "zunion":
 		if argsLen < 3 {
-			return nil
+			return 0, 0, false
 		}
-		numKeys, err := strconv.Atoi(cmd.stringArg(1))
-		if err != nil || numKeys <= 0 {
-			return nil
+		numKeys, ok := cscNumKeys(cmd)
+		if !ok || numKeys <= 0 {
+			return 0, 0, false
 		}
-		keys := make([]string, 0, numKeys)
-		for i := 2; i < 2+numKeys && i < argsLen; i++ {
-			k, ok := keyArg(cmd, i)
-			if !ok {
-				return nil
-			}
-			keys = append(keys, k)
-		}
-		return keys
+		return 2, min(2+numKeys, argsLen) - 1, true
 
 	// LCS: exactly two consecutive keys starting at firstKeyPos.
 	case "lcs":
 		if firstKey+1 >= argsLen {
-			return nil
+			return 0, 0, false
 		}
-		k1, ok1 := keyArg(cmd, firstKey)
-		k2, ok2 := keyArg(cmd, firstKey+1)
-		if !ok1 || !ok2 {
-			return nil
-		}
-		return []string{k1, k2}
+		return firstKey, firstKey + 1, true
 
 	// JSON.MGET: keys from firstKeyPos to second-to-last (last arg is the
 	// JSON path, not a key).
 	case "json.mget":
-		lastKey := argsLen - 2
-		if lastKey < firstKey {
-			return nil
+		if argsLen-2 < firstKey {
+			return 0, 0, false
 		}
-		keys := make([]string, 0, lastKey-firstKey+1)
-		for i := firstKey; i <= lastKey; i++ {
-			k, ok := keyArg(cmd, i)
-			if !ok {
-				return nil
-			}
-			keys = append(keys, k)
-		}
-		return keys
+		return firstKey, argsLen - 2, true
 	}
 
 	// Single key at firstKeyPos (GET, HGET, LRANGE, ...).
-	k, ok := keyArg(cmd, firstKey)
-	if !ok {
-		return nil
+	return firstKey, firstKey, true
+}
+
+// cscNumKeys parses the numkeys argument (args[1]). The typed commands pass
+// an int, which is read without rendering it to a string.
+func cscNumKeys(cmd Cmder) (int, bool) {
+	switch v := cmd.Args()[1].(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
 	}
-	return []string{k}
+	n, err := strconv.Atoi(cmd.stringArg(1))
+	return n, err == nil
+}
+
+// cscKeysRenderable reports whether every key in [lo, hi] is a type
+// isWireKeyType accepts. It allocates nothing, so processCached runs it on every read,
+// before it builds the cache key.
+func cscKeysRenderable(cmd Cmder, lo, hi int) bool {
+	args := cmd.Args()
+	for i := lo; i <= hi; i++ {
+		if !isWireKeyType(args[i]) {
+			return false
+		}
+	}
+	return true
 }
