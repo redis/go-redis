@@ -42,7 +42,9 @@ var ErrFDPipelineUnavailable = errors.New(
 // cannot stream (blocking, per-command read timeout, runs-outside-pipeline,
 // HIMPORT, or one the caller's own mustDivert rejects). Such a command has to
 // leave the pipe, which would break the batch's contiguity, so the whole call is
-// refused instead of being silently split.
+// refused instead of being silently split. A NoRetry command (e.g. RawWriteTo)
+// is refused too: it makes the batch unreplayable as a unit, which the pipe's
+// per-command recovery cannot honor.
 var ErrFDPipelineDiverts = errors.New(
 	"redis: FDPipelined got a command that must be diverted off the full-duplex pipe")
 
@@ -101,6 +103,14 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, er
 		if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) ||
 			isBlockingCmd(cmd) || isHImportCmd(cmd) ||
 			(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) {
+			return 0, ErrFDPipelineDiverts
+		}
+		// A NoRetry command makes the whole batch unreplayable: an ordinary
+		// pipeline holding one retries nothing after a connection error. The FD
+		// tail recovery replays per command, up to the first sent NoRetry one,
+		// so the commands before it could run twice. Keep such a batch off the
+		// pipe.
+		if fdNoRetrySafe(cmd) {
 			return 0, ErrFDPipelineDiverts
 		}
 	}
@@ -171,6 +181,7 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 	}
 	for i, cmd := range cmds {
 		b := newAPBatch() // never pooled: pooled batches are the blocking face's single-waiter signal
+		b.fdAttempts = 1  // the first issue; replays and the reader raise it
 		batches[i] = b
 		var hd chan struct{}
 		if hooked {
