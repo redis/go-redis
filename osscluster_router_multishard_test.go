@@ -42,6 +42,15 @@ func (h *multiShardCaptureHook) ProcessHook(next ProcessHook) ProcessHook {
 	}
 }
 
+// take returns the recorded commands and resets the record.
+func (h *multiShardCaptureHook) take() [][]interface{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sent := h.sent
+	h.sent = nil
+	return sent
+}
+
 func (h *multiShardCaptureHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return next
 }
@@ -82,28 +91,24 @@ func TestClusterMultiShardMSetNonStringValues(t *testing.T) {
 		t.Fatalf("MSet returned error: %v", err)
 	}
 
-	hook.mu.Lock()
-	defer hook.mu.Unlock()
 	want := []interface{}{"mset", "{t}a", 1, "{t}b", []byte("x"), "{t}c", "s"}
-	if len(hook.sent) != 1 || !reflect.DeepEqual(hook.sent[0], want) {
-		t.Fatalf("sent %v, want [%v]", hook.sent, want)
+	if sent := hook.take(); len(sent) != 1 || !reflect.DeepEqual(sent[0], want) {
+		t.Fatalf("sent %v, want [%v]", sent, want)
 	}
-	hook.sent = nil
-	hook.mu.Unlock()
 
 	// Keys in different slots are split per slot, each keeping its value.
 	if err := client.MSet(ctx, "a", 1, "b", int64(2)).Err(); err != nil {
 		t.Fatalf("MSet returned error: %v", err)
 	}
-	hook.mu.Lock()
+	sent := hook.take()
 	got := map[string]interface{}{}
-	for _, args := range hook.sent {
+	for _, args := range sent {
 		if len(args) != 3 {
 			t.Fatalf("unexpected sub-command %v", args)
 		}
 		got[args[1].(string)] = args[2]
 	}
 	if !reflect.DeepEqual(got, map[string]interface{}{"a": 1, "b": int64(2)}) {
-		t.Fatalf("sent %v", hook.sent)
+		t.Fatalf("sent %v", sent)
 	}
 }
