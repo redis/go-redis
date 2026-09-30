@@ -184,13 +184,13 @@ type cscRefreshTarget struct {
 	// invalidated), so this narrows the jam window rather than closing it.
 	valBytes int
 	// accessNs is the evicted entry's reader-access token (lastAccessNs), captured
-	// under the shard lock in collectHotAndDelete. The refresh republish restores it
-	// after fulfill so a background refresh does NOT count as a fresh reader access:
-	// fulfill stamps a new token, which would keep the key above the refresh horizon
-	// forever and make each invalidation refresh it again even after all readers stop
-	// (a self-sustaining refetch loop, contrary to the cold-key guard). Restoring the
-	// original token means only real reader activity keeps a key eligible for
-	// refresh. See restoreAccessToken.
+	// under the shard lock in collectHotAndDelete. The refresh republish keeps it
+	// so a background refresh does NOT count as a fresh reader access: a new token
+	// would keep the key above the refresh horizon forever and make each
+	// invalidation refresh it again even after all readers stop (a self-sustaining
+	// refetch loop, contrary to the cold-key guard). Keeping the original token
+	// means only real reader activity keeps a key eligible for refresh. See
+	// stageRefreshAccess.
 	accessNs int64
 	// read is the evicted entry's second-chance bit, restored with accessNs so
 	// the refreshed entry keeps the eviction standing the old one had.
@@ -913,16 +913,16 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					key:     kept[i].cacheKey,
 					token:   kept[i].token,
 				}
+				// Keep the invalidated entry's recency: a background refresh is not a
+				// reader read, so it must not renew the key's refresh eligibility (see
+				// stageRefreshAccess). It is staged on the reservation so the publish
+				// applies it atomically. Refresh runs only with the built-in
+				// *LocalCache; the hook path fulfills that same cache.
+				if lc, ok := c.csc.(*LocalCache); ok {
+					lc.stageRefreshAccess(kept[i].cacheKey, kept[i].token, kept[i].accessNs, kept[i].read)
+				}
 				if c.fulfillCached(kept[i].cacheKey, kept[i].token, fc) {
 					published++
-					// Undo the fresh access token fulfill stamped: a background refresh is
-					// not a reader read, so it must not renew the key's refresh eligibility,
-					// or each invalidation would keep refreshing it after all readers stop
-					// (see restoreAccessToken). Refresh runs only with the built-in
-					// *LocalCache; the hook path fulfills that same cache.
-					if lc, ok := c.csc.(*LocalCache); ok {
-						lc.restoreAccessToken(kept[i].cacheKey, kept[i].accessNs, kept[i].read)
-					}
 				}
 				// fulfillCached cancels on its own failure paths, so the token is
 				// settled either way.
