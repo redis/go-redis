@@ -9027,6 +9027,7 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
+	cmd.val = nil
 	section := ""
 	scanner := bufio.NewScanner(strings.NewReader(val))
 	for scanner.Scan() {

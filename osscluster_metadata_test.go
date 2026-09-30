@@ -1672,14 +1672,79 @@ func TestClusterKeylessSelectionRespectsTopologyHealth(t *testing.T) {
 	}
 }
 
+func TestClusterKeylessPipelineTopology(t *testing.T) {
+	for _, readOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("readOnly=%v", readOnly), func(t *testing.T) {
+			var cfg *CommandMetadataConfig
+			if readOnly {
+				cfg = &CommandMetadataConfig{Overrides: map[string]*CommandInfo{
+					"custom.read": {Name: "custom.read", Arity: 1, Flags: []string{"readonly"}},
+				}}
+			}
+			c := newMetadataTestCluster(t, cfg)
+			c.opt.MaxRedirects = 1
+			c.opt.ReadOnly = readOnly
+			nodeDecls := []Node{{ID: "stale", Endpoint: "127.0.0.1", Port: 7351, Role: "master", Health: "fail"}}
+			if readOnly {
+				nodeDecls = append(nodeDecls, Node{ID: "replica", Endpoint: "127.0.0.1", Port: 7352, Role: "replica", Health: "online"})
+			}
+			stale, err := newClusterStateFromShards(c.nodes, []ClusterShard{{
+				Slots: []SlotRange{{Start: 0, End: 16383}}, Nodes: nodeDecls,
+			}}, "127.0.0.1:7351", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			healthy, err := newClusterStateFromShards(c.nodes, []ClusterShard{{
+				Slots: []SlotRange{{Start: 0, End: 16383}}, Nodes: []Node{{ID: "healthy", Endpoint: "127.0.0.1", Port: 7352, Role: "master", Health: "online"}},
+			}}, "127.0.0.1:7352", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls, reloads atomic.Int32
+			healthy.Masters[0].Client.AddHook(clusterMetadataNodeHook{pipeline: func(_ context.Context, cmds []Cmder) error {
+				calls.Add(1)
+				for _, cmd := range cmds {
+					cmd.(*StringCmd).SetVal("value")
+				}
+				return nil
+			}})
+			c.state.state.Store(stale)
+			c.state.load = func(context.Context) (*clusterState, error) {
+				reloads.Add(1)
+				return healthy, nil
+			}
+			cmd := NewStringCmd(context.Background(), "echo", "value")
+			if readOnly {
+				cmd = NewStringCmd(context.Background(), "custom.read")
+			}
+			err = c.processPipeline(context.Background(), []Cmder{cmd})
+			if readOnly && reloads.Load() != 0 {
+				t.Fatal("online replica should be used without a topology reload")
+			}
+			if !readOnly && reloads.Load() == 0 {
+				t.Fatal("stale topology was not reloaded")
+			}
+			if err != nil || calls.Load() != 1 {
+				t.Fatalf("err=%v, executions=%d, reloads=%d; want successful execution", err, calls.Load(), reloads.Load())
+			}
+		})
+	}
+}
+
 func TestClusterRetriesAfterUnhealthyTopologySelection(t *testing.T) {
-	for _, pipeline := range []bool{false, true} {
-		name := "command"
-		if pipeline {
-			name = "pipeline"
-		}
+	for _, name := range []string{"command", "pipeline", "all shards", "all nodes", "fanout retry limit"} {
 		t.Run(name, func(t *testing.T) {
 			c := newMetadataTestCluster(t, nil)
+			c.opt.MaxRedirects = 1
+			if strings.HasPrefix(name, "all ") || name == "fanout retry limit" {
+				request := routing.ReqAllShards
+				if name == "all nodes" {
+					request = routing.ReqAllNodes
+				}
+				c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
+					return &routing.CommandPolicy{Request: request, Response: routing.RespAllSucceeded}
+				}))
+			}
 			stale, err := newClusterStateFromShards(c.nodes, []ClusterShard{{
 				Slots: []SlotRange{{Start: 0, End: 16383}},
 				Nodes: []Node{{
@@ -1716,9 +1781,18 @@ func TestClusterRetriesAfterUnhealthyTopologySelection(t *testing.T) {
 			})
 			c.state.state.Store(stale)
 			c.state.load = func(context.Context) (*clusterState, error) { return healthy, nil }
+			if name == "fanout retry limit" {
+				c.state.load = func(context.Context) (*clusterState, error) { return stale, nil }
+			}
 
 			cmd := NewStringCmd(context.Background(), "get", "key")
-			if pipeline {
+			if name == "fanout retry limit" {
+				if err := c.process(context.Background(), cmd); !errors.Is(err, errClusterTopologyUnhealthy) || calls.Load() != 0 {
+					t.Fatalf("error=%v calls=%d, want unhealthy topology before dispatch", err, calls.Load())
+				}
+				return
+			}
+			if name == "pipeline" {
 				if err := c.processPipeline(context.Background(), []Cmder{cmd}); err != nil {
 					t.Fatal(err)
 				}
@@ -1891,39 +1965,54 @@ func TestClusterMultiShardRedirectRetriesOnlyAffectedSubgroup(t *testing.T) {
 }
 
 func TestClusterAllShardsRetriesOnlyFailedTarget(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	one, _ := c.nodes.GetOrCreate("127.0.0.1:7201")
-	two, _ := c.nodes.GetOrCreate("127.0.0.1:7202")
-	installMetadataClusterState(c, []*clusterNode{one, two})
+	for _, tc := range []struct {
+		name      string
+		failure   error
+		wantCalls int
+		wantErr   error
+	}{
+		{"transient target error", io.EOF, 2, nil},
+		{"topology error after dispatch", errClusterTopologyUnhealthy, 1, errClusterTopologyUnhealthy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newMetadataTestCluster(t, nil)
+			ctx := context.Background()
+			one, _ := c.nodes.GetOrCreate("127.0.0.1:7201")
+			two, _ := c.nodes.GetOrCreate("127.0.0.1:7202")
+			installMetadataClusterState(c, []*clusterNode{one, two})
 
-	var mu sync.Mutex
-	oneCalls, twoCalls := 0, 0
-	one.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		mu.Lock()
-		oneCalls++
-		mu.Unlock()
-		cmd.(*StatusCmd).SetVal("PONG")
-		return nil
-	}})
-	two.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		mu.Lock()
-		twoCalls++
-		call := twoCalls
-		mu.Unlock()
-		if call == 1 {
-			return io.EOF
-		}
-		cmd.(*StatusCmd).SetVal("PONG")
-		return nil
-	}})
+			var mu sync.Mutex
+			oneCalls, twoCalls := 0, 0
+			one.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+				mu.Lock()
+				oneCalls++
+				mu.Unlock()
+				cmd.(*StatusCmd).SetVal("PONG")
+				return nil
+			}})
+			two.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+				mu.Lock()
+				twoCalls++
+				call := twoCalls
+				mu.Unlock()
+				if call == 1 {
+					return tc.failure
+				}
+				cmd.(*StatusCmd).SetVal("PONG")
+				return nil
+			}})
 
-	cmd := NewStatusCmd(ctx, "ping")
-	if err := c.process(ctx, cmd); err != nil {
-		t.Fatal(err)
-	}
-	if oneCalls != 1 || twoCalls != 2 || cmd.Val() != "PONG" {
-		t.Fatalf("one=%d two=%d value=%q, want 1/2/PONG", oneCalls, twoCalls, cmd.Val())
+			cmd := NewStatusCmd(ctx, "ping")
+			if err := c.process(ctx, cmd); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error=%v, want %v", err, tc.wantErr)
+			}
+			if oneCalls != 1 || twoCalls != tc.wantCalls {
+				t.Fatalf("one=%d two=%d, want 1/%d", oneCalls, twoCalls, tc.wantCalls)
+			}
+			if tc.wantErr == nil && cmd.Val() != "PONG" {
+				t.Fatalf("value=%q, want PONG", cmd.Val())
+			}
+		})
 	}
 }
 

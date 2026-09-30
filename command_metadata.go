@@ -1130,16 +1130,38 @@ func (c *baseClient) fetchCommandMetadata(ctx context.Context) (commandMetadataF
 
 	helloCmd := NewMapStringInterfaceCmd(ctx, "hello")
 	infoCmd := NewCommandsInfoCmd(ctx, "command")
-	if err := fetchClient.processPipeline(ctx, []Cmder{helloCmd, infoCmd}); err != nil {
-		return commandMetadataFetchResult{}, err
-	}
-	hello, err := helloCmd.Result()
+	err := fetchClient.processPipeline(ctx, []Cmder{helloCmd, infoCmd})
+	hello := helloCmd.Val()
 	if err != nil {
-		return commandMetadataFetchResult{}, err
+		// Match initConn's RESP2 fallback for servers that reject HELLO.
+		// Transport, parsing, and COMMAND errors still fail the refresh.
+		if !isRedisError(helloCmd.Err()) || infoCmd.Err() != nil {
+			return commandMetadataFetchResult{}, err
+		}
+		serverCmd := NewInfoCmd(ctx, "info", "server")
+		modulesCmd := NewMapStringInterfaceSliceCmd(ctx, "module", "list")
+		// The pool may lend a different connection now. Fetch COMMAND again
+		// alongside its identity rather than pairing replies across connections.
+		if err := fetchClient.processPipeline(ctx, []Cmder{serverCmd, modulesCmd, infoCmd}); err != nil {
+			return commandMetadataFetchResult{}, err
+		}
+		modules := make([]interface{}, len(modulesCmd.Val()))
+		for i, module := range modulesCmd.Val() {
+			name, nameOK := module["name"].(string)
+			_, versionOK := module["ver"].(int64)
+			if !nameOK || name == "" || !versionOK {
+				return commandMetadataFetchResult{}, fmt.Errorf("command metadata MODULE LIST reply has no module name or version")
+			}
+			modules[i] = module
+		}
+		hello = map[string]interface{}{
+			"version": serverCmd.Item("Server", "redis_version"),
+			"modules": modules,
+		}
 	}
 	serverVersion := helloServerVersion(hello)
 	if serverVersion == "" {
-		return commandMetadataFetchResult{}, fmt.Errorf("command metadata HELLO reply has no server version")
+		return commandMetadataFetchResult{}, fmt.Errorf("command metadata reply has no server version")
 	}
 	actualFp := helloServerFingerprint(hello)
 	if expectedFp != "" && actualFp != expectedFp {

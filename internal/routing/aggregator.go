@@ -79,13 +79,13 @@ func NewDefaultAggregator(isKeyed bool) ResponseAggregator {
 // AllSucceededAggregator returns one non-error reply if every shard succeeded,
 // propagates the first error otherwise.
 type AllSucceededAggregator struct {
-	err atomic.Value
+	err atomic.Pointer[error]
 	res atomic.Value
 }
 
 func (a *AllSucceededAggregator) Add(result interface{}, err error) error {
 	if err != nil {
-		a.err.CompareAndSwap(nil, err)
+		a.err.CompareAndSwap(nil, &err)
 		return nil
 	}
 
@@ -130,7 +130,7 @@ func (a *AllSucceededAggregator) Aggregate() (interface{}, error) {
 	var err error
 	res, e := a.res.Load(), a.err.Load()
 	if e != nil {
-		err = e.(error)
+		err = *e
 	}
 
 	return res, err
@@ -143,13 +143,13 @@ func (a *AllSucceededAggregator) AddWithKey(key string, result interface{}, err 
 // OneSucceededAggregator returns the first non-error reply,
 // if all shards errored, returns any one of those errors.
 type OneSucceededAggregator struct {
-	err atomic.Value
+	err atomic.Pointer[error]
 	res atomic.Value
 }
 
 func (a *OneSucceededAggregator) Add(result interface{}, err error) error {
 	if err != nil {
-		a.err.CompareAndSwap(nil, err)
+		a.err.CompareAndSwap(nil, &err)
 		return nil
 	}
 
@@ -196,8 +196,8 @@ func (a *OneSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
 
 func (a *OneSucceededAggregator) Aggregate() (interface{}, error) {
 	res, e := a.res.Load(), a.err.Load()
-	if res == nil {
-		return nil, e.(error)
+	if res == nil && e != nil {
+		return nil, *e
 	}
 
 	return res, nil

@@ -673,6 +673,111 @@ func TestCommandMetadataFetchRejectsAndAdoptsDifferentServer(t *testing.T) {
 	}
 }
 
+func TestCommandMetadataFetchWithoutHello(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		infoReply    string
+		moduleReply  string
+		commandReply string
+		retry        bool
+		wantErr      bool
+	}{
+		{name: "legacy module"},
+		{name: "missing version", infoReply: commandInfoTestBulk("# Server\r\n"), wantErr: true},
+		{name: "retry without version", retry: true, wantErr: true},
+		{name: "info denied", infoReply: "-NOPERM INFO denied\r\n", wantErr: true},
+		{name: "modules denied", moduleReply: "-NOPERM MODULE denied\r\n", wantErr: true},
+		{name: "malformed module", moduleReply: commandInfoTestArray(commandInfoTestBulk("invalid")), wantErr: true},
+		{name: "missing module version", moduleReply: commandInfoTestArray(commandInfoTestMap(commandInfoTestBulk("name"), commandInfoTestBulk("custom"))), wantErr: true},
+		{name: "command denied", commandReply: "-NOPERM COMMAND denied\r\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			var connections atomic.Int32
+			go func() {
+				for {
+					conn, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					id := connections.Add(1)
+					go serveTestRESPConn(conn, func(command string) string {
+						switch command {
+						case "hello":
+							return "-ERR unknown command 'hello'\r\n"
+						case "info":
+							if tc.retry && id >= 3 {
+								return commandInfoTestBulk("# Clients\r\nconnected_clients:1\r\n")
+							}
+							if tc.infoReply != "" {
+								return tc.infoReply
+							}
+							return commandInfoTestBulk("# Server\r\nredis_version:5.0.14\r\n")
+						case "module":
+							if tc.retry && id == 2 {
+								_ = conn.Close()
+								return ""
+							}
+							if tc.moduleReply != "" {
+								return tc.moduleReply
+							}
+							return commandInfoTestArray(commandInfoTestMap(
+								commandInfoTestBulk("name"), commandInfoTestBulk("custom"),
+								commandInfoTestBulk("ver"), commandInfoTestInt(int64(id)),
+							))
+						case "command":
+							if tc.commandReply != "" {
+								return tc.commandReply
+							}
+							return commandInfoTestArray(commandInfoTestEntry6(fmt.Sprintf("custom.read%d", id)))
+						default:
+							return "+OK\r\n"
+						}
+					})
+				}
+			}()
+			maxRetries := -1
+			if tc.retry {
+				maxRetries = 1
+			}
+			client := NewClient(&Options{
+				Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true, MaxRetries: maxRetries,
+				// Force fallback to borrow a different connection. Its identity and
+				// COMMAND reply must still describe the same server.
+				ConnMaxLifetime: time.Nanosecond,
+			})
+			t.Cleanup(func() { _ = client.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			metadata, err := client.baseClient.fetchCommandMetadata(ctx)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("unverifiable metadata was accepted")
+				}
+				if tc.retry && (connections.Load() < 3 || !strings.Contains(err.Error(), "no server version")) {
+					t.Fatalf("retry did not reject the missing version: connections=%d, err=%v", connections.Load(), err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if metadata.serverVersion != "5.0.14" || metadata.serverFingerprint != "5.0.14|custom:2" ||
+				metadata.records["custom.read2"] == nil || metadata.records["custom.read1"] != nil {
+				t.Fatalf("metadata came from mismatched connections: %+v", metadata)
+			}
+			view := buildCommandMetadataViewForServerWithLegacy(metadata.records, nil, metadata.serverVersion, metadata.legacyRecords)
+			if !view.routingTable["custom.read2"].valid || isCacheableInView(view, makeCmd("custom.read2", "key")) {
+				t.Fatal("legacy module metadata must enable routing but remain uncached")
+			}
+		})
+	}
+}
+
 func TestCommandMetadataServerChangeRefreshesLiveView(t *testing.T) {
 	var phase atomic.Int32
 	var calls atomic.Int32

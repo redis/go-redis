@@ -2,8 +2,47 @@ package routing
 
 import (
 	"errors"
+	"net"
+	"sync"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+func TestSuccessAggregatorsMixedErrors(t *testing.T) {
+	for _, policy := range []ResponsePolicy{RespAllSucceeded, RespOneSucceeded} {
+		t.Run(policy.String(), func(t *testing.T) {
+			agg := NewResponseAggregator(policy, "")
+			nodeErrors := []error{
+				proto.RedisError("NOTBUSY No scripts in execution right now."),
+				&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
+			}
+			var wg sync.WaitGroup
+			for _, err := range nodeErrors {
+				wg.Add(1)
+				go func(err error) {
+					defer wg.Done()
+					if err := agg.Add(nil, err); err != nil {
+						t.Errorf("Add: %v", err)
+					}
+				}(err)
+			}
+			wg.Wait()
+			_, err := agg.Aggregate()
+			if err != nodeErrors[0] && err != nodeErrors[1] {
+				t.Fatalf("Aggregate error = %v, want one of the shard errors", err)
+			}
+			if err := agg.Add("OK", nil); err != nil {
+				t.Fatal(err)
+			}
+			result, afterSuccess := agg.Aggregate()
+			if result != "OK" || (policy == RespOneSucceeded && afterSuccess != nil) ||
+				(policy == RespAllSucceeded && afterSuccess != err) {
+				t.Fatalf("Aggregate after success = (%v, %v)", result, afterSuccess)
+			}
+		})
+	}
+}
 
 func TestAggLogicalAndAggregator(t *testing.T) {
 	t.Run("all true values", func(t *testing.T) {

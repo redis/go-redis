@@ -1894,6 +1894,12 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		if errors.As(lastErr, &fanoutErr) {
 			return fanoutErr.err
 		}
+		// Fan-out may reject the topology before selecting any target. Only
+		// retry before dispatch; the execution-error guard above prevents replay.
+		if c.reloadTopologyForRetry(ctx, lastErr, attempt) {
+			node = nil
+			continue
+		}
 		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
 			if isReadOnly {
 				c.state.LazyReload()
@@ -2162,7 +2168,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 			shardsErr = stateErr
 		}
 
-		// CLUSTER SLOTS remains a fallback but cannot authorize all_shards.
+		// CLUSTER SLOTS remains a fallback for the available topology.
 		slots, slotsErr := node.Client.ClusterSlots(ctx).Result()
 		if slotsErr == nil {
 			return newClusterState(c.nodes, slots, addr)
@@ -2584,23 +2590,12 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 			var node *clusterNode
 			// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
 			if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
-				if len(state.Masters) == 0 {
-					return errClusterNoNodes
-				}
-				// For read-only keyless commands, pick from all nodes (masters + slaves).
-				// Index directly instead of building a combined slice, which would
-				// append into the shared snapshot's spare capacity and race.
-				idx := c.opt.ShardPicker.Next(len(state.Masters) + len(state.Slaves))
-				if idx < len(state.Masters) {
-					node = state.Masters[idx]
-				} else {
-					node = state.Slaves[idx-len(state.Masters)]
-				}
+				node, err = state.pickNode(c.opt.ShardPicker, true)
 			} else {
 				node, err = c.slotReadOnlyNode(state, slot)
-				if err != nil {
-					return err
-				}
+			}
+			if err != nil {
+				return c.noteTopologySelectionError(err)
 			}
 			cmdsMap.Add(node, cmd)
 		}
@@ -2624,16 +2619,12 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 		var node *clusterNode
 		// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
 		if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
-			if len(state.Masters) == 0 {
-				return errClusterNoNodes
-			}
-			idx := c.opt.ShardPicker.Next(len(state.Masters))
-			node = state.Masters[idx]
+			node, err = state.pickNode(c.opt.ShardPicker, false)
 		} else {
 			node, err = state.slotMasterNode(slot)
-			if err != nil {
-				return c.noteTopologySelectionError(err)
-			}
+		}
+		if err != nil {
+			return c.noteTopologySelectionError(err)
 		}
 		cmdsMap.Add(node, cmd)
 	}
