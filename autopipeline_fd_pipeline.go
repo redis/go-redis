@@ -139,13 +139,24 @@ func (ap *AutoPipeliner) fdPipelineMetrics(ctx context.Context, start time.Time,
 // batch: the first transport (non-Redis) error, else the first command's reply
 // error. pipelineReadCmds returns exactly that.
 func fdPipelineLevelErr(cmds []Cmder) error {
-	for _, cmd := range cmds {
-		if e := cmd.rawErr(); e != nil && !isRedisError(e) {
-			return e
-		}
+	if err := fdPipelineTransportErr(cmds); err != nil {
+		return err
 	}
 	if len(cmds) > 0 {
 		return cmds[0].rawErr()
+	}
+	return nil
+}
+
+// fdPipelineTransportErr returns the first error in cmds that is not a reply
+// from the server: a connection, protocol or push-drain failure, classified
+// as the reader classifies a fatal reply (fdReplyIsFatal). nil when every
+// command got a reply.
+func fdPipelineTransportErr(cmds []Cmder) error {
+	for _, cmd := range cmds {
+		if e := cmd.rawErr(); e != nil && (errors.Is(e, errFDPushDrainFailed) || !isRedisError(e)) {
+			return e
+		}
 	}
 	return nil
 }
@@ -235,6 +246,11 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeR
 			res.flushed = true
 		}
 	}
+	// A transport failure comes first, as in processPipeline: it tells the
+	// caller the later commands have no known result.
+	if err := fdPipelineTransportErr(cmds); err != nil {
+		return res, err
+	}
 	return res, first
 }
 
@@ -274,6 +290,7 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 		reqs[i] = fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1, pipelined: true}
 	}
 
+	passed, havePassed := uint64(0), false
 	fd.submitMu.RLock()
 	for {
 		if fd.closed {
@@ -302,7 +319,17 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 		// batch. Same release conditions as submit()'s backpressure wait.
 		select {
 		case <-fd.q.roomCh():
-			if fd.q.depth() < fd.q.capacity() {
+			// Chain the wake as submit() does, so a waiter behind this batch
+			// that fits is not left asleep. A batch that does not fit passes the
+			// wake on only once per take: with no other waiter it would take its
+			// own signal straight back, fail to fit, and spin, holding
+			// submitMu.RLock while the writer is blocked.
+			free, takes := fd.q.roomAndTakes()
+			switch {
+			case free > len(cmds):
+				fd.q.signalRoom() // room for others after this batch
+			case free > 0 && (!havePassed || takes != passed):
+				passed, havePassed = takes, true
 				fd.q.signalRoom()
 			}
 		case <-ctx.Done():

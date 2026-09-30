@@ -57,6 +57,10 @@ type fdQueue struct {
 	wake chan struct{} // cap 1: submitter -> parked writer
 	room chan struct{} // cap 1: writer -> submitters blocked on a full queue
 
+	// takes counts the takes that freed room. A blocked batch uses it to pass
+	// a wake it cannot use on at most once per take (see submitBatch).
+	takes uint64
+
 	closed bool
 }
 
@@ -304,6 +308,7 @@ func (q *fdQueue) takeInto(dst []fdReq, max int) []fdReq {
 		q.compact()
 	}
 	q.parked = false // we are awake; stop submitters from signalling
+	q.takes++
 	q.mu.Unlock()
 	// Release anyone blocked on a full queue. Non-blocking on a cap-1 channel, so
 	// this is a cheap no-op once a signal is already pending.
@@ -353,6 +358,17 @@ func (q *fdQueue) unpark() {
 	q.mu.Unlock()
 }
 
+// roomAndTakes reports the free slots and the take count, under one lock.
+func (q *fdQueue) roomAndTakes() (free int, takes uint64) {
+	if q == nil {
+		return 0, 0
+	}
+	q.mu.Lock()
+	free, takes = q.max-q.live(), q.takes
+	q.mu.Unlock()
+	return free, takes
+}
+
 func (q *fdQueue) depth() int {
 	if q == nil {
 		return 0
@@ -375,6 +391,7 @@ func (q *fdQueue) drainAll(dst []fdReq) []fdReq {
 	clear(q.buf)
 	q.resetEmpty()
 	q.parked = false
+	q.takes++
 	q.mu.Unlock()
 	select {
 	case q.room <- struct{}{}:

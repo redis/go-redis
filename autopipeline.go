@@ -3552,7 +3552,13 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 		// does), so the first command's stale retryable reply is returned instead.
 		// The Close-time flush stamps fdAttempts the same way, so a flushed batch
 		// is not re-run either.
-		if e := cmds[0].rawErr(); used == 1 && isRedisError(e) && shouldRetry(e, false) {
+		//
+		// A transport or protocol failure anywhere in the batch rules the
+		// re-run out too. The engine did not replay that command, since it may
+		// already have run, and an ordinary pipeline returns that read error
+		// instead of retrying.
+		if e := cmds[0].rawErr(); used == 1 && isRedisError(e) && shouldRetry(e, false) &&
+			fdPipelineTransportErr(cmds) == nil {
 			retry = true
 		}
 	}
