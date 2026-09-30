@@ -1631,21 +1631,18 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// 1.95% in deadline() at ~400k replies/s. Reading the WHOLE snapshot in
 			// one WithReader was tried before and was slower, because it blocks on
 			// commands the writer has pushed but not yet flushed. This cannot do
-			// that: after the first reply of a group it continues only while
-			// rd.Buffered() > 0, so it never waits on the socket inside a group.
+			// that: after the first reply of a group it continues only while the
+			// next reply is whole in the buffer, so it never waits on the socket
+			// inside a group.
 			for i := 0; i < len(buf); {
 				readErrs := readErrsBuf[:0]
 				grp := 0
 				// The whole group reads under the one deadline WithReader arms
-				// here. Buffered() > 0 does not mean the next reply is complete: a
-				// partial frame still needs a socket read. armed lets the group
-				// stop once half the timeout is spent, so every reply starts with
-				// at least readTimeout/2 left instead of whatever earlier replies
-				// in the group did not use.
-				var armed time.Time
-				if readTimeout > 0 {
-					armed = time.Now()
-				}
+				// here, so only its first reply may read from the socket. The
+				// group goes on only while the next reply is already whole in the
+				// buffer (HasBufferedReply); Buffered() > 0 is not enough, since a
+				// partial frame still needs a socket read. A reply that needs one
+				// starts the next group, whose WithReader arms a full deadline.
 				ge := cn.WithReader(bg, readTimeout, func(rd *proto.Reader) error {
 					for i+grp < len(buf) {
 						// Same push-drain contract as before: a partial-frame drain
@@ -1665,11 +1662,8 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 							// transport or protocol fault would consume shifted bytes.
 							return nil
 						}
-						if rd.Buffered() == 0 {
-							return nil
-						}
-						if readTimeout > 0 && time.Since(armed) > readTimeout/2 {
-							return nil // next WithReader re-arms a full deadline
+						if !rd.HasBufferedReply() {
+							return nil // next WithReader arms a full deadline
 						}
 					}
 					return nil
