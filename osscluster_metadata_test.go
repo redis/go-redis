@@ -1109,8 +1109,16 @@ func TestClusterInitialMetadataVerifiesSiblings(t *testing.T) {
 }
 
 func TestClusterMetadataRefreshesOnNodeReconnect(t *testing.T) {
-	for _, protocol := range []int{2, 3} {
-		t.Run(fmt.Sprintf("RESP%d", protocol), func(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		protocol    int
+		rejectHello bool
+	}{
+		{name: "RESP2", protocol: 2},
+		{name: "RESP3", protocol: 3},
+		{name: "HELLO fallback", protocol: 2, rejectHello: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var phases, fetches [2]atomic.Int32
 			var addrs []string
 			for i := range phases {
@@ -1127,18 +1135,28 @@ func TestClusterMetadataRefreshesOnNodeReconnect(t *testing.T) {
 							return
 						}
 						go serveTestRESPConn(conn, func(command string) string {
+							phase := phases[i].Load()
+							version := "8.10.0"
+							if phase > 0 {
+								version = "8.11.0"
+							}
 							switch command {
 							case "hello":
-								phase := phases[i].Load()
-								version := "8.10.0"
-								if phase > 0 {
-									version = "8.11.0"
+								if tc.rejectHello {
+									return "-ERR HELLO unavailable\r\n"
 								}
 								mapHeader := "%2\r\n"
-								if protocol == 2 {
+								if tc.protocol == 2 {
 									mapHeader = "*4\r\n"
 								}
 								return fmt.Sprintf("%s+version\r\n+%s\r\n+modules\r\n*1\r\n%s+name\r\n+test\r\n+ver\r\n:%d\r\n", mapHeader, version, mapHeader, phase)
+							case "info":
+								return commandInfoTestBulk("# Server\r\nredis_version:" + version + "\r\n")
+							case "module":
+								return commandInfoTestArray(commandInfoTestMap(
+									commandInfoTestBulk("name"), commandInfoTestBulk("test"),
+									commandInfoTestBulk("ver"), commandInfoTestInt(int64(phase)),
+								))
 							case "command":
 								fetches[i].Add(1)
 								return "*0\r\n"
@@ -1152,7 +1170,7 @@ func TestClusterMetadataRefreshesOnNodeReconnect(t *testing.T) {
 				}()
 			}
 			c := NewClusterClient(&ClusterOptions{
-				Addrs: addrs, Protocol: protocol, PoolSize: 1,
+				Addrs: addrs, Protocol: tc.protocol, PoolSize: 1,
 				DisableIdentity:          true,
 				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 				CommandMetadata:          &CommandMetadataConfig{Mode: CommandMetadataPreferLive},

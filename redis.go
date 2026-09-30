@@ -1278,22 +1278,18 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	// A connection enables live metadata. HELLO identity changes retire its
-	// view; without HELLO, the fetcher adopts the identity atomically.
-	if s := c.cmdMeta; s != nil {
+	if c.cmdMeta != nil || c.opt.onServerHello != nil {
+		// Without HELLO, a reconnect must verify the old identity in the
+		// background. An empty fingerprint asks the cluster parent to do the same.
+		fingerprint := ""
 		if helloOK {
-			if reply, replyErr := helloCmd.Result(); replyErr == nil {
-				s.onServerHello(helloServerFingerprint(reply))
-			} else {
-				s.onConnInit()
-			}
+			fingerprint = helloServerFingerprint(helloCmd.Val())
+			c.cmdMeta.onServerHello(fingerprint)
 		} else {
-			s.onConnInit()
+			c.cmdMeta.requestVerification()
 		}
-	}
-	if helloOK && c.opt.onServerHello != nil {
-		if reply, replyErr := helloCmd.Result(); replyErr == nil {
-			c.opt.onServerHello(helloServerFingerprint(reply))
+		if c.opt.onServerHello != nil {
+			c.opt.onServerHello(fingerprint)
 		}
 	}
 

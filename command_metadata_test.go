@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/routing"
 )
@@ -64,6 +65,7 @@ func TestCommandMetadataStaticStoreNeverStartsWorker(t *testing.T) {
 	})
 	s.onConnInit()
 	s.requestRefresh()
+	s.requestVerification()
 	s.mu.Lock()
 	started := s.started
 	s.mu.Unlock()
@@ -775,6 +777,71 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 				t.Fatal("legacy module metadata must enable routing but remain uncached")
 			}
 		})
+	}
+}
+
+func TestCommandMetadataReconnectWithoutHello(t *testing.T) {
+	var phase, fetches atomic.Int32
+	client := NewClient(&Options{
+		Protocol: 2, DisableIdentity: true, MaxRetries: -1, PoolSize: 1,
+		CommandMetadata: &CommandMetadataConfig{Mode: CommandMetadataPreferLive},
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go serveTestRESPConn(server, func(command string) string {
+				switch command {
+				case "hello":
+					return "-ERR unknown command 'hello'\r\n"
+				case "info":
+					return commandInfoTestBulk("# Server\r\nredis_version:5.0.14\r\n")
+				case "module":
+					return commandInfoTestArray(commandInfoTestMap(
+						commandInfoTestBulk("name"), commandInfoTestBulk("custom"),
+						commandInfoTestBulk("ver"), commandInfoTestInt(int64(phase.Load())),
+					))
+				case "command":
+					fetches.Add(1)
+					return commandInfoTestArray(commandInfoTestEntry6(fmt.Sprintf("custom.read%d", phase.Load())))
+				case "ping":
+					return "+PONG\r\n"
+				default:
+					return "+OK\r\n"
+				}
+			})
+			return client, nil
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := context.Background()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForCondition(t, time.Second, func() bool { return client.metadataView().live }) {
+		t.Fatal("initial metadata did not load")
+	}
+	for _, moduleVersion := range []int32{0, 1} {
+		command := fmt.Sprintf("custom.read%d", moduleVersion)
+		previous := client.metadataView()
+		before := fetches.Load()
+		phase.Store(moduleVersion)
+		if err := client.connPool.(*pool.ConnPool).Filter(func(*pool.Conn) bool { return true }); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Ping(ctx).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if !waitForCondition(t, 3*time.Second, func() bool {
+			view := client.metadataView()
+			return fetches.Load() > before && view.live && view.records[command] != nil &&
+				client.cmdMeta.serverFingerprint() == fmt.Sprintf("5.0.14|custom:%d", moduleVersion)
+		}) {
+			t.Fatal("reconnect did not verify the server identity")
+		}
+		client.cmdMeta.refreshMu.Lock()
+		view := client.metadataView()
+		client.cmdMeta.refreshMu.Unlock()
+		if moduleVersion == 0 && view != previous {
+			t.Fatal("unchanged identity rebuilt the metadata view")
+		}
 	}
 }
 

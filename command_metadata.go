@@ -741,12 +741,22 @@ func (s *commandMetadataStore) onServerHello(fp string) {
 
 // onClusterServerHello schedules verification without adopting one node's
 // identity. The cluster fetch checks siblings before retiring the live view.
+// An empty fingerprint always requests verification, including during a fetch.
 func (s *commandMetadataStore) onClusterServerHello(fp string) {
 	if s == nil || s.mode != CommandMetadataPreferLive {
 		return
 	}
-	if fp == s.serverFingerprint() {
+	if fp != "" && fp == s.serverFingerprint() {
 		s.onConnInit()
+		return
+	}
+	s.requestVerification()
+}
+
+// requestVerification checks identity even when metadata is already live.
+// HELLO-fallback reconnects cannot prove that the previous identity still holds.
+func (s *commandMetadataStore) requestVerification() {
+	if s == nil || s.mode != CommandMetadataPreferLive {
 		return
 	}
 	s.refreshLive.Store(true)
@@ -925,8 +935,8 @@ func (s *commandMetadataStore) run() {
 				return
 			default:
 			}
-			// Skip redundant connection-init requests, but verify node identity
-			// changes even while the cluster still has a live view.
+			// Skip redundant connection-init requests, but verify identity
+			// changes and HELLO-fallback reconnects even while the view is live.
 			verifyLive := s.refreshLive.Swap(false)
 			if v := s.current.Load(); !verifyLive && v != nil && v.live {
 				continue

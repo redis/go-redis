@@ -497,6 +497,7 @@ type Options struct {
 
 	// onServerHello lets cluster nodes report identity changes to their
 	// parent's metadata store without owning a store or refresh worker.
+	// An empty fingerprint requests verification after a HELLO fallback.
 	onServerHello func(string)
 
 	// ClientSideCacheStrategy selects the invalidation architecture used when
