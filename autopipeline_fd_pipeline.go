@@ -94,8 +94,8 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 			start = time.Now()
 		}
 		res, err := ap.fdPipelined(ctx, cmds)
-		if res.attempts > 0 && !res.flushed {
-			ap.fdPipelineMetrics(ctx, start, cmds, res.attempts, res.cn)
+		if res.measured() {
+			ap.fdPipelineMetrics(ctx, start, cmds, max(res.attempts, 1), res.cn)
 		}
 		return err
 	})(ctx, cmds)
@@ -169,9 +169,36 @@ type fdPipeResult struct {
 	attempts int
 	// cn is the held connection its replies came back on.
 	cn *pool.Conn
-	// flushed reports that the Close-time flush ran it through the pooled
-	// pipeline, which already recorded the pipeline metric.
+	// flushed reports that the Close-time flush ran every batch of it through
+	// the pooled pipeline, which already recorded the pipeline metric.
 	flushed bool
+	// rejected reports that it was refused before admission (closed, or ctx
+	// done), so nothing ran.
+	rejected bool
+}
+
+// measured reports whether the caller records the pipeline metric: for a
+// batch that ran on the FD wire, or one refused before admission (an
+// ordinary pipeline records that case when withPipelineConn fails), but not
+// for one the Close-time flush measured in full.
+func (r fdPipeResult) measured() bool {
+	return !r.flushed && (r.attempts > 0 || r.rejected)
+}
+
+// fdPipelineAllFlushed reports whether the Close-time flush ran every batch of
+// a pipeline. Only then did the pooled flush record the whole pipeline. When
+// it ran only an unread tail, it recorded that tail, and the FD metric still
+// covers the whole operation.
+func fdPipelineAllFlushed(batches []*apBatch) bool {
+	if len(batches) == 0 {
+		return false
+	}
+	for _, b := range batches {
+		if !b.fdFlushed {
+			return false
+		}
+	}
+	return true
 }
 
 // fdPipelined runs an eligible batch on the FD path.
@@ -216,7 +243,7 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeR
 	if batches == nil {
 		// Submit-time rejection (closed, or ctx expired while backpressured).
 		// Every command carries its own error; report the first.
-		return fdPipeResult{}, cmdsFirstErr(cmds)
+		return fdPipeResult{rejected: true}, cmdsFirstErr(cmds)
 	}
 	// Mirror submit()'s contract on the deferred face: the batch is installed on
 	// the command so its result accessors self-gate, which matters for a caller
@@ -242,10 +269,8 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeR
 		if c := batches[i].fdConn; c != nil {
 			res.cn = c
 		}
-		if batches[i].fdFlushed {
-			res.flushed = true
-		}
 	}
+	res.flushed = fdPipelineAllFlushed(batches)
 	// A transport failure comes first, as in processPipeline: it tells the
 	// caller the later commands have no known result.
 	if err := fdPipelineTransportErr(cmds); err != nil {
