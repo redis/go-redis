@@ -876,6 +876,14 @@ func (s *cacheShard) closeWaitersLocked(entry *cacheEntry) {
 // measurement is in cacheShard.get, at the call site. The threshold is
 // deliberately loose (three quarters) so the bit is already being maintained
 // by the time eviction actually starts choosing victims.
+//
+// The trade: a read made while the shard is below the threshold leaves no
+// trace. When a gradually warming shard later reaches its cap, an entry read
+// only during that warm-up looks as cold as one never read, so the first
+// evictions go by insertion order among them and a key hot early on can take
+// one avoidable miss. Recovering those reads would need the per-read store
+// this gate exists to skip (9.7% of CPU under churn, measured at the call
+// site); reads from the threshold on are tracked as usual.
 func (s *cacheShard) nearCapacityLocked() bool {
 	if s.maxEntries > 0 && len(s.entries)*4 >= s.maxEntries*3 {
 		return true
