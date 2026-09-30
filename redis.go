@@ -2089,7 +2089,14 @@ func (c *baseClient) generalProcessPipelineFrom(
 	if pipelineOpDurationCallback != nil {
 		operationStart = start
 		if operationStart.IsZero() {
-			operationStart = time.Now()
+			if priorAttempts > 0 {
+				// A continued operation (a full-duplex attempt) that began
+				// with no duration callback: its start is unknown, so record
+				// no duration, as the FD path does.
+				pipelineOpDurationCallback = nil
+			} else {
+				operationStart = time.Now()
+			}
 		}
 	}
 	var lastConn *pool.Conn
