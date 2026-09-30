@@ -2948,6 +2948,11 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// Drain and close the queue now (before flushing carry) so no new submit lands
 	// mid-flush. fresh commands (attempts == 1) have not run yet.
 	fresh := fd.takeQueue()
+	// The flush below runs pipelined commands through the pooled pipeline with
+	// its own retry loop. Count that as a further issue on their batches, so
+	// fdPipelineExec treats them as already retried and does not run them again.
+	fdMarkFlushed(carry)
+	fdMarkFlushed(fresh)
 	// Flush the carried tail honoring EACH command's remaining retry budget across
 	// the Close boundary (flushCarryBudgeted), then the fresh queue at the full
 	// budget. Flushing carry first keeps FIFO order across the two sets.
@@ -2961,6 +2966,17 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// Last flush: a transport failure is already handled inside flushReqs (it fails
 	// the remainder), and there is nothing after it, so the returned error is moot.
 	_ = fd.flushReqs(bg, fresh, fd.retryBudget())
+}
+
+// fdMarkFlushed stamps each pipelined request's batch with one more issue than
+// it has had, for the Close-time flush that is about to run it. Before
+// completion, so completing the batch publishes the stamp.
+func fdMarkFlushed(reqs []fdReq) {
+	for i := range reqs {
+		if reqs[i].pipelined && reqs[i].batch != nil {
+			reqs[i].batch.fdAttempts = reqs[i].attempts + 1
+		}
+	}
 }
 
 // fdCarryRemainingRetries returns the retry bound for a carried command flushed on
