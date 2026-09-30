@@ -74,6 +74,67 @@ func TestFDShutdownFlushMarksPipelinedBatchesRetried(t *testing.T) {
 	if b.fdAttempts < 2 {
 		t.Fatalf("flushed pipelined batch reports %d issue(s); fdPipelineExec would re-run it after Close", b.fdAttempts)
 	}
+	if !b.fdFlushed {
+		t.Fatal("flushed pipelined batch is not marked flushed; fdPipelineExec would record its pipeline metric twice")
+	}
+}
+
+// fdFlushProbe is a stub engine whose flush records the chunk sizes it runs.
+func fdFlushProbe(maxBatch int) (*fdEngine, *[]int) {
+	var chunks []int
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{MaxRetries: 3}}},
+		maxBatch: maxBatch,
+		runPipeline: func(_ context.Context, cmds []Cmder, _ int) error {
+			chunks = append(chunks, len(cmds))
+			return nil
+		},
+	}
+	return fd, &chunks
+}
+
+// fdPipeGroupReqs builds n pipelined requests of one FD pipeline batch, the
+// way submitBatch stamps them, with the given attempt counts.
+func fdPipeGroupReqs(ctx context.Context, attempts ...int) []fdReq {
+	reqs := make([]fdReq, len(attempts))
+	var first *apBatch
+	for i, a := range attempts {
+		b := newAPBatch()
+		if first == nil {
+			first = b
+		}
+		b.fdGroup = first
+		reqs[i] = fdReq{cmd: NewStatusCmd(ctx, "set", "k"+itoa(i), "v"), batch: b, attempts: a, pipelined: true}
+	}
+	return reqs
+}
+
+// The Close-time flush runs an FD pipeline batch as ONE pipeline, so its
+// whole-batch retry covers all of it. It used to split the batch at
+// MaxBatchSize and retry each chunk on its own. Ordinary commands around it are
+// still chunked, without being mixed into the pipeline.
+func TestFDShutdownFlushKeepsPipelineWhole(t *testing.T) {
+	ctx := context.Background()
+	fd, chunks := fdFlushProbe(2)
+	carry := append(fdPipeGroupReqs(ctx, 1, 1, 1, 1, 1),
+		fdReq{cmd: NewStatusCmd(ctx, "get", "a"), batch: newAPBatch(), attempts: 1},
+		fdReq{cmd: NewStatusCmd(ctx, "get", "b"), batch: newAPBatch(), attempts: 1})
+	fd.shutdownFlush(ctx, carry)
+	if got := *chunks; len(got) != 2 || got[0] != 5 || got[1] != 2 {
+		t.Fatalf("flush chunks %v, want [5 2]: the 5-command pipeline whole, then the ordinary commands", got)
+	}
+}
+
+// A pipeline batch whose commands carry different attempt counts (a partial
+// replay) is still flushed as one pipeline, not split by attempt count.
+func TestFDShutdownFlushKeepsPipelineWholeAcrossAttempts(t *testing.T) {
+	ctx := context.Background()
+	fd, chunks := fdFlushProbe(8)
+	fd.shutdownFlush(ctx, fdPipeGroupReqs(ctx, 2, 2, 1))
+	if got := *chunks; len(got) != 1 || got[0] != 3 {
+		t.Fatalf("flush chunks %v, want [3]: one pipeline despite mixed attempt counts", got)
+	}
 }
 
 // fdRetryMetricRecorder captures pipeline-duration records.

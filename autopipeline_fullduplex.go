@@ -2975,8 +2975,15 @@ func fdMarkFlushed(reqs []fdReq) {
 	for i := range reqs {
 		if reqs[i].pipelined && reqs[i].batch != nil {
 			reqs[i].batch.fdAttempts = reqs[i].attempts + 1
+			reqs[i].batch.fdFlushed = true
 		}
 	}
+}
+
+// fdSameGroup reports whether b follows a in the same FD pipeline batch.
+func fdSameGroup(a, b fdReq) bool {
+	return a.pipelined && b.pipelined && a.batch != nil && b.batch != nil &&
+		a.batch.fdGroup != nil && a.batch.fdGroup == b.batch.fdGroup
 }
 
 // fdCarryRemainingRetries returns the retry bound for a carried command flushed on
@@ -3007,7 +3014,9 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 	for i := 0; i < len(carry); {
 		a := carry[i].attempts
 		j := i + 1
-		for j < len(carry) && carry[j].attempts == a {
+		// Keep an FD pipeline batch in one group even if its commands carry
+		// different attempt counts, so flushReqs can run it as one pipeline.
+		for j < len(carry) && (carry[j].attempts == a || fdSameGroup(carry[j-1], carry[j])) {
 			j++
 		}
 		group := carry[i:j]
@@ -3073,18 +3082,37 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
 	for i < len(reqs) {
 		end := fdBatchEnd(reqs, i, fd.maxBatch, byteLimit)
-		// Do not mix retry policies in one chunk: generalProcessPipeline disables
-		// retries for the WHOLE chunk if any command is NoRetry (cmdsContainNoRetry).
-		// That would strip retryable commands in the same accepted backlog of their
-		// budget. Break the chunk at the first NoRetry-policy change so a NoRetry
-		// command (e.g. RawWriteToCmd) is isolated from its retryable neighbors, like
-		// the half-duplex dispatcher's contiguous retry-policy runs. The clamp starts
-		// at i+1, so end stays > i and the chunk is never empty (no infinite loop).
-		policy := reqs[i].cmd.NoRetry()
-		for k := i + 1; k < end; k++ {
-			if reqs[k].cmd.NoRetry() != policy {
-				end = k
-				break
+		if reqs[i].pipelined {
+			// An FD pipeline batch flushes as ONE pipeline, whatever its size, as
+			// Pipeline.Exec sends it: its first command's retryable reply then
+			// retries the whole batch together, not only the first chunk.
+			end = i + 1
+			for end < len(reqs) && fdSameGroup(reqs[end-1], reqs[end]) {
+				end++
+			}
+		} else {
+			// A chunk of ordinary commands stops where a pipeline batch starts,
+			// so the pipeline is not split across chunks.
+			for k := i + 1; k < end; k++ {
+				if reqs[k].pipelined {
+					end = k
+					break
+				}
+			}
+			// Do not mix retry policies in one chunk: generalProcessPipeline
+			// disables retries for the WHOLE chunk if any command is NoRetry
+			// (cmdsContainNoRetry). That would strip retryable commands in the same
+			// accepted backlog of their budget. Break the chunk at the first
+			// NoRetry-policy change so a NoRetry command (e.g. RawWriteToCmd) is
+			// isolated from its retryable neighbors, like the half-duplex
+			// dispatcher's contiguous retry-policy runs. The clamp starts at i+1,
+			// so end stays > i and the chunk is never empty (no infinite loop).
+			policy := reqs[i].cmd.NoRetry()
+			for k := i + 1; k < end; k++ {
+				if reqs[k].cmd.NoRetry() != policy {
+					end = k
+					break
+				}
 			}
 		}
 		cmds := make([]Cmder, end-i)
@@ -3144,7 +3172,9 @@ func (fd *fdEngine) failQueue(err error) {
 		// fdSetErrSafe: same hazard as failReqs — a panicking custom Cmder must
 		// not escape on the sole fd.run goroutine with no outer recover.
 		fdSetErrSafe(r.cmd, err)
-		if errorCallback != nil {
+		// A pipelined command's failure is reported once for its batch
+		// (fdPipelineMetrics), as in failReqs.
+		if errorCallback != nil && !r.pipelined {
 			if !classified {
 				errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 				classified = true

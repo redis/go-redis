@@ -505,6 +505,13 @@ type apBatch struct {
 	// fdConn is the held connection that carried a PIPELINED command's reply,
 	// stamped with fdAttempts, for the pipeline duration metric.
 	fdConn *pool.Conn
+	// fdGroup marks the commands of one FD pipeline batch: every batch of the
+	// pipeline points at the batch of its first command. The Close-time flush
+	// uses it to run the pipeline as one, with one whole-batch retry.
+	fdGroup *apBatch
+	// fdFlushed is set when the Close-time flush ran this pipelined command
+	// through the pooled pipeline, which recorded the pipeline metric itself.
+	fdFlushed bool
 	// closed makes close() idempotent: on the async faces the dispatch closes
 	// the batch at the innermost exec seam (under the user hooks, so a hook
 	// reading a result after next() does not block on a channel its own
@@ -3523,7 +3530,8 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 	if otel.GetPipelineOperationDurationCallback() != nil {
 		start = time.Now()
 	}
-	used, cn, err := ap.fdPipelined(ctx, cmds)
+	res, err := ap.fdPipelined(ctx, cmds)
+	used, cn := res.attempts, res.cn
 	// An ordinary pipeline allows MaxRetries+1 executions. The FD engine may
 	// already have issued the batch more than once (a connection-error replay),
 	// so the re-run gets what is left.
@@ -3549,7 +3557,9 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 		}
 	}
 	if !ineligible && !retry {
-		if used > 0 { // admitted and run on the FD path
+		// Admitted and run on the FD path. A batch the Close-time flush ran was
+		// measured by that pooled pipeline already.
+		if used > 0 && !res.flushed {
 			ap.fdPipelineMetrics(ctx, start, cmds, used, cn)
 		}
 		return err
