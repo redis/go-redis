@@ -59,6 +59,13 @@ type cacheEntry struct {
 	// core can hold it at once; only the first read after a sweep writes.
 	readSinceSweep atomic.Bool
 
+	// refreshKeep marks an IN_PROGRESS refresh reservation: fulfill publishes
+	// it with refreshAccessNs and refreshRead instead of a fresh recency. See
+	// stageRefreshAccess. Written and read under the shard write lock.
+	refreshKeep     bool
+	refreshRead     bool
+	refreshAccessNs int64
+
 	// validAt retains time.Now's monotonic component for the MaxStaleness
 	// backstop, so wall-clock corrections cannot extend an entry's lifetime.
 	// Written under Lock (Set/Fulfill), read under RLock (get).
@@ -579,7 +586,16 @@ func (c *LocalCache) fulfill(cacheKey string, token, ownerConnID uint64, value [
 	entry.state = cacheEntryValid
 	entry.validAt = time.Now()
 	entry.token = 0
-	entry.lastAccessNs.Store(nextLRUToken())
+	if entry.refreshKeep {
+		// A refresh republish keeps the old entry's standing, set here in the
+		// same lock as the publish so the eviction pass below, and any insert
+		// after it, already see it.
+		entry.lastAccessNs.Store(entry.refreshAccessNs)
+		entry.readSinceSweep.Store(entry.refreshRead)
+		entry.refreshKeep = false
+	} else {
+		entry.lastAccessNs.Store(nextLRUToken())
+	}
 	if ownerConnID != 0 {
 		entry.ownerConnID = ownerConnID
 		s.indexConnLocked(ownerConnID, cacheKey)
@@ -598,25 +614,26 @@ func (c *LocalCache) fulfill(cacheKey string, token, ownerConnID uint64, value [
 	return stillExists && current == entry && entry.state == cacheEntryValid
 }
 
-// restoreAccessToken resets a Valid entry's reader-access recency to what the
-// invalidated entry had: lastAccessNs to accessNs, undoing the fresh token
-// fulfill stamps, and the second-chance bit to read. Restoring the bit keeps a
-// refreshed hot key from becoming the first eviction victim merely because the
-// refresh republished it with a clear bit. The refresh republish calls
-// this so a background refresh does NOT count as a reader access: otherwise the
-// refreshed key stays above the refresh horizon and every later invalidation
-// refreshes it again even after all readers stop — a self-sustaining refetch loop
-// contrary to the cold-key guard. A reader that get()s between the fulfill and this
-// call has its newer token overwritten, which only UNDER-refreshes that key (the
-// next reader refetches), never serves stale. No-op if the entry is gone or not
-// Valid.
-func (c *LocalCache) restoreAccessToken(cacheKey string, accessNs int64, read bool) {
+// stageRefreshAccess sets the recency a refresh republish keeps on the
+// IN_PROGRESS reservation token: lastAccessNs becomes accessNs and the
+// second-chance bit becomes read, both taken from the invalidated entry.
+// fulfill applies them in the same lock as the publish.
+//
+// The refresh does not count as a reader access: a fresh token would keep the
+// key above the refresh horizon, so every later invalidation would refresh it
+// again after all readers stop -- a self-sustaining refetch loop. Keeping the
+// bit stops a hot key from being the first eviction victim only because the
+// refresh republished it. Setting both before the publish, not after it,
+// closes the gap in which an insert could evict the republished entry while
+// its bit was still clear. No-op when the reservation is gone.
+func (c *LocalCache) stageRefreshAccess(cacheKey string, token uint64, accessNs int64, read bool) {
 	s := c.shardFor(cacheKey)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if entry, ok := s.entries[cacheKey]; ok && entry.state == cacheEntryValid {
-		entry.lastAccessNs.Store(accessNs)
-		entry.readSinceSweep.Store(read)
+	if entry, ok := s.entries[cacheKey]; ok && entry.state == cacheEntryInProgress && entry.token == token {
+		entry.refreshKeep = true
+		entry.refreshAccessNs = accessNs
+		entry.refreshRead = read
 	}
 }
 

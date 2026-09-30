@@ -4611,10 +4611,10 @@ func TestRefreshRepublishKeepsSecondChance(t *testing.T) {
 		t.Fatalf("want 1 hot target carrying the read bit, got %+v", targets)
 	}
 	tok2, _ := lc.Reserve(key, []string{rk})
+	lc.stageRefreshAccess(key, tok2, targets[0].accessNs, targets[0].read)
 	if !lc.fulfill(key, tok2, 0, []byte("v2")) {
 		t.Fatal("republish fulfill failed")
 	}
-	lc.restoreAccessToken(key, targets[0].accessNs, targets[0].read)
 
 	s := lc.shardFor(key)
 	s.mu.RLock()
@@ -4627,7 +4627,7 @@ func TestRefreshRepublishKeepsSecondChance(t *testing.T) {
 
 // A refresh republish must NOT renew a key's reader-access recency, or every
 // invalidation would keep refreshing a key nobody reads anymore (a self-sustaining
-// refetch loop). After the republish + restoreAccessToken, the entry must be COLD
+// refetch loop). After a staged republish, the entry must be COLD
 // relative to the horizon of its last real read.
 func TestRefreshRepublishDoesNotRenewDemand(t *testing.T) {
 	lc := NewLocalCache(CacheConfig{MaxEntries: 16})
@@ -4640,20 +4640,20 @@ func TestRefreshRepublishDoesNotRenewDemand(t *testing.T) {
 	}
 
 	// One refresh cycle: collect the hot target (captures the reader-access token and
-	// deletes the entry), republish a fresh value, restore the captured token.
+	// deletes the entry), republish a fresh value keeping the captured token.
 	targets := lc.deleteByRedisKeyCollectingHot(rk, cscInvalNoHorizon, ^uint64(0), nil)
 	if len(targets) != 1 {
 		t.Fatalf("want 1 hot target, got %d", len(targets))
 	}
 	tok2, _ := lc.Reserve(key, []string{rk})
+	lc.stageRefreshAccess(key, tok2, targets[0].accessNs, targets[0].read)
 	if !lc.fulfill(key, tok2, 0, []byte("v2")) {
 		t.Fatal("republish fulfill failed")
 	}
-	lc.restoreAccessToken(key, targets[0].accessNs, targets[0].read)
 
 	// No reader touched the key since. At the horizon of its last real read the entry
-	// must be COLD (lastAccessNs == that token, not > it). Without the restore the
-	// republish would leave a newer token here and the entry would still be collected
+	// must be COLD (lastAccessNs == that token, not > it). Without the staged token
+	// the republish would leave a newer token here and the entry would still be collected
 	// — the self-sustaining loop.
 	if hot := lc.deleteByRedisKeyCollectingHot(rk, targets[0].accessNs, ^uint64(0), nil); len(hot) != 0 {
 		t.Fatalf("refreshed-but-unread entry still hot after restore; got %d targets", len(hot))
