@@ -298,6 +298,19 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 // cmdFirstKeyPosWithInfo returns the first key position in a command's args (0 if none).
 // Uses CommandInfo.FirstKeyPos when available (via cache peek, no network call), falling
 // back to a hardcoded table. eval/evalsha variants are resolved from the runtime numkeys arg.
+// cmdArgAfterToken returns the position after the first argument, from
+// position from on, that equals token (case-insensitive), or 0 when there is
+// none or nothing follows it.
+func cmdArgAfterToken(cmd Cmder, from int, token string) int {
+	n := len(cmd.Args())
+	for i := from; i < n-1; i++ {
+		if strings.EqualFold(cmd.stringArg(i), token) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
@@ -337,6 +350,37 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		// fallback only covers raw Do("msetex", ...) calls, which aren't
 		// guaranteed to route correctly and aren't the recommended usage.
 		return 2
+
+	// Raw forms of the commands below. The typed constructors set the key
+	// position; a raw Do / NewCmd does not, and args[1] is not a key.
+	case "xread":
+		// XREAD [COUNT n] [BLOCK ms] STREAMS key... id...
+		return cmdArgAfterToken(cmd, 1, "streams")
+	case "xreadgroup":
+		// XREADGROUP GROUP group consumer [...] STREAMS key... id...; the
+		// scan starts after the group and consumer names.
+		return cmdArgAfterToken(cmd, 4, "streams")
+	case "object", "xinfo":
+		// OBJECT|XINFO subcommand key; HELP has no key.
+		if len(cmd.Args()) > 2 {
+			return 2
+		}
+		return 0
+	case "bitop":
+		// BITOP op destkey key...
+		return 2
+	case "lmpop", "zmpop", "sintercard", "zintercard":
+		// numkeys key...
+		return 2
+	case "blmpop", "bzmpop":
+		// timeout numkeys key...
+		return 3
+	case "migrate":
+		// MIGRATE host port key|"" db timeout [...] [KEYS key...]
+		if cmd.stringArg(3) != "" {
+			return 3
+		}
+		return cmdArgAfterToken(cmd, 6, "keys")
 	}
 
 	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).
