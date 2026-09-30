@@ -1423,9 +1423,11 @@ func applyCachedFast(cmd Cmder, raw []byte) (err error, done bool) {
 		if !ok {
 			return nil, false
 		}
-		// Single frame only: a CR before the terminator would mean more than
-		// one line, which this path does not handle.
-		if bytes.IndexByte(raw[:len(raw)-2], '\r') >= 0 {
+		// Single frame only: a CR or a bare LF before the terminator would mean
+		// more than one line, which this path does not handle. The reader stops
+		// at the first LF and rejects the frame, and that rejection is what
+		// makes processCached drop the bad entry and refetch.
+		if bytes.ContainsAny(raw[:len(raw)-2], "\r\n") {
 			return nil, false
 		}
 		c.SetVal(string(raw[1 : len(raw)-2]))
