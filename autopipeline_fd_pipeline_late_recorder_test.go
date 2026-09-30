@@ -47,3 +47,33 @@ func TestFDPipelineMetricsSkipsDurationWithoutStart(t *testing.T) {
 		t.Fatalf("recorded %d duration(s) for an operation with a start, want 1", n)
 	}
 }
+
+// The pooled re-run continues an FD operation. If that operation began with
+// no duration callback (zero start) and a recorder was installed before the
+// re-run, generalProcessPipelineFrom started the clock at the re-run: the
+// duration covered only the pooled tail while the count included the FD
+// attempt. It now records no duration, as the FD path does.
+func TestPipelineRetriesAfterSkipsDurationWithoutStart(t *testing.T) {
+	srv := newFDStateServer(t)
+	c := NewClient(&Options{Addr: srv.addr(), Protocol: 2, DisableIdentity: true})
+	defer c.Close()
+	rec := &fdDurationRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	ctx := context.Background()
+	cmds := []Cmder{NewStatusCmd(ctx, "set", "k", "v")}
+	if err := c.processPipelineRetriesAfter(ctx, cmds, 0, time.Time{}, 1); err != nil {
+		t.Fatalf("processPipelineRetriesAfter: %v", err)
+	}
+	if n := rec.calls.Load(); n != 0 {
+		t.Fatalf("recorded %d duration(s) for a continued operation with no start", n)
+	}
+	cmds = []Cmder{NewStatusCmd(ctx, "set", "k", "v")}
+	if err := c.processPipelineRetriesAfter(ctx, cmds, 0, time.Now(), 1); err != nil {
+		t.Fatalf("processPipelineRetriesAfter: %v", err)
+	}
+	if n := rec.calls.Load(); n != 1 {
+		t.Fatalf("recorded %d duration(s) for a continued operation with a start, want 1", n)
+	}
+}

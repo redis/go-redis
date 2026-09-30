@@ -3021,7 +3021,15 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 		}
 		group := carry[i:j]
 		i = j
+		// The group runs as one pipeline, so it gets the smallest remaining
+		// budget of its commands: none may run past its MaxRetries+1
+		// executions. A command with more budget left may therefore get fewer
+		// retries than it alone would, as in an ordinary pipeline, whose retry
+		// budget covers the whole batch.
 		rem := fdCarryRemainingRetries(a, mr)
+		for k := range group {
+			rem = min(rem, fdCarryRemainingRetries(group[k].attempts, mr))
+		}
 		if rem < 0 {
 			fd.failReqs(group, errFDRetryBudgetExhausted) // budget spent; do not re-run
 			continue
