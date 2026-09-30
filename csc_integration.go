@@ -1703,6 +1703,15 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		}
 	}
 
+	// With shouldFetch still false, this caller lost the reservation twice and
+	// reads the server directly, uncached. That read can return a newer value
+	// than a fetch another caller reserved earlier and is still running. That
+	// fetch may store its older value afterwards, and a later hit returns it
+	// until the key's invalidation arrives, so reads are not monotonic per
+	// caller. This stays within the staleness every hit already has until its
+	// invalidation arrives. Dropping the older fetch would cost each of its
+	// waiters a miss, under the churn that leads here, so it is documented
+	// instead (README, client-side caching).
 	var fc cscFetchCapture
 	var capture *cscFetchCapture
 	if shouldFetch {
