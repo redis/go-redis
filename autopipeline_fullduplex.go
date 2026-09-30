@@ -1412,6 +1412,12 @@ func (fd *fdEngine) run() {
 					// replay is a first attempt.
 					for i := range carry {
 						carry[i].attempts++
+						// Keep a pipelined command's batch in step, so the pipeline
+						// retry charges this replay even if the command then fails
+						// here instead of completing through the reader.
+						if carry[i].pipelined {
+							carry[i].batch.fdAttempts = carry[i].attempts
+						}
 					}
 					continue
 				}
