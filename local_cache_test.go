@@ -783,6 +783,40 @@ func TestLocalCache_ReserveHonorsCapWithoutEvictingPeers(t *testing.T) {
 // have no clear-bit candidate and would fall back to insertion order forever,
 // silently losing LRU behaviour. oldestLocked clears them when every candidate
 // has been read, which is what this test drives.
+// A memory-capped shard whose resident entries have all been read must still
+// admit a new key. The placeholder costs nothing, so Reserve does not evict;
+// the value only goes over the cap in fulfill. The fresh entry used to be born
+// with its second-chance bit clear, which made it the only clear-bit candidate:
+// it was evicted on the spot and a warm shard could not admit anything. A fresh
+// entry is now born referenced, as a page is in second-chance eviction, so the
+// sweep takes the oldest entry instead.
+func TestLocalCache_WarmMemoryCappedShardAdmitsNewKeys(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{
+		MaxMemoryBytes: 6,
+		Sizer: func(_ string, _ []string, value []byte) int64 {
+			return int64(len(value))
+		},
+	})
+	for _, k := range []string{"a", "b"} {
+		if !cache.set(k, []string{k}, []byte(k+k)) { // 2 bytes each
+			t.Fatalf("failed to set %s", k)
+		}
+	}
+	for round, k := range []string{"c", "d", "e", "f"} {
+		// Read everything resident, so no entry has a clear bit.
+		for _, r := range []string{"a", "b", "c", "d", "e", "f"} {
+			_, _ = cache.Get(ctx, r)
+		}
+		if !cache.set(k, []string{k}, []byte(k+k+k)) { // 3 bytes: over the cap
+			t.Fatalf("round %d: a warm memory-capped shard rejected new key %q", round, k)
+		}
+		if _, ok := cache.Get(ctx, k); !ok {
+			t.Fatalf("round %d: %q was admitted but is not cached", round, k)
+		}
+	}
+}
+
 func TestLocalCache_SecondChanceIsConsumed(t *testing.T) {
 	ctx := context.Background()
 	cache := NewLocalCache(CacheConfig{MaxEntries: 3})

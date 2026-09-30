@@ -189,9 +189,12 @@ type cscRefreshTarget struct {
 	// fulfill stamps a new token, which would keep the key above the refresh horizon
 	// forever and make each invalidation refresh it again even after all readers stop
 	// (a self-sustaining refetch loop, contrary to the cold-key guard). Restoring the
-	// original token means only a real reader read (get, which re-stamps) keeps a key
-	// eligible for refresh. See restoreAccessToken.
+	// original token means only real reader activity keeps a key eligible for
+	// refresh. See restoreAccessToken.
 	accessNs int64
+	// read is the evicted entry's second-chance bit, restored with accessNs so
+	// the refreshed entry keeps the eviction standing the old one had.
+	read bool
 }
 
 // cscRefreshQueue carries invalidated-but-hot keys from the drainer to the
@@ -918,7 +921,7 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					// (see restoreAccessToken). Refresh runs only with the built-in
 					// *LocalCache; the hook path fulfills that same cache.
 					if lc, ok := c.csc.(*LocalCache); ok {
-						lc.restoreAccessToken(kept[i].cacheKey, kept[i].accessNs)
+						lc.restoreAccessToken(kept[i].cacheKey, kept[i].accessNs, kept[i].read)
 					}
 				}
 				// fulfillCached cancels on its own failure paths, so the token is
