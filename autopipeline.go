@@ -222,15 +222,6 @@ type AutoPipelineOptions struct {
 	// value is rejected by Validate.
 	FullDuplexMaxHold time.Duration
 
-	// FullDuplexFastSubmit is ignored.
-	//
-	// Deprecated: it chose between two ways of sending into the full-duplex
-	// submit channel. The channel is gone: every submit now appends to a
-	// mutex-guarded slice queue, which is both the fast path and the fair one,
-	// so there is nothing left to toggle. Kept so code that sets it still
-	// compiles; setting it has no effect.
-	FullDuplexFastSubmit bool
-
 	// contentSharded is set internally by cluster wiring when commands are
 	// routed to shards by content (slot), so same-key commands always share a
 	// shard and per-key order holds even with several shards. It exempts that

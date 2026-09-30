@@ -73,15 +73,6 @@ func TestFDQueueFIFOModel(t *testing.T) {
 	}
 }
 
-// FullDuplexFastSubmit shipped in v9.23.0-beta.1. It is now a no-op, but code
-// that sets it must keep compiling and validating.
-func TestFullDuplexFastSubmitStillAccepted(t *testing.T) {
-	opt := &AutoPipelineOptions{FullDuplex: true, FullDuplexFastSubmit: true}
-	if err := opt.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
-}
-
 // BenchmarkFDQueueDeepDrain is the writer draining a full default-size queue
 // in 200-command waves while submitters refill it. Before the head offset,
 // every take shifted the whole remaining queue under the lock.
