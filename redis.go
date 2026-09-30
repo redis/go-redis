@@ -2055,6 +2055,26 @@ func pipelineErrShouldStamp(err error) bool {
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
 ) error {
+	return c.generalProcessPipelineFrom(ctx, cmds, p, operationName, maxRetries, time.Time{}, 0)
+}
+
+// processPipelineRetriesAfter is processPipelineRetries continuing an operation
+// that already ran: start and priorAttempts carry over into the one pipeline
+// metric, so a full-duplex attempt re-run on the pooled path is measured as a
+// single operation, the way an ordinary pipeline's own retries are.
+func (c *baseClient) processPipelineRetriesAfter(ctx context.Context, cmds []Cmder, maxRetries int, start time.Time, priorAttempts int) error {
+	if err := c.generalProcessPipelineFrom(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", maxRetries, start, priorAttempts); err != nil {
+		return err
+	}
+	return cmdsFirstErr(cmds)
+}
+
+// generalProcessPipelineFrom is generalProcessPipeline with its measurement
+// started at start (zero: now) and priorAttempts already spent.
+func (c *baseClient) generalProcessPipelineFrom(
+	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
+	start time.Time, priorAttempts int,
+) error {
 	// Pipeline commands never pass through process, so apply the same CSC state
 	// guard here. initConn's internal client is exempt.
 	for _, cmd := range cmds {
@@ -2067,10 +2087,13 @@ func (c *baseClient) generalProcessPipeline(
 	var operationStart time.Time
 	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
 	if pipelineOpDurationCallback != nil {
-		operationStart = time.Now()
+		operationStart = start
+		if operationStart.IsZero() {
+			operationStart = time.Now()
+		}
 	}
 	var lastConn *pool.Conn
-	totalAttempts := 0
+	totalAttempts := priorAttempts
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {

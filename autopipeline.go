@@ -3536,7 +3536,15 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 		// Not a command failure: the batch is simply not eligible.
 		ineligible = true
 	case len(cmds) > 0 && remaining >= 0 && !cmdsContainNoRetry(cmds):
-		if e := cmds[0].rawErr(); isRedisError(e) && shouldRetry(e, false) {
+		// Only a batch the engine issued exactly once. After a connection-error
+		// replay, the replay already was this batch's retry: it re-ran the unread
+		// tail, which an ordinary pipeline re-runs as its one whole-batch retry
+		// after the same network error. A whole-batch re-run on top would run
+		// that tail a third time (a mutation beyond what an ordinary pipeline
+		// does), so the first command's stale retryable reply is returned instead.
+		// The Close-time flush stamps fdAttempts the same way, so a flushed batch
+		// is not re-run either.
+		if e := cmds[0].rawErr(); used == 1 && isRedisError(e) && shouldRetry(e, false) {
 			retry = true
 		}
 	}
@@ -3559,13 +3567,15 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 	// The re-run runs remaining+1 times at most, so FD attempts plus re-runs
 	// never exceed MaxRetries+1, after the backoff an ordinary pipeline sleeps
 	// before its next retry. Inside the hook chain, like generalProcessPipeline's
-	// own retries; the pooled run records the pipeline metric.
+	// own retries. It continues this operation's measurement (start and the FD
+	// attempts), so one pipeline metric covers the whole operation.
 	c := ap.fd.client
 	if serr := internal.Sleep(ctx, c.retryBackoff(used)); serr != nil {
 		setCmdsErr(cmds, serr)
+		ap.fdPipelineMetrics(ctx, start, cmds, used, cn)
 		return serr
 	}
-	return c.processPipelineRetries(ctx, cmds, remaining)
+	return c.processPipelineRetriesAfter(ctx, cmds, remaining, start, used)
 }
 
 // Pipelined executes a function in a pipeline context.
