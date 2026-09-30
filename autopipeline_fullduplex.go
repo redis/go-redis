@@ -2970,12 +2970,12 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 
 // fdMarkFlushed stamps each pipelined request's batch with one more issue than
 // it has had, for the Close-time flush that is about to run it. Before
-// completion, so completing the batch publishes the stamp.
+// completion, so completing the batch publishes the stamp. The batch is marked
+// fdFlushed only where flushReqs actually runs it.
 func fdMarkFlushed(reqs []fdReq) {
 	for i := range reqs {
 		if reqs[i].pipelined && reqs[i].batch != nil {
 			reqs[i].batch.fdAttempts = reqs[i].attempts + 1
-			reqs[i].batch.fdFlushed = true
 		}
 	}
 }
@@ -3118,6 +3118,13 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 		cmds := make([]Cmder, end-i)
 		for j := i; j < end; j++ {
 			cmds[j-i] = reqs[j].cmd
+			// The pooled pipeline below records this chunk's pipeline metric.
+			// Marked here, where the chunk runs: a batch that never runs (a
+			// dead endpoint fails the rest) stays unmarked, so fdPipelineExec
+			// records its failure.
+			if reqs[j].pipelined && reqs[j].batch != nil {
+				reqs[j].batch.fdFlushed = true
+			}
 		}
 		// Initialize the flush with a request's own context (cancellation removed), not
 		// the engine's background context: if this flush initializes a fresh pooled
