@@ -89,12 +89,11 @@ type cscInvalItem struct {
 }
 
 // cscInvalNoHorizon marks an invalidation enqueued while no refresh binding
-// existed (see cscInvalItem.sinceToken). It doubles as the LIVE horizon a
-// cscRefreshQueue holds when Options.ClientSideCacheRefreshRecencyWindow is
-// unset (refresh-everything mode, see startCSCRefresher): -1 is less than any
-// real lastAccessNs token, so deleteByRedisKeyCollectingHot's `> sinceToken`
-// check marks every Valid entry hot regardless of recency, in either case.
-// The two meanings never conflict because they resolve to the same effect.
+// existed (see cscInvalItem.sinceToken). It is also the horizon every
+// cscRefreshQueue holds, since refresh-on-invalidate refreshes every entry
+// (see startCSCRefresher): -1 is less than any real lastAccessNs token, so
+// deleteByRedisKeyCollectingHot's `> sinceToken` check marks every Valid entry
+// hot regardless of recency, in either case.
 const cscInvalNoHorizon = -1
 
 type cscInvalBatcher struct {
