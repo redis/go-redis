@@ -257,11 +257,11 @@ type fdPipeCountLimiter struct{ calls atomic.Int64 }
 func (l *fdPipeCountLimiter) Allow() error       { l.calls.Add(1); return nil }
 func (l *fdPipeCountLimiter) ReportResult(error) {}
 
-// On a warm connection an ordinary Pipeline.Exec takes ONE Limiter decision
-// for the whole batch, so a breaker admits or rejects it as a unit. The FD path
-// asked per write chunk (3 decisions for 3 commands at MaxBatchSize 1), so a
-// breaker could admit part of a pipeline and reject the rest.
-func TestFDPipelineExecOneLimiterDecision(t *testing.T) {
+// A Limiter does not take the batch off the FD path. The FD writer asks it
+// once per write chunk (documented on FDPipelined), so at MaxBatchSize 1 a
+// three-command pipeline takes three decisions, where an ordinary pipeline
+// takes one per attempt.
+func TestFDPipelineWithLimiterStaysOnFD(t *testing.T) {
 	srv := newFDStateServer(t)
 	lim := &fdPipeCountLimiter{}
 	c := NewClient(&Options{
@@ -279,22 +279,24 @@ func TestFDPipelineExecOneLimiterDecision(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	exec := func() int64 {
+	exec := func() ([]*StatusCmd, int64) {
 		pipe := ap.Pipeline()
-		pipe.Set(ctx, "a", "1", 0)
-		pipe.Set(ctx, "b", "2", 0)
-		pipe.Set(ctx, "c", "3", 0)
+		cmds := []*StatusCmd{pipe.Set(ctx, "a", "1", 0), pipe.Set(ctx, "b", "2", 0), pipe.Set(ctx, "c", "3", 0)}
 		before := lim.calls.Load()
 		if _, err := pipe.Exec(ctx); err != nil {
 			t.Fatalf("Exec: %v", err)
 		}
-		return lim.calls.Load() - before
+		return cmds, lim.calls.Load() - before
 	}
-	exec() // warm: the first Exec also pays for dialing
-	for i := 0; i < 3; i++ {
-		if n := exec(); n != 1 {
-			t.Fatalf("warm Exec %d took %d Limiter decisions, want 1 (as an ordinary pipeline)", i, n)
+	exec() // warm: the first Exec also pays for leasing the held connection
+	cmds, n := exec()
+	for _, cmd := range cmds {
+		if !fdRodePipe(cmd) {
+			t.Fatal("a Limiter took the pipeline off the FD path")
 		}
+	}
+	if n != int64(len(cmds)) {
+		t.Fatalf("%d Limiter decisions for %d single-command chunks, want one per chunk", n, len(cmds))
 	}
 }
 
