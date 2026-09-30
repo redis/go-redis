@@ -48,6 +48,9 @@ func TestApplyCachedFastMatchesGenericReader(t *testing.T) {
 		{"bulk length lies long", "$99\r\nhello\r\n"},
 		{"no terminator", "$5\r\nhello"},
 		{"bad length", "$abc\r\nhello\r\n"},
+		// Only -1 is the RESP2 null; the reader rejects any other negative.
+		{"negative bulk length", "$-2\r\n"},
+		{"very negative bulk length", "$-100\r\n"},
 		{"just crlf", "\r\n"},
 		{"empty", ""},
 	}

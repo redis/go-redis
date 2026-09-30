@@ -1444,8 +1444,11 @@ func applyCachedFast(cmd Cmder, raw []byte) (err error, done bool) {
 		if perr != nil {
 			return nil, false
 		}
-		if n < 0 { // RESP2 null bulk string
-			if i+2 != len(raw) {
+		if n < 0 {
+			// Only -1 is the RESP2 null bulk string. The reader rejects any
+			// other negative length, so decline it: the generic path then
+			// fails and processCached drops the bad entry and refetches.
+			if n != -1 || i+2 != len(raw) {
 				return nil, false
 			}
 			c.SetVal("")
