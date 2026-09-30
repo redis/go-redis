@@ -990,6 +990,124 @@ func TestClusterFullDuplexPinsAndReleasesMetadata(t *testing.T) {
 	}
 }
 
+func TestClusterInitialMetadataVerifiesSiblings(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		variant int32
+		legacy  bool
+		loading bool
+		reload  bool
+	}{
+		{name: "homogeneous"},
+		{name: "legacy", legacy: true},
+		{name: "mixed versions", variant: 1},
+		{name: "mixed modules", variant: 2},
+		{name: "unverifiable sibling", variant: 3},
+		{name: "loading sibling", variant: 2, loading: true},
+		{name: "topology changes during verification", reload: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var variant, hellos, commands atomic.Int32
+			var reloaded atomic.Bool
+			variant.Store(tc.variant)
+			var c *ClusterClient
+			c = NewClusterClient(&ClusterOptions{
+				Addrs: []string{"127.0.0.1:7501"}, Protocol: 2, DisableIdentity: true, MaxRetries: -1,
+				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+				CommandMetadata:          &CommandMetadataConfig{Mode: CommandMetadataPreferLive},
+				Dialer: func(_ context.Context, _ string, addr string) (net.Conn, error) {
+					client, server := net.Pipe()
+					go serveTestRESPConn(server, func(command string) string {
+						phase := int32(0)
+						if strings.HasSuffix(addr, ":7502") {
+							phase = variant.Load()
+						}
+						switch command {
+						case "hello":
+							hellos.Add(1)
+							if tc.reload && commands.Load() > 0 && reloaded.CompareAndSwap(false, true) {
+								c.state.state.Store(&clusterState{generation: 99})
+							}
+							if tc.legacy || phase == 3 {
+								return "-ERR HELLO unavailable\r\n"
+							}
+							version, module := "8.10.0", 1
+							if phase == 1 {
+								version = "8.11.0"
+							}
+							if phase == 2 {
+								module = 2
+							}
+							return fmt.Sprintf("*4\r\n+version\r\n+%s\r\n+modules\r\n*1\r\n*4\r\n+name\r\n+custom\r\n+ver\r\n:%d\r\n", version, module)
+						case "info":
+							if phase == 3 {
+								return "-NOPERM INFO denied\r\n"
+							}
+							return commandInfoTestBulk("# Server\r\nredis_version:5.0.14\r\n")
+						case "module":
+							return "*1\r\n*4\r\n+name\r\n+custom\r\n+ver\r\n:1\r\n"
+						case "command":
+							commands.Add(1)
+							return "*0\r\n"
+						default:
+							return "+OK\r\n"
+						}
+					})
+					return client, nil
+				},
+			})
+			t.Cleanup(func() { _ = c.Close() })
+			health := "online"
+			if tc.loading {
+				health = "loading"
+			}
+			state, err := newClusterStateFromShards(c.nodes, []ClusterShard{{
+				Slots: []SlotRange{{Start: 0, End: 16383}}, Nodes: []Node{
+					{ID: "master", Endpoint: "127.0.0.1", Port: 7501, Role: "master", Health: "online"},
+					{ID: "replica", Endpoint: "127.0.0.1", Port: 7502, Role: "replica", Health: health},
+				},
+			}}, "127.0.0.1:7501", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.state.state.Store(state)
+			c.state.load = func(context.Context) (*clusterState, error) { return state, nil }
+			ctx := context.Background()
+			before := commands.Load()
+			if tc.variant != 0 || tc.reload {
+				if err := c.cmdMeta.ensureLive(ctx); err == nil || c.metadataView().live || c.cmdMeta.serverFingerprint() != "" {
+					t.Fatalf("unverified initial metadata published: live=%v err=%v", c.metadataView().live, err)
+				}
+				variant.Store(0)
+				c.state.state.Store(state)
+				before = commands.Load()
+				if _, err := c.state.Reload(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if !waitForCondition(t, time.Second, func() bool { return c.metadataView().live }) {
+					t.Fatal("topology reload did not retry initial identity verification")
+				}
+			} else if err := c.cmdMeta.ensureLive(ctx); err != nil {
+				t.Fatal(err)
+			}
+			wantCommands := int32(1)
+			if tc.legacy {
+				wantCommands = 2 // Refetch COMMAND with the legacy identity fallback.
+			}
+			if !c.metadataView().live || commands.Load()-before != wantCommands {
+				t.Fatalf("live=%v COMMAND calls=%d, want one source fetch", c.metadataView().live, commands.Load()-before)
+			}
+			before = hellos.Load()
+			if err := c.cmdMeta.refreshOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if hellos.Load()-before != 1 {
+				t.Fatal("steady-state refresh repeated sibling identity checks")
+			}
+		})
+	}
+}
+
 func TestClusterMetadataRefreshesOnNodeReconnect(t *testing.T) {
 	for _, protocol := range []int{2, 3} {
 		t.Run(fmt.Sprintf("RESP%d", protocol), func(t *testing.T) {
@@ -1623,6 +1741,68 @@ func TestClusterStateFromShardsPreservesEndpointHealthAndZeroSlotShards(t *testi
 	}
 	if c.cmdMeta.view().live {
 		t.Fatal("replacing a replica endpoint did not retire live metadata")
+	}
+}
+
+type clusterMetadataStatsPool struct{ pool.Pooler }
+
+func (p clusterMetadataStatsPool) Stats() *pool.Stats {
+	return &pool.Stats{TotalConns: 1, Hits: 2}
+}
+
+func TestClusterEnumeratesUnhealthyNodes(t *testing.T) {
+	c := newMetadataTestCluster(t, nil)
+	state, err := newClusterStateFromShards(c.nodes, []ClusterShard{
+		{Slots: []SlotRange{{Start: 0, End: 8191}}, Nodes: []Node{
+			{ID: "m1", Endpoint: "127.0.0.1", Port: 7501, Role: "master", Health: "online"},
+			{ID: "r1", Endpoint: "127.0.0.1", Port: 7502, Role: "replica", Health: "loading"},
+		}},
+		{Slots: []SlotRange{{Start: 8192, End: 16383}}, Nodes: []Node{
+			{ID: "m2", Endpoint: "127.0.0.1", Port: 7503, Role: "master", Health: "fail"},
+			{ID: "r2", Endpoint: "127.0.0.1", Port: 7504, Role: "replica", Health: "online"},
+		}},
+	}, "127.0.0.1:7501", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.state.state.Store(state)
+	c.state.load = func(context.Context) (*clusterState, error) { return state, nil }
+	for _, nodes := range [][]*clusterNode{state.declaredMasters(), state.declaredSlaves()} {
+		for _, node := range nodes {
+			node.Client.connPool = clusterMetadataStatsPool{node.Client.connPool}
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		each func(context.Context, func(context.Context, *Client) error) error
+		want int32
+	}{
+		{"masters", c.ForEachMaster, 2},
+		{"replicas", c.ForEachSlave, 2},
+		{"all nodes", c.ForEachShard, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen atomic.Int32
+			if err := tc.each(context.Background(), func(context.Context, *Client) error {
+				seen.Add(1)
+				return nil
+			}); err != nil || seen.Load() != tc.want {
+				t.Fatalf("callbacks=%d err=%v, want %d declared nodes", seen.Load(), err, tc.want)
+			}
+			wantErr := errors.New("unhealthy node callback failed")
+			err := tc.each(context.Background(), func(_ context.Context, client *Client) error {
+				if client.opt.Addr == "127.0.0.1:7502" || client.opt.Addr == "127.0.0.1:7503" {
+					return wantErr
+				}
+				return nil
+			})
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("error=%v, want unhealthy node callback error", err)
+			}
+		})
+	}
+	if stats := c.PoolStats(); stats.TotalConns != 4 || stats.Hits != 8 {
+		t.Fatalf("stats=%+v, want all four declared pools", stats)
 	}
 }
 

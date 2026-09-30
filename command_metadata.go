@@ -1100,6 +1100,19 @@ func (c *baseClient) metadataView() *commandMetadataView {
 // fetchCommandMetadata retrieves HELLO and COMMAND on one connection. It
 // bypasses process hooks and CSC, but retains connection initialization hooks.
 func (c *baseClient) fetchCommandMetadata(ctx context.Context) (commandMetadataFetchResult, error) {
+	infoCmd := NewCommandsInfoCmd(ctx, "command")
+	metadata, err := c.fetchMetadataIdentity(ctx, infoCmd)
+	if err != nil {
+		return commandMetadataFetchResult{}, err
+	}
+	metadata.records, err = infoCmd.Result()
+	metadata.legacyRecords = infoCmd.legacyRecords
+	return metadata, err
+}
+
+// fetchMetadataIdentity optionally includes COMMAND in the same pipeline, so
+// records and identity describe one connection. A nil infoCmd only reads identity.
+func (c *baseClient) fetchMetadataIdentity(ctx context.Context, infoCmd *CommandsInfoCmd) (commandMetadataFetchResult, error) {
 	// Metadata refresh owns a bounded internal context independently of the
 	// application's ContextTimeoutEnabled and socket-timeout choices. Run the
 	// command through a lightweight clone whose zero socket timeouts defer to
@@ -1129,20 +1142,27 @@ func (c *baseClient) fetchCommandMetadata(ctx context.Context) (commandMetadataF
 	fetchClient.opt.onServerHello = nil
 
 	helloCmd := NewMapStringInterfaceCmd(ctx, "hello")
-	infoCmd := NewCommandsInfoCmd(ctx, "command")
-	err := fetchClient.processPipeline(ctx, []Cmder{helloCmd, infoCmd})
+	cmds := []Cmder{helloCmd}
+	if infoCmd != nil {
+		cmds = append(cmds, infoCmd)
+	}
+	err := fetchClient.processPipeline(ctx, cmds)
 	hello := helloCmd.Val()
 	if err != nil {
 		// Match initConn's RESP2 fallback for servers that reject HELLO.
 		// Transport, parsing, and COMMAND errors still fail the refresh.
-		if !isRedisError(helloCmd.Err()) || infoCmd.Err() != nil {
+		if !isRedisError(helloCmd.Err()) || infoCmd != nil && infoCmd.Err() != nil {
 			return commandMetadataFetchResult{}, err
 		}
 		serverCmd := NewInfoCmd(ctx, "info", "server")
 		modulesCmd := NewMapStringInterfaceSliceCmd(ctx, "module", "list")
 		// The pool may lend a different connection now. Fetch COMMAND again
 		// alongside its identity rather than pairing replies across connections.
-		if err := fetchClient.processPipeline(ctx, []Cmder{serverCmd, modulesCmd, infoCmd}); err != nil {
+		cmds = []Cmder{serverCmd, modulesCmd}
+		if infoCmd != nil {
+			cmds = append(cmds, infoCmd)
+		}
+		if err := fetchClient.processPipeline(ctx, cmds); err != nil {
 			return commandMetadataFetchResult{}, err
 		}
 		modules := make([]interface{}, len(modulesCmd.Val()))
@@ -1173,13 +1193,7 @@ func (c *baseClient) fetchCommandMetadata(ctx context.Context) (commandMetadataF
 			"command metadata server changed: got %q, want %q", actualFp, expectedFp,
 		)
 	}
-	records, err := infoCmd.Result()
-	if err != nil {
-		return commandMetadataFetchResult{}, err
-	}
 	return commandMetadataFetchResult{
-		records:           records,
-		legacyRecords:     infoCmd.legacyRecords,
 		serverVersion:     serverVersion,
 		serverFingerprint: actualFp,
 	}, nil

@@ -1746,10 +1746,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 			c.cmdMeta.finishParentSourceChange()
 			return
 		}
-		if previous == nil {
-			// The initial topology enables live refresh without invalidating its fetch.
-			c.cmdMeta.requestRefresh()
-		}
+		// Initial publication and later health-only reloads retry an unverified
+		// initial identity, without invalidating an established live view.
+		c.cmdMeta.onConnInit()
 	}
 	c.SetCommandInfoResolver(newCommandMetadataPolicyResolver(c.metadataView))
 
@@ -1969,7 +1968,7 @@ func (c *ClusterClient) ForEachMaster(
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)
 
-	for _, master := range state.Masters {
+	for _, master := range state.declaredMasters() {
 		wg.Add(1)
 		go func(node *clusterNode) {
 			defer wg.Done()
@@ -2007,7 +2006,7 @@ func (c *ClusterClient) ForEachSlave(
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)
 
-	for _, slave := range state.Slaves {
+	for _, slave := range state.declaredSlaves() {
 		wg.Add(1)
 		go func(node *clusterNode) {
 			defer wg.Done()
@@ -2056,11 +2055,11 @@ func (c *ClusterClient) ForEachShard(
 		}
 	}
 
-	for _, node := range state.Masters {
+	for _, node := range state.declaredMasters() {
 		wg.Add(1)
 		go worker(node)
 	}
-	for _, node := range state.Slaves {
+	for _, node := range state.declaredSlaves() {
 		wg.Add(1)
 		go worker(node)
 	}
@@ -2114,10 +2113,10 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		}
 	}
 
-	for _, node := range state.Masters {
+	for _, node := range state.declaredMasters() {
 		foldNode(node.Client)
 	}
-	for _, node := range state.Slaves {
+	for _, node := range state.declaredSlaves() {
 		foldNode(node.Client)
 	}
 
@@ -3672,6 +3671,11 @@ func (c *ClusterClient) fetchCommandMetadata(ctx context.Context) (commandMetada
 				changedFingerprint = metadata.serverFingerprint
 				continue
 			}
+			if expected == "" {
+				if err := c.verifyInitialMetadataIdentity(ctx, state, nodes[idx], metadata.serverFingerprint); err != nil {
+					return commandMetadataFetchResult{}, err
+				}
+			}
 			return metadata, nil
 		}
 		if firstErr == nil {
@@ -3686,6 +3690,31 @@ func (c *ClusterClient) fetchCommandMetadata(ctx context.Context) (commandMetada
 		)
 	}
 	return commandMetadataFetchResult{}, firstErr
+}
+
+// verifyInitialMetadataIdentity prevents the first live view from choosing an
+// arbitrary version during a rolling upgrade. Only identity is fetched from
+// siblings; later refreshes keep the established view while nodes upgrade.
+func (c *ClusterClient) verifyInitialMetadataIdentity(ctx context.Context, state *clusterState, source *clusterNode, fingerprint string) error {
+	for _, nodes := range [][]*clusterNode{state.declaredMasters(), state.declaredSlaves()} {
+		for _, node := range nodes {
+			if node == source {
+				continue
+			}
+			identity, err := node.Client.baseClient.fetchMetadataIdentity(ctx, nil)
+			if err != nil {
+				return err
+			}
+			if !c.isTopologyGeneration(state.generation) {
+				return fmt.Errorf("redis: cluster topology changed during command metadata verification")
+			}
+			if identity.serverFingerprint != fingerprint {
+				return fmt.Errorf("redis: cluster command metadata identities differ: got %q, want %q",
+					identity.serverFingerprint, fingerprint)
+			}
+		}
+	}
+	return nil
 }
 
 func clusterMetadataFingerprintMatches(expected, actual string) (bool, error) {
