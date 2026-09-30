@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3105,8 +3106,11 @@ func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
 // already know pos avoid a redundant Peek() call.
 func (c *ClusterClient) cmdSlotWithPos(cmd Cmder, pos int, prefferedSlot int) int {
 	args := cmd.Args()
-	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
-		return args[2].(int)
+	if len(args) > 2 && args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
+		// The slot may arrive as any integer type or as a string (raw Do calls).
+		if slot, err := strconv.Atoi(cmd.stringArg(2)); err == nil {
+			return slot
+		}
 	}
 	return cmdSlot(cmd, pos, prefferedSlot)
 }
