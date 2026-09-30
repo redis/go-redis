@@ -3563,10 +3563,10 @@ func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error
 		}
 	}
 	if !ineligible && !retry {
-		// Admitted and run on the FD path. A batch the Close-time flush ran was
-		// measured by that pooled pipeline already.
-		if used > 0 && !res.flushed {
-			ap.fdPipelineMetrics(ctx, start, cmds, used, cn)
+		// Run on the FD path, or refused before admission. A batch the
+		// Close-time flush ran in full was measured by that pooled pipeline.
+		if res.measured() {
+			ap.fdPipelineMetrics(ctx, start, cmds, max(used, 1), cn)
 		}
 		return err
 	}

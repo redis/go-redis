@@ -2099,7 +2099,10 @@ func (c *baseClient) generalProcessPipelineFrom(
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		if attempt > 0 {
-			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+			// Continue the backoff of an operation that already ran
+			// priorAttempts times (a full-duplex attempt), as its own retries
+			// would: 0 for an ordinary pipeline.
+			if err := internal.Sleep(ctx, c.retryBackoff(priorAttempts+attempt)); err != nil {
 				setCmdsErr(cmds, err)
 				if pipelineOpDurationCallback != nil {
 					operationDuration := time.Since(operationStart)
