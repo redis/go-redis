@@ -93,9 +93,9 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 		if otel.GetPipelineOperationDurationCallback() != nil {
 			start = time.Now()
 		}
-		used, cn, err := ap.fdPipelined(ctx, cmds)
-		if used > 0 {
-			ap.fdPipelineMetrics(ctx, start, cmds, used, cn)
+		res, err := ap.fdPipelined(ctx, cmds)
+		if res.attempts > 0 && !res.flushed {
+			ap.fdPipelineMetrics(ctx, start, cmds, res.attempts, res.cn)
 		}
 		return err
 	})(ctx, cmds)
@@ -150,13 +150,23 @@ func fdPipelineLevelErr(cmds []Cmder) error {
 	return nil
 }
 
-// fdPipelined runs an eligible batch on the FD path and reports how many times
-// the engine issued it (1, plus one per connection-error replay: the highest
-// attempt count across its commands; 0 when nothing was admitted) and the held
-// connection its replies came back on.
-func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, *pool.Conn, error) {
+// fdPipeResult is what fdPipelined reports about a batch it ran.
+type fdPipeResult struct {
+	// attempts is how many times the engine issued the batch: 1, plus one per
+	// connection-error replay (the highest across its commands); 0 when nothing
+	// was admitted.
+	attempts int
+	// cn is the held connection its replies came back on.
+	cn *pool.Conn
+	// flushed reports that the Close-time flush ran it through the pooled
+	// pipeline, which already recorded the pipeline metric.
+	flushed bool
+}
+
+// fdPipelined runs an eligible batch on the FD path.
+func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeResult, error) {
 	if len(cmds) == 0 {
-		return 0, nil, nil
+		return fdPipeResult{}, nil
 	}
 	// A redirect-aware engine is a cluster node child. It is reachable (the
 	// child is the node client's cached async autopipeliner, which
@@ -164,7 +174,7 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, *p
 	// command off the pipe, which would let the rest of the pipeline run ahead
 	// of it. Such a batch keeps the node client's ordinary pipeline, as before.
 	if ap.fd == nil || ap.fd.redirectAware {
-		return 0, nil, ErrFDPipelineUnavailable
+		return fdPipeResult{}, ErrFDPipelineUnavailable
 	}
 	// Refuse a batch containing anything that would leave the pipe. Checked for
 	// EVERY command before anything is submitted, so the call either goes as one
@@ -172,12 +182,12 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, *p
 	// diverted command complete out of order relative to its neighbours.
 	for _, cmd := range cmds {
 		if cmd == nil {
-			return 0, nil, ErrFDPipelineDiverts
+			return fdPipeResult{}, ErrFDPipelineDiverts
 		}
 		if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) ||
 			isBlockingCmd(cmd) || isHImportCmd(cmd) ||
 			(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) {
-			return 0, nil, ErrFDPipelineDiverts
+			return fdPipeResult{}, ErrFDPipelineDiverts
 		}
 		// A NoRetry command makes the whole batch unreplayable: an ordinary
 		// pipeline holding one retries nothing after a connection error. The FD
@@ -185,17 +195,17 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, *p
 		// so the commands before it could run twice. Keep such a batch off the
 		// pipe.
 		if fdNoRetrySafe(cmd) {
-			return 0, nil, ErrFDPipelineDiverts
+			return fdPipeResult{}, ErrFDPipelineDiverts
 		}
 	}
 	batches, err := ap.fd.submitBatch(ctx, cmds)
 	if err != nil {
-		return 0, nil, err
+		return fdPipeResult{}, err
 	}
 	if batches == nil {
 		// Submit-time rejection (closed, or ctx expired while backpressured).
 		// Every command carries its own error; report the first.
-		return 0, nil, cmdsFirstErr(cmds)
+		return fdPipeResult{}, cmdsFirstErr(cmds)
 	}
 	// Mirror submit()'s contract on the deferred face: the batch is installed on
 	// the command so its result accessors self-gate, which matters for a caller
@@ -206,8 +216,7 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, *p
 		}
 	}
 	var first error
-	var cn *pool.Conn
-	attempts := 1
+	res := fdPipeResult{attempts: 1}
 	for i, cmd := range cmds {
 		// AutoFuture.Wait carries the executor-goroutine self-deadlock guard, so
 		// waiting through it rather than on batch.done keeps a pipeline hook that
@@ -216,14 +225,17 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (int, *p
 			first = werr
 		}
 		// Wait returned, so the reader's stamp is visible.
-		if a := batches[i].fdAttempts; a > attempts {
-			attempts = a
+		if a := batches[i].fdAttempts; a > res.attempts {
+			res.attempts = a
 		}
 		if c := batches[i].fdConn; c != nil {
-			cn = c
+			res.cn = c
+		}
+		if batches[i].fdFlushed {
+			res.flushed = true
 		}
 	}
-	return attempts, cn, first
+	return res, first
 }
 
 // submitBatch enqueues cmds as one contiguous run and returns their completion
@@ -254,6 +266,10 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 	for i, cmd := range cmds {
 		b := newAPBatch() // never pooled: pooled batches are the blocking face's single-waiter signal
 		b.fdAttempts = 1  // the first issue; replays and the reader raise it
+		b.fdGroup = batches[0]
+		if i == 0 {
+			b.fdGroup = b
+		}
 		batches[i] = b
 		reqs[i] = fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1, pipelined: true}
 	}
