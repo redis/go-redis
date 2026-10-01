@@ -126,7 +126,10 @@ type ClusterOptions struct {
 	ContextTimeoutEnabled bool
 
 	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
-	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
+	// If <= 0, each node's pool defaults it to that node's PoolSize. If > PoolSize, it
+	// is capped at PoolSize. Note: ClusterOptions itself leaves the field un-normalized
+	// (introspecting it after init still reports the zero value); resolution happens in
+	// each node's Options so the pipeline pool can widen its own dial cap.
 	MaxConcurrentDials int
 
 	PoolFIFO              bool
@@ -245,11 +248,12 @@ func (opt *ClusterOptions) init() {
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 5 * runtime.GOMAXPROCS(0)
 	}
-	if opt.MaxConcurrentDials <= 0 {
-		opt.MaxConcurrentDials = opt.PoolSize
-	} else if opt.MaxConcurrentDials > opt.PoolSize {
-		opt.MaxConcurrentDials = opt.PoolSize
-	}
+	// Do NOT normalize MaxConcurrentDials here. clientOptions() copies this value
+	// into each node's Options, and the per-node Options.init() normalizes it for
+	// the node's main pool. Setting it here would make the per-node init treat an
+	// unset value as explicit (maxConcurrentDialsSet), which makes the pipeline
+	// pool inherit the node PoolSize as its dial cap instead of widening to
+	// PipelinePoolSize, and so serializes pipeline dials.
 	if opt.ReadBufferSize == 0 {
 		opt.ReadBufferSize = proto.DefaultBufferSize
 	}
@@ -1859,7 +1863,7 @@ func (c *ClusterClient) AutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, nil, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, nil, nil, "", config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -1952,7 +1956,7 @@ func (c *ClusterClient) AsyncAutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *ClusterClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, nil, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, nil, nil, "", config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
