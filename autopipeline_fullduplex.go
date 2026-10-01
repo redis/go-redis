@@ -2949,10 +2949,8 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// mid-flush. fresh commands (attempts == 1) have not run yet.
 	fresh := fd.takeQueue()
 	// The flush below runs pipelined commands through the pooled pipeline with
-	// its own retry loop. Count that as a further issue on their batches, so
-	// fdPipelineExec treats them as already retried and does not run them again.
-	fdMarkFlushed(carry)
-	fdMarkFlushed(fresh)
+	// its own retry loop; flushReqs counts that as a further issue on each batch
+	// it runs, so fdPipelineExec does not run them again.
 	// Flush the carried tail honoring EACH command's remaining retry budget across
 	// the Close boundary (flushCarryBudgeted), then the fresh queue at the full
 	// budget. Flushing carry first keeps FIFO order across the two sets.
@@ -2966,18 +2964,6 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// Last flush: a transport failure is already handled inside flushReqs (it fails
 	// the remainder), and there is nothing after it, so the returned error is moot.
 	_ = fd.flushReqs(bg, fresh, fd.retryBudget())
-}
-
-// fdMarkFlushed stamps each pipelined request's batch with one more issue than
-// it has had, for the Close-time flush that is about to run it. Before
-// completion, so completing the batch publishes the stamp. The batch is marked
-// fdFlushed only where flushReqs actually runs it.
-func fdMarkFlushed(reqs []fdReq) {
-	for i := range reqs {
-		if reqs[i].pipelined && reqs[i].batch != nil {
-			reqs[i].batch.fdAttempts = reqs[i].attempts + 1
-		}
-	}
 }
 
 // fdSameGroup reports whether b follows a in the same FD pipeline batch.
@@ -3134,11 +3120,13 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 		cmds := make([]Cmder, end-i)
 		for j := i; j < end; j++ {
 			cmds[j-i] = reqs[j].cmd
-			// The pooled pipeline below records this chunk's pipeline metric.
-			// Marked here, where the chunk runs: a batch that never runs (a
-			// dead endpoint fails the rest) stays unmarked, so fdPipelineExec
-			// records its failure.
+			// The pooled pipeline below runs this chunk again and records its
+			// pipeline metric. Stamped here, where the chunk runs: one more
+			// issue (so fdPipelineExec does not re-run it), and flushed. A batch
+			// that never runs (a dead endpoint fails the rest) keeps its issue
+			// count and stays unmarked, so fdPipelineExec records its failure.
 			if reqs[j].pipelined && reqs[j].batch != nil {
+				reqs[j].batch.fdAttempts = reqs[j].attempts + 1
 				reqs[j].batch.fdFlushed = true
 			}
 		}
