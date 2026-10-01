@@ -854,8 +854,14 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 }
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
+	// Preserve constructor errors before shard selection, which reads command arguments.
+	if err := cmd.rawErr(); err != nil {
+		return err
+	}
+
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		cmd.SetErr(nil)
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
