@@ -1937,6 +1937,23 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						break drain
 					}
 				}
+				// Keep the batch unsent when the session is already ending. The
+				// accumulation wait above returns on the reader's exit, and a
+				// handoff mark can land while it waits. Written now, the batch would
+				// run on a connection whose replies nobody reads, and recovery would
+				// replay it: one command, two executions. It is recovered as never
+				// sent instead (copied: batch may reuse a buffer).
+				select {
+				case <-readerDone:
+					carrySuffix = append([]fdReq(nil), batch...)
+					break serve // fdConnErr: recovered behind the unacked tail
+				default:
+				}
+				if cn.ShouldHandoff() {
+					carrySuffix = append([]fdReq(nil), batch...)
+					result = fdRecycle // replayed on the next lease
+					break serve
+				}
 				if e := fd.writeBatch(bg, cn, inflight, batch); e != nil {
 					writeErr = e
 					break serve
@@ -2093,7 +2110,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		inflight.hardClose()
 		_ = cn.Close()
 		<-readerDone
-		unacked = inflight.takeRemaining()
+		// carrySuffix is a batch the serve loop kept unsent because the reader
+		// had exited; it rides behind the unacked tail, refunded (never sent).
+		unacked = fdRecoverTail(inflight.takeRemaining(), carrySuffix)
 		if sharedErr == nil {
 			sharedErr = errFDReaderGone
 		}

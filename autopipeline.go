@@ -318,6 +318,10 @@ type AutoPipelineOptions struct {
 	// This provides automatic adaptation to varying load patterns without
 	// manual tuning. Uses integer-only arithmetic for optimal performance.
 	// Default: false (use fixed MaxFlushDelay)
+	//
+	// Half-duplex only. The full-duplex writer has its own policy: it waits
+	// MaxFlushDelay only when enough commands are in flight (see MaxFlushDelay)
+	// and ignores AdaptiveDelay.
 	AdaptiveDelay bool
 }
 
