@@ -364,7 +364,10 @@ func (s *cacheShard) collectHotAndDeleteBatch(keys []string, sinceTokens []int64
 					cacheKey:  cacheKey,
 					redisKeys: ks,
 					accessNs:  entry.lastAccessNs.Load(),
-					valBytes:  len(entry.value),
+					// The second-chance bit, as collectHotAndDelete keeps it:
+					// the refresh republishes the entry with it.
+					read:     entry.readSinceSweep.Load(),
+					valBytes: len(entry.value),
 				})
 			}
 			if s.removeEntryLocked(cacheKey) {
