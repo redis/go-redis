@@ -93,6 +93,9 @@ type AutoPipelineOptions struct {
 	// connection. On a fast link (loopback) prefer half-duplex — with no RTT to
 	// overlap, full-duplex only adds coordination overhead.
 	//
+	// Also honored by the full-duplex writer, where it is gated on in-flight
+	// depth so it never taxes low-concurrency callers (see fdAccumMinFor).
+	//
 	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1),
 	// single-shard face of a standalone *Client that has a pipeline pool — BOTH the
 	// deferred (AsyncAutoPipeline) and the blocking (AutoPipeline) face. A SINGLE
@@ -219,35 +222,6 @@ type AutoPipelineOptions struct {
 	// value is rejected by Validate.
 	FullDuplexMaxHold time.Duration
 
-	// FullDuplexFastSubmit trades submit fairness for throughput on hot,
-	// low-RTT links. Off by default; only used when FullDuplex is set.
-	//
-	// What: normal submit waits on a blocking three-arm select. The fast path
-	// tries a non-blocking channel send first and only falls back to that select
-	// on a miss, cutting the selectgo cost (~40% of submit CPU) that dominates at
-	// high producer counts.
-	//
-	// Benefit: measured +15-33% throughput at 1 ms RTT and +6-18% at 5 ms with
-	// >=1k concurrent callers on the default window, tail equal-or-better.
-	//
-	// Drawback: it can affect fairness. A producer that finds room jumps ahead of
-	// producers already blocked on a full channel, so under a deep/bursting queue
-	// it would starve them and inflate p99. To bound that, the fast path is
-	// queue-depth gated (fdFastSubmitGatePct, ~10% full): once the channel backs
-	// up, the fair blocking select takes over. No-op on high-RTT links (RTT-bound)
-	// and with a small FullDuplexWindow (the channel is min(window,4096) deep, so
-	// it stays shallow) — the gains are at the default window.
-	//
-	// Ordering is unaffected. The enqueue is synchronous even on the async
-	// (Submit) face — only the reply is deferred, not the send. A caller's command
-	// N is on the ordered channel before its submit returns, and submit(N+1)
-	// cannot start until submit(N) returns, so a goroutine's own commands keep
-	// program order regardless of which path each took. Fast-submit changes only
-	// how long a synchronous enqueue waits and how it interleaves with OTHER
-	// producers (fairness); it can never let a caller's later command overtake its
-	// own earlier one.
-	FullDuplexFastSubmit bool
-
 	// contentSharded is set internally by cluster wiring when commands are
 	// routed to shards by content (slot), so same-key commands always share a
 	// shard and per-key order holds even with several shards. It exempts that
@@ -315,6 +289,10 @@ type AutoPipelineOptions struct {
 	// This provides automatic adaptation to varying load patterns without
 	// manual tuning. Uses integer-only arithmetic for optimal performance.
 	// Default: false (use fixed MaxFlushDelay)
+	//
+	// Half-duplex only. The full-duplex writer has its own policy: it waits
+	// MaxFlushDelay only when enough commands are in flight (see MaxFlushDelay)
+	// and ignores AdaptiveDelay.
 	AdaptiveDelay bool
 }
 
@@ -3402,12 +3380,13 @@ func (ap *AutoPipeliner) Len() int {
 	for _, s := range ap.shards {
 		total += s.Len()
 	}
-	// Full-duplex accepts commands onto fd.ch instead of the shard queues, so
-	// include its backlog — otherwise Len() reports 0 while accepted commands are
-	// buffered behind a backpressured/stalled FD writer, and callers using Len()
-	// for monitoring or local backpressure lose the signal in FullDuplex mode.
+	// Full-duplex accepts commands onto its submit queue instead of the shard
+	// queues, so include that backlog — otherwise Len() reports 0 while accepted
+	// commands are buffered behind a backpressured/stalled FD writer, and callers
+	// using Len() for monitoring or local backpressure lose the signal in
+	// FullDuplex mode.
 	if ap.fd != nil {
-		total += len(ap.fd.ch)
+		total += ap.fd.q.depth()
 	}
 	// Cluster full-duplex accepts commands onto per-node FD children, not the
 	// shard queues; include their backlog for the same monitoring reason.
