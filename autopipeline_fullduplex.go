@@ -3014,10 +3014,18 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 	for i := 0; i < len(carry); {
 		a := carry[i].attempts
 		j := i + 1
-		// Keep an FD pipeline batch in one group even if its commands carry
-		// different attempt counts, so flushReqs can run it as one pipeline.
-		for j < len(carry) && (carry[j].attempts == a || fdSameGroup(carry[j-1], carry[j])) {
-			j++
+		if carry[i].pipelined {
+			// One FD pipeline batch, even if its commands carry different
+			// attempt counts, so flushReqs can run it as one pipeline.
+			for j < len(carry) && fdSameGroup(carry[j-1], carry[j]) {
+				j++
+			}
+		} else {
+			// A run of other commands with the same attempt count. It stops at
+			// a pipeline batch, so no command shares a pipeline's budget.
+			for j < len(carry) && !carry[j].pipelined && carry[j].attempts == a {
+				j++
+			}
 		}
 		group := carry[i:j]
 		i = j
