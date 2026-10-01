@@ -108,6 +108,10 @@ func (c cmdable) BZMPop(ctx context.Context, timeout time.Duration, order string
 	}
 	args = append(args, strings.ToLower(order), "count", count)
 	cmd := NewZSliceWithKeyCmd(ctx, args...)
+	// The key follows numkeys, not args[1]: route by it.
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd
@@ -270,6 +274,10 @@ func (c cmdable) ZInterCard(ctx context.Context, limit int64, keys ...string) *I
 	args[2+numKeys] = "limit"
 	args[3+numKeys] = limit
 	cmd := NewIntCmd(ctx, args...)
+	// The key follows numkeys, not args[1]: route by it.
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(2)
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -286,6 +294,10 @@ func (c cmdable) ZMPop(ctx context.Context, order string, count int64, keys ...s
 	}
 	args = append(args, strings.ToLower(order), "count", count)
 	cmd := NewZSliceWithKeyCmd(ctx, args...)
+	// The key follows numkeys, not args[1]: route by it.
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(2)
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
