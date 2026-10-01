@@ -129,6 +129,21 @@ func cscNamespacedKey(prefix, key string) string {
 	return prefix + key
 }
 
+// cscMissKeys returns the namespaced redis keys in args [lo, hi] for Reserve.
+// processCached has already checked the span with cscKeySpan and
+// cscKeysRenderable.
+//
+// This is called on the MISS path only. It used to run before the cache-hit
+// check, which meant a hit -- the 94-99% case -- allocated a raw key slice,
+// this slice, and one string per key, then discarded all three.
+func cscMissKeys(cmd Cmder, keyPrefix string, lo, hi int) []string {
+	ns := make([]string, 0, hi-lo+1)
+	for i := lo; i <= hi; i++ {
+		ns = append(ns, cscNamespacedKey(keyPrefix, cmd.stringArg(i)))
+	}
+	return ns
+}
+
 // invalidateHandler propagates RESP3 "invalidate" push notifications into the
 // shared client-side cache. keyPrefix scopes incoming key names so a shared
 // cache cannot collide across databases or fixed ACL identities.
@@ -1538,29 +1553,36 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
-	redisKeys := extractRedisKeys(cmd)
-	if len(redisKeys) == 0 {
-		// Without a key list we cannot react to invalidations for this command.
-		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
-	}
-
 	// Read the namespace BEFORE building the key: the key is now built with
 	// the namespace already in it, in one allocation, so the prefix has to be
-	// known first. Both checks are cheap and neither depends on the other.
+	// known first.
 	keyPrefix := c.cscKeyPrefix
 	if keyPrefix == "" {
 		// A successfully attached client always has a namespace. Fail closed if
 		// an incomplete custom baseClient reaches this path.
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
+	// Check the key arguments BEFORE building the cache key. Building it
+	// encodes every argument, which calls MarshalBinary on a marshaler key; an
+	// uncacheable command would then marshal its key twice, once here and once
+	// for the request. The check allocates nothing.
+	keyLo, keyHi, ok := cscKeySpan(cmd)
+	if !ok || !cscKeysRenderable(cmd, keyLo, keyHi) {
+		// Without a key list we cannot react to invalidations for this
+		// command, so it must not be cached.
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+	}
 	key, ok := buildCacheKeyNS(cmd, keyPrefix)
 	if !ok {
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
-	nsRedisKeys := make([]string, len(redisKeys))
-	for i, k := range redisKeys {
-		nsRedisKeys[i] = cscNamespacedKey(keyPrefix, k)
-	}
+
+	// The key strings are deliberately NOT built here. Only Reserve needs
+	// them, and Reserve is on the miss path -- so at a 94-99% hit rate this
+	// used to allocate a key slice, a namespaced slice and one string per key
+	// on every read and discard all of it. By object count that was ~18% of
+	// everything the client allocated. They are built in cscMissKeys below,
+	// after the hit check.
 
 	// Serve hits straight from the cache.
 	if data, ok := c.cscGet(ctx, key); ok {
@@ -1581,6 +1603,9 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// window timer is the backstop. Correctness is unaffected (the key still
 	// refreshes); only the early-flush latency is client-local.
 	c.cscRefreshQueue.signalDemand(key)
+
+	// Miss path: now the key list is actually needed.
+	nsRedisKeys := cscMissKeys(cmd, keyPrefix, keyLo, keyHi)
 
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
