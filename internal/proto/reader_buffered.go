@@ -33,6 +33,24 @@ func (r *Reader) HasBufferedReply() bool {
 	return false
 }
 
+// bufferedValueLen returns the length of one complete value at the start of
+// b, including the attribute frames that may prefix it: inside an aggregate an
+// attribute decorates the element after it and is not an element itself.
+func bufferedValueLen(b []byte, depth int) (int, bool) {
+	off := 0
+	for {
+		n, ok := bufferedFrameLen(b[off:], depth)
+		if !ok {
+			return 0, false
+		}
+		t := b[off]
+		off += n
+		if t != RespAttr {
+			return off, true
+		}
+	}
+}
+
 // bufferedFrameLen returns the length of the complete frame at the start of
 // b. ok is false when b holds only part of it or the frame is not valid.
 func bufferedFrameLen(b []byte, depth int) (n int, ok bool) {
@@ -79,7 +97,7 @@ func bufferedFrameLen(b []byte, depth int) (n int, ok bool) {
 		// hold ends the loop early instead of running cnt times.
 		for k := 0; k < cnt; k++ {
 			for e := 0; e < per; e++ {
-				m, ok := bufferedFrameLen(b[off:], depth+1)
+				m, ok := bufferedValueLen(b[off:], depth+1)
 				if !ok {
 					return 0, false
 				}

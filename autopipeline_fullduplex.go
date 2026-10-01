@@ -106,6 +106,22 @@ func fdReadReplySafe(cmd Cmder, rd *proto.Reader) (err error) {
 	return cmd.readReply(rd)
 }
 
+// fdPushDrainSafe drains pending push notifications before a grouped reply,
+// turning a panic in a push handler (CSC invalidation, a registered or custom
+// processor) into a drain error, as fdReadReplySafe does for the decoder.
+// Escaping the group's WithReader, the panic left the replies the group had
+// already read uncompleted, and session recovery replayed them.
+func (fd *fdEngine) fdPushDrainSafe(ctx context.Context, cn *pool.Conn, rd *proto.Reader) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(ctx,
+				"autopipeline: recovered full-duplex push handler panic: %v\n%s", r, debug.Stack())
+			err = fmt.Errorf("%w: push handler: %v", errFDPanicRecovered, r)
+		}
+	}()
+	return fd.client.processPendingPushNotificationWithReader(ctx, cn, rd)
+}
+
 // errFDRetryBudgetExhausted fails a carried command that has already spent its full
 // retry budget (attempts > MaxRetries) when Close routes the unacked tail to
 // shutdownFlush. The shutdown pipeline must not grant another MaxRetries+1
@@ -1647,8 +1663,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					for i+grp < len(buf) {
 						// Same push-drain contract as before: a partial-frame drain
 						// desyncs the stream, so it is fatal for the session rather than
-						// logged and skipped.
-						if perr := fd.client.processPendingPushNotificationWithReader(bg, cn, rd); perr != nil {
+						// logged and skipped. A push handler panic is one too
+						// (fdPushDrainSafe), so the replies read before it complete.
+						if perr := fd.fdPushDrainSafe(bg, cn, rd); perr != nil {
 							internal.Logger.Printf(bg, "autopipeline: full-duplex push drain: %v", perr)
 							readErrs = append(readErrs, fmt.Errorf("%w: %w", errFDPushDrainFailed, perr))
 							grp++

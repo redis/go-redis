@@ -45,6 +45,10 @@ var completeReplies = []string{
 	// A push and an attribute in front of the reply are part of reading it.
 	">2\r\n+invalidate\r\n*1\r\n$1\r\nk\r\n+OK\r\n",
 	"|1\r\n+ttl\r\n:3\r\n$1\r\nv\r\n",
+	// An attribute inside an aggregate prefixes the element after it; it is
+	// not an element itself.
+	"*2\r\n|1\r\n+a\r\n+b\r\n:1\r\n:2\r\n",
+	"%1\r\n+k\r\n|1\r\n+a\r\n+b\r\n$1\r\nv\r\n",
 }
 
 // TestHasBufferedReply checks each complete reply, every strict prefix of it,
