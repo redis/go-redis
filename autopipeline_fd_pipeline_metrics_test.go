@@ -83,14 +83,22 @@ func TestFDShutdownFlushMarksOnlyBatchesItRuns(t *testing.T) {
 	}
 	carry := fdPipeGroupReqs(ctx, 1)
 	fresh := fdPipeGroupReqs(ctx, 1)
+	carry[0].batch.fdAttempts, fresh[0].batch.fdAttempts = 1, 1 // as submitBatch stamps them
 	fd.q.push(fresh[0])
 	fd.shutdownFlush(ctx, carry)
 
 	if !carry[0].batch.fdFlushed {
 		t.Fatal("the carried batch ran in the flush but is not marked flushed")
 	}
+	if carry[0].batch.fdAttempts < 2 {
+		t.Fatalf("the carried batch ran again in the flush but reports %d issue(s)", carry[0].batch.fdAttempts)
+	}
 	if fresh[0].batch.fdFlushed {
 		t.Fatal("the fresh batch never ran (the carry hit a dead endpoint) but is marked flushed; its failure would record no metric")
+	}
+	// Its attempt count must not count an issue that never happened.
+	if a := fresh[0].batch.fdAttempts; a != 1 {
+		t.Fatalf("the fresh batch never ran but reports %d issues, want 1", a)
 	}
 }
 
