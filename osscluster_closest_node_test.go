@@ -81,3 +81,32 @@ func TestSlotClosestNodeAllFailingPicksLeastSlow(t *testing.T) {
 		t.Fatal("expected the least-slow failing node")
 	}
 }
+
+func TestSlotClosestNodeAllTimeoutsRandomizeOnlineCandidates(t *testing.T) {
+	one := closestNodeTestNode(t, maximumNodeLatency, true)
+	two := closestNodeTestNode(t, maximumNodeLatency, true)
+	offline := closestNodeTestNode(t, time.Millisecond, true)
+	state := &clusterState{
+		slots:  []*clusterSlot{{start: 0, end: 16383, nodes: []*clusterNode{offline, one, two}}},
+		health: map[*clusterNode]string{offline: "loading"},
+	}
+	for _, tolerance := range []time.Duration{0, time.Millisecond} {
+		seen := make(map[*clusterNode]bool)
+		for i := 0; i < 100; i++ {
+			var node *clusterNode
+			var err error
+			if tolerance == 0 {
+				node, err = state.slotClosestNode(0)
+			} else {
+				node, err = state.slotNodeWithinLatency(0, tolerance)
+			}
+			if err != nil || node == offline {
+				t.Fatalf("fallback selected an offline node or failed: node=%v err=%v", node, err)
+			}
+			seen[node] = true
+		}
+		if !seen[one] || !seen[two] {
+			t.Fatalf("tolerance=%v: all-timeout fallback used only %d online candidates", tolerance, len(seen))
+		}
+	}
+}

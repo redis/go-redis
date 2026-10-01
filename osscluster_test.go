@@ -569,7 +569,17 @@ var _ = Describe("ClusterClient", func() {
 			lostScript := redis.NewScript(lostScriptSrc)
 
 			script.Load(ctx, client)
-			client.Do(ctx, "script", "load", lostScriptSrc)
+			// Load one master so SCRIPT EXISTS must aggregate false across shards.
+			var once sync.Once
+			var loadErr error
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				once.Do(func() {
+					loadErr = master.ScriptLoad(ctx, lostScriptSrc).Err()
+				})
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loadErr).NotTo(HaveOccurred())
 
 			val, _ := client.ScriptExists(ctx, script.Hash(), lostScript.Hash()).Result()
 
@@ -634,7 +644,6 @@ var _ = Describe("ClusterClient", func() {
 			var pipe *redis.Pipeline
 
 			assertPipeline := func(keys []string) {
-
 				It("should follow redirects", func() {
 					if !failover {
 						for _, key := range keys {
@@ -781,6 +790,41 @@ var _ = Describe("ClusterClient", func() {
 					pipe.Ping(ctx)
 					_, err := pipe.Exec(ctx)
 					Expect(err).To(Not(HaveOccurred()))
+				})
+
+				It("reads same-slot streams in transactions and follows MOVED", func() {
+					keys := []string{"stream-a{s}", "stream-b{s}"}
+					for _, key := range keys {
+						Expect(client.XAdd(ctx, &redis.XAddArgs{
+							Stream: key, ID: "1-0", Values: map[string]interface{}{"field": "value"},
+						}).Err()).NotTo(HaveOccurred())
+						Expect(client.XGroupCreate(ctx, key, "streams", "0").Err()).NotTo(HaveOccurred())
+					}
+					for _, redirect := range []bool{false, true} {
+						id := ">"
+						if redirect {
+							id = "0" // Read the pending entries again after redirecting.
+						}
+						if redirect && !failover {
+							Eventually(func() error { return client.SwapNodes(ctx, keys[0]) }, 30*time.Second).Should(Succeed())
+						}
+						read := pipe.XRead(ctx, &redis.XReadArgs{Streams: []string{keys[0], keys[1], "0", "0"}, Block: -1})
+						group := pipe.XReadGroup(ctx, &redis.XReadGroupArgs{
+							Group: "streams", Consumer: "streams", Count: 1,
+							Streams: []string{keys[0], keys[1], id, id}, Block: -1,
+						})
+						_, err := pipe.Exec(ctx)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(read.Val()).To(HaveLen(2))
+						for i, stream := range read.Val() {
+							Expect(stream.Stream).To(Equal(keys[i]))
+							Expect(stream.Messages).To(HaveLen(1))
+						}
+						Expect(group.Val()).To(HaveLen(2))
+						for _, stream := range group.Val() {
+							Expect(stream.Messages).To(HaveLen(1))
+						}
+					}
 				})
 
 				// doesn't fail when no commands are queued
@@ -1295,7 +1339,7 @@ var _ = Describe("ClusterClient", func() {
 
 					Expect(node.ReplicationOffset).To(BeNumerically(">=", 0))
 
-					validHealthStatuses := []string{"online", "failed", "loading"}
+					validHealthStatuses := []string{"online", "fail", "failed", "loading"}
 					Expect(validHealthStatuses).To(ContainElement(node.Health))
 				}
 			}
@@ -1422,7 +1466,8 @@ var _ = Describe("ClusterClient", func() {
 			}
 
 			for i := 0; i < nkeys*10; i++ {
-				key := client.RandomKey(ctx).Val()
+				key, err := client.RandomKey(ctx).Result()
+				Expect(err).NotTo(HaveOccurred())
 				addKey(key)
 			}
 
@@ -2137,7 +2182,7 @@ var _ = Describe("ClusterClient timeout", func() {
 
 		It("should timeout Pipeline", func() {
 			_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Ping(ctx)
+				pipe.Echo(ctx, "timeout")
 				return nil
 			})
 			Expect(err).To(HaveOccurred())
@@ -3496,7 +3541,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 	})
 
-	var _ = Describe("ClusterClient ParseURL", func() {
+	_ = Describe("ClusterClient ParseURL", func() {
 		cases := []struct {
 			test string
 			url  string

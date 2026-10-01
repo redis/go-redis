@@ -58,7 +58,7 @@ func TestCSCRefresherStopDrainSkipsRefetchEntirely(t *testing.T) {
 	const chunks = 3
 	const targets = chunks * cscRefreshBatchMax
 	for i := 0; i < targets; i++ {
-		key := "p:" + strconv.Itoa(i)
+		key := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, strconv.Itoa(i))
 		q.ch <- cscRefreshTarget{cacheKey: key, redisKeys: []string{key}}
 	}
 
@@ -120,7 +120,7 @@ func TestCSCRefresherNormalFlushAbortsOnClose(t *testing.T) {
 	// A full window (4 * cscRefreshBatchMax) triggers a NORMAL flush(false,false) from the
 	// q.ch case — this is NOT the stop-drain path (h.stop is not pre-closed).
 	for i := 0; i < cscRefreshWindowMaxKeys; i++ {
-		key := "p:" + strconv.Itoa(i)
+		key := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, strconv.Itoa(i))
 		q.ch <- cscRefreshTarget{cacheKey: key, redisKeys: []string{key}}
 	}
 
@@ -522,9 +522,10 @@ func TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic(t *testing.T) {
 	lc := NewLocalCache(CacheConfig{MaxEntries: 64, Sizer: sizer})
 	c := &baseClient{csc: lc, cscKeyPrefix: "p"}
 
+	prefix := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, "")
 	targets := []cscRefreshTarget{
-		{cacheKey: "ck:1", redisKeys: []string{"rk:1"}},
-		{cacheKey: "ck:2", redisKeys: []string{"rk:2"}},
+		{cacheKey: prefix + "ck:1", redisKeys: []string{"rk:1"}},
+		{cacheKey: prefix + "ck:2", redisKeys: []string{"rk:2"}},
 	}
 
 	func() {
@@ -538,7 +539,7 @@ func TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic(t *testing.T) {
 
 	// ck:1 was reserved before the panic on ck:2; the defer must have cancelled it, so a
 	// fresh Reserve sees no lingering IN_PROGRESS placeholder (shouldFetch, non-zero tok).
-	tok, shouldFetch := lc.Reserve("ck:1", []string{"rk:1"})
+	tok, shouldFetch := lc.Reserve(targets[0].cacheKey, targets[0].redisKeys)
 	if !shouldFetch || tok == 0 {
 		t.Fatalf("ck:1 reservation not cancelled after the panic (Reserve = %d, %v); a reader "+
 			"would block on the orphaned placeholder until StaleTimeout (#3989)", tok, shouldFetch)
