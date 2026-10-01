@@ -272,7 +272,10 @@ type AutoPipelineOptions struct {
 	// else: the number of full-duplex engines, each holding one pipeline-pool
 	// connection with its own window (see FullDuplexWindow). Commands are routed
 	// to an engine by a hash of their first key, so Unordered is not required,
-	// but order holds only between commands that share a first key. Commands
+	// but order holds only between commands that share a first key. The key is
+	// hashed in its string form (fmt for non-string arguments, as Ring does), so
+	// pass a key as the same Go type everywhere: true and "1" are the same Redis
+	// key but can land on different engines. Commands
 	// that touch other keys after the first one (COPY, RENAME, MSET, multi-key
 	// DEL, EVAL/FCALL with several keys) and keyless commands (including
 	// FLUSHDB and SWAPDB) are not ordered against the rest; await the first
