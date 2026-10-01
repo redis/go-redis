@@ -76,7 +76,7 @@ surface. The API is experimental and may change in a future release.
 
 - Redis commands except QUIT and SYNC.
 - Automatic connection pooling.
-- [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority) (experimental)
+- [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority)
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
 - [Automatic pipelining](#automatic-pipelining) (experimental) — batches concurrent
@@ -177,7 +177,7 @@ defer rdb.Close()
 
 The Redis client supports multiple ways to provide authentication credentials, with a clear priority order. Here are the available options:
 
-#### 1. Streaming Credentials Provider (Highest Priority) - Experimental feature
+#### 1. Streaming Credentials Provider (Highest Priority)
 
 The streaming credentials provider allows for dynamic credential updates during the connection lifetime. This is particularly useful for managed identity services and token-based authentication.
 
