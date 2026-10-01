@@ -11,7 +11,7 @@ import (
 // them. An empty-string key used to collide with the keyless sentinel.
 func TestFDForRoutesKeyFormsTogether(t *testing.T) {
 	ctx := context.Background()
-	cl := NewClient(&Options{Addr: "127.0.0.1:6379"})
+	cl := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer cl.Close()
 	if err := cl.Ping(ctx).Err(); err != nil {
 		t.Skipf("no local redis: %v", err)

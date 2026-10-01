@@ -6,7 +6,7 @@ package redis_test
 // routed to engine A whose reply is read off engine B would corrupt data
 // silently rather than error.
 //
-// Requires a local server on 127.0.0.1:6379.
+// Requires a local server (apTestAddr: REDIS_PORT, default 6379).
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 
 func TestFDShardsReplyCorrelation(t *testing.T) {
 	ctx := context.Background()
-	cl := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+	cl := redis.NewClient(&redis.Options{Addr: apTestAddr()})
 	defer cl.Close()
 	if err := cl.Ping(ctx).Err(); err != nil {
 		t.Skipf("no local redis: %v", err)
@@ -113,7 +113,7 @@ func TestFDShardsReplyCorrelation(t *testing.T) {
 // state, so a fallback surfaces as FullDuplex:false.
 func TestFDShardsKeepsFullDuplexOn(t *testing.T) {
 	ctx := context.Background()
-	cl := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+	cl := redis.NewClient(&redis.Options{Addr: apTestAddr()})
 	defer cl.Close()
 	if err := cl.Ping(ctx).Err(); err != nil {
 		t.Skipf("no local redis: %v", err)
@@ -139,7 +139,7 @@ func TestFDShardsKeepsFullDuplexOn(t *testing.T) {
 // not the requested one. Construction only, so no server is needed.
 func TestFDShardsFallbackStillNeedsUnordered(t *testing.T) {
 	cl := redis.NewClient(&redis.Options{
-		Addr:             "127.0.0.1:6379",
+		Addr:             apTestAddr(),
 		PipelinePoolSize: -1,
 	})
 	defer cl.Close()
@@ -163,7 +163,7 @@ func TestFDShardsFallbackStillNeedsUnordered(t *testing.T) {
 func TestFDShardsRejectsMoreEnginesThanPool(t *testing.T) {
 	ctx := context.Background()
 	cl := redis.NewClient(&redis.Options{
-		Addr:             "127.0.0.1:6379",
+		Addr:             apTestAddr(),
 		PipelinePoolSize: 4,
 	})
 	defer cl.Close()
