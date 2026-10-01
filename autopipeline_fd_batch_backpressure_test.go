@@ -75,7 +75,7 @@ func TestFDSubmitBatchDoesNotSpinWhileBlocked(t *testing.T) {
 	stop := startBlockedBatch(t, fd)
 	defer stop()
 
-	fd.q.signalBatchRoom() // one slot free, the batch needs five
+	wakeHead(t, fd.q) // one slot free, the batch needs five
 	time.Sleep(20 * time.Millisecond)
 	running := 0
 	const samples = 20
@@ -90,27 +90,161 @@ func TestFDSubmitBatchDoesNotSpinWhileBlocked(t *testing.T) {
 	}
 }
 
-// TestFDSubmitBatchPassesOnAWakeItCannotUse pins the wake chain: batchRoom
-// holds one signal, and a holder that wakes passes it on while space remains.
-// A batch that wakes but does not fit must still pass the wake to a smaller
-// batch behind it, which may fit.
-func TestFDSubmitBatchPassesOnAWakeItCannotUse(t *testing.T) {
+// wakeHead signals the head of the holder line the way a take would.
+func wakeHead(t *testing.T, q *fdQueue) {
+	t.Helper()
+	q.mu.Lock()
+	head := q.headWakeLocked()
+	q.mu.Unlock()
+	if head == nil {
+		t.Fatal("no holder is waiting")
+	}
+	signalHolder(head)
+}
+
+// waitHolders blocks until n batches hold a reservation.
+func waitHolders(t *testing.T, q *fdQueue, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for q.holderCount() != n {
+		if time.Now().After(deadline) {
+			t.Fatalf("holders = %d, want %d", q.holderCount(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestFDSubmitBatchWakesOnlyTheHead pins the direct wake: a take signals the
+// head of the holder line on its own channel, and a holder behind it is not
+// woken at all, so no wake is shared or passed between holders.
+func TestFDSubmitBatchWakesOnlyTheHead(t *testing.T) {
 	fd := fdBackpressureEngine(t)
-	stop := startBlockedBatch(t, fd)
+	headID, headWake := fd.q.hold(1) // an earlier holder, standing in for a head
+	stop := startBlockedBatch(t, fd) // the batch lines up behind it
 	defer stop()
+	waitHolders(t, fd.q, 2)
 
-	woke := make(chan struct{})
-	go func() {
-		<-fd.q.batchRoomCh() // another batch waiting behind this one
-		close(woke)
-	}()
-	time.Sleep(50 * time.Millisecond)
-
-	fd.q.signalBatchRoom() // one slot free: the batch wakes first and cannot fit
+	fd.q.takeInto(nil, 1)
 	select {
-	case <-woke:
+	case <-headWake:
 	case <-time.After(time.Second):
-		t.Fatal("the batch kept a wake it could not use; the waiter behind it never woke")
+		t.Fatal("a take did not wake the head of the line")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if !submitBatchParked(t) {
+		t.Fatal("the batch behind the head was woken by a take meant for the head")
+	}
+
+	// The head leaves: the batch becomes the head and is woken to try.
+	fd.q.unhold(headID)
+	time.Sleep(20 * time.Millisecond)
+	if fd.q.holderCount() != 1 {
+		t.Fatalf("holders after unhold = %d, want 1", fd.q.holderCount())
+	}
+}
+
+// TestFDSubmitBatchHoldersAreFIFO pins that holders are admitted in arrival
+// order: small batches that arrive behind a large one cannot take the room
+// the writer frees for the large one, even though each alone would fit, and
+// each is admitted in turn once it reaches the head of the line.
+func TestFDSubmitBatchHoldersAreFIFO(t *testing.T) {
+	apCtx, apCancel := context.WithCancel(context.Background())
+	defer apCancel()
+	fd := &fdEngine{
+		ap:     &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: apCtx},
+		client: &Client{baseClient: &baseClient{opt: &Options{}}},
+		q:      newFDQueue(10),
+	}
+	for i := 0; i < 10; i++ {
+		fd.q.push(fdReq{cmd: NewStatusCmd(context.Background(), "set", "k", "v"), batch: newAPBatch()})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mk := func(n int) []Cmder {
+		cmds := make([]Cmder, n)
+		for i := range cmds {
+			cmds[i] = NewStatusCmd(ctx, "set", "k", "v")
+		}
+		return cmds
+	}
+	order := make(chan string, 3)
+	submit := func(name string, cmds []Cmder) {
+		b, err := fd.submitBatch(ctx, cmds)
+		if err != nil || len(b) != len(cmds) {
+			t.Errorf("%s: submitBatch = (%d, %v)", name, len(b), err)
+		}
+		order <- name
+	}
+	go submit("big", mk(10))
+	waitHolders(t, fd.q, 1)
+	go submit("small1", mk(1))
+	waitHolders(t, fd.q, 2)
+	go submit("small2", mk(1))
+	waitHolders(t, fd.q, 3)
+
+	// Drain one at a time, as a writer with a one-command wave would. After
+	// each take a small batch alone would fit; neither may be admitted.
+	for i := 0; i < 10; i++ {
+		fd.q.takeInto(nil, 1)
+		time.Sleep(5 * time.Millisecond)
+		if i < 9 {
+			select {
+			case name := <-order:
+				t.Fatalf("%q admitted after %d takes, ahead of the head of the line", name, i+1)
+			default:
+			}
+		}
+	}
+	next := func(want string) {
+		t.Helper()
+		select {
+		case got := <-order:
+			if got != want {
+				t.Fatalf("admitted %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%q was not admitted", want)
+		}
+	}
+	next("big") // 10 live again
+	fd.q.takeInto(nil, 1)
+	next("small1")
+	fd.q.takeInto(nil, 1)
+	next("small2")
+}
+
+// TestFDSubmitBatchCloseReleasesAllHolders pins that closing the queue wakes
+// every holder, not just the head: a holder behind the head has no other
+// room signal, and Close must not leave it waiting for its ctx.
+func TestFDSubmitBatchCloseReleasesAllHolders(t *testing.T) {
+	fd := fdBackpressureEngine(t)
+	ctx := context.Background()
+	done := make(chan error, 2)
+	for _, n := range []int{5, 5} {
+		cmds := make([]Cmder, n)
+		for i := range cmds {
+			cmds[i] = NewStatusCmd(ctx, "set", "k", "v")
+		}
+		go func() {
+			b, err := fd.submitBatch(ctx, cmds)
+			if b != nil || err != nil {
+				t.Errorf("submitBatch = (%v, %v); want a submit-time rejection", b, err)
+			}
+			done <- cmds[0].Err()
+		}()
+	}
+	waitHolders(t, fd.q, 2)
+
+	fd.q.closeQueue()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != ErrClosed {
+				t.Fatalf("holder error = %v, want ErrClosed", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("a holder was not released by closeQueue")
+		}
 	}
 }
 

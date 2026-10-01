@@ -920,7 +920,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 			// Confined to this saturated path, so steady state pays nothing. Room a
 			// waiting batch has reserved does not count: no single can use it, and
 			// passing the wake on for it would only spin this chain until the batch
-			// is admitted (the batch has its own batchRoom signal).
+			// is admitted (each holder has its own wake channel).
 			if fd.q.roomFor(1) {
 				fd.q.signalRoom()
 			}

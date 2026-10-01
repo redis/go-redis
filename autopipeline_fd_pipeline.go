@@ -296,6 +296,9 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeR
 // wave, single submitters refill any free slot, and the batch never sees its
 // whole length free at once. With the reservation the freed room accumulates
 // for the batch, and the singles resume once it is admitted (or gives up).
+// Holders are admitted in arrival order: a later, smaller batch that could be
+// admitted with the room the head is waiting for would otherwise starve the
+// head.
 func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, error) {
 	// A batch larger than the queue itself can NEVER be admitted, and the
 	// room-wait loop below would spin forever waiting for space that cannot
@@ -324,14 +327,16 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 		reqs[i] = fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1, pipelined: true}
 	}
 
-	passed, havePassed := uint64(0), false
-	// held: this batch holds len(reqs) reserved slots. Every exit that does not
-	// admit the batch must give them back, after the RLock is dropped.
-	held := false
+	// held: this batch holds len(reqs) reserved slots under id and waits on
+	// wake, which the queue signals only while this batch is the head of the
+	// holder line (and on close). Every exit that does not admit the batch must
+	// give the slots back, after the RLock is dropped.
+	held, id := false, uint64(0)
+	var wake <-chan struct{}
 	reject := func(err error) ([]*apBatch, error) {
 		fd.submitMu.RUnlock()
 		if held {
-			fd.q.unhold(len(reqs))
+			fd.q.unhold(id)
 		}
 		setCmdsErr(cmds, err)
 		return nil, nil
@@ -349,7 +354,7 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 		}
 		var res fdPushResult
 		if held {
-			res = fd.q.pushHeld(reqs) // consumes the reservation on success
+			res = fd.q.pushHeld(reqs, id) // consumes the reservation on success
 		} else {
 			res = fd.q.pushBatch(reqs)
 		}
@@ -361,33 +366,24 @@ func (fd *fdEngine) submitBatch(ctx context.Context, cmds []Cmder) ([]*apBatch, 
 			return reject(ErrClosed)
 		}
 		// Queue full. Reserve the batch's slots, then retry at once rather than
-		// sleeping: a take between the refused push and the hold saw no
-		// reservation and did not signal batchRoom, and if it emptied the queue
-		// there would be no later take to wake this batch. The retry under the
-		// reservation either fits or observes a queue that still holds work, so
-		// a signalled take is guaranteed.
+		// sleeping: a take between the refused push and the hold saw no holder
+		// to wake, and if it emptied the queue there would be no later take to
+		// wake this batch. The retry under the reservation either fits, or
+		// observes a queue that still holds work (so a take, which wakes the
+		// head, is guaranteed), or finds another holder ahead (whose departure
+		// wakes the new head).
 		if !held {
-			fd.q.hold(len(reqs))
+			id, wake = fd.q.hold(len(reqs))
 			held = true
 			continue
 		}
-		// Wait for the writer to take a wave, then retry the whole batch. Same
-		// release conditions as submit()'s backpressure wait.
+		// Wait to be woken as the head of the line (a take freed room, or the
+		// previous head left), then retry the whole batch. The wake is this
+		// batch's own cap-1 channel, so it cannot be taken by another waiter and
+		// a wake that lands while this batch is mid-retry is kept for the next
+		// wait. Same release conditions as submit()'s backpressure wait.
 		select {
-		case <-fd.q.batchRoomCh():
-			// Chain the wake to another holder, so a batch behind this one that
-			// fits is not left asleep. A batch that does not fit passes the wake
-			// on only once per take: with no other waiter it would take its own
-			// signal straight back, fail to fit, and spin, holding submitMu.RLock
-			// while the writer is blocked.
-			free, takes := fd.q.roomAndTakes()
-			switch {
-			case free > len(cmds):
-				fd.q.signalBatchRoom() // room for others after this batch
-			case free > 0 && (!havePassed || takes != passed):
-				passed, havePassed = takes, true
-				fd.q.signalBatchRoom()
-			}
+		case <-wake:
 		case <-ctx.Done():
 			return reject(ctx.Err())
 		case <-fd.ap.ctx.Done():
