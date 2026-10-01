@@ -330,7 +330,14 @@ supported because they use dedicated connections.
 
 Invalidations are processed asynchronously. `DrainInterval` controls how often
 idle connections are checked for them, while `MaxStaleness` can provide an
-optional upper bound on an entry's lifetime. See the
+optional upper bound on an entry's lifetime.
+
+Until a key's invalidation arrives, a cache hit can return a value older than
+the one on the server. Reads are also not monotonic for one caller. A read that
+waits twice for another caller's fetch of the same key reads the server
+directly instead. The other fetch ran on the server earlier, can store its
+older value afterwards, and a later hit then returns that older value until the
+invalidation arrives. See the
 [client-side caching example](./example/client-side-caching) for a working
 demonstration.
 
