@@ -71,7 +71,7 @@ func isCacheable(cmd Cmder) bool {
 	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd) {
 		return false
 	}
-	return cmdFirstKeyPosWithInfo(cmd, nil) != 0
+	return cmdFirstKeyPosWithInfo(cmd, nil) > 0
 }
 
 // sortROHasByGet reports whether a SORT_RO invocation uses BY or GET
@@ -223,7 +223,9 @@ func isWireKeyType(v any) bool {
 // ok is false when cmd has no key.
 func cscKeySpan(cmd Cmder) (lo, hi int, ok bool) {
 	firstKey := cmdFirstKeyPosWithInfo(cmd, nil)
-	if firstKey == 0 {
+	// SetFirstKeyPos is public and takes any int8, so a negative position is
+	// possible. It is not a key: reject it here rather than index args with it.
+	if firstKey <= 0 {
 		return 0, 0, false
 	}
 	argsLen := len(cmd.Args())
