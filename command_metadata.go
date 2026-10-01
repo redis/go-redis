@@ -95,11 +95,24 @@ type commandMetadataView struct {
 	serverVersion string
 }
 
-// defaultCommandMetadataView is shared by every client without overrides or
-// live mode.
-var defaultCommandMetadataView = buildCommandMetadataView(nil, nil)
+// defaultCommandMetadataView is built only when CSC or metadata routing needs
+// it, and is shared by clients without overrides or live mode.
+var defaultCommandMetadataView = sync.OnceValue(func() *commandMetadataView {
+	return buildCommandMetadataView(nil, nil)
+})
 
 var commandMetadataGeneration atomic.Uint64
+
+// The snapshot itself is static data. Only live compatibility resolution needs
+// a name index; ordinary static view construction can iterate the records.
+var commandInfoSnapshotByName = sync.OnceValue(func() map[string]*CommandInfo {
+	index := make(map[string]*CommandInfo, len(commandInfoSnapshotRecords))
+	for i := range commandInfoSnapshotRecords {
+		info := &commandInfoSnapshotRecords[i]
+		index[info.Name] = info
+	}
+	return index
+})
 
 // commandMetadataCompatibilityCorrection adds CSC exclusions missing before
 // Redis 8.10.
@@ -110,9 +123,10 @@ type commandMetadataCompatibilityCorrection struct {
 
 // commandMetadataPre810Corrections contains only pre-8.10 CSC exclusions.
 // Redis 8.10+ metadata stays authoritative except for built-in corrections.
-var commandMetadataPre810Corrections = func() map[string]commandMetadataCompatibilityCorrection {
+var commandMetadataPre810Corrections = sync.OnceValue(func() map[string]commandMetadataCompatibilityCorrection {
 	corrections := make(map[string]commandMetadataCompatibilityCorrection)
-	for name, info := range commandInfoSnapshot {
+	for i := range commandInfoSnapshotRecords {
+		info := &commandInfoSnapshotRecords[i]
 		var correction commandMetadataCompatibilityCorrection
 		if !commandRecordHas(info, "readonly", false) {
 			// Do not let old metadata make a known write command cacheable.
@@ -131,11 +145,11 @@ var commandMetadataPre810Corrections = func() map[string]commandMetadataCompatib
 			}
 		}
 		if len(correction.flags) > 0 || len(correction.tips) > 0 {
-			corrections[name] = correction
+			corrections[info.Name] = correction
 		}
 	}
 	return corrections
-}()
+})
 
 // buildCommandMetadataView builds a view, treating live input as Redis 8.10.
 func buildCommandMetadataView(live, overrides map[string]*CommandInfo) *commandMetadataView {
@@ -160,7 +174,7 @@ func buildCommandMetadataViewForServerWithLegacy(
 	serverVersion string,
 	liveLegacyRecords map[string]struct{},
 ) *commandMetadataView {
-	records := make(map[string]*CommandInfo, len(commandInfoSnapshot)+len(overrides))
+	records := make(map[string]*CommandInfo, len(commandInfoSnapshotRecords)+len(overrides))
 	tombstones := make(map[string]struct{})
 	parents := make(map[string]struct{})
 	markParent := func(name string) {
@@ -176,10 +190,12 @@ func buildCommandMetadataViewForServerWithLegacy(
 			offset++
 		}
 	}
-	for name, info := range commandInfoSnapshot {
-		lower := internal.ToLower(name)
-		records[lower] = cloneCommandInfoForName(lower, info)
-		markParent(lower)
+	for i := range commandInfoSnapshotRecords {
+		// Generated records are normalized and immutable. Mutable layers below
+		// copy their inputs before applying changes.
+		info := &commandInfoSnapshotRecords[i]
+		records[info.Name] = info
+		markParent(info.Name)
 	}
 
 	legacyLive := make(map[string]struct{}, len(liveLegacyRecords))
@@ -312,7 +328,7 @@ func resolveLiveCommandMetadata(
 	legacy bool,
 ) *CommandInfo {
 	resolved := cloneCommandInfoForName(name, info)
-	snapshot, snapshotKnown := commandInfoSnapshot[name]
+	snapshot, snapshotKnown := commandInfoSnapshotByName()[name]
 	if legacy && snapshotKnown {
 		// Redis 5/6 COMMAND records cannot advertise routing policies. Keep
 		// the known policies while retaining the server's flags and key positions.
@@ -323,7 +339,7 @@ func resolveLiveCommandMetadata(
 		}
 	}
 	if !liveSupportsCSC {
-		if correction, ok := commandMetadataPre810Corrections[name]; ok {
+		if correction, ok := commandMetadataPre810Corrections()[name]; ok {
 			resolved.Flags = appendCommandMetadataTokens(resolved.Flags, correction.flags...)
 			resolved.Tips = appendCommandMetadataTokens(resolved.Tips, correction.tips...)
 		}
@@ -539,12 +555,23 @@ func cscTableFingerprint(table map[string]cscCommandMeta) string {
 	}
 	sort.Strings(names)
 	h := sha256.New()
+	buf := make([]byte, 0, 128)
 	for _, name := range names {
 		m := table[name]
-		fmt.Fprintf(h, "%s\x00%d %d %d %d %d %d %d\n",
-			name, m.bits, m.extract, m.guard, m.firstKey, m.lastKey, m.step, m.numkeysAt)
+		buf = append(buf[:0], name...)
+		buf = append(buf, 0)
+		for _, value := range [...]int64{
+			int64(m.bits), int64(m.extract), int64(m.guard),
+			int64(m.firstKey), int64(m.lastKey), int64(m.step), int64(m.numkeysAt),
+		} {
+			buf = strconv.AppendInt(buf, value, 10)
+			buf = append(buf, ' ')
+		}
+		buf[len(buf)-1] = '\n'
+		h.Write(buf)
 	}
-	return hex.EncodeToString(h.Sum(nil)[:16])
+	var digest [sha256.Size]byte
+	return hex.EncodeToString(h.Sum(digest[:0])[:16])
 }
 
 // commandMetadataFetchResult separates publication identity from the version
@@ -664,7 +691,7 @@ func newCommandMetadataStoreWithLiveRequirement(
 	}
 	s.fetchCtx, s.fetchCancel = context.WithCancel(context.Background())
 	if len(overrides) == 0 {
-		s.static = defaultCommandMetadataView
+		s.static = defaultCommandMetadataView()
 	} else {
 		s.static = buildCommandMetadataView(nil, overrides)
 	}
@@ -685,6 +712,10 @@ func newCommandMetadataStoreWithLiveRequirement(
 
 func (s *commandMetadataStore) view() *commandMetadataView {
 	return s.current.Load()
+}
+
+func (s *commandMetadataStore) wantsServerHello() bool {
+	return s != nil && s.mode == CommandMetadataPreferLive
 }
 
 // onConnInit runs after each successful connection initialization: in
@@ -1104,7 +1135,10 @@ func (c *baseClient) metadataView() *commandMetadataView {
 	if s := c.cmdMeta; s != nil {
 		return s.view()
 	}
-	return defaultCommandMetadataView
+	if c.staticCmdMeta != nil {
+		return c.staticCmdMeta
+	}
+	return defaultCommandMetadataView()
 }
 
 // fetchCommandMetadata retrieves HELLO and COMMAND on one connection. It

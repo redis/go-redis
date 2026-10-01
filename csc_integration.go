@@ -704,6 +704,9 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 	if ih := lookupInvalidateHandler(c.pushProcessor); ih != nil {
 		ih.setInvalBatchWindow(c.opt.ClientSideCacheInvalidationBatchWindow)
 	}
+	if c.cmdMeta == nil {
+		c.staticCmdMeta = defaultCommandMetadataView()
+	}
 	c.csc = cache
 	c.registerConnEvictHook(cache, reg)
 	c.startBackgroundDrainer()
@@ -1004,22 +1007,25 @@ func (c *baseClient) cscCommandError(cmd Cmder) error {
 		return errUnverifiableCommandWithCSC
 	}
 	if strings.EqualFold(name, "client") {
-		if _, ok := cscCommandToken(cmd, 1); !ok {
+		subcommand, ok := cscCommandToken(cmd, 1)
+		if !ok {
 			return errUnverifiableCommandWithCSC
 		}
+		if strings.EqualFold(subcommand, "tracking") {
+			return errClientTrackingWithCSC
+		}
+		return nil
 	}
 	switch {
-	case isClientTrackingCmd(cmd):
-		return errClientTrackingWithCSC
-	case isSelectCmd(cmd):
+	case strings.EqualFold(name, "select"):
 		return errSelectWithCSC
-	case isAuthCmd(cmd):
+	case strings.EqualFold(name, "auth"):
 		return errAuthWithCSC
-	case isProtocolChangingHelloCmd(cmd):
+	case strings.EqualFold(name, "hello") && len(cmd.Args()) > 1:
 		return errHelloWithCSC
-	case isResetCmd(cmd):
+	case strings.EqualFold(name, "reset"):
 		return errResetWithCSC
-	case isSubscribeCmd(cmd):
+	case isSubscribeName(name):
 		return errSubscribeWithCSC
 	default:
 		return nil
@@ -1456,27 +1462,24 @@ func (c *baseClient) processCached(
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
-	rawKey, ok := buildCacheKey(cmd)
-	if !ok {
-		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
-	}
-
-	redisKeys := cscExtractRedisKeys(meta, cmd)
-	if len(redisKeys) == 0 {
-		// Without a key list we cannot react to invalidations for this command.
-		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
-	}
-
 	keyPrefix := c.cscKeyPrefix
 	if keyPrefix == "" {
 		// A successfully attached client always has a namespace. Fail closed if
 		// an incomplete custom baseClient reaches this path.
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
-	key := cscEntryKey(keyPrefix, view.cscFingerprint, rawKey)
-	nsRedisKeys := make([]string, len(redisKeys))
-	for i, k := range redisKeys {
-		nsRedisKeys[i] = cscNamespacedKey(keyPrefix, k)
+	first, step, count := cscRedisKeyLayout(meta, cmd)
+	if count == 0 {
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+	}
+	for i, pos := 0, first; i < count; i, pos = i+1, pos+step {
+		if !keyArgOK(cmd, pos) {
+			return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+		}
+	}
+	key, ok := cscRenderEntryKey(keyPrefix, view.cscFingerprint, cmd)
+	if !ok {
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
 	// Serve hits straight from the cache. A hit is served only while the
@@ -1506,6 +1509,12 @@ func (c *baseClient) processCached(
 	// refreshes); only the early-flush latency is client-local.
 	c.cscRefreshQueue.signalDemand(key)
 
+	// Only misses need the Redis keys for invalidation bookkeeping.
+	redisKeys := cscCollectKeys(cmd, first, step, count)
+	nsRedisKeys := make([]string, len(redisKeys))
+	for i, k := range redisKeys {
+		nsRedisKeys[i] = cscNamespacedKey(keyPrefix, k)
+	}
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
 		// Another goroutine is fetching; Get below waits until it completes.

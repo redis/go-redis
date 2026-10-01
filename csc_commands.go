@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -396,99 +397,125 @@ func cscCommandToken(cmd Cmder, pos int) (string, bool) {
 	}
 }
 
-// isClientTrackingCmd reports whether cmd is provably CLIENT TRACKING.
-func isClientTrackingCmd(cmd Cmder) bool {
-	name, nameOK := cscCommandToken(cmd, 0)
-	subcommand, subcommandOK := cscCommandToken(cmd, 1)
-	return nameOK && subcommandOK && strings.EqualFold(name, "client") &&
-		strings.EqualFold(subcommand, "tracking")
-}
-
-// isSelectCmd: SELECT would desync the connection's DB from the cache
-// namespace, which is fixed at Options.DB.
-func isSelectCmd(cmd Cmder) bool {
-	name, ok := cscCommandToken(cmd, 0)
-	return ok && strings.EqualFold(name, "select")
-}
-
-// isAuthCmd: AUTH would desync the connection's identity from the cache
-// namespace, which is fixed at Options.Username.
-func isAuthCmd(cmd Cmder) bool {
-	name, ok := cscCommandToken(cmd, 0)
-	return ok && strings.EqualFold(name, "auth")
-}
-
-// isProtocolChangingHelloCmd: HELLO with arguments can switch a tracked
-// connection out of RESP3. A bare HELLO is safe.
-func isProtocolChangingHelloCmd(cmd Cmder) bool {
-	name, ok := cscCommandToken(cmd, 0)
-	return ok && strings.EqualFold(name, "hello") && len(cmd.Args()) > 1
-}
-
-// isResetCmd: RESET disables tracking and switches to RESP2.
-func isResetCmd(cmd Cmder) bool {
-	name, ok := cscCommandToken(cmd, 0)
-	return ok && strings.EqualFold(name, "reset")
-}
-
-// isSubscribeCmd: raw subscriptions would turn a pooled connection into a
-// Pub/Sub connection the CSC drainer cannot own.
-func isSubscribeCmd(cmd Cmder) bool {
-	name, ok := cscCommandToken(cmd, 0)
-	if !ok {
-		return false
+func isSubscribeName(name string) bool {
+	for i := range len(name) {
+		if name[i] >= 0x80 {
+			// Preserve ToLower's Unicode behavior, which differs from EqualFold.
+			switch strings.ToLower(name) {
+			case "subscribe", "psubscribe", "ssubscribe":
+				return true
+			default:
+				return false
+			}
+		}
 	}
-	switch strings.ToLower(name) {
-	case "subscribe", "psubscribe", "ssubscribe":
-		return true
-	default:
-		return false
-	}
+	return strings.EqualFold(name, "subscribe") ||
+		strings.EqualFold(name, "psubscribe") ||
+		strings.EqualFold(name, "ssubscribe")
 }
 
-// buildCacheKey: the RESP encoding of the args is the collision-free key.
-func buildCacheKey(cmd Cmder) (string, bool) {
+type cscEntryKeyWriter struct {
+	buf bytes.Buffer
+	w   *proto.Writer
+}
+
+var cscEntryKeyWriters = sync.Pool{New: func() interface{} {
+	r := new(cscEntryKeyWriter)
+	r.w = proto.NewWriter(&r.buf)
+	return r
+}}
+
+// cscRenderEntryKey renders the namespace and RESP arguments in one buffer.
+// The returned string owns its bytes; the scratch buffer may be reused at once.
+func cscRenderEntryKey(keyPrefix, fingerprint string, cmd Cmder) (string, bool) {
 	args := cmd.Args()
-	if len(args) == 0 {
+	if len(args) == 0 || !commandArgsRepeatable(cmd) {
 		return "", false
 	}
-	// Stateful MarshalBinary calls could make the cache key differ from the command.
-	if !commandArgsRepeatable(cmd) {
+	r := cscEntryKeyWriters.Get().(*cscEntryKeyWriter)
+	r.buf.Reset()
+	defer func() {
+		// Do not retain unusually large command payloads in the pool.
+		if r.buf.Cap() <= 64<<10 {
+			cscEntryKeyWriters.Put(r)
+		}
+	}()
+	r.buf.WriteString(keyPrefix)
+	r.buf.WriteString(fingerprint)
+	r.buf.WriteString(cscNamespaceSep)
+	if err := r.w.WriteArgs(args); err != nil {
 		return "", false
 	}
-	var buf bytes.Buffer
-	if err := proto.NewWriter(&buf).WriteArgs(args); err != nil {
-		return "", false
-	}
-	return buf.String(), true
+	return r.buf.String(), true
+}
+
+func cscEntryKeyPrefixLen(keyPrefix, fingerprint string) int {
+	return len(keyPrefix) + len(fingerprint) + len(cscNamespaceSep)
 }
 
 // keyArg renders the arg at pos exactly as it goes on the wire; a mismatched
 // key would never match its invalidation and be served stale forever, so
 // types whose rendering can differ return ok=false (caller skips caching).
 func keyArg(cmd Cmder, pos int) (string, bool) {
+	if !keyArgOK(cmd, pos) {
+		return "", false
+	}
+	return cmd.stringArg(pos), true
+}
+
+// keyArgOK validates a key without allocating its wire representation.
+func keyArgOK(cmd Cmder, pos int) bool {
 	args := cmd.Args()
 	if pos < 0 || pos >= len(args) {
-		return "", false
+		return false
 	}
 	switch args[pos].(type) {
 	case string, []byte,
 		int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64:
-		return cmd.stringArg(pos), true
+		return true
 	}
-	return "", false
+	return false
 }
 
-// cscExtractRedisKeys lists the keys the cache must watch for a call to a
-// command already resolved to meta. nil = serve this call uncached; a
-// PARTIAL list is never returned.
-func cscExtractRedisKeys(meta cscCommandMeta, cmd Cmder) []string {
-	first, step, count := cscRedisKeyLayout(meta, cmd)
-	if count == 0 {
-		return nil
+// cscIntArg reads a count using the same types and integer range as
+// keyArg followed by strconv.Atoi, without rendering numeric arguments.
+func cscIntArg(cmd Cmder, pos int) (int, bool) {
+	args := cmd.Args()
+	if pos < 0 || pos >= len(args) {
+		return 0, false
 	}
-	return cscCollectKeys(cmd, first, step, count)
+	var text string
+	switch value := args[pos].(type) {
+	case string:
+		text = value
+	case []byte:
+		text = string(value)
+	case int:
+		return value, true
+	case int8:
+		return int(value), true
+	case int16:
+		return int(value), true
+	case int32:
+		return int(value), true
+	case int64:
+		return int(value), value >= math.MinInt && value <= math.MaxInt
+	case uint:
+		return int(value), value <= uint(math.MaxInt)
+	case uint8:
+		return int(value), true
+	case uint16:
+		return int(value), true
+	case uint32:
+		return int(value), uint64(value) <= uint64(math.MaxInt)
+	case uint64:
+		return int(value), value <= uint64(math.MaxInt)
+	default:
+		return 0, false
+	}
+	value, err := strconv.Atoi(text)
+	return value, err == nil
 }
 
 // cscCanExtractRedisKeys applies the same invocation checks without allocating
@@ -496,7 +523,7 @@ func cscExtractRedisKeys(meta cscCommandMeta, cmd Cmder) []string {
 func cscCanExtractRedisKeys(meta cscCommandMeta, cmd Cmder) bool {
 	first, step, count := cscRedisKeyLayout(meta, cmd)
 	for i := range count {
-		if _, ok := keyArg(cmd, first+i*step); !ok {
+		if !keyArgOK(cmd, first+i*step) {
 			return false
 		}
 	}
@@ -539,12 +566,8 @@ func cscRedisKeyLayout(meta cscCommandMeta, cmd Cmder) (int, int, int) {
 			return 0, 0, 0
 		}
 		// numkeys decides which positions are keys: read it wire-faithfully.
-		raw, ok := keyArg(cmd, nkPos)
-		if !ok {
-			return 0, 0, 0
-		}
-		numKeys, err := strconv.Atoi(raw)
-		if err != nil || numKeys <= 0 {
+		numKeys, ok := cscIntArg(cmd, nkPos)
+		if !ok || numKeys <= 0 {
 			return 0, 0, 0
 		}
 		first, step := int(meta.firstKey), int(meta.step)

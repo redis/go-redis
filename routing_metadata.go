@@ -17,7 +17,11 @@ import (
 func commandArgsRepeatable(cmd Cmder) bool {
 	for _, arg := range cmd.Args() {
 		switch arg.(type) {
-		case time.Time, *time.Time, net.IP:
+		case nil, string, *string, []byte,
+			int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			float32, float64, bool,
+			time.Time, *time.Time, net.IP:
 			// proto.Writer encodes these directly.
 		case encoding.BinaryMarshaler:
 			return false

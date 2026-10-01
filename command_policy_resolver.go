@@ -190,8 +190,9 @@ func NewCommandInfoResolver(resolveFunc CommandInfoResolveFunc) *commandInfoReso
 // NewDefaultCommandPolicyResolver derives policies from the shipped COMMAND
 // metadata snapshot.
 func NewDefaultCommandPolicyResolver() *commandInfoResolver {
+	view := defaultCommandMetadataView()
 	return newCommandMetadataPolicyResolver(func() *commandMetadataView {
-		return defaultCommandMetadataView
+		return view
 	})
 }
 

@@ -626,7 +626,7 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			// progress. Boundary logic extracted pure (cscRefreshChunkEnd) and
 			// unit-tested.
 			writeBudget := cscMissWriteBatchBytes(c.opt)
-			prefixLen := len(cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, ""))
+			prefixLen := cscEntryKeyPrefixLen(c.cscKeyPrefix, c.metadataView().cscFingerprint)
 			for start := 0; start < len(targets); {
 				// Abort this (always non-stopping — see the stopping check above) flush
 				// if Close begins while it's still running: continuing to give each

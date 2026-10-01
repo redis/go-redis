@@ -86,10 +86,10 @@ func main() {
 
 package redis
 
-var commandInfoSnapshot = map[string]*CommandInfo{
+var commandInfoSnapshotRecords = [...]CommandInfo{
 `, source)
 	for _, name := range names {
-		fmt.Fprintf(&b, "\t%q: {%s},\n", strings.ToLower(name), record(infos[name]))
+		fmt.Fprintf(&b, "\t{%s},\n", record(infos[name]))
 	}
 	b.WriteString("}\n")
 

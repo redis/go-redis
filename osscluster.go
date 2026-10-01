@@ -1737,7 +1737,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		return metadata, err
 	})
 	runtime.AddCleanup(c, func(store *commandMetadataStore) { store.signalStop() }, c.cmdMeta)
-	c.nodes.onServerHello = c.cmdMeta.onClusterServerHello
+	if c.cmdMeta.wantsServerHello() {
+		c.nodes.onServerHello = c.cmdMeta.onClusterServerHello
+	}
 	c.state.beforeReload = func(_, _ *clusterState) {
 		c.cmdMeta.beginParentSourceChange()
 	}
@@ -3629,7 +3631,7 @@ func (c *ClusterClient) metadataView() *commandMetadataView {
 	if c.cmdMeta != nil {
 		return c.cmdMeta.view()
 	}
-	return defaultCommandMetadataView
+	return defaultCommandMetadataView()
 }
 
 // fetchCommandMetadata reads HELLO and COMMAND on one connection.
@@ -3912,7 +3914,7 @@ func (c *ClusterClient) legacyRoutingDecision(cmd Cmder) clusterRoutingDecision 
 		keyless:  firstKey == 0,
 	}
 	// Disabled policy routing uses only the static snapshot for replica selection.
-	if meta, ok := routingLookupMeta(defaultCommandMetadataView, cmd); ok && meta.policy != nil {
+	if meta, ok := routingLookupMeta(defaultCommandMetadataView(), cmd); ok && meta.policy != nil {
 		d.readOnly = meta.readOnly
 	}
 	d.naturalSlot = c.legacyCmdSlotWithPos(cmd, firstKey, -1)

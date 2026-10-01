@@ -28,7 +28,7 @@ func TestRoutingMetadataDerivesPoliciesFromSharedRecords(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			meta, ok := defaultCommandMetadataView.routingTable[tt.name]
+			meta, ok := defaultCommandMetadataView().routingTable[tt.name]
 			if !ok {
 				t.Fatalf("missing routing metadata for %s", tt.name)
 			}
@@ -77,15 +77,15 @@ func TestRoutingMetadataResolvesContainerInvocation(t *testing.T) {
 func TestRoutingMetadataResolvesBareContainerInvocation(t *testing.T) {
 	ctx := context.Background()
 
-	bare, ok := routingLookupMeta(defaultCommandMetadataView, NewCmd(ctx, "command"))
+	bare, ok := routingLookupMeta(defaultCommandMetadataView(), NewCmd(ctx, "command"))
 	if !ok || bare.name != "command" {
 		t.Fatalf("bare COMMAND metadata = (%#v, %v), want command", bare, ok)
 	}
-	child, ok := routingLookupMeta(defaultCommandMetadataView, NewCmd(ctx, "command", "info", "get"))
+	child, ok := routingLookupMeta(defaultCommandMetadataView(), NewCmd(ctx, "command", "info", "get"))
 	if !ok || child.name != "command|info" {
 		t.Fatalf("COMMAND INFO metadata = (%#v, %v), want command|info", child, ok)
 	}
-	if _, ok := routingLookupMeta(defaultCommandMetadataView, NewCmd(ctx, "command", "future")); ok {
+	if _, ok := routingLookupMeta(defaultCommandMetadataView(), NewCmd(ctx, "command", "future")); ok {
 		t.Fatal("unknown COMMAND child fell back to the bare parent")
 	}
 }
@@ -208,7 +208,7 @@ func TestRoutingMetadataKeyPlans(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			meta := defaultCommandMetadataView.routingTable[tt.name]
+			meta := defaultCommandMetadataView().routingTable[tt.name]
 			cmd := NewCmd(context.Background(), tt.args...)
 			plan, ok := routingResolveKeyPlan(meta, cmd)
 			if !ok {
@@ -232,13 +232,13 @@ func TestRoutingMetadataKeyPlans(t *testing.T) {
 }
 
 func TestRoutingMetadataMultipleAndKeywordKeySpecs(t *testing.T) {
-	bitop := defaultCommandMetadataView.routingTable["bitop"]
+	bitop := defaultCommandMetadataView().routingTable["bitop"]
 	plan, ok := routingResolveKeyPlan(bitop, NewCmd(context.Background(), "bitop", "and", "dst", "a", "b"))
 	if !ok || !reflect.DeepEqual(plan.positions, []int{2, 3, 4}) || plan.splittable {
 		t.Fatalf("BITOP plan = %#v, ok=%v", plan, ok)
 	}
 
-	jsonDebug := defaultCommandMetadataView.routingTable["json.debug"]
+	jsonDebug := defaultCommandMetadataView().routingTable["json.debug"]
 	plan, ok = routingResolveKeyPlan(jsonDebug, NewCmd(context.Background(), "json.debug", "memory", "doc"))
 	if !ok || !reflect.DeepEqual(plan.positions, []int{2}) {
 		t.Fatalf("JSON.DEBUG MEMORY plan = %#v, ok=%v", plan, ok)
@@ -276,7 +276,7 @@ func TestRoutingMetadataPartialKeyPlans(t *testing.T) {
 		{"migrate", []interface{}{"migrate", "host", 6379, "", 0, 1000, "keys", "one", "two"}, 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			meta := defaultCommandMetadataView.routingTable[tc.name]
+			meta := defaultCommandMetadataView().routingTable[tc.name]
 			if tc.name == "limited" {
 				meta = deriveRoutingCommandMeta(tc.name, &CommandInfo{KeySpecs: []KeySpec{{
 					Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1,
@@ -307,7 +307,7 @@ func TestRoutingMetadataPartialKeyPlans(t *testing.T) {
 func TestRoutingStreamAdaptationRejectsChangedMetadata(t *testing.T) {
 	for _, specs := range [][]KeySpec{
 		{{Flags: []string{"RO", "incomplete"}, BeginSearch: "index", Index: 2, FindKeys: "range", LastKey: -1, KeyStep: 1, Limit: 2}},
-		append(append([]KeySpec(nil), commandInfoSnapshot["xread"].KeySpecs...), KeySpec{BeginSearch: "unknown", FindKeys: "unknown"}),
+		append(append([]KeySpec(nil), commandInfoSnapshotByName()["xread"].KeySpecs...), KeySpec{BeginSearch: "unknown", FindKeys: "unknown"}),
 	} {
 		meta := deriveRoutingCommandMeta("xread", &CommandInfo{Name: "xread", KeySpecs: specs})
 		if _, ok := routingResolveTransactionKeyPlan(meta, makeCmd("xread", "streams", "key", "0")); ok {
@@ -317,7 +317,7 @@ func TestRoutingStreamAdaptationRejectsChangedMetadata(t *testing.T) {
 }
 
 func TestCommandInfoResolverDoesNotPrepareUnusedMetadataFallback(t *testing.T) {
-	view := defaultCommandMetadataView
+	view := defaultCommandMetadataView()
 	ensures, customCalls, fallbackCaptures := 0, 0, 0
 	metadata := newCommandMetadataPolicyResolverWithEnsure(
 		func() *commandMetadataView { return view },
@@ -349,7 +349,7 @@ func TestCommandInfoResolverDoesNotPrepareUnusedMetadataFallback(t *testing.T) {
 func TestCommandInfoResolverUsesStaticViewAfterEnsureFailure(t *testing.T) {
 	wantErr := errors.New("COMMAND denied")
 	metadata := newCommandMetadataPolicyResolverWithEnsure(
-		func() *commandMetadataView { return defaultCommandMetadataView },
+		func() *commandMetadataView { return defaultCommandMetadataView() },
 		func(context.Context) error { return wantErr },
 	)
 	resolution, view, err := metadata.resolveCommandRoutingWithView(
@@ -360,8 +360,8 @@ func TestCommandInfoResolverUsesStaticViewAfterEnsureFailure(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want %v", err, wantErr)
 	}
-	if view != defaultCommandMetadataView || resolution.policy == nil || resolution.policy.Response != routing.RespDefaultHashSlot {
-		t.Fatalf("static fallback = (%#v, %p), want hash-slot/%p", resolution.policy, view, defaultCommandMetadataView)
+	if view != defaultCommandMetadataView() || resolution.policy == nil || resolution.policy.Response != routing.RespDefaultHashSlot {
+		t.Fatalf("static fallback = (%#v, %p), want hash-slot/%p", resolution.policy, view, defaultCommandMetadataView())
 	}
 }
 

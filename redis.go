@@ -467,6 +467,9 @@ type baseClient struct {
 	// command_metadata.go); nil when the client uses the shared static
 	// default. Shared with clones; only the owner's Close stops its worker.
 	cmdMeta *commandMetadataStore
+	// staticCmdMeta caches the lazy default when CSC attaches without a store,
+	// so serving a cached command does not need to call sync.OnceValue.
+	staticCmdMeta *commandMetadataView
 
 	// Refresh-on-invalidate + reader-miss coalescing (nil unless enabled).
 	// cscRefreshQueue IS copied by clone() (a clone signals demand on the owner's
@@ -546,7 +549,8 @@ func (c *baseClient) clone() *baseClient {
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
 		// Derived clients share the owner's immutable metadata view.
-		cmdMeta: c.cmdMeta,
+		cmdMeta:       c.cmdMeta,
+		staticCmdMeta: c.staticCmdMeta,
 
 		// cscRefreshQueue is SHARED (pointer copy), like cscPoolHook: processCached
 		// calls signalDemand on it so a miss for a key still in the refresher's
@@ -1278,7 +1282,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	if c.cmdMeta != nil || c.opt.onServerHello != nil {
+	if c.cmdMeta.wantsServerHello() || c.opt.onServerHello != nil {
 		// Without HELLO, a reconnect must verify the old identity in the
 		// background. An empty fingerprint asks the cluster parent to do the same.
 		fingerprint := ""

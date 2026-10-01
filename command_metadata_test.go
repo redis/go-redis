@@ -380,7 +380,7 @@ func TestCommandMetadataLegacyRoutingPolicies(t *testing.T) {
 		t.Run(fmt.Sprint(fields), func(t *testing.T) {
 			var entries []string
 			for _, name := range []string{"dbsize", "flushall", "mget"} {
-				info := commandInfoSnapshot[name]
+				info := commandInfoSnapshotByName()[name]
 				first, last, step := info.FirstKeyPos, info.LastKeyPos, info.StepCount
 				if name == "mget" {
 					first = 2 // Live positions must win over the snapshot's position 1.
@@ -517,7 +517,7 @@ func TestCommandMetadataTombstonedChildKeepsParentShadowed(t *testing.T) {
 }
 
 func TestCommandMetadataNormalizedCollisionsFailClosed(t *testing.T) {
-	keyed := commandInfoSnapshot["get"]
+	keyed := commandInfoSnapshotByName()["get"]
 	for _, tc := range []struct {
 		name            string
 		live, overrides map[string]*CommandInfo
@@ -1003,7 +1003,7 @@ func TestCSCPre810CompatibilityCorrectionKeepsSnapshotNegatives(t *testing.T) {
 	if got, want := view.cscTable["ts.info"], cscDeriveMeta(view.records["ts.info"]); got != want {
 		t.Fatalf("CSC metadata was not derived solely from the resolved record: got %+v, want %+v", got, want)
 	}
-	if !commandRecordHas(commandInfoSnapshot["ts.info"], "dont_cache", true) {
+	if !commandRecordHas(commandInfoSnapshotByName()["ts.info"], "dont_cache", true) {
 		t.Fatal("test premise: snapshot ts.info must carry dont_cache")
 	}
 	// Application overrides may replace the correction.
@@ -1186,7 +1186,7 @@ func TestCommandMetadataRefreshSkipsRetiredEntries(t *testing.T) {
 	pooler := &erroringPooler{}
 	c := &baseClient{opt: &Options{}, csc: cache, cmdMeta: s, connPool: pooler, cscKeyPrefix: "p:"}
 	rawKey, _ := buildCacheKey(makeCmd("get", "k"))
-	key := cscEntryKey(c.cscKeyPrefix, defaultCommandMetadataView.cscFingerprint, rawKey)
+	key := cscEntryKey(c.cscKeyPrefix, defaultCommandMetadataView().cscFingerprint, rawKey)
 	n, err := c.refreshInvalidatedBatch(context.Background(), []cscRefreshTarget{{cacheKey: key, redisKeys: []string{"p:k"}}})
 	if err != nil || n != 0 || pooler.gets.Load() != 0 || cache.Len() != 0 {
 		t.Fatalf("retired refresh: published=%d err=%v pool gets=%d entries=%d", n, err, pooler.gets.Load(), cache.Len())

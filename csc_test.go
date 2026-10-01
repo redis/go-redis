@@ -4,11 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
+	"os"
+	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,9 +34,62 @@ func makeCmd(args ...interface{}) Cmder {
 	return NewCmd(context.Background(), args...)
 }
 
+// isClientTrackingCmd reports whether cmd is provably CLIENT TRACKING.
+func isClientTrackingCmd(cmd Cmder) bool {
+	name, nameOK := cscCommandToken(cmd, 0)
+	subcommand, subcommandOK := cscCommandToken(cmd, 1)
+	return nameOK && subcommandOK && strings.EqualFold(name, "client") &&
+		strings.EqualFold(subcommand, "tracking")
+}
+
+// isSelectCmd: SELECT would desync the connection's DB from the cache
+// namespace, which is fixed at Options.DB.
+func isSelectCmd(cmd Cmder) bool {
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && strings.EqualFold(name, "select")
+}
+
+// isAuthCmd: AUTH would desync the connection's identity from the cache
+// namespace, which is fixed at Options.Username.
+func isAuthCmd(cmd Cmder) bool {
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && strings.EqualFold(name, "auth")
+}
+
+// isProtocolChangingHelloCmd: HELLO with arguments can switch a tracked
+// connection out of RESP3. A bare HELLO is safe.
+func isProtocolChangingHelloCmd(cmd Cmder) bool {
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && strings.EqualFold(name, "hello") && len(cmd.Args()) > 1
+}
+
+// isResetCmd: RESET disables tracking and switches to RESP2.
+func isResetCmd(cmd Cmder) bool {
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && strings.EqualFold(name, "reset")
+}
+
+// isSubscribeCmd: raw subscriptions would turn a pooled connection into a
+// Pub/Sub connection the CSC drainer cannot own.
+func isSubscribeCmd(cmd Cmder) bool {
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && isSubscribeName(name)
+}
+
+// cscExtractRedisKeys lists the keys the cache must watch for a call to a
+// command already resolved to meta. nil = serve this call uncached; a
+// PARTIAL list is never returned.
+func cscExtractRedisKeys(meta cscCommandMeta, cmd Cmder) []string {
+	first, step, count := cscRedisKeyLayout(meta, cmd)
+	if count == 0 {
+		return nil
+	}
+	return cscCollectKeys(cmd, first, step, count)
+}
+
 // Test conveniences over the default view.
 func isCacheable(cmd Cmder) bool {
-	return isCacheableInView(defaultCommandMetadataView, cmd)
+	return isCacheableInView(defaultCommandMetadataView(), cmd)
 }
 
 func isCacheableInView(view *commandMetadataView, cmd Cmder) bool {
@@ -39,7 +98,7 @@ func isCacheableInView(view *commandMetadataView, cmd Cmder) bool {
 }
 
 func extractRedisKeys(cmd Cmder) []string {
-	return extractRedisKeysInView(defaultCommandMetadataView, cmd)
+	return extractRedisKeysInView(defaultCommandMetadataView(), cmd)
 }
 
 func extractRedisKeysInView(view *commandMetadataView, cmd Cmder) []string {
@@ -51,7 +110,7 @@ func extractRedisKeysInView(view *commandMetadataView, cmd Cmder) []string {
 }
 
 func cscCommandMetaFor(cmd Cmder) (cscCommandMeta, bool) {
-	return cscLookupMeta(defaultCommandMetadataView, cmd)
+	return cscLookupMeta(defaultCommandMetadataView(), cmd)
 }
 
 // --- isCacheable -----------------------------------------------------------
@@ -319,12 +378,12 @@ func TestIsCacheable_PolicyTokensMustBeWireFaithful(t *testing.T) {
 func TestCSCMetadataCorrections(t *testing.T) {
 	// Corrections must survive in the shared default view.
 	for name, correction := range commandMetadataCorrections {
-		base, ok := commandInfoSnapshot[name]
+		base, ok := commandInfoSnapshotByName()[name]
 		if !ok {
 			t.Errorf("correction %q has no snapshot record; re-audit or remove it", name)
 			continue
 		}
-		meta, ok := defaultCommandMetadataView.cscTable[name]
+		meta, ok := defaultCommandMetadataView().cscTable[name]
 		if !ok {
 			t.Errorf("correction %q did not survive into the default table (bare container-parent key?)", name)
 			continue
@@ -332,7 +391,7 @@ func TestCSCMetadataCorrections(t *testing.T) {
 		if cscIsClientSideCacheable(meta) {
 			t.Errorf("correction %q must never resolve cacheable, got %+v", name, meta)
 		}
-		rec := defaultCommandMetadataView.records[name]
+		rec := defaultCommandMetadataView().records[name]
 		for _, tip := range correction.tips {
 			if !commandRecordHas(rec, tip, true) {
 				t.Errorf("correction %q lost tip %q in the resolved record", name, tip)
@@ -343,10 +402,10 @@ func TestCSCMetadataCorrections(t *testing.T) {
 			t.Errorf("correction %q must keep the base record's flags and key specs", name)
 		}
 	}
-	if commandRecordHas(defaultCommandMetadataView.records["cf.compact"], "readonly", false) {
+	if commandRecordHas(defaultCommandMetadataView().records["cf.compact"], "readonly", false) {
 		t.Fatal("CF.COMPACT correction left the mutating command readonly")
 	}
-	jsonMGet := defaultCommandMetadataView.records["json.mget"]
+	jsonMGet := defaultCommandMetadataView().records["json.mget"]
 	if len(jsonMGet.KeySpecs) != 1 || jsonMGet.KeySpecs[0].LastKey != -2 {
 		t.Fatalf("JSON.MGET correction did not expose all keys: %+v", jsonMGet.KeySpecs)
 	}
@@ -483,7 +542,7 @@ func TestCommandMetadataViewLivePrecedence(t *testing.T) {
 		t.Error("application override must beat the live record")
 	}
 	// ...and built-in corrections apply on top of live records too.
-	touch := commandInfoSnapshot["touch"]
+	touch := commandInfoSnapshotByName()["touch"]
 	view = buildCommandMetadataView(map[string]*CommandInfo{"touch": touch}, nil)
 	if isCacheableInView(view, makeCmd("touch", "k")) {
 		t.Error("built-in correction must survive a live record for the same command")
@@ -891,7 +950,7 @@ func testCSCNamespacedKey(db int, key string) string {
 // testCSCEntryKey builds the cache-entry key processCached would use under
 // the default metadata view.
 func testCSCEntryKey(db int, rawKey string) string {
-	return cscEntryKey(cscNamespacePrefix(db, ""), defaultCommandMetadataView.cscFingerprint, rawKey)
+	return cscEntryKey(cscNamespacePrefix(db, ""), defaultCommandMetadataView().cscFingerprint, rawKey)
 }
 
 type unusedStreamingProvider struct{}
@@ -910,6 +969,9 @@ func TestAttachCSC_EnabledForExplicitCache(t *testing.T) {
 	if client.csc == nil {
 		t.Fatal("CSC must be enabled for an owner-aware cache")
 	}
+	if client.staticCmdMeta == nil || client.staticCmdMeta != client.metadataView() {
+		t.Fatal("CSC must cache the shared default metadata view")
+	}
 }
 
 func TestAttachCSC_DisablesForTypedNilCache(t *testing.T) {
@@ -921,7 +983,7 @@ func TestAttachCSC_DisablesForTypedNilCache(t *testing.T) {
 	})
 	defer client.Close()
 
-	if client.csc != nil || client.cscTrackingRequested() {
+	if client.csc != nil || client.cscTrackingRequested() || client.staticCmdMeta != nil {
 		t.Fatal("a typed-nil cache must leave CSC disabled")
 	}
 }
@@ -1271,7 +1333,7 @@ func TestFulfillCached_FailsClosedOnZeroConnID(t *testing.T) {
 	if !sf {
 		t.Fatal("Reserve should fetch")
 	}
-	if c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v")}, defaultCommandMetadataView) {
+	if c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v")}, defaultCommandMetadataView()) {
 		t.Fatal("fulfillCached must fail closed when an eviction hook is active and connID==0")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
@@ -2469,7 +2531,7 @@ func TestFulfillCached_RejectsInactiveCSC(t *testing.T) {
 		raw:     []byte("$1\r\nv\r\n"),
 		connID:  connID,
 		initGen: hook.initGenOf(connID),
-	}, defaultCommandMetadataView) {
+	}, defaultCommandMetadataView()) {
 		t.Fatal("a fetch must not publish after its CSC drainer stops")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
@@ -2524,7 +2586,7 @@ func TestCSCConnCloseHook_NoOrphanWhenCloseRacesFulfill(t *testing.T) {
 	}
 	// Fulfill attributes to the just-closed conn; the generation guard must
 	// drop it (the close deleted the conn's entry, so it reads 0 != gen).
-	c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}, defaultCommandMetadataView)
+	c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}, defaultCommandMetadataView())
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
 		t.Fatal("entry owned by a conn closed before fulfill must not survive")
 	}
@@ -2551,7 +2613,7 @@ func TestFulfillCached_RaceWithConnRemoval(t *testing.T) {
 	if !sf {
 		t.Fatal("Reserve should fetch")
 	}
-	if c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}, defaultCommandMetadataView) {
+	if c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}, defaultCommandMetadataView()) {
 		t.Fatal("coverage loss must reject fulfillment before publication")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
@@ -2593,7 +2655,7 @@ func TestFulfillCached_CoverageLossSkipsPublication(t *testing.T) {
 		raw:     []byte("v"),
 		connID:  connID,
 		initGen: gen,
-	}, defaultCommandMetadataView) {
+	}, defaultCommandMetadataView()) {
 		t.Fatal("a reply without invalidation coverage must not be published")
 	}
 	if cache.fulfillCalls != 0 {
@@ -2662,7 +2724,7 @@ func TestFulfillCached_RaceWithHandoffReinit(t *testing.T) {
 	// entry does not exist yet; only the placeholder does).
 	c.cscEvictOwnedEntries(connID)
 
-	c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}, defaultCommandMetadataView)
+	c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}, defaultCommandMetadataView())
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
 		t.Fatal("entry fetched on a socket replaced before fulfill must not remain resident")
 	}
@@ -2704,7 +2766,7 @@ func TestFulfillCached_HandoffBumpsCoverageBeforeSocketSwap(t *testing.T) {
 		raw:     []byte("v"),
 		connID:  connID,
 		initGen: oldGen,
-	}, defaultCommandMetadataView) {
+	}, defaultCommandMetadataView()) {
 		t.Fatal("an old-socket reply must be rejected after handoff")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
@@ -2730,7 +2792,7 @@ func TestFulfillCached_PostHandoffFetchIsCached(t *testing.T) {
 	}
 	gen := c.cscConnInitGen(connID) // captured at reply time, post-bump
 
-	if !c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}, defaultCommandMetadataView) {
+	if !c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}, defaultCommandMetadataView()) {
 		t.Fatal("post-handoff fetch on the new socket should be cached")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); !ok {
@@ -2745,7 +2807,7 @@ func TestFulfillCached_NoHookUsesUnownedFulfill(t *testing.T) {
 	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache} // cscPoolHook nil
 
 	tok, _ := cache.Reserve("get:k", []string{"k"})
-	if !c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: 7}, defaultCommandMetadataView) {
+	if !c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: 7}, defaultCommandMetadataView()) {
 		t.Fatal("fulfillCached should store an unowned value when no hook is present")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); !ok {
@@ -2796,8 +2858,9 @@ func TestCSCNamespaceUsesACLUsername(t *testing.T) {
 // lifecycle fields.
 func TestBaseClientClone_CarriesCSCPointers(t *testing.T) {
 	c := &baseClient{
-		opt: &Options{},
-		csc: NewLocalCache(CacheConfig{MaxEntries: 16}),
+		opt:           &Options{},
+		csc:           NewLocalCache(CacheConfig{MaxEntries: 16}),
+		staticCmdMeta: defaultCommandMetadataView(),
 	}
 	// cscPoolHook IS carried: a clone reads it to attribute fetches to the
 	// shared eviction hook. The owner-only fields are NOT carried, so a derived
@@ -2823,6 +2886,9 @@ func TestBaseClientClone_CarriesCSCPointers(t *testing.T) {
 	}
 	if cl.cscKeyPrefix != c.cscKeyPrefix {
 		t.Fatal("clone must retain the shared cache namespace")
+	}
+	if cl.staticCmdMeta != c.staticCmdMeta {
+		t.Fatal("clone must retain the cached default metadata view")
 	}
 	if cl.cscOwnsCache {
 		t.Fatal("clone must not copy cscOwnsCache (owner-only)")
@@ -5105,5 +5171,238 @@ func TestRefreshRepublishDoesNotRenewDemand(t *testing.T) {
 	// — the self-sustaining loop.
 	if hot := lc.deleteByRedisKeyCollectingHot(rk, targets[0].accessNs, ^uint64(0), nil); len(hot) != 0 {
 		t.Fatalf("refreshed-but-unread entry still hot after restore; got %d targets", len(hot))
+	}
+}
+
+func TestCSCKeyArgTypes(t *testing.T) {
+	text := "1"
+	type namedInt int
+	for _, tc := range []struct {
+		arg interface{}
+		ok  bool
+	}{
+		{"key", true},
+		{[]byte("key"), true},
+		{[]byte(nil), true},
+		{int(1), true},
+		{int8(1), true},
+		{int16(1), true},
+		{int32(1), true},
+		{int64(1), true},
+		{uint(1), true},
+		{uint8(1), true},
+		{uint16(1), true},
+		{uint32(1), true},
+		{uint64(1), true},
+		{nil, false},
+		{&text, false},
+		{(*string)(nil), false},
+		{float32(1), false},
+		{float64(1), false},
+		{true, false},
+		{uintptr(1), false},
+		{namedInt(1), false},
+		{cscWireSmuggler{wire: "key", str: "key"}, false},
+	} {
+		t.Run(fmt.Sprintf("%T/%v", tc.arg, tc.arg), func(t *testing.T) {
+			cmd := makeCmd("get", tc.arg)
+			if got := keyArgOK(cmd, 1); got != tc.ok {
+				t.Fatalf("keyArgOK = %v, want %v", got, tc.ok)
+			}
+			meta, _ := cscCommandMetaFor(cmd)
+			if got := cscCanExtractRedisKeys(meta, cmd); got != tc.ok {
+				t.Fatalf("cscCanExtractRedisKeys = %v, want %v", got, tc.ok)
+			}
+			if got := cscExtractRedisKeys(meta, cmd); (got != nil) != tc.ok {
+				t.Fatalf("cscExtractRedisKeys = %v, want extraction success %v", got, tc.ok)
+			}
+		})
+	}
+	for _, pos := range []int{-1, 2} {
+		if keyArgOK(makeCmd("get", "key"), pos) {
+			t.Fatalf("keyArgOK accepted missing position %d", pos)
+		}
+	}
+}
+
+func TestCSCIntArgMatchesWireParsing(t *testing.T) {
+	text := "1"
+	for _, arg := range []interface{}{
+		int(1), int8(-1), int16(2), int32(math.MaxInt32), int64(math.MaxInt64), int64(math.MinInt64),
+		uint(1), uint8(2), uint16(3), uint32(math.MaxUint32), uint64(math.MaxUint64),
+		uint64(math.MaxInt), uint64(math.MaxInt) + 1,
+		"1", "+1", "01", "-0", "-1", " 1", "1.0", "", "18446744073709551616",
+		[]byte("2"), []byte("-2"), []byte("invalid"), []byte(nil),
+		&text, nil, true, float64(1),
+		cscWireSmuggler{wire: "1", str: "2"},
+	} {
+		t.Run(fmt.Sprintf("%T/%v", arg, arg), func(t *testing.T) {
+			cmd := makeCmd("zdiff", arg, "key")
+			wire, ok := keyArg(cmd, 1)
+			want, err := strconv.Atoi(wire)
+			wantOK := ok && err == nil
+			got, gotOK := cscIntArg(cmd, 1)
+			if gotOK != wantOK || gotOK && got != want {
+				t.Fatalf("cscIntArg = (%d, %v), wire parse = (%d, %v)", got, gotOK, want, wantOK)
+			}
+		})
+	}
+	for _, pos := range []int{-1, 3} {
+		if _, ok := cscIntArg(makeCmd("zdiff", 1, "key"), pos); ok {
+			t.Fatalf("cscIntArg accepted missing position %d", pos)
+		}
+	}
+}
+
+func TestCSCSubscribeCaseFolding(t *testing.T) {
+	for _, name := range []string{
+		"subscribe", "SUBSCRIBE", "PSubscribe", "ssubscribe", "GET", "unsubscribe",
+		"subscrİbe", "pSUBSCRİBE", "ſubscribe", "ſſubscribe", "subscr\xffbe",
+	} {
+		lower := strings.ToLower(name)
+		want := lower == "subscribe" || lower == "psubscribe" || lower == "ssubscribe"
+		for _, arg := range []interface{}{name, []byte(name), &name} {
+			if got := isSubscribeCmd(makeCmd(arg, "channel")); got != want {
+				t.Errorf("isSubscribeCmd(%T(%q)) = %v, want %v", arg, name, got, want)
+			}
+		}
+	}
+}
+
+// buildCacheKey preserves the original renderer as a compatibility oracle and
+// benchmark baseline for cscRenderEntryKey.
+func buildCacheKey(cmd Cmder) (string, bool) {
+	args := cmd.Args()
+	if len(args) == 0 {
+		return "", false
+	}
+	// Stateful MarshalBinary calls could make the cache key differ from the command.
+	if !commandArgsRepeatable(cmd) {
+		return "", false
+	}
+	var buf bytes.Buffer
+	if err := proto.NewWriter(&buf).WriteArgs(args); err != nil {
+		return "", false
+	}
+	return buf.String(), true
+}
+
+func TestCSCRenderEntryKey(t *testing.T) {
+	text := "value"
+	for _, args := range [][]interface{}{
+		nil,
+		{"get", "key"},
+		{[]byte("MGET"), []byte("key\x00\r\n"), 42},
+		{"set", "key", &text, nil, true, 1.5},
+		{"get", strings.Repeat("x", 128<<10)},
+		{"get", struct{}{}},
+		{"get", cscWireSmuggler{wire: "key", str: "other"}},
+	} {
+		cmd := makeCmd(args...)
+		raw, wantOK := buildCacheKey(cmd)
+		got, ok := cscRenderEntryKey("namespace\x00", "fingerprint", cmd)
+		if ok != wantOK {
+			t.Fatalf("render success = %v, want %v", ok, wantOK)
+		}
+		if !ok {
+			continue
+		}
+		want := cscEntryKey("namespace\x00", "fingerprint", raw)
+		if got != want {
+			t.Fatal("entry key differs from the original RESP rendering")
+		}
+		// A later render may reuse the buffer but must not change a prior key.
+		for range 10 {
+			cscRenderEntryKey("other", "generation", makeCmd("get", "other"))
+		}
+		if got != want {
+			t.Fatal("entry key changed after buffer reuse")
+		}
+	}
+}
+
+func TestCSCEntryKeyPrefixLen(t *testing.T) {
+	for _, prefix := range []string{"", "namespace\x00", "שלום"} {
+		if got, want := cscEntryKeyPrefixLen(prefix, "fingerprint"), len(cscEntryKey(prefix, "fingerprint", "")); got != want {
+			t.Fatalf("prefix length = %d, want %d", got, want)
+		}
+	}
+}
+
+func TestCommandMetadataSnapshotNormalizedAndImmutable(t *testing.T) {
+	if len(commandInfoSnapshotByName()) != len(commandInfoSnapshotRecords) {
+		t.Fatal("snapshot contains duplicate command names")
+	}
+	before := make(map[string]*CommandInfo, len(commandInfoSnapshotByName()))
+	for name, info := range commandInfoSnapshotByName() {
+		if info.Name != name || !reflect.DeepEqual(cloneCommandInfoForName(name, info), info) {
+			t.Fatalf("snapshot record %q requires normalization", name)
+		}
+		before[name] = cloneCommandInfo(info)
+	}
+
+	// All mutable layers may take their inputs from the shared snapshot.
+	buildCommandMetadataView(nil, nil)
+	buildCommandMetadataViewForServer(commandInfoSnapshotByName(), nil, "6.2.0")
+	buildCommandMetadataView(commandInfoSnapshotByName(), commandInfoSnapshotByName())
+	if !reflect.DeepEqual(commandInfoSnapshotByName(), before) {
+		t.Fatal("building metadata views mutated the snapshot")
+	}
+}
+
+func TestCSCTableFingerprintEncoding(t *testing.T) {
+	for _, table := range []map[string]cscCommandMeta{
+		nil,
+		defaultCommandMetadataView().cscTable,
+		{
+			"a\x00\n": {bits: 255, extract: 255, guard: 255, firstKey: -32768, lastKey: 32767, step: -1},
+			"z":       {numkeysAt: -32768},
+		},
+	} {
+		// Preserve the original wire encoding, including sorting, separators,
+		// signed fields, and the truncated hexadecimal digest.
+		names := make([]string, 0, len(table))
+		for name := range table {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		h := sha256.New()
+		for _, name := range names {
+			m := table[name]
+			fmt.Fprintf(h, "%s\x00%d %d %d %d %d %d %d\n",
+				name, m.bits, m.extract, m.guard, m.firstKey, m.lastKey, m.step, m.numkeysAt)
+		}
+		if got, want := cscTableFingerprint(table), hex.EncodeToString(h.Sum(nil)[:16]); got != want {
+			t.Fatalf("fingerprint = %q, want %q", got, want)
+		}
+	}
+}
+
+// TestCSCPerformanceCompatibility pins the sorted eligible-command dump and
+// cache namespace before performance changes. Set CSC_COMPATIBILITY_DUMP to a
+// file path to compare the full dump byte-for-byte between revisions.
+func TestCSCPerformanceCompatibility(t *testing.T) {
+	view := (&baseClient{}).metadataView()
+	var names []string
+	for name, meta := range view.cscTable {
+		if cscIsClientSideCacheable(meta) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	dump := strings.Join(names, "\n") + "\n"
+	if len(names) != 120 {
+		t.Fatalf("eligible commands: got %d, want 120", len(names))
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(dump))); got != "cd52438234a475701fd546e2a685cf493e7486bd78ebe2bbb8ac7f224485b609" {
+		t.Fatalf("eligible-command dump changed: sha256=%s", got)
+	}
+	if view.cscFingerprint != "0255d4ea837ce42f4814b7b4b9ff820c" {
+		t.Fatalf("default CSC fingerprint changed: %s", view.cscFingerprint)
+	}
+	if path := os.Getenv("CSC_COMPATIBILITY_DUMP"); path != "" {
+		if err := os.WriteFile(path, []byte(view.cscFingerprint+"\n"+dump), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
