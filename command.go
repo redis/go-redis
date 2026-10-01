@@ -311,6 +311,29 @@ func cmdArgAfterToken(cmd Cmder, from int, token string) int {
 	return 0
 }
 
+// migrateKeysPos returns the position of the first key of a MIGRATE KEYS
+// clause, walking the options so an operand (an AUTH password that reads
+// "keys") is not taken for the clause. 0 when there is no key.
+func migrateKeysPos(cmd Cmder) int {
+	n := len(cmd.Args())
+	for i := 6; i < n; {
+		switch strings.ToLower(cmd.stringArg(i)) {
+		case "keys":
+			if i+1 < n {
+				return i + 1
+			}
+			return 0
+		case "auth":
+			i += 2 // AUTH password
+		case "auth2":
+			i += 3 // AUTH2 username password
+		default:
+			i++ // COPY, REPLACE
+		}
+	}
+	return 0
+}
+
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
@@ -380,7 +403,7 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(3) != "" {
 			return 3
 		}
-		return cmdArgAfterToken(cmd, 6, "keys")
+		return migrateKeysPos(cmd)
 	}
 
 	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).
