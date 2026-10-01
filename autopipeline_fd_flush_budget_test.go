@@ -56,3 +56,28 @@ func TestFDCloseFlushFailsPipelineWithSpentBudget(t *testing.T) {
 		}
 	}
 }
+
+// A command in front of an FD pipeline is not part of that pipeline's budget
+// group. With the same attempt count as the pipeline's first command it used
+// to join the group, so a later pipeline command that had spent its budget
+// failed the unrelated command too.
+func TestFDCloseFlushKeepsOtherCommandsOutOfAPipelineBudget(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdBudgetProbe()
+	other := fdReq{cmd: NewStatusCmd(ctx, "set", "o", "v"), batch: newAPBatch(), attempts: 2}
+	carry := append([]fdReq{other}, fdPipeGroupReqs(ctx, 2, 5)...) // the pipeline's 2nd command has no budget left
+	if err := fd.flushCarryBudgeted(ctx, carry); err != nil {
+		t.Fatalf("flushCarryBudgeted: %v", err)
+	}
+	if got := *bounds; len(got) != 1 || got[0] != 2 {
+		t.Fatalf("retry bounds %v, want [2]: the other command runs alone with its own budget", got)
+	}
+	if err := carry[0].cmd.Err(); err != nil {
+		t.Fatalf("other command err=%v, want nil", err)
+	}
+	for i, r := range carry[1:] {
+		if !errors.Is(r.cmd.Err(), errFDRetryBudgetExhausted) {
+			t.Fatalf("pipeline command %d err=%v, want errFDRetryBudgetExhausted", i, r.cmd.Err())
+		}
+	}
+}
