@@ -144,4 +144,16 @@ var _ = Describe("tests conn_check with real conns", func() {
 		Expect(connCheck(conn)).NotTo(HaveOccurred())
 		Expect(conn.Close()).NotTo(HaveOccurred())
 	})
+
+	It("checkForData survives an expired residual read deadline", func() {
+		// A prior WithReader leaves its read deadline armed; once expired,
+		// rawConn.Read would fail fast with i/o timeout before the peek runs.
+		// checkForData must clear it and report the idle conn healthy — the CSC
+		// drainer removes the conn (evicting its cache coverage) on any error.
+		Expect(conn.SetReadDeadline(time.Now().Add(-time.Second))).NotTo(HaveOccurred())
+		hasData, err := checkForData(conn)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(hasData).To(BeFalse())
+		Expect(conn.Close()).NotTo(HaveOccurred())
+	})
 })

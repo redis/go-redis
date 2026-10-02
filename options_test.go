@@ -203,7 +203,7 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 		t.Errorf("got %q, want %q", actual.Addr, expected.Addr)
 	}
 	if actual.DB != expected.DB {
-		t.Errorf("DB: got %q, expected %q", actual.DB, expected.DB)
+		t.Errorf("DB: got %d, expected %d", actual.DB, expected.DB)
 	}
 	if actual.TLSConfig == nil && expected.TLSConfig != nil {
 		t.Errorf("got nil TLSConfig, expected a TLSConfig")
@@ -456,6 +456,41 @@ func TestClusterOptionsDialerRetries(t *testing.T) {
 	}
 }
 
+func TestClusterOptionsNodeTimeouts(t *testing.T) {
+	cases := []struct {
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{timeout: -1, want: 0},
+		{timeout: -2, want: -1},
+		{timeout: 0, want: 5 * time.Second},
+		{timeout: 3 * time.Second, want: 3 * time.Second},
+	}
+
+	for _, tc := range cases {
+		opt := &ClusterOptions{
+			ReadTimeout:  tc.timeout,
+			WriteTimeout: tc.timeout,
+		}
+		opt.init()
+		nodes := newClusterNodes(opt)
+
+		node, err := nodes.GetOrCreate("127.0.0.1:7000")
+		if err != nil {
+			t.Fatalf("GetOrCreate failed: %v", err)
+		}
+
+		nodeOpt := node.Client.Options()
+		if nodeOpt.ReadTimeout != tc.want {
+			t.Errorf("timeout %v: expected node ReadTimeout=%v, got %v", tc.timeout, tc.want, nodeOpt.ReadTimeout)
+		}
+		if nodeOpt.WriteTimeout != tc.want {
+			t.Errorf("timeout %v: expected node WriteTimeout=%v, got %v", tc.timeout, tc.want, nodeOpt.WriteTimeout)
+		}
+		_ = nodes.Close()
+	}
+}
+
 func TestRingOptionsDialerRetries(t *testing.T) {
 	ringOpt := &RingOptions{
 		DialerRetries:      10,
@@ -607,8 +642,8 @@ func TestNewClientSkipsEndpointDetectWhenMaintDisabled(t *testing.T) {
 }
 
 func TestClientSideCacheRESP2Warning(t *testing.T) {
-	origLogger := internal.Logger
-	defer func() { internal.Logger = origLogger }()
+	origLogger := internal.Logger.Load()
+	defer func() { internal.Logger.Store(origLogger) }()
 
 	cases := []struct {
 		name     string
@@ -640,7 +675,7 @@ func TestClientSideCacheRESP2Warning(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := &capturingLogger{}
-			internal.Logger = logger
+			internal.Logger.Store(logger)
 
 			tc.opt.init()
 

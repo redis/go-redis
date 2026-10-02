@@ -71,6 +71,29 @@ func TestProcessor_ConsumesFragmentedPushFrame(t *testing.T) {
 	}
 }
 
+// TestProcessor_ConsumesUnpeekableNamePush: a confirmed push whose NAME cannot be
+// peeked (here a non-string/integer name) must be CONSUMED by the blocking drain,
+// not left at the buffer head. If it is left, a reply-expected reader (the CSC
+// refresh / miss-coalescer / single-command drain) reads the push as the command
+// value — cache poison and a one-frame reply shift (the intermittent `redis: nil`).
+func TestProcessor_ConsumesUnpeekableNamePush(t *testing.T) {
+	// A push with an integer (non-string) name, then the real command reply.
+	stream := []byte(">2\r\n:123\r\n$4\r\ndata\r\n$2\r\nOK\r\n")
+	rd := proto.NewReader(bytes.NewReader(stream))
+	p := NewProcessor()
+	if err := p.ProcessPendingNotifications(context.Background(), NotificationHandlerContext{}, rd); err != nil {
+		t.Fatalf("ProcessPendingNotifications: %v", err)
+	}
+	// The push was consumed, so the next frame is the command reply — not the push.
+	reply, err := rd.ReadString()
+	if err != nil {
+		t.Fatalf("read reply after drain: %v (the unpeekable-name push was left and misread)", err)
+	}
+	if reply != "OK" {
+		t.Fatalf("reply after drain = %q, want OK (the push was left at the buffer head)", reply)
+	}
+}
+
 func TestProcessor_BufferedPeekTimeoutEndsBatch(t *testing.T) {
 	t.Run("empty boundary", func(t *testing.T) {
 		rd := proto.NewReader(&timeoutAfterReader{read: true})
