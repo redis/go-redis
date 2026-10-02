@@ -40,6 +40,9 @@ type config struct {
 	hidePubSubChannelNames bool
 	hideStreamNames        bool
 
+	// Record redis.Nil replies as client errors
+	recordNilErrors bool
+
 	// Histogram settings
 	histAggregation HistogramAggregation
 
@@ -142,6 +145,10 @@ type Config struct {
 	// Cardinality reduction
 	HidePubSubChannelNames bool
 	HideStreamNames        bool
+
+	// RecordNilErrors records redis.Nil replies (e.g. GET on a missing key) as
+	// client errors. Off by default: a Nil reply is a successful command.
+	RecordNilErrors bool
 
 	// Histogram settings
 	HistogramAggregation HistogramAggregation
@@ -246,6 +253,13 @@ func (c *Config) WithHidePubSubChannelNames(hide bool) *Config {
 // WithHideStreamNames omits stream label from stream metrics to reduce cardinality.
 func (c *Config) WithHideStreamNames(hide bool) *Config {
 	c.HideStreamNames = hide
+	return c
+}
+
+// WithRecordNilErrors records redis.Nil replies as client errors with the
+// error type "NIL". Default: false, so a cache miss is not counted as an error.
+func (c *Config) WithRecordNilErrors(record bool) *Config {
+	c.RecordNilErrors = record
 	return c
 }
 

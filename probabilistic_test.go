@@ -482,6 +482,17 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 					Expect(info.Depth).To(BeEquivalentTo(int64(10)))
 				})
 
+				It("should report CMSInfo cell size", Label("cms", "cmsinfo"), func() {
+					SkipBeforeRedisVersion("8.11", "CMS.INFO reports cell_size since Redis 8.12 (8.11 pre-release)")
+
+					err := client.CMSInitByDim(ctx, "testcms1", 5, 10).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					info, err := client.CMSInfo(ctx, "testcms1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(info.CellSize).To(BeEquivalentTo(int64(4)))
+				})
+
 				It("should CMSInitByProb", Label("cms", "cmsinitbyprob"), func() {
 					err := client.CMSInitByProb(ctx, "testcms1", 0.002, 0.01).Err()
 					Expect(err).NotTo(HaveOccurred())
