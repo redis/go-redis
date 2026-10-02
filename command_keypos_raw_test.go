@@ -21,11 +21,20 @@ func TestRawCommandsRouteByTheirKey(t *testing.T) {
 		{"xreadgroup", "group", "streams", "streams", "count", 1, "noack", "streams", K, ">"},
 		{"object", "encoding", K},
 		{"xinfo", "stream", K},
+		{"xgroup", "create", K, "g", "$"},
+		{"XGROUP", "CREATE", K, "g", "$", "MKSTREAM"},
+		{"xgroup", "setid", K, "g", "0"},
+		{"xgroup", "destroy", K, "g"},
+		{"xgroup", "createconsumer", K, "g", "c"},
+		{"xgroup", "delconsumer", K, "g", "c"},
 		{"bitop", "and", K, "b"},
 		{"lmpop", 1, K, "left"},
 		{"zmpop", 1, K, "min"},
 		{"sintercard", 1, K},
 		{"zintercard", 2, K, "b"},
+		{"zunion", 1, K},
+		{"zinter", 2, K, "b", "withscores"},
+		{"zdiff", 2, K, "b"},
 		{"blmpop", 0, 1, K, "left"},
 		{"bzmpop", 0, 1, K, "min"},
 		{"migrate", "h", 1, K, 0, 1000},
@@ -46,7 +55,7 @@ func TestRawCommandsRouteByTheirKey(t *testing.T) {
 	}
 
 	// Subcommand help has no key.
-	for _, args := range [][]interface{}{{"object", "help"}, {"xinfo", "help"}} {
+	for _, args := range [][]interface{}{{"object", "help"}, {"xinfo", "help"}, {"xgroup", "help"}} {
 		if pos := cmdFirstKeyPosWithInfo(NewCmd(ctx, args...), nil); pos != 0 {
 			t.Errorf("%v: resolver picks position %d, want 0 (keyless)", args, pos)
 		}
