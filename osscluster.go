@@ -530,6 +530,17 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 	opt := clOpt.clientOptions()
 	opt.Addr = addr
 	opt.NodeAddress = nodeAddress
+	// The default value 0 never reaches this point: ClusterOptions.init
+	// already sets ReadTimeout to 5s and WriteTimeout to ReadTimeout.
+	// So a 0 here can only come from -1.
+	// ClusterOptions.init maps -1 (no timeout) to 0, which Options.init
+	// would turn into the 5s default.
+	if opt.ReadTimeout == 0 {
+		opt.ReadTimeout = -1
+	}
+	if opt.WriteTimeout == 0 {
+		opt.WriteTimeout = -1
+	}
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
 	}

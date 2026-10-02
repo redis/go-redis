@@ -456,6 +456,41 @@ func TestClusterOptionsDialerRetries(t *testing.T) {
 	}
 }
 
+func TestClusterOptionsNodeTimeouts(t *testing.T) {
+	cases := []struct {
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{timeout: -1, want: 0},
+		{timeout: -2, want: -1},
+		{timeout: 0, want: 5 * time.Second},
+		{timeout: 3 * time.Second, want: 3 * time.Second},
+	}
+
+	for _, tc := range cases {
+		opt := &ClusterOptions{
+			ReadTimeout:  tc.timeout,
+			WriteTimeout: tc.timeout,
+		}
+		opt.init()
+		nodes := newClusterNodes(opt)
+
+		node, err := nodes.GetOrCreate("127.0.0.1:7000")
+		if err != nil {
+			t.Fatalf("GetOrCreate failed: %v", err)
+		}
+
+		nodeOpt := node.Client.Options()
+		if nodeOpt.ReadTimeout != tc.want {
+			t.Errorf("timeout %v: expected node ReadTimeout=%v, got %v", tc.timeout, tc.want, nodeOpt.ReadTimeout)
+		}
+		if nodeOpt.WriteTimeout != tc.want {
+			t.Errorf("timeout %v: expected node WriteTimeout=%v, got %v", tc.timeout, tc.want, nodeOpt.WriteTimeout)
+		}
+		_ = nodes.Close()
+	}
+}
+
 func TestRingOptionsDialerRetries(t *testing.T) {
 	ringOpt := &RingOptions{
 		DialerRetries:      10,
