@@ -1661,6 +1661,12 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 		return "", "", false
 	}
 
+	// A Nil reply is a successful command with no value. It gets its own type so
+	// the recorder can tell it apart from a real failure.
+	if errors.Is(err, Nil) {
+		return ErrorTypeNil, ErrorTypeNil, false
+	}
+
 	errStr := err.Error()
 
 	// Check for timeout errors
@@ -2049,6 +2055,26 @@ func pipelineErrShouldStamp(err error) bool {
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
 ) error {
+	return c.generalProcessPipelineFrom(ctx, cmds, p, operationName, maxRetries, time.Time{}, 0)
+}
+
+// processPipelineRetriesAfter is processPipelineRetries continuing an operation
+// that already ran: start and priorAttempts carry over into the one pipeline
+// metric, so a full-duplex attempt re-run on the pooled path is measured as a
+// single operation, the way an ordinary pipeline's own retries are.
+func (c *baseClient) processPipelineRetriesAfter(ctx context.Context, cmds []Cmder, maxRetries int, start time.Time, priorAttempts int) error {
+	if err := c.generalProcessPipelineFrom(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", maxRetries, start, priorAttempts); err != nil {
+		return err
+	}
+	return cmdsFirstErr(cmds)
+}
+
+// generalProcessPipelineFrom is generalProcessPipeline with its measurement
+// started at start (zero: now) and priorAttempts already spent.
+func (c *baseClient) generalProcessPipelineFrom(
+	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
+	start time.Time, priorAttempts int,
+) error {
 	// Pipeline commands never pass through process, so apply the same CSC state
 	// guard here. initConn's internal client is exempt.
 	for _, cmd := range cmds {
@@ -2061,16 +2087,29 @@ func (c *baseClient) generalProcessPipeline(
 	var operationStart time.Time
 	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
 	if pipelineOpDurationCallback != nil {
-		operationStart = time.Now()
+		operationStart = start
+		if operationStart.IsZero() {
+			if priorAttempts > 0 {
+				// A continued operation (a full-duplex attempt) that began
+				// with no duration callback: its start is unknown, so record
+				// no duration, as the FD path does.
+				pipelineOpDurationCallback = nil
+			} else {
+				operationStart = time.Now()
+			}
+		}
 	}
 	var lastConn *pool.Conn
-	totalAttempts := 0
+	totalAttempts := priorAttempts
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		if attempt > 0 {
-			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+			// Continue the backoff of an operation that already ran
+			// priorAttempts times (a full-duplex attempt), as its own retries
+			// would: 0 for an ordinary pipeline.
+			if err := internal.Sleep(ctx, c.retryBackoff(priorAttempts+attempt)); err != nil {
 				setCmdsErr(cmds, err)
 				if pipelineOpDurationCallback != nil {
 					operationDuration := time.Since(operationStart)

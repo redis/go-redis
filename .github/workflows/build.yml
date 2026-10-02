@@ -11,8 +11,36 @@ permissions:
 
 jobs:
 
+  # Go versions for the test matrix: the go.mod minimum, oldstable and stable.
+  # oldstable is dropped when it is the same minor as the go.mod minimum.
+  go-versions:
+    name: go-versions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.versions.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Resolve Go versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          min=$(awk '/^go /{print $2}' go.mod | cut -d. -f1,2)
+          # On lookup failure old stays empty and all three versions run.
+          old=$(curl -fsSL 'https://go.dev/dl/?mode=json' | jq -r '.[1].version' | sed 's/^go//' | cut -d. -f1,2) || old=""
+          if [ "$old" = "$min" ]; then
+            matrix="[\"${min}.x\",\"stable\"]"
+          else
+            matrix="[\"${min}.x\",\"oldstable\",\"stable\"]"
+          fi
+          echo "min=$min oldstable=$old matrix=$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   benchmark:
     name: benchmark
+    needs: go-versions
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -23,10 +51,7 @@ jobs:
           - "8.4.x" # Redis CE 8.4
           - "8.2.x" # Redis CE 8.2
           - "8.0.x" # Redis CE 8.0
-        go-version:
-          - "1.25.x"
-          - oldstable
-          - stable
+        go-version: ${{ fromJSON(needs.go-versions.outputs.matrix) }}
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -74,6 +99,7 @@ jobs:
 
   test-redis-ce:
     name: test-redis-ce
+    needs: go-versions
     runs-on: ubuntu-latest
     strategy:
         fail-fast: false
@@ -84,10 +110,7 @@ jobs:
             - "8.4.x" # Redis CE 8.4
             - "8.2.x" # Redis CE 8.2
             - "8.0.x" # Redis CE 8.0
-          go-version:
-            - "1.25.x"
-            - oldstable
-            - stable
+          go-version: ${{ fromJSON(needs.go-versions.outputs.matrix) }}
 
     steps:
       - name: Checkout code

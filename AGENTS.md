@@ -9,7 +9,7 @@ Zed, …) read `AGENTS.md` directly. Edit repository guidance here, not in
 ## Repository
 
 go-redis is the official Redis client for Go. Module path:
-`github.com/redis/go-redis/v9` (Go 1.24+). The repo is a multi-module workspace
+`github.com/redis/go-redis/v9` (Go 1.26+). The repo is a multi-module workspace
 — every directory containing a `go.mod` is built and tested independently:
 
 - root (`github.com/redis/go-redis/v9`) — the client library.

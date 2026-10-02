@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/extra/rediscensus/v9
 
-go 1.24
+go 1.26.0
 
 replace github.com/redis/go-redis/v9 => ../..
 
@@ -14,9 +14,9 @@ require (
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
-	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
+	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
+	go.uber.org/atomic v1.12.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 )
 
 retract (

@@ -108,9 +108,6 @@ const (
 	// share this constant.
 	cscRefreshBatchTimeout = 5 * time.Second
 
-	// cscRefreshRecencyTick is how often the "recently read" horizon advances.
-	cscRefreshRecencyTick = 200 * time.Millisecond
-
 	cscRefreshWarnEvery = 30 * time.Second
 )
 
@@ -187,14 +184,17 @@ type cscRefreshTarget struct {
 	// invalidated), so this narrows the jam window rather than closing it.
 	valBytes int
 	// accessNs is the evicted entry's reader-access token (lastAccessNs), captured
-	// under the shard lock in collectHotAndDelete. The refresh republish restores it
-	// after fulfill so a background refresh does NOT count as a fresh reader access:
-	// fulfill stamps a new token, which would keep the key above the refresh horizon
-	// forever and make each invalidation refresh it again even after all readers stop
-	// (a self-sustaining refetch loop, contrary to the cold-key guard). Restoring the
-	// original token means only a real reader read (get, which re-stamps) keeps a key
-	// eligible for refresh. See restoreAccessToken.
+	// under the shard lock in collectHotAndDelete. The refresh republish keeps it
+	// so a background refresh does NOT count as a fresh reader access: a new token
+	// would keep the key above the refresh horizon forever and make each
+	// invalidation refresh it again even after all readers stop (a self-sustaining
+	// refetch loop, contrary to the cold-key guard). Keeping the original token
+	// means only real reader activity keeps a key eligible for refresh. See
+	// stageRefreshAccess.
 	accessNs int64
+	// read is the evicted entry's second-chance bit, restored with accessNs so
+	// the refreshed entry keeps the eviction standing the old one had.
+	read bool
 }
 
 // cscRefreshQueue carries invalidated-but-hot keys from the drainer to the
@@ -228,16 +228,17 @@ type cscRefreshQueue struct {
 	// invalidation — a feedback loop that generates its own work. Same guard the
 	// time-based sweeper uses for the same reason.
 	//
-	// Holds cscInvalNoHorizon (-1) forever when
-	// Options.ClientSideCacheRefreshRecencyWindow is unset (the default): every
-	// Valid entry is then "hot" by construction, and the feedback-loop tradeoff
-	// above is an accepted, documented default (see the option's doc comment) —
-	// bound it with the option to restore this guard's original intent.
+	// Pinned at cscInvalNoHorizon (-1): every Valid entry is "hot" by
+	// construction, so an invalidation always schedules a refetch. The
+	// feedback-loop tradeoff above is therefore accepted unconditionally —
+	// refreshing re-registers the key with the server's tracking table, so a
+	// write-heavy, rarely-read key keeps refreshing itself off write traffic
+	// for as long as its entry survives capacity eviction.
+	//
+	// The field is kept rather than dropped because the sentinel has a SECOND
+	// meaning that still applies: an invalidation enqueued while no refresh
+	// binding existed carries it too (see cscInvalItem.sinceToken).
 	sinceToken atomic.Int64
-	// recency holds the multi-tick history backing sinceToken when
-	// ClientSideCacheRefreshRecencyWindow is set; nil in the default
-	// refresh-everything mode, where sinceToken is fixed and this is unused.
-	recency *cscRecencyRing
 
 	enqueued      atomic.Uint64
 	dropped       atomic.Uint64
@@ -428,16 +429,10 @@ func (c *baseClient) startCSCRefresher() {
 		ch:       make(chan cscRefreshTarget, cscRefreshQueueDepth),
 		demandCh: make(chan uint64, 1),
 	}
-	// Default (window <= 0): refresh every invalidated Valid entry regardless of
-	// recency. cscInvalNoHorizon (-1) is less than any real lastAccessNs token,
-	// so it marks everything hot; sinceToken then never changes (see the
-	// recency-tick case in runCSCRefresher, which no-ops when q.recency is nil).
+	// Refresh every invalidated Valid entry, regardless of how recently it was
+	// read. cscInvalNoHorizon (-1) is less than any real lastAccessNs token, so
+	// it marks everything hot, and it never changes.
 	q.sinceToken.Store(cscInvalNoHorizon)
-	if w := c.opt.ClientSideCacheRefreshRecencyWindow; w > 0 {
-		q.recency = newCscRecencyRing(cscRefreshWindowTicks(w))
-		q.recency.push(lc.LRUClock())
-		q.sinceToken.Store(q.recency.oldest())
-	}
 
 	h := &cscRevalidateHandle{stop: make(chan struct{}), done: make(chan struct{})}
 
@@ -503,9 +498,6 @@ func (c *baseClient) startCSCRefresher() {
 
 func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *cscRefreshQueue) {
 	defer close(h.done)
-
-	recency := time.NewTicker(cscRefreshRecencyTick)
-	defer recency.Stop()
 
 	// The collection window. It starts (timer armed) when the first key of a
 	// batch is collected and is NOT re-armed on later arrivals — a sliding reset
@@ -702,16 +694,6 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 				if empty {
 					return
 				}
-			}
-
-		case <-recency.C:
-			// Advance the horizon: entries not read within the configured window
-			// stop being worth refetching. Default (q.recency nil, window
-			// unset): sinceToken is fixed at cscInvalNoHorizon — refresh
-			// everything, forever — so there is nothing to advance.
-			if q.recency != nil {
-				q.recency.push(lc.LRUClock())
-				q.sinceToken.Store(q.recency.oldest())
 			}
 
 		case t := <-q.ch:
@@ -931,16 +913,16 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					key:     kept[i].cacheKey,
 					token:   kept[i].token,
 				}
+				// Keep the invalidated entry's recency: a background refresh is not a
+				// reader read, so it must not renew the key's refresh eligibility (see
+				// stageRefreshAccess). It is staged on the reservation so the publish
+				// applies it atomically. Refresh runs only with the built-in
+				// *LocalCache; the hook path fulfills that same cache.
+				if lc, ok := c.csc.(*LocalCache); ok {
+					lc.stageRefreshAccess(kept[i].cacheKey, kept[i].token, kept[i].accessNs, kept[i].read)
+				}
 				if c.fulfillCached(kept[i].cacheKey, kept[i].token, fc) {
 					published++
-					// Undo the fresh access token fulfill stamped: a background refresh is
-					// not a reader read, so it must not renew the key's refresh eligibility,
-					// or each invalidation would keep refreshing it after all readers stop
-					// (see restoreAccessToken). Refresh runs only with the built-in
-					// *LocalCache; the hook path fulfills that same cache.
-					if lc, ok := c.csc.(*LocalCache); ok {
-						lc.restoreAccessToken(kept[i].cacheKey, kept[i].accessNs)
-					}
 				}
 				// fulfillCached cancels on its own failure paths, so the token is
 				// settled either way.

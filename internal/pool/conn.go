@@ -633,7 +633,7 @@ func (cn *Conn) expireRelaxedTimeout(deadlineNs int64) {
 			newPtr = nil
 		}
 		if cn.relaxed.CompareAndSwap(cur, newPtr) {
-			internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
+			internal.Logger.Printf(context.Background(), "%s", logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
 			return
 		}
 	}
