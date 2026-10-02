@@ -137,6 +137,36 @@ func TestFDShutdownFlushKeepsPipelineWholeAcrossAttempts(t *testing.T) {
 	}
 }
 
+// A pipeline the writer took only a prefix of, before the session failed, has
+// that prefix in the carry and its tail still queued. Close flushes it as one
+// pipeline with one retry budget, the smallest of its commands', not as two
+// pipelines where the tail gets a full budget of its own.
+func TestFDShutdownFlushJoinsPipelineSplitAcrossCarryAndQueue(t *testing.T) {
+	ctx := context.Background()
+	type run struct{ n, maxRetries int }
+	var runs []run
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{MaxRetries: 3}}},
+		maxBatch: 8,
+		q:        newFDQueue(8),
+		runPipeline: func(_ context.Context, cmds []Cmder, maxRetries int) error {
+			runs = append(runs, run{len(cmds), maxRetries})
+			return nil
+		},
+	}
+	reqs := fdPipeGroupReqs(ctx, 2, 2, 1, 1, 1) // prefix replayed once, tail never taken
+	if res := fd.q.pushBatch(reqs[2:]); res != fdPushOK {
+		t.Fatalf("pushBatch = %v", res)
+	}
+	fd.shutdownFlush(ctx, reqs[:2])
+
+	want := run{5, fdCarryRemainingRetries(2, 3)}
+	if len(runs) != 1 || runs[0] != want {
+		t.Fatalf("flush runs %+v, want one %+v: the whole pipeline at the prefix's remaining budget", runs, want)
+	}
+}
+
 // fdRetryMetricRecorder captures pipeline-duration records.
 type fdRetryMetricRecorder struct {
 	fdOtelRecorder

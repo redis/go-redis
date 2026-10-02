@@ -2948,6 +2948,18 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// Drain and close the queue now (before flushing carry) so no new submit lands
 	// mid-flush. fresh commands (attempts == 1) have not run yet.
 	fresh := fd.takeQueue()
+	// The writer may have taken only a prefix of an FD pipeline before the
+	// session failed: the prefix is then at the end of carry and the tail at
+	// the head of fresh. Move the tail into carry so the pipeline flushes as
+	// one, with one retry budget.
+	if n := len(carry); n > 0 && len(fresh) > 0 && fdSameGroup(carry[n-1], fresh[0]) {
+		k := 1
+		for k < len(fresh) && fdSameGroup(fresh[k-1], fresh[k]) {
+			k++
+		}
+		carry = append(carry[:n:n], fresh[:k]...) // copy: carry may share a backing array
+		fresh = fresh[k:]
+	}
 	// The flush below runs pipelined commands through the pooled pipeline with
 	// its own retry loop; flushReqs counts that as a further issue on each batch
 	// it runs, so fdPipelineExec does not run them again.
