@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/cpu"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -495,6 +496,22 @@ type cmdableClient interface {
 // one goroutine wake-up apiece).
 type apBatch struct {
 	done chan struct{}
+	// fdAttempts is how many times the full-duplex engine issued a PIPELINED
+	// command (1, plus one per connection-error replay), stamped by the reader
+	// before it completes the command, so closing done publishes it. The
+	// pipeline retry reads it to charge those executions against MaxRetries.
+	// Zero on every other path.
+	fdAttempts int
+	// fdConn is the held connection that carried a PIPELINED command's reply,
+	// stamped with fdAttempts, for the pipeline duration metric.
+	fdConn *pool.Conn
+	// fdGroup marks the commands of one FD pipeline batch: every batch of the
+	// pipeline points at the batch of its first command. The Close-time flush
+	// uses it to run the pipeline as one, with one whole-batch retry.
+	fdGroup *apBatch
+	// fdFlushed is set when the Close-time flush ran this pipelined command
+	// through the pooled pipeline, which recorded the pipeline metric itself.
+	fdFlushed bool
 	// closed makes close() idempotent: on the async faces the dispatch closes
 	// the batch at the innermost exec seam (under the user hooks, so a hook
 	// reading a result after next() does not block on a channel its own
@@ -3440,15 +3457,151 @@ func (ap *AutoPipeliner) calculateDelay(queueLen int) time.Duration {
 
 // Pipeline returns a new pipeline that uses the underlying pipeliner.
 // This allows you to create a traditional pipeline from an autopipeliner.
+//
+// On a FULL-DUPLEX autopipeliner the pipeline runs on the HELD connection
+// rather than taking one of its own: see fdPipelineExec. Without that, a
+// pipeline built from an autopipeliner would quietly leave the pipe, take a
+// pooled connection per Exec, and lose the coalescing that is the whole point
+// of the engine — measured at 150 active sockets and less than a third of the
+// throughput of the same commands submitted through the engine.
 func (ap *AutoPipeliner) Pipeline() Pipeliner {
+	if ap.fd != nil {
+		pipe := Pipeline{exec: pipelineExecer(ap.fdPipelineHooked)}
+		pipe.init()
+		return &pipe
+	}
 	return ap.pipeliner.Pipeline()
+}
+
+// fdPipelineExec runs a whole pipeline through the full-duplex engine as one
+// contiguous batch, and falls back to a pooled pipeline when the batch cannot
+// ride the held connection.
+//
+// Contiguity is what makes this safe: FDPipelined admits the batch all-or-
+// nothing, so the commands occupy consecutive in-flight slots and their replies
+// come back in submit order. A pipeline's internal ordering therefore holds
+// exactly as it does on a dedicated connection.
+//
+// The fallback covers the cases the engine must divert — a blocking command, a
+// command with its own read timeout, anything the divert predicate claims, or a
+// batch larger than the whole submit queue. Those go to the ordinary pipeline
+// path, which is where they would have gone before this existed.
+//
+// fdPipelineExec is the TERMINAL of the client's ProcessPipelineHook chain
+// (see fdPipelineHooked), the place processPipeline takes in an ordinary
+// pipeline. So hooks wrap the whole execution, fallback and retry included,
+// exactly once, and the pooled paths below call the hookless processPipeline.
+//
+// On the FD path it records what an ordinary pipeline records: one pipeline
+// duration and, on failure, one pipeline-level error, instead of the reader's
+// per-command metrics.
+//
+// A Limiter is asked per WRITE CHUNK on the FD path, not once per batch: a
+// chunk can mix this batch with other callers' commands, so a batch longer
+// than MaxBatchSize (or MaxBatchBytes) can be partly admitted. An ordinary
+// pipeline makes one decision per attempt.
+//
+// Also:
+//
+//   - A retryable reply (LOADING and the like) on the FIRST command: an
+//     ordinary pipeline retries the whole batch, in order. FDPipelined settles
+//     retryable replies inline, so the batch is re-run the ordinary way, unless
+//     it holds a NoRetry command, which an ordinary pipeline does not retry
+//     either. A retryable reply on a later command is returned, as an ordinary
+//     pipeline does.
+//
+// fdPipelineHooked is Pipeline().Exec on a full-duplex autopipeliner: the
+// client's pipeline hooks around fdPipelineExec.
+//
+// ContextTimeoutEnabled keeps the pooled path: an ordinary pipeline bounds its
+// socket I/O by the caller's ctx, and the FD wait cannot abandon an admitted
+// batch on a shared connection.
+func (ap *AutoPipeliner) fdPipelineHooked(ctx context.Context, cmds []Cmder) error {
+	c := ap.fd.client
+	if c.opt.ContextTimeoutEnabled {
+		return ap.pipeliner.processPipelineHook(ctx, cmds)
+	}
+	return c.wrapPipelineHooks(ap.fdPipelineExec)(ctx, cmds)
+}
+
+func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error {
+	opt := ap.fd.client.opt
+	var start time.Time
+	if otel.GetPipelineOperationDurationCallback() != nil {
+		start = time.Now()
+	}
+	res, err := ap.fdPipelined(ctx, cmds)
+	used, cn := res.attempts, res.cn
+	// An ordinary pipeline allows MaxRetries+1 executions. The FD engine may
+	// already have issued the batch more than once (a connection-error replay),
+	// so the re-run gets what is left.
+	remaining := opt.MaxRetries - used
+	ineligible, retry := false, false
+	switch {
+	case errors.Is(err, ErrFDPipelineDiverts),
+		errors.Is(err, ErrFDPipelineUnavailable),
+		errors.Is(err, ErrFDPipelineTooLarge):
+		// Not a command failure: the batch is simply not eligible.
+		ineligible = true
+	case len(cmds) > 0 && remaining >= 0 && !cmdsContainNoRetry(cmds):
+		// Only a batch the engine issued exactly once. After a connection-error
+		// replay, the replay already was this batch's retry: it re-ran the unread
+		// tail, which an ordinary pipeline re-runs as its one whole-batch retry
+		// after the same network error. A whole-batch re-run on top would run
+		// that tail a third time (a mutation beyond what an ordinary pipeline
+		// does), so the first command's stale retryable reply is returned instead.
+		// The Close-time flush stamps fdAttempts the same way, so a flushed batch
+		// is not re-run either.
+		//
+		// A transport or protocol failure anywhere in the batch rules the
+		// re-run out too. The engine did not replay that command, since it may
+		// already have run, and an ordinary pipeline returns that read error
+		// instead of retrying.
+		if e := cmds[0].rawErr(); used == 1 && isRedisError(e) && shouldRetry(e, false) &&
+			fdPipelineTransportErr(cmds) == nil {
+			retry = true
+		}
+	}
+	if !ineligible && !retry {
+		// Run on the FD path, or refused before admission. A batch the
+		// Close-time flush ran in full was measured by that pooled pipeline.
+		if res.measured() {
+			ap.fdPipelineMetrics(ctx, start, cmds, max(used, 1), cn)
+		}
+		return err
+	}
+	// Clear the per-command errors FDPipelined may have stamped, then run the
+	// batch the ordinary way so the caller sees one authoritative outcome.
+	for _, cmd := range cmds {
+		cmd.SetErr(nil)
+	}
+	// Hookless processPipeline: this is already the terminal of the hook
+	// chain. The pooled run records its own pipeline metric.
+	if ineligible {
+		return ap.fd.client.processPipeline(ctx, cmds)
+	}
+	// The re-run runs remaining+1 times at most, so FD attempts plus re-runs
+	// never exceed MaxRetries+1, after the backoff an ordinary pipeline sleeps
+	// before its next retry. Inside the hook chain, like generalProcessPipeline's
+	// own retries. It continues this operation's measurement (start and the FD
+	// attempts), so one pipeline metric covers the whole operation.
+	c := ap.fd.client
+	if serr := internal.Sleep(ctx, c.retryBackoff(used)); serr != nil {
+		setCmdsErr(cmds, serr)
+		ap.fdPipelineMetrics(ctx, start, cmds, used, cn)
+		return serr
+	}
+	return c.processPipelineRetriesAfter(ctx, cmds, remaining, start, used)
 }
 
 // Pipelined executes a function in a pipeline context.
 // This is a convenience method that creates a pipeline, executes the function,
 // and returns the results.
+//
+// Uses Pipeline, so on a full-duplex autopipeliner this also runs on the held
+// connection rather than taking one of its own.
 func (ap *AutoPipeliner) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
-	return ap.pipeliner.Pipeline().Pipelined(ctx, fn)
+	return ap.Pipeline().Pipelined(ctx, fn)
 }
 
 // TxPipelined executes a function in a transaction pipeline context.

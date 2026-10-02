@@ -247,6 +247,13 @@ type fdReq struct {
 	// never-sent NoRetry commands recovered from a dead connection's backlog, returning
 	// an error for a command the server never saw.
 	sent bool
+	// pipelined marks a command submitted as part of an FD pipeline batch
+	// (submitBatch). The reader settles its retryable replies inline instead of
+	// diverting them one by one: an individual retry would let later commands
+	// of the same pipeline run before it. fdPipelineExec retries the whole batch
+	// instead, the way an ordinary pipeline does. Next to sent, so it fits in
+	// existing padding and does not grow the struct.
+	pipelined bool
 	// limReport is the Limiter obligation for the WRITTEN chunk this req closes:
 	// non-nil ONLY on the LAST req of a chunk that Allow() admitted and writeBatch
 	// then wrote cleanly. It rides the in-flight deque so the reply-side outcome
@@ -910,8 +917,11 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		case <-fd.q.roomCh():
 			// Chain the signal: room is cap-1, so with several submitters blocked only
 			// one is released per take. Whoever wakes re-signals while space remains.
-			// Confined to this saturated path, so steady state pays nothing.
-			if fd.q.depth() < fd.q.capacity() {
+			// Confined to this saturated path, so steady state pays nothing. Room a
+			// waiting batch has reserved does not count: no single can use it, and
+			// passing the wake on for it would only spin this chain until the batch
+			// is admitted (each holder has its own wake channel).
+			if fd.q.roomFor(1) {
 				fd.q.signalRoom()
 			}
 		case <-ctx.Done():
@@ -1378,7 +1388,9 @@ func (fd *fdEngine) run() {
 				var exhausted []fdReq
 				eligible, exhausted = fdPartitionByBudget(unacked, fd.retryBudget())
 				if len(exhausted) > 0 {
-					fd.failReqs(exhausted, aerr) // spent MaxRetries+1 attempts; fail with the real cause
+					// Spent MaxRetries+1 attempts; fail with the real cause, and with
+					// them the rest of their pipelines.
+					eligible = fd.failPipelines(exhausted, eligible, aerr)
 				}
 				// Split the eligible suffix at the first SENT NoRetry command: replay the
 				// prefix and fail that command plus everything ordered after it (a NoRetry
@@ -1392,12 +1404,12 @@ func (fd *fdEngine) run() {
 				// and fall through to fail it — a command that may be a sent NoRetry must
 				// never be re-sent when in doubt.
 				if n, scanPanic := fdFirstNoRetrySafe(eligible); !scanPanic && n > 0 {
+					carry = eligible[:n]
 					if n < len(eligible) {
-						fd.failReqs(eligible[n:], aerr)
+						carry = fd.failPipelines(eligible[n:], carry, aerr)
 					}
 					retryAttempts++
 					fd.sleepBackoff(retryAttempts)
-					carry = eligible[:n]
 					// Already issued on the failed connection and about to be re-issued;
 					// bump attempts so a later success/failure reports the real
 					// retry_attempts (not always 1). The clean-recycle suffix path
@@ -1405,6 +1417,12 @@ func (fd *fdEngine) run() {
 					// replay is a first attempt.
 					for i := range carry {
 						carry[i].attempts++
+						// Keep a pipelined command's batch in step, so the pipeline
+						// retry charges this replay even if the command then fails
+						// here instead of completing through the reader.
+						if carry[i].pipelined {
+							carry[i].batch.fdAttempts = carry[i].attempts
+						}
 					}
 					continue
 				}
@@ -1413,7 +1431,7 @@ func (fd *fdEngine) run() {
 			// remaining unfailed commands, then ALWAYS back off before re-leasing so a
 			// dead server cannot spin this loop. Keep the engine alive to serve new work
 			// when it recovers.
-			fd.failReqs(eligible, aerr)
+			fd.failPipelines(eligible, nil, aerr)
 			carry = nil
 			retryAttempts++
 			fd.sleepBackoff(retryAttempts)
@@ -1745,7 +1763,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						}
 						// A RETRYABLE execution error (not a redirect) may have produced a
 						// partially consumed response, so it stays gated on NoRetry.
-						if !fdNoRetrySafe(req.cmd) {
+						// A pipelined command is never diverted alone (see
+						// fdReq.pipelined); its reply settles inline below.
+						if !req.pipelined && !fdNoRetrySafe(req.cmd) {
 							// Cluster full-duplex: divert a retryable server reply
 							// (LOADING/READONLY/TRYAGAIN/CLUSTERDOWN/MASTERDOWN/NOREPLICAS/
 							// max-clients) to the redirect-aware ClusterClient. It consults NO
@@ -1802,7 +1822,14 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// here would reach the reader's session-failure recovery BEFORE this req
 					// is advanced, so recovery would re-own the already-consumed reply and
 					// replay it — a mutating command twice.
-					fd.reportReplyMetrics(octx, req, e, cn)
+					if req.pipelined {
+						// A pipelined command is measured with its batch, as in an
+						// ordinary pipeline (fdPipelineMetrics), not per command.
+						req.batch.fdAttempts = req.attempts // published by complete()
+						req.batch.fdConn = cn
+					} else {
+						fd.reportReplyMetrics(octx, req, e, cn)
+					}
 					req.complete() // wake the caller, or hand off to the hook host
 					done++
 				}
@@ -2851,6 +2878,48 @@ func classifyCommandErrorGuarded(err error) (errorType, statusCode string, isInt
 	return classifyCommandError(err)
 }
 
+// failPipelines fails failed with err, and with it the rest of every FD
+// pipeline that has a request in failed: its members in keep and its tail
+// still at the head of the queue (the writer may have taken only a prefix).
+// A pipeline fails as one, as on a dedicated connection: once part of it has
+// failed, the rest must not run. Returns keep without those members.
+func (fd *fdEngine) failPipelines(failed, keep []fdReq, err error) []fdReq {
+	var groups map[*apBatch]struct{}
+	for _, r := range failed {
+		if r.pipelined && r.batch != nil && r.batch.fdGroup != nil {
+			if groups == nil {
+				groups = make(map[*apBatch]struct{})
+			}
+			groups[r.batch.fdGroup] = struct{}{}
+		}
+	}
+	if groups == nil {
+		fd.failReqs(failed, err)
+		return keep
+	}
+	failed = failed[:len(failed):len(failed)] // may be a sub-slice of keep's array: append copies
+	inGroup := func(r fdReq) bool {
+		if !r.pipelined || r.batch == nil {
+			return false
+		}
+		_, ok := groups[r.batch.fdGroup]
+		return ok
+	}
+	out := make([]fdReq, 0, len(keep))
+	for _, r := range keep {
+		if inGroup(r) {
+			failed = append(failed, r)
+		} else {
+			out = append(out, r)
+		}
+	}
+	if n := fd.q.headRun(inGroup); n > 0 {
+		failed = fd.q.takeInto(failed, n)
+	}
+	fd.failReqs(failed, err)
+	return out
+}
+
 func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 	// Error-metric parity: commands terminated here (lease failure, retry
 	// exhaustion, a NoRetry tail, Close) never reach the reader's inline
@@ -2874,7 +2943,9 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 			// reqs unsettled.
 			fdSetErrSafe(reqs[i].cmd, err)
 		}
-		if errorCallback != nil {
+		// A pipelined command's failure is reported once for its batch
+		// (fdPipelineMetrics), as an ordinary pipeline does.
+		if errorCallback != nil && !reqs[i].pipelined {
 			octx := reqs[i].ctx
 			if octx == nil {
 				octx = context.Background()
@@ -2924,6 +2995,21 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// Drain and close the queue now (before flushing carry) so no new submit lands
 	// mid-flush. fresh commands (attempts == 1) have not run yet.
 	fresh := fd.takeQueue()
+	// The writer may have taken only a prefix of an FD pipeline before the
+	// session failed: the prefix is then at the end of carry and the tail at
+	// the head of fresh. Move the tail into carry so the pipeline flushes as
+	// one, with one retry budget.
+	if n := len(carry); n > 0 && len(fresh) > 0 && fdSameGroup(carry[n-1], fresh[0]) {
+		k := 1
+		for k < len(fresh) && fdSameGroup(fresh[k-1], fresh[k]) {
+			k++
+		}
+		carry = append(carry[:n:n], fresh[:k]...) // copy: carry may share a backing array
+		fresh = fresh[k:]
+	}
+	// The flush below runs pipelined commands through the pooled pipeline with
+	// its own retry loop; flushReqs counts that as a further issue on each batch
+	// it runs, so fdPipelineExec does not run them again.
 	// Flush the carried tail honoring EACH command's remaining retry budget across
 	// the Close boundary (flushCarryBudgeted), then the fresh queue at the full
 	// budget. Flushing carry first keeps FIFO order across the two sets.
@@ -2937,6 +3023,12 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// Last flush: a transport failure is already handled inside flushReqs (it fails
 	// the remainder), and there is nothing after it, so the returned error is moot.
 	_ = fd.flushReqs(bg, fresh, fd.retryBudget())
+}
+
+// fdSameGroup reports whether b follows a in the same FD pipeline batch.
+func fdSameGroup(a, b fdReq) bool {
+	return a.pipelined && b.pipelined && a.batch != nil && b.batch != nil &&
+		a.batch.fdGroup != nil && a.batch.fdGroup == b.batch.fdGroup
 }
 
 // fdCarryRemainingRetries returns the retry bound for a carried command flushed on
@@ -2967,12 +3059,30 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 	for i := 0; i < len(carry); {
 		a := carry[i].attempts
 		j := i + 1
-		for j < len(carry) && carry[j].attempts == a {
-			j++
+		if carry[i].pipelined {
+			// One FD pipeline batch, even if its commands carry different
+			// attempt counts, so flushReqs can run it as one pipeline.
+			for j < len(carry) && fdSameGroup(carry[j-1], carry[j]) {
+				j++
+			}
+		} else {
+			// A run of other commands with the same attempt count. It stops at
+			// a pipeline batch, so no command shares a pipeline's budget.
+			for j < len(carry) && !carry[j].pipelined && carry[j].attempts == a {
+				j++
+			}
 		}
 		group := carry[i:j]
 		i = j
+		// The group runs as one pipeline, so it gets the smallest remaining
+		// budget of its commands: none may run past its MaxRetries+1
+		// executions. A command with more budget left may therefore get fewer
+		// retries than it alone would, as in an ordinary pipeline, whose retry
+		// budget covers the whole batch.
 		rem := fdCarryRemainingRetries(a, mr)
+		for k := range group {
+			rem = min(rem, fdCarryRemainingRetries(group[k].attempts, mr))
+		}
 		if rem < 0 {
 			fd.failReqs(group, errFDRetryBudgetExhausted) // budget spent; do not re-run
 			continue
@@ -3033,23 +3143,51 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
 	for i < len(reqs) {
 		end := fdBatchEnd(reqs, i, fd.maxBatch, byteLimit)
-		// Do not mix retry policies in one chunk: generalProcessPipeline disables
-		// retries for the WHOLE chunk if any command is NoRetry (cmdsContainNoRetry).
-		// That would strip retryable commands in the same accepted backlog of their
-		// budget. Break the chunk at the first NoRetry-policy change so a NoRetry
-		// command (e.g. RawWriteToCmd) is isolated from its retryable neighbors, like
-		// the half-duplex dispatcher's contiguous retry-policy runs. The clamp starts
-		// at i+1, so end stays > i and the chunk is never empty (no infinite loop).
-		policy := reqs[i].cmd.NoRetry()
-		for k := i + 1; k < end; k++ {
-			if reqs[k].cmd.NoRetry() != policy {
-				end = k
-				break
+		if reqs[i].pipelined {
+			// An FD pipeline batch flushes as ONE pipeline, whatever its size, as
+			// Pipeline.Exec sends it: its first command's retryable reply then
+			// retries the whole batch together, not only the first chunk.
+			end = i + 1
+			for end < len(reqs) && fdSameGroup(reqs[end-1], reqs[end]) {
+				end++
+			}
+		} else {
+			// A chunk of ordinary commands stops where a pipeline batch starts,
+			// so the pipeline is not split across chunks.
+			for k := i + 1; k < end; k++ {
+				if reqs[k].pipelined {
+					end = k
+					break
+				}
+			}
+			// Do not mix retry policies in one chunk: generalProcessPipeline
+			// disables retries for the WHOLE chunk if any command is NoRetry
+			// (cmdsContainNoRetry). That would strip retryable commands in the same
+			// accepted backlog of their budget. Break the chunk at the first
+			// NoRetry-policy change so a NoRetry command (e.g. RawWriteToCmd) is
+			// isolated from its retryable neighbors, like the half-duplex
+			// dispatcher's contiguous retry-policy runs. The clamp starts at i+1,
+			// so end stays > i and the chunk is never empty (no infinite loop).
+			policy := reqs[i].cmd.NoRetry()
+			for k := i + 1; k < end; k++ {
+				if reqs[k].cmd.NoRetry() != policy {
+					end = k
+					break
+				}
 			}
 		}
 		cmds := make([]Cmder, end-i)
 		for j := i; j < end; j++ {
 			cmds[j-i] = reqs[j].cmd
+			// The pooled pipeline below runs this chunk again and records its
+			// pipeline metric. Stamped here, where the chunk runs: one more
+			// issue (so fdPipelineExec does not re-run it), and flushed. A batch
+			// that never runs (a dead endpoint fails the rest) keeps its issue
+			// count and stays unmarked, so fdPipelineExec records its failure.
+			if reqs[j].pipelined && reqs[j].batch != nil {
+				reqs[j].batch.fdAttempts = reqs[j].attempts + 1
+				reqs[j].batch.fdFlushed = true
+			}
 		}
 		// Initialize the flush with a request's own context (cancellation removed), not
 		// the engine's background context: if this flush initializes a fresh pooled
@@ -3104,7 +3242,9 @@ func (fd *fdEngine) failQueue(err error) {
 		// fdSetErrSafe: same hazard as failReqs — a panicking custom Cmder must
 		// not escape on the sole fd.run goroutine with no outer recover.
 		fdSetErrSafe(r.cmd, err)
-		if errorCallback != nil {
+		// A pipelined command's failure is reported once for its batch
+		// (fdPipelineMetrics), as in failReqs.
+		if errorCallback != nil && !r.pipelined {
 			if !classified {
 				errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 				classified = true
