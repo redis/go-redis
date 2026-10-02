@@ -64,3 +64,15 @@ indicative, not a spec):
 - Batched commands fire the client's *pipeline* hooks (one span per batch, not
   per command), so per-command instrumentation looks different from a plain
   client.
+
+## Full duplex
+
+`FullDuplex: true` streams every command over one held connection, with no
+request-response wait between batches. Three examples cover it:
+
+- [`autopipeline-fullduplex`](../autopipeline-fullduplex): the blocking face,
+  and pipelines on the full-duplex connection.
+- [`autopipeline-fullduplex-async`](../autopipeline-fullduplex-async): the
+  async face, `Submit` and submission windows.
+- [`autopipeline-fullduplex-engines`](../autopipeline-fullduplex-engines):
+  `NumShards > 1`, several full-duplex connections on one client.
