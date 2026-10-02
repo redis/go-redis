@@ -389,10 +389,17 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 			return 2
 		}
 		return 0
+	case "himport":
+		// HIMPORT SET key fieldset ...; PREPARE takes a fieldset name, not a key.
+		if strings.EqualFold(cmd.stringArg(1), "set") {
+			return 2
+		}
+		return 0
 	case "bitop":
 		// BITOP op destkey key...
 		return 2
-	case "lmpop", "zmpop", "sintercard", "zintercard", "zunion", "zinter", "zdiff":
+	case "lmpop", "zmpop", "sintercard", "zintercard", "zunion", "zinter", "zdiff",
+		"sdiffcard", "sunioncard", "ts.nrange", "ts.nrevrange":
 		// numkeys key...
 		return 2
 	case "blmpop", "bzmpop":
