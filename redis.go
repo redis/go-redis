@@ -709,7 +709,13 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
-			if isBadConn(err, false, c.opt.Addr) {
+			// A server-side rejection (WRONGPASS, NOPERM, ...) is not a bad-conn
+			// error, so isBadConn alone would leave the connection pooled while it
+			// is still authenticated with the credentials the provider has already
+			// replaced. Retire it too: on this path only the re-auth AUTH can
+			// produce a Redis error, and the reconnect authenticates with the
+			// provider's current credentials.
+			if isBadConn(err, false, c.opt.Addr) || isRedisError(err) {
 				// Close the connection to force a reconnection.
 				// Re-auth happens on connections that were idle in the pool (the pool hook
 				// waits for IDLE state before transitioning to UNUSABLE for re-auth).
