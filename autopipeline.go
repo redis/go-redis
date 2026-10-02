@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/cpu"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -96,9 +97,11 @@ type AutoPipelineOptions struct {
 	// Also honored by the full-duplex writer, where it is gated on in-flight
 	// depth so it never taxes low-concurrency callers (see fdAccumMinFor).
 	//
-	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1),
-	// single-shard face of a standalone *Client that has a pipeline pool — BOTH the
-	// deferred (AsyncAutoPipeline) and the blocking (AutoPipeline) face. A SINGLE
+	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1) face of a
+	// standalone *Client that has a pipeline pool — BOTH the deferred
+	// (AsyncAutoPipeline) and the blocking (AutoPipeline) face. NumShards > 1
+	// runs that many full-duplex engines, each on its own held connection; see
+	// NumShards for the ordering that mode keeps. A SINGLE
 	// blocking caller gains nothing: it has one command in flight, so there is
 	// nothing to overlap, and it still pays the held connection and goroutine
 	// overhead; the win needs MANY concurrent blocking callers, whose commands then
@@ -207,6 +210,11 @@ type AutoPipelineOptions struct {
 	// memory until a stalled peer makes in-flight grow. Only used when FullDuplex is
 	// set; 0 means the default (65536, covering ~50ms links at ~1.3M ops/s) and a
 	// negative value is rejected by Validate.
+	//
+	// The window is PER ENGINE. With NumShards > 1 each full-duplex engine gets
+	// its own window and submit queue of this size, so the client-wide bound is
+	// NumShards × FullDuplexWindow in flight, plus as many queued. Size it for
+	// one wire; to cap the total, divide by NumShards.
 	FullDuplexWindow int
 
 	// FullDuplexIdleTimeout is how long the held full-duplex connection may sit
@@ -259,6 +267,29 @@ type AutoPipelineOptions struct {
 	// max(NumShards, MaxConcurrentBatches) — and because shards flush
 	// concurrently, NumShards > 1 on the deferred (async) face requires
 	// Unordered: true (construction fails otherwise).
+	//
+	// With FullDuplex active on a standalone *Client, NumShards means something
+	// else: the number of full-duplex engines, each holding one pipeline-pool
+	// connection with its own window (see FullDuplexWindow). More engines pay
+	// off only with many concurrent callers: measured with 10-command
+	// pipelines, 8 engines were 30% slower than 1 at 8 callers, broke even at about
+	// 128, and 2.2x faster at 1024. Commands are routed
+	// to an engine by a hash of their first key, so Unordered is not required,
+	// but order holds only between commands that share a first key. The key is
+	// hashed in its string form (fmt for non-string arguments, as Ring does), so
+	// pass a key as the same Go type everywhere: true and "1" are the same Redis
+	// key but can land on different engines. Commands
+	// that touch other keys after the first one (COPY, RENAME, MSET, multi-key
+	// DEL, EVAL/FCALL with several keys) and keyless commands (including
+	// FLUSHDB and SWAPDB) are not ordered against the rest; await the first
+	// future before submitting a dependent one, or keep NumShards at 1, which
+	// keeps the whole submit order. A Pipeline() rides the FD wire only when all
+	// its keyed commands hash to one engine; otherwise it runs as an ordinary
+	// pipeline on a pooled connection, not ordered against unawaited commands on
+	// the engines. The pipeline pool must hold at least
+	// NumShards connections for every full-duplex autopipeliner in use
+	// (construction checks this one). If full duplex cannot engage (no
+	// pipeline pool), the Unordered rule above applies.
 	NumShards int
 
 	// MaxFlushDelay is the maximum delay after flushing before checking for more commands.
@@ -412,10 +443,16 @@ func (cfg *AutoPipelineOptions) Validate() error {
 		// half-duplex. contentSharded is exempt: that flag is set by the CLUSTER
 		// wiring (never by users), where the silent fallback IS the documented
 		// behavior, since the options type cannot see the client type.
-		if cfg.NumShards > 1 && !cfg.contentSharded {
-			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires NumShards<=1 "+
-				"(one held FIFO connection is a single stream); got %d", cfg.NumShards)
-		}
+		// NumShards>1 under FullDuplex means N engines, each holding its own
+		// connection, routed by key hash so per-key order still holds (see
+		// autopipeline_fd_shards.go). It is therefore no longer rejected here.
+		//
+		// This is one half of a TWO-SITED rule: the fdOn gate in
+		// newAutoPipeliner must relax with it. Relaxing only this check leaves
+		// full duplex silently OFF for NumShards>1 — commands fall through to
+		// the half-duplex shards, which are unordered, and a same-key
+		// write-then-read can read the stale value.
+		_ = cfg.contentSharded
 	}
 	if cfg.MaxConcurrentBatches > 1 && !cfg.Unordered {
 		return fmt.Errorf("redis: AutoPipelineOptions.MaxConcurrentBatches=%d requires Unordered:true "+
@@ -495,6 +532,22 @@ type cmdableClient interface {
 // one goroutine wake-up apiece).
 type apBatch struct {
 	done chan struct{}
+	// fdAttempts is how many times the full-duplex engine issued a PIPELINED
+	// command (1, plus one per connection-error replay), stamped by the reader
+	// before it completes the command, so closing done publishes it. The
+	// pipeline retry reads it to charge those executions against MaxRetries.
+	// Zero on every other path.
+	fdAttempts int
+	// fdConn is the held connection that carried a PIPELINED command's reply,
+	// stamped with fdAttempts, for the pipeline duration metric.
+	fdConn *pool.Conn
+	// fdGroup marks the commands of one FD pipeline batch: every batch of the
+	// pipeline points at the batch of its first command. The Close-time flush
+	// uses it to run the pipeline as one, with one whole-batch retry.
+	fdGroup *apBatch
+	// fdFlushed is set when the Close-time flush ran this pipelined command
+	// through the pooled pipeline, which recorded the pipeline metric itself.
+	fdFlushed bool
 	// closed makes close() idempotent: on the async faces the dispatch closes
 	// the batch at the innermost exec seam (under the user hooks, so a hook
 	// reading a result after next() does not block on a channel its own
@@ -832,6 +885,12 @@ type AutoPipeliner struct {
 	// submit() streams on one held connection instead of the sharded batch queue
 	// and no shard flusher is started. See autopipeline_fullduplex.go.
 	fd *fdEngine
+	// fds holds every full-duplex engine when NumShards>1 puts several held
+	// connections behind one autopipeliner (see autopipeline_fd_shards.go).
+	// fds[0] is always fd, so every existing `ap.fd != nil` check still reads as
+	// "full duplex is on" and the single-engine path is unchanged.
+	fds  []*fdEngine
+	fdRR atomic.Uint32 // round-robin cursor, keyless commands only
 	// clusterFD, when non-nil, runs ordered full-duplex natively on a
 	// *ClusterClient by routing each command to a per-node FD child autopipeliner
 	// (one held connection per master). Mutually exclusive with fd and with the
@@ -1166,7 +1225,33 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// per command, and Submit is rejected there), as is cluster slot sharding
 	// (contentSharded: same-key commands always land in the same shard, so
 	// per-key order holds).
-	if config.NumShards > 1 && !config.Unordered && !blocking && !config.contentSharded {
+	//
+	// Full duplex is exempt for the SAME reason contentSharded is: its engines
+	// are chosen by key hash, so same-key commands always land on one wire and
+	// per-key order holds without an Unordered opt-in. The exemption follows
+	// the EFFECTIVE state (fdOn), not the requested FullDuplex: on a client
+	// without a pipeline pool full duplex does not engage, construction falls
+	// back to the round-robin shards below, and those need the opt-in.
+	//
+	// Ordered full-duplex: the ordered single-shard face on a standalone *Client
+	// with a pipeline pool, async or blocking. When on, submit() streams on one
+	// held connection and no shard flusher runs. The blocking face needs nothing
+	// extra: submit's fd branch skips setReady (the blocking contract) and
+	// processBlocking Waits on the returned batch, as for a half-duplex enqueue.
+	var fdClient *Client
+	fdOn := false
+	// NOT gated on nShards: NumShards>1 selects several engines rather than
+	// disabling full duplex. This is the second half of the two-sited rule
+	// noted in Validate — while this line also required nShards==1, a
+	// NumShards>1 caller got half-duplex round-robin shards instead of the
+	// ordered engine it asked for, silently.
+	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 {
+		if c, ok := pipeliner.(*Client); ok && c.getPipelinePool() != nil {
+			fdOn, fdClient = true, c
+		}
+	}
+	if config.NumShards > 1 && !config.Unordered && !blocking &&
+		!config.contentSharded && !fdOn {
 		return nil, fmt.Errorf(
 			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
@@ -1279,17 +1364,36 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		perShard = 1
 		remainder = 0
 	}
-	// Ordered full-duplex: the ordered single-shard face on a standalone *Client
-	// with a pipeline pool, async or blocking. When on, submit() streams on one
-	// held connection and no shard flusher runs. The blocking face needs nothing
-	// extra: submit's fd branch skips setReady (the blocking contract) and
-	// processBlocking Waits on the returned batch, as for a half-duplex enqueue.
-	var fdClient *Client
-	fdOn := false
-	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 && nShards == 1 {
-		if c, ok := pipeliner.(*Client); ok && c.getPipelinePool() != nil {
-			fdOn, fdClient = true, c
+	// fdOn was decided above, before the ordering check. Engines are
+	// flusherless, so nShards is forced to 1 below to keep enqueue's shard
+	// indexing safe; the engine count lives in ap.fds.
+	if fdOn {
+		// Every engine holds one connection leased from the pipeline pool for
+		// as long as it runs, so more engines than that pool can hold would
+		// leave the surplus permanently spilling to the main pool — quietly
+		// competing with ordinary commands instead of pipelining. Fail loudly
+		// instead: the caller can raise PipelinePoolSize or ask for fewer
+		// engines. DefaultPipelinePoolSize is 10, so this bites at 11+.
+		//
+		// The check is per autopipeliner. The blocking and async faces and
+		// WithTimeout clones each run their own engines on the SAME pipeline
+		// pool, so the pool must hold the sum of their NumShards; two faces at
+		// NumShards 8 pass here against a pool of 10, and the surplus spills.
+		// A client-wide engine count is a follow-up; until then size
+		// PipelinePoolSize for every full-duplex autopipeliner in use.
+		if n := fdShardCount(config); n > 1 {
+			if pp := fdClient.getPipelinePool(); pp != nil && n > pp.Size() {
+				return nil, fmt.Errorf(
+					"redis: AutoPipelineOptions.NumShards=%d needs a pipeline pool of at "+
+						"least %d connections (each full-duplex engine holds one), but "+
+						"PipelinePoolSize gives %d; raise Options.PipelinePoolSize or lower "+
+						"NumShards", n, n, pp.Size())
+			}
 		}
+		// One flusherless shard, exactly as the single-engine path does: no
+		// half-duplex flusher runs and enqueue never does a %0, even though
+		// submit routes past it entirely.
+		nShards = 1
 	}
 	// Publish the EFFECTIVE full-duplex state, not the requested one: FullDuplex
 	// engages on a standalone *Client with a pipeline pool (fdOn) or on a
@@ -1345,9 +1449,18 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	}
 
 	if fdOn {
-		ap.fd = newFDEngine(ap, fdClient)
-		ap.wg.Add(1)
-		go ap.fd.run()
+		// NumShards>1 runs N engines on THIS client, each leasing its own
+		// connection from the pipeline pool. fds[0] is fd, so nothing
+		// downstream needs to know the difference when N==1.
+		n := fdShardCount(config)
+		ap.fds = make([]*fdEngine, 0, n)
+		for i := 0; i < n; i++ {
+			e := newFDEngine(ap, fdClient)
+			ap.fds = append(ap.fds, e)
+			ap.wg.Add(1)
+			go e.run()
+		}
+		ap.fd = ap.fds[0]
 	}
 	if clusterFDOn {
 		ap.clusterFD = newClusterFDRouter(ap, clusterFDCC, config, blocking)
@@ -1921,7 +2034,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// Ordered full-duplex: stream on one held connection. enqueue's async
 		// setReady is replicated here since we bypass it. ctx is threaded so a
 		// per-command process-hook host can parent its span correctly.
-		b := ap.fd.submit(ctx, cmd)
+		b := ap.fdFor(cmd).submit(ctx, cmd)
 		if !ap.blocking {
 			cmd.setReady(b)
 		}
@@ -3385,8 +3498,8 @@ func (ap *AutoPipeliner) Len() int {
 	// commands are buffered behind a backpressured/stalled FD writer, and callers
 	// using Len() for monitoring or local backpressure lose the signal in
 	// FullDuplex mode.
-	if ap.fd != nil {
-		total += ap.fd.q.depth()
+	for _, e := range ap.fds {
+		total += e.q.depth()
 	}
 	// Cluster full-duplex accepts commands onto per-node FD children, not the
 	// shard queues; include their backlog for the same monitoring reason.
@@ -3440,15 +3553,152 @@ func (ap *AutoPipeliner) calculateDelay(queueLen int) time.Duration {
 
 // Pipeline returns a new pipeline that uses the underlying pipeliner.
 // This allows you to create a traditional pipeline from an autopipeliner.
+//
+// On a FULL-DUPLEX autopipeliner the pipeline runs on the HELD connection
+// rather than taking one of its own: see fdPipelineExec. Without that, a
+// pipeline built from an autopipeliner would quietly leave the pipe, take a
+// pooled connection per Exec, and lose the coalescing that is the whole point
+// of the engine — measured at 150 active sockets and less than a third of the
+// throughput of the same commands submitted through the engine.
 func (ap *AutoPipeliner) Pipeline() Pipeliner {
+	if ap.fd != nil {
+		pipe := Pipeline{exec: pipelineExecer(ap.fdPipelineHooked)}
+		pipe.init()
+		return &pipe
+	}
 	return ap.pipeliner.Pipeline()
+}
+
+// fdPipelineExec runs a whole pipeline through the full-duplex engine as one
+// contiguous batch, and falls back to a pooled pipeline when the batch cannot
+// ride the held connection.
+//
+// Contiguity is what makes this safe: FDPipelined admits the batch all-or-
+// nothing, so the commands occupy consecutive in-flight slots and their replies
+// come back in submit order. A pipeline's internal ordering therefore holds
+// exactly as it does on a dedicated connection.
+//
+// The fallback covers the cases the engine must divert — a blocking command, a
+// command with its own read timeout, anything the divert predicate claims, or a
+// batch larger than the whole submit queue. Those go to the ordinary pipeline
+// path, which is where they would have gone before this existed.
+//
+// fdPipelineExec is the TERMINAL of the client's ProcessPipelineHook chain
+// (see fdPipelineHooked), the place processPipeline takes in an ordinary
+// pipeline. So hooks wrap the whole execution, fallback and retry included,
+// exactly once, and the pooled paths below call the hookless processPipeline.
+//
+// On the FD path it records what an ordinary pipeline records: one pipeline
+// duration and, on failure, one pipeline-level error, instead of the reader's
+// per-command metrics.
+//
+// A Limiter is asked per WRITE CHUNK on the FD path, not once per batch: a
+// chunk can mix this batch with other callers' commands, so a batch longer
+// than MaxBatchSize (or MaxBatchBytes) can be partly admitted. An ordinary
+// pipeline makes one decision per attempt.
+//
+// Also:
+//
+//   - A retryable reply (LOADING and the like) on the FIRST command: an
+//     ordinary pipeline retries the whole batch, in order. FDPipelined settles
+//     retryable replies inline, so the batch is re-run the ordinary way, unless
+//     it holds a NoRetry command, which an ordinary pipeline does not retry
+//     either. A retryable reply on a later command is returned, as an ordinary
+//     pipeline does.
+//
+// fdPipelineHooked is Pipeline().Exec on a full-duplex autopipeliner: the
+// client's pipeline hooks around fdPipelineExec.
+//
+// ContextTimeoutEnabled keeps the pooled path: an ordinary pipeline bounds its
+// socket I/O by the caller's ctx, and the FD wait cannot abandon an admitted
+// batch on a shared connection.
+func (ap *AutoPipeliner) fdPipelineHooked(ctx context.Context, cmds []Cmder) error {
+	c := ap.fd.client
+	if c.opt.ContextTimeoutEnabled {
+		return ap.pipeliner.processPipelineHook(ctx, cmds)
+	}
+	return c.wrapPipelineHooks(ap.fdPipelineExec)(ctx, cmds)
+}
+
+func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error {
+	opt := ap.fd.client.opt
+	var start time.Time
+	if otel.GetPipelineOperationDurationCallback() != nil {
+		start = time.Now()
+	}
+	res, err := ap.fdPipelined(ctx, cmds)
+	used, cn := res.attempts, res.cn
+	// An ordinary pipeline allows MaxRetries+1 executions. The FD engine may
+	// already have issued the batch more than once (a connection-error replay),
+	// so the re-run gets what is left.
+	remaining := opt.MaxRetries - used
+	ineligible, retry := false, false
+	switch {
+	case errors.Is(err, ErrFDPipelineDiverts),
+		errors.Is(err, ErrFDPipelineUnavailable),
+		errors.Is(err, ErrFDPipelineTooLarge),
+		errors.Is(err, ErrFDPipelineSpansEngines):
+		// Not a command failure: the batch is simply not eligible.
+		ineligible = true
+	case len(cmds) > 0 && remaining >= 0 && !cmdsContainNoRetry(cmds):
+		// Only a batch the engine issued exactly once. After a connection-error
+		// replay, the replay already was this batch's retry: it re-ran the unread
+		// tail, which an ordinary pipeline re-runs as its one whole-batch retry
+		// after the same network error. A whole-batch re-run on top would run
+		// that tail a third time (a mutation beyond what an ordinary pipeline
+		// does), so the first command's stale retryable reply is returned instead.
+		// The Close-time flush stamps fdAttempts the same way, so a flushed batch
+		// is not re-run either.
+		//
+		// A transport or protocol failure anywhere in the batch rules the
+		// re-run out too. The engine did not replay that command, since it may
+		// already have run, and an ordinary pipeline returns that read error
+		// instead of retrying.
+		if e := cmds[0].rawErr(); used == 1 && isRedisError(e) && shouldRetry(e, false) &&
+			fdPipelineTransportErr(cmds) == nil {
+			retry = true
+		}
+	}
+	if !ineligible && !retry {
+		// Run on the FD path, or refused before admission. A batch the
+		// Close-time flush ran in full was measured by that pooled pipeline.
+		if res.measured() {
+			ap.fdPipelineMetrics(ctx, start, cmds, max(used, 1), cn)
+		}
+		return err
+	}
+	// Clear the per-command errors FDPipelined may have stamped, then run the
+	// batch the ordinary way so the caller sees one authoritative outcome.
+	for _, cmd := range cmds {
+		cmd.SetErr(nil)
+	}
+	// Hookless processPipeline: this is already the terminal of the hook
+	// chain. The pooled run records its own pipeline metric.
+	if ineligible {
+		return ap.fd.client.processPipeline(ctx, cmds)
+	}
+	// The re-run runs remaining+1 times at most, so FD attempts plus re-runs
+	// never exceed MaxRetries+1, after the backoff an ordinary pipeline sleeps
+	// before its next retry. Inside the hook chain, like generalProcessPipeline's
+	// own retries. It continues this operation's measurement (start and the FD
+	// attempts), so one pipeline metric covers the whole operation.
+	c := ap.fd.client
+	if serr := internal.Sleep(ctx, c.retryBackoff(used)); serr != nil {
+		setCmdsErr(cmds, serr)
+		ap.fdPipelineMetrics(ctx, start, cmds, used, cn)
+		return serr
+	}
+	return c.processPipelineRetriesAfter(ctx, cmds, remaining, start, used)
 }
 
 // Pipelined executes a function in a pipeline context.
 // This is a convenience method that creates a pipeline, executes the function,
 // and returns the results.
+//
+// Uses Pipeline, so on a full-duplex autopipeliner this also runs on the held
+// connection rather than taking one of its own.
 func (ap *AutoPipeliner) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
-	return ap.pipeliner.Pipeline().Pipelined(ctx, fn)
+	return ap.Pipeline().Pipelined(ctx, fn)
 }
 
 // TxPipelined executes a function in a transaction pipeline context.

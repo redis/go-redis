@@ -10293,7 +10293,7 @@ func (n *numberStruct) ScanRedis(str string) error {
 
 func deref(viface interface{}) interface{} {
 	v := reflect.ValueOf(viface)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	return v.Interface()

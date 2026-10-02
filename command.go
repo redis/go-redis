@@ -383,16 +383,23 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		// XREADGROUP GROUP group consumer [...] STREAMS key... id...; the
 		// scan starts after the group and consumer names.
 		return cmdArgAfterToken(cmd, 4, "streams")
-	case "object", "xinfo":
-		// OBJECT|XINFO subcommand key; HELP has no key.
+	case "object", "xinfo", "xgroup":
+		// OBJECT|XINFO|XGROUP subcommand key; HELP has no key.
 		if len(cmd.Args()) > 2 {
+			return 2
+		}
+		return 0
+	case "himport":
+		// HIMPORT SET key fieldset ...; PREPARE takes a fieldset name, not a key.
+		if strings.EqualFold(cmd.stringArg(1), "set") {
 			return 2
 		}
 		return 0
 	case "bitop":
 		// BITOP op destkey key...
 		return 2
-	case "lmpop", "zmpop", "sintercard", "zintercard":
+	case "lmpop", "zmpop", "sintercard", "zintercard", "zunion", "zinter", "zdiff",
+		"sdiffcard", "sunioncard", "ts.nrange", "ts.nrevrange":
 		// numkeys key...
 		return 2
 	case "blmpop", "bzmpop":
