@@ -917,8 +917,11 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		case <-fd.q.roomCh():
 			// Chain the signal: room is cap-1, so with several submitters blocked only
 			// one is released per take. Whoever wakes re-signals while space remains.
-			// Confined to this saturated path, so steady state pays nothing.
-			if fd.q.depth() < fd.q.capacity() {
+			// Confined to this saturated path, so steady state pays nothing. Room a
+			// waiting batch has reserved does not count: no single can use it, and
+			// passing the wake on for it would only spin this chain until the batch
+			// is admitted (each holder has its own wake channel).
+			if fd.q.roomFor(1) {
 				fd.q.signalRoom()
 			}
 		case <-ctx.Done():

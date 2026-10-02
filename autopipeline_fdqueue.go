@@ -33,6 +33,19 @@ import "sync"
 // for the mutex. Per-goroutine program order is still exact (a goroutine's push
 // happens-before its next push), which is what the ordering contract actually
 // promises; cross-goroutine arrival order under saturation was never defined.
+//
+// Re-contention is fair enough between single commands, which all need one
+// slot, but not between a single command and a BATCH (pushBatch), which needs
+// its whole length free at one instant. The writer frees at most a wave per
+// take while singles refill any free slot, so under sustained load a batch
+// longer than a wave would never see enough room. A batch that is refused
+// therefore RESERVES its slots (hold): reserved slots count as occupied for
+// every other push, so the writer's takes accumulate room for the batch
+// instead of handing it straight back to the singles. Holders form a FIFO
+// line and only the HEAD can be admitted (pushHeld): a later, smaller batch
+// would otherwise refill the head's room exactly as the singles did. Each
+// holder has its own wake channel and only the head is ever signalled, so no
+// wake is shared, passed along, or lost between waiters.
 type fdQueue struct {
 	mu sync.Mutex
 	// buf[head:] is the live queue. takeInto advances head instead of shifting
@@ -47,6 +60,20 @@ type fdQueue struct {
 	head int
 	max  int // bound; mirrors the old channel capacity
 
+	// holders are the batches that were refused for lack of room and are
+	// waiting to be admitted, in arrival order (see hold/pushHeld). reserved
+	// is the sum of their sizes; it counts as occupied for push and for a
+	// non-holding pushBatch, so neither a single command nor a new batch can
+	// refill the room the writer frees ahead of a waiting batch. Only
+	// holders[0] can be admitted, and it needs just its own length free: the
+	// sum of reservations may exceed the capacity, so a rule that made the
+	// head wait for ALL reservations to fit could never be satisfied. Every
+	// event that may let the head in (a take, a drain, the previous head
+	// leaving) signals holders[0].wake; closeQueue signals every holder.
+	holders  []fdHolder
+	reserved int
+	nextID   uint64
+
 	// parked/wakeAt are the writer's standing request: it is asleep and wants a
 	// signal once the queue holds at least wakeAt entries. Only a submitter that
 	// takes parked from true to false sends the signal, so a wave of arrivals
@@ -55,11 +82,7 @@ type fdQueue struct {
 	wakeAt int
 
 	wake chan struct{} // cap 1: submitter -> parked writer
-	room chan struct{} // cap 1: writer -> submitters blocked on a full queue
-
-	// takes counts the takes that freed room. A blocked batch uses it to pass
-	// a wake it cannot use on at most once per take (see submitBatch).
-	takes uint64
+	room chan struct{} // cap 1: writer -> single submitters blocked on a full queue
 
 	closed bool
 }
@@ -73,6 +96,16 @@ var fdQueueReady = func() chan struct{} {
 	close(c)
 	return c
 }()
+
+// fdHolder is a batch waiting for room with a reservation of n slots. The id
+// identifies it to pushHeld and unhold. wake (cap 1) is signalled when the
+// holder is at the head of the line and may fit, and on close. A holder behind
+// the head is never woken by room events: nothing it could do with the wake.
+type fdHolder struct {
+	id   uint64
+	n    int
+	wake chan struct{}
+}
 
 // fdPushResult is the outcome of an enqueue attempt.
 type fdPushResult int
@@ -173,8 +206,9 @@ func (q *fdQueue) reserve(k int) {
 	}
 }
 
-// signalRoom re-arms the cap-1 room signal. Called only by a submitter that just
-// woke from a full queue, to chain the wake to the next one waiting.
+// signalRoom re-arms the cap-1 room signal. Called by a submitter that just
+// woke from a full queue, to chain the wake to the next one waiting, and by a
+// holder whose reservation stops counting against the singles.
 func (q *fdQueue) signalRoom() {
 	if q == nil {
 		return
@@ -183,6 +217,107 @@ func (q *fdQueue) signalRoom() {
 	case q.room <- struct{}{}:
 	default:
 	}
+}
+
+// signalHolder wakes one holder. Non-blocking on its cap-1 channel, so a
+// pending wake is not doubled; nil (no holder) is a no-op. Called OUTSIDE mu.
+func signalHolder(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// headWakeLocked returns the wake channel of the head of the holder line, or
+// nil when the line is empty. Caller holds mu; the send happens after unlock.
+func (q *fdQueue) headWakeLocked() chan struct{} {
+	if len(q.holders) == 0 {
+		return nil
+	}
+	return q.holders[0].wake
+}
+
+// signalRoomAndHead releases the waiters a take or drain may have made room
+// for: one single on room, and the head of the holder line on its own wake.
+// Called OUTSIDE mu with head read under it.
+func (q *fdQueue) signalRoomAndHead(head chan struct{}) {
+	q.signalRoom()
+	signalHolder(head)
+}
+
+// hold reserves k slots for a batch that was refused for lack of room and
+// puts it at the back of the holder line. Until the holder is admitted
+// (pushHeld) or gives up (unhold), the slots count as occupied for every other
+// push, so the room the writer frees accumulates for the holders. k is bounded
+// by the caller to the queue capacity. Returns the holder's id and the channel
+// it must wait on; on a nil queue both are zero and the nil channel never
+// fires (see the nil-queue contract).
+func (q *fdQueue) hold(k int) (id uint64, wake <-chan struct{}) {
+	if q == nil || k <= 0 {
+		return 0, nil
+	}
+	ch := make(chan struct{}, 1)
+	q.mu.Lock()
+	q.nextID++
+	id = q.nextID
+	q.holders = append(q.holders, fdHolder{id: id, n: k, wake: ch})
+	q.reserved += k
+	q.mu.Unlock()
+	return id, ch
+}
+
+// unhold releases the reservation of a holder that gave up (ctx done,
+// shutdown). It wakes a single the reservation may have been holding back,
+// and, if the holder was at the head of the line, the new head, which may fit.
+// A holder behind the head leaves without a trace: it was never signalled, so
+// no wake is lost with it.
+func (q *fdQueue) unhold(id uint64) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	wasHead, found := q.dropHolderLocked(id)
+	wakeSingles := found && q.live()+q.reserved < q.max
+	var head chan struct{}
+	if wasHead {
+		head = q.headWakeLocked()
+	}
+	q.mu.Unlock()
+	if wakeSingles {
+		q.signalRoom()
+	}
+	signalHolder(head)
+}
+
+// dropHolderLocked removes the holder with id from the line and releases
+// its slots. Caller holds mu.
+func (q *fdQueue) dropHolderLocked(id uint64) (wasHead, found bool) {
+	for i, h := range q.holders {
+		if h.id != id {
+			continue
+		}
+		q.reserved -= h.n
+		q.holders = append(q.holders[:i], q.holders[i+1:]...)
+		if len(q.holders) == 0 {
+			q.holders = nil // let a burst's line be collected
+		}
+		return i == 0, true
+	}
+	return false, false
+}
+
+// roomFor reports whether n more single commands fit, net of reservations.
+func (q *fdQueue) roomFor(n int) bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	ok := q.max-q.live()-q.reserved >= n
+	q.mu.Unlock()
+	return ok
 }
 
 // push enqueues one command. The wake signal is sent OUTSIDE the mutex: it is a
@@ -198,7 +333,7 @@ func (q *fdQueue) push(req fdReq) fdPushResult {
 		q.mu.Unlock()
 		return fdPushClosed
 	}
-	if q.live() >= q.max {
+	if q.live()+q.reserved >= q.max {
 		q.mu.Unlock()
 		return fdPushFull
 	}
@@ -210,10 +345,7 @@ func (q *fdQueue) push(req fdReq) fdPushResult {
 	}
 	q.mu.Unlock()
 	if signal {
-		select {
-		case q.wake <- struct{}{}:
-		default:
-		}
+		q.signalWake()
 	}
 	return fdPushOK
 }
@@ -221,7 +353,9 @@ func (q *fdQueue) push(req fdReq) fdPushResult {
 // pushBatch enqueues reqs under a SINGLE lock, for callers that already hold a
 // run of commands (a pipeline, or a carry tail being returned to the queue).
 // All-or-nothing: a partial enqueue would split a pipeline across two flushes
-// and, worse, leave the caller unsure which half it owns.
+// and, worse, leave the caller unsure which half it owns. Slots reserved by
+// waiting holders count as occupied; a refused caller that wants to wait
+// should hold its own slots and retry through pushHeld.
 func (q *fdQueue) pushBatch(reqs []fdReq) fdPushResult {
 	if len(reqs) == 0 {
 		return fdPushOK
@@ -234,24 +368,72 @@ func (q *fdQueue) pushBatch(reqs []fdReq) fdPushResult {
 		q.mu.Unlock()
 		return fdPushClosed
 	}
-	if q.live()+len(reqs) > q.max {
+	if q.live()+q.reserved+len(reqs) > q.max {
 		q.mu.Unlock()
 		return fdPushFull
 	}
+	signal := q.appendLocked(reqs)
+	q.mu.Unlock()
+	if signal {
+		q.signalWake()
+	}
+	return fdPushOK
+}
+
+// pushHeld is pushBatch for the holder with id, whose reservation is
+// len(reqs) slots. Only the head of the holder line is admitted; anyone else
+// is refused (fdPushFull) and waits on its own wake, which fires once it has
+// become the head and may fit. The head needs only its own length free: the
+// slots behind it are reserved, not occupied, and counting them would let the
+// line deadlock once the reservations outgrow the capacity. On admission the
+// reservation is consumed, a single the reservation was holding back is woken
+// if room remains, and the next holder is woken to try in turn.
+func (q *fdQueue) pushHeld(reqs []fdReq, id uint64) fdPushResult {
+	if q == nil {
+		return fdPushFull // see the nil-queue contract
+	}
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return fdPushClosed
+	}
+	if len(q.holders) == 0 || q.holders[0].id != id || q.live()+len(reqs) > q.max {
+		q.mu.Unlock()
+		return fdPushFull
+	}
+	signal := q.appendLocked(reqs)
+	q.dropHolderLocked(id)
+	wakeSingles := q.live()+q.reserved < q.max
+	head := q.headWakeLocked()
+	q.mu.Unlock()
+	if signal {
+		q.signalWake()
+	}
+	if wakeSingles {
+		q.signalRoom()
+	}
+	signalHolder(head)
+	return fdPushOK
+}
+
+// appendLocked appends an admitted run and reports whether the parked writer
+// must be woken. Caller holds mu and has checked the bound.
+func (q *fdQueue) appendLocked(reqs []fdReq) (signal bool) {
 	q.reserve(len(reqs))
 	q.buf = append(q.buf, reqs...)
-	signal := q.parked && q.live() >= q.wakeAt
+	signal = q.parked && q.live() >= q.wakeAt
 	if signal {
 		q.parked = false
 	}
-	q.mu.Unlock()
-	if signal {
-		select {
-		case q.wake <- struct{}{}:
-		default:
-		}
+	return signal
+}
+
+// signalWake sends the writer wake claimed under mu. Outside the lock: see push.
+func (q *fdQueue) signalWake() {
+	select {
+	case q.wake <- struct{}{}:
+	default:
 	}
-	return fdPushOK
 }
 
 // pushFront returns commands the WRITER already took but could not write this
@@ -308,14 +490,11 @@ func (q *fdQueue) takeInto(dst []fdReq, max int) []fdReq {
 		q.compact()
 	}
 	q.parked = false // we are awake; stop submitters from signalling
-	q.takes++
+	head := q.headWakeLocked()
 	q.mu.Unlock()
-	// Release anyone blocked on a full queue. Non-blocking on a cap-1 channel, so
+	// Release anyone blocked on a full queue. Non-blocking on cap-1 channels, so
 	// this is a cheap no-op once a signal is already pending.
-	select {
-	case q.room <- struct{}{}:
-	default:
-	}
+	q.signalRoomAndHead(head)
 	return dst
 }
 
@@ -358,17 +537,6 @@ func (q *fdQueue) unpark() {
 	q.mu.Unlock()
 }
 
-// roomAndTakes reports the free slots and the take count, under one lock.
-func (q *fdQueue) roomAndTakes() (free int, takes uint64) {
-	if q == nil {
-		return 0, 0
-	}
-	q.mu.Lock()
-	free, takes = q.max-q.live(), q.takes
-	q.mu.Unlock()
-	return free, takes
-}
-
 func (q *fdQueue) depth() int {
 	if q == nil {
 		return 0
@@ -391,12 +559,9 @@ func (q *fdQueue) drainAll(dst []fdReq) []fdReq {
 	clear(q.buf)
 	q.resetEmpty()
 	q.parked = false
-	q.takes++
+	head := q.headWakeLocked()
 	q.mu.Unlock()
-	select {
-	case q.room <- struct{}{}:
-	default:
-	}
+	q.signalRoomAndHead(head)
 	return dst
 }
 
@@ -408,10 +573,17 @@ func (q *fdQueue) closeQueue() {
 	}
 	q.mu.Lock()
 	q.closed = true
+	// Every holder, not just the head: a holder behind the head is otherwise
+	// woken only by its ctx, and Close must release it.
+	wakes := make([]chan struct{}, len(q.holders))
+	for i, h := range q.holders {
+		wakes[i] = h.wake
+	}
 	q.mu.Unlock()
-	// Release submitters blocked on a full queue so they observe the closed state.
-	select {
-	case q.room <- struct{}{}:
-	default:
+	// Release submitters blocked on a full queue, singles and holders alike, so
+	// they observe the closed state.
+	q.signalRoom()
+	for _, ch := range wakes {
+		signalHolder(ch)
 	}
 }
