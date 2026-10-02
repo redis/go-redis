@@ -309,17 +309,6 @@ func (q *fdQueue) dropHolderLocked(id uint64) (wasHead, found bool) {
 	return false, false
 }
 
-// holderCount reports how many batches are waiting with a reservation.
-func (q *fdQueue) holderCount() int {
-	if q == nil {
-		return 0
-	}
-	q.mu.Lock()
-	n := len(q.holders)
-	q.mu.Unlock()
-	return n
-}
-
 // roomFor reports whether n more single commands fit, net of reservations.
 func (q *fdQueue) roomFor(n int) bool {
 	if q == nil {

@@ -102,13 +102,20 @@ func wakeHead(t *testing.T, q *fdQueue) {
 	signalHolder(head)
 }
 
+// holderCount reports how many batches are waiting with a reservation.
+func holderCount(q *fdQueue) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.holders)
+}
+
 // waitHolders blocks until n batches hold a reservation.
 func waitHolders(t *testing.T, q *fdQueue, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for q.holderCount() != n {
+	for holderCount(q) != n {
 		if time.Now().After(deadline) {
-			t.Fatalf("holders = %d, want %d", q.holderCount(), n)
+			t.Fatalf("holders = %d, want %d", holderCount(q), n)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -138,8 +145,8 @@ func TestFDSubmitBatchWakesOnlyTheHead(t *testing.T) {
 	// The head leaves: the batch becomes the head and is woken to try.
 	fd.q.unhold(headID)
 	time.Sleep(20 * time.Millisecond)
-	if fd.q.holderCount() != 1 {
-		t.Fatalf("holders after unhold = %d, want 1", fd.q.holderCount())
+	if n := holderCount(fd.q); n != 1 {
+		t.Fatalf("holders after unhold = %d, want 1", n)
 	}
 }
 
