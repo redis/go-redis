@@ -119,6 +119,13 @@ func (hs *hooksMixin) wrapPipelineHooks(next ProcessPipelineHook) ProcessPipelin
 // an ordinary pipeline: one duration with the command count and attempts, and
 // one error when the pipeline as a whole failed. The reader skips its
 // per-command metrics for pipelined commands, so nothing is counted twice.
+//
+// attempts counts the times the batch was issued. One difference from an
+// ordinary pipeline: connection-lease retries are not counted. The lease
+// belongs to the engine, not to the batch; a batch queued while the engine
+// retries a lease waits and is issued once. So a batch issued after lease
+// retries reports 1 attempt, and a batch failed because the lease retries ran
+// out reports 0 retries.
 func (ap *AutoPipeliner) fdPipelineMetrics(ctx context.Context, start time.Time, cmds []Cmder, attempts int, cn *pool.Conn) {
 	perr := fdPipelineLevelErr(cmds)
 	db := ap.fd.client.opt.DB
