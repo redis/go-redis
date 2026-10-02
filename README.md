@@ -516,13 +516,13 @@ go-redis supports extending the client identification phase to allow projects to
 
 By default, go-redis automatically sends the client library name and version during the connection process. This feature is available in redis-server as of version 7.2. As a result, the command is "fire and forget", meaning it should fail silently, in the case that the redis server does not support this feature.
 
-#### Disabling Identity Verification
+#### Disabling Client Identification
 
-When connection identity verification is not required or needs to be explicitly disabled, a `DisableIdentity` configuration option exists.
+The `DisableIdentity` option disables sending the client library name and version with `CLIENT SETINFO` during connection initialization. It does not disable authentication or TLS certificate verification.
 Initially there was a typo and the option was named `DisableIndentity` instead of `DisableIdentity`. The misspelled option is marked as Deprecated and will be removed in V10 of this library.
 Although both options will work at the moment, the correct option is `DisableIdentity`. The deprecated option will be removed in V10 of this library, so please use the correct option name to avoid any issues.
 
-To disable verification, set the `DisableIdentity` option to `true` in the Redis client options:
+To disable client identification, set the `DisableIdentity` option to `true` in the Redis client options:
 
 ```go
 rdb := redis.NewClient(&redis.Options{
