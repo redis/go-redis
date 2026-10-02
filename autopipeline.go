@@ -270,7 +270,10 @@ type AutoPipelineOptions struct {
 	//
 	// With FullDuplex active on a standalone *Client, NumShards means something
 	// else: the number of full-duplex engines, each holding one pipeline-pool
-	// connection with its own window (see FullDuplexWindow). Commands are routed
+	// connection with its own window (see FullDuplexWindow). More engines pay
+	// off only with many concurrent callers: measured with 10-command
+	// pipelines, 8 engines were 30% slower than 1 at 8 callers, broke even at about
+	// 128, and 2.2x faster at 1024. Commands are routed
 	// to an engine by a hash of their first key, so Unordered is not required,
 	// but order holds only between commands that share a first key. The key is
 	// hashed in its string form (fmt for non-string arguments, as Ring does), so
