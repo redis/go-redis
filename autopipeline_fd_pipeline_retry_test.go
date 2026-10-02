@@ -242,3 +242,44 @@ func TestFDPipelineRetryMetricOnBackoffCancel(t *testing.T) {
 		t.Fatalf("metric error %v, want the ctx deadline", e)
 	}
 }
+
+// Live recovery fails an FD pipeline as one. When part of it fails (its
+// budget is spent, or the error is not retryable), the rest of it must not
+// run: neither its members kept for replay nor the tail the writer had not yet
+// taken from the queue. It used to send that tail on the next connection, so
+// Exec reported a transport error for a pipeline whose later commands ran.
+func TestFDRecoveryFailsTheWholePipeline(t *testing.T) {
+	ctx := context.Background()
+	fd := &fdEngine{
+		ap:     &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client: &Client{baseClient: &baseClient{opt: &Options{}}},
+		q:      newFDQueue(16),
+	}
+	pipe := fdPipeGroupReqs(ctx, 2, 1, 1, 1, 1) // [0] spent, [1] kept, [2:] still queued
+	other := fdPipeGroupReqs(ctx, 1)            // another pipeline, kept
+	single := fdReq{cmd: NewStatusCmd(ctx, "get", "s"), batch: newAPBatch(), attempts: 1}
+	if res := fd.q.pushBatch(pipe[2:]); res != fdPushOK {
+		t.Fatalf("pushBatch = %v", res)
+	}
+	fd.q.push(single)
+
+	dead := errors.New("read: connection reset by peer")
+	keep := fd.failPipelines(pipe[:1], []fdReq{pipe[1], other[0]}, dead)
+
+	if len(keep) != 1 || keep[0].batch != other[0].batch {
+		t.Fatalf("kept %d requests, want only the other pipeline's", len(keep))
+	}
+	for i, r := range pipe {
+		select {
+		case <-r.batch.done:
+		default:
+			t.Fatalf("pipeline command %d was not failed with the rest of its pipeline", i)
+		}
+		if !errors.Is(r.cmd.Err(), dead) {
+			t.Fatalf("pipeline command %d: err %v, want %v", i, r.cmd.Err(), dead)
+		}
+	}
+	if d := fd.q.depth(); d != 1 {
+		t.Fatalf("queue depth %d after the failure, want 1 (only the unrelated command)", d)
+	}
+}

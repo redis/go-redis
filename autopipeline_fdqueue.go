@@ -467,6 +467,23 @@ func (q *fdQueue) pushFront(reqs []fdReq) {
 // The taken slots are cleared, because the backing array outlives them and a
 // stale fdReq pins a Cmder, a context and an apBatch. That is 104 bytes per slot
 // of memclr, against the per-command lock and copy the channel charged.
+// headRun counts the leading queued requests for which match is true. With
+// takeInto it lets the engine goroutine take the queued tail of a pipeline:
+// only that goroutine removes from the head, so the run cannot change in
+// between.
+func (q *fdQueue) headRun(match func(fdReq) bool) int {
+	if q == nil {
+		return 0
+	}
+	q.mu.Lock()
+	n := 0
+	for q.head+n < len(q.buf) && match(q.buf[q.head+n]) {
+		n++
+	}
+	q.mu.Unlock()
+	return n
+}
+
 func (q *fdQueue) takeInto(dst []fdReq, max int) []fdReq {
 	if q == nil || max <= 0 {
 		return dst

@@ -1388,7 +1388,9 @@ func (fd *fdEngine) run() {
 				var exhausted []fdReq
 				eligible, exhausted = fdPartitionByBudget(unacked, fd.retryBudget())
 				if len(exhausted) > 0 {
-					fd.failReqs(exhausted, aerr) // spent MaxRetries+1 attempts; fail with the real cause
+					// Spent MaxRetries+1 attempts; fail with the real cause, and with
+					// them the rest of their pipelines.
+					eligible = fd.failPipelines(exhausted, eligible, aerr)
 				}
 				// Split the eligible suffix at the first SENT NoRetry command: replay the
 				// prefix and fail that command plus everything ordered after it (a NoRetry
@@ -1402,12 +1404,12 @@ func (fd *fdEngine) run() {
 				// and fall through to fail it — a command that may be a sent NoRetry must
 				// never be re-sent when in doubt.
 				if n, scanPanic := fdFirstNoRetrySafe(eligible); !scanPanic && n > 0 {
+					carry = eligible[:n]
 					if n < len(eligible) {
-						fd.failReqs(eligible[n:], aerr)
+						carry = fd.failPipelines(eligible[n:], carry, aerr)
 					}
 					retryAttempts++
 					fd.sleepBackoff(retryAttempts)
-					carry = eligible[:n]
 					// Already issued on the failed connection and about to be re-issued;
 					// bump attempts so a later success/failure reports the real
 					// retry_attempts (not always 1). The clean-recycle suffix path
@@ -1429,7 +1431,7 @@ func (fd *fdEngine) run() {
 			// remaining unfailed commands, then ALWAYS back off before re-leasing so a
 			// dead server cannot spin this loop. Keep the engine alive to serve new work
 			// when it recovers.
-			fd.failReqs(eligible, aerr)
+			fd.failPipelines(eligible, nil, aerr)
 			carry = nil
 			retryAttempts++
 			fd.sleepBackoff(retryAttempts)
@@ -2874,6 +2876,48 @@ func classifyCommandErrorGuarded(err error) (errorType, statusCode string, isInt
 		}
 	}()
 	return classifyCommandError(err)
+}
+
+// failPipelines fails failed with err, and with it the rest of every FD
+// pipeline that has a request in failed: its members in keep and its tail
+// still at the head of the queue (the writer may have taken only a prefix).
+// A pipeline fails as one, as on a dedicated connection: once part of it has
+// failed, the rest must not run. Returns keep without those members.
+func (fd *fdEngine) failPipelines(failed, keep []fdReq, err error) []fdReq {
+	var groups map[*apBatch]struct{}
+	for _, r := range failed {
+		if r.pipelined && r.batch != nil && r.batch.fdGroup != nil {
+			if groups == nil {
+				groups = make(map[*apBatch]struct{})
+			}
+			groups[r.batch.fdGroup] = struct{}{}
+		}
+	}
+	if groups == nil {
+		fd.failReqs(failed, err)
+		return keep
+	}
+	failed = failed[:len(failed):len(failed)] // may be a sub-slice of keep's array: append copies
+	inGroup := func(r fdReq) bool {
+		if !r.pipelined || r.batch == nil {
+			return false
+		}
+		_, ok := groups[r.batch.fdGroup]
+		return ok
+	}
+	out := make([]fdReq, 0, len(keep))
+	for _, r := range keep {
+		if inGroup(r) {
+			failed = append(failed, r)
+		} else {
+			out = append(out, r)
+		}
+	}
+	if n := fd.q.headRun(inGroup); n > 0 {
+		failed = fd.q.takeInto(failed, n)
+	}
+	fd.failReqs(failed, err)
+	return out
 }
 
 func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
