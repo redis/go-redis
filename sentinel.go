@@ -1379,6 +1379,8 @@ func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 
 	c := NewClusterClient(opt)
 
+	c.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
+
 	failover.mu.Lock()
 	failover.onUpdate = func(ctx context.Context) {
 		c.ReloadState(ctx)
