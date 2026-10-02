@@ -113,6 +113,14 @@ const MinRESP3ReadBufferSize = 128
 // in the bounded peek window. Callers should consume the frame with ReadReply.
 var ErrPushNotificationNameTooLong = errors.New("redis: push notification name exceeds peek window")
 
+// ErrPushNotificationMalformed is returned when the next push frame is buffered
+// but its header cannot be parsed, e.g. the first element is not a string name.
+// Like ErrPushNotificationNameTooLong it means the name is unpeekable while the
+// frame itself sits at the buffer head, so callers should consume it with
+// ReadReply. Both are distinct from an I/O error, which peeked nothing and means
+// the frame has not fully arrived: there is nothing safe to consume then.
+var ErrPushNotificationMalformed = errors.New("redis: malformed push notification header")
+
 // PeekPushNotificationName returns the notification name of the next RESP3
 // push frame without consuming it. The caller is expected to have already
 // verified that the next reply is a push notification (e.g. via PeekReplyType
@@ -152,7 +160,9 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 		}
 		name, complete, parseErr := parsePushNotificationName(buf)
 		if parseErr != nil {
-			return "", parseErr
+			// Parsing only ever looks at buffered bytes, so a parse error is a
+			// property of the frame, not of the connection.
+			return "", fmt.Errorf("%w: %w", ErrPushNotificationMalformed, parseErr)
 		}
 		if complete {
 			return name, nil

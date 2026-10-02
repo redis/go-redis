@@ -229,14 +229,20 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 		// see if we should skip this notification
 		notificationName, err := rd.PeekPushNotificationName()
 		if err != nil {
-			// The frame is a CONFIRMED push (peeked above) but its name cannot
-			// be peeked: too long, or a non-string / malformed name. Fall
-			// through to ReadReply to CONSUME it. Breaking here would leave the
-			// push at the buffer head for the caller's reply read to eat as the
-			// command value (reply shift). Only the too-long case was handled
-			// before, so any other peek error desynced the connection. This
-			// matches the built-in Processor path. A genuine mid-frame read
-			// error surfaces at ReadReply below.
+			// The frame is a confirmed push (peeked above) whose name could not
+			// be peeked. Consume it below when the frame itself is buffered and
+			// only the name is unreadable - too long for the peek window, or a
+			// malformed header such as a non-string name. Breaking in that case
+			// leaves the push at the buffer head for the caller's reply read to
+			// take as the command value (reply shift); only the too-long case
+			// was handled before. An I/O error is different: the peek consumed
+			// nothing and the frame has not fully arrived, so a ReadReply here
+			// would block or stop mid-frame. Break and let the caller's own read
+			// surface the error.
+			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) &&
+				!errors.Is(err, proto.ErrPushNotificationMalformed) {
+				break
+			}
 		} else if willHandleNotificationInClient(notificationName) {
 			break
 		}
