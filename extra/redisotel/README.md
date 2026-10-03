@@ -32,3 +32,12 @@ if err := redisotel.InstrumentMetrics(rdb); err != nil {
 See [example](../../example/otel) and
 [Monitoring Go Redis Performance and Errors](https://redis.uptrace.dev/guide/go-redis-monitoring.html)
 for details.
+
+## Connection pool usage
+
+`db.client.connections.usage` reports open connections with `state="idle"` or
+`state="used"`. Pool snapshots exclude pending `MinIdleConns` dials. If a snapshot
+contains more idle than total connections, the metrics callback reports an error
+through `otel.Handle` and omits both usage states for that collection rather than
+reporting a wrapped or negative count. The callback still succeeds so other
+metrics can be exported.
