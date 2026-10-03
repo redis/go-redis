@@ -739,3 +739,66 @@ func TestParseURLPipelinePoolOptions(t *testing.T) {
 		t.Fatalf("ParseFailoverURL pipeline opts: size=%d rbuf=%d wbuf=%d", fo.PipelinePoolSize, fo.PipelineReadBufferSize, fo.PipelineWriteBufferSize)
 	}
 }
+
+// TestParseURLConnectionOptions verifies that the URL parsers accept the
+// connection settings that ParseURL, ParseClusterURL and ParseFailoverURL
+// previously rejected as unexpected options, and that omitting them keeps the
+// zero values.
+func TestParseURLConnectionOptions(t *testing.T) {
+	const q = "dialer_retries=3&dialer_retry_timeout=2s&context_timeout_enabled=true" +
+		"&read_buffer_size=65536&write_buffer_size=32768&disable_identity=true&identity_suffix=app"
+
+	o, err := ParseURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	if o.DialerRetries != 3 || o.DialerRetryTimeout != 2*time.Second || !o.ContextTimeoutEnabled ||
+		o.ReadBufferSize != 65536 || o.WriteBufferSize != 32768 || !o.DisableIdentity || o.IdentitySuffix != "app" {
+		t.Fatalf("ParseURL connection opts: %+v", o)
+	}
+
+	co, err := ParseClusterURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseClusterURL: %v", err)
+	}
+	if co.DialerRetries != 3 || co.DialerRetryTimeout != 2*time.Second || !co.ContextTimeoutEnabled ||
+		co.ReadBufferSize != 65536 || co.WriteBufferSize != 32768 || !co.DisableIdentity || co.IdentitySuffix != "app" {
+		t.Fatalf("ParseClusterURL connection opts: %+v", co)
+	}
+
+	fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + q)
+	if err != nil {
+		t.Fatalf("ParseFailoverURL: %v", err)
+	}
+	if fo.DialerRetries != 3 || fo.DialerRetryTimeout != 2*time.Second || !fo.ContextTimeoutEnabled ||
+		fo.ReadBufferSize != 65536 || fo.WriteBufferSize != 32768 || !fo.DisableIdentity || fo.IdentitySuffix != "app" {
+		t.Fatalf("ParseFailoverURL connection opts: %+v", fo)
+	}
+
+	// ParseFailoverURL keeps accepting the original camelCase spellings.
+	fo, err = ParseFailoverURL("redis://localhost:6379?master_name=mymaster&disableIdentity=true&identitySuffix=legacy")
+	if err != nil {
+		t.Fatalf("ParseFailoverURL camelCase: %v", err)
+	}
+	if !fo.DisableIdentity || fo.IdentitySuffix != "legacy" {
+		t.Fatalf("ParseFailoverURL camelCase opts: disable=%v suffix=%q", fo.DisableIdentity, fo.IdentitySuffix)
+	}
+
+	// Without the parameters every field keeps its zero value.
+	o, err = ParseURL("redis://localhost:6379")
+	if err != nil {
+		t.Fatalf("ParseURL defaults: %v", err)
+	}
+	if o.DialerRetries != 0 || o.DialerRetryTimeout != 0 || o.ContextTimeoutEnabled ||
+		o.ReadBufferSize != 0 || o.WriteBufferSize != 0 || o.DisableIdentity || o.IdentitySuffix != "" {
+		t.Fatalf("ParseURL defaults changed: %+v", o)
+	}
+
+	// Invalid values are reported, not ignored.
+	if _, err = ParseURL("redis://localhost:6379?context_timeout_enabled=maybe"); err == nil {
+		t.Fatal("ParseURL accepted an invalid context_timeout_enabled")
+	}
+	if _, err = ParseClusterURL("redis://localhost:6379?read_buffer_size=big"); err == nil {
+		t.Fatal("ParseClusterURL accepted an invalid read_buffer_size")
+	}
+}
