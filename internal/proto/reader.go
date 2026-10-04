@@ -113,13 +113,14 @@ const MinRESP3ReadBufferSize = 128
 // in the bounded peek window. Callers should consume the frame with ReadReply.
 var ErrPushNotificationNameTooLong = errors.New("redis: push notification name exceeds peek window")
 
-// ErrPushNotificationMalformed is returned when the next push frame is buffered
-// but its header cannot be parsed, e.g. the first element is not a string name.
-// Like ErrPushNotificationNameTooLong it means the name is unpeekable while the
-// frame itself sits at the buffer head, so callers should consume it with
-// ReadReply. Both are distinct from an I/O error, which peeked nothing and means
-// the frame has not fully arrived: there is nothing safe to consume then.
-var ErrPushNotificationMalformed = errors.New("redis: malformed push notification header")
+// ErrPushNotificationNameNotString is returned when the next push frame has a
+// well-formed header but its first element is a RESP value other than a string,
+// so there is no name to peek. Like ErrPushNotificationNameTooLong the frame can
+// still be read as a whole, so callers should consume it with ReadReply. Any
+// other error means there is nothing safe to consume: either the frame has not
+// fully arrived (I/O error) or its header does not parse, and ReadReply would
+// stop partway through the frame.
+var ErrPushNotificationNameNotString = errors.New("redis: push notification name is not a string")
 
 // PeekPushNotificationName returns the notification name of the next RESP3
 // push frame without consuming it. The caller is expected to have already
@@ -160,9 +161,7 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 		}
 		name, complete, parseErr := parsePushNotificationName(buf)
 		if parseErr != nil {
-			// Parsing only ever looks at buffered bytes, so a parse error is a
-			// property of the frame, not of the connection.
-			return "", fmt.Errorf("%w: %w", ErrPushNotificationMalformed, parseErr)
+			return "", parseErr
 		}
 		if complete {
 			return name, nil
@@ -223,7 +222,14 @@ func parsePushNotificationName(buf []byte) (string, bool, error) {
 		return "", false, nil
 	}
 	typeOfName := buf[pos]
-	if typeOfName != RespString && typeOfName != RespStatus {
+	switch typeOfName {
+	case RespString, RespStatus:
+	case RespError, RespInt, RespNil, RespFloat, RespBool, RespBlobError, RespVerbatim,
+		RespBigInt, RespArray, RespMap, RespSet, RespAttr, RespPush:
+		// A valid RESP value that is not a string: the header parsed and the
+		// frame can still be read as a whole, it just has no name.
+		return "", false, fmt.Errorf("%w: %q", ErrPushNotificationNameNotString, buf[pos:])
+	default:
 		return "", false, fmt.Errorf("redis: can't parse push notification name: %q", buf[pos:])
 	}
 	pos++

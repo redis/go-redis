@@ -94,3 +94,34 @@ func TestVoidProcessorKeepsPushOnPeekIOError(t *testing.T) {
 		t.Fatalf("push frame was partially consumed: next reply type %q, want %q", replyType, proto.RespPush)
 	}
 }
+
+// TestVoidProcessorKeepsPushOnUnparseableHeader covers a push whose header does
+// not parse. ReadReply cannot find the end of such a frame, so consuming it
+// would stop partway and hand the rest of the push to the caller as the reply.
+// It must be left at the buffer head for the caller's own read to fail on.
+func TestVoidProcessorKeepsPushOnUnparseableHeader(t *testing.T) {
+	const rest = "$3\r\nfoo\r\n" + "+OK\r\n"
+
+	for name, header := range map[string]string{
+		"array length":      ">x\r\n",
+		"name length":       ">2\r\n$x\r\n",
+		"unknown name type": ">2\r\nxyz\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			stream := header + rest
+			rd := proto.NewReader(strings.NewReader(stream))
+
+			vp := NewVoidProcessor()
+			if err := vp.ProcessPendingNotifications(context.Background(), NotificationHandlerContext{}, rd); err != nil {
+				t.Fatalf("ProcessPendingNotifications: %v", err)
+			}
+
+			if got := rd.Buffered(); got != len(stream) {
+				t.Fatalf("push frame was partially consumed: %d of %d bytes left", got, len(stream))
+			}
+			if reply, err := rd.ReadReply(); err == nil {
+				t.Fatalf("reply shift: got %#v, want a parse error", reply)
+			}
+		})
+	}
+}
