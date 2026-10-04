@@ -114,12 +114,13 @@ const MinRESP3ReadBufferSize = 128
 var ErrPushNotificationNameTooLong = errors.New("redis: push notification name exceeds peek window")
 
 // ErrPushNotificationNameNotString is returned when the next push frame has a
-// well-formed header but its first element is a RESP value other than a string,
-// so there is no name to peek. Like ErrPushNotificationNameTooLong the frame can
-// still be read as a whole, so callers should consume it with ReadReply. Any
-// other error means there is nothing safe to consume: either the frame has not
-// fully arrived (I/O error) or its header does not parse, and ReadReply would
-// stop partway through the frame.
+// well-formed header but its first element is a RESP type other than a string,
+// so there is no name to peek. Like ErrPushNotificationNameTooLong the header
+// gives ReadReply a frame to consume, so callers should consume it with
+// ReadReply. Only the type byte of the first element is checked: a body that
+// does not parse still stops ReadReply partway, as it does for a push with a
+// valid name. Any other error means there is nothing to consume: either the
+// frame has not fully arrived (I/O error) or its header does not parse.
 var ErrPushNotificationNameNotString = errors.New("redis: push notification name is not a string")
 
 // PeekPushNotificationName returns the notification name of the next RESP3
@@ -226,8 +227,8 @@ func parsePushNotificationName(buf []byte) (string, bool, error) {
 	case RespString, RespStatus:
 	case RespError, RespInt, RespNil, RespFloat, RespBool, RespBlobError, RespVerbatim,
 		RespBigInt, RespArray, RespMap, RespSet, RespAttr, RespPush:
-		// A valid RESP value that is not a string: the header parsed and the
-		// frame can still be read as a whole, it just has no name.
+		// A RESP type other than a string: the header parsed, the frame just
+		// has no name. Only the type byte is checked, not the value behind it.
 		return "", false, fmt.Errorf("%w: %q", ErrPushNotificationNameNotString, buf[pos:])
 	default:
 		return "", false, fmt.Errorf("redis: can't parse push notification name: %q", buf[pos:])
