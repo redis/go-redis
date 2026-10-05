@@ -273,6 +273,15 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 	case <-ctx.Done():
 		// Timeout or cancellation - remove from queue
 		sm.mu.Lock()
+		// notifyWaiters removes the waiter and sends on w.done under sm.mu, so
+		// a value here means it was served before we got the lock: report the
+		// transition and don't decrement waiterCount again.
+		select {
+		case err := <-w.done:
+			sm.mu.Unlock()
+			return sm.GetState(), err
+		default:
+		}
 		sm.waiters.Remove(elem)
 		sm.waiterCount.Add(-1)
 		sm.mu.Unlock()
@@ -316,21 +325,18 @@ func (sm *ConnStateMachine) notifyWaiters() {
 			w := elem.Value.(*waiter)
 
 			if _, valid := w.validStates[currentState]; valid {
-				sm.waiters.Remove(elem)
-				sm.waiterCount.Add(-1)
-
 				if sm.state.CompareAndSwap(uint32(currentState), uint32(w.targetState)) {
+					sm.waiters.Remove(elem)
+					sm.waiterCount.Add(-1)
 					w.done <- nil
 					currentState = w.targetState
-					processed = true
-					break
 				} else {
-					sm.waiters.PushFront(w)
-					sm.waiterCount.Add(1)
+					// State changed concurrently. Keep the waiter where it is:
+					// AwaitAndTransition holds elem and removes it on timeout.
 					currentState = sm.GetState()
-					processed = true
-					break
 				}
+				processed = true
+				break
 			}
 		}
 
