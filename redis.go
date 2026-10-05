@@ -2295,19 +2295,19 @@ func (c *Client) Close() error {
 // Conn returns a Conn that runs every command on a single connection borrowed
 // from this client's pool. Close returns that connection to the pool, so any
 // session state left on it (AUTH, SELECT, CLIENT SETNAME, CLIENT TRACKING, ...)
-// is still there for the next pooled caller. Use DisposableConn when the Conn
+// is still there for the next pooled caller. Use EphemeralConn when the Conn
 // changes session state.
 func (c *Client) Conn() *Conn {
 	return c.conn(false)
 }
 
-// DisposableConn is Conn, except Close discards the underlying connection
+// EphemeralConn is Conn, except Close discards the underlying connection
 // instead of returning it to the pool. Session state a Conn sets (AUTH,
 // SELECT, CLIENT SETNAME, CLIENT TRACKING, RESET, ...) cannot be undone
 // generically on release, so a connection that carried it must not go on to
-// serve unrelated callers. The cost is one dial per DisposableConn lifetime;
+// serve unrelated callers. The cost is one dial per EphemeralConn lifetime;
 // Get still reuses an idle pooled connection.
-func (c *Client) DisposableConn() *Conn {
+func (c *Client) EphemeralConn() *Conn {
 	return c.conn(true)
 }
 

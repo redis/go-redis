@@ -46,7 +46,7 @@ type StickyConnPool struct {
 	onFirstConn func(*Conn)
 
 	// discardOnClose makes Close remove the claimed connection from the parent
-	// pool instead of returning it. Client.DisposableConn sets it: the session
+	// pool instead of returning it. Client.EphemeralConn sets it: the session
 	// state a dedicated connection accumulates (AUTH, SELECT, CLIENT SETNAME,
 	// CLIENT TRACKING, RESET, ...) cannot be undone, and a pooled caller must
 	// never inherit it.

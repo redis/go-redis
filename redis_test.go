@@ -245,7 +245,7 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should not return a DisposableConn's session state to the pool", Label("NonRedisEnterprise"), func() {
+	It("should not return an EphemeralConn's session state to the pool", Label("NonRedisEnterprise"), func() {
 		opt := redisOptions()
 		opt.PoolSize = 1
 		db := redis.NewClient(opt)
@@ -254,7 +254,7 @@ var _ = Describe("Client", func() {
 			Expect(db.Close()).NotTo(HaveOccurred())
 		}()
 
-		conn := db.DisposableConn()
+		conn := db.EphemeralConn()
 		Expect(conn.Select(ctx, 1).Err()).NotTo(HaveOccurred())
 		Expect(conn.Close()).NotTo(HaveOccurred())
 
