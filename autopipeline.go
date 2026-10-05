@@ -2248,16 +2248,44 @@ func (ap *AutoPipeliner) releaseQueued(n int) {
 	}
 }
 
+// queueFull reports, without taking a slot, whether MaxQueuedCommands is
+// already reached. enqueue checks it before sizing a command, so a rejected
+// submit does not run user Args/MarshalBinary code. admitQueued still makes
+// the final, atomic decision.
+func (ap *AutoPipeliner) queueFull() bool {
+	return ap.maxQueued > 0 && ap.queued.Load() >= ap.maxQueued
+}
+
+// rejectQueueFull fails cmd with ErrAutoPipelineQueueFull and accounts it as an
+// arrival (see consumeExpectedArrival).
+func (ap *AutoPipeliner) rejectQueueFull(cmd Cmder) *apBatch {
+	if ap.consumeExpectedArrival() {
+		// This rejection was the last expected arrival. A flusher waiting for
+		// the wave only re-checks the count when woken, and a rejected command
+		// never calls wake, so wake every shard (the count is pipeliner-wide):
+		// the waiting one flushes now instead of after the silence fallback.
+		for _, s := range ap.shards {
+			s.wake()
+		}
+	}
+	cmd.SetErr(ErrAutoPipelineQueueFull)
+	return completedBatch
+}
+
 // consumeExpectedArrival accounts a rejected command as an arrival, so the
 // flusher does not wait out the silence fallback for a resubmission that will
 // never land. Unlike enqueue's plain decrement it never goes below zero: a
 // caller retrying a rejection in a loop would otherwise push the counter far
-// negative, and the next announced wave would vanish into that deficit.
-func (ap *AutoPipeliner) consumeExpectedArrival() {
+// negative, and the next announced wave would vanish into that deficit. It
+// reports whether it took the count from 1 to 0.
+func (ap *AutoPipeliner) consumeExpectedArrival() bool {
 	for {
 		v := ap.expectedArrivals.Load()
-		if v <= 0 || ap.expectedArrivals.CompareAndSwap(v, v-1) {
-			return
+		if v <= 0 {
+			return false
+		}
+		if ap.expectedArrivals.CompareAndSwap(v, v-1) {
+			return v == 1
 		}
 	}
 }
@@ -2289,6 +2317,11 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 		s = ap.shards[int((ap.next.Add(1)-1)%uint32(len(ap.shards)))]
 	}
 
+	// Already full: reject before sizing runs user code (see queueFull).
+	if ap.queueFull() {
+		return ap.rejectQueueFull(cmd)
+	}
+
 	// Size the command BEFORE taking the stripe lock, and panic-safely. Sizing
 	// runs user code — cmd.Args() on a custom Cmder, and MarshalBinary on a
 	// BinaryMarshaler argument — and MaxBatchBytes is on by default, so this is
@@ -2308,9 +2341,7 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	}
 
 	if !ap.admitQueued() {
-		ap.consumeExpectedArrival()
-		cmd.SetErr(ErrAutoPipelineQueueFull)
-		return completedBatch
+		return ap.rejectQueueFull(cmd)
 	}
 
 	st := s.stripe()

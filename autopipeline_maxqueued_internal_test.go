@@ -147,6 +147,85 @@ func TestAutoPipelineMaxQueuedCommandsRejectKeepsArrivalsNonNegative(t *testing.
 	waitQueuedZero(t, ap)
 }
 
+// TestAutoPipelineMaxQueuedCommandsRejectWakesOnLastArrival checks that a
+// rejection that consumes the last expected arrival wakes the shards, so a
+// flusher waiting for that wave flushes at once (Copilot on #4070). Built
+// without flusher goroutines so the notify channel is observed directly.
+func TestAutoPipelineMaxQueuedCommandsRejectWakesOnLastArrival(t *testing.T) {
+	ctx := context.Background()
+	s := &apShard{notify: make(chan struct{}, 1)}
+	ap := &AutoPipeliner{maxQueued: 1, shards: []*apShard{s}}
+	s.ap = ap
+	woke := func() bool {
+		select {
+		case <-s.notify:
+			return true
+		default:
+			return false
+		}
+	}
+
+	ap.expectedArrivals.Store(2)
+	ap.rejectQueueFull(NewStatusCmd(ctx, "set", "k", "v")) // 2 -> 1
+	if woke() {
+		t.Fatal("woke with an arrival still expected")
+	}
+	cmd := NewStatusCmd(ctx, "set", "k", "v")
+	ap.rejectQueueFull(cmd) // 1 -> 0
+	if !woke() {
+		t.Fatal("rejecting the last expected arrival must wake the shards")
+	}
+	if !errors.Is(cmd.Err(), ErrAutoPipelineQueueFull) {
+		t.Fatalf("err = %v, want ErrAutoPipelineQueueFull", cmd.Err())
+	}
+	ap.rejectQueueFull(NewStatusCmd(ctx, "set", "k", "v")) // stays 0
+	if woke() {
+		t.Fatal("woke with no arrival expected")
+	}
+}
+
+type countingMarshaler struct{ calls *atomic.Int32 }
+
+func (m countingMarshaler) MarshalBinary() ([]byte, error) {
+	m.calls.Add(1)
+	return []byte("v"), nil
+}
+
+// TestAutoPipelineMaxQueuedCommandsRejectSkipsSizing checks a submit to a full
+// queue is rejected before MaxBatchBytes sizing runs user code (Copilot on
+// #4070).
+func TestAutoPipelineMaxQueuedCommandsRejectSkipsSizing(t *testing.T) {
+	ctx := context.Background()
+	client, gate, armed := maxQueuedTestClient(t)
+
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{
+		MaxQueuedCommands: 1,
+		MaxBatchBytes:     128 * 1024,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	armed.Store(true)
+	held := ap.Set(ctx, "mq:s", "1", 0)
+
+	var calls atomic.Int32
+	cmd := ap.Set(ctx, "mq:s", countingMarshaler{calls: &calls}, 0)
+	if !errors.Is(cmd.Err(), ErrAutoPipelineQueueFull) {
+		t.Fatalf("err = %v, want ErrAutoPipelineQueueFull", cmd.Err())
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("MarshalBinary called %d times on a rejected submit, want 0", n)
+	}
+
+	armed.Store(false)
+	close(gate)
+	if err := held.Err(); err != nil {
+		t.Fatalf("held command: %v", err)
+	}
+	waitQueuedZero(t, ap)
+}
+
 // TestAutoPipelineMaxQueuedCommandsBlockingFace checks the limit on the
 // blocking face: a caller over the limit fails at once instead of waiting.
 func TestAutoPipelineMaxQueuedCommandsBlockingFace(t *testing.T) {
