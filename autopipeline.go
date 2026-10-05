@@ -328,8 +328,8 @@ type AutoPipelineOptions struct {
 
 	// MaxQueuedCommands, when > 0, is a hard limit on commands the
 	// autopipeliner has accepted but not yet completed: queued, waiting for a
-	// batch permit, executing, and (on the deferred face) diverted commands
-	// running on their own goroutine. A command submitted at the limit is not
+	// batch permit, executing, and commands run outside the pipeline (Do,
+	// blocking and connection-hostile commands). A command submitted at the limit is not
 	// queued: it fails at once with ErrAutoPipelineQueueFull. The limit bounds
 	// client memory when the server is slower than the producers.
 	//
@@ -1552,9 +1552,17 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 			cmd.SetErr(ErrClosed)
 			return completedBatch
 		}
+		// Counts against MaxQueuedCommands too: it holds a pooled connection
+		// until it completes.
+		if !ap.admitQueued() {
+			ap.divertMu.Unlock()
+			cmd.SetErr(ErrAutoPipelineQueueFull)
+			return completedBatch
+		}
 		ap.divertWg.Add(1)
 		ap.divertMu.Unlock()
 		defer ap.divertWg.Done()
+		defer ap.releaseQueued(1)
 		_ = ap.pipeliner.Process(ctx, cmd)
 		return completedBatch
 	}
@@ -2240,6 +2248,20 @@ func (ap *AutoPipeliner) releaseQueued(n int) {
 	}
 }
 
+// consumeExpectedArrival accounts a rejected command as an arrival, so the
+// flusher does not wait out the silence fallback for a resubmission that will
+// never land. Unlike enqueue's plain decrement it never goes below zero: a
+// caller retrying a rejection in a loop would otherwise push the counter far
+// negative, and the next announced wave would vanish into that deficit.
+func (ap *AutoPipeliner) consumeExpectedArrival() {
+	for {
+		v := ap.expectedArrivals.Load()
+		if v <= 0 || ap.expectedArrivals.CompareAndSwap(v, v-1) {
+			return
+		}
+	}
+}
+
 func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	if ap.isClosed() {
 		cmd.SetErr(ErrClosed)
@@ -2286,10 +2308,7 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	}
 
 	if !ap.admitQueued() {
-		// A rejected command never lands, so account for it as an arrival:
-		// otherwise the flusher waits out the silence fallback for it on every
-		// flush, exactly while the engine is overloaded.
-		ap.expectedArrivals.Add(-1)
+		ap.consumeExpectedArrival()
 		cmd.SetErr(ErrAutoPipelineQueueFull)
 		return completedBatch
 	}

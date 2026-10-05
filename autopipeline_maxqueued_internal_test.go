@@ -100,6 +100,53 @@ func TestAutoPipelineMaxQueuedCommandsRejectsAsync(t *testing.T) {
 	waitQueuedZero(t, ap)
 }
 
+// TestAutoPipelineMaxQueuedCommandsRejectKeepsArrivalsNonNegative checks that
+// rejected submits consume announced arrivals but never drive the counter
+// negative, so a caller retrying in a loop cannot hide the next wave
+// (Cursor Bugbot on #4070).
+func TestAutoPipelineMaxQueuedCommandsRejectKeepsArrivalsNonNegative(t *testing.T) {
+	ctx := context.Background()
+	client, gate, armed := maxQueuedTestClient(t)
+
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{MaxQueuedCommands: 1}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	armed.Store(true)
+	held := ap.Set(ctx, "mq:e", "1", 0)
+	// Wait until the held command is dispatched: the flusher is then idle and
+	// cannot touch expectedArrivals (rejected submits do not wake it).
+	deadline := time.Now().Add(5 * time.Second)
+	for ap.shards[0].inFlight.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("held command was never dispatched")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	ap.expectedArrivals.Store(3)
+	for i := 0; i < 2; i++ {
+		_ = ap.Set(ctx, "mq:e", "x", 0)
+	}
+	if got := ap.expectedArrivals.Load(); got != 1 {
+		t.Fatalf("expectedArrivals = %d after 2 rejects from 3, want 1", got)
+	}
+	for i := 0; i < 1000; i++ {
+		_ = ap.Set(ctx, "mq:e", "x", 0)
+	}
+	if got := ap.expectedArrivals.Load(); got != 0 {
+		t.Fatalf("expectedArrivals = %d after a retry storm, want 0 (never negative)", got)
+	}
+
+	armed.Store(false)
+	close(gate)
+	if err := held.Err(); err != nil {
+		t.Fatalf("held command: %v", err)
+	}
+	waitQueuedZero(t, ap)
+}
+
 // TestAutoPipelineMaxQueuedCommandsBlockingFace checks the limit on the
 // blocking face: a caller over the limit fails at once instead of waiting.
 func TestAutoPipelineMaxQueuedCommandsBlockingFace(t *testing.T) {
@@ -125,6 +172,10 @@ func TestAutoPipelineMaxQueuedCommandsBlockingFace(t *testing.T) {
 
 	if err := ap.Set(ctx, "mq:b", "2", 0).Err(); !errors.Is(err, ErrAutoPipelineQueueFull) {
 		t.Fatalf("blocking face over the limit: err = %v, want ErrAutoPipelineQueueFull", err)
+	}
+	// Commands run outside the pipeline count too (Codex on #4070).
+	if err := ap.Do(ctx, "PING").Err(); !errors.Is(err, ErrAutoPipelineQueueFull) {
+		t.Fatalf("blocking-face Do over the limit: err = %v, want ErrAutoPipelineQueueFull", err)
 	}
 
 	armed.Store(false)
