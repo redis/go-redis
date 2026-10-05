@@ -964,16 +964,32 @@ func (c *sentinelFailover) Close() error {
 }
 
 func (c *sentinelFailover) closeSentinel() error {
-	firstErr := c.pubsub.Close()
-	c.pubsub = nil
-
-	err := c.sentinel.Close()
-	if err != nil && firstErr == nil {
-		firstErr = err
+	var firstErr error
+	if c.pubsub != nil {
+		firstErr = c.pubsub.Close()
+		c.pubsub = nil
 	}
-	c.sentinel = nil
+
+	if c.sentinel != nil {
+		err := c.sentinel.Close()
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.sentinel = nil
+	}
 
 	return firstErr
+}
+
+func (c *sentinelFailover) rotateSentinelAddr(addr string) {
+	if len(c.sentinelAddrs) <= 1 {
+		return
+	}
+	idx := slices.Index(c.sentinelAddrs, addr)
+	if idx < 0 {
+		idx = 0
+	}
+	c.sentinelAddrs = append(append(c.sentinelAddrs[:idx], c.sentinelAddrs[idx+1:]...), c.sentinelAddrs[idx])
 }
 
 func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error) {
@@ -1007,10 +1023,6 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	if sentinel != nil {
 		addr, err := c.getMasterAddr(ctx, sentinel)
 		if err != nil {
-			if isContextError(ctx.Err()) {
-				return "", err
-			}
-			// Continue on other errors
 			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else {
@@ -1022,23 +1034,31 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	defer c.mu.Unlock()
 
 	if c.sentinel != nil {
-		addr, err := c.getMasterAddr(ctx, c.sentinel)
-		if err != nil {
+		if c.sentinel == sentinel {
+			addr := c.sentinel.opt.Addr
 			_ = c.closeSentinel()
-			if isContextError(ctx.Err()) {
-				return "", err
-			}
-			// Continue on other errors
-			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
-				c.opt.MasterName, err)
+			c.rotateSentinelAddr(addr)
 		} else {
-			return addr, nil
+			addr, err := c.getMasterAddr(ctx, c.sentinel)
+			if err != nil {
+				failedAddr := c.sentinel.opt.Addr
+				_ = c.closeSentinel()
+				c.rotateSentinelAddr(failedAddr)
+				internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
+					c.opt.MasterName, err)
+			} else {
+				return addr, nil
+			}
 		}
 	}
 
 	// Closed: do not rebuild the sentinel client (see sentinelFailover.closed).
 	if c.closed {
 		return "", pool.ErrClosed
+	}
+
+	if isContextError(ctx.Err()) {
+		return "", ctx.Err()
 	}
 
 	// short circuit if no sentinels configured
@@ -1105,14 +1125,12 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	if sentinel != nil {
 		addrs, err := c.getReplicaAddrs(ctx, sentinel)
 		if err != nil {
-			if isContextError(ctx.Err()) {
-				return nil, err
-			}
-			// Continue on other errors
 			internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else if len(addrs) > 0 {
 			return addrs, nil
+		} else if !useDisconnected {
+			return []string{}, nil
 		}
 	}
 
@@ -1120,34 +1138,42 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	defer c.mu.Unlock()
 
 	if c.sentinel != nil {
-		addrs, err := c.getReplicaAddrs(ctx, c.sentinel)
-		if err != nil {
+		if c.sentinel == sentinel {
+			addr := c.sentinel.opt.Addr
 			_ = c.closeSentinel()
-			if isContextError(ctx.Err()) {
-				return nil, err
-			}
-			// Continue on other errors
-			internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
-				c.opt.MasterName, err)
-		} else if len(addrs) > 0 {
-			return addrs, nil
-		} else if !useDisconnected {
-			// No error and no replicas — valid steady state for master-only setups.
-			// Preserve the sentinel connection for master discovery and failover
-			// pub/sub monitoring. Only return early when useDisconnected is false;
-			// when true, fall through to the discovery loop which passes
-			// useDisconnected to parseReplicaAddrs (getReplicaAddrs hardcodes false).
-			return []string{}, nil
+			c.rotateSentinelAddr(addr)
 		} else {
-			// useDisconnected=true: close sentinel so the discovery loop can call
-			// setSentinel if it finds disconnected replicas.
-			_ = c.closeSentinel()
+			addrs, err := c.getReplicaAddrs(ctx, c.sentinel)
+			if err != nil {
+				failedAddr := c.sentinel.opt.Addr
+				_ = c.closeSentinel()
+				c.rotateSentinelAddr(failedAddr)
+				internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
+					c.opt.MasterName, err)
+			} else if len(addrs) > 0 {
+				return addrs, nil
+			} else if !useDisconnected {
+				// No error and no replicas — valid steady state for master-only setups.
+				// Preserve the sentinel connection for master discovery and failover
+				// pub/sub monitoring. Only return early when useDisconnected is false;
+				// when true, fall through to the discovery loop which passes
+				// useDisconnected to parseReplicaAddrs (getReplicaAddrs hardcodes false).
+				return []string{}, nil
+			} else {
+				failedAddr := c.sentinel.opt.Addr
+				_ = c.closeSentinel()
+				c.rotateSentinelAddr(failedAddr)
+			}
 		}
 	}
 
 	// Closed: do not rebuild the sentinel client (see sentinelFailover.closed).
 	if c.closed {
 		return nil, pool.ErrClosed
+	}
+
+	if isContextError(ctx.Err()) {
+		return nil, ctx.Err()
 	}
 
 	var sentinelReachable bool
@@ -1158,9 +1184,6 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 		replicas, err := sentinel.Replicas(ctx, c.opt.MasterName).Result()
 		if err != nil {
 			_ = sentinel.Close()
-			if isContextError(ctx.Err()) {
-				return nil, err
-			}
 			internal.Logger.Printf(ctx, "sentinel: Replicas master=%q failed: %s",
 				c.opt.MasterName, err)
 			continue

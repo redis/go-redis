@@ -1,12 +1,15 @@
 package redis_test
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1080,5 +1083,330 @@ func TestSentinelFailover_ClosedDoesNotRebuildSentinel(t *testing.T) {
 	// Close must stay idempotent once closed.
 	if err := failover.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func readMockRESPCmd(r *bufio.Reader) ([]string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	line = strings.TrimRight(line, "\r\n")
+	if !strings.HasPrefix(line, "*") {
+		return nil, fmt.Errorf("expected array header, got %q", line)
+	}
+	n, err := strconv.Atoi(line[1:])
+	if err != nil {
+		return nil, err
+	}
+	args := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		hdr, err := r.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		hdr = strings.TrimRight(hdr, "\r\n")
+		if !strings.HasPrefix(hdr, "$") {
+			return nil, fmt.Errorf("expected bulk header, got %q", hdr)
+		}
+		length, err := strconv.Atoi(hdr[1:])
+		if err != nil {
+			return nil, err
+		}
+		buf := make([]byte, length)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		if _, err := r.Discard(2); err != nil {
+			return nil, err
+		}
+		args = append(args, string(buf))
+	}
+	return args, nil
+}
+
+type testMockSentinelServer struct {
+	ln     net.Listener
+	closed chan struct{}
+}
+
+func newTestMockSentinelServer(t *testing.T, masterAddr string) *testMockSentinelServer {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	s := &testMockSentinelServer{
+		ln:     ln,
+		closed: make(chan struct{}),
+	}
+	go s.serve(masterAddr)
+	return s
+}
+
+func (s *testMockSentinelServer) Addr() string {
+	return s.ln.Addr().String()
+}
+
+func (s *testMockSentinelServer) Close() error {
+	select {
+	case <-s.closed:
+	default:
+		close(s.closed)
+	}
+	return s.ln.Close()
+}
+
+func (s *testMockSentinelServer) serve(masterAddr string) {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			r := bufio.NewReader(c)
+			for {
+				select {
+				case <-s.closed:
+					return
+				default:
+				}
+				cmd, err := readMockRESPCmd(r)
+				if err != nil {
+					return
+				}
+				if len(cmd) == 0 {
+					continue
+				}
+				name := strings.ToLower(cmd[0])
+				switch name {
+				case "hello":
+					_, _ = io.WriteString(c, "-ERR unknown command 'HELLO'\r\n")
+				case "client":
+					_, _ = io.WriteString(c, "+OK\r\n")
+				case "ping":
+					_, _ = io.WriteString(c, "+PONG\r\n")
+				case "subscribe":
+					for i := 1; i < len(cmd); i++ {
+						ch := cmd[i]
+						_, _ = fmt.Fprintf(c, "*3\r\n$9\r\nsubscribe\r\n$%d\r\n%s\r\n:%d\r\n", len(ch), ch, i)
+					}
+				case "sentinel":
+					subcmd := ""
+					if len(cmd) > 1 {
+						subcmd = strings.ToLower(cmd[1])
+					}
+					switch subcmd {
+					case "get-master-addr-by-name":
+						host, port, _ := net.SplitHostPort(masterAddr)
+						_, _ = fmt.Fprintf(c, "*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(host), host, len(port), port)
+					case "sentinels":
+						_, _ = io.WriteString(c, "*0\r\n")
+					case "replicas":
+						_, _ = io.WriteString(c, "*1\r\n*4\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n$4\r\n6380\r\n")
+					default:
+						_, _ = io.WriteString(c, "+OK\r\n")
+					}
+				default:
+					_, _ = io.WriteString(c, "+OK\r\n")
+				}
+			}
+		}(conn)
+	}
+}
+
+func newTestSilentSentinelServer(t *testing.T) net.Listener {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 1024)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+	return ln
+}
+
+// TestSentinelFailover_MasterAddr_QueriesNextSentinelOnTimeout tests that when
+// the currently cached sentinel becomes unresponsive (drops packets / times out),
+// MasterAddr discards the failed sentinel and queries the next available sentinel.
+func TestSentinelFailover_MasterAddr_QueriesNextSentinelOnTimeout(t *testing.T) {
+	ctx := context.Background()
+
+	silentLn := newTestSilentSentinelServer(t)
+	defer silentLn.Close()
+
+	healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+	defer healthyServer.Close()
+
+	sentinelAddrs := []string{silentLn.Addr().String(), healthyServer.Addr()}
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: sentinelAddrs,
+		DialTimeout:   100 * time.Millisecond,
+		ReadTimeout:   100 * time.Millisecond,
+	}, sentinelAddrs)
+	defer failover.Close()
+
+	// Initial discovery: silentLn is first in list but times out; healthyServer responds.
+	addr, err := failover.MasterAddr(ctx)
+	if err != nil {
+		t.Fatalf("initial MasterAddr failed: %v", err)
+	}
+	if addr != "127.0.0.1:6379" {
+		t.Fatalf("want 127.0.0.1:6379, got %s", addr)
+	}
+
+	// Verify working sentinel was selected.
+	if !failover.HasSentinel() {
+		t.Fatal("expected cached sentinel to be set")
+	}
+
+	// Now simulate the cached sentinel failing while a second healthy sentinel is available.
+	healthyServer2 := newTestMockSentinelServer(t, "127.0.0.1:6380")
+	defer healthyServer2.Close()
+
+	// Close the currently selected sentinel to make it fail.
+	healthyServer.Close()
+
+	// Update sentinel address list to include healthyServer2.
+	newAddrs := []string{healthyServer.Addr(), healthyServer2.Addr()}
+	failover2 := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: newAddrs,
+		DialTimeout:   100 * time.Millisecond,
+		ReadTimeout:   100 * time.Millisecond,
+	}, newAddrs)
+	defer failover2.Close()
+
+	// Manually attach a sentinel pointing to the stopped server.
+	deadCli := redis.NewSentinelClient(&redis.Options{
+		Addr:        healthyServer.Addr(),
+		DialTimeout: 100 * time.Millisecond,
+		ReadTimeout: 100 * time.Millisecond,
+	})
+	failover2.SetSentinel(deadCli)
+
+	// MasterAddr should detect dead sentinel, close it, rotate addresses, and query healthyServer2.
+	addr2, err := failover2.MasterAddr(ctx)
+	if err != nil {
+		t.Fatalf("failover MasterAddr failed: %v", err)
+	}
+	if addr2 != "127.0.0.1:6380" {
+		t.Fatalf("want 127.0.0.1:6380, got %s", addr2)
+	}
+	if !failover2.HasSentinel() {
+		t.Fatal("expected new cached sentinel to be set")
+	}
+}
+
+// TestSentinelFailover_MasterAddr_ContextDeadlineExceededClearsCachedSentinel
+// tests issue #4065: when dialing/querying the cached sentinel exceeds the caller's
+// context deadline, the client closes and clears the cached sentinel rather than
+// remaining stalled on the failed address for subsequent calls.
+func TestSentinelFailover_MasterAddr_ContextDeadlineExceededClearsCachedSentinel(t *testing.T) {
+	silentLn := newTestSilentSentinelServer(t)
+	defer silentLn.Close()
+
+	healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+	defer healthyServer.Close()
+
+	sentinelAddrs := []string{silentLn.Addr().String(), healthyServer.Addr()}
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: sentinelAddrs,
+		DialTimeout:   150 * time.Millisecond,
+		ReadTimeout:   150 * time.Millisecond,
+	}, sentinelAddrs)
+	defer failover.Close()
+
+	// Pre-set the cached sentinel to the silent server (simulating connection drops after establishment).
+	silentCli := redis.NewSentinelClient(&redis.Options{
+		Addr:        silentLn.Addr().String(),
+		DialTimeout: 150 * time.Millisecond,
+		ReadTimeout: 150 * time.Millisecond,
+	})
+	failover.SetSentinel(silentCli)
+
+	// Call MasterAddr with a context matching DialTimeout.
+	callCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	_, err := failover.MasterAddr(callCtx)
+	if err == nil {
+		t.Fatal("expected error on silent sentinel with expired context, got nil")
+	}
+
+	// The cached sentinel MUST be closed and cleared despite context deadline expiration.
+	if failover.HasSentinel() {
+		t.Fatal("expected cached sentinel to be cleared after query failure")
+	}
+
+	// The failed sentinel address must be rotated out of index 0.
+	addrs := failover.SentinelAddrs()
+	if len(addrs) > 0 && addrs[0] == silentLn.Addr().String() {
+		t.Fatalf("expected failed sentinel to be rotated from index 0, got %v", addrs)
+	}
+
+	// Subsequent call with fresh context should query the healthy sentinel and succeed.
+	freshCtx, freshCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer freshCancel()
+
+	masterAddr, err := failover.MasterAddr(freshCtx)
+	if err != nil {
+		t.Fatalf("MasterAddr with fresh context failed: %v", err)
+	}
+	if masterAddr != "127.0.0.1:6379" {
+		t.Fatalf("want 127.0.0.1:6379, got %s", masterAddr)
+	}
+	if !failover.HasSentinel() {
+		t.Fatal("expected healthy sentinel to be established as cached sentinel")
+	}
+}
+
+// TestSentinelFailover_ReplicaAddrs_QueriesNextSentinelOnTimeout tests that
+// replica discovery iterates past an unresponsive sentinel to find replicas on
+// the next available sentinel address.
+func TestSentinelFailover_ReplicaAddrs_QueriesNextSentinelOnTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	silentLn := newTestSilentSentinelServer(t)
+	defer silentLn.Close()
+
+	healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+	defer healthyServer.Close()
+
+	sentinelAddrs := []string{silentLn.Addr().String(), healthyServer.Addr()}
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: sentinelAddrs,
+		DialTimeout:   100 * time.Millisecond,
+		ReadTimeout:   100 * time.Millisecond,
+	}, sentinelAddrs)
+	defer failover.Close()
+
+	replicas, err := failover.ReplicaAddrs(ctx)
+	if err != nil {
+		t.Fatalf("ReplicaAddrs failed: %v", err)
+	}
+	if len(replicas) != 1 || replicas[0] != "127.0.0.1:6380" {
+		t.Fatalf("want [127.0.0.1:6380], got %v", replicas)
+	}
+	if !failover.HasSentinel() {
+		t.Fatal("expected healthy sentinel to be cached after replica discovery")
 	}
 }
