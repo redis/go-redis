@@ -129,6 +129,10 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost/?pool_fifo=yes",
 			err: errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
 		}, {
+			// invalid skip_verify value
+			url: "rediss://localhost/?skip_verify=yes",
+			err: errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
+		}, {
 			// it returns first error
 			url: "redis://localhost/?db=foo&pool_size=five",
 			err: errors.New(`redis: invalid database number: strconv.Atoi: parsing "foo": invalid syntax`),

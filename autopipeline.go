@@ -325,6 +325,23 @@ type AutoPipelineOptions struct {
 	// MaxFlushDelay only when enough commands are in flight (see MaxFlushDelay)
 	// and ignores AdaptiveDelay.
 	AdaptiveDelay bool
+
+	// MaxQueuedCommands, when > 0, is a hard limit on commands the
+	// autopipeliner has accepted but not yet completed: queued, waiting for a
+	// batch permit, executing, and commands run outside the pipeline (Do,
+	// blocking and connection-hostile commands). A command submitted at the limit is not
+	// queued: it fails at once with ErrAutoPipelineQueueFull. The limit bounds
+	// client memory when the server is slower than the producers.
+	//
+	// Rejection is per command, so it can break submit order on the deferred
+	// face: a SET may be rejected while a later GET on the same key is
+	// accepted. Check the error of each command that the next one depends on.
+	//
+	// With FullDuplex the ordered stream is bounded by FullDuplexWindow (a full
+	// window blocks the submitter instead of rejecting), so MaxQueuedCommands
+	// then limits only the commands run outside the pipeline.
+	// Default: 0 (no limit).
+	MaxQueuedCommands int
 }
 
 // autoPipelinePermitBackstop bounds how long a flush waits for a concurrency
@@ -476,6 +493,9 @@ func (cfg *AutoPipelineOptions) Validate() error {
 	}
 	if cfg.NumShards < 0 {
 		return fmt.Errorf("redis: AutoPipelineOptions.NumShards=%d must be >= 0", cfg.NumShards)
+	}
+	if cfg.MaxQueuedCommands < 0 {
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxQueuedCommands=%d must be >= 0", cfg.MaxQueuedCommands)
 	}
 	if cfg.AdaptiveDelay && cfg.MaxFlushDelay <= 0 {
 		return fmt.Errorf("redis: AutoPipelineOptions.AdaptiveDelay requires MaxFlushDelay > 0 " +
@@ -969,6 +989,12 @@ type AutoPipeliner struct {
 	// follow-up on a different shard than the batch that woke its caller.
 	expectedArrivals atomic.Int64
 
+	// maxQueued is config.MaxQueuedCommands (0 = no limit). queued counts the
+	// accepted, not-yet-completed commands it limits: admitQueued adds one,
+	// releaseQueued subtracts a batch's commands before the batch closes.
+	maxQueued int64
+	queued    atomic.Int64
+
 	// execEWMA is an exponentially-weighted moving average (alpha 1/8) of
 	// batch execution time in nanoseconds — the engine's own view of the
 	// server round-trip. It scales awaitExpectedArrivals's silence fallback so a
@@ -1268,6 +1294,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		ctx:       ctx,
 		cancel:    cancel,
 		closeDone: make(chan struct{}),
+		maxQueued: int64(config.MaxQueuedCommands),
 	}
 	// Capture the pipeline pool (in-package, promoted to *Client). nil for a
 	// client that has none (e.g. *ClusterClient) — the straggler-hold then
@@ -1522,9 +1549,17 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 			cmd.SetErr(ErrClosed)
 			return completedBatch
 		}
+		// Counts against MaxQueuedCommands too: it holds a pooled connection
+		// until it completes.
+		if !ap.admitQueued() {
+			ap.divertMu.Unlock()
+			cmd.SetErr(ErrAutoPipelineQueueFull)
+			return completedBatch
+		}
 		ap.divertWg.Add(1)
 		ap.divertMu.Unlock()
 		defer ap.divertWg.Done()
+		defer ap.releaseQueued(1)
 		_ = ap.pipeliner.Process(ctx, cmd)
 		return completedBatch
 	}
@@ -1541,6 +1576,14 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		cmd.setReady(completedBatch)
 		return completedBatch
 	}
+	// Each diverted command holds a goroutine until it completes, so it counts
+	// against MaxQueuedCommands like a queued one.
+	if !ap.admitQueued() {
+		ap.divertMu.Unlock()
+		cmd.SetErr(ErrAutoPipelineQueueFull)
+		cmd.setReady(completedBatch)
+		return completedBatch
+	}
 	b := newAPBatch()
 	cmd.setReady(b)
 	ap.divertWg.Add(1)
@@ -1548,6 +1591,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 	go func() {
 		defer ap.divertWg.Done()
 		defer b.close()
+		defer ap.releaseQueued(1)
 		defer recoverDispatchPanic([]Cmder{cmd})
 		if ap.armSelfDeadlockGuard() {
 			b.dispGid.Store(curGoroutineID())
@@ -2072,6 +2116,15 @@ var ErrAutoPipelineTimeout = errors.New(
 	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)",
 )
 
+// ErrAutoPipelineQueueFull is set on a command rejected because the
+// autopipeliner already holds AutoPipelineOptions.MaxQueuedCommands accepted
+// commands. The command was not sent. The caller may retry it later.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
+var ErrAutoPipelineQueueFull = errors.New(
+	"redis: autopipeline: queue full (MaxQueuedCommands reached)",
+)
+
 // Submit queues a command without blocking and returns an AutoFuture; Wait on
 // it when the result is needed. This is the explicit form for working with raw
 // Cmders on the deferred (async) face, where the typed methods (Set, Get, ...)
@@ -2170,10 +2223,80 @@ func (ap *AutoPipeliner) isClosed() bool {
 	return ap.closed.Load() || (ap.sharedClosed != nil && ap.sharedClosed.Load())
 }
 
+// admitQueued takes one MaxQueuedCommands slot. It reports false when the
+// pipeliner is at its limit; the caller then rejects the command. Always true
+// when no limit is set.
+func (ap *AutoPipeliner) admitQueued() bool {
+	if ap.maxQueued <= 0 {
+		return true
+	}
+	if ap.queued.Add(1) > ap.maxQueued {
+		ap.queued.Add(-1)
+		return false
+	}
+	return true
+}
+
+// releaseQueued frees n slots taken by admitQueued. Call it before the
+// commands' batch closes, so a woken caller can submit again at once.
+func (ap *AutoPipeliner) releaseQueued(n int) {
+	if ap.maxQueued > 0 {
+		ap.queued.Add(-int64(n))
+	}
+}
+
+// queueFull reports, without taking a slot, whether MaxQueuedCommands is
+// already reached. enqueue checks it before cluster slot routing and sizing,
+// so a rejected submit does not run user Args/String/MarshalBinary code.
+// admitQueued still makes the final, atomic decision.
+func (ap *AutoPipeliner) queueFull() bool {
+	return ap.maxQueued > 0 && ap.queued.Load() >= ap.maxQueued
+}
+
+// rejectQueueFull fails cmd with ErrAutoPipelineQueueFull and accounts it as an
+// arrival (see consumeExpectedArrival).
+func (ap *AutoPipeliner) rejectQueueFull(cmd Cmder) *apBatch {
+	if ap.consumeExpectedArrival() {
+		// This rejection was the last expected arrival. A flusher waiting for
+		// the wave only re-checks the count when woken, and a rejected command
+		// never calls wake, so wake every shard (the count is pipeliner-wide):
+		// the waiting one flushes now instead of after the silence fallback.
+		for _, s := range ap.shards {
+			s.wake()
+		}
+	}
+	cmd.SetErr(ErrAutoPipelineQueueFull)
+	return completedBatch
+}
+
+// consumeExpectedArrival accounts a rejected command as an arrival, so the
+// flusher does not wait out the silence fallback for a resubmission that will
+// never land. Unlike enqueue's plain decrement it never goes below zero: a
+// caller retrying a rejection in a loop would otherwise push the counter far
+// negative, and the next announced wave would vanish into that deficit. It
+// reports whether it took the count from 1 to 0.
+func (ap *AutoPipeliner) consumeExpectedArrival() bool {
+	for {
+		v := ap.expectedArrivals.Load()
+		if v <= 0 {
+			return false
+		}
+		if ap.expectedArrivals.CompareAndSwap(v, v-1) {
+			return v == 1
+		}
+	}
+}
+
 func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	if ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return completedBatch
+	}
+
+	// Already full: reject before slot routing and sizing run user code (see
+	// queueFull).
+	if ap.queueFull() {
+		return ap.rejectQueueFull(cmd)
 	}
 
 	// Pick a shard. With shardFn (cluster mode) route by command content so all
@@ -2215,6 +2338,10 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 		cmdBytes = n
 	}
 
+	if !ap.admitQueued() {
+		return ap.rejectQueueFull(cmd)
+	}
+
 	st := s.stripe()
 	st.mu.Lock()
 	// Re-check closed under the stripe lock (see Close): either we win the lock
@@ -2222,6 +2349,7 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	// reject here — so a late enqueue never hangs on an unclosed done.
 	if ap.isClosed() {
 		st.mu.Unlock()
+		ap.releaseQueued(1)
 		cmd.SetErr(ErrClosed)
 		return completedBatch
 	}
@@ -3152,6 +3280,12 @@ func (s *apShard) flushBatchSlice() {
 				for _, qc := range queues[i] {
 					qc.SetErr(batchErr)
 				}
+			}
+			// Release only once every command has its error, so the limit
+			// holds until the batch is really done, and before the closes
+			// wake the waiters.
+			ap.releaseQueued(total)
+			for i := range queues {
 				batches[i].close()
 				putQueueSlice(queues[i])
 			}
@@ -3210,6 +3344,7 @@ func (s *apShard) flushBatchSlice() {
 			// arming the silence-gap wait.
 			defer ap.batchWg.Done()
 			defer batches[0].close()
+			defer ap.releaseQueued(1)
 			defer s.inFlight.Add(-1)
 			defer s.sem.Release()
 			defer putQueueSlice(queues[0])
@@ -3261,6 +3396,7 @@ func (s *apShard) flushBatchSlice() {
 		// the closes run after Exec on the happy path, so results are
 		// populated first.
 		defer func() {
+			ap.releaseQueued(total)
 			for i := range queues {
 				batches[i].close()
 				putQueueSlice(queues[i])
@@ -3363,6 +3499,7 @@ func (s *apShard) flushBatchSliceShutdown() {
 				defer s.sem.Release()
 			}
 			defer func() {
+				ap.releaseQueued(total)
 				for i := range queues {
 					batches[i].close()
 					putQueueSlice(queues[i])
