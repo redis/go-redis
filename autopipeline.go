@@ -3276,11 +3276,16 @@ func (s *apShard) flushBatchSlice() {
 				"redis: autopipeline: no batch permit after %s; failing %d queued commands",
 				autoPipelinePermitBackstop, total)
 			batchErr := err
-			ap.releaseQueued(total)
 			for i := range queues {
 				for _, qc := range queues[i] {
 					qc.SetErr(batchErr)
 				}
+			}
+			// Release only once every command has its error, so the limit
+			// holds until the batch is really done, and before the closes
+			// wake the waiters.
+			ap.releaseQueued(total)
+			for i := range queues {
 				batches[i].close()
 				putQueueSlice(queues[i])
 			}
