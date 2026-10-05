@@ -1572,17 +1572,27 @@ func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]int64, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch num, err := rd.ReadInt(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			// TS.MADD and CMS.INCRBY report a rejected item as an error
+			// element and still answer for the items after it. The element
+			// is a complete frame, so read on and return the first one once
+			// the whole array is consumed.
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *IntSliceCmd) Clone() Cmder {
