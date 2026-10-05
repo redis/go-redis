@@ -12,8 +12,9 @@ func TestAutoPipelineMaxQueuedCommandsValidate(t *testing.T) {
 	if err := (&AutoPipelineOptions{MaxQueuedCommands: -1}).Validate(); err == nil {
 		t.Fatal("negative MaxQueuedCommands must be rejected")
 	}
-	if err := (&AutoPipelineOptions{MaxQueuedCommands: 10, FullDuplex: true}).Validate(); err == nil {
-		t.Fatal("MaxQueuedCommands with FullDuplex must be rejected")
+	// Allowed with FullDuplex: it then caps the commands run outside the pipeline.
+	if err := (&AutoPipelineOptions{MaxQueuedCommands: 10, FullDuplex: true}).Validate(); err != nil {
+		t.Fatalf("MaxQueuedCommands with FullDuplex must be valid: %v", err)
 	}
 	if err := (&AutoPipelineOptions{MaxQueuedCommands: 10}).Validate(); err != nil {
 		t.Fatalf("half-duplex MaxQueuedCommands must be valid: %v", err)
@@ -222,6 +223,81 @@ func TestAutoPipelineMaxQueuedCommandsRejectSkipsSizing(t *testing.T) {
 	close(gate)
 	if err := held.Err(); err != nil {
 		t.Fatalf("held command: %v", err)
+	}
+	waitQueuedZero(t, ap)
+}
+
+// TestAutoPipelineMaxQueuedCommandsRejectSkipsRouting checks a submit to a full
+// queue is rejected before cluster slot routing (shardFn) runs user code
+// (Codex on #4070).
+func TestAutoPipelineMaxQueuedCommandsRejectSkipsRouting(t *testing.T) {
+	ctx := context.Background()
+	client, gate, armed := maxQueuedTestClient(t)
+
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{MaxQueuedCommands: 1}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	var routed atomic.Int32
+	ap.setShardFn(func(Cmder) int { routed.Add(1); return 0 })
+	armed.Store(true)
+	held := ap.Set(ctx, "mq:r", "1", 0)
+	before := routed.Load()
+
+	cmd := ap.Set(ctx, "mq:r", "2", 0)
+	if !errors.Is(cmd.Err(), ErrAutoPipelineQueueFull) {
+		t.Fatalf("err = %v, want ErrAutoPipelineQueueFull", cmd.Err())
+	}
+	if n := routed.Load() - before; n != 0 {
+		t.Fatalf("shardFn called %d times on a rejected submit, want 0", n)
+	}
+
+	armed.Store(false)
+	close(gate)
+	if err := held.Err(); err != nil {
+		t.Fatalf("held command: %v", err)
+	}
+	waitQueuedZero(t, ap)
+}
+
+// TestAutoPipelineMaxQueuedCommandsFullDuplexDiverted checks that with
+// FullDuplex the limit caps commands run outside the pipeline, while the FD
+// stream itself is not counted (it is bounded by FullDuplexWindow). Codex on
+// #4070.
+func TestAutoPipelineMaxQueuedCommandsFullDuplexDiverted(t *testing.T) {
+	ctx := context.Background()
+	client, gate, armed := maxQueuedTestClient(t)
+
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{
+		FullDuplex:        true,
+		MaxQueuedCommands: 1,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Skip("full-duplex engine not enabled for this client")
+	}
+	armed.Store(true)
+
+	held := ap.Do(ctx, "PING")
+	if err := ap.Do(ctx, "PING").Err(); !errors.Is(err, ErrAutoPipelineQueueFull) {
+		t.Fatalf("FD Do over the limit: err = %v, want ErrAutoPipelineQueueFull", err)
+	}
+	// The FD stream is not counted: these are accepted while the slot is taken.
+	streamed := []*StatusCmd{ap.Set(ctx, "mq:f", "1", 0), ap.Set(ctx, "mq:f", "2", 0)}
+
+	armed.Store(false)
+	close(gate)
+	if err := held.Err(); err != nil {
+		t.Fatalf("held Do: %v", err)
+	}
+	for _, cmd := range streamed {
+		if err := cmd.Err(); err != nil {
+			t.Fatalf("FD stream command: %v", err)
+		}
 	}
 	waitQueuedZero(t, ap)
 }

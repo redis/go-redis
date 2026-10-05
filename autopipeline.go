@@ -337,8 +337,9 @@ type AutoPipelineOptions struct {
 	// face: a SET may be rejected while a later GET on the same key is
 	// accepted. Check the error of each command that the next one depends on.
 	//
-	// Half-duplex only. FullDuplex has its own bound (FullDuplexWindow) and
-	// blocks instead of rejecting, so Validate rejects setting both.
+	// With FullDuplex the ordered stream is bounded by FullDuplexWindow (a full
+	// window blocks the submitter instead of rejecting), so MaxQueuedCommands
+	// then limits only the commands run outside the pipeline.
 	// Default: 0 (no limit).
 	MaxQueuedCommands int
 }
@@ -495,10 +496,6 @@ func (cfg *AutoPipelineOptions) Validate() error {
 	}
 	if cfg.MaxQueuedCommands < 0 {
 		return fmt.Errorf("redis: AutoPipelineOptions.MaxQueuedCommands=%d must be >= 0", cfg.MaxQueuedCommands)
-	}
-	if cfg.MaxQueuedCommands > 0 && cfg.FullDuplex {
-		return fmt.Errorf("redis: AutoPipelineOptions.MaxQueuedCommands is half-duplex only; " +
-			"FullDuplex bounds outstanding commands with FullDuplexWindow")
 	}
 	if cfg.AdaptiveDelay && cfg.MaxFlushDelay <= 0 {
 		return fmt.Errorf("redis: AutoPipelineOptions.AdaptiveDelay requires MaxFlushDelay > 0 " +
@@ -2249,9 +2246,9 @@ func (ap *AutoPipeliner) releaseQueued(n int) {
 }
 
 // queueFull reports, without taking a slot, whether MaxQueuedCommands is
-// already reached. enqueue checks it before sizing a command, so a rejected
-// submit does not run user Args/MarshalBinary code. admitQueued still makes
-// the final, atomic decision.
+// already reached. enqueue checks it before cluster slot routing and sizing,
+// so a rejected submit does not run user Args/String/MarshalBinary code.
+// admitQueued still makes the final, atomic decision.
 func (ap *AutoPipeliner) queueFull() bool {
 	return ap.maxQueued > 0 && ap.queued.Load() >= ap.maxQueued
 }
@@ -2296,6 +2293,12 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 		return completedBatch
 	}
 
+	// Already full: reject before slot routing and sizing run user code (see
+	// queueFull).
+	if ap.queueFull() {
+		return ap.rejectQueueFull(cmd)
+	}
+
 	// Pick a shard. With shardFn (cluster mode) route by command content so all
 	// commands for one node collect in the same shard's batch; otherwise spread
 	// round-robin to keep each shard's mutex lightly contended.
@@ -2315,11 +2318,6 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 		// Unsigned modulo: converting to int first goes negative after the
 		// uint32 counter passes 2^31 on 32-bit platforms and panics.
 		s = ap.shards[int((ap.next.Add(1)-1)%uint32(len(ap.shards)))]
-	}
-
-	// Already full: reject before sizing runs user code (see queueFull).
-	if ap.queueFull() {
-		return ap.rejectQueueFull(cmd)
 	}
 
 	// Size the command BEFORE taking the stripe lock, and panic-safely. Sizing
