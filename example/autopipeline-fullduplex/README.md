@@ -8,10 +8,9 @@ receives, and replies are matched to commands by their position on the wire,
 so there is no request-response wait between batches.
 
 This example uses the blocking face (`AutoPipeline`): each call blocks until
-its reply lands, like a plain client. For the async face see
-[`autopipeline-fullduplex-async`](../autopipeline-fullduplex-async); for
-several connections see
-[`autopipeline-fullduplex-engines`](../autopipeline-fullduplex-engines).
+its reply lands, like a plain client. For the async face, and for several
+connections (`NumShards > 1`), see
+[`autopipeline-fullduplex-async`](../autopipeline-fullduplex-async).
 
 ## Run
 
@@ -64,5 +63,10 @@ done
   for non-idempotent commands to run twice.
 - **ctx.** A command's ctx is checked before it is queued. Once queued it
   runs; `ReadTimeout` bounds each reply.
+- **A bounded queue.** `FullDuplexWindow` bounds the commands on the
+  connection, and a full window blocks the submitter (its ctx bounds the
+  wait) instead of rejecting. So `MaxQueuedCommands`, the half-duplex cap
+  that rejects with `ErrAutoPipelineQueueFull`, limits only the commands run
+  outside the pipeline here (blocking commands, `Do`).
 - **Cluster.** On a `ClusterClient`, full duplex runs one engine per node;
   `FDPipelined` is for a standalone `*Client` only.

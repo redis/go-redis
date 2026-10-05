@@ -38,7 +38,11 @@ go run .
    surface doesn't cover, never expect it to batch. (Typed blocking commands
    — `BLPop`, `XRead` with `Block`, ... — are diverted to a normal connection
    automatically.)
-5. Tuning notes: `Unordered` + `MaxConcurrentBatches: 2-4` for peak async
+5. A bounded queue: `MaxQueuedCommands` caps the commands accepted but not
+   yet completed. A command over the cap is not sent; it fails at once with
+   `ErrAutoPipelineQueueFull`, and the caller backs off and retries. The tour
+   fires 10,000 `SET`s at a cap of 16 and retries every rejection.
+6. Tuning notes: `Unordered` + `MaxConcurrentBatches: 2-4` for peak async
    throughput; leave `NumShards` at 0; the instance is cached per client
    (first call's config wins); optional dedicated pipeline pool via
    `PipelineReadBufferSize`/`PipelineWriteBufferSize`/`PipelinePoolSize`.
@@ -56,6 +60,11 @@ indicative, not a spec):
 
 ## Caveats worth knowing
 
+- With the default `MaxQueuedCommands: 0` nothing bounds the accepted
+  commands: a server slower than the producers grows client memory. Set a cap
+  for producers that can outrun the server. A rejection is per command, so on
+  the async face a `SET` can be rejected while a later `GET` of the same key
+  is accepted; check the error of a command a later one depends on.
 - A command's context is not honored once queued; use a plain client for
   per-command deadlines (or `AutoFuture.WaitContext` to bound a wait).
 - A batch that fails on a network error is retried whole (up to `MaxRetries`),
@@ -68,11 +77,10 @@ indicative, not a spec):
 ## Full duplex
 
 `FullDuplex: true` streams every command over one held connection, with no
-request-response wait between batches. Three examples cover it:
+request-response wait between batches. Two examples cover it:
 
 - [`autopipeline-fullduplex`](../autopipeline-fullduplex): the blocking face,
   and pipelines on the full-duplex connection.
 - [`autopipeline-fullduplex-async`](../autopipeline-fullduplex-async): the
-  async face, `Submit` and submission windows.
-- [`autopipeline-fullduplex-engines`](../autopipeline-fullduplex-engines):
-  `NumShards > 1`, several full-duplex connections on one client.
+  async face, `Submit` and submission windows, on one connection and on
+  several (`NumShards > 1`).
