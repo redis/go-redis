@@ -44,6 +44,12 @@ type FailoverOptions struct {
 	// authentication.
 	SentinelPassword string
 
+	// SentinelOptionsOverride optionally overrides connection properties for
+	// the connections made to the Sentinel nodes, leaving the master/replica
+	// connections on the top-level values. If nil, sentinel connections inherit
+	// every top-level setting, which is the historical behaviour.
+	SentinelOptionsOverride *SentinelOptionsOverride
+
 	// Allows routing read-only commands to the closest master or replica node.
 	// This option only works with NewFailoverClusterClient.
 	RouteByLatency bool
@@ -196,6 +202,198 @@ type FailoverOptions struct {
 	// MaintNotificationsConfig *maintnotifications.Config
 }
 
+// SentinelOptionsOverride overrides selected connection properties for the
+// connections a failover client makes to the Sentinel nodes themselves.
+//
+// By default those connections reuse the master/replica settings, but the two
+// have very different profiles. A client needs roughly one connection per
+// sentinel to resolve the master address, plus one for the +switch-master
+// subscription; the data-node pool is sized for application throughput. Sharing
+// one configuration means a data-node pool sized at 50 connections with 10 kept
+// warm also opens 10 idle connections to every sentinel it talks to, and applies
+// data-node timeouts and dial-retry policy to sentinel dials.
+//
+// Every field is optional: a zero value inherits the corresponding top-level
+// FailoverOptions value, so an override only names what actually differs. Where
+// zero is itself a meaningful setting, -1 requests it explicitly — matching the
+// convention already used by MaxRetries and Min/MaxRetryBackoff.
+//
+//	rdb := redis.NewFailoverClient(&redis.FailoverOptions{
+//		MasterName:    "mymaster",
+//		SentinelAddrs: []string{":26379"},
+//		PoolSize:      50,
+//		MinIdleConns:  10,
+//		SentinelOptionsOverride: &redis.SentinelOptionsOverride{
+//			PoolSize:     2,  // sentinels need very few connections
+//			MinIdleConns: -1, // and no eagerly-opened idle ones
+//		},
+//	})
+type SentinelOptionsOverride struct {
+	// Dialer creates new network connections to the sentinel nodes and has
+	// priority over the top-level Dialer. If nil, the top-level Dialer is used.
+	//
+	// This is the only way to apply dial policy (rate limiting, backoff,
+	// instrumentation) to sentinel connections without also applying it to
+	// master/replica connections.
+	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// DialTimeout for establishing a connection to a sentinel.
+	// Only positive values apply; zero or negative inherits.
+	//
+	// Unlike ReadTimeout and WriteTimeout below, there is no "no dial timeout"
+	// representation: Options.init only defaults a zero DialTimeout, and a
+	// negative one would reach net.Dialer.Timeout, which treats it as a deadline
+	// already in the past and fails every dial immediately. Non-positive values
+	// therefore inherit rather than disable.
+	DialTimeout time.Duration
+	// ReadTimeout for socket reads against a sentinel.
+	// Zero inherits; -1 means no timeout.
+	ReadTimeout time.Duration
+	// WriteTimeout for socket writes against a sentinel.
+	// Zero inherits; -1 means no timeout.
+	WriteTimeout time.Duration
+
+	// MaxRetries before giving up on a sentinel command.
+	// Zero inherits; -1 disables retries.
+	MaxRetries int
+	// DialerRetries is the maximum number of retry attempts when dialing a
+	// sentinel fails. Zero inherits.
+	DialerRetries int
+	// DialerRetryTimeout is the backoff between sentinel dial retries.
+	// Zero inherits. Setting it also clears any DialerRetryBackoff callback
+	// inherited from FailoverOptions, which would otherwise take precedence and
+	// leave this value unread.
+	DialerRetryTimeout time.Duration
+
+	// PoolSize is the base number of socket connections per sentinel.
+	// Only positive values apply; zero or negative inherits.
+	//
+	// This is usually the field that matters: a failover client queries sentinel
+	// concurrently while resolving the master, so the sentinel pool grows to
+	// PoolSize on demand even when MinIdleConns is zero.
+	//
+	// Unlike MinIdleConns and the other counts, -1 is not an explicit zero here:
+	// a pool of size zero is meaningless, and nothing downstream normalises a
+	// negative value, so it would reach make(chan struct{}, PoolSize) and panic.
+	PoolSize int
+	// PoolTimeout is how long to wait for a free connection before returning an
+	// error. Only positive values apply; zero or negative inherits.
+	//
+	// Like DialTimeout, this has no "no timeout" representation: Options.init
+	// defaults only a zero PoolTimeout, and a negative one reaches
+	// FastSemaphore.Acquire as a timer deadline already in the past, so every
+	// wait for a sentinel connection fails at once with ErrPoolTimeout.
+	PoolTimeout time.Duration
+	// MaxConcurrentDials limits in-flight dials per sentinel. Zero inherits.
+	MaxConcurrentDials int
+	// MinIdleConns to keep open against each sentinel.
+	// Zero inherits; -1 keeps none, so no connections are opened eagerly.
+	MinIdleConns int
+	// MaxIdleConns to keep open against each sentinel.
+	// Zero inherits; -1 means no limit.
+	MaxIdleConns int
+	// MaxActiveConns against each sentinel.
+	// Zero inherits; -1 means no limit.
+	MaxActiveConns int
+	// ConnMaxIdleTime for sentinel connections.
+	// Zero inherits; -1 disables idle-time-based expiry.
+	ConnMaxIdleTime time.Duration
+	// ConnMaxLifetime for sentinel connections.
+	// Zero inherits; -1 disables lifetime-based expiry.
+	ConnMaxLifetime time.Duration
+}
+
+// applyTo overlays the override onto the options used for sentinel connections.
+// A nil receiver, and any field left at its zero value, leaves the inherited
+// value untouched.
+func (o *SentinelOptionsOverride) applyTo(opt *Options) {
+	if o == nil {
+		return
+	}
+
+	if o.Dialer != nil {
+		opt.Dialer = o.Dialer
+	}
+
+	// Durations: 0 inherits, -1 is passed through so Options.init() applies its
+	// own "disabled" handling, any other value overrides.
+	// DialTimeout and PoolTimeout are positive-only; see their field docs.
+	// Neither has a non-positive convention in Options: init normalises only the
+	// zero case, and a negative value then reaches net.Dialer.Timeout /
+	// FastSemaphore.Acquire as a deadline already in the past, failing every dial
+	// or pool wait immediately. The durations below do have one, so they pass
+	// through: init maps Read/WriteTimeout -1 to 0, and the pool guards
+	// ConnMaxIdleTime/ConnMaxLifetime with > 0 and DialerRetryTimeout with <= 0.
+	applyPositiveDuration(&opt.DialTimeout, o.DialTimeout)
+	applyPositiveDuration(&opt.PoolTimeout, o.PoolTimeout)
+
+	applyDuration(&opt.ReadTimeout, o.ReadTimeout)
+	applyDuration(&opt.WriteTimeout, o.WriteTimeout)
+	// The pool consults DialerRetryBackoff first and only falls back to
+	// DialerRetryTimeout when it is nil (internal/pool/pool.go), so a sentinel
+	// retry timeout has to displace the callback inherited from the data-node
+	// options or it would never be read.
+	if o.DialerRetryTimeout != 0 {
+		opt.DialerRetryBackoff = nil
+	}
+	applyDuration(&opt.DialerRetryTimeout, o.DialerRetryTimeout)
+	applyDuration(&opt.ConnMaxIdleTime, o.ConnMaxIdleTime)
+	applyDuration(&opt.ConnMaxLifetime, o.ConnMaxLifetime)
+
+	// MaxRetries carries its own -1 convention into Options.init().
+	if o.MaxRetries != 0 {
+		opt.MaxRetries = o.MaxRetries
+	}
+	if o.DialerRetries != 0 {
+		opt.DialerRetries = o.DialerRetries
+	}
+	// PoolSize is positive-only. Unlike MaxConcurrentDials (init guards <= 0),
+	// MaxRetries (init maps -1) and DialerRetries (the pool guards <= 0), nothing
+	// downstream normalises a negative PoolSize: Options.init only defaults the
+	// zero case, and NewConnPool then does make(chan struct{}, PoolSize), which
+	// panics with "makechan: size out of range". Inherit instead.
+	if o.PoolSize > 0 {
+		opt.PoolSize = o.PoolSize
+	}
+	if o.MaxConcurrentDials != 0 {
+		opt.MaxConcurrentDials = o.MaxConcurrentDials
+	}
+
+	// Options.init() has no -1 handling for these, so translate here.
+	applyCount(&opt.MinIdleConns, o.MinIdleConns)
+	applyCount(&opt.MaxIdleConns, o.MaxIdleConns)
+	applyCount(&opt.MaxActiveConns, o.MaxActiveConns)
+}
+
+// applyDuration writes override into dst unless it is zero ("inherit"). A
+// negative override is forwarded, for the fields whose underlying Options value
+// gives a non-positive duration a defined meaning.
+func applyDuration(dst *time.Duration, override time.Duration) {
+	if override != 0 {
+		*dst = override
+	}
+}
+
+// applyPositiveDuration writes override into dst only when it is positive, for
+// the fields where a non-positive duration has no defined meaning and would
+// otherwise become a deadline already in the past.
+func applyPositiveDuration(dst *time.Duration, override time.Duration) {
+	if override > 0 {
+		*dst = override
+	}
+}
+
+// applyCount writes override into dst unless it is zero ("inherit"). A negative
+// override requests an explicit zero, which the plain zero value cannot express.
+func applyCount(dst *int, override int) {
+	switch {
+	case override < 0:
+		*dst = 0
+	case override > 0:
+		*dst = override
+	}
+}
+
 func (opt *FailoverOptions) clientOptions() *Options {
 	return &Options{
 		Addr:       "FailoverClient",
@@ -260,7 +458,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 }
 
 func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
-	return &Options{
+	sentinelOpt := &Options{
 		Addr:       addr,
 		ClientName: opt.ClientName,
 
@@ -278,6 +476,8 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		// The sentinel client uses a 4KiB read/write buffer size.
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
+		// NOTE: sentinel-specific overrides are applied at the end of this
+		// function; see SentinelOptionsOverride.applyTo.
 
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
@@ -312,6 +512,12 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 			Mode: maintnotifications.ModeDisabled,
 		},
 	}
+
+	// Sentinel connections have a different profile from master/replica ones;
+	// let the caller override the properties where that matters.
+	opt.SentinelOptionsOverride.applyTo(sentinelOpt)
+
+	return sentinelOpt
 }
 
 func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
