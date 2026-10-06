@@ -71,7 +71,6 @@ var keylessCommands = map[string]struct{}{
 	"unsubscribe":  {},
 	"unwatch":      {},
 	"wait":         {},
-	"bless":        {},
 }
 
 // CmdTyper interface for getting command type
@@ -412,6 +411,15 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 			return 3
 		}
 		return migrateKeysPos(cmd)
+	case "bless":
+		// BLESS SCAN is keyless (cursor-based, server-wide); BLESS SET/GET/CLEAR
+		// take the key at position 2. The typed methods set this via
+		// SetFirstKeyPos; this fallback covers raw Do("bless", ...) calls so a
+		// Ring/Cluster doesn't send them to a random shard.
+		if internal.ToLower(cmd.stringArg(1)) == "scan" {
+			return 0
+		}
+		return 2
 	}
 
 	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).

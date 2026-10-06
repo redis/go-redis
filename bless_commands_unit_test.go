@@ -93,11 +93,33 @@ func TestBlessScan_Args(t *testing.T) {
 	}
 }
 
-// BlessScan has no key argument: it must route as keyless (via the static
-// table) rather than hashing "scan" as a key, since it never calls
-// SetFirstKeyPos.
-func TestBlessIsKeyless(t *testing.T) {
-	if _, ok := keylessCommands["bless"]; !ok {
-		t.Error(`keylessCommands["bless"] missing: BlessScan would hash "scan" as a key`)
+// Only BLESS SCAN is keyless; BLESS SET/GET/CLEAR carry the key at position 2.
+// Raw Do("bless", ...) calls have no SetFirstKeyPos hint, so the fallback in
+// cmdFirstKeyPosWithInfo must distinguish the subcommand. Otherwise a Ring
+// would route key-bearing BLESS calls to a random shard.
+func TestBlessFirstKeyPos_RawDo(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		args []any
+		want int
+	}{
+		{name: "scan_keyless", args: []any{"bless", "scan", 0, "NO-EVICT"}, want: 0},
+		{name: "scan_uppercase", args: []any{"BLESS", "SCAN", 0, "NO-EVICT"}, want: 0},
+		{name: "set", args: []any{"bless", "set", "key1", "NO-EVICT"}, want: 2},
+		{name: "get", args: []any{"bless", "get", "key1"}, want: 2},
+		{name: "clear", args: []any{"bless", "clear", "key1", "NO-EVICT"}, want: 2},
+		{name: "set_uppercase", args: []any{"BLESS", "SET", "key1", "NO-EVICT"}, want: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := NewCmd(ctx, tt.args...)
+			if got := cmdFirstKeyPosWithInfo(cmd, nil); got != tt.want {
+				t.Errorf("cmdFirstKeyPosWithInfo(%v) = %d, want %d", tt.args, got, tt.want)
+			}
+		})
+	}
+	if _, ok := keylessCommands["bless"]; ok {
+		t.Error(`keylessCommands["bless"] present: raw BLESS SET/GET/CLEAR would route to a random shard`)
 	}
 }
