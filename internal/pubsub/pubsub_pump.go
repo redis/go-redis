@@ -1,0 +1,79 @@
+package pubsub
+
+import (
+	"context"
+	"time"
+
+	"github.com/redis/go-redis/v9/internal"
+)
+
+// pumpMode records which consumer view was started over Events; the two
+// are mutually exclusive.
+type pumpMode uint8
+
+const (
+	pumpNone pumpMode = iota
+	pumpMessages
+	pumpAll
+)
+
+// pump moves the events filter selects into out, closing out when the
+// stream ends. With sendTimeout <= 0 sends block (backpressure lands in
+// the events buffer); a positive sendTimeout drops events the consumer
+// doesn't take in time, with throttled logging. done unblocks a parked
+// send when the handle closes.
+func pump[T any](
+	events <-chan any, done <-chan struct{}, out chan T,
+	sendTimeout, logInterval time.Duration, filter func(any) (T, bool),
+) {
+	var timer *time.Timer
+	if sendTimeout > 0 {
+		timer = time.NewTimer(sendTimeout)
+		timer.Stop()
+	}
+	dropLog := internal.NewThrottledLogger(logInterval, nil)
+loop:
+	for ev := range events {
+		v, ok := filter(ev)
+		if !ok {
+			continue
+		}
+		if timer == nil {
+			select {
+			case out <- v:
+			case <-done:
+				break loop
+			}
+			continue
+		}
+		timer.Reset(sendTimeout)
+		select {
+		case out <- v:
+			timer.Stop()
+		case <-done:
+			break loop
+		case <-timer.C:
+			dropLog.Printf(context.TODO(),
+				"redis: pubsub: dropped a message to a slow consumer (send timed out after %s, see WithChannelSendTimeout)",
+				sendTimeout)
+		}
+	}
+	close(out)
+}
+
+// messageFilter selects the Channel view: messages only.
+func messageFilter(ev any) (*Message, bool) {
+	msg, ok := ev.(*Message)
+	return msg, ok
+}
+
+// allEventsFilter selects the ChannelWithSubscriptions view: messages
+// and subscription confirmations; pongs and error replies are filtered
+// out (the channel views auto-recover; errors surface through Receive).
+func allEventsFilter(ev any) (any, bool) {
+	switch ev.(type) {
+	case *Pong, error:
+		return nil, false
+	}
+	return ev, true
+}
