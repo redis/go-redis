@@ -3,7 +3,24 @@ package pubsub
 import (
 	"context"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+// AddrResolver is the owner's say over where the shared connection goes
+// and when it has to go, keeping the manager unaware of the mechanism
+// behind either (in the client: maintenance-notification handoffs).
+// Resolve runs on every reconnect with the connection being replaced —
+// nil when there is none — and the address dialed last; the manager
+// dials what it returns and remembers it for later reconnects.
+// ShouldReplace is consulted after every frame read: true retires cn
+// now, with a reconnect through Resolve. Both run under the manager
+// lock and must not block. A nil resolver keeps the configured address
+// and retires only connections the pool marked unusable.
+type AddrResolver interface {
+	Resolve(ctx context.Context, prev *pool.Conn, current string) string
+	ShouldReplace(cn *pool.Conn) bool
+}
 
 // ChannelOption tunes the client's shared pub/sub manager when passed
 // to Channel/ChannelWithSubscriptions — see PubSubConfiger.
@@ -13,7 +30,8 @@ type ChannelOption func(c PubSubConfiger)
 // implemented by handle (standalone) and clusterShardHandle (cluster).
 type PubSuber interface {
 	// Events is the raw delivery stream — *Message, *Subscription,
-	// *Pong and error (attribution is connection-wide) — existing from
+	// *Pong and error (an error reply reaches the subscribers of the
+	// names it rejected, or everyone when unattributable) — existing from
 	// handle creation and closed with it. Reading it directly after
 	// starting Channel/ChannelWithSubscriptions competes with the pump.
 	Events() <-chan any

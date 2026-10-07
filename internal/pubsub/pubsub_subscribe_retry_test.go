@@ -11,13 +11,13 @@ import (
 // TestPendingReconcilesWithHealthCheckDisabled pins that disabling the
 // health check does not disable subscription recovery: a subscribe
 // rejected with an error reply on a healthy connection is re-sent by
-// the dedicated resync loop (see Manager.resubscribe), the only Pending
-// reconciliation path once the health checker is parked.
+// the dedicated retry loop (see Manager.retryRejected), which runs
+// whether or not the health checker is parked.
 func TestPendingReconcilesWithHealthCheckDisabled(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	cfg := testConfig("node:6379") // HealthCheckInterval -1: checker parked
-	cfg.PendingResyncFallback = 20 * time.Millisecond
+	cfg.SubscribeRetryInterval = 20 * time.Millisecond
 	m := newTestManager(t, srv, cfg)
 
 	if _, err := m.Subscribe(ctx, "denied"); err != nil {
@@ -107,17 +107,20 @@ func TestSubscribeAfterFailedDialSelfHeals(t *testing.T) {
 	}
 }
 
-// TestRejectedSubscribeReconciles pins the Pending/Subscribed
-// reconciliation (see subscription): a subscribe the server rejects
-// answers with an error reply instead of a confirmation — writes are
-// fire-and-forget — so the name stays Pending and the health checker
-// re-sends it until the server accepts. Confirmed names are never
-// re-sent, and unsubscribing a Pending name stops its retries.
+// TestRejectedSubscribeReconciles pins the Rejected reconciliation (see
+// subState): a subscribe the server rejects answers with an error reply
+// instead of a confirmation — writes are fire-and-forget — so the name
+// becomes Rejected and the retry loop re-sends it until the server
+// accepts, with the health checker's pings interleaving. Confirmed
+// names are never re-sent, and unsubscribing a Rejected name stops its
+// retries.
 func TestRejectedSubscribeReconciles(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
+	srv.autoPong = true
 	cfg := testConfig("node:6379")
 	cfg.HealthCheckInterval = 10 * time.Millisecond
+	cfg.SubscribeRetryInterval = 10 * time.Millisecond
 	m := newTestManager(t, srv, cfg)
 
 	h, err := m.Subscribe(ctx, "ok")
@@ -284,14 +287,13 @@ func TestPingWriteFailureDropsConn(t *testing.T) {
 
 // TestPendingResyncSurvivesChurn pins retry liveness under unrelated
 // traffic: a rejected subscribe must still be re-sent even when other
-// handles write subscription commands more often than the resync
-// interval (each name carries its own retry deadline; writes must not
-// extend a manager-wide one).
+// handles write subscription commands more often than the retry
+// interval.
 func TestPendingResyncSurvivesChurn(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	cfg := testConfig("node:6379") // HealthCheckInterval -1: checker parked
-	cfg.PendingResyncFallback = 100 * time.Millisecond
+	cfg.SubscribeRetryInterval = 100 * time.Millisecond
 	m := newTestManager(t, srv, cfg)
 
 	if _, err := m.Subscribe(ctx, "bad"); err != nil {
@@ -329,10 +331,10 @@ func TestPendingResyncSurvivesChurn(t *testing.T) {
 }
 
 // TestSubscribeSkipsNamesCoveredByConnectReplay pins the fresh-connect
-// dedup: a Subscribe that has to dial replays every retained
-// registration, so its explicit write must carry only the names the
-// replay did not cover — a second write would draw a second
-// confirmation (duplicate events, two ledger entries).
+// dedup: a Subscribe that has to dial registers its names first, so the
+// replay carries them along with every retained registration and no
+// second write follows — one would draw a second confirmation
+// (duplicate events, two ledger entries).
 func TestSubscribeSkipsNamesCoveredByConnectReplay(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
@@ -344,17 +346,21 @@ func TestSubscribeSkipsNamesCoveredByConnectReplay(t *testing.T) {
 	h := m.NewHandle().(*handle)
 	m.mu.Lock()
 	h.channels["kept"] = struct{}{}
-	registerHandle(m.subscribers, "kept", h)
+	m.registerHandleLocked(m.subscribers, "kept", h)
 	m.mu.Unlock()
 
-	// Subscribing to the retained name plus a new one dials fresh: the
-	// replay covers "kept", the explicit write only "new".
+	// Subscribing to the retained name plus a new one dials fresh: both
+	// are registered before the dial, so the replay carries both in one
+	// command (map order) and nothing else is written.
 	if _, err := h.Subscribe(ctx, "kept", "new"); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	fsc := srv.waitDial(t)
-	fsc.expectCmd(t, "subscribe", "kept") // the connect replay
-	fsc.expectCmd(t, "subscribe", "new")  // the filtered explicit write
+	replay := fsc.waitCmd(t)
+	if replay[0] != "subscribe" || len(replay) != 3 ||
+		!slices.Contains(replay[1:], "kept") || !slices.Contains(replay[1:], "new") {
+		t.Fatalf("replay command = %v, want one subscribe carrying kept and new", replay)
+	}
 	fsc.expectNoCmd(t, 100*time.Millisecond)
 
 	// Exactly one confirmation per name surfaces on Events.
