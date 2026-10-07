@@ -341,7 +341,10 @@ func (b *AggregateBuilder) Collect(o FTAggregateCollect) *AggregateBuilder {
 // SortBy adds SORTBY <field> ASC|DESC. Consecutive SortBy calls (with no
 // other step in between) are merged into a single SORTBY clause so fields
 // act as tiebreakers. A SortBy call after a non-SortBy step starts a new
-// SORTBY step.
+// SORTBY step. The server allows only one SORTBY between two GroupBy steps,
+// so a second SORTBY in the same segment makes Run return an error. For
+// example, SortBy().Filter().SortBy() fails, and
+// SortBy().GroupBy().SortBy() works.
 //
 // Note: this is a semantics change from earlier experimental versions of
 // the builder, where SortBy always accumulated into a single SORTBY clause
@@ -385,9 +388,9 @@ func (b *AggregateBuilder) Filter(expr string) *AggregateBuilder {
 }
 
 // Limit adds a LIMIT <offset> <num> step at the current position in the
-// pipeline. The server merges all SortBy and Limit steps between two GroupBy
-// steps into one sort/limit stage at the position of the first of them, and
-// a later Limit replaces an earlier Limit or SortByMax.
+// pipeline. The server merges the SortBy and all Limit steps between two
+// GroupBy steps into one sort/limit stage at the position of the first of
+// them, and a later Limit replaces an earlier Limit or SortByMax.
 func (b *AggregateBuilder) Limit(offset, num int) *AggregateBuilder {
 	b.options.Steps = append(b.options.Steps, FTAggregateStep{
 		Limit: &FTAggregateLimit{Offset: offset, Num: num},

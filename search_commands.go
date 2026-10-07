@@ -277,7 +277,8 @@ type FTAggregateWithCursor struct {
 
 // FTAggregateSortByStep represents a SORTBY operation with optional MAX.
 // Used inside FTAggregateStep to place SORTBY at an arbitrary position in
-// the aggregation pipeline.
+// the aggregation pipeline. Only one SORTBY is allowed between two GROUPBY
+// steps; see FTAggregateStep.
 type FTAggregateSortByStep struct {
 	Fields []FTAggregateSortBy
 	Max    int // 0 means no MAX
@@ -298,10 +299,16 @@ type FTAggregateLimit struct {
 // FTAggregateStep represents a single operation in the aggregation pipeline.
 // LOAD, APPLY, GROUPBY, SORTBY, FILTER and LIMIT can all appear multiple
 // times in any order. The server runs them in the order they are sent, with
-// one exception: all SORTBY and LIMIT steps between two GROUPBY steps are
-// merged into one sort/limit stage at the position of the first of them, and
-// a later LIMIT replaces an earlier LIMIT or MAX. To filter before paging,
-// put the FILTER step before the SORTBY and LIMIT steps.
+// these exceptions for SORTBY and LIMIT:
+//   - The server allows only one SORTBY between two GROUPBY steps. A second
+//     SORTBY in the same segment returns an error. Put all sort fields in one
+//     SORTBY step.
+//   - The SORTBY and all LIMIT steps between two GROUPBY steps are merged
+//     into one sort/limit stage at the position of the first of them. A later
+//     LIMIT replaces an earlier LIMIT or MAX.
+//
+// To filter before paging, put the FILTER step before the SORTBY and LIMIT
+// steps.
 // Exactly one of the fields should be set per step.
 type FTAggregateStep struct {
 	Load    *FTAggregateLoad
