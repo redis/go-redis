@@ -71,8 +71,13 @@ type fakeServerConn struct {
 	done chan struct{} // closed when the read loop exits (conn closed)
 	// paused stops the read loop between frames; with net.Pipe unread,
 	// the manager's next write then blocks until its write deadline —
-	// how tests force a deterministic write timeout.
+	// how tests force a write timeout. Setting it directly is racy: the
+	// loop may already be parked inside a Read that consumes one more
+	// frame, or not — use pauseAfterNext for a deterministic cut.
 	paused atomic.Bool
+	// pauseAfterFrames, when positive, counts down per frame read and
+	// sets paused when it reaches zero (see pauseAfterNext).
+	pauseAfterFrames atomic.Int32
 	// autoConfirm makes the read loop answer every (p/s)(un)subscribe
 	// command with confirmation frames, like a real server. The manager
 	// completes deferred unsubscribes only on those confirmations, so
@@ -201,7 +206,18 @@ func (c *fakeServerConn) readLoop() {
 		if c.autoPong.Load() && len(cmd) > 0 && cmd[0] == "ping" {
 			c.pong(cmd)
 		}
+		if c.pauseAfterFrames.Load() > 0 && c.pauseAfterFrames.Add(-1) == 0 {
+			c.paused.Store(true)
+		}
 	}
+}
+
+// pauseAfterNext pauses the read loop right after the next frame it
+// reads, wherever the loop currently is: the next write from the
+// manager is consumed, every write after it blocks on the pipe. This
+// is the deterministic way to force a write timeout.
+func (c *fakeServerConn) pauseAfterNext() {
+	c.pauseAfterFrames.Store(1)
 }
 
 // confirm answers a (p/s)(un)subscribe command with one confirmation
