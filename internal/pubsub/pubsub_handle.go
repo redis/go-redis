@@ -327,14 +327,20 @@ func (h *handle) Close() error {
 }
 
 // closeLocked ends the handle's delivery stream (closing events also
-// terminates the consumer pump). Callers must hold the manager lock, so
-// no send can race with the close; no-op if already closed.
+// terminates the consumer pump) and its ownership: a closed handle owns
+// nothing, whichever path closed it — Close detached every name before
+// getting here, the manager's teardown has not. Callers must hold the
+// manager lock, so no send can race with the close; no-op if already
+// closed.
 func (h *handle) closeLocked() {
 	if h.closed {
 		return
 	}
 	h.closed = true
 	delete(h.m.handles, h)
+	clear(h.channels)
+	clear(h.patterns)
+	clear(h.schannels)
 	// Nil (don't remove) the handle's pong waits: each entry must still
 	// consume its reply or attribution desyncs for every later waiter.
 	for i := range h.m.replyQueue {

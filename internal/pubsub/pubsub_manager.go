@@ -155,12 +155,14 @@ type replyWaiter struct {
 	// broadcast marks a replay write (reconnect, pending resync): its
 	// confirmations go to every registered owner, not one handle.
 	broadcast bool
-	// affected are the handles an orphan unsubscribe was written for —
-	// the ones that released its names — captured at write time: the
-	// registry no longer lists the names, so an error reply has no
-	// owners left to look up, and a name re-added meanwhile belongs to
-	// an unrelated handle.
-	affected []*handle
+	// affected maps each name of an orphan unsubscribe to the handles
+	// that released it, captured at write time: the registry no longer
+	// lists the names, so an error reply has no owners left to look up,
+	// and a name re-added meanwhile belongs to an unrelated handle. Per
+	// name, because a sharded unsubscribe is one command per slot and
+	// the error reply of one slot concerns only the names that command
+	// carried (see deliverToReleasersLocked).
+	affected map[string][]*handle
 }
 
 // NewManager creates a manager that multiplexes all subscriptions over
@@ -880,6 +882,25 @@ func cloneMessage(msg *Message) *Message {
 	return &c
 }
 
+// deliverToReleasersLocked reports a refused orphan unsubscribe to the
+// handles that released the names the command carried (captured at
+// write time, see replyWaiter.affected) — a sharded unsubscribe is one
+// command per slot, so a MOVED on one slot never reaches the releasers
+// of a slot that succeeded. A closed handle no longer listens. Callers
+// must hold the WRITE lock.
+func (m *Manager) deliverToReleasersLocked(w replyWaiter, err error) {
+	delivered := make(map[*handle]struct{})
+	for _, name := range w.names {
+		for _, h := range w.affected[name] {
+			if _, done := delivered[h]; done {
+				continue
+			}
+			delivered[h] = struct{}{}
+			h.deliverLocked(err)
+		}
+	}
+}
+
 // fanoutErrorLocked routes an unattributable error reply to every
 // handle's events stream.
 func (m *Manager) fanoutErrorLocked(err error) {
@@ -1562,11 +1583,11 @@ func (m *Manager) handleUnsubscribeLocked(h *handle, redisCommand string, names 
 	}
 
 	// Names whose last owner leaves, in first-appearance order so
-	// confirmations come back in unsubscribe order — and the handles
-	// that released a name, for an error reply to reach (see
+	// confirmations come back in unsubscribe order — and, per name, the
+	// handles that released it, for an error reply to reach (see
 	// replyWaiter.affected).
 	var orphanOrder []string
-	var affected []*handle
+	affected := make(map[string][]*handle)
 	for cur := range hs {
 		owned := cur.channels
 		switch redisCommand {
@@ -1591,7 +1612,6 @@ func (m *Manager) handleUnsubscribeLocked(h *handle, redisCommand string, names 
 			}
 		}
 
-		released := false
 		for _, name := range curNames {
 			if _, ok := owned[name]; !ok {
 				// Not owned by this handle: nothing to detach or write,
@@ -1607,7 +1627,7 @@ func (m *Manager) handleUnsubscribeLocked(h *handle, redisCommand string, names 
 				continue
 			}
 			delete(owned, name)
-			released = true
+			affected[name] = append(affected[name], cur)
 			if sub := registry[name]; sub != nil {
 				delete(sub.handles, cur)
 				if len(sub.handles) == 0 {
@@ -1620,9 +1640,6 @@ func (m *Manager) handleUnsubscribeLocked(h *handle, redisCommand string, names 
 				Channel: name,
 				Count:   cur.ownedTotal(),
 			})
-		}
-		if released {
-			affected = append(affected, cur)
 		}
 	}
 
@@ -1715,9 +1732,11 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 		// (re)subscribe's names become Rejected; retryRejected re-sends
 		// them one by one.
 		m.errorLog.Printf(ctx, "pubsub: error reply on shared connection: %v", err)
-		// MOVED/ASK: the topology view is stale; the reload-driven sweep
-		// moves the registered channels to the right owner.
-		if isRedirectError(err) && m.requestTopologyRefresh != nil {
+		// MOVED: the topology view is stale; the reload-driven sweep
+		// moves the registered channels to the right owner. (ASK is a
+		// transient one-shot redirect, not a stale view: see
+		// isMovedError.)
+		if isMovedError(err) && m.requestTopologyRefresh != nil {
 			m.requestTopologyRefresh()
 		}
 		m.mu.Lock()
@@ -1735,10 +1754,8 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 		case ok && len(w.affected) > 0:
 			// An orphan unsubscribe: its names left the registry when
 			// it was written, so the handles that released them were
-			// captured instead (a closed one no longer listens).
-			for _, h := range w.affected {
-				h.deliverLocked(err)
-			}
+			// captured instead.
+			m.deliverToReleasersLocked(w, err)
 		case ok && len(w.names) > 0:
 			m.deliverToOwnersLocked(w, err)
 		default:
@@ -1876,11 +1893,17 @@ func (m *Manager) updateReconnectTimeout(newTimeout time.Duration) {
 	m.cfg.ReconnectTimeout = newTimeout
 }
 
-// isRedirectError reports a cluster redirect reply (MOVED/ASK): the
-// topology view that routed the rejected command is stale.
-func isRedirectError(err error) bool {
-	msg := err.Error()
-	return strings.HasPrefix(msg, "MOVED ") || strings.HasPrefix(msg, "ASK ")
+// isMovedError reports a MOVED reply: the topology view that routed
+// the rejected command is stale. ASK deliberately is not one: it is a
+// one-shot redirect for the duration of a slot migration, during which
+// CLUSTER SLOTS still names the migrating source — a reload would
+// change nothing, and a connection pinned to one node cannot follow a
+// one-shot redirect to another. An ASK-rejected name is treated like
+// any other refusal: it stays Rejected and retryRejected re-sends it
+// on its interval, so the retry that lands after the migration either
+// succeeds or earns the MOVED that does drive a reload.
+func isMovedError(err error) bool {
+	return strings.HasPrefix(err.Error(), "MOVED ")
 }
 
 // shardMessage marks a Message delivered via sharded pub/sub, a

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/hashtag"
 )
 
 // waitForError drains events until an error event arrives.
@@ -259,5 +261,90 @@ func TestManagerUnsubscribeErrorReachesEveryReleaser(t *testing.T) {
 		if err := waitForError(t, h.Events()); !strings.Contains(err.Error(), "NOPERM") {
 			t.Fatalf("h%d got %v, want the NOPERM reply to the unsubscribe", i+1, err)
 		}
+	}
+}
+
+// errorBeforeMessage drains events up to the next *Message and returns
+// the error event seen on the way, if any.
+func errorBeforeMessage(t *testing.T, events <-chan any) error {
+	t.Helper()
+	var got error
+	for {
+		switch ev := recvEvent(t, events).(type) {
+		case error:
+			got = ev
+		case *Message:
+			return got
+		}
+	}
+}
+
+// TestManagerSUnsubscribeErrorStaysWithinSlot pins per-slot
+// attribution: a manager-level SUnsubscribe spanning handles whose
+// shard channels hash to different slots is written as one command per
+// slot, and the error reply of one slot (a MOVED, say) reaches only the
+// handles that released the names that command carried — not the
+// releasers of a slot that succeeded.
+func TestManagerSUnsubscribeErrorStaysWithinSlot(t *testing.T) {
+	ctx := context.Background()
+	if s1, s2 := hashtag.Slot("{a}one"), hashtag.Slot("{b}one"); s1 == s2 {
+		t.Fatalf("test channels share slot %d; pick different tags", s1)
+	}
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	// Each handle owns one shard channel plus a marker channel that
+	// keeps the connection alive and orders the assertions below.
+	hA, err := m.SSubscribe(ctx, "{a}one")
+	if err != nil {
+		t.Fatalf("SSubscribe hA: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "ssubscribe", "{a}one")
+	if _, err := hA.Subscribe(ctx, "markA"); err != nil {
+		t.Fatalf("Subscribe markA: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "markA")
+	hB, err := m.SSubscribe(ctx, "{b}one")
+	if err != nil {
+		t.Fatalf("SSubscribe hB: %v", err)
+	}
+	fsc.expectCmd(t, "ssubscribe", "{b}one")
+	if _, err := hB.Subscribe(ctx, "markB"); err != nil {
+		t.Fatalf("Subscribe markB: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "markB")
+	waitForConfirmation(t, hA.Events(), "subscribe", "markA")
+	waitForConfirmation(t, hB.Events(), "subscribe", "markB")
+	releaser := map[string]PubSuber{"{a}one": hA, "{b}one": hB}
+	marker := map[string]string{"{a}one": "markA", "{b}one": "markB"}
+
+	// One call orphans both shard channels: two SUNSUBSCRIBE commands,
+	// one per slot, in an order that depends on map iteration.
+	fsc.autoConfirm.Store(false)
+	if err := m.SUnsubscribe(ctx, "{a}one", "{b}one"); err != nil {
+		t.Fatalf("SUnsubscribe: %v", err)
+	}
+	first, second := fsc.waitCmd(t), fsc.waitCmd(t)
+	for _, cmd := range [][]string{first, second} {
+		if len(cmd) != 2 || cmd[0] != "sunsubscribe" {
+			t.Fatalf("command = %v, want a single-name sunsubscribe", cmd)
+		}
+	}
+
+	// The server refuses the first slot and confirms the second, then
+	// the markers: a handle's events up to its marker hold the error iff
+	// its slot was the refused one.
+	fsc.sendError(t, "MOVED 15495 node-b:6379")
+	fsc.sendConfirm(t, "sunsubscribe", second[1], 0)
+	fsc.sendMessage(t, "message", marker[first[1]], "m")
+	fsc.sendMessage(t, "message", marker[second[1]], "m")
+
+	if err := errorBeforeMessage(t, releaser[first[1]].Events()); err == nil || !strings.Contains(err.Error(), "MOVED") {
+		t.Fatalf("releaser of the refused slot %q got %v, want the MOVED reply", first[1], err)
+	}
+	if err := errorBeforeMessage(t, releaser[second[1]].Events()); err != nil {
+		t.Fatalf("releaser of the confirmed slot %q received the other slot's error: %v", second[1], err)
 	}
 }
