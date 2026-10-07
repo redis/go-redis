@@ -23,13 +23,16 @@ type Config struct {
 	// silent before a health-check PING; <= 0 disables the health
 	// check.
 	HealthCheckInterval time.Duration
-	// PendingResyncFallback is the cadence of the dedicated Pending
-	// reconciliation loop, which re-sends subscribes that were rejected
-	// or lost their confirmation on a healthy connection. It runs even
-	// with the health check disabled; <= 0 disables the loop (the root
-	// package defaults it via Options.PubSubPendingResyncFallback).
-	PendingResyncFallback time.Duration
-	// PingTimeout bounds the health-check PING write.
+	// SubscribeRetryInterval is the cadence at which subscribes the
+	// server rejected with an error reply are re-sent; <= 0 disables
+	// the retries (the root package defaults it via
+	// Options.PubSubSubscribeRetryInterval).
+	SubscribeRetryInterval time.Duration
+	// PingTimeout bounds the health-check PING: the write, and the wait
+	// for the server's reply (any inbound frame) that follows it; no
+	// reply in time drops the connection. <= 0 removes both the probe's
+	// deadline (the write still honours WriteTimeout) and the reply
+	// requirement.
 	PingTimeout time.Duration
 	// ReconnectTimeout bounds the health checker's re-dial and
 	// subscription replay after a failed ping.

@@ -3,6 +3,8 @@ package pubsub
 import (
 	"context"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal"
 )
 
 // pumpMode records which consumer view was started over Events; the two
@@ -30,7 +32,7 @@ func pump[T any](
 		timer.Stop()
 	}
 	var dropped int
-	var dropLogTime time.Time
+	dropLog := internal.NewThrottledLogger(logInterval)
 loop:
 	for ev := range events {
 		v, ok := filter(ev)
@@ -53,7 +55,7 @@ loop:
 			break loop
 		case <-timer.C:
 			dropped++
-			if logThrottled(context.TODO(), &dropLogTime, logInterval,
+			if dropLog.Printf(context.TODO(),
 				"redis: pubsub: dropped %d message(s) to a slow consumer (send timed out after %s, see WithChannelSendTimeout)",
 				dropped, sendTimeout) {
 				dropped = 0

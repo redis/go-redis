@@ -11,9 +11,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+// testHandoffResolver mirrors the client's resolver: a connection
+// marked for handoff is retired, and the reconnect is redirected to the
+// handoff endpoint it names (a null endpoint keeps the address).
+type testHandoffResolver struct{}
+
+func (testHandoffResolver) ShouldReplace(cn *pool.Conn) bool { return cn.ShouldHandoff() }
+
+func (testHandoffResolver) Resolve(_ context.Context, prev *pool.Conn, current string) string {
+	if prev != nil && prev.ShouldHandoff() {
+		if next := prev.GetHandoffEndpoint(); next != "" && next != internal.RedisNull {
+			return next
+		}
+	}
+	return current
+}
 
 // fakeServer hands out net.Pipe-backed connections to the manager under
 // test. Each dial yields a fakeServerConn holding the server end of the
@@ -27,6 +44,10 @@ type fakeServer struct {
 	// autoConfirm, when set before dialing, arms autoConfirm on every
 	// connection the server hands out.
 	autoConfirm bool
+	// autoPong, when set before dialing, makes every connection answer
+	// PING with a pong frame like a real server; off by default so the
+	// ping tests can answer by hand.
+	autoPong bool
 	// dialGate, when set, parks every dial (after signaling gateHit)
 	// until the gate channel is closed — how tests hold an operation
 	// mid-flight to interleave a concurrent call deterministically. The
@@ -57,7 +78,9 @@ type fakeServerConn struct {
 	// completes deferred unsubscribes only on those confirmations, so
 	// most teardown flows need it.
 	autoConfirm atomic.Bool
-	subCount    int // read-loop only: the running per-conn count
+	// autoPong makes the read loop answer PING with a pong frame.
+	autoPong atomic.Bool
+	subCount int // read-loop only: the running per-conn count
 
 	// frames feeds the single writer goroutine that serializes test
 	// injections and auto-confirmations onto the pipe. Writing from the
@@ -104,6 +127,7 @@ func (s *fakeServer) dial(ctx context.Context, addr string) (*pool.Conn, error) 
 	}
 	s.mu.Lock()
 	fsc.autoConfirm.Store(s.autoConfirm)
+	fsc.autoPong.Store(s.autoPong)
 	s.mu.Unlock()
 	fsc.poolConn = pool.NewConn(client)
 	go fsc.readLoop()
@@ -174,6 +198,9 @@ func (c *fakeServerConn) readLoop() {
 		if c.autoConfirm.Load() {
 			c.confirm(cmd)
 		}
+		if c.autoPong.Load() && len(cmd) > 0 && cmd[0] == "ping" {
+			c.pong(cmd)
+		}
 	}
 }
 
@@ -194,6 +221,16 @@ func (c *fakeServerConn) confirm(cmd []string) {
 			c.writeRaw(confirmFrame(cmd[0], name, c.subCount))
 		}
 	}
+}
+
+// pong answers a PING the way a subscribed RESP2 connection does:
+// ["pong", payload], the payload empty for a bare PING.
+func (c *fakeServerConn) pong(cmd []string) {
+	payload := ""
+	if len(cmd) > 1 {
+		payload = cmd[1]
+	}
+	c.writeRaw(fmt.Sprintf("*2\r\n$4\r\npong\r\n$%d\r\n%s\r\n", len(payload), payload))
 }
 
 // writeLoop is the single pipe writer; it exits when the read loop
@@ -345,6 +382,7 @@ func newTestManagerReload(t *testing.T, srv *fakeServer, cfg Config, onReconnect
 		func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error { return nil },
 		testIsBadConn,
 		onReconnectFailure,
+		testHandoffResolver{},
 	)
 	t.Cleanup(func() { _ = m.Close() })
 	return m

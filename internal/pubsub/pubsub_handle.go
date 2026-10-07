@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -37,9 +38,10 @@ type handle struct {
 	allCh chan any
 
 	// Slow-consumer drop accounting (written only by the listen
-	// goroutine).
-	dropped     int
-	dropLogTime time.Time
+	// goroutine): drops since the last logged line, and the throttle
+	// pacing those lines.
+	dropped int
+	dropLog *internal.ThrottledLogger
 
 	closed bool
 }
@@ -195,7 +197,7 @@ func (h *handle) deliverPongLocked(pong *Pong) {
 // LogInterval with the drops accumulated since the previous log.
 func (h *handle) noteDropLocked(bufSize int) {
 	h.dropped++
-	if logThrottled(context.TODO(), &h.dropLogTime, h.m.cfg.LogInterval,
+	if h.dropLog.Printf(context.TODO(),
 		"redis: pubsub: dropped %d message(s) to a slow subscriber (buffer of %d is full, see PubSubChanSize)",
 		h.dropped, bufSize) {
 		h.dropped = 0
@@ -268,20 +270,14 @@ func (h *handle) Subscriptions() (channels, patterns, schannels []string) {
 // this handle's Events (see Manager.replyQueue), best-effort — it is
 // dropped if the buffer is full.
 func (h *handle) Ping(ctx context.Context, payload ...string) error {
-	return h.m.ping(ctx, h, true, payload...)
+	return h.m.ping(ctx, h, false, payload...)
 }
 
 // PingSilent writes a PING without marking the handle as awaiting the
 // reply, so the pong never surfaces on this handle's Events. The handle
 // still gates the write: a closed one must not dial.
 func (h *handle) PingSilent(ctx context.Context, payload ...string) error {
-	h.m.mu.Lock()
-	defer h.m.mu.Unlock()
-
-	if h.closed {
-		return pool.ErrClosed
-	}
-	return h.m.pingLocked(ctx, nil, true, payload...)
+	return h.m.ping(ctx, h, true, payload...)
 }
 
 // ClientSetName names the shared connection; the +OK reply surfaces on
@@ -296,6 +292,15 @@ func (h *handle) ClientSetName(ctx context.Context, name string) error {
 // nil no-op).
 func (h *handle) Close() error {
 	ctx := context.TODO()
+
+	// The I/O slot first (lock order): the unsubscribes below may write,
+	// and holding it throughout keeps a racing Subscribe from landing on
+	// the dying handle. Like every writer, this waits behind an in-flight
+	// dial or write. A closed manager refuses the slot — its teardown
+	// closed every handle already, which the check below reports.
+	if err := h.m.acquireIO(ctx); err == nil {
+		defer h.m.releaseIO()
+	}
 
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()

@@ -15,8 +15,9 @@ const (
 	errPubSubNoConn pubSubError = "redis: pubsub: connection is not available"
 
 	// errConnUnusable is the reconnect reason when the shared connection
-	// was marked for a maintenance-notification handoff (MOVING) or made
-	// unusable by a background operation.
+	// was made unusable by a background operation or retired by the
+	// owner's AddrResolver (in the client: a maintenance-notification
+	// handoff).
 	errConnUnusable pubSubError = "redis: pubsub: connection is not usable"
 
 	// errConnExists is connectIdempotentLocked's way of saying the shared
@@ -24,6 +25,12 @@ const (
 	// did NOT run: subscribers must write their commands themselves. It
 	// never escapes the manager.
 	errConnExists pubSubError = "redis: pubsub: connection already established"
+
+	// errPingTimeout is the reconnect reason when the health-check PING
+	// got no reply within PingTimeout: replies on a connection are
+	// ordered, so a missing pong means the server is unresponsive or
+	// the socket silently dead.
+	errPingTimeout pubSubError = "redis: pubsub: health-check ping got no reply in time"
 
 	// Subscribe-argument validation, one per namespace. Exported so the
 	// root package's client-level validation (e.g. Ring, which must pick

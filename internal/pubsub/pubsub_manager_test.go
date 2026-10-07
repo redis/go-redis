@@ -312,6 +312,7 @@ func TestManagerReconnect(t *testing.T) {
 				default:
 				}
 			},
+			testHandoffResolver{},
 		)
 		t.Cleanup(func() { _ = m.Close() })
 
@@ -550,6 +551,7 @@ func TestManagerSubscribeWriteFailureRollsBackFreshHandle(t *testing.T) {
 		func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error { return nil },
 		testIsBadConn,
 		nil,
+		testHandoffResolver{},
 	)
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -785,8 +787,8 @@ func TestReadFailureNoSubscribersReleasesConn(t *testing.T) {
 // sections, so the last unsubscribe can release the connection in
 // between — a dialing ping would resurrect a connection with no
 // subscribers that nothing ever closes, and whose own later pings keep
-// it alive. The checker's ping (shouldDial false) must report
-// errPubSubNoConn instead, and still ping normally on a live conn.
+// it alive. The checker's ping (healthPing) must report errPubSubNoConn
+// instead, and still ping normally on a live conn.
 func TestHealthCheckPingDoesNotRedial(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
@@ -808,7 +810,7 @@ func TestHealthCheckPingDoesNotRedial(t *testing.T) {
 
 	// The health-check ping landing after the release (the racy
 	// interleaving this pins) must skip, not dial.
-	if err := m.ping(ctx, nil, false); !errors.Is(err, errPubSubNoConn) {
+	if _, err := m.healthPing(ctx); !errors.Is(err, errPubSubNoConn) {
 		t.Fatalf("non-dialing ping on a released conn = %v, want errPubSubNoConn", err)
 	}
 	select {
@@ -823,7 +825,7 @@ func TestHealthCheckPingDoesNotRedial(t *testing.T) {
 	}
 	fsc2 := srv.waitDial(t)
 	fsc2.expectCmd(t, "subscribe", "ch2")
-	if err := m.ping(ctx, nil, false); err != nil {
+	if _, err := m.healthPing(ctx); err != nil {
 		t.Fatalf("non-dialing ping with a live conn: %v", err)
 	}
 	fsc2.expectCmd(t, "ping")
@@ -888,6 +890,7 @@ func TestManagerSlowConsumerDrop(t *testing.T) {
 func TestManagerHealthCheck(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
+	srv.autoPong = true
 	cfg := testConfig("node:6379")
 	cfg.HealthCheckInterval = 20 * time.Millisecond
 	cfg.WriteTimeout = 100 * time.Millisecond
@@ -928,6 +931,7 @@ func TestHealthCheckRuntimeUpdates(t *testing.T) {
 	setup := func(t *testing.T, interval time.Duration) (PubSuber, *fakeServerConn) {
 		t.Helper()
 		srv := newFakeServer()
+		srv.autoPong = true
 		cfg := testConfig("node:6379")
 		cfg.HealthCheckInterval = interval
 		m := newTestManager(t, srv, cfg)
@@ -938,10 +942,8 @@ func TestHealthCheckRuntimeUpdates(t *testing.T) {
 		}
 		fsc := srv.waitDial(t)
 		fsc.expectCmd(t, "subscribe", "hc")
-		// Confirm like a real server would: an unconfirmed name stays
-		// Pending and the health checker re-sends it (see
-		// resubscribePending), which would interleave with the exact
-		// command sequences asserted below.
+		// Confirm like a real server would: the exact command sequences
+		// asserted below assume a settled subscription.
 		fsc.sendConfirm(t, "subscribe", "hc", 1)
 		return h, fsc
 	}
@@ -1003,6 +1005,7 @@ func TestHealthCheckRuntimeUpdates(t *testing.T) {
 func TestPingTimeoutAppliesAtRuntime(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
+	srv.autoPong = true
 	cfg := testConfig("node:6379")
 	cfg.HealthCheckInterval = 20 * time.Millisecond
 	cfg.WriteTimeout = 30 * time.Second
@@ -1015,8 +1018,7 @@ func TestPingTimeoutAppliesAtRuntime(t *testing.T) {
 	}
 	fsc1 := srv.waitDial(t)
 	fsc1.expectCmd(t, "subscribe", "pt")
-	// Confirm like a real server would, so the health checker's Pending
-	// reconciliation has nothing to re-send here.
+	// Confirm like a real server would.
 	fsc1.sendConfirm(t, "subscribe", "pt", 1)
 
 	h.Channel(func(c PubSubConfiger) {
@@ -1046,6 +1048,7 @@ func TestPingTimeoutAppliesAtRuntime(t *testing.T) {
 func TestReconnectTimeoutAppliesAtRuntime(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
+	srv.autoPong = true
 	cfg := testConfig("node:6379")
 	cfg.HealthCheckInterval = 20 * time.Millisecond
 	cfg.PingTimeout = 50 * time.Millisecond
@@ -1066,8 +1069,7 @@ func TestReconnectTimeoutAppliesAtRuntime(t *testing.T) {
 	}
 	fsc1 := srv.waitDial(t)
 	fsc1.expectCmd(t, "subscribe", "rt")
-	// Confirm like a real server would, so the health checker's Pending
-	// reconciliation has nothing to re-send here.
+	// Confirm like a real server would.
 	fsc1.sendConfirm(t, "subscribe", "rt", 1)
 
 	h.Channel(func(c PubSubConfiger) {
@@ -1443,7 +1445,7 @@ func TestHandoffDropsStaleProtocolFrames(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	cfg := testConfig("node-a:6379")
-	cfg.PendingResyncFallback = 50 * time.Millisecond
+	cfg.SubscribeRetryInterval = 50 * time.Millisecond
 	m := newTestManager(t, srv, cfg)
 
 	h, err := m.Subscribe(ctx, "ch")
@@ -1477,13 +1479,20 @@ func TestHandoffDropsStaleProtocolFrames(t *testing.T) {
 		t.Fatalf("replay command = %v, want subscribe with ch and ch2", replay)
 	}
 
-	// The new node rejects the replay: both names must stay Pending —
-	// the stale confirmation from the old socket must not have marked
-	// ch2 Subscribed — so the resync re-sends BOTH.
+	// The new node rejects the replay: both names must be Rejected — the
+	// stale confirmation from the old socket must not have marked ch2
+	// Subscribed — so the retry re-sends BOTH, one by one.
 	fsc2.sendError(t, "NOPERM this user has no permissions")
-	resend := fsc2.waitCmd(t)
-	if resend[0] != "subscribe" || !slices.Contains(resend[1:], "ch2") || !slices.Contains(resend[1:], "ch") {
-		t.Fatalf("resync re-sent %v, want subscribe with ch and ch2", resend)
+	resent := map[string]bool{}
+	for range 2 {
+		cmd := fsc2.waitCmd(t)
+		if len(cmd) != 2 || cmd[0] != "subscribe" {
+			t.Fatalf("retry sent %v, want a single-name subscribe", cmd)
+		}
+		resent[cmd[1]] = true
+	}
+	if !resent["ch"] || !resent["ch2"] {
+		t.Fatalf("retry re-sent %v, want ch and ch2", resent)
 	}
 }
 
