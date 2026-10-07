@@ -572,11 +572,10 @@ func TestWriteFailureFailsPongWaiters(t *testing.T) {
 	fsc := srv.waitDial(t)
 	fsc.expectCmd(t, "ping", "lost")
 
-	// Pause the server's read loop; the pause takes effect after the
-	// pending read consumes one more frame, so a sacrificial ping arms
-	// it. The next write then blocks on the synchronous pipe and hits
-	// the write timeout.
-	fsc.paused.Store(true)
+	// Pause the server's read loop right after it consumes the next
+	// frame — a sacrificial ping — so the write under test then blocks
+	// on the synchronous pipe and hits the write timeout.
+	fsc.pauseAfterNext()
 	if err := m.Ping(ctx); err != nil {
 		t.Fatalf("arming ping: %v", err)
 	}

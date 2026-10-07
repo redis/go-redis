@@ -402,11 +402,10 @@ func TestManagerUnsubscribeWriteFailureSelfHeals(t *testing.T) {
 		t.Fatalf("first event = %#v, want the subscribe confirmation", sub)
 	}
 
-	// Pause the server's read loop. The pause takes effect after the
-	// pending read consumes one more frame, so a sacrificial ping arms
-	// it; the orphan UNSUBSCRIBE write then blocks on the synchronous
-	// pipe and hits the write timeout.
-	fsc.paused.Store(true)
+	// Pause the server's read loop right after it consumes the next
+	// frame — a sacrificial ping — so the orphan UNSUBSCRIBE write then
+	// blocks on the synchronous pipe and hits the write timeout.
+	fsc.pauseAfterNext()
 	if err := m.Ping(ctx); err != nil {
 		t.Fatalf("arming ping: %v", err)
 	}
