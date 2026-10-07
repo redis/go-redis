@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // TODO (ned): Revisit logging
@@ -141,4 +143,59 @@ func (l LogLevelT) InfoOrAbove() bool {
 
 func (l LogLevelT) DebugOrAbove() bool {
 	return l >= LogLevelDebug
+}
+
+// ThrottledLogger is a Logging decorator that rate-limits one recurring
+// log line: at most one line per interval goes through to the sink, and
+// the calls suppressed in between are counted and reported on the next
+// line that does ("(N similar line(s) suppressed in the last 30s)"), so
+// nothing is lost, only coalesced. Every emitter owns an instance — the
+// throttle is per source, not per message text, so a noisy source never
+// silences another source's first warning. Safe for concurrent use. A
+// zero or negative interval (and the zero value) logs every call.
+type ThrottledLogger struct {
+	mu         sync.Mutex
+	next       Logging // nil: the package Logger, read at call time
+	interval   time.Duration
+	last       time.Time
+	suppressed int
+}
+
+var _ Logging = (*ThrottledLogger)(nil)
+
+// NewThrottledLogger returns a Logging that emits at most one line per
+// interval through next — the package Logger when next is nil, looked
+// up at call time so a later SetLogger still applies. The first Printf
+// always logs.
+func NewThrottledLogger(interval time.Duration, next Logging) Logging {
+	return &ThrottledLogger{interval: interval, next: next}
+}
+
+// Printf logs format and v through the sink unless a line went out less
+// than the interval ago; a suppressed call is counted, and the count is
+// appended to the next line that goes out.
+func (l *ThrottledLogger) Printf(ctx context.Context, format string, v ...interface{}) {
+	now := time.Now()
+	l.mu.Lock()
+	if !l.last.IsZero() && now.Sub(l.last) < l.interval {
+		l.suppressed++
+		l.mu.Unlock()
+		return
+	}
+	n := l.suppressed
+	l.suppressed, l.last = 0, now
+	l.mu.Unlock()
+
+	if n > 0 {
+		format += " (%d similar line(s) suppressed in the last %s)"
+		v = append(v[:len(v):len(v)], n, l.interval)
+	}
+	l.sink().Printf(ctx, format, v...)
+}
+
+func (l *ThrottledLogger) sink() Logging {
+	if l.next != nil {
+		return l.next
+	}
+	return Logger
 }

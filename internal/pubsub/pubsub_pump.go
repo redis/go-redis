@@ -31,8 +31,7 @@ func pump[T any](
 		timer = time.NewTimer(sendTimeout)
 		timer.Stop()
 	}
-	var dropped int
-	dropLog := internal.NewThrottledLogger(logInterval)
+	dropLog := internal.NewThrottledLogger(logInterval, nil)
 loop:
 	for ev := range events {
 		v, ok := filter(ev)
@@ -54,12 +53,9 @@ loop:
 		case <-done:
 			break loop
 		case <-timer.C:
-			dropped++
-			if dropLog.Printf(context.TODO(),
-				"redis: pubsub: dropped %d message(s) to a slow consumer (send timed out after %s, see WithChannelSendTimeout)",
-				dropped, sendTimeout) {
-				dropped = 0
-			}
+			dropLog.Printf(context.TODO(),
+				"redis: pubsub: dropped a message to a slow consumer (send timed out after %s, see WithChannelSendTimeout)",
+				sendTimeout)
 		}
 	}
 	close(out)
