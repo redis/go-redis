@@ -370,9 +370,28 @@ func (b *AggregateBuilder) SortByMax(max int) *AggregateBuilder {
 	return b
 }
 
-// Filter sets FILTER <expr>.
+// Filter adds a FILTER <expr> step at the current position in the pipeline.
+// You can call it multiple times, e.g. before and after a GroupBy. To filter
+// before paging, call Filter before SortBy and Limit.
+//
+// Note: this is a semantics change from earlier experimental versions of
+// the builder, where Filter set a single FILTER that was always sent at the
+// end of the pipeline, after LIMIT.
 func (b *AggregateBuilder) Filter(expr string) *AggregateBuilder {
-	b.options.Filter = expr
+	b.options.Steps = append(b.options.Steps, FTAggregateStep{
+		Filter: &FTAggregateFilter{Expression: expr},
+	})
+	return b
+}
+
+// Limit adds a LIMIT <offset> <num> step at the current position in the
+// pipeline. The server merges all SortBy and Limit steps between two GroupBy
+// steps into one sort/limit stage at the position of the first of them, and
+// a later Limit replaces an earlier Limit or SortByMax.
+func (b *AggregateBuilder) Limit(offset, num int) *AggregateBuilder {
+	b.options.Steps = append(b.options.Steps, FTAggregateStep{
+		Limit: &FTAggregateLimit{Offset: offset, Num: num},
+	})
 	return b
 }
 
