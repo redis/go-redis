@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +12,72 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+// TestSubscribeWriteRacingCloseReturnsClosed pins the re-validation
+// after a subscribe write on an existing connection: the write runs
+// with the manager lock released, so a Close landing in between tears
+// the handle down, and a handle closed by the time the write path
+// re-locks must come back as pool.ErrClosed — as after the dial on the
+// fresh-connect path — not as a dead handle with a nil error. The
+// teardown is staged under the lock the writer is waiting for, which
+// is exactly where Manager.Close lands.
+func TestSubscribeWriteRacingCloseReturnsClosed(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "seed")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "seed")
+	waitForConfirmation(t, h.Events(), "subscribe", "seed")
+
+	// Park the next write on the pipe: the server stops reading after
+	// the arming ping.
+	fsc.pauseAfterNext()
+	if err := h.PingSilent(ctx); err != nil {
+		t.Fatalf("arming ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping")
+
+	type result struct {
+		ps  PubSuber
+		err error
+	}
+	res := make(chan result, 1)
+	go func() {
+		ps, err := h.Subscribe(ctx, "raced")
+		res <- result{ps, err}
+	}()
+
+	// Wait until the subscribe is in its write (its ledger entry is in
+	// place and the lock is free), then keep the lock it must re-take.
+	for {
+		m.mu.Lock()
+		inWrite := slices.ContainsFunc(m.replyQueue, func(w replyWaiter) bool {
+			return slices.Contains(w.names, "raced")
+		})
+		if inWrite {
+			break
+		}
+		m.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	// Let the write complete: the writer then blocks on the lock, and
+	// the manager closes under it.
+	fsc.paused.Store(false)
+	fsc.expectCmd(t, "subscribe", "raced")
+	_ = m.closeNowLocked()
+	m.mu.Unlock()
+
+	r := <-res
+	if !errors.Is(r.err, pool.ErrClosed) || r.ps != nil {
+		t.Fatalf("Subscribe racing Close = (%v, %v), want (nil, pool.ErrClosed)", r.ps, r.err)
+	}
+}
 
 // TestFreshDialConfirmationReachesNewOwner pins that a subscriber whose
 // Subscribe dials the connection is registered before the replay is
