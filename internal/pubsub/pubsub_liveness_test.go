@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -149,4 +150,52 @@ func TestHealthCheckReplyWaitHonorsRelaxedTimeout(t *testing.T) {
 	fsc2 := srv.waitDial(t)
 	fsc2.expectCmd(t, "subscribe", "hc")
 	fsc1.expectClosed(t)
+}
+
+// TestHealthPingExpiredContextKeepsConnection pins that a health probe
+// whose deadline expired while it waited for the I/O slot is skipped,
+// not written: acquireIO's select is not biased, so an expired probe
+// can still win the slot, and a write with a born-expired deadline
+// fails before sending a byte — which would drop a healthy connection
+// for every subscriber. Many attempts, since the hazard is a coin flip
+// per call.
+func TestHealthPingExpiredContextKeepsConnection(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	expired, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancel()
+	var errs []error
+	for range 32 {
+		_, err := m.healthPing(expired)
+		errs = append(errs, err)
+	}
+
+	// Nothing was written, the connection was neither dropped nor
+	// replaced, and it still delivers.
+	fsc.expectNoCmd(t, 50*time.Millisecond)
+	select {
+	case fsc2 := <-srv.dialCh:
+		t.Fatalf("healthy connection was replaced (dial to %q) after expired probes", fsc2.addr)
+	case <-time.After(200 * time.Millisecond):
+	}
+	fsc.sendMessage(t, "message", "ch", "alive")
+	if msg := drainToMessage(t, h.Events()); msg.Payload != "alive" {
+		t.Fatalf("got %q, want \"alive\"", msg.Payload)
+	}
+	for _, err := range errs {
+		if !errors.Is(err, errPingNotSent) {
+			t.Fatalf("healthPing with an expired context = %v, want errPingNotSent", err)
+		}
+	}
 }

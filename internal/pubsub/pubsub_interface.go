@@ -10,11 +10,12 @@ import (
 // AddrResolver is the owner's say over where the shared connection goes
 // and when it has to go, keeping the manager unaware of the mechanism
 // behind either (in the client: maintenance-notification handoffs).
-// Resolve runs before every dial but the first — a reconnect, or the
-// restoration of a connection lost to a failed write — with the
-// connection being replaced (the one lost, for a restoration; nil when
-// there is none) and the address dialed last; the manager dials what it
-// returns and remembers it for later reconnects.
+// Resolve runs before every dial but the first — a reconnect, the
+// restoration of a connection lost to a failed write, or a retry after
+// a dial that failed — with the connection being replaced (the one
+// lost, for a restoration; nil when there is none, as after a first
+// dial that never connected) and the address dialed last; the manager
+// dials what it returns and remembers it for later reconnects.
 // ShouldReplace is consulted after every frame read: true retires cn
 // now, with a reconnect through Resolve. Both run under the manager
 // lock and must not block. A nil resolver keeps the configured address
