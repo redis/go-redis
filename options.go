@@ -445,6 +445,11 @@ type Options struct {
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
 
+	// Client-side caching is eventually consistent. A cached value may be
+	// stale until its invalidation arrives, and reads are not guaranteed to
+	// be monotonic: a value observed through an uncached path can be newer
+	// than one a subsequent cached read returns. Applications that require
+	// monotonic reads must not rely on the cache for ordering.
 	// ClientSideCacheConfig enables client-side caching when non-nil. Together
 	// with ClientSideCache it is the on/off switch for the feature: leave both
 	// nil to disable CSC, set either one to enable it. If ClientSideCache is also set, it
@@ -495,8 +500,12 @@ type Options struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
 
-	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
-	// their invalidation arrives, instead of waiting for a reader to miss.
+	// ClientSideCacheRefreshOnInvalidate re-fetches every cached entry of an
+	// invalidated key as soon as its invalidation arrives, instead of waiting for
+	// a reader to miss. It does not look at how recently the entry was read, so
+	// each invalidation of a cached key costs one background read: on a
+	// write-heavy keyspace that is refetch traffic across the whole resident
+	// cache, not only its hot part.
 	//
 	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
 	// to a *LocalCache), like the other CSC knobs: the refresher's hot-entry
@@ -505,33 +514,6 @@ type Options struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheRefreshOnInvalidate bool
-
-	// ClientSideCacheRefreshRecencyWindow bounds ClientSideCacheRefreshOnInvalidate
-	// to keys read within this window before their invalidation arrived. 0
-	// (default) refreshes every invalidated Valid entry, regardless of how long
-	// ago it was last read. A positive value only refreshes entries whose last
-	// read falls inside the window; an entry outside it is just evicted (an
-	// ordinary miss on the next read, same as refresh being off).
-	//
-	// Tradeoff: refreshing re-registers the key with the server's tracking
-	// table, which manufactures the NEXT invalidation on the next write — so
-	// the default (refresh everything) turns a write-heavy, rarely-read key
-	// into a self-sustaining refresh loop driven by write traffic, not read
-	// traffic, for as long as its entry survives capacity eviction. Set a
-	// window to bound that blast radius to keys actually being read.
-	//
-	// Recency is tracked at the existing 200ms tick resolution
-	// (cscRefreshRecencyTick): a nonzero window is rounded up to the tick
-	// boundary that guarantees AT LEAST the requested window is covered
-	// regardless of where an invalidation lands relative to the tick phase, so
-	// the enforced window is somewhere in [window, window+200ms). It also takes
-	// up to one tick to reach full accuracy right after the refresher starts.
-	//
-	// Ignored unless ClientSideCacheRefreshOnInvalidate is set, and requires
-	// the built-in cache like that option does.
-	//
-	// Experimental: this API may change in a minor release.
-	ClientSideCacheRefreshRecencyWindow time.Duration
 
 	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses so they
 	// stream on a held tracked full-duplex connection instead of each taking a
@@ -568,6 +550,15 @@ type Options struct {
 	// the connection reader. 0 (default) applies invalidations inline. Set it no
 	// larger than the cache MaxStaleness: deferring a delete by up to the window
 	// lets a reader see the pre-invalidation value for up to that long.
+	//
+	// Deferring a delete also defers ORDERING. A caller that reads the key
+	// through a non-cached path -- for example when a miss is shed to the
+	// pooled path -- can observe a newer value than the one a concurrent
+	// in-flight fetch is about to publish, and a later cached read can then
+	// return the older value. Client-side caching is eventually consistent
+	// and does not guarantee monotonic reads; the window widens that envelope,
+	// because a published value stays readable until its invalidation is
+	// APPLIED rather than observed.
 	//
 	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
 	// to a *LocalCache), like ClientSideCacheCoalesceMisses: the batcher's
@@ -1128,11 +1119,11 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	if q.has("conn_max_lifetime_jitter") {
 		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
 	}
-	if q.err != nil {
-		return nil, q.err
-	}
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
+	}
+	if q.err != nil {
+		return nil, q.err
 	}
 
 	// any parameters left?

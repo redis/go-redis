@@ -4589,9 +4589,45 @@ func TestInvalidateHandlerFullFlushNonComparableCacheNoPanic(t *testing.T) {
 	}
 }
 
+// A refresh republish keeps the invalidated entry's second-chance bit. It used
+// to republish with the bit clear, so a hot key that had just been refreshed was
+// the first eviction victim and could vanish before its next reader.
+func TestRefreshRepublishKeepsSecondChance(t *testing.T) {
+	ctx := context.Background()
+	// A full shard, so the read is recorded even where reads are only marked
+	// under eviction pressure.
+	lc := NewLocalCache(CacheConfig{MaxEntries: 1})
+	const key, rk = "get:k", "rk"
+
+	tok, _ := lc.Reserve(key, []string{rk})
+	if !lc.fulfill(key, tok, 0, []byte("v")) {
+		t.Fatal("seed fulfill failed")
+	}
+	if _, ok := lc.Get(ctx, key); !ok { // a reader: sets the bit
+		t.Fatal("seeded key missing")
+	}
+	targets := lc.deleteByRedisKeyCollectingHot(rk, cscInvalNoHorizon, ^uint64(0), nil)
+	if len(targets) != 1 || !targets[0].read {
+		t.Fatalf("want 1 hot target carrying the read bit, got %+v", targets)
+	}
+	tok2, _ := lc.Reserve(key, []string{rk})
+	lc.stageRefreshAccess(key, tok2, targets[0].accessNs, targets[0].read)
+	if !lc.fulfill(key, tok2, 0, []byte("v2")) {
+		t.Fatal("republish fulfill failed")
+	}
+
+	s := lc.shardFor(key)
+	s.mu.RLock()
+	e := s.entries[key]
+	s.mu.RUnlock()
+	if e == nil || !e.readSinceSweep.Load() {
+		t.Fatal("the refreshed entry lost the second chance its read had earned")
+	}
+}
+
 // A refresh republish must NOT renew a key's reader-access recency, or every
 // invalidation would keep refreshing a key nobody reads anymore (a self-sustaining
-// refetch loop). After the republish + restoreAccessToken, the entry must be COLD
+// refetch loop). After a staged republish, the entry must be COLD
 // relative to the horizon of its last real read.
 func TestRefreshRepublishDoesNotRenewDemand(t *testing.T) {
 	lc := NewLocalCache(CacheConfig{MaxEntries: 16})
@@ -4604,20 +4640,20 @@ func TestRefreshRepublishDoesNotRenewDemand(t *testing.T) {
 	}
 
 	// One refresh cycle: collect the hot target (captures the reader-access token and
-	// deletes the entry), republish a fresh value, restore the captured token.
-	targets := lc.deleteByRedisKeyCollectingHot(rk, lc.LRUClock()-1, ^uint64(0), nil)
+	// deletes the entry), republish a fresh value keeping the captured token.
+	targets := lc.deleteByRedisKeyCollectingHot(rk, cscInvalNoHorizon, ^uint64(0), nil)
 	if len(targets) != 1 {
 		t.Fatalf("want 1 hot target, got %d", len(targets))
 	}
 	tok2, _ := lc.Reserve(key, []string{rk})
+	lc.stageRefreshAccess(key, tok2, targets[0].accessNs, targets[0].read)
 	if !lc.fulfill(key, tok2, 0, []byte("v2")) {
 		t.Fatal("republish fulfill failed")
 	}
-	lc.restoreAccessToken(key, targets[0].accessNs)
 
 	// No reader touched the key since. At the horizon of its last real read the entry
-	// must be COLD (lastAccessNs == that token, not > it). Without the restore the
-	// republish would leave a newer token here and the entry would still be collected
+	// must be COLD (lastAccessNs == that token, not > it). Without the staged token
+	// the republish would leave a newer token here and the entry would still be collected
 	// — the self-sustaining loop.
 	if hot := lc.deleteByRedisKeyCollectingHot(rk, targets[0].accessNs, ^uint64(0), nil); len(hot) != 0 {
 		t.Fatalf("refreshed-but-unread entry still hot after restore; got %d targets", len(hot))

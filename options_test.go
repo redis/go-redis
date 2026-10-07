@@ -129,6 +129,10 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost/?pool_fifo=yes",
 			err: errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
 		}, {
+			// invalid skip_verify value
+			url: "rediss://localhost/?skip_verify=yes",
+			err: errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
+		}, {
 			// it returns first error
 			url: "redis://localhost/?db=foo&pool_size=five",
 			err: errors.New(`redis: invalid database number: strconv.Atoi: parsing "foo": invalid syntax`),
@@ -203,7 +207,7 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 		t.Errorf("got %q, want %q", actual.Addr, expected.Addr)
 	}
 	if actual.DB != expected.DB {
-		t.Errorf("DB: got %q, expected %q", actual.DB, expected.DB)
+		t.Errorf("DB: got %d, expected %d", actual.DB, expected.DB)
 	}
 	if actual.TLSConfig == nil && expected.TLSConfig != nil {
 		t.Errorf("got nil TLSConfig, expected a TLSConfig")
@@ -453,6 +457,41 @@ func TestClusterOptionsDialerRetries(t *testing.T) {
 	}
 	if opt.DialerRetryTimeout != 200*time.Millisecond {
 		t.Errorf("expected DialerRetryTimeout=200ms, got %v", opt.DialerRetryTimeout)
+	}
+}
+
+func TestClusterOptionsNodeTimeouts(t *testing.T) {
+	cases := []struct {
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{timeout: -1, want: 0},
+		{timeout: -2, want: -1},
+		{timeout: 0, want: 5 * time.Second},
+		{timeout: 3 * time.Second, want: 3 * time.Second},
+	}
+
+	for _, tc := range cases {
+		opt := &ClusterOptions{
+			ReadTimeout:  tc.timeout,
+			WriteTimeout: tc.timeout,
+		}
+		opt.init()
+		nodes := newClusterNodes(opt)
+
+		node, err := nodes.GetOrCreate("127.0.0.1:7000")
+		if err != nil {
+			t.Fatalf("GetOrCreate failed: %v", err)
+		}
+
+		nodeOpt := node.Client.Options()
+		if nodeOpt.ReadTimeout != tc.want {
+			t.Errorf("timeout %v: expected node ReadTimeout=%v, got %v", tc.timeout, tc.want, nodeOpt.ReadTimeout)
+		}
+		if nodeOpt.WriteTimeout != tc.want {
+			t.Errorf("timeout %v: expected node WriteTimeout=%v, got %v", tc.timeout, tc.want, nodeOpt.WriteTimeout)
+		}
+		_ = nodes.Close()
 	}
 }
 
