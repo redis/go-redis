@@ -277,8 +277,8 @@ type FTAggregateWithCursor struct {
 
 // FTAggregateSortByStep represents a SORTBY operation with optional MAX.
 // Used inside FTAggregateStep to place SORTBY at an arbitrary position in
-// the aggregation pipeline. Only one SORTBY is allowed between two GROUPBY
-// steps; see FTAggregateStep.
+// the aggregation pipeline. The server currently allows only one SORTBY
+// between two GROUPBY steps; see FTAggregateStep.
 type FTAggregateSortByStep struct {
 	Fields []FTAggregateSortBy
 	Max    int // 0 means no MAX
@@ -300,9 +300,9 @@ type FTAggregateLimit struct {
 // LOAD, APPLY, GROUPBY, SORTBY, FILTER and LIMIT can all appear multiple
 // times in any order. The server runs them in the order they are sent, with
 // these exceptions for SORTBY and LIMIT:
-//   - The server allows only one SORTBY between two GROUPBY steps. A second
-//     SORTBY in the same segment returns an error. Put all sort fields in one
-//     SORTBY step.
+//   - The server currently allows only one SORTBY between two GROUPBY steps
+//     and returns an error for a second one. Put all sort fields in one
+//     SORTBY step. go-redis does not check this and leaves it to the server.
 //   - The SORTBY and all LIMIT steps between two GROUPBY steps are merged
 //     into one sort/limit stage at the position of the first of them. A later
 //     LIMIT replaces an earlier LIMIT or MAX.

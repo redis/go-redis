@@ -1167,6 +1167,32 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(cmd.Args()[3:]).To(Equal([]interface{}(expected[1:])))
 	})
 
+	It("should leave the one-SORTBY-per-GROUPBY rule to the server", Label("search", "ftaggregate"), func() {
+		sortBy := func(field string) redis.FTAggregateStep {
+			return redis.FTAggregateStep{SortBy: &redis.FTAggregateSortByStep{
+				Fields: []redis.FTAggregateSortBy{{FieldName: field, Asc: true}},
+			}}
+		}
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				sortBy("@a"),
+				{Filter: &redis.FTAggregateFilter{Expression: "@a > 1"}},
+				sortBy("@b"),
+			},
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"*",
+			"SORTBY", 2, "@a", "ASC",
+			"FILTER", "@a > 1",
+			"SORTBY", 2, "@b", "ASC",
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+	})
+
 	It("should error when a step sets both Filter and Limit", Label("search", "ftaggregate"), func() {
 		options := &redis.FTAggregateOptions{
 			Steps: []redis.FTAggregateStep{

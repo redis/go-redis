@@ -341,10 +341,10 @@ func (b *AggregateBuilder) Collect(o FTAggregateCollect) *AggregateBuilder {
 // SortBy adds SORTBY <field> ASC|DESC. Consecutive SortBy calls (with no
 // other step in between) are merged into a single SORTBY clause so fields
 // act as tiebreakers. A SortBy call after a non-SortBy step starts a new
-// SORTBY step. The server allows only one SORTBY between two GroupBy steps,
-// so a second SORTBY in the same segment makes Run return an error. For
-// example, SortBy().Filter().SortBy() fails, and
-// SortBy().GroupBy().SortBy() works.
+// SORTBY step. The server currently allows only one SORTBY between two
+// GroupBy steps and returns an error for a second one, e.g. for
+// SortBy().Filter().SortBy(). SortBy().GroupBy().SortBy() works. The builder
+// does not check this and leaves it to the server.
 //
 // Note: this is a semantics change from earlier experimental versions of
 // the builder, where SortBy always accumulated into a single SORTBY clause
