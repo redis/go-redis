@@ -696,6 +696,15 @@ func (cn *Conn) EffectiveWriteTimeout(normalTimeout time.Duration) time.Duration
 // then reads the window again. A surviving notification holder's relaxed timeout
 // still takes priority over normalTimeout.
 func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
+	// A zero normal timeout is a deliberately blocking read — pub/sub
+	// waits for pushes with no deadline. A relaxed timeout may only ever
+	// loosen a deadline, and nothing is looser than none: substituting a
+	// finite value here would tighten the read and fail a healthy idle
+	// connection exactly during the maintenance window that set it.
+	if normalTimeout == 0 {
+		return normalTimeout
+	}
+
 	cur := cn.relaxed.Load()
 	if cur == nil || cur.readNs <= 0 {
 		return normalTimeout

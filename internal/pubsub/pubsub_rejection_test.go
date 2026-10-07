@@ -169,3 +169,95 @@ func TestReplayWritesKnownRejectedNamesAlone(t *testing.T) {
 		t.Fatalf("got %v, want the NOPERM reply", err)
 	}
 }
+
+// TestUnsubscribeErrorReachesIssuer pins the attribution of a rejected
+// orphan UNSUBSCRIBE (an ACL revoking the command, say): the error
+// reaches the handle that released the name even though the name has
+// left the registry by then — and not a handle that re-added the name
+// meanwhile, which an owner lookup would mistake for its target.
+func TestUnsubscribeErrorReachesIssuer(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // no autoConfirm: the test answers by hand
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	// keep holds the shared connection open once ch is gone.
+	a, err := m.Subscribe(ctx, "ch", "keep")
+	if err != nil {
+		t.Fatalf("Subscribe a: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch", "keep")
+	fsc.sendConfirm(t, "subscribe", "ch", 1)
+	fsc.sendConfirm(t, "subscribe", "keep", 2)
+	waitForConfirmation(t, a.Events(), "subscribe", "keep")
+
+	// a leaves ch (last owner: the orphan UNSUBSCRIBE is written), and b
+	// re-adds ch before the server's reply arrives.
+	if err := a.Unsubscribe(ctx, "ch"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "ch")
+	b, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe b: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "ch")
+
+	// The server answers in write order: the unsubscribe is refused.
+	fsc.sendError(t, "NOPERM this user has no permissions to run the 'unsubscribe' command")
+	fsc.sendConfirm(t, "subscribe", "ch", 2)
+
+	if err := waitForError(t, a.Events()); !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("a got %v, want the NOPERM reply to its unsubscribe", err)
+	}
+	// b sees its own confirmation and nothing of a's rejection.
+	for {
+		switch ev := recvEvent(t, b.Events()).(type) {
+		case error:
+			t.Fatalf("b received a's unsubscribe rejection: %v", ev)
+		case *Subscription:
+			if ev.Kind == "subscribe" && ev.Channel == "ch" {
+				return
+			}
+		}
+	}
+}
+
+// TestManagerUnsubscribeErrorReachesEveryReleaser pins the same for a
+// manager-level Unsubscribe spanning handles: every handle that
+// released the name gets the rejection.
+func TestManagerUnsubscribeErrorReachesEveryReleaser(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h1, err := m.Subscribe(ctx, "x")
+	if err != nil {
+		t.Fatalf("Subscribe h1: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "x")
+	fsc.sendConfirm(t, "subscribe", "x", 1)
+	waitForConfirmation(t, h1.Events(), "subscribe", "x")
+
+	h2, err := m.Subscribe(ctx, "x", "keep")
+	if err != nil {
+		t.Fatalf("Subscribe h2: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "x", "keep")
+	fsc.sendConfirm(t, "subscribe", "x", 1)
+	fsc.sendConfirm(t, "subscribe", "keep", 2)
+	waitForConfirmation(t, h2.Events(), "subscribe", "keep")
+
+	if err := m.Unsubscribe(ctx, "x"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "x")
+	fsc.sendError(t, "NOPERM this user has no permissions to run the 'unsubscribe' command")
+
+	for i, h := range []PubSuber{h1, h2} {
+		if err := waitForError(t, h.Events()); !strings.Contains(err.Error(), "NOPERM") {
+			t.Fatalf("h%d got %v, want the NOPERM reply to the unsubscribe", i+1, err)
+		}
+	}
+}
