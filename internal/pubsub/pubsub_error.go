@@ -32,6 +32,12 @@ const (
 	// the socket silently dead.
 	errPingTimeout pubSubError = "redis: pubsub: health-check ping got no reply in time"
 
+	// errPingNotSent is the health probe's "no verdict": the I/O slot
+	// stayed busy (a dial or a write in flight) for the whole
+	// PingTimeout, so the PING was never written and the connection is
+	// neither known good nor bad. The health checker skips that tick.
+	errPingNotSent pubSubError = "redis: pubsub: health-check ping not sent: I/O slot busy"
+
 	// Subscribe-argument validation, one per namespace. Exported so the
 	// root package's client-level validation (e.g. Ring, which must pick
 	// a shard before it can delegate) returns the same error values.

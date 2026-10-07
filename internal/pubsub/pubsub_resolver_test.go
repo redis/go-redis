@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -290,4 +291,77 @@ func TestForegroundRestoreFollowsHandoff(t *testing.T) {
 	}
 	fsc2.expectCmd(t, "subscribe", "ch")
 	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+}
+
+// rotatingResolver mimics a resolver that picks another endpoint when
+// there is no previous connection to learn from — the shape of a
+// resolver that rotates through candidates until one dials.
+type rotatingResolver struct {
+	target   string
+	nilPrevs atomic.Int32 // Resolve calls that saw no previous connection
+}
+
+func (*rotatingResolver) ShouldReplace(*pool.Conn) bool { return false }
+
+func (r *rotatingResolver) Resolve(_ context.Context, prev *pool.Conn, current string) string {
+	if prev != nil {
+		return current
+	}
+	r.nilPrevs.Add(1)
+	return r.target
+}
+
+// TestFailedFirstDialResolvesLaterDials pins the resolver contract
+// when the very first dial fails: no connection was ever dropped, yet
+// every later dial must still consult the resolver (with a nil
+// previous connection), or a Subscribe retried against a dead address
+// could never reach the working one the resolver knows. The scenario
+// is sticky on purpose: Manager.Subscribe rolls back the registration
+// its failed call made, so no background reconnect runs and only the
+// next foreground call can dial.
+func TestFailedFirstDialResolvesLaterDials(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	var deadDials atomic.Int32
+	newConn := func(ctx context.Context, addr string) (*pool.Conn, error) {
+		if addr == "dead:6379" {
+			deadDials.Add(1)
+			return nil, errors.New("connection refused")
+		}
+		return srv.dial(ctx, addr)
+	}
+	r := &rotatingResolver{target: "node-b:6379"}
+	m := NewManager(testConfig("dead:6379"), newConn, func(cn *pool.Conn) error { return cn.Close() },
+		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
+		testIsBadConn, nil, r)
+	t.Cleanup(func() { _ = m.Close() })
+
+	// The first dial goes to the configured address, unresolved, and
+	// fails; the call's registration is rolled back with it.
+	if _, err := m.Subscribe(ctx, "ch"); err == nil {
+		t.Fatal("Subscribe against the dead address succeeded, want a dial error")
+	}
+	if n := deadDials.Load(); n != 1 {
+		t.Fatalf("dead address dialed %d times, want 1", n)
+	}
+
+	// The next dial is resolved — with no previous connection to show —
+	// and lands on the endpoint the resolver picked.
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("second Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	if fsc.addr != "node-b:6379" {
+		t.Fatalf("second dial went to %q, want the resolver's node-b:6379", fsc.addr)
+	}
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+	if n := deadDials.Load(); n != 1 {
+		t.Fatalf("dead address dialed %d times in total, want only the first", n)
+	}
+	if n := r.nilPrevs.Load(); n == 0 {
+		t.Fatal("resolver was never consulted with a nil previous connection")
+	}
 }

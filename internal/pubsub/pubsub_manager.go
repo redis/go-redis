@@ -77,6 +77,11 @@ type Manager struct {
 	// a maintenance handoff it had received must still redirect the
 	// dial (see resolveAddrLocked). Guarded by mu.
 	dropped *pool.Conn
+	// dialed records that a dial has been attempted, connected or not:
+	// Resolve runs before every dial but the first (see AddrResolver),
+	// and a failed first dial leaves no dropped connection to key that
+	// off. Guarded by mu.
+	dialed bool
 
 	// mu guards the in-memory state only and is never held across the
 	// network. io is the I/O slot: a one-slot semaphore held by whoever
@@ -994,9 +999,11 @@ func (m *Manager) healthCheck() {
 		cn, pingErr := m.healthPing(ctx)
 		cancel()
 
-		if errors.Is(pingErr, errPubSubNoConn) {
+		if errors.Is(pingErr, errPubSubNoConn) || errors.Is(pingErr, errPingNotSent) {
 			// No conn (possibly released since the tick started) means
-			// nothing to health-check.
+			// nothing to health-check; a probe that never got the I/O
+			// slot (a dial or a write held it for the whole window) has
+			// no verdict either — that operation reports its own failure.
 			continue
 		}
 		if pingErr != nil {
@@ -1031,9 +1038,20 @@ func (m *Manager) healthCheck() {
 // (errPubSubNoConn when there is none).
 func (m *Manager) healthPing(ctx context.Context) (*pool.Conn, error) {
 	if err := m.acquireIO(ctx); err != nil {
-		return nil, err
+		if errors.Is(err, pool.ErrClosed) {
+			return nil, err
+		}
+		return nil, errPingNotSent
 	}
 	defer m.releaseIO()
+	// The slot may have come free just as the probe's deadline expired
+	// (acquireIO's select is not biased): a write with a born-expired
+	// deadline fails before sending a byte, and writeReleasingLock would
+	// drop a healthy connection for every subscriber. Like every writer,
+	// check before touching the connection.
+	if ctx.Err() != nil {
+		return nil, errPingNotSent
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1126,12 +1144,16 @@ func (m *Manager) connectIdempotentLocked(ctx context.Context) error {
 		go m.retryRejected()
 	})
 
-	// A restoration — not the first dial — is redirected like a
-	// reconnect: the resolver sees the connection lost, which may have
-	// received a maintenance handoff naming the endpoint to use.
-	if m.dropped != nil {
+	// Every dial but the first — a restoration, or a retry after a first
+	// dial that failed — is redirected like a reconnect: the resolver
+	// sees the connection lost (which may have received a maintenance
+	// handoff naming the endpoint to use), nil when none ever came up —
+	// a resolver that rotates endpoints on a dead address needs the call
+	// all the same, or every retry would dial the same dead address.
+	if m.dialed {
 		m.resolveAddrLocked(ctx, m.dropped)
 	}
+	m.dialed = true
 
 	cn, err := m.dialUnlocked(ctx, m.cfg.Addr)
 	if err != nil {
@@ -1232,6 +1254,7 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 	m.resolveAddrLocked(ctx, prev)
 
 	m.reconnectAttempts++
+	m.dialed = true
 	newConn, err := m.dialUnlocked(ctx, m.cfg.Addr)
 	if err != nil {
 		m.nextReconnectAt = time.Now().Add(m.reconnectBackoffLocked())
