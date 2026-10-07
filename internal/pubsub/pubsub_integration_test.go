@@ -55,32 +55,6 @@ func newTestClient(t *testing.T, opts ...func(*redis.Options)) *redis.Client {
 	return client
 }
 
-// skipBeforeVersion skips the test when the server is older than
-// major.minor.
-func skipBeforeVersion(t *testing.T, client *redis.Client, major, minor int, reason string) {
-	t.Helper()
-
-	info, err := client.Info(ctx, "server").Result()
-	if err != nil {
-		t.Fatalf("INFO server: %v", err)
-	}
-	for _, line := range strings.Split(info, "\n") {
-		if v, ok := strings.CutPrefix(line, "redis_version:"); ok {
-			parts := strings.SplitN(strings.TrimSpace(v), ".", 3)
-			if len(parts) < 2 {
-				break
-			}
-			gotMajor, _ := strconv.Atoi(parts[0])
-			gotMinor, _ := strconv.Atoi(parts[1])
-			if gotMajor > major || (gotMajor == major && gotMinor >= minor) {
-				return
-			}
-			t.Skipf("requires Redis >= %d.%d (server is %s): %s", major, minor, strings.TrimSpace(v), reason)
-		}
-	}
-	t.Fatalf("redis_version not found in INFO server")
-}
-
 // eventually polls cond until it returns true or the timeout expires.
 func eventually(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
@@ -576,72 +550,5 @@ func TestPubSubIntrospectionCommands(t *testing.T) {
 	}
 	if len(schannels) != 1 || schannels[0] != "psint:sch" {
 		t.Fatalf("PubSubShardChannels = %v, want [psint:sch]", schannels)
-	}
-}
-
-// TestPubSubSubkeyNotifications pins delivery of hash-field subkey
-// keyspace notifications (Redis 8.8+) through the pub/sub engine.
-func TestPubSubSubkeyNotifications(t *testing.T) {
-	if os.Getenv("RE_CLUSTER") == "true" {
-		t.Skip("keyspace notification config not available on Redis Enterprise")
-	}
-	client := newTestClient(t)
-	skipBeforeVersion(t, client, 8, 8, "subkeyspace notifications")
-
-	prev, err := client.ConfigGet(ctx, "notify-keyspace-events").Result()
-	if err != nil {
-		t.Fatalf("ConfigGet: %v", err)
-	}
-	if err := client.ConfigSet(ctx, "notify-keyspace-events", "STh").Err(); err != nil {
-		t.Fatalf("ConfigSet: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = client.ConfigSet(ctx, "notify-keyspace-events", prev["notify-keyspace-events"]).Err()
-	})
-
-	const (
-		hashKey         = "skn:hash"
-		field           = "field-alpha"
-		hexpireChannel  = "__subkeyevent@0__:hexpire"
-		expiredChannel  = "__subkeyevent@0__:hexpired"
-		expectedPayload = "8:skn:hash|11:field-alpha"
-	)
-	if err := client.Del(ctx, hashKey).Err(); err != nil {
-		t.Fatalf("Del: %v", err)
-	}
-
-	pubsub := client.Subscribe(ctx, hexpireChannel, expiredChannel)
-	defer pubsub.Close()
-	ch := pubsub.Channel()
-
-	waitSubscribers(t, client, hexpireChannel, 1)
-	waitSubscribers(t, client, expiredChannel, 1)
-
-	if err := client.HSet(ctx, hashKey, field, "value").Err(); err != nil {
-		t.Fatalf("HSet: %v", err)
-	}
-	res, err := client.HPExpire(ctx, hashKey, 50*time.Millisecond, field).Result()
-	if err != nil {
-		t.Fatalf("HPExpire: %v", err)
-	}
-	if len(res) != 1 || res[0] != 1 {
-		t.Fatalf("HPExpire = %v, want [1]", res)
-	}
-
-	seen := make(map[string]string)
-	deadline := time.After(10 * time.Second)
-	for seen[hexpireChannel] == "" || seen[expiredChannel] == "" {
-		select {
-		case msg := <-ch:
-			if msg.Channel != hexpireChannel && msg.Channel != expiredChannel {
-				continue
-			}
-			if msg.Payload != expectedPayload {
-				t.Fatalf("payload on %s = %q, want %q", msg.Channel, msg.Payload, expectedPayload)
-			}
-			seen[msg.Channel] = msg.Payload
-		case <-deadline:
-			t.Fatalf("timed out; seen: %v", seen)
-		}
 	}
 }

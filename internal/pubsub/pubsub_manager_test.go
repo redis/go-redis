@@ -472,6 +472,64 @@ func TestManagerRedirectReplyRequestsReload(t *testing.T) {
 	}
 }
 
+// TestManagerAskReplyDoesNotRequestReload pins that ASK is not a
+// stale-topology signal: it is a one-shot redirect for the duration of
+// a slot migration, during which CLUSTER SLOTS still names the
+// migrating source, so a reload would change nothing. The reply still
+// reaches the issuer, the connection stays up, and the name stays
+// Rejected: retryRejected re-sends it on its interval, and the retry
+// that lands after the migration earns the MOVED that drives a reload.
+func TestManagerAskReplyDoesNotRequestReload(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	reloads := make(chan struct{}, 16)
+	cfg := testConfig("node-a:6379")
+	cfg.SubscribeRetryInterval = 50 * time.Millisecond
+	m := newTestManagerReload(t, srv, cfg, func() {
+		select {
+		case reloads <- struct{}{}:
+		default:
+		}
+	})
+	t.Cleanup(func() { _ = m.Close() })
+
+	h, err := m.SSubscribe(ctx, "{a}ch")
+	if err != nil {
+		t.Fatalf("SSubscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "ssubscribe", "{a}ch")
+
+	fsc.sendError(t, "ASK 866 node-b:6379")
+	if ev, ok := recvEvent(t, h.Events()).(error); !ok || !strings.Contains(ev.Error(), "ASK") {
+		t.Fatalf("event = %#v, want the ASK error reply", ev)
+	}
+	// The name stays Rejected and is retried on the interval — on the
+	// same connection, since the slot still belongs to this node.
+	fsc.expectCmd(t, "ssubscribe", "{a}ch")
+	// A reload request would have been made before the error event was
+	// delivered, so these checks need no waiting.
+	select {
+	case <-reloads:
+		t.Fatal("ASK reply requested a topology reload")
+	default:
+	}
+	select {
+	case fsc2 := <-srv.dialCh:
+		t.Fatalf("unexpected reconnect to %q after an ASK reply", fsc2.addr)
+	default:
+	}
+
+	// The migration completed meanwhile: the retry earns a MOVED, which
+	// is the stale-topology signal.
+	fsc.sendError(t, "MOVED 866 node-b:6379")
+	select {
+	case <-reloads:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the reload request after MOVED")
+	}
+}
+
 // TestManagerSubscribeSelfHeals pins the contract for subscribe-time
 // failures: clients hand out the PubSub without checking
 // the subscribe error, so the intent must survive a failed dial and be
