@@ -314,11 +314,11 @@ func (h *handle) Close() error {
 		}
 	}
 
-	err := h.m.handleUnsubscribeLocked(ctx, h, "unsubscribe")
-	if perr := h.m.handleUnsubscribeLocked(ctx, h, "punsubscribe"); err == nil {
+	err := h.m.handleUnsubscribeLocked(h, "unsubscribe")
+	if perr := h.m.handleUnsubscribeLocked(h, "punsubscribe"); err == nil {
 		err = perr
 	}
-	if serr := h.m.handleUnsubscribeLocked(ctx, h, "sunsubscribe"); err == nil {
+	if serr := h.m.handleUnsubscribeLocked(h, "sunsubscribe"); err == nil {
 		err = serr
 	}
 

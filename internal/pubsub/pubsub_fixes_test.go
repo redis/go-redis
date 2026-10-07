@@ -93,6 +93,92 @@ func TestExpiredContextDoesNotDropConnection(t *testing.T) {
 	}
 }
 
+// TestCallerDeadlineDoesNotBoundSharedWrite pins the other half of the
+// expired-context fix: a caller's deadline that passes while its write
+// is in flight must not fail that write, because the shared connection
+// would be dropped for every subscriber. The write is bounded by the
+// manager's WriteTimeout alone; here it stalls past the caller's
+// deadline, then completes, and the connection stays up.
+func TestCallerDeadlineDoesNotBoundSharedWrite(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379")
+	cfg.WriteTimeout = 5 * time.Second
+	m := newTestManager(t, srv, cfg)
+
+	h, err := m.Subscribe(ctx, "a")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "a")
+	fsc.sendConfirm(t, "subscribe", "a", 1)
+	waitForConfirmation(t, h.Events(), "subscribe", "a")
+
+	// Stall the server after the arming ping: the Subscribe write below
+	// blocks on the pipe, past the caller's deadline, until the server
+	// resumes well within WriteTimeout.
+	fsc.pauseAfterNext()
+	if err := m.Ping(ctx); err != nil {
+		t.Fatalf("arming ping: %v", err)
+	}
+	fsc.expectCmd(t, "ping")
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		fsc.paused.Store(false)
+	}()
+
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if _, err := h.Subscribe(short, "b"); err != nil {
+		t.Fatalf("Subscribe whose deadline passed mid-write: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "b")
+	fsc.sendConfirm(t, "subscribe", "b", 2)
+	waitForConfirmation(t, h.Events(), "subscribe", "b")
+
+	// The connection survived: no redial.
+	select {
+	case fsc2 := <-srv.dialCh:
+		t.Fatalf("a caller's deadline cost a reconnect to %s", fsc2.addr)
+	default:
+	}
+}
+
+// TestIdleReadIgnoresRelaxedTimeout pins the read loop's blocking read
+// against maintenance windows: the manager reads with no deadline, and
+// a relaxed timeout set on the connection (a MOVING/MIGRATING window)
+// must not turn that into a finite one — an idle subscription would
+// time out, look broken and be reconnected although the socket is
+// healthy. The connection stays, and delivery continues afterwards.
+func TestIdleReadIgnoresRelaxedTimeout(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "idle")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	ch := h.Channel()
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "idle")
+
+	// A relaxed window far shorter than the idle period that follows.
+	fsc.poolConn.SetRelaxedTimeout(50*time.Millisecond, 50*time.Millisecond)
+	select {
+	case fsc2 := <-srv.dialCh:
+		t.Fatalf("idle connection reconnected to %s under a relaxed timeout", fsc2.addr)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	fsc.sendMessage(t, "message", "idle", "still-here")
+	if msg := recvMsg(t, ch); msg.Payload != "still-here" {
+		t.Fatalf("got %q, want \"still-here\"", msg.Payload)
+	}
+}
+
 // TestHealthCheckWithoutPingTimeout pins that a non-positive PingTimeout
 // disables the probe's deadline and the reply requirement instead of
 // failing every probe: pings still go out, and an unanswered one does
