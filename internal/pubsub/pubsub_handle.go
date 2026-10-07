@@ -37,11 +37,9 @@ type handle struct {
 	msgCh chan *Message
 	allCh chan any
 
-	// Slow-consumer drop accounting (written only by the listen
-	// goroutine): drops since the last logged line, and the throttle
-	// pacing those lines.
-	dropped int
-	dropLog *internal.ThrottledLogger
+	// dropLog paces the slow-subscriber drop line: one per LogInterval,
+	// the drops in between counted on it.
+	dropLog internal.Logging
 
 	closed bool
 }
@@ -156,9 +154,10 @@ func (h *handle) pumpStarted() bool {
 }
 
 // deliverLocked sends an event into the handle's stream, dropping it
-// with accounting when the buffer is full (a blocking send would stall
-// the shared fan-out for every handle). Callers must hold the manager
-// lock.
+// when the buffer is full: a blocking send would stall the shared
+// fan-out for every handle. The drop line is throttled — one per
+// LogInterval, the drops in between counted on it. Callers must hold
+// the manager lock.
 func (h *handle) deliverLocked(ev any) {
 	if h.closed {
 		return
@@ -166,7 +165,9 @@ func (h *handle) deliverLocked(ev any) {
 	select {
 	case h.events <- ev:
 	default:
-		h.noteDropLocked(cap(h.events))
+		h.dropLog.Printf(context.TODO(),
+			"redis: pubsub: dropped a message to a slow subscriber (buffer of %d is full, see PubSubChanSize)",
+			cap(h.events))
 	}
 }
 
@@ -190,17 +191,6 @@ func (h *handle) deliverPongLocked(pong *Pong) {
 	select {
 	case h.events <- pong:
 	default:
-	}
-}
-
-// noteDropLocked records a dropped delivery, logging at most once per
-// LogInterval with the drops accumulated since the previous log.
-func (h *handle) noteDropLocked(bufSize int) {
-	h.dropped++
-	if h.dropLog.Printf(context.TODO(),
-		"redis: pubsub: dropped %d message(s) to a slow subscriber (buffer of %d is full, see PubSubChanSize)",
-		h.dropped, bufSize) {
-		h.dropped = 0
 	}
 }
 

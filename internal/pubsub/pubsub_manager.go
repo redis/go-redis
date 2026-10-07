@@ -97,10 +97,10 @@ type Manager struct {
 	io chan struct{}
 
 	// Reconnect bookkeeping (guarded by mu). reconnectLog paces the
-	// failure lines of one outage; a successful connect resets it so the
-	// next outage's first failure logs immediately.
+	// failure lines of an outage to one per LogInterval, the rest
+	// counted on the next line.
 	reconnectAttempts int
-	reconnectLog      *internal.ThrottledLogger
+	reconnectLog      internal.Logging
 	// nextReconnectAt gates the replacement of a live connection the
 	// resolver wants retired (see receive): a redirect to an endpoint
 	// that does not dial yet must not cost a blocking dial per frame.
@@ -109,7 +109,7 @@ type Manager struct {
 	// errorLog paces the line logged for error replies on the shared
 	// connection: a persistently rejected subscribe is retried on a
 	// cadence and would otherwise log on every retry.
-	errorLog *internal.ThrottledLogger
+	errorLog internal.Logging
 
 	// The per-kind registries, one subscription entry per name. They
 	// always equal the desired state: registration happens at write
@@ -193,8 +193,8 @@ func NewManager(
 		requestTopologyRefresh: requestTopologyRefresh,
 		resolver:               resolver,
 
-		reconnectLog: internal.NewThrottledLogger(cfg.LogInterval),
-		errorLog:     internal.NewThrottledLogger(cfg.LogInterval),
+		reconnectLog: internal.NewThrottledLogger(cfg.LogInterval, nil),
+		errorLog:     internal.NewThrottledLogger(cfg.LogInterval, nil),
 
 		subscribers:        make(map[string]*subscription),
 		patternSubscribers: make(map[string]*subscription),
@@ -236,7 +236,7 @@ func (m *Manager) newHandleLocked() *handle {
 		schannels: make(map[string]struct{}),
 		events:    make(chan any, m.cfg.ChanSize),
 		done:      make(chan struct{}),
-		dropLog:   internal.NewThrottledLogger(m.cfg.LogInterval),
+		dropLog:   internal.NewThrottledLogger(m.cfg.LogInterval, nil),
 	}
 }
 
@@ -1197,7 +1197,6 @@ func (m *Manager) connectIdempotentLocked(ctx context.Context) error {
 	// loops (independent non-blocking sends: a coupled or blocking send
 	// under m.mu could starve one loop or deadlock).
 	m.reconnectAttempts = 0
-	m.reconnectLog.Reset()
 	m.nextReconnectAt = time.Time{}
 	select {
 	case m.wakeListen <- struct{}{}:
@@ -1332,7 +1331,6 @@ func (m *Manager) reconnect(ctx context.Context, cn *pool.Conn, reason error) er
 
 	internal.Logger.Printf(ctx, "pubsub: reconnected (attempts: %d, due to: %v)", m.reconnectAttempts, reason)
 	m.reconnectAttempts = 0
-	m.reconnectLog.Reset()
 	m.nextReconnectAt = time.Time{}
 	return nil
 }
