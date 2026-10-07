@@ -348,3 +348,48 @@ func TestManagerSUnsubscribeErrorStaysWithinSlot(t *testing.T) {
 		t.Fatalf("releaser of the confirmed slot %q received the other slot's error: %v", second[1], err)
 	}
 }
+
+// TestRetryWriteBudgetStartsWithSlotInHand pins that a rejected-name
+// retry's write is not bounded by the budget spent getting to it: a
+// budget shared with the I/O slot wait could be spent by the time the
+// write starts, and a socket deadline already in the past fails the
+// write before a byte is sent — dropping a live connection for every
+// subscriber. The wait is stretched past the whole budget here by
+// holding the manager lock, the one thing between the slot and the
+// write.
+func TestRetryWriteBudgetStartsWithSlotInHand(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	fsc.sendError(t, "NOPERM no permissions to access this channel")
+	if err := waitForError(t, h.Events()); !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("got %v, want the NOPERM reply", err)
+	}
+
+	// Stall the retry between the slot and the write for longer than
+	// its whole budget, then let it go.
+	m.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.resubscribeRejected(50 * time.Millisecond)
+	}()
+	time.Sleep(150 * time.Millisecond)
+	m.mu.Unlock()
+	<-done
+
+	// The live connection stays, and the retry went out on it.
+	select {
+	case fsc2 := <-srv.dialCh:
+		t.Fatalf("live connection was replaced (dial to %q) by a retry whose wait outlived its budget", fsc2.addr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	fsc.expectCmd(t, "subscribe", "ch")
+}

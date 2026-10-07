@@ -400,13 +400,8 @@ func (m *Manager) handleSubscribe(ctx context.Context, h *handle, redisCommand s
 	// The dial ran with the lock released, so re-validate: the manager
 	// may have closed (taking a handle created here, and the registry,
 	// down with it), or a caller-held handle may have been closed.
-	select {
-	case <-m.done:
-		return nil, pool.ErrClosed
-	default:
-	}
-	if handle.closed {
-		return nil, pool.ErrClosed
+	if err := m.stillOpenLocked(handle); err != nil {
+		return nil, err
 	}
 
 	switch {
@@ -425,6 +420,13 @@ func (m *Manager) handleSubscribe(ctx context.Context, h *handle, redisCommand s
 			if h == nil {
 				m.rollbackSubscribeLocked(handle, redisCommand, channels)
 			}
+			return nil, err
+		}
+		// The write ran with the lock released too: a Close that landed
+		// meanwhile tore the handle down (a manager Close, the registry
+		// with it), and a closed handle must not be handed out as
+		// subscribed.
+		if err := m.stillOpenLocked(handle); err != nil {
 			return nil, err
 		}
 	default:
@@ -466,6 +468,22 @@ func (m *Manager) rollbackSubscribeLocked(handle *handle, redisCommand string, c
 		}
 	}
 	delete(m.handles, handle)
+}
+
+// stillOpenLocked re-validates, after a network step ran with m.mu
+// released, that neither the manager nor the handle was closed
+// meanwhile: a Close that landed in between owns the teardown, and a
+// closed handle must not be handed out. Callers must hold m.mu.
+func (m *Manager) stillOpenLocked(h *handle) error {
+	select {
+	case <-m.done:
+		return pool.ErrClosed
+	default:
+	}
+	if h.closed {
+		return pool.ErrClosed
+	}
+	return nil
 }
 
 // Unsubscribe removes channel subscriptions across all handles;
@@ -992,10 +1010,7 @@ func (m *Manager) healthCheck() {
 		// write still honours WriteTimeout) and, below, the reply
 		// requirement; a born-expired context would fail every write and
 		// drop a healthy connection on each tick.
-		ctx, cancel := context.Background(), context.CancelFunc(func() {})
-		if pingTimeout > 0 {
-			ctx, cancel = context.WithTimeout(ctx, pingTimeout)
-		}
+		ctx, cancel := timeoutCtx(pingTimeout)
 		cn, pingErr := m.healthPing(ctx)
 		cancel()
 
@@ -1388,18 +1403,18 @@ func (m *Manager) replayLocked() [][]any {
 
 // resubscribeRejected re-sends every Rejected subscription — answered
 // with an error reply instead of a confirmation — making it Pending
-// again until the server answers the retry. Writes are bounded by
-// pingTimeout: a dead pipe must not hold the I/O slot for the full
-// WriteTimeout. With no connection the reconnect replay owns recovery.
+// again until the server answers the retry. The I/O slot wait and each
+// write are bounded by pingTimeout, with a budget each: a dead pipe
+// must not hold the slot for the full WriteTimeout, and a budget shared
+// across the wait could be spent by the time the write starts — a
+// socket deadline already in the past fails the write before a byte is
+// sent, and writeReleasingLock would then drop a live connection for
+// every subscriber. With no connection the reconnect replay owns
+// recovery.
 func (m *Manager) resubscribeRejected(pingTimeout time.Duration) {
-	ctx := context.Background()
-	if pingTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, pingTimeout)
-		defer cancel()
-	}
-
-	if err := m.acquireIO(ctx); err != nil {
+	waitCtx, cancelWait := timeoutCtx(pingTimeout)
+	defer cancelWait()
+	if err := m.acquireIO(waitCtx); err != nil {
 		return
 	}
 	defer m.releaseIO()
@@ -1423,10 +1438,23 @@ func (m *Manager) resubscribeRejected(pingTimeout time.Duration) {
 		// Broadcast: the retry's confirmations belong to every owner,
 		// like a replay's.
 		cmds := m.prepareSubscribeLocked(kind, replyWaiter{broadcast: true}, rejected)
-		if err := m.writeReleasingLock(ctx, m.conn, cmds); err != nil {
+		// The write's budget starts now, slot and lock in hand.
+		writeCtx, cancelWrite := timeoutCtx(pingTimeout)
+		err := m.writeReleasingLock(writeCtx, m.conn, cmds)
+		cancelWrite()
+		if err != nil {
 			return
 		}
 	}
+}
+
+// timeoutCtx bounds a fresh background context by d; d <= 0 means no
+// bound (and a no-op cancel).
+func timeoutCtx(d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return context.Background(), func() {}
+	}
+	return context.WithTimeout(context.Background(), d)
 }
 
 // prepareSubscribeLocked ledgers the (un)subscribe command(s) carrying
