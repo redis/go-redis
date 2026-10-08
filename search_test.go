@@ -2185,6 +2185,30 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		WaitForIndexing(rawClient, "idx1")
 	})
 
+	It("should FTCreate VECTOR with HNSW compression and read it back from FTInfo", Label("search", "ftcreate", "ftinfo"), func() {
+		SkipBeforeRedisVersion("8.12", "HNSW COMPRESSION requires Redis 8.12+")
+		hnswOptions := &redis.FTHNSWOptions{
+			Type:              "FLOAT32",
+			Dim:               4,
+			DistanceMetric:    "L2",
+			Compression:       "SQ8",
+			TrainingThreshold: 1024,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(rawClient, "idx1")
+
+		resInfo, err := client.FTInfo(ctx, "idx1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resInfo.Attributes).To(HaveLen(1))
+		Expect(resInfo.Attributes[0].Algorithm).To(BeEquivalentTo("HNSW"))
+		Expect(resInfo.Attributes[0].Compression).To(BeEquivalentTo("SQ8"))
+		Expect(resInfo.Attributes[0].TrainingThreshold).To(BeEquivalentTo(1024))
+	})
+
 	It("should FTCreate VECTOR with VAMANA algorithm - advanced parameters", Label("search", "ftcreate"), func() {
 		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
@@ -4870,5 +4894,32 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res2).ToNot(BeEmpty())
 		}).ShouldNot(Panic())
+	})
+
+	It("should read HNSW compression back from FTInfo with RESP3", Label("search", "ftcreate", "ftinfo"), func() {
+		SkipBeforeRedisVersion("8.12", "HNSW COMPRESSION requires Redis 8.12+")
+		hnswOptions := &redis.FTHNSWOptions{
+			Type:              "FLOAT32",
+			Dim:               4,
+			DistanceMetric:    "L2",
+			Compression:       "SQ8",
+			TrainingThreshold: 1024,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(rawClient, "idx1")
+
+		// RESP3 attributes arrive as maps and go through parseFTAttributeFromMap.
+		for _, c := range []redis.Cmdable{client, client2} {
+			resInfo, err := c.FTInfo(ctx, "idx1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resInfo.Attributes).To(HaveLen(1))
+			Expect(resInfo.Attributes[0].Algorithm).To(BeEquivalentTo("HNSW"))
+			Expect(resInfo.Attributes[0].Compression).To(BeEquivalentTo("SQ8"))
+			Expect(resInfo.Attributes[0].TrainingThreshold).To(BeEquivalentTo(1024))
+		}
 	})
 })
