@@ -55,6 +55,14 @@ type metricsRecorder struct {
 
 	streamLag metric.Float64Histogram
 
+	// MultiDB (Active-Active failover); see metrics_multidb.go
+	multiDBFailovers             metric.Int64Counter
+	multiDBFailoverDuration      metric.Float64Histogram
+	multiDBActiveDatabaseChanges metric.Int64Counter
+	multiDBCircuitStateChanges   metric.Int64Counter
+	multiDBHealthChecks          metric.Int64Counter
+	multiDBHealthCheckDuration   metric.Float64Histogram
+
 	// Configuration
 	cfg *config
 }
