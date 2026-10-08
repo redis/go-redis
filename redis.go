@@ -1540,6 +1540,12 @@ type processState struct {
 }
 
 func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
+	// Constructors can reject invalid commands before execution. Preserve that
+	// error so processHook does not overwrite it with a network error.
+	if err := cmd.rawErr(); err != nil {
+		return err
+	}
+
 	// Reject commands that would make one pooled connection diverge from CSC's
 	// tracking or database assumptions. Pipelines mirror this guard below.
 	if err := c.cscCommandError(cmd); err != nil {
