@@ -98,6 +98,8 @@ The default resolver derives all ordinary policies from the checked-in metadata 
 
 `ReqSpecial` and `RespSpecial` are capability declarations, not permission to use a generic fallback. A command must have a matching, tested handler in the internal special-policy registry. The checked-in request handler for `FT.CURSOR READ`/`DEL` routes by cursor ID, and the checked-in `RANDOMKEY` response handler ignores empty shards and selects one successful shard contribution. A live-only or checked-in special policy without an implemented handler returns an explicit routing error before dispatch; in particular, `RespSpecial` must never fall through to "first successful response."
 
+The known keyless `BLESS SCAN` special/special metadata pair is interpreted as ordinary single-node routing, preserving its public node-local behavior. The reply and cursor pass through unchanged; scanning the whole cluster still requires `ForEachMaster`. This narrow interpretation does not authorize other special policies or aggregate cursor pages.
+
 ---
 
 ## Aggregators (`internal/routing/aggregator.go`)

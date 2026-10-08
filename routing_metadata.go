@@ -243,6 +243,13 @@ func deriveRoutingCommandMeta(name string, info *CommandInfo) routingCommandMeta
 		// Preserve a keyed response default, but disable multi-shard below.
 		resp = routing.RespDefaultHashSlot
 	}
+	if name == "bless|scan" && meta.keyState == routingKeysNone &&
+		req == routing.ReqSpecial && resp == routing.RespSpecial {
+		// Preserve BLESS SCAN's node-local behavior. Its cursor and reply
+		// belong to one server, so use ordinary keyless routing without
+		// aggregating pages or interpreting the cursor as a routing key.
+		req, resp = routing.ReqDefault, routing.RespDefaultKeyless
+	}
 	meta.policy = &routing.CommandPolicy{Request: req, Response: resp, Tips: tips}
 	return meta
 }

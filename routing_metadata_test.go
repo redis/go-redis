@@ -80,6 +80,36 @@ func TestRoutingMetadataMigrateKeys(t *testing.T) {
 	}
 }
 
+func TestRoutingMetadataBlessScanPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name, request, response string
+		firstKey                int8
+		wantRequest             routing.RequestPolicy
+		wantResponse            routing.ResponsePolicy
+	}{
+		{"bless|scan", "special", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"scan", "special", "special", 0, routing.ReqSpecial, routing.RespSpecial},
+		{"bless|unknown", "special", "special", 0, routing.ReqSpecial, routing.RespSpecial},
+		{"bless|scan", "all_shards", "special", 0, routing.ReqAllShards, routing.RespSpecial},
+		{"bless|scan", "special", "special", 2, routing.ReqSpecial, routing.RespSpecial},
+	} {
+		t.Run(tt.name+"/"+tt.request, func(t *testing.T) {
+			info := &CommandInfo{
+				Name: tt.name, Tips: []string{"request_policy:" + tt.request, "response_policy:" + tt.response},
+				FirstKeyPos: tt.firstKey, LastKeyPos: tt.firstKey, StepCount: tt.firstKey,
+			}
+			meta := deriveRoutingCommandMeta(tt.name, info)
+			if meta.policy.Request != tt.wantRequest || meta.policy.Response != tt.wantResponse {
+				t.Fatalf("policy = %v, want (%s, %s)", meta.policy, tt.wantRequest, tt.wantResponse)
+			}
+			_, supported := routingPolicyFor(meta)
+			if supported != (tt.wantRequest == routing.ReqDefault) {
+				t.Fatalf("policy supported = %v", supported)
+			}
+		})
+	}
+}
+
 func TestRoutingMetadataDerivesPoliciesFromSharedRecords(t *testing.T) {
 	tests := []struct {
 		name     string

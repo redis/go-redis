@@ -247,6 +247,39 @@ func TestClusterSpecialPoliciesFailClosed(t *testing.T) {
 	}
 }
 
+func TestClusterBlessScanUsesOneNode(t *testing.T) {
+	c := newMetadataTestCluster(t, &CommandMetadataConfig{Overrides: map[string]*CommandInfo{
+		"bless|scan": {
+			Name: "bless|scan", Arity: -4,
+			Tips: []string{"request_policy:special", "response_policy:special"},
+		},
+	}})
+	ctx := context.Background()
+	picker := &countingClusterShardPicker{index: 1}
+	c.opt.ShardPicker = picker
+	first, _ := c.nodes.GetOrCreate("127.0.0.1:7051")
+	second, _ := c.nodes.GetOrCreate("127.0.0.1:7052")
+	installMetadataClusterState(c, []*clusterNode{first, second})
+	firstCalls, secondCalls := 0, 0
+	first.Client.AddHook(clusterMetadataNodeHook{process: func(context.Context, Cmder) error {
+		firstCalls++
+		return nil
+	}})
+	second.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+		secondCalls++
+		cmd.(*ScanCmd).SetVal([]string{"blessed-key"}, 42)
+		return nil
+	}})
+
+	keys, cursor, err := c.BlessScan(ctx, 0, BlessNoEvict, 10).Result()
+	if err != nil || !reflect.DeepEqual(keys, []string{"blessed-key"}) || cursor != 42 {
+		t.Fatalf("BLESS SCAN = (%v, %d, %v), want ([blessed-key], 42, nil)", keys, cursor, err)
+	}
+	if firstCalls != 0 || secondCalls != 1 || picker.calls != 1 {
+		t.Fatalf("first=%d second=%d picker=%d, want 0/1/1", firstCalls, secondCalls, picker.calls)
+	}
+}
+
 func TestClusterPipelineRejectsSpecialRequestBeforeDispatch(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	c.state.state.Store(&clusterState{generation: 1, nodes: c.nodes})
