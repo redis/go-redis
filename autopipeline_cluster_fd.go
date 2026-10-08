@@ -129,7 +129,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// re-run that same classification, hit its nil preflight, and build a finish
 	// closure: pure per-command CPU on the hot path (measured ~1/3 of submit cost is
 	// this second pass). child.fd is non-nil (getOrCreateChild screened it).
-	b := child.fd.submit(ctx, cmd)
+	b := child.fd.submitWithCompletion(ctx, cmd, r.parent.commandDone)
 	if b == completedBatch && errors.Is(cmd.Err(), ErrClosed) {
 		// Topology GC (a cluster reload dropping this node, or the node's own pool
 		// close hook) can close this child at any point up to and including while
@@ -167,7 +167,10 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// inline completion unconditionally overwrites cmd's error with the
 		// reply outcome.
 		cmd.SetErr(nil)
-		b = child.fd.submit(ctx, cmd)
+		b = child.fd.submitWithCompletion(ctx, cmd, r.parent.commandDone)
+	}
+	if b == completedBatch {
+		r.parent.notifyCommandDone(cmd)
 	}
 	if !r.blocking {
 		cmd.setReady(b)
@@ -180,6 +183,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 // completedBatch sentinel immediately (no host goroutine, nothing to wait on).
 func (r *clusterFDRouter) rejectClosed(cmd Cmder) AutoFuture {
 	cmd.SetErr(ErrClosed)
+	r.parent.notifyCommandDone(cmd)
 	if !r.blocking {
 		cmd.setReady(completedBatch)
 	}
@@ -199,17 +203,15 @@ func (r *clusterFDRouter) divertToProcess(ctx context.Context, cmd Cmder) AutoFu
 // slot, topology not loaded, or a non-FD node), and (nil, true) when the router
 // is closing (submit must then reject with ErrClosed rather than divert).
 func (r *clusterFDRouter) childFor(ctx context.Context, cmd Cmder) (*AutoPipeliner, bool) {
-	slot := r.cc.cmdSlot(cmd, -1)
+	// Reuse admission metadata through node selection and redirect retries.
+	decision := r.cc.autoPipelineRoutingDecision(ctx, cmd)
+	slot := r.cc.cmdSlotWithDecision(cmd, decision, -1)
 	if slot < 0 {
 		// Keyless command: no single owning node. Let it run through Process, which
 		// applies the configured ShardPicker.
 		return nil, false
 	}
-	state, err := r.cc.state.Get(ctx)
-	if err != nil {
-		return nil, false
-	}
-	node, err := state.slotMasterNode(slot)
+	node, err := r.cc.cmdNodeWithDecision(ctx, slot, decision)
 	if err != nil || node == nil {
 		return nil, false
 	}

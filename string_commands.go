@@ -433,8 +433,8 @@ type MSetEXArgs struct {
 // MSetEX sets the given keys to their respective values.
 // This command is an extension of the MSETNX that adds expiration and XX options.
 // Available since Redis 8.4
-// Important: When this method is used with Cluster clients, all keys
-// must be in the same hash slot, otherwise CROSSSLOT error will be returned.
+// In Cluster, unconditional MSetEX may be split across slots and is not atomic.
+// NX/XX require one slot; cross-slot calls return ErrCrossSlot before changes.
 // For more information, see https://redis.io/commands/msetex
 func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interface{}) *IntCmd {
 	expandedArgs := appendArgs([]interface{}{}, values)

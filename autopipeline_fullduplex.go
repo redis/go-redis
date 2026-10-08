@@ -213,6 +213,7 @@ type fdReq struct {
 	cmd      Cmder
 	batch    *apBatch
 	hookDone chan struct{}
+	onDone   func(Cmder) // releases a cluster command's pinned routing decision
 	// ctx is the caller's submit context, kept so the per-command OTel metric can
 	// be recorded against it (span/baggage correlation), mirroring process().
 	ctx context.Context
@@ -308,6 +309,9 @@ func (o *fdLimiterReport) settle(err error) {
 // caller directly, or (when hooks are present) hands off to the command's host
 // goroutine, which runs the hook chain and then wakes the caller.
 func (r fdReq) complete() {
+	if r.onDone != nil {
+		r.onDone(r.cmd)
+	}
 	if r.hookDone != nil {
 		close(r.hookDone)
 		return
@@ -829,6 +833,12 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 // (see hostHook) and ctx parents its span; the hook-free path skips that
 // goroutine and channel entirely.
 func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
+	return fd.submitWithCompletion(ctx, cmd, nil)
+}
+
+// submitWithCompletion retains onDone through retries and calls it before an
+// accepted command completes. The caller handles submit-time rejections.
+func (fd *fdEngine) submitWithCompletion(ctx context.Context, cmd Cmder, onDone func(Cmder)) *apBatch {
 	if fd.ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return completedBatch
@@ -851,7 +861,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	} else {
 		b = newAPBatch()
 	}
-	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx, attempts: 1}
+	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, onDone: onDone, ctx: ctx, attempts: 1}
 
 	// Send under RLock and re-check closed so a send can never win the race with
 	// run()'s shutdown drain (takeQueue: WLock, set closed, drain fd.ch). Once the

@@ -204,6 +204,12 @@ type UniversalOptions struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
 
+	// CommandMetadata configures shared metadata for standalone and cluster clients.
+	// See Options.CommandMetadata and ClusterOptions.CommandMetadata.
+	//
+	// Experimental: this API may change in a minor release.
+	CommandMetadata *CommandMetadataConfig
+
 	// ClientSideCacheRefreshOnInvalidate re-fetches every cached entry of an
 	// invalidated key as soon as its invalidation arrives, whether or not it was
 	// read recently. See Options.ClientSideCacheRefreshOnInvalidate.
@@ -289,6 +295,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		MaintNotificationsConfig:  o.MaintNotificationsConfig,
+		CommandMetadata:           o.CommandMetadata,
 	}
 }
 
@@ -361,6 +368,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		AutoPipelineOptions:       o.AutoPipelineOptions,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
+		CommandMetadata:           o.CommandMetadata,
 		// Note: MaintNotificationsConfig not supported for FailoverOptions
 	}
 }
@@ -428,6 +436,7 @@ func (o *UniversalOptions) Simple() *Options {
 		ClientSideCacheConfig:     o.ClientSideCacheConfig,
 		ClientSideCache:           o.ClientSideCache,
 		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
+		CommandMetadata:           o.CommandMetadata,
 
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,

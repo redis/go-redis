@@ -101,3 +101,23 @@ func TestClusterShardsCmdUnknownNodeFieldWithArrayValue(t *testing.T) {
 		t.Errorf("node Role = %q, want replica", node.Role)
 	}
 }
+
+func TestClusterShardsCmdAcceptsNullEndpoint(t *testing.T) {
+	reply := "*1\r\n" +
+		"%2\r\n" +
+		"$5\r\nslots\r\n*2\r\n:0\r\n:16383\r\n" +
+		"$5\r\nnodes\r\n*1\r\n" +
+		"%4\r\n" +
+		"$8\r\nendpoint\r\n_\r\n" +
+		"$4\r\nport\r\n:6379\r\n" +
+		"$4\r\nrole\r\n$6\r\nmaster\r\n" +
+		"$6\r\nhealth\r\n$6\r\nonline\r\n"
+
+	cmd := NewClusterShardsCmd(context.Background())
+	if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err != nil {
+		t.Fatal(err)
+	}
+	if got := cmd.val[0].Nodes[0].Endpoint; got != "" {
+		t.Fatalf("null endpoint=%q, want empty origin marker", got)
+	}
+}

@@ -3,11 +3,15 @@ package redis
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
+	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -313,16 +317,21 @@ func cmdArgAfterToken(cmd Cmder, from int, token string) int {
 
 // migrateKeysPos returns the position of the first key of a MIGRATE KEYS
 // clause, walking the options so an operand (an AUTH password that reads
-// "keys") is not taken for the clause. 0 when there is no key.
-func migrateKeysPos(cmd Cmder) int {
+// "keys") is not taken for the clause. The position is 0 when there is no
+// key; valid is false when an option token has no reproducible wire encoding.
+func migrateKeysPos(cmd Cmder) (pos int, valid bool) {
 	n := len(cmd.Args())
 	for i := 6; i < n; {
-		switch strings.ToLower(cmd.stringArg(i)) {
+		token, ok := routingArgText(cmd, i)
+		if !ok {
+			return 0, false
+		}
+		switch strings.ToLower(token) {
 		case "keys":
 			if i+1 < n {
-				return i + 1
+				return i + 1, true
 			}
-			return 0
+			return 0, true
 		case "auth":
 			i += 2 // AUTH password
 		case "auth2":
@@ -331,7 +340,7 @@ func migrateKeysPos(cmd Cmder) int {
 			i++ // COPY, REPLACE
 		}
 	}
-	return 0
+	return 0, true
 }
 
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
@@ -410,7 +419,8 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(3) != "" {
 			return 3
 		}
-		return migrateKeysPos(cmd)
+		pos, _ := migrateKeysPos(cmd)
+		return pos
 	case "bless":
 		// BLESS SCAN is keyless (cursor-based, server-wide); BLESS SET/GET/CLEAR
 		// take the key at position 2. The typed methods set this via
@@ -602,6 +612,8 @@ func (cmd *baseCmd) firstKeyPos() int8 {
 	return cmd.keyPos
 }
 
+// SetFirstKeyPos sets the key position used when server metadata for a command
+// is unavailable. Resolved metadata remains authoritative when present.
 func (cmd *baseCmd) SetFirstKeyPos(keyPos int8) {
 	cmd.keyPos = keyPos
 }
@@ -5407,22 +5419,49 @@ func (cmd *GeoPosCmd) Clone() Cmder {
 
 //------------------------------------------------------------------------------
 
+// KeySpec is one COMMAND key specification. BeginSearch and FindKeys carry
+// the type names from the reply ("index"/"keyword"/"unknown",
+// "range"/"keynum"/"unknown"); position fields are relative per the COMMAND
+// docs.
+type KeySpec struct {
+	Flags []string // e.g. RO, RW, access, update, incomplete, not_key
+
+	BeginSearch string
+	Index       int
+	Keyword     string
+	StartFrom   int
+
+	FindKeys  string
+	LastKey   int
+	KeyStep   int
+	Limit     int
+	KeyNumIdx int
+	FirstKey  int
+}
+
 type CommandInfo struct {
-	Name          string
-	Arity         int8
-	Flags         []string
-	ACLFlags      []string
-	FirstKeyPos   int8
-	LastKeyPos    int8
-	StepCount     int8
-	ReadOnly      bool
+	Name        string
+	Arity       int8
+	Flags       []string
+	ACLFlags    []string
+	FirstKeyPos int8
+	LastKeyPos  int8
+	StepCount   int8
+	ReadOnly    bool
+	// Tips holds the raw command tips (e.g. "nondeterministic_output").
+	Tips          []string
+	KeySpecs      []KeySpec
 	CommandPolicy *routing.CommandPolicy
 }
 
 type CommandsInfoCmd struct {
 	baseCmd
 
+	// A nil value tombstones a malformed record without discarding siblings.
 	val map[string]*CommandInfo
+
+	// legacyRecords tracks Redis 5/6 layouts, which lack tips and key specs.
+	legacyRecords map[string]struct{}
 }
 
 var _ Cmder = (*CommandsInfoCmd)(nil)
@@ -5457,135 +5496,751 @@ func (cmd *CommandsInfoCmd) String() string {
 }
 
 func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
-	const numArgRedis5 = 6
-	const numArgRedis6 = 7
-	const numArgRedis7 = 10 // Also matches redis 8
-
+	typ, _, err := peekCommandInfoReplyType(rd, 0)
+	if err != nil {
+		return err
+	}
+	if typ != proto.RespArray {
+		// Preserve server errors, notably ACL NOPERM, as typed Redis errors.
+		if typ == proto.RespError || typ == proto.RespBlobError || typ == proto.RespNil {
+			_, err := rd.ReadArrayLen()
+			return err
+		}
+		// Drain framed wrong types to keep the connection aligned.
+		if err := discardCommandInfoValue(rd, 0); err != nil {
+			return err
+		}
+		return fmt.Errorf("redis: COMMAND reply has type %q, wanted array", typ)
+	}
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
 	}
-	cmd.val = make(map[string]*CommandInfo, n)
+	cmd.val = make(map[string]*CommandInfo, commandInfoPrealloc(n))
+	cmd.legacyRecords = make(map[string]struct{})
 
 	for i := 0; i < n; i++ {
-		nn, err := rd.ReadArrayLen()
-		if err != nil {
+		if err := readCommandInfoEntry(rd, cmd.val, cmd.legacyRecords); err != nil {
 			return err
 		}
-
-		switch nn {
-		case numArgRedis5, numArgRedis6, numArgRedis7:
-			// ok
-		default:
-			return fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6/7/10", nn)
-		}
-
-		cmdInfo := &CommandInfo{}
-		if cmdInfo.Name, err = rd.ReadString(); err != nil {
-			return err
-		}
-
-		arity, err := rd.ReadInt()
-		if err != nil {
-			return err
-		}
-		cmdInfo.Arity = int8(arity)
-
-		flagLen, err := rd.ReadArrayLen()
-		if err != nil {
-			return err
-		}
-		cmdInfo.Flags = make([]string, flagLen)
-		for f := 0; f < len(cmdInfo.Flags); f++ {
-			switch s, err := rd.ReadString(); {
-			case err == Nil:
-				cmdInfo.Flags[f] = ""
-			case err != nil:
-				return err
-			default:
-				if !cmdInfo.ReadOnly && s == "readonly" {
-					cmdInfo.ReadOnly = true
-				}
-				cmdInfo.Flags[f] = s
-			}
-		}
-
-		firstKeyPos, err := rd.ReadInt()
-		if err != nil {
-			return err
-		}
-		cmdInfo.FirstKeyPos = int8(firstKeyPos)
-
-		lastKeyPos, err := rd.ReadInt()
-		if err != nil {
-			return err
-		}
-		cmdInfo.LastKeyPos = int8(lastKeyPos)
-
-		stepCount, err := rd.ReadInt()
-		if err != nil {
-			return err
-		}
-		cmdInfo.StepCount = int8(stepCount)
-
-		if nn >= numArgRedis6 {
-			aclFlagLen, err := rd.ReadArrayLen()
-			if err != nil {
-				return err
-			}
-			cmdInfo.ACLFlags = make([]string, aclFlagLen)
-			for f := 0; f < len(cmdInfo.ACLFlags); f++ {
-				switch s, err := rd.ReadString(); {
-				case err == Nil:
-					cmdInfo.ACLFlags[f] = ""
-				case err != nil:
-					return err
-				default:
-					cmdInfo.ACLFlags[f] = s
-				}
-			}
-		}
-
-		if nn >= numArgRedis7 {
-			// The 8th argument is an array of tips.
-			tipsLen, err := rd.ReadArrayLen()
-			if err != nil {
-				return err
-			}
-
-			rawTips := make(map[string]string, tipsLen)
-			if cmdInfo.ReadOnly {
-				rawTips[routing.ReadOnlyCMD] = ""
-			}
-			for f := 0; f < tipsLen; f++ {
-				tip, err := rd.ReadString()
-				if err != nil {
-					return err
-				}
-
-				k, v, ok := strings.Cut(tip, ":")
-				if !ok {
-					// Handle tips that don't have a colon (like "nondeterministic_output")
-					rawTips[tip] = ""
-				} else {
-					// Handle normal key:value tips
-					rawTips[k] = v
-				}
-			}
-			cmdInfo.CommandPolicy = parseCommandPolicies(rawTips, cmdInfo.FirstKeyPos)
-
-			if err := rd.DiscardNext(); err != nil {
-				return err
-			}
-			if err := rd.DiscardNext(); err != nil {
-				return err
-			}
-		}
-
-		cmd.val[cmdInfo.Name] = cmdInfo
 	}
 
 	return nil
+}
+
+const (
+	numArgRedis5 = 6
+	numArgRedis6 = 7
+	numArgRedis7 = 10 // Also matches redis 8
+)
+
+// Redis command hierarchies are shallow; this generous limit makes malformed
+// server input fail closed before recursive parsing can exhaust the Go stack.
+const maxCommandInfoDepth = 16
+
+// Limit preallocation without changing how many wire values are consumed.
+const maxCommandInfoPrealloc = 1024
+
+func commandInfoPrealloc(n int) int {
+	return min(max(n, 0), maxCommandInfoPrealloc)
+}
+
+// peekCommandInfoReplyType unwraps RESP3 attributes within the parser's depth
+// limit.
+func peekCommandInfoReplyType(rd *proto.Reader, depth int) (byte, int, error) {
+	for {
+		if depth > maxCommandInfoDepth {
+			return 0, depth, fmt.Errorf(
+				"redis: COMMAND metadata exceeds maximum nesting depth %d",
+				maxCommandInfoDepth,
+			)
+		}
+		b, err := rd.Peek(1)
+		if err != nil {
+			return 0, depth, err
+		}
+		if b[0] != proto.RespAttr {
+			return b[0], depth, nil
+		}
+		n, err := rd.ReadAttributeLen()
+		if err != nil {
+			return 0, depth, err
+		}
+		for range n {
+			if err := discardCommandInfoValue(rd, depth+1); err != nil {
+				return 0, depth, err
+			}
+			if err := discardCommandInfoValue(rd, depth+1); err != nil {
+				return 0, depth, err
+			}
+		}
+		depth++
+	}
+}
+
+func fitsInt8(v int64) bool {
+	return v >= math.MinInt8 && v <= math.MaxInt8
+}
+
+// These readers drain wrong-shaped values and return ok=false. Errors mean
+// framing or I/O failed, so parsing cannot safely continue.
+func readCommandInfoString(rd *proto.Reader) (string, bool, error) {
+	value, ok, err := readCommandInfoStringOrNil(rd)
+	if err == Nil {
+		return "", false, nil
+	}
+	return value, ok, err
+}
+
+// readCommandInfoStringOrNil preserves Nil so optional collection tokens can
+// be skipped without accepting other wrong-shaped values.
+func readCommandInfoStringOrNil(rd *proto.Reader) (string, bool, error) {
+	typ, _, err := peekCommandInfoReplyType(rd, 0)
+	if err != nil {
+		return "", false, err
+	}
+	switch typ {
+	case proto.RespStatus, proto.RespString, proto.RespVerbatim, proto.RespNil:
+		s, err := rd.ReadString()
+		if errors.Is(err, proto.ErrInvalidVerbatimString) {
+			// The scalar was consumed, so sibling records remain aligned.
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		return s, true, nil
+	default:
+		if err := discardCommandInfoValue(rd, 0); err != nil {
+			return "", false, err
+		}
+		return "", false, nil
+	}
+}
+
+func readCommandInfoInt(rd *proto.Reader) (int64, bool, error) {
+	typ, _, err := peekCommandInfoReplyType(rd, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	if typ != proto.RespInt {
+		if err := discardCommandInfoValue(rd, 0); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+
+	// COMMAND integers must not use ReadInt's string/status coercion.
+	line, err := rd.ReadLine()
+	if err != nil {
+		return 0, false, err
+	}
+	v, err := util.ParseInt(line[1:], 10, 64)
+	if err != nil {
+		// The scalar was consumed, so sibling records remain aligned.
+		return 0, false, nil
+	}
+	return v, true, nil
+}
+
+func readCommandInfoArrayLen(rd *proto.Reader) (int, bool, error) {
+	typ, _, err := peekCommandInfoReplyType(rd, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	switch typ {
+	case proto.RespArray:
+		n, err := rd.ReadArrayLen()
+		if err == Nil {
+			return 0, false, nil
+		}
+		if err != nil {
+			return 0, false, err
+		}
+		return n, true, nil
+	default:
+		if err := discardCommandInfoValue(rd, 0); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+}
+
+// readCommandInfoCollectionLen accepts RESP2 arrays and RESP3 sets for
+// unordered COMMAND collections.
+func readCommandInfoCollectionLen(rd *proto.Reader) (int, bool, error) {
+	typ, _, err := peekCommandInfoReplyType(rd, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	switch typ {
+	case proto.RespArray, proto.RespSet:
+		n, err := rd.ReadArrayLen()
+		if err == Nil {
+			return 0, false, nil
+		}
+		if err != nil {
+			return 0, false, err
+		}
+		return n, true, nil
+	default:
+		if err := discardCommandInfoValue(rd, 0); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+}
+
+// readCommandInfoStrings skips null tokens and drains the entire collection
+// even if another item is malformed.
+func readCommandInfoStrings(rd *proto.Reader) ([]string, bool, error) {
+	n, valid, err := readCommandInfoCollectionLen(rd)
+	if err != nil || !valid {
+		return nil, false, err
+	}
+	values := make([]string, 0, commandInfoPrealloc(n))
+	for range n {
+		value, ok, err := readCommandInfoStringOrNil(rd)
+		if err == Nil {
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			valid = false
+			continue
+		}
+		values = append(values, value)
+	}
+	return values, valid, nil
+}
+
+// readCommandInfoMapLen accepts RESP3 maps and RESP2 field/value arrays.
+func readCommandInfoMapLen(rd *proto.Reader) (int, bool, error) {
+	typ, _, err := peekCommandInfoReplyType(rd, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	switch typ {
+	case proto.RespMap:
+		n, err := rd.ReadMapLen()
+		if err == Nil {
+			return 0, false, nil
+		}
+		if err != nil {
+			return 0, false, err
+		}
+		return n, true, nil
+	case proto.RespArray:
+		n, err := rd.ReadArrayLen()
+		if err == Nil {
+			return 0, false, nil
+		}
+		if err != nil {
+			return 0, false, err
+		}
+		if n%2 != 0 {
+			if err := discardCommandInfoValues(rd, n); err != nil {
+				return 0, false, err
+			}
+			return 0, false, nil
+		}
+		return n / 2, true, nil
+	default:
+		if err := discardCommandInfoValue(rd, 0); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+}
+
+func discardCommandInfoValues(rd *proto.Reader, n int) error {
+	for range n {
+		if err := discardCommandInfoValue(rd, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// discardCommandInfoValue drains one value within the parser's depth limit.
+func discardCommandInfoValue(rd *proto.Reader, depth int) error {
+	if depth > maxCommandInfoDepth {
+		return fmt.Errorf("redis: COMMAND metadata exceeds maximum nesting depth %d", maxCommandInfoDepth)
+	}
+	typ, valueDepth, err := peekCommandInfoReplyType(rd, depth)
+	if err != nil {
+		return err
+	}
+	switch typ {
+	case proto.RespArray, proto.RespSet, proto.RespPush:
+		n, err := rd.ReadArrayLen()
+		if err == Nil {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for range n {
+			if err := discardCommandInfoValue(rd, valueDepth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case proto.RespMap:
+		n, err := rd.ReadMapLen()
+		if err == Nil {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for range n {
+			if err := discardCommandInfoValue(rd, valueDepth+1); err != nil {
+				return err
+			}
+			if err := discardCommandInfoValue(rd, valueDepth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return rd.DiscardNext()
+	}
+}
+
+// readCommandInfoEntry parses one COMMAND entry into m, recursively
+// flattening subcommands (named "parent|child" on the wire).
+func readCommandInfoEntry(
+	rd *proto.Reader,
+	m map[string]*CommandInfo,
+	legacyRecords map[string]struct{},
+) error {
+	return readCommandInfoEntryAtDepth(rd, m, legacyRecords, 0)
+}
+
+// storeCommandInfoRecord tombstones conflicting or malformed duplicates.
+func storeCommandInfoRecord(
+	m map[string]*CommandInfo,
+	legacyRecords map[string]struct{},
+	name string,
+	info *CommandInfo,
+	legacy bool,
+) {
+	if existing, duplicate := m[name]; duplicate {
+		// Identical duplicate COMMAND INFO records are valid; conflicts are not.
+		_, existingLegacy := legacyRecords[name]
+		if existing == nil || info == nil || existingLegacy != legacy || !reflect.DeepEqual(existing, info) {
+			m[name] = nil
+			delete(legacyRecords, name)
+		}
+		return
+	}
+	m[name] = info
+	if info != nil && legacy {
+		legacyRecords[name] = struct{}{}
+	}
+}
+
+func readCommandInfoEntryAtDepth(
+	rd *proto.Reader,
+	m map[string]*CommandInfo,
+	legacyRecords map[string]struct{},
+	depth int,
+) error {
+	if depth > maxCommandInfoDepth {
+		return fmt.Errorf("redis: COMMAND subcommands exceed maximum depth %d", maxCommandInfoDepth)
+	}
+	nn, ok, err := readCommandInfoArrayLen(rd)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// The unnamed malformed value was drained.
+		return nil
+	}
+
+	// Tombstone a named short record, but keep parsing siblings.
+	if nn != numArgRedis5 && nn != numArgRedis6 && nn < numArgRedis7 {
+		var name string
+		nameOK := false
+		if nn > 0 {
+			name, nameOK, err = readCommandInfoString(rd)
+			if err != nil {
+				return err
+			}
+		}
+		if err := discardCommandInfoValues(rd, nn-1); err != nil {
+			return err
+		}
+		if nameOK && name != "" {
+			storeCommandInfoRecord(m, legacyRecords, name, nil, false)
+		}
+		return nil
+	}
+
+	cmdInfo := &CommandInfo{}
+	nameOK := false
+	if cmdInfo.Name, nameOK, err = readCommandInfoString(rd); err != nil {
+		return err
+	}
+	valid := nameOK && cmdInfo.Name != ""
+
+	arity, arityOK, err := readCommandInfoInt(rd)
+	if err != nil {
+		return err
+	}
+	if arityOK && fitsInt8(arity) {
+		cmdInfo.Arity = int8(arity)
+	} else {
+		valid = false
+	}
+
+	var flagsOK bool
+	cmdInfo.Flags, flagsOK, err = readCommandInfoStrings(rd)
+	if err != nil {
+		return err
+	}
+	valid = valid && flagsOK
+	cmdInfo.ReadOnly = slices.Contains(cmdInfo.Flags, "readonly")
+
+	firstKeyPos, firstKeyOK, err := readCommandInfoInt(rd)
+	if err != nil {
+		return err
+	}
+	lastKeyPos, lastKeyOK, err := readCommandInfoInt(rd)
+	if err != nil {
+		return err
+	}
+	stepCount, stepOK, err := readCommandInfoInt(rd)
+	if err != nil {
+		return err
+	}
+	// The public fields are int8; a value that does not fit would silently
+	// wrap into a DIFFERENT valid key position (e.g. firstkey 257 -> 1).
+	// Zero the triple instead: "key positions unknown" fails closed.
+	if firstKeyOK && lastKeyOK && stepOK &&
+		fitsInt8(firstKeyPos) && fitsInt8(lastKeyPos) && fitsInt8(stepCount) {
+		cmdInfo.FirstKeyPos = int8(firstKeyPos)
+		cmdInfo.LastKeyPos = int8(lastKeyPos)
+		cmdInfo.StepCount = int8(stepCount)
+	} else {
+		valid = false
+	}
+
+	if nn >= numArgRedis6 {
+		var aclFlagsOK bool
+		cmdInfo.ACLFlags, aclFlagsOK, err = readCommandInfoStrings(rd)
+		if err != nil {
+			return err
+		}
+		valid = valid && aclFlagsOK
+	}
+
+	if nn >= numArgRedis7 {
+		// The 8th argument is an array of tips.
+		var tipsOK bool
+		cmdInfo.Tips, tipsOK, err = readCommandInfoStrings(rd)
+		if err != nil {
+			return err
+		}
+		valid = valid && tipsOK
+		rawTips := make(map[string]string, len(cmdInfo.Tips)+1)
+		if cmdInfo.ReadOnly {
+			rawTips[routing.ReadOnlyCMD] = ""
+		}
+		for _, tip := range cmdInfo.Tips {
+			key, value, _ := strings.Cut(tip, ":")
+			rawTips[key] = value
+		}
+
+		// The 9th argument is the key specifications.
+		specsLen, specsOK, err := readCommandInfoCollectionLen(rd)
+		if err != nil {
+			return err
+		}
+		valid = valid && specsOK
+		if specsOK && specsLen > 0 {
+			cmdInfo.KeySpecs = make([]KeySpec, 0, commandInfoPrealloc(specsLen))
+			for s := 0; s < specsLen; s++ {
+				ks, specOK, err := readKeySpec(rd)
+				if err != nil {
+					return err
+				}
+				if !specOK {
+					valid = false
+					continue
+				}
+				cmdInfo.KeySpecs = append(cmdInfo.KeySpecs, ks)
+			}
+		}
+
+		// The 10th argument is the subcommands, flattened into m.
+		subLen, subcommandsOK, err := readCommandInfoCollectionLen(rd)
+		if err != nil {
+			return err
+		}
+		valid = valid && subcommandsOK
+		if subcommandsOK {
+			for s := 0; s < subLen; s++ {
+				if err := readCommandInfoEntryAtDepth(rd, m, legacyRecords, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+
+		if valid {
+			cmdInfo.CommandPolicy = parseCommandPolicies(rawTips, cmdInfo.FirstKeyPos)
+		}
+	}
+
+	if nn > numArgRedis7 {
+		// Preserve the known prefix when Redis appends new metadata fields.
+		if err := discardCommandInfoValues(rd, nn-numArgRedis7); err != nil {
+			return err
+		}
+	}
+
+	if nameOK && cmdInfo.Name != "" {
+		if valid {
+			storeCommandInfoRecord(m, legacyRecords, cmdInfo.Name, cmdInfo, nn < numArgRedis7)
+		} else {
+			storeCommandInfoRecord(m, legacyRecords, cmdInfo.Name, nil, false)
+		}
+	}
+	return nil
+}
+
+// readKeySpec parses one key specification. ReadMapLen handles both wire
+// shapes (RESP3 map, RESP2 field-value array).
+func readKeySpec(rd *proto.Reader) (KeySpec, bool, error) {
+	var ks KeySpec
+	n, ok, err := readCommandInfoMapLen(rd)
+	if err != nil {
+		return ks, false, err
+	}
+	if !ok {
+		return ks, false, nil
+	}
+	valid := true
+	var seenFlags, seenBeginSearch, seenFindKeys bool
+	for i := 0; i < n; i++ {
+		field, fieldOK, err := readCommandInfoString(rd)
+		if err != nil {
+			return ks, false, err
+		}
+		if !fieldOK {
+			valid = false
+			if err := discardCommandInfoValue(rd, 0); err != nil {
+				return ks, false, err
+			}
+			continue
+		}
+		switch field {
+		case "flags":
+			if seenFlags {
+				valid = false
+			}
+			seenFlags = true
+			var flagsOK bool
+			ks.Flags, flagsOK, err = readCommandInfoStrings(rd)
+			if err != nil {
+				return ks, false, err
+			}
+			valid = valid && flagsOK
+		case "begin_search":
+			if seenBeginSearch {
+				valid = false
+			}
+			seenBeginSearch = true
+			sectionOK, err := readKeySpecSectionChecked(rd, &ks, true)
+			if err != nil {
+				return ks, false, err
+			}
+			valid = valid && sectionOK
+		case "find_keys":
+			if seenFindKeys {
+				valid = false
+			}
+			seenFindKeys = true
+			sectionOK, err := readKeySpecSectionChecked(rd, &ks, false)
+			if err != nil {
+				return ks, false, err
+			}
+			valid = valid && sectionOK
+		default:
+			if err := discardCommandInfoValue(rd, 0); err != nil {
+				return ks, false, err
+			}
+		}
+	}
+	return ks, valid && seenFlags && seenBeginSearch && seenFindKeys, nil
+}
+
+// readKeySpecSectionChecked parses a begin_search or find_keys section.
+func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) (bool, error) {
+	n, ok, err := readCommandInfoMapLen(rd)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	valid := true
+	var seenType, seenSpec bool
+	seenSpecFields := make(map[string]bool)
+	for i := 0; i < n; i++ {
+		field, fieldOK, err := readCommandInfoString(rd)
+		if err != nil {
+			return false, err
+		}
+		if !fieldOK {
+			valid = false
+			if err := discardCommandInfoValue(rd, 0); err != nil {
+				return false, err
+			}
+			continue
+		}
+		switch field {
+		case "type":
+			if seenType {
+				valid = false
+			}
+			seenType = true
+			typ, typeOK, err := readCommandInfoString(rd)
+			if err != nil {
+				return false, err
+			}
+			if !typeOK {
+				valid = false
+				continue
+			}
+			if beginSearch {
+				ks.BeginSearch = typ
+			} else {
+				ks.FindKeys = typ
+			}
+		case "spec":
+			if seenSpec {
+				valid = false
+			}
+			seenSpec = true
+			sn, specOK, err := readCommandInfoMapLen(rd)
+			if err != nil {
+				return false, err
+			}
+			if !specOK {
+				valid = false
+				continue
+			}
+			for j := 0; j < sn; j++ {
+				name, nameOK, err := readCommandInfoString(rd)
+				if err != nil {
+					return false, err
+				}
+				if !nameOK {
+					valid = false
+					if err := discardCommandInfoValue(rd, 0); err != nil {
+						return false, err
+					}
+					continue
+				}
+				switch name {
+				case "keyword":
+					if !beginSearch {
+						if err := discardCommandInfoValue(rd, 0); err != nil {
+							return false, err
+						}
+						continue
+					}
+					if seenSpecFields[name] {
+						valid = false
+					}
+					seenSpecFields[name] = true
+					keyword, keywordOK, err := readCommandInfoString(rd)
+					if err != nil {
+						return false, err
+					}
+					if !keywordOK {
+						valid = false
+						continue
+					}
+					ks.Keyword = keyword
+				default:
+					var dst *int
+					if beginSearch {
+						switch name {
+						case "index":
+							dst = &ks.Index
+						case "startfrom":
+							dst = &ks.StartFrom
+						}
+					} else {
+						switch name {
+						case "lastkey":
+							dst = &ks.LastKey
+						case "keystep":
+							dst = &ks.KeyStep
+						case "limit":
+							dst = &ks.Limit
+						case "keynumidx":
+							dst = &ks.KeyNumIdx
+						case "firstkey":
+							dst = &ks.FirstKey
+						}
+					}
+					if dst == nil {
+						if err := discardCommandInfoValue(rd, 0); err != nil {
+							return false, err
+						}
+						continue
+					}
+					if seenSpecFields[name] {
+						valid = false
+					}
+					seenSpecFields[name] = true
+					v, valueOK, err := readCommandInfoInt(rd)
+					if err != nil {
+						return false, err
+					}
+					if !valueOK {
+						valid = false
+						continue
+					}
+					// Keep positions portable across 32- and 64-bit platforms.
+					if v < math.MinInt32 || v > math.MaxInt32 {
+						valid = false
+						continue
+					}
+					*dst = int(v)
+				}
+			}
+		default:
+			if err := discardCommandInfoValue(rd, 0); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	typ := ks.FindKeys
+	if beginSearch {
+		typ = ks.BeginSearch
+	}
+	valid = valid && seenType && seenSpec && typ != ""
+	switch {
+	case beginSearch && typ == "index":
+		valid = valid && seenSpecFields["index"]
+	case beginSearch && typ == "keyword":
+		valid = valid && seenSpecFields["keyword"] && seenSpecFields["startfrom"]
+	case !beginSearch && typ == "range":
+		valid = valid && seenSpecFields["lastkey"] && seenSpecFields["keystep"] && seenSpecFields["limit"]
+	case !beginSearch && typ == "keynum":
+		valid = valid && seenSpecFields["keynumidx"] && seenSpecFields["firstkey"] && seenSpecFields["keystep"]
+	default:
+		// Preserve unknown algorithms; generic consumers reject them.
+	}
+	return valid, nil
 }
 
 func (cmd *CommandsInfoCmd) Clone() Cmder {
@@ -5593,31 +6248,17 @@ func (cmd *CommandsInfoCmd) Clone() Cmder {
 	if cmd.val != nil {
 		val = make(map[string]*CommandInfo, len(cmd.val))
 		for k, v := range cmd.val {
-			if v != nil {
-				newInfo := &CommandInfo{
-					Name:          v.Name,
-					Arity:         v.Arity,
-					FirstKeyPos:   v.FirstKeyPos,
-					LastKeyPos:    v.LastKeyPos,
-					StepCount:     v.StepCount,
-					ReadOnly:      v.ReadOnly,
-					CommandPolicy: v.CommandPolicy, // CommandPolicy can be shared as it's immutable
-				}
-				if v.Flags != nil {
-					newInfo.Flags = make([]string, len(v.Flags))
-					copy(newInfo.Flags, v.Flags)
-				}
-				if v.ACLFlags != nil {
-					newInfo.ACLFlags = make([]string, len(v.ACLFlags))
-					copy(newInfo.ACLFlags, v.ACLFlags)
-				}
-				val[k] = newInfo
+			if v == nil {
+				val[k] = nil
+				continue
 			}
+			val[k] = cloneCommandInfo(v)
 		}
 	}
 	return &CommandsInfoCmd{
-		baseCmd: cmd.cloneBaseCmd(),
-		val:     val,
+		baseCmd:       cmd.cloneBaseCmd(),
+		val:           val,
+		legacyRecords: maps.Clone(cmd.legacyRecords),
 	}
 }
 
@@ -7749,6 +8390,11 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 							cmd.val[i].Nodes[k].ID, err = rd.ReadString()
 						case "endpoint":
 							cmd.val[i].Nodes[k].Endpoint, err = rd.ReadString()
+							if err == Nil {
+								// Null means reuse the connection's endpoint.
+								cmd.val[i].Nodes[k].Endpoint = ""
+								err = nil
+							}
 						case "ip":
 							cmd.val[i].Nodes[k].IP, err = rd.ReadString()
 						case "hostname":
@@ -8472,6 +9118,7 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
+	cmd.val = nil
 	section := ""
 	scanner := bufio.NewScanner(strings.NewReader(val))
 	for scanner.Scan() {
@@ -9636,10 +10283,12 @@ func (cmd *IncrEXIntCmd) Val() IncrEXIntResult {
 	cmd.await()
 	return cmd.val
 }
+
 func (cmd *IncrEXIntCmd) Result() (IncrEXIntResult, error) {
 	cmd.await()
 	return cmd.val, cmd.err
 }
+
 func (cmd *IncrEXIntCmd) String() string {
 	cmd.await()
 	return cmdString(cmd, cmd.val)
@@ -9697,10 +10346,12 @@ func (cmd *IncrEXFloatCmd) Val() IncrEXFloatResult {
 	cmd.await()
 	return cmd.val
 }
+
 func (cmd *IncrEXFloatCmd) Result() (IncrEXFloatResult, error) {
 	cmd.await()
 	return cmd.val, cmd.err
 }
+
 func (cmd *IncrEXFloatCmd) String() string {
 	cmd.await()
 	return cmdString(cmd, cmd.val)
