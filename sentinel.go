@@ -568,7 +568,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 
 	opt := failoverOpt.clientOptions()
-	opt.Dialer = masterReplicaDialer(failover)
+	opt.Dialer = masterReplicaDialer(failover, opt)
 	opt.init()
 
 	rdb := &Client{
@@ -681,6 +681,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 func masterReplicaDialer(
 	failover *sentinelFailover,
+	opt *Options,
 ) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, _ string) (net.Conn, error) {
 		var addr string
@@ -702,7 +703,7 @@ func masterReplicaDialer(
 		}
 
 		netDialer := &net.Dialer{
-			Timeout:         failover.opt.DialTimeout,
+			Timeout:         opt.DialTimeout,
 			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if failover.opt.TLSConfig == nil {
