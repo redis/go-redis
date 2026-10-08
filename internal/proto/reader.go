@@ -664,6 +664,65 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 	return 0, fmt.Errorf("redis: can't parse reply=%.100q reading string into buffer", line)
 }
 
+// ReadChunked streams a bulk string ($) or RESP3 verbatim string (=) reply
+// through fn in bounded chunks, without materializing the payload.
+func (r *Reader) ReadChunked(buf []byte, fn func(chunk []byte) error) (int, error) {
+	if len(buf) == 0 {
+		return 0, fmt.Errorf("redis: ReadChunked: empty chunk buffer")
+	}
+	line, err := r.ReadLine()
+	if err != nil {
+		return 0, err
+	}
+	switch line[0] {
+	case RespString, RespVerbatim:
+	default:
+		return 0, fmt.Errorf("redis: can't parse reply=%.100q reading chunked bulk string", line)
+	}
+	n, err := replyLen(line)
+	if err != nil {
+		return 0, err
+	}
+
+	const verbatimTagLength = 4
+	payload := n
+	if line[0] == RespVerbatim {
+		var verbatimTag [verbatimTagLength]byte // txt:
+		if n < len(verbatimTag) {
+			if _, derr := r.rd.Discard(n + 2); derr != nil {
+				return 0, derr
+			}
+			return 0, fmt.Errorf("redis: can't parse verbatim string reply: %q", line)
+		}
+		if _, err := io.ReadFull(r.rd, verbatimTag[:]); err != nil {
+			return 0, err
+		}
+		payload = n - verbatimTagLength
+	}
+
+	var delivered int
+	var fnErr error
+	for payload > 0 {
+		chunk := buf
+		if payload < len(chunk) {
+			chunk = buf[:payload]
+		}
+		if _, err := io.ReadFull(r.rd, chunk); err != nil {
+			return delivered, err
+		}
+		payload -= len(chunk)
+
+		if fnErr == nil { // dont deliver, only drain
+			delivered += len(chunk)
+			fnErr = fn(chunk)
+		}
+	}
+	if _, err := r.rd.Discard(2); err != nil { // trailing CRLF
+		return delivered, err
+	}
+	return delivered, fnErr
+}
+
 func (r *Reader) ReadString() (string, error) {
 	line, err := r.ReadLine()
 	if err != nil {
