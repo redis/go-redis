@@ -78,7 +78,7 @@ func TestTruthBlockingPerGoroutineOrder(t *testing.T) {
 		}
 		for i, v := range vals {
 			if v != strconv.Itoa(i) {
-				t.Fatalf("g%d: position %d = %q, want %q (per-goroutine order violated)", g, i, v, i)
+				t.Fatalf("g%d: position %d = %q, want %d (per-goroutine order violated)", g, i, v, i)
 			}
 		}
 	}
@@ -128,7 +128,7 @@ func TestTruthAsyncOrderedSingleGoroutine(t *testing.T) {
 	}
 	for i, v := range vals {
 		if v != strconv.Itoa(i) {
-			t.Fatalf("position %d = %q, want %q (submit order violated on ordered face)", i, v, i)
+			t.Fatalf("position %d = %q, want %d (submit order violated on ordered face)", i, v, i)
 		}
 	}
 }
@@ -620,7 +620,7 @@ func TestTruthClusterOrderAndDemux(t *testing.T) {
 		}
 		for i, v := range vals {
 			if v != strconv.Itoa(i) {
-				t.Fatalf("CLUSTER ORDER g%d: pos %d = %q want %q", g, i, v, i)
+				t.Fatalf("CLUSTER ORDER g%d: pos %d = %q want %d", g, i, v, i)
 			}
 		}
 	}

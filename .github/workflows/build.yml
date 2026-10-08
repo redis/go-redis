@@ -11,22 +11,48 @@ permissions:
 
 jobs:
 
+  # Go versions for the test matrix: the go.mod minimum, oldstable and stable.
+  # oldstable is dropped when it is the same minor as the go.mod minimum.
+  go-versions:
+    name: go-versions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.versions.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Resolve Go versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          min=$(awk '/^go /{print $2}' go.mod | cut -d. -f1,2)
+          # On lookup failure old stays empty and all three versions run.
+          old=$(curl -fsSL 'https://go.dev/dl/?mode=json' | jq -r '.[1].version' | sed 's/^go//' | cut -d. -f1,2) || old=""
+          if [ "$old" = "$min" ]; then
+            matrix="[\"${min}.x\",\"stable\"]"
+          else
+            matrix="[\"${min}.x\",\"oldstable\",\"stable\"]"
+          fi
+          echo "min=$min oldstable=$old matrix=$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   benchmark:
     name: benchmark
+    needs: go-versions
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         redis-version:
+          - "8.12.x" # Redis CE 8.12 (pre-release)
           - "8.10.x" # Redis CE 8.10
           - "8.6.x" # Redis CE 8.6
           - "8.4.x" # Redis CE 8.4
           - "8.2.x" # Redis CE 8.2
           - "8.0.x" # Redis CE 8.0
-        go-version:
-          - "1.25.x"
-          - oldstable
-          - stable
+        go-version: ${{ fromJSON(needs.go-versions.outputs.matrix) }}
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -47,6 +73,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
+            ["8.12.x"]="8.12-m02-int"
             ["8.10.x"]="8.10.0"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
@@ -74,20 +101,19 @@ jobs:
 
   test-redis-ce:
     name: test-redis-ce
+    needs: go-versions
     runs-on: ubuntu-latest
     strategy:
         fail-fast: false
         matrix:
           redis-version:
+            - "8.12.x" # Redis CE 8.12 (pre-release)
             - "8.10.x" # Redis CE 8.10
             - "8.6.x" # Redis CE 8.6
             - "8.4.x" # Redis CE 8.4
             - "8.2.x" # Redis CE 8.2
             - "8.0.x" # Redis CE 8.0
-          go-version:
-            - "1.25.x"
-            - oldstable
-            - stable
+          go-version: ${{ fromJSON(needs.go-versions.outputs.matrix) }}
 
     steps:
       - name: Checkout code
@@ -115,15 +141,26 @@ jobs:
           - "8.10.x" # Redis CE 8.10
         go-version:
           - "stable"
+        # One AutoPipeliner face per cell: the half-duplex blocking and async
+        # faces, and both with FullDuplex on (see newUniversalSubject in
+        # main_test.go). Cells run in parallel and a red one names the face.
+        subject:
+          - ap-blocking
+          - ap-async
+          - ap-fd-blocking
+          - ap-fd
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      # Replay the command integration suite through the AutoPipeliner Cmdable
-      # faces (blocking + async) so every command is verified to behave the same
-      # batched as on a plain client.
-      - name: Run command suite through AutoPipeliner faces
+      # Replay the command integration suite through one AutoPipeliner Cmdable
+      # face so every command is verified to behave the same batched as on a
+      # plain client. SUBJECTS reaches make through the environment (the action
+      # passes make-target as a single word).
+      - name: Run command suite through the ${{ matrix.subject }} face
         uses: ./.github/actions/run-tests
+        env:
+          SUBJECTS: ${{ matrix.subject }}
         with:
           go-version: ${{ matrix.go-version }}
           redis-version: ${{ matrix.redis-version }}
