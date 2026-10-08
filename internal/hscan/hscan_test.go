@@ -61,6 +61,15 @@ type BinaryData struct {
 	Binary *binaryUnmarshaler `redis:"binary"`
 }
 
+type stringSlice []string
+
+type scannerSlice []string
+
+func (s *scannerSlice) ScanRedis(value string) error {
+	*s = scannerSlice{value}
+	return nil
+}
+
 type i []interface{}
 
 func TestGinkgoSuite(t *testing.T) {
@@ -207,6 +216,73 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&d, i{"bool"}, i{"-1"})).To(HaveOccurred())
 		Expect(Scan(&d, i{"bool"}, i{""})).To(HaveOccurred())
 		Expect(Scan(&d, i{"bool"}, i{"123"})).To(HaveOccurred())
+	})
+
+	DescribeTable("rejects unsupported slice fields", func(key, fieldType string) {
+		strings := []string{"keep"}
+		d := struct {
+			Strings []string    `redis:"strings"`
+			Ints    []int       `redis:"ints"`
+			Nested  [][]byte    `redis:"nested"`
+			Named   stringSlice `redis:"named"`
+			Pointer *[]string   `redis:"pointer"`
+		}{
+			Strings: strings,
+			Ints:    []int{42},
+			Nested:  [][]byte{[]byte("keep")},
+			Named:   stringSlice{"keep"},
+			Pointer: &strings,
+		}
+		Expect(Scan(&d, i{key}, i{"value"})).To(MatchError(
+			ContainSubstring("redis.Scan(unsupported " + fieldType + ")"),
+		))
+		Expect(d.Strings).To(Equal([]string{"keep"}))
+		Expect(d.Ints).To(Equal([]int{42}))
+		Expect(d.Nested).To(Equal([][]byte{[]byte("keep")}))
+		Expect(d.Named).To(Equal(stringSlice{"keep"}))
+		Expect(d.Pointer).To(Equal(util.ToPtr([]string{"keep"})))
+	},
+		Entry("strings", "strings", "[]string"),
+		Entry("integers", "ints", "[]int"),
+		Entry("nested bytes", "nested", "[][]uint8"),
+		Entry("named slices", "named", "hscan.stringSlice"),
+		Entry("slice pointers", "pointer", "[]string"),
+	)
+
+	It("rejects nil pointers to unsupported slices", func() {
+		var d struct {
+			Strings *[]string `redis:"strings"`
+		}
+
+		Expect(Scan(&d, i{"strings"}, i{"value"})).To(MatchError(
+			ContainSubstring("redis.Scan(unsupported []string)"),
+		))
+	})
+
+	It("scans byte slices and pointers with empty and non-empty values", func() {
+		for _, value := range []string{"", "hello"} {
+			var d struct {
+				Bytes   []byte  `redis:"bytes"`
+				Pointer *[]byte `redis:"pointer"`
+			}
+
+			Expect(Scan(&d, i{"bytes", "pointer"}, i{value, value})).NotTo(HaveOccurred())
+			Expect(d.Bytes).To(Equal([]byte(value)))
+			Expect(d.Pointer).NotTo(BeNil())
+			Expect(*d.Pointer).To(Equal([]byte(value)))
+		}
+	})
+
+	It("uses Scanner for named slice fields", func() {
+		var d struct {
+			Strings scannerSlice  `redis:"strings"`
+			Pointer *scannerSlice `redis:"pointer"`
+		}
+
+		Expect(Scan(&d, i{"strings", "pointer"}, i{"hello", "world"})).NotTo(HaveOccurred())
+		Expect(d.Strings).To(Equal(scannerSlice{"hello"}))
+		Expect(d.Pointer).NotTo(BeNil())
+		Expect(*d.Pointer).To(Equal(scannerSlice{"world"}))
 	})
 
 	It("Implements Scanner", func() {
