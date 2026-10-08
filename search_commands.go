@@ -115,6 +115,16 @@ type FTHNSWOptions struct {
 	// false can be distinguished from unset (omitted).
 	Rerank    bool
 	HasRerank bool
+	// Compression selects the vector quantization scheme for HNSW indexes
+	// (Redis 8.12+), e.g. "SQ8". Emitted as COMPRESSION when non-empty.
+	Compression string
+	// TrainingThreshold is the number of vectors the index collects before
+	// training the compression model. A positive value emits
+	// TRAINING_THRESHOLD on its own; to emit an explicit TRAINING_THRESHOLD 0,
+	// set HasTrainingThreshold=true with TrainingThreshold=0, so that an
+	// explicit zero can be distinguished from unset (omitted).
+	TrainingThreshold    int
+	HasTrainingThreshold bool
 }
 
 type FTVamanaOptions struct {
@@ -583,12 +593,14 @@ type FTAttribute struct {
 	WithSuffixtrie  bool
 
 	// Vector specific attributes
-	Algorithm      string
-	DataType       string
-	Dim            int
-	DistanceMetric string
-	M              int
-	EFConstruction int
+	Algorithm         string
+	DataType          string
+	Dim               int
+	DistanceMetric    string
+	M                 int
+	EFConstruction    int
+	Compression       string
+	TrainingThreshold int
 }
 
 type CursorStats struct {
@@ -1537,6 +1549,13 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 					}
 					hnswArgs = append(hnswArgs, "RERANK", rerank)
 				}
+				if schema.VectorArgs.HNSWOptions.Compression != "" {
+					hnswArgs = append(hnswArgs, "COMPRESSION", schema.VectorArgs.HNSWOptions.Compression)
+				}
+				if schema.VectorArgs.HNSWOptions.TrainingThreshold > 0 || schema.VectorArgs.HNSWOptions.HasTrainingThreshold {
+					hnswArgs = append(hnswArgs, "TRAINING_THRESHOLD", schema.VectorArgs.HNSWOptions.TrainingThreshold)
+				}
+
 				args = append(args, len(hnswArgs))
 				args = append(args, hnswArgs...)
 			}
@@ -1769,6 +1788,10 @@ func parseFTAttributeFromMap(attrMap map[interface{}]interface{}) FTAttribute {
 			att.M = internal.ToInteger(v)
 		case "ef_construction":
 			att.EFConstruction = internal.ToInteger(v)
+		case "compression":
+			att.Compression = internal.ToString(v)
+		case "training_threshold":
+			att.TrainingThreshold = internal.ToInteger(v)
 		case "flags":
 			// flags is an array of strings like ["SORTABLE", "NOSTEM"]
 			if flags, ok := v.([]interface{}); ok {
@@ -2008,6 +2031,16 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 					}
 					if internal.ToLower(internal.ToString(attrSlice[i])) == "ef_construction" && i+1 < attrLen {
 						att.EFConstruction = internal.ToInteger(attrSlice[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "compression" && i+1 < attrLen {
+						att.Compression = internal.ToString(attrSlice[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "training_threshold" && i+1 < attrLen {
+						att.TrainingThreshold = internal.ToInteger(attrSlice[i+1])
 						i++
 						continue
 					}
