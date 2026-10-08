@@ -86,6 +86,11 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return false
 	}
 
+	var txReadErr *txQueuedReadError
+	if errors.As(err, &txReadErr) {
+		return false
+	}
+
 	// Check for EOF errors (works with wrapped errors)
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
@@ -188,6 +193,14 @@ func isRedisError(err error) bool {
 func isBadConn(err error, allowTimeout bool, addr string) bool {
 	if err == nil {
 		return false
+	}
+
+	var txReadErr *txQueuedReadError
+	if errors.As(err, &txReadErr) {
+		if txReadErr.forceBad {
+			return true
+		}
+		return isBadConn(txReadErr.readErr, allowTimeout, addr)
 	}
 
 	// Check for context errors (works with wrapped errors)
