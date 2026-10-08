@@ -73,6 +73,9 @@ func Struct(dst interface{}) (StructValue, error) {
 
 // Scan scans the results from a key-value Redis map result set to a destination struct.
 // The Redis keys are matched to the struct's field with the `redis` tag.
+// This method will attempt to unmarshal each field and will return an error if any of the 
+// fields cannot be unmarshalled. The destination struct will have the failed fields set to
+// their zero value.
 func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 	if len(keys) != len(vals) {
 		return errors.New("args should have the same number of keys and vals")
@@ -82,6 +85,8 @@ func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 	if err != nil {
 		return err
 	}
+
+	scanErrors := []error{}
 
 	// Iterate through the (key, value) sequence.
 	for i := 0; i < len(vals); i++ {
@@ -96,8 +101,12 @@ func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 		}
 
 		if err := strct.Scan(key, val); err != nil {
-			return err
+			scanErrors = append(scanErrors, err)
 		}
+	}
+
+	if len(scanErrors) > 0 {
+		return fmt.Errorf("scan errors: %v", scanErrors)
 	}
 
 	return nil
