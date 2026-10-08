@@ -1794,6 +1794,12 @@ func (p *ConnPool) usableIdleLen() int {
 }
 
 func (p *ConnPool) Stats() *Stats {
+	p.connsMu.Lock()
+	totalConns := len(p.conns)
+	// idleConnsLen also includes reservations for MinIdleConns dials.
+	idleConns := len(p.idleConns)
+	p.connsMu.Unlock()
+
 	return &Stats{
 		Hits:            atomic.LoadUint32(&p.stats.Hits),
 		Misses:          atomic.LoadUint32(&p.stats.Misses),
@@ -1803,8 +1809,8 @@ func (p *ConnPool) Stats() *Stats {
 		WaitDurationNs:  p.waitDurationNs.Load(),
 		PendingRequests: atomic.LoadUint32(&p.stats.PendingRequests),
 
-		TotalConns: uint32(p.Len()),
-		IdleConns:  uint32(p.IdleLen()),
+		TotalConns: uint32(totalConns),
+		IdleConns:  uint32(idleConns),
 		StaleConns: atomic.LoadUint32(&p.stats.StaleConns),
 	}
 }
