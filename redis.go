@@ -2095,6 +2095,26 @@ func pipelineErrShouldStamp(err error) bool {
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
 ) error {
+	return c.generalProcessPipelineFrom(ctx, cmds, p, operationName, maxRetries, time.Time{}, 0)
+}
+
+// processPipelineRetriesAfter is processPipelineRetries continuing an operation
+// that already ran: start and priorAttempts carry over into the one pipeline
+// metric, so a full-duplex attempt re-run on the pooled path is measured as a
+// single operation, the way an ordinary pipeline's own retries are.
+func (c *baseClient) processPipelineRetriesAfter(ctx context.Context, cmds []Cmder, maxRetries int, start time.Time, priorAttempts int) error {
+	if err := c.generalProcessPipelineFrom(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", maxRetries, start, priorAttempts); err != nil {
+		return err
+	}
+	return cmdsFirstErr(cmds)
+}
+
+// generalProcessPipelineFrom is generalProcessPipeline with its measurement
+// started at start (zero: now) and priorAttempts already spent.
+func (c *baseClient) generalProcessPipelineFrom(
+	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
+	start time.Time, priorAttempts int,
+) error {
 	// Pipeline commands never pass through process, so apply the same CSC state
 	// guard here. initConn's internal client is exempt.
 	for _, cmd := range cmds {
@@ -2107,16 +2127,29 @@ func (c *baseClient) generalProcessPipeline(
 	var operationStart time.Time
 	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
 	if pipelineOpDurationCallback != nil {
-		operationStart = time.Now()
+		operationStart = start
+		if operationStart.IsZero() {
+			if priorAttempts > 0 {
+				// A continued operation (a full-duplex attempt) that began
+				// with no duration callback: its start is unknown, so record
+				// no duration, as the FD path does.
+				pipelineOpDurationCallback = nil
+			} else {
+				operationStart = time.Now()
+			}
+		}
 	}
 	var lastConn *pool.Conn
-	totalAttempts := 0
+	totalAttempts := priorAttempts
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		if attempt > 0 {
-			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+			// Continue the backoff of an operation that already ran
+			// priorAttempts times (a full-duplex attempt), as its own retries
+			// would: 0 for an ordinary pipeline.
+			if err := internal.Sleep(ctx, c.retryBackoff(priorAttempts+attempt)); err != nil {
 				setCmdsErr(cmds, err)
 				if pipelineOpDurationCallback != nil {
 					operationDuration := time.Since(operationStart)
@@ -2682,11 +2715,34 @@ func (c *Client) Close() error {
 	return firstErr
 }
 
+// Conn returns a Conn that runs every command on a single connection borrowed
+// from this client's pool. Close returns that connection to the pool, so any
+// session state left on it (AUTH, SELECT, CLIENT SETNAME, CLIENT TRACKING, ...)
+// is still there for the next pooled caller. Use EphemeralConn when the Conn
+// changes session state.
 func (c *Client) Conn() *Conn {
+	return c.conn(false)
+}
+
+// EphemeralConn is Conn, except Close discards the underlying connection
+// instead of returning it to the pool. Session state a Conn sets (AUTH,
+// SELECT, CLIENT SETNAME, CLIENT TRACKING, RESET, ...) cannot be undone
+// generically on release, so a connection that carried it must not go on to
+// serve unrelated callers. The cost is one dial per EphemeralConn lifetime;
+// Get still reuses an idle pooled connection.
+func (c *Client) EphemeralConn() *Conn {
+	return c.conn(true)
+}
+
+func (c *Client) conn(discardOnClose bool) *Conn {
+	sticky := c.baseClient.newStickyConnPool()
+	if discardOnClose {
+		sticky.DiscardOnClose()
+	}
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
-	conn := newConn(c.opt, c.baseClient.newStickyConnPool(), &c.hooksMixin, c.himport)
+	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
 	// A sticky client does not serve cache hits, but a new pool connection first
 	// initialized through it may later be reused by the parent. Share the
 	// successful-attachment signal so that connection is tracked exactly when

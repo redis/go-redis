@@ -1590,7 +1590,7 @@ func normalizeAggregatedCommandValue(cmd Cmder, value interface{}) (interface{},
 	}
 
 	cmdValue := reflect.ValueOf(cmd)
-	if cmdValue.Kind() != reflect.Ptr || cmdValue.IsNil() {
+	if cmdValue.Kind() != reflect.Pointer || cmdValue.IsNil() {
 		return nil, errInvalidCmdPointer
 	}
 	setVal := cmdValue.MethodByName("SetVal")
@@ -1607,7 +1607,7 @@ func normalizeAggregatedCommandValue(cmd Cmder, value interface{}) (interface{},
 // setCommandValueReflection is a fallback function that uses reflection
 func (c *ClusterClient) setCommandValueReflection(cmd Cmder, value interface{}) (retErr error) {
 	cmdValue := reflect.ValueOf(cmd)
-	if cmdValue.Kind() != reflect.Ptr || cmdValue.IsNil() {
+	if cmdValue.Kind() != reflect.Pointer || cmdValue.IsNil() {
 		return errInvalidCmdPointer
 	}
 

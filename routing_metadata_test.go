@@ -6,8 +6,79 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/routing"
 )
+
+func TestRoutingMetadataUintptrKeys(t *testing.T) {
+	key := uintptr(42)
+	client := &ClusterClient{}
+	view := defaultCommandMetadataView()
+	for _, tt := range []struct {
+		name string
+		arg  interface{}
+		text string
+	}{
+		{"value", key, "42"},
+		{"pointer", &key, "42"},
+		{"nil pointer", (*uintptr)(nil), "0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := NewCmd(context.Background(), "get", tt.arg)
+			decision := client.routingDecisionInView(context.Background(), cmd, view, nil)
+			if decision.policyErr != nil || decision.naturalSlot != hashtag.Slot(tt.text) {
+				t.Fatalf("GET routing = slot %d, error %v; want slot %d", decision.naturalSlot, decision.policyErr, hashtag.Slot(tt.text))
+			}
+		})
+	}
+}
+
+func TestRoutingMetadataMigrateKeys(t *testing.T) {
+	keys := "KEYS"
+	meta := defaultCommandMetadataView().routingTable["migrate"]
+	for _, tt := range []struct {
+		name string
+		args []interface{}
+		pos  int
+	}{
+		{"single key", []interface{}{"migrate", "host", 6379, "key", 0, 1000}, 3},
+		{"key named KEYS", []interface{}{"migrate", "host", 6379, "", 0, 1000, "KEYS", "KEYS", "other"}, 7},
+		{"AUTH operand", []interface{}{"migrate", "host", 6379, "", 0, 1000, "AUTH", "KEYS", "KEYS", "key"}, 9},
+		{"AUTH2 operands", []interface{}{"migrate", "host", 6379, "", 0, 1000, "AUTH2", "KEYS", "KEYS", "KEYS", "key"}, 10},
+		{"pointer option", []interface{}{"migrate", "host", 6379, "", 0, 1000, &keys, "KEYS", "other"}, 7},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := NewCmd(context.Background(), tt.args...)
+			if pos, ok := routingFirstKeyPos(meta, cmd); !ok || pos != tt.pos {
+				t.Fatalf("first key = (%d, %v), want (%d, true)", pos, ok, tt.pos)
+			}
+			if pos := cmdFirstKeyPosWithInfo(cmd, nil); pos != tt.pos {
+				t.Fatalf("legacy first key = %d, want %d", pos, tt.pos)
+			}
+		})
+	}
+
+	t.Run("unsupported option encoding", func(t *testing.T) {
+		cmd := NewCmd(context.Background(), "migrate", "host", 6379, "", 0, 1000,
+			cscWireSmuggler{wire: "KEYS", str: "KEYS"}, "key")
+		if pos, ok := routingFirstKeyPos(meta, cmd); ok {
+			t.Fatalf("unsupported option selected key position %d", pos)
+		}
+		client := &ClusterClient{}
+		decision := client.routingDecisionInView(context.Background(), cmd, defaultCommandMetadataView(), nil)
+		if decision.policyErr == nil {
+			t.Fatal("unsupported option did not prevent dispatch")
+		}
+	})
+
+	// An override with a different key layout remains authoritative.
+	info := cloneCommandInfoForName("migrate", commandInfoSnapshotByName()["migrate"])
+	info.KeySpecs[0].Index = 1
+	override := deriveRoutingCommandMeta("migrate", info)
+	if pos, ok := routingFirstKeyPos(override, NewCmd(context.Background(), "migrate", "key", 6379, "", 0, 1000, "KEYS", "other")); !ok || pos != 1 {
+		t.Fatalf("overridden first key = (%d, %v), want (1, true)", pos, ok)
+	}
+}
 
 func TestRoutingMetadataDerivesPoliciesFromSharedRecords(t *testing.T) {
 	tests := []struct {

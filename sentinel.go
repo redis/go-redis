@@ -534,6 +534,9 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
 	}
+	if q.err != nil {
+		return nil, q.err
+	}
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {

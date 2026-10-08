@@ -2818,3 +2818,43 @@ func TestGetOrCreateAutoPipelinerDrainsEngineLostToSharedClose(t *testing.T) {
 		})
 	}
 }
+
+// A cluster command can acquire a pinned routing decision before the queue
+// limit is checked. Rejection must release that decision on both execution paths.
+func TestAutoPipelineQueueFullReleasesCommandState(t *testing.T) {
+	for _, blocking := range []bool{false, true} {
+		for _, diverted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("blocking=%v/diverted=%v", blocking, diverted), func(t *testing.T) {
+				ctx := context.Background()
+				cmd := NewStringCmd(ctx, "get", "key")
+				var pinned Cmder
+				completed := 0
+				ap := &AutoPipeliner{
+					blocking:  blocking,
+					maxQueued: 1,
+					mustDivert: func(_ context.Context, c Cmder) bool {
+						pinned = c
+						return diverted
+					},
+					commandDone: func(c Cmder) {
+						if pinned != c {
+							t.Fatalf("released %v, want pinned command %v", c, pinned)
+						}
+						pinned = nil
+						completed++
+					},
+				}
+				ap.queued.Store(1)
+				if err := ap.submit(ctx, cmd).Wait(); !errors.Is(err, ErrAutoPipelineQueueFull) {
+					t.Fatalf("submit error = %v, want ErrAutoPipelineQueueFull", err)
+				}
+				if pinned != nil || completed != 1 {
+					t.Fatalf("pinned = %v, completions = %d; want nil, 1", pinned, completed)
+				}
+				if got := ap.queued.Load(); got != 1 {
+					t.Fatalf("rejected command changed queued count to %d, want 1", got)
+				}
+			})
+		}
+	}
+}

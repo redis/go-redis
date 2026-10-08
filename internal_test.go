@@ -631,7 +631,7 @@ func BenchmarkBuildCacheKey(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cscBenchmarkString, cscBenchmarkBool = buildCacheKey(cmd)
+		cscBenchmarkString, cscBenchmarkBool = buildCacheKeyReference(cmd)
 	}
 }
 
@@ -726,7 +726,7 @@ func benchmarkCSCProcessCached(b *testing.B, hit bool) {
 		b.Fatal("GET must be eligible")
 	}
 	if hit {
-		rawKey, _ := buildCacheKey(cmd)
+		rawKey, _ := buildCacheKeyReference(cmd)
 		key := cscEntryKey(c.cscKeyPrefix, view.cscFingerprint, rawKey)
 		if !cache.set(key, []string{cscNamespacedKey(c.cscKeyPrefix, "key")}, []byte("$5\r\nvalue\r\n")) {
 			b.Fatal("failed to seed cache")

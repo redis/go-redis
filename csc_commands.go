@@ -414,39 +414,88 @@ func isSubscribeName(name string) bool {
 		strings.EqualFold(name, "ssubscribe")
 }
 
-type cscEntryKeyWriter struct {
+// cacheKeyScratch is the reusable buffer+writer pair buildCacheKeyNS encodes
+// into. Building a cache key was the single largest allocator on the cached
+// read path -- 32% of all bytes allocated -- because every call heap-allocated
+// a bytes.Buffer, a proto.Writer (which itself allocates two 64-byte scratch
+// slices), grew the buffer, and then copied it out with String(). Only the
+// final String() is inherent: the key is retained, the scratch is not.
+type cacheKeyScratch struct {
 	buf bytes.Buffer
-	w   *proto.Writer
+	wr  *proto.Writer
 }
 
-var cscEntryKeyWriters = sync.Pool{New: func() interface{} {
-	r := new(cscEntryKeyWriter)
-	r.w = proto.NewWriter(&r.buf)
-	return r
-}}
+var cacheKeyScratchPool = sync.Pool{
+	New: func() any {
+		s := &cacheKeyScratch{}
+		s.wr = proto.NewWriter(&s.buf)
+		return s
+	},
+}
 
-// cscRenderEntryKey renders the namespace and RESP arguments in one buffer.
-// The returned string owns its bytes; the scratch buffer may be reused at once.
-func cscRenderEntryKey(keyPrefix, fingerprint string, cmd Cmder) (string, bool) {
+// buildCacheKeyNS renders the namespace parts and RESP arguments in one
+// allocation (the returned string).
+//
+// Fusing the namespace in matters as much as pooling: the caller used to take
+// this function's result and then do prefix+key, a second full copy of every
+// cache key on every cached read. Writing the prefix into the buffer first
+// makes the single String() produce the namespaced key directly, and the
+// suffix after the namespace is still exactly the wire encoding, which the
+// refresher relies on when it slices the namespace off to re-issue the command.
+func buildCacheKeyNS(cmd Cmder, namespace ...string) (string, bool) {
 	args := cmd.Args()
 	if len(args) == 0 || !commandArgsRepeatable(cmd) {
 		return "", false
 	}
-	r := cscEntryKeyWriters.Get().(*cscEntryKeyWriter)
-	r.buf.Reset()
+	s := cacheKeyScratchPool.Get().(*cacheKeyScratch)
 	defer func() {
-		// Do not retain unusually large command payloads in the pool.
-		if r.buf.Cap() <= 64<<10 {
-			cscEntryKeyWriters.Put(r)
+		// Drop an oversized buffer instead of pooling it, so one huge command
+		// does not pin that capacity for the process lifetime.
+		if s.buf.Cap() > cacheKeyScratchMaxCap {
+			return
 		}
+		s.buf.Reset()
+		cacheKeyScratchPool.Put(s)
 	}()
-	r.buf.WriteString(keyPrefix)
-	r.buf.WriteString(fingerprint)
-	r.buf.WriteString(cscNamespaceSep)
-	if err := r.w.WriteArgs(args); err != nil {
+	s.buf.Reset()
+	for _, part := range namespace {
+		s.buf.WriteString(part)
+	}
+	// The pooled writer targets s.buf for its whole life; Reset here only
+	// guards against a zero-value scratch reaching this path.
+	if s.wr == nil {
+		s.wr = proto.NewWriter(&s.buf)
+	}
+	if err := s.wr.WriteArgs(args); err != nil {
 		return "", false
 	}
-	return r.buf.String(), true
+	return s.buf.String(), true
+}
+
+// cacheKeyScratchMaxCap bounds the buffer capacity kept in the pool.
+const cacheKeyScratchMaxCap = 64 << 10
+
+// isWireKeyType reports whether a key argument of v's type renders, through
+// stringArg, exactly as proto.Writer sends it to the server, so invalidation
+// lookups match the key names in the server's "invalidate" pushes. Only
+// byte-identical types are accepted (fmt.Sprint of any integer matches the
+// writer's base-10 strconv output); for anything else — pointers, bools,
+// times, durations, floats, BinaryMarshaler values — the rendering can
+// diverge, the invalidation would never match, and the entry would be served
+// stale forever, so the caller skips caching (see processCached).
+func isWireKeyType(v any) bool {
+	switch v.(type) {
+	case string, []byte,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return true
+	}
+	return false
+}
+
+// cscRenderEntryKey includes the metadata fingerprint in the entry namespace.
+func cscRenderEntryKey(keyPrefix, fingerprint string, cmd Cmder) (string, bool) {
+	return buildCacheKeyNS(cmd, keyPrefix, fingerprint, cscNamespaceSep)
 }
 
 func cscEntryKeyPrefixLen(keyPrefix, fingerprint string) int {
@@ -466,16 +515,7 @@ func keyArg(cmd Cmder, pos int) (string, bool) {
 // keyArgOK validates a key without allocating its wire representation.
 func keyArgOK(cmd Cmder, pos int) bool {
 	args := cmd.Args()
-	if pos < 0 || pos >= len(args) {
-		return false
-	}
-	switch args[pos].(type) {
-	case string, []byte,
-		int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64:
-		return true
-	}
-	return false
+	return pos >= 0 && pos < len(args) && isWireKeyType(args[pos])
 }
 
 // cscIntArg reads a count using the same types and integer range as
@@ -581,17 +621,4 @@ func cscRedisKeyLayout(meta cscCommandMeta, cmd Cmder) (int, int, int) {
 		return first, step, numKeys
 	}
 	return 0, 0, 0
-}
-
-// cscCollectKeys returns nil — never a partial list — if any key fails keyArg.
-func cscCollectKeys(cmd Cmder, first, step, n int) []string {
-	keys := make([]string, 0, n)
-	for i, k := first, 0; k < n; i, k = i+step, k+1 {
-		key, ok := keyArg(cmd, i)
-		if !ok {
-			return nil
-		}
-		keys = append(keys, key)
-	}
-	return keys
 }

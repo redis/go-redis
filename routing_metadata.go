@@ -55,6 +55,7 @@ const (
 	routingBeginIndex routingBeginSearch = iota
 	routingBeginKeyword
 	routingBeginStreams
+	routingBeginMigrate
 )
 
 type routingFindKeys uint8
@@ -214,6 +215,17 @@ func deriveRoutingCommandMeta(name string, info *CommandInfo) routingCommandMeta
 	}
 
 	meta.keyState, meta.keySpecs, meta.keyPlanComplete = deriveRoutingKeySpecs(info)
+	if name == "migrate" && len(info.KeySpecs) == 2 && len(meta.keySpecs) == 2 {
+		key, keys := &meta.keySpecs[0], &meta.keySpecs[1]
+		if key.begin == routingBeginIndex && key.index == 3 && key.find == routingFindRange &&
+			key.lastKey == 0 && key.step == 1 && key.limit == 0 &&
+			keys.begin == routingBeginKeyword && strings.EqualFold(keys.keyword, "keys") && keys.startFrom == -2 &&
+			keys.find == routingFindRange && keys.lastKey == -1 && keys.step == 1 && keys.limit == 0 {
+			// KEYS can also be a key or an AUTH operand. Reuse the option
+			// parser for the known layout without overriding other metadata.
+			keys.begin = routingBeginMigrate
+		}
+	}
 	if len(info.KeySpecs) == 1 && len(meta.keySpecs) == 1 {
 		spec := &meta.keySpecs[0]
 		if spec.begin == routingBeginKeyword && strings.EqualFold(spec.keyword, "streams") &&
@@ -650,6 +662,9 @@ func routingResolveKeySpecLayout(spec routingKeySpec, cmd Cmder) (routingKeySpec
 
 func routingBeginPosition(spec routingKeySpec, cmd Cmder) (int, bool, bool) {
 	switch spec.begin {
+	case routingBeginMigrate:
+		pos, valid := migrateKeysPos(cmd)
+		return pos, pos != 0, valid
 	case routingBeginStreams:
 		// Match Redis's xreadGetKeys: option values are not delimiters.
 		for i := 1; i < len(cmd.Args()); i++ {
@@ -804,6 +819,13 @@ func routingArgText(cmd Cmder, pos int) (string, bool) {
 			return "0", true
 		}
 		return strconv.FormatUint(*value, 10), true
+	case uintptr:
+		return strconv.FormatUint(uint64(value), 10), true
+	case *uintptr:
+		if value == nil {
+			return "0", true
+		}
+		return strconv.FormatUint(uint64(*value), 10), true
 	case float32:
 		return strconv.FormatFloat(float64(value), 'f', -1, 64), true
 	case *float32:

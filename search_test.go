@@ -2729,6 +2729,24 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	// query never times out and the spec hangs until the suite timeout.
 	It("should stop processing and return an error when a timeout occurs", Label("search", "ftaggregate", "NonRedisEnterprise"), func() {
 		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
+
+		// The 1 ms timeout is only enforced deterministically when the query
+		// runs on the main thread. With search-workers > 0 the aggregate is
+		// offloaded to the worker pool, where the timeout check can be skipped
+		// and the query completes successfully. Pin workers to 0 for this spec
+		// and restore the previous values afterwards.
+		prevConfig, err := rawClient.ConfigGet(ctx, "search-*").Result()
+		Expect(err).NotTo(HaveOccurred())
+		for _, param := range []string{"search-workers", "search-on-timeout"} {
+			Expect(prevConfig).To(HaveKey(param), "server does not expose %s", param)
+		}
+		defer func() {
+			for _, param := range []string{"search-workers", "search-on-timeout"} {
+				Expect(rawClient.ConfigSet(ctx, param, prevConfig[param]).Err()).NotTo(HaveOccurred())
+			}
+		}()
+		Expect(rawClient.ConfigSet(ctx, "search-workers", "0").Err()).NotTo(HaveOccurred())
+
 		val, err := client.FTCreate(ctx, "aggTimeoutHeavy", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric, Sortable: true},
 		).Result()
@@ -2743,8 +2761,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		// default behaviour was changed in 8.0.1, set to fail to validate the timeout was triggered
-		err = rawClient.ConfigSet(ctx, "search-on-timeout", "fail").Err()
-		Expect(err).NotTo(HaveOccurred())
+		Expect(rawClient.ConfigSet(ctx, "search-on-timeout", "fail").Err()).NotTo(HaveOccurred())
 
 		options := &redis.FTAggregateOptions{
 			SortBy:      []redis.FTAggregateSortBy{{FieldName: "@n", Desc: true}},
