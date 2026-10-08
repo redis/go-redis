@@ -1061,6 +1061,223 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).To(MatchError(ContainSubstring("Steps cannot be combined with the deprecated")))
 	})
 
+	It("should emit FILTER and LIMIT steps in pipeline order", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "@price"}},
+				{Filter: &redis.FTAggregateFilter{Expression: "@price > 100"}},
+				{Filter: &redis.FTAggregateFilter{Expression: "@price < 1000"}},
+				{GroupBy: &redis.FTAggregateGroupBy{
+					Fields: []interface{}{"@category"},
+					Reduce: []redis.FTAggregateReducer{
+						{Reducer: redis.SearchSum, Args: []interface{}{"@price"}, As: "total"},
+					},
+				}},
+				{Filter: &redis.FTAggregateFilter{Expression: "@total > 1000"}},
+				{SortBy: &redis.FTAggregateSortByStep{
+					Fields: []redis.FTAggregateSortBy{{FieldName: "@total", Desc: true}},
+					Max:    50,
+				}},
+				{Limit: &redis.FTAggregateLimit{Offset: 0, Num: 10}},
+			},
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"*",
+			"LOAD", 1, "@price",
+			"FILTER", "@price > 100",
+			"FILTER", "@price < 1000",
+			"GROUPBY", 1, "@category",
+			"REDUCE", "SUM", 1, "@price", "AS", "total",
+			"FILTER", "@total > 1000",
+			"SORTBY", 2, "@total", "DESC", "MAX", 50,
+			"LIMIT", 0, 10,
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+	})
+
+	// Wire order only: the server merges SORTBY and LIMIT steps that are not
+	// separated by a GROUPBY into one stage.
+	It("should emit every LIMIT step in the given order", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{Limit: &redis.FTAggregateLimit{Offset: 0, Num: 100}},
+				{Apply: &redis.FTAggregateApply{Field: "@price * 2", As: "double"}},
+				{Limit: &redis.FTAggregateLimit{Offset: 5, Num: 10}},
+			},
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"*",
+			"LIMIT", 0, 100,
+			"APPLY", "@price * 2", "AS", "double",
+			"LIMIT", 5, 10,
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+	})
+
+	It("should keep the legacy LIMIT then FILTER tail order", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			LimitOffset: 0,
+			Limit:       10,
+			Filter:      "@price > 100",
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"*",
+			"LIMIT", 0, 10,
+			"FILTER", "@price > 100",
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+	})
+
+	It("should emit Steps before the legacy LIMIT and FILTER", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{Filter: &redis.FTAggregateFilter{Expression: "@a > 1"}},
+				{Limit: &redis.FTAggregateLimit{Offset: 0, Num: 100}},
+			},
+			LimitOffset: 0,
+			Limit:       10,
+			Filter:      "@b > 2",
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"*",
+			"FILTER", "@a > 1",
+			"LIMIT", 0, 100,
+			"LIMIT", 0, 10,
+			"FILTER", "@b > 2",
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+
+		cmd := client.FTAggregateWithArgs(ctx, "idx_missing", "*", options)
+		Expect(cmd.Args()[3:]).To(Equal([]interface{}(expected[1:])))
+	})
+
+	It("should leave the one-SORTBY-per-GROUPBY rule to the server", Label("search", "ftaggregate"), func() {
+		sortBy := func(field string) redis.FTAggregateStep {
+			return redis.FTAggregateStep{SortBy: &redis.FTAggregateSortByStep{
+				Fields: []redis.FTAggregateSortBy{{FieldName: field, Asc: true}},
+			}}
+		}
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				sortBy("@a"),
+				{Filter: &redis.FTAggregateFilter{Expression: "@a > 1"}},
+				sortBy("@b"),
+			},
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"*",
+			"SORTBY", 2, "@a", "ASC",
+			"FILTER", "@a > 1",
+			"SORTBY", 2, "@b", "ASC",
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+	})
+
+	It("should error when a step sets both Filter and Limit", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{
+					Filter: &redis.FTAggregateFilter{Expression: "@x > 1"},
+					Limit:  &redis.FTAggregateLimit{Offset: 0, Num: 10},
+				},
+			},
+		}
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("each step must set exactly one")))
+	})
+
+	It("should FTAggregate with FILTER and LIMIT steps", Label("search", "ftaggregate"), func() {
+		category := &redis.FieldSchema{FieldName: "category", FieldType: redis.SearchFieldTypeTag}
+		price := &redis.FieldSchema{FieldName: "price", FieldType: redis.SearchFieldTypeNumeric}
+		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, category, price).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(rawClient, "idx1")
+
+		client.HSet(ctx, "p1", "category", "a", "price", 10)
+		client.HSet(ctx, "p2", "category", "a", "price", 200)
+		client.HSet(ctx, "p3", "category", "b", "price", 300)
+		client.HSet(ctx, "p4", "category", "b", "price", 400)
+		client.HSet(ctx, "p5", "category", "c", "price", 50)
+
+		// Filter rows before grouping and groups after grouping. Without the
+		// first FILTER, the only group with cnt == 1 would be "c".
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "@category"}},
+				{Load: &redis.FTAggregateLoad{Field: "@price"}},
+				{Filter: &redis.FTAggregateFilter{Expression: "@price > 100"}},
+				{GroupBy: &redis.FTAggregateGroupBy{
+					Fields: []interface{}{"@category"},
+					Reduce: []redis.FTAggregateReducer{
+						{Reducer: redis.SearchSum, Args: []interface{}{"@price"}, As: "total"},
+						{Reducer: redis.SearchCount, As: "cnt"},
+					},
+				}},
+				{Filter: &redis.FTAggregateFilter{Expression: "@cnt == 1"}},
+				{Limit: &redis.FTAggregateLimit{Offset: 0, Num: 10}},
+			},
+		}
+		res, err := client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).To(HaveLen(1))
+		Expect(res.Rows[0].Fields["category"]).To(BeEquivalentTo("a"))
+		Expect(res.Rows[0].Fields["total"]).To(BeEquivalentTo("200"))
+
+		// FILTER before SORTBY and LIMIT pages over the filtered rows.
+		sortByPrice := redis.FTAggregateStep{SortBy: &redis.FTAggregateSortByStep{
+			Fields: []redis.FTAggregateSortBy{{FieldName: "@price", Asc: true}},
+		}}
+		options = &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "@price"}},
+				{Filter: &redis.FTAggregateFilter{Expression: "@price > 100"}},
+				sortByPrice,
+				{Limit: &redis.FTAggregateLimit{Offset: 0, Num: 2}},
+			},
+		}
+		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).To(HaveLen(2))
+		Expect(res.Rows[0].Fields["price"]).To(BeEquivalentTo("200"))
+		Expect(res.Rows[1].Fields["price"]).To(BeEquivalentTo("300"))
+
+		// The legacy Filter field runs after LIMIT: the two cheapest rows
+		// are taken first and none of them passes the filter.
+		options = &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "@price"}},
+				sortByPrice,
+			},
+			LimitOffset: 0,
+			Limit:       2,
+			Filter:      "@price > 100",
+		}
+		res, err = client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Rows).To(BeEmpty())
+	})
+
 	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {
 		client.HSet(ctx, "doc1", "foo", "bar")
 
@@ -1966,6 +2183,30 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
 		WaitForIndexing(rawClient, "idx1")
+	})
+
+	It("should FTCreate VECTOR with HNSW compression and read it back from FTInfo", Label("search", "ftcreate", "ftinfo"), func() {
+		SkipBeforeRedisVersion("8.12", "HNSW COMPRESSION requires Redis 8.12+")
+		hnswOptions := &redis.FTHNSWOptions{
+			Type:              "FLOAT32",
+			Dim:               4,
+			DistanceMetric:    "L2",
+			Compression:       "SQ8",
+			TrainingThreshold: 1024,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(rawClient, "idx1")
+
+		resInfo, err := client.FTInfo(ctx, "idx1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resInfo.Attributes).To(HaveLen(1))
+		Expect(resInfo.Attributes[0].Algorithm).To(BeEquivalentTo("HNSW"))
+		Expect(resInfo.Attributes[0].Compression).To(BeEquivalentTo("SQ8"))
+		Expect(resInfo.Attributes[0].TrainingThreshold).To(BeEquivalentTo(1024))
 	})
 
 	It("should FTCreate VECTOR with VAMANA algorithm - advanced parameters", Label("search", "ftcreate"), func() {
@@ -4653,5 +4894,32 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res2).ToNot(BeEmpty())
 		}).ShouldNot(Panic())
+	})
+
+	It("should read HNSW compression back from FTInfo with RESP3", Label("search", "ftcreate", "ftinfo"), func() {
+		SkipBeforeRedisVersion("8.12", "HNSW COMPRESSION requires Redis 8.12+")
+		hnswOptions := &redis.FTHNSWOptions{
+			Type:              "FLOAT32",
+			Dim:               4,
+			DistanceMetric:    "L2",
+			Compression:       "SQ8",
+			TrainingThreshold: 1024,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{HNSWOptions: hnswOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(rawClient, "idx1")
+
+		// RESP3 attributes arrive as maps and go through parseFTAttributeFromMap.
+		for _, c := range []redis.Cmdable{client, client2} {
+			resInfo, err := c.FTInfo(ctx, "idx1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resInfo.Attributes).To(HaveLen(1))
+			Expect(resInfo.Attributes[0].Algorithm).To(BeEquivalentTo("HNSW"))
+			Expect(resInfo.Attributes[0].Compression).To(BeEquivalentTo("SQ8"))
+			Expect(resInfo.Attributes[0].TrainingThreshold).To(BeEquivalentTo(1024))
+		}
 	})
 })
