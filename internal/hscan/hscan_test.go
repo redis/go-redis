@@ -61,6 +61,42 @@ type BinaryData struct {
 	Binary *binaryUnmarshaler `redis:"binary"`
 }
 
+// inPlaceUnmarshaler decodes in place, which both encoding.BinaryUnmarshaler
+// and encoding.TextUnmarshaler allow: their contracts only forbid RETAINING
+// the slice, not writing to it (base64.Decode(b, b) is the canonical example).
+type inPlaceUnmarshaler struct {
+	s string
+}
+
+func (u *inPlaceUnmarshaler) UnmarshalBinary(data []byte) error {
+	lowerInPlace(data)
+	u.s = string(data)
+	return nil
+}
+
+type inPlaceTextUnmarshaler struct {
+	s string
+}
+
+func (u *inPlaceTextUnmarshaler) UnmarshalText(data []byte) error {
+	lowerInPlace(data)
+	u.s = string(data)
+	return nil
+}
+
+func lowerInPlace(b []byte) {
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+}
+
+type InPlaceData struct {
+	Binary *inPlaceUnmarshaler     `redis:"binary"`
+	Text   *inPlaceTextUnmarshaler `redis:"text"`
+}
+
 type i []interface{}
 
 func TestGinkgoSuite(t *testing.T) {
@@ -234,5 +270,18 @@ var _ = Describe("Scan", func() {
 		var bd BinaryData
 		Expect(Scan(&bd, i{"binary"}, i{"hello"})).NotTo(HaveOccurred())
 		Expect(bd.Binary.s).To(Equal("hello"))
+	})
+
+	It("does not expose the value to an in-place unmarshaler", func() {
+		// Built at run time so the write lands on heap memory: a string in
+		// read-only memory faults the process instead, which a spec cannot
+		// assert on.
+		val := string([]byte("HELLO"))
+
+		var d InPlaceData
+		Expect(Scan(&d, i{"binary", "text"}, i{val, val})).NotTo(HaveOccurred())
+		Expect(d.Binary.s).To(Equal("hello"))
+		Expect(d.Text.s).To(Equal("hello"))
+		Expect(val).To(Equal("HELLO"))
 	})
 })
