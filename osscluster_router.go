@@ -66,7 +66,7 @@ func (c *ClusterClient) executeDefault(ctx context.Context, cmd Cmder, policy *r
 		}
 	}
 
-	return node.Client.Process(ctx, cmd)
+	return node.Client.Process(c.cscNodeContext(ctx, node, cmd), cmd)
 }
 
 // executeOnArbitraryNode routes command to an arbitrary node
@@ -75,7 +75,7 @@ func (c *ClusterClient) executeOnArbitraryNode(ctx context.Context, cmd Cmder) e
 	if node == nil {
 		return errClusterNoNodes
 	}
-	return node.Client.Process(ctx, cmd)
+	return node.Client.Process(c.cscNodeContext(ctx, node, cmd), cmd)
 }
 
 // executeOnAllNodes executes command on all nodes (masters and replicas)
@@ -165,7 +165,7 @@ func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap
 
 			// Create a command for this specific slot's keys
 			subCmd := c.createSlotSpecificCommand(ctx, cmd, keys, firstKeyPos)
-			err = node.Client.Process(ctx, subCmd)
+			err = node.Client.Process(c.cscNodeContext(ctx, node, subCmd), subCmd)
 			results <- slotResult{subCmd, keys, err}
 		}(slot, keys)
 	}
@@ -318,7 +318,7 @@ func (c *ClusterClient) executeParallel(ctx context.Context, cmd Cmder, nodes []
 	}
 
 	if len(nodes) == 1 {
-		return nodes[0].Client.Process(ctx, cmd)
+		return nodes[0].Client.Process(c.cscNodeContext(ctx, nodes[0], cmd), cmd)
 	}
 
 	type nodeResult struct {
@@ -334,7 +334,7 @@ func (c *ClusterClient) executeParallel(ctx context.Context, cmd Cmder, nodes []
 		go func(n *clusterNode) {
 			defer wg.Done()
 			cmdCopy := cmd.Clone()
-			err := n.Client.Process(ctx, cmdCopy)
+			err := n.Client.Process(c.cscNodeContext(ctx, n, cmdCopy), cmdCopy)
 			results <- nodeResult{cmdCopy, err}
 		}(node)
 	}

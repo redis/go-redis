@@ -143,6 +143,7 @@ const (
 // cscMissReq is one caller waiting for its missed key. done carries the fetch
 // result back (the reply is already applied to cmd by the time done fires).
 type cscMissReq struct {
+	scope    *clusterCSCScope
 	cmd      Cmder
 	cacheKey string
 	token    uint64
@@ -507,6 +508,7 @@ func (mc *cscMissCoalescer) emitReplyErr(ctx context.Context, req *cscMissReq, e
 
 func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) (served *pool.Conn, err error) {
 	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
+	req.scope = mc.c.clusterCSCScope(ctx)
 	// Bound total in-flight serialized bytes before allocating this command's wire
 	// snapshot: reserve its approximate encoded size and, if that would exceed
 	// cscMissWireBudgetBytes, shed to the ordinary pooled path (errCSCRetryUncached)
@@ -764,6 +766,7 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 	}
 	if isCacheableReplyResult(applyErr) {
 		fc := &cscFetchCapture{
+			scope:   req.scope,
 			raw:     raw,
 			connID:  connID,
 			initGen: capturedGen,
@@ -773,6 +776,7 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 		c.fulfillCached(req.cacheKey, req.token, fc)
 	} else {
 		// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
+		c.observeCSCRedirect(applyErr)
 		c.csc.Cancel(req.cacheKey, req.token)
 	}
 	// No error-metric emission here: the CALLER emits at its req.done receive

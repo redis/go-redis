@@ -97,7 +97,8 @@ type cscInvalItem struct {
 const cscInvalNoHorizon = -1
 
 type cscInvalBatcher struct {
-	window time.Duration
+	cluster *clusterCSCNode
+	window  time.Duration
 	// batchMax is the size-cap flush threshold; 0 means cscInvalBatchMax. Per-batcher
 	// (not a mutable global) so a test can lower it without racing other batchers'
 	// worker goroutines reading it under -race; production leaves it 0.
@@ -528,7 +529,11 @@ func (b *cscInvalBatcher) run() {
 			}()
 			b.drop()
 			if b.cache != nil {
-				b.cache.Flush()
+				if b.cluster != nil {
+					b.cluster.invalidateAll()
+				} else {
+					b.cache.Flush()
+				}
 			}
 		}()
 		// The pending batch is superseded by the Flush and never applied as

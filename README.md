@@ -292,7 +292,7 @@ rdb := redis.NewClient(&redis.Options{
 
 ### Client-side caching
 
-go-redis supports server-assisted client-side caching for standalone clients.
+go-redis supports server-assisted client-side caching for standalone and Cluster clients.
 Eligible read replies are stored in the application's memory, so repeated reads
 can avoid a Redis round trip. Redis tracks which keys each connection has read
 and sends RESP3 invalidation notifications when those keys change. go-redis
@@ -314,12 +314,56 @@ rdb := redis.NewClient(&redis.Options{
 defer rdb.Close()
 ```
 
-Client-side caching currently requires RESP3, a standalone client, and database
+Client-side caching currently requires RESP3 and database
 0. Fixed `Username` and `Password` values are supported. It is disabled when a
 dynamic credential provider is configured, because cached data must never be
 reused after the client's ACL identity changes. Only deterministic read
 commands supported by the cache are stored; writes and streaming responses
 bypass it.
+
+For a Cluster client, use the same configuration on `ClusterOptions`:
+
+```go
+rdb := redis.NewClusterClient(&redis.ClusterOptions{
+    Addrs: []string{"localhost:7000", "localhost:7001"},
+    Protocol: 3,
+    ClientSideCacheConfig: &redis.ClientSideCacheConfig{MaxEntries: 10_000},
+})
+defer rdb.Close()
+```
+
+Each internal node client owns an independent cache shared by its connections.
+Limits apply **per node**: discovering more nodes can increase total memory.
+Cluster cache hits still perform slot routing, but do not acquire a connection.
+Only primary-routed reads are cached; replica routing is preserved without CSC.
+Ordinary pipelines, transactions and full-duplex batches remain uncached;
+AutoPipeline's existing ordered solo path can use CSC. Direct node handles
+(`MasterForKey`, `SlaveForKey`, `ForEachShard`) and their clones bypass caching.
+`ClusterClient.CSCStats()` and `CSCRefreshStats()` aggregate node statistics.
+
+Observed ownership/role changes retire the affected nodes' caches, including
+both old and new owners; cached values are never transferred between nodes.
+MOVED and ASK retire scopes before retrying, and old requests or queued refreshes
+cannot fill a successor scope. Losing a tracking connection evicts only entries
+dependent on that connection, not the entire node or Cluster cache. Reconnected
+connections establish tracking again for future reads.
+
+CSC bypasses stale topology snapshots until a successful reload; the trust
+threshold is `ClusterStateReloadInterval` (default 60 seconds, negative means
+always expired). This protects against **observed** transitions, not changes the
+client never sees. A fresh slot map cannot rule out migration or failback between
+observations. Negative replies, including `redis.Nil`, are cached, and with
+`MaxStaleness=0` (the unchanged default), an absence-dependent result can remain
+usable indefinitely following an unobserved migration. A finite entry age bounds
+reuse but cannot repair missing server-side tracking coverage. Redis Enterprise
+proxy deployments may require reconnecting caching clients after shard additions
+or same-node slot moves; cache scopes do not remove that operational requirement.
+
+Custom per-node caches can be created with `ClusterOptions.NewClient`: preserve
+the supplied options and create a fresh cache for each node-client lifetime.
+`UniversalOptions` forwards CSC configuration to Cluster, but its explicit
+`ClientSideCache` instance remains standalone-only. Refresh, miss coalescing and
+invalidation batching retain their standalone built-in-cache limitations.
 
 While client-side caching is enabled, go-redis rejects `SELECT`, `AUTH`,
 `HELLO` with arguments, `RESET`, `CLIENT TRACKING`, and raw `SUBSCRIBE`,

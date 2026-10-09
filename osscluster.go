@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
@@ -51,6 +52,24 @@ type ClusterOptions struct {
 	// NewClient creates a cluster node client with provided name and options.
 	// If NewClient is set by the user, the user is responsible for handling maintnotifications upgrades and push notifications.
 	NewClient func(opt *Options) *Client
+
+	// ClientSideCacheConfig enables an independent cache per node client. Capacity
+	// and memory limits apply to each node, not to the whole ClusterClient.
+	// A custom NewClient must preserve the supplied Options and create a fresh
+	// cache for each node-client lifetime. See Options.ClientSideCacheConfig.
+	ClientSideCacheConfig *ClientSideCacheConfig
+	// ClientSideCacheStrategy shares tracking across a node's connections, not
+	// across cluster nodes. See Options.ClientSideCacheStrategy.
+	ClientSideCacheStrategy CSCStrategy
+	// ClientSideCacheRefreshOnInvalidate enables node-local background refresh.
+	// See Options.ClientSideCacheRefreshOnInvalidate.
+	ClientSideCacheRefreshOnInvalidate bool
+	// ClientSideCacheCoalesceMisses enables node-local miss coalescing.
+	// See Options.ClientSideCacheCoalesceMisses.
+	ClientSideCacheCoalesceMisses bool
+	// ClientSideCacheInvalidationBatchWindow batches node-local invalidations.
+	// See Options.ClientSideCacheInvalidationBatchWindow.
+	ClientSideCacheInvalidationBatchWindow time.Duration
 
 	// The maximum number of retries before giving up. Command is retried
 	// on network errors and MOVED/ASK redirects.
@@ -455,9 +474,14 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	}
 
 	return &Options{
-		ClientName: opt.ClientName,
-		Dialer:     opt.Dialer,
-		OnConnect:  opt.OnConnect,
+		ClientSideCacheConfig:                  opt.ClientSideCacheConfig,
+		ClientSideCacheStrategy:                opt.ClientSideCacheStrategy,
+		ClientSideCacheRefreshOnInvalidate:     opt.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          opt.ClientSideCacheCoalesceMisses,
+		ClientSideCacheInvalidationBatchWindow: opt.ClientSideCacheInvalidationBatchWindow,
+		ClientName:                             opt.ClientName,
+		Dialer:                                 opt.Dialer,
+		OnConnect:                              opt.OnConnect,
 
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
@@ -526,8 +550,11 @@ type clusterNode struct {
 	lastLatencyMeasurement atomic.Int64
 }
 
-func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress string) *clusterNode {
+func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress string, controls ...*clusterCSC) *clusterNode {
 	opt := clOpt.clientOptions()
+	if len(controls) != 0 && controls[0] != nil {
+		opt.clusterCSC = &clusterCSCNode{owner: controls[0], addr: addr}
+	}
 	opt.Addr = addr
 	opt.NodeAddress = nodeAddress
 	// The default value 0 never reaches this point: ClusterOptions.init
@@ -541,8 +568,20 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = -1
 	}
+	control := opt.clusterCSC
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
+	}
+	if control != nil {
+		if node.Client.opt.clusterCSC != control {
+			// A factory which discards the private controls cannot safely cache.
+			// Clones have no drainer handle, so revoke their shared serving flag
+			// too; their canonical owner will observe it and stop its workers.
+			node.Client.disableCSCServing(context.Background(), "node factory discarded Cluster CSC controls")
+			node.Client.stopBackgroundDrainer()
+		} else {
+			control.owner.register(control, node.Client)
+		}
 	}
 
 	node.latency.Store(unmeasuredNodeLatencyMicros)
@@ -670,6 +709,7 @@ func (n *clusterNode) Loading() bool {
 //------------------------------------------------------------------------------
 
 type clusterNodes struct {
+	csc *clusterCSC
 	opt *ClusterOptions
 
 	mu          sync.RWMutex
@@ -677,6 +717,8 @@ type clusterNodes struct {
 	nodes       map[string]*clusterNode
 	activeAddrs []string
 	closed      bool
+	closeDone   chan struct{}
+	closeErr    error
 	onNewNode   []func(rdb *Client)
 
 	generation atomic.Uint32
@@ -692,22 +734,35 @@ func newClusterNodes(opt *ClusterOptions) *clusterNodes {
 
 func (c *clusterNodes) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
-		return nil
+		done := c.closeDone
+		c.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		c.mu.RLock()
+		err := c.closeErr
+		c.mu.RUnlock()
+		return err
 	}
 	c.closed = true
+	c.closeDone = make(chan struct{})
+	nodes := c.nodes
+	c.nodes = nil
+	c.activeAddrs = nil
+	c.mu.Unlock()
 
 	var firstErr error
-	for _, node := range c.nodes {
+	for _, node := range nodes {
 		if err := node.Client.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-
-	c.nodes = nil
-	c.activeAddrs = nil
+	c.mu.Lock()
+	c.closeErr = firstErr
+	close(c.closeDone)
+	c.mu.Unlock()
 
 	return firstErr
 }
@@ -800,7 +855,7 @@ func (c *clusterNodes) GetOrCreateWithNodeAddress(addr, nodeAddress string) (*cl
 		return node, nil
 	}
 
-	node = newClusterNodeWithNodeAddress(c.opt, addr, nodeAddress)
+	node = newClusterNodeWithNodeAddress(c.opt, addr, nodeAddress, c.csc)
 	for _, fn := range c.onNewNode {
 		fn(node.Client)
 	}
@@ -862,9 +917,11 @@ type clusterSlot struct {
 }
 
 type clusterState struct {
-	nodes   *clusterNodes
-	Masters []*clusterNode
-	Slaves  []*clusterNode
+	cscScopes  map[*clusterNode]*clusterCSCScope
+	identities map[*clusterNode]string
+	nodes      *clusterNodes
+	Masters    []*clusterNode
+	Slaves     []*clusterNode
 
 	slots []*clusterSlot
 
@@ -876,7 +933,8 @@ func newClusterState(
 	nodes *clusterNodes, slots []ClusterSlot, origin string,
 ) (*clusterState, error) {
 	c := clusterState{
-		nodes: nodes,
+		identities: make(map[*clusterNode]string),
+		nodes:      nodes,
 
 		slots: make([]*clusterSlot, 0, len(slots)),
 
@@ -908,6 +966,7 @@ func newClusterState(
 			}
 
 			node.SetGeneration(c.generation)
+			c.identities[node] = slotNode.ID
 			nodes = append(nodes, node)
 
 			if i == 0 {
@@ -926,10 +985,6 @@ func newClusterState(
 
 	slices.SortFunc(c.slots, func(a, b *clusterSlot) int {
 		return cmp.Compare(a.start, b.start)
-	})
-
-	time.AfterFunc(time.Minute, func() {
-		nodes.GC(c.generation)
 	})
 
 	return &c, nil
@@ -1287,7 +1342,11 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 //------------------------------------------------------------------------------
 
 type clusterStateHolder struct {
-	load func(ctx context.Context) (*clusterState, error)
+	csc               *clusterCSC
+	publishMu         sync.Mutex
+	loadSequence      atomic.Uint64
+	publishedSequence uint64
+	load              func(ctx context.Context) (*clusterState, error)
 
 	reloadInterval time.Duration
 	state          atomic.Value
@@ -1303,15 +1362,50 @@ func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error)
 }
 
 func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) {
+	sequence := c.loadSequence.Add(1)
+	started := time.Now()
+	var revision uint64
+	if c.csc != nil {
+		revision = c.csc.observation()
+	}
 	state, err := c.load(ctx)
 	if err != nil {
 		return nil, err
 	}
-	c.state.Store(state)
+	c.publishMu.Lock()
+	defer c.publishMu.Unlock()
+	if sequence < c.publishedSequence {
+		// Construction may have discovered nodes and advanced their registry
+		// generations. A newer accepted reload must collect those orphan nodes;
+		// using the rejected candidate's generation could close current owners.
+		if c.csc == nil || !c.csc.closed.Load() {
+			c.LazyReload()
+		}
+		return c.state.Load().(*clusterState), nil
+	}
+	state.createdAt = started
+	if c.csc != nil {
+		if !c.csc.publish(state, revision) {
+			if !c.csc.closed.Load() {
+				c.LazyReload()
+			}
+			if old := c.state.Load(); old != nil {
+				return old.(*clusterState), nil
+			}
+			return nil, errClusterNoNodes
+		}
+	} else {
+		c.state.Store(state)
+	}
+	c.publishedSequence = sequence
+	if state.nodes != nil {
+		time.AfterFunc(time.Minute, func() { state.nodes.GC(state.generation) })
+	}
 	return state, nil
 }
 
 func (c *clusterStateHolder) LazyReload() {
+	c.reloadPending.Store(1)
 	// If already reloading, mark that another reload is pending
 	if !c.reloading.CompareAndSwap(0, 1) {
 		c.reloadPending.Store(1)
@@ -1320,24 +1414,16 @@ func (c *clusterStateHolder) LazyReload() {
 
 	go func() {
 		for {
-			_, err := c.Reload(context.Background())
-			if err != nil {
-				c.reloadPending.Store(0)
-				c.reloading.Store(0)
-				return
-			}
-
-			// Clear pending flag after reload completes, before cooldown
-			// This captures notifications that arrived during the reload
 			c.reloadPending.Store(0)
+			_, err := c.Reload(context.Background())
+			_ = err // A failed fetch must not erase requests made during the fetch.
 
 			// Wait cooldown period
 			time.Sleep(200 * time.Millisecond)
 
 			// Check if another reload was requested during cooldown
-			if c.reloadPending.Load() == 0 {
-				// No pending reload, we're done
-				c.reloading.Store(0)
+			c.reloading.Store(0)
+			if c.reloadPending.Load() == 0 || !c.reloading.CompareAndSwap(0, 1) {
 				return
 			}
 
@@ -1373,6 +1459,7 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
+	csc             *clusterCSC
 	opt             *ClusterOptions
 	nodes           *clusterNodes
 	state           *clusterStateHolder
@@ -1412,13 +1499,17 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	// Every node client shares the cluster-wide fieldset registry, replicas
 	// included: a promoted replica's connections carry no prepared flags, so
 	// the first HIMPORT SET routed to it replays the PREPARE lazily.
+	registry := c.himport
 	c.nodes.OnNewNode(func(nodeClient *Client) {
-		nodeClient.himport = c.himport
+		nodeClient.himport = registry
 	})
 
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
 	c.state = newClusterStateHolder(c.loadState, opt.ClusterStateReloadInterval)
+	c.csc = newClusterCSC(c)
+	c.nodes.csc = c.csc
+	c.state.csc = c.csc
 
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 
@@ -1434,10 +1525,15 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	// When a node client receives a SMIGRATED notification, it should trigger
 	// cluster state reload on the parent ClusterClient
 	if opt.MaintNotificationsConfig != nil {
+		clusterWeak := weak.Make(c)
 		c.nodes.OnNewNode(func(nodeClient *Client) {
 			manager := nodeClient.GetMaintNotificationsManager()
 			if manager != nil {
 				manager.SetClusterStateReloadCallback(func(ctx context.Context, hostPort string, slotRanges []string) {
+					c := clusterWeak.Value()
+					if c == nil {
+						return
+					}
 					// Log the migration details for now
 					if internal.LogLevel.InfoOrAbove() {
 						internal.Logger.Printf(ctx, "cluster: slots %v migrated to %s, reloading cluster state", slotRanges, hostPort)
@@ -1470,6 +1566,7 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
+	c.csc.close()
 	// Stop both cached autopipeliners (blocking and async faces) before
 	// closing nodes, so its background flusher goroutines don't outlive the
 	// client. AutoPipeliner.Close is idempotent and nil-safe here.
@@ -1499,12 +1596,29 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
+	callerCtx := ctx
 	slot := c.cmdSlot(cmd, -1)
 	var node *clusterNode
+	var routeState *clusterState
+	var redirected bool
 	var moved bool
 	var ask bool
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		ctx = callerCtx
+		if c.csc.enabled.Load() || c.state.state.Load() == nil {
+			if node == nil {
+				state, err := c.state.Get(ctx)
+				if err != nil {
+					return err
+				}
+				routeState = state
+			}
+			ctx = context.WithValue(ctx, clusterCSCRouteKey{}, routeState)
+			if redirected {
+				ctx = clusterCSCBypass(ctx)
+			}
+		}
 		// MOVED and ASK responses are not transient errors that require retry delay; they
 		// should be attempted immediately.
 		if attempt > 0 && !moved && !ask {
@@ -1535,13 +1649,13 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			if !c.opt.DisableRoutingPolicies {
 				lastErr = c.routeAndRun(ctx, cmd, node)
 			} else {
-				lastErr = node.Client.Process(ctx, cmd)
+				lastErr = node.Client.Process(c.cscNodeContext(ctx, node, cmd), cmd)
 			}
 		}
 
 		// If there is no error - we are done.
-		if lastErr == nil {
-			return nil
+		if lastErr == nil || lastErr == Nil {
+			return lastErr
 		}
 		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
 			if isReadOnly {
@@ -1561,6 +1675,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
+			redirected = true
 			c.state.LazyReload()
 
 			// Record error metrics
@@ -2293,6 +2408,7 @@ func (c *ClusterClient) pipelineReadCmds(
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
+		node.Client.observeCSCRedirect(err)
 		cmd.SetErr(err)
 
 		if err == nil {
@@ -2712,7 +2828,9 @@ func (c *ClusterClient) readTxPipelineReplies(
 
 	readStatus := func() error {
 		c.txProcessPush(ctx, node, cn, rd)
-		return scratch.readReply(rd)
+		err := scratch.readReply(rd)
+		node.Client.observeCSCRedirect(err)
+		return err
 	}
 
 	// Optional top-level ASKING reply (+OK, or a retryable error such as -LOADING).
@@ -2761,6 +2879,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 	// err means EXEC returned an error rather than the result array.
 	c.txProcessPush(ctx, node, cn, rd)
 	line, err := rd.ReadLine()
+	node.Client.observeCSCRedirect(err)
 	if err != nil {
 		if !isRedisError(err) {
 			return c.txReadFatal(err) // IO error
@@ -3139,7 +3258,7 @@ func (c *ClusterClient) cmdNode(
 	cmdName string,
 	slot int,
 ) (*clusterNode, error) {
-	state, err := c.state.Get(ctx)
+	state, err := c.cscRoutingState(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -3159,7 +3278,7 @@ func (c *ClusterClient) cmdNodeWithShardPicker(
 	slot int,
 	shardPicker routing.ShardPicker,
 ) (*clusterNode, error) {
-	state, err := c.state.Get(ctx)
+	state, err := c.cscRoutingState(ctx)
 	if err != nil {
 		return nil, err
 	}

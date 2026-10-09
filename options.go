@@ -47,6 +47,8 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
+	// clusterCSC gates node-local caching without changing standalone behavior.
+	clusterCSC *clusterCSCNode
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.

@@ -155,6 +155,7 @@ func cscMissKeys(cmd Cmder, keyPrefix string, lo, hi int) []string {
 // a successor client on the same processor can still rebind it (see
 // registerInvalidateHandler).
 type invalidateHandler struct {
+	cluster   *clusterCSCNode
 	mu        sync.RWMutex
 	cache     Cache
 	keyPrefix string
@@ -274,7 +275,8 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 	}
 	if h.batcher == nil {
 		h.batcher = &cscInvalBatcher{
-			window: w,
+			cluster: h.cluster,
+			window:  w,
 			// Snapshot the cache for the batcher's lifetime (⊂ the binding's:
 			// releaseLocked stops it before clearing it) so the release-time
 			// stop-drain still applies queued deletes after h.cache is nilled.
@@ -510,12 +512,22 @@ func (h *invalidateHandler) HandlePushNotification(
 // h.cache, and a guarded `if h.cache != nil` would then silently skip the wipe. RLock
 // (not Lock) suffices — it blocks the write-locked rebuilds — and drop()/Flush() take
 // their own locks, not h.mu, so there is no lock-order cycle.
+// Cluster retirement runs outside h.mu; its cleanup worker performs the flush.
 func (h *invalidateHandler) fullFlush(cache Cache) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
 	if sameCache(h.cache, cache) && h.batcher != nil {
 		h.batcher.drop()
 	}
+	var n *clusterCSCNode
+	if sameCache(h.cache, cache) {
+		n = h.cluster
+	}
+	if n != nil {
+		h.mu.RUnlock()
+		n.invalidateAll()
+		return
+	}
+	defer h.mu.RUnlock()
 	cache.Flush()
 }
 
@@ -545,6 +557,7 @@ func (h *invalidateHandler) releaseLocked() *cscInvalBatcher {
 		return nil
 	}
 	h.cache = nil
+	h.cluster = nil
 	h.keyPrefix = ""
 	// Stop the windowed batcher so its goroutine does not outlive the binding.
 	// Detached+signalled here; release() joins it outside the lock, so the last user
@@ -719,6 +732,14 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 		ih.setInvalBatchWindow(c.opt.ClientSideCacheInvalidationBatchWindow)
 	}
 	c.csc = cache
+	if n := c.opt.clusterCSC; n != nil {
+		n.bind(c)
+		if ih := lookupInvalidateHandler(c.pushProcessor); ih != nil {
+			ih.mu.Lock()
+			ih.cluster = n
+			ih.mu.Unlock()
+		}
+	}
 	c.registerConnEvictHook(cache, reg)
 	c.startBackgroundDrainer()
 	c.startCSCRefresher()
@@ -930,6 +951,7 @@ func (c *baseClient) newStickyConnPool() *pool.StickyConnPool {
 // released: a handoff queued at Put can re-init the socket (bumping the
 // generation) before fulfillCached runs.
 type cscFetchCapture struct {
+	scope   *clusterCSCScope
 	raw     []byte
 	connID  uint64
 	initGen uint64
@@ -1284,7 +1306,11 @@ func (c *baseClient) stopBackgroundDrainer() {
 		// The drainer's exit defer revoked and evicted this pool's coverage
 		// before closing done, including for injected caches shared elsewhere.
 		if c.cscOwnsCache && c.csc != nil {
-			c.csc.Flush()
+			if n := c.opt.clusterCSC; n != nil {
+				n.flushCache()
+			} else {
+				c.csc.Flush()
+			}
 		}
 	})
 }
@@ -1557,6 +1583,14 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// the namespace already in it, in one allocation, so the prefix has to be
 	// known first.
 	keyPrefix := c.cscKeyPrefix
+	var scope *clusterCSCScope
+	if c.opt.clusterCSC != nil {
+		scope = c.clusterCSCScope(ctx)
+		if scope == nil {
+			return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+		}
+		keyPrefix = scope.prefix
+	}
 	if keyPrefix == "" {
 		// A successfully attached client always has a namespace. Fail closed if
 		// an incomplete custom baseClient reaches this path.
@@ -1586,6 +1620,9 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 
 	// Serve hits straight from the cache.
 	if data, ok := c.cscGet(ctx, key); ok {
+		if scope != nil && !scope.usable() {
+			return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1605,12 +1642,18 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	c.cscRefreshQueue.signalDemand(key)
 
 	// Miss path: now the key list is actually needed.
-	nsRedisKeys := cscMissKeys(cmd, keyPrefix, keyLo, keyHi)
+	nsRedisKeys := cscMissKeys(cmd, c.cscKeyPrefix, keyLo, keyHi)
+	if scope != nil && !scope.usable() {
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+	}
 
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
 		// Another goroutine is fetching; Get below waits until it completes.
 		if data, ok := c.cscGet(ctx, key); ok {
+			if scope != nil && !scope.usable() {
+				return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+			}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -1703,6 +1746,9 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 				// coalescing this path exists for. Same shape (and 2x-RTT churn
 				// tradeoff) as the first-Reserve loser path above.
 				if data, ok := c.cscGet(ctx, key); ok {
+					if scope != nil && !scope.usable() {
+						return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+					}
 					if err := ctx.Err(); err != nil {
 						return err
 					}
@@ -1739,6 +1785,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// waiters a miss, under the churn that leads here, so it is documented
 	// instead (README, client-side caching).
 	var fc cscFetchCapture
+	fc.scope = scope
 	var capture *cscFetchCapture
 	if shouldFetch {
 		capture = &fc
@@ -1773,6 +1820,10 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 // was already lost never becomes visible and never wakes waiters with stale
 // data.
 func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture) bool {
+	if c.opt.clusterCSC != nil && !fc.scope.usable() {
+		c.csc.Cancel(key, token)
+		return false
+	}
 	if active := c.cscActive; active != nil && !active.Load() {
 		c.csc.Cancel(key, token)
 		return false
