@@ -6,6 +6,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -61,6 +62,48 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 			Run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(agg.Rows)).To(Equal(2))
+	})
+
+	It("should aggregate with positional Filter and Limit using builders", Label("search", "ftaggregate"), func() {
+		_, err := client.NewCreateIndexBuilder(ctx, "idx_steps").
+			OnHash().
+			Schema(&redis.FieldSchema{FieldName: "category", FieldType: redis.SearchFieldTypeTag}).
+			Schema(&redis.FieldSchema{FieldName: "price", FieldType: redis.SearchFieldTypeNumeric}).
+			Run()
+		Expect(err).NotTo(HaveOccurred())
+		WaitForIndexing(client, "idx_steps")
+
+		client.HSet(ctx, "p1", "category", "a", "price", 10)
+		client.HSet(ctx, "p2", "category", "a", "price", 200)
+		client.HSet(ctx, "p3", "category", "b", "price", 300)
+		client.HSet(ctx, "p4", "category", "b", "price", 400)
+		client.HSet(ctx, "p5", "category", "c", "price", 50)
+
+		agg, err := client.NewAggregateBuilder(ctx, "idx_steps", "*").
+			Load("@category").
+			Load("@price").
+			Filter("@price > 100").
+			GroupBy("@category").
+			ReduceAs(redis.SearchSum, "total", "@price").
+			ReduceAs(redis.SearchCount, "cnt").
+			Filter("@cnt == 1").
+			Limit(0, 10).
+			Run()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(agg.Rows).To(HaveLen(1))
+		Expect(agg.Rows[0].Fields["category"]).To(BeEquivalentTo("a"))
+		Expect(agg.Rows[0].Fields["total"]).To(BeEquivalentTo("200"))
+
+		agg, err = client.NewAggregateBuilder(ctx, "idx_steps", "*").
+			Load("@price").
+			Filter("@price > 100").
+			SortBy("@price", true).
+			Limit(1, 2).
+			Run()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(agg.Rows).To(HaveLen(2))
+		Expect(agg.Rows[0].Fields["price"]).To(BeEquivalentTo("300"))
+		Expect(agg.Rows[1].Fields["price"]).To(BeEquivalentTo("400"))
 	})
 
 	It("should drop index using builder", Label("search", "ftdropindex"), func() {

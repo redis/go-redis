@@ -5,8 +5,6 @@ import (
 	"errors"
 	"strings"
 	"time"
-
-	"github.com/redis/go-redis/v9/internal/hashtag"
 )
 
 type SortedSetCmdable interface {
@@ -770,9 +768,6 @@ func (c cmdable) ZScan(ctx context.Context, key string, cursor uint64, match str
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(ctx, c, args...)
-	if hashtag.Present(match) {
-		cmd.SetFirstKeyPos(4)
-	}
 	_ = c(ctx, cmd)
 	return cmd
 }

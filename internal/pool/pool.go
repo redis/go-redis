@@ -1469,8 +1469,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
 		// put them at the opposite end of the queue
-		// Optimization: if we just transitioned to IDLE, we know it's usable - skip the check
-		if !transitionedToIdle && !cn.IsUsable() {
+		// Check even if Release() succeeded: it notifies waiters, which may have
+		// already moved the conn out of IDLE (e.g. re-auth to UNUSABLE).
+		if !cn.IsUsable() {
 			p.connsMu.Lock()
 			// Check if Close() already removed this connection from p.conns.
 			// If so, skip the append and metrics — Close() already accounted for it.

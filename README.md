@@ -23,8 +23,8 @@ In `go-redis` we are aiming to support the last three releases of Redis. Current
 - [Redis 8.8](https://raw.githubusercontent.com/redis/redis/8.8/00-RELEASENOTES) - using Redis CE 8.8
 - [Redis 8.10](https://raw.githubusercontent.com/redis/redis/8.10/00-RELEASENOTES) - using Redis CE 8.10
 
-Although the `go.mod` states it requires at minimum `go 1.24`, our CI is configured to run the tests against all supported
-versions of Redis and multiple versions of Go ([1.24](https://go.dev/doc/devel/release#go1.24.0), oldstable, and stable). We observe that some modules related test may not pass with
+Although the `go.mod` states it requires at minimum `go 1.26`, our CI is configured to run the tests against all supported
+versions of Redis and multiple versions of Go ([1.26](https://go.dev/doc/devel/release#go1.26.0), oldstable, and stable). We observe that some modules related test may not pass with
 Redis Stack 7.2 and some commands are changed with Redis CE 8.0.
 Although it is not officially supported, `go-redis/v9`  should be able to work with any Redis 7.0+.
 Please do refer to the documentation and the tests if you experience any issues.
@@ -516,13 +516,13 @@ go-redis supports extending the client identification phase to allow projects to
 
 By default, go-redis automatically sends the client library name and version during the connection process. This feature is available in redis-server as of version 7.2. As a result, the command is "fire and forget", meaning it should fail silently, in the case that the redis server does not support this feature.
 
-#### Disabling Identity Verification
+#### Disabling Client Identification
 
-When connection identity verification is not required or needs to be explicitly disabled, a `DisableIdentity` configuration option exists.
+The `DisableIdentity` option disables sending the client library name and version with `CLIENT SETINFO` during connection initialization. It does not disable authentication or TLS certificate verification.
 Initially there was a typo and the option was named `DisableIndentity` instead of `DisableIdentity`. The misspelled option is marked as Deprecated and will be removed in V10 of this library.
 Although both options will work at the moment, the correct option is `DisableIdentity`. The deprecated option will be removed in V10 of this library, so please use the correct option name to avoid any issues.
 
-To disable verification, set the `DisableIdentity` option to `true` in the Redis client options:
+To disable client identification, set the `DisableIdentity` option to `true` in the Redis client options:
 
 ```go
 rdb := redis.NewClient(&redis.Options{
@@ -641,7 +641,10 @@ them, while a raw `Do(ctx, "himport", "prepare", ...)` bypasses that
 entirely, with no replay, recovery, or discard propagation.
 
 For session-scoped work without a typed API, hold a dedicated connection
-(`client.Conn()`) for its whole lifetime and close it afterwards.
+(`client.EphemeralConn()`) for its whole lifetime and close it afterwards.
+`client.Conn()` is also a dedicated connection, but `Close` returns it to the
+pool with whatever session state is left on it, so it only suits commands that
+leave the connection as they found it.
 
 ## Typed Errors
 
