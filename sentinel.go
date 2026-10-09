@@ -989,7 +989,9 @@ func (c *sentinelFailover) rotateSentinelAddr(addr string) {
 	if idx < 0 {
 		idx = 0
 	}
-	c.sentinelAddrs = append(append(c.sentinelAddrs[:idx], c.sentinelAddrs[idx+1:]...), c.sentinelAddrs[idx])
+	target := c.sentinelAddrs[idx]
+	rotated := append(append([]string{}, c.sentinelAddrs[:idx]...), c.sentinelAddrs[idx+1:]...)
+	c.sentinelAddrs = append(rotated, target)
 }
 
 func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error) {
@@ -1039,8 +1041,14 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 			_ = c.closeSentinel()
 			c.rotateSentinelAddr(addr)
 		} else {
+			if isContextError(ctx.Err()) {
+				return "", ctx.Err()
+			}
 			addr, err := c.getMasterAddr(ctx, c.sentinel)
 			if err != nil {
+				if isContextError(err) || isContextError(ctx.Err()) {
+					return "", err
+				}
 				failedAddr := c.sentinel.opt.Addr
 				_ = c.closeSentinel()
 				c.rotateSentinelAddr(failedAddr)
@@ -1122,9 +1130,11 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	sentinel := c.sentinel
 	c.mu.RUnlock()
 
+	var queryErr error
 	if sentinel != nil {
 		addrs, err := c.getReplicaAddrs(ctx, sentinel)
 		if err != nil {
+			queryErr = err
 			internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else if len(addrs) > 0 {
@@ -1139,12 +1149,22 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 
 	if c.sentinel != nil {
 		if c.sentinel == sentinel {
-			addr := c.sentinel.opt.Addr
-			_ = c.closeSentinel()
-			c.rotateSentinelAddr(addr)
+			if queryErr != nil {
+				addr := c.sentinel.opt.Addr
+				_ = c.closeSentinel()
+				c.rotateSentinelAddr(addr)
+			} else {
+				_ = c.closeSentinel()
+			}
 		} else {
+			if isContextError(ctx.Err()) {
+				return nil, ctx.Err()
+			}
 			addrs, err := c.getReplicaAddrs(ctx, c.sentinel)
 			if err != nil {
+				if isContextError(err) || isContextError(ctx.Err()) {
+					return nil, err
+				}
 				failedAddr := c.sentinel.opt.Addr
 				_ = c.closeSentinel()
 				c.rotateSentinelAddr(failedAddr)
@@ -1160,9 +1180,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 				// useDisconnected to parseReplicaAddrs (getReplicaAddrs hardcodes false).
 				return []string{}, nil
 			} else {
-				failedAddr := c.sentinel.opt.Addr
 				_ = c.closeSentinel()
-				c.rotateSentinelAddr(failedAddr)
 			}
 		}
 	}

@@ -146,3 +146,18 @@ func (c *sentinelFailover) SetSentinel(sentinel *SentinelClient) {
 	defer c.mu.Unlock()
 	c.sentinel = sentinel
 }
+
+// RotateSentinelAddr exports rotateSentinelAddr for testing.
+func (c *sentinelFailover) RotateSentinelAddr(addr string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rotateSentinelAddr(addr)
+}
+
+// Sentinel returns the cached sentinel client for testing.
+func (c *sentinelFailover) Sentinel() *SentinelClient {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sentinel
+}
+

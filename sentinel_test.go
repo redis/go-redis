@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1408,5 +1409,334 @@ func TestSentinelFailover_ReplicaAddrs_QueriesNextSentinelOnTimeout(t *testing.T
 	}
 	if !failover.HasSentinel() {
 		t.Fatal("expected healthy sentinel to be cached after replica discovery")
+	}
+}
+
+// TestSentinelFailover_RotateSentinelAddr_SliceIntegrity tests that rotateSentinelAddr
+// rotates addresses correctly without dropping elements or creating duplicates.
+func TestSentinelFailover_RotateSentinelAddr_SliceIntegrity(t *testing.T) {
+	t.Run("rotates head element to tail", func(t *testing.T) {
+		initial := []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379"}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initial,
+		}, initial)
+		defer failover.Close()
+
+		failover.RotateSentinelAddr("10.0.0.1:26379")
+		got := failover.SentinelAddrs()
+		want := []string{"10.0.0.2:26379", "10.0.0.3:26379", "10.0.0.1:26379"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+	})
+
+	t.Run("rotates middle element to tail", func(t *testing.T) {
+		initial := []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379", "10.0.0.4:26379"}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initial,
+		}, initial)
+		defer failover.Close()
+
+		failover.RotateSentinelAddr("10.0.0.2:26379")
+		got := failover.SentinelAddrs()
+		want := []string{"10.0.0.1:26379", "10.0.0.3:26379", "10.0.0.4:26379", "10.0.0.2:26379"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+	})
+
+	t.Run("rotates tail element to tail (ordering preserved)", func(t *testing.T) {
+		initial := []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379"}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initial,
+		}, initial)
+		defer failover.Close()
+
+		failover.RotateSentinelAddr("10.0.0.3:26379")
+		got := failover.SentinelAddrs()
+		want := []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+	})
+
+	t.Run("rotates unknown element (falls back to index 0)", func(t *testing.T) {
+		initial := []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379"}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initial,
+		}, initial)
+		defer failover.Close()
+
+		failover.RotateSentinelAddr("unknown:26379")
+		got := failover.SentinelAddrs()
+		want := []string{"10.0.0.2:26379", "10.0.0.3:26379", "10.0.0.1:26379"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+	})
+
+	t.Run("single element slice is unchanged", func(t *testing.T) {
+		initial := []string{"10.0.0.1:26379"}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initial,
+		}, initial)
+		defer failover.Close()
+
+		failover.RotateSentinelAddr("10.0.0.1:26379")
+		got := failover.SentinelAddrs()
+		want := []string{"10.0.0.1:26379"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+	})
+
+	t.Run("repeated full rotation cycles preserve all elements with zero drops or duplicates", func(t *testing.T) {
+		initial := []string{"s1", "s2", "s3", "s4", "s5"}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initial,
+		}, initial)
+		defer failover.Close()
+
+		for cycle := 0; cycle < 20; cycle++ {
+			for _, target := range initial {
+				failover.RotateSentinelAddr(target)
+				current := failover.SentinelAddrs()
+				if len(current) != len(initial) {
+					t.Fatalf("length changed: want %d, got %d", len(initial), len(current))
+				}
+				seen := make(map[string]int)
+				for _, addr := range current {
+					seen[addr]++
+				}
+				for _, addr := range initial {
+					if seen[addr] != 1 {
+						t.Fatalf("element %q count is %d (expected 1) in %v", addr, seen[addr], current)
+					}
+				}
+			}
+		}
+	})
+}
+
+// TestSentinelFailover_MasterAddr_ExpiredContextDoesNotTearDownReplacementSentinel
+// tests that when a caller's query fails due to an expired context while another
+// caller has installed a healthy replacement sentinel, the replacement sentinel
+// is not closed or rotated.
+func TestSentinelFailover_MasterAddr_ExpiredContextDoesNotTearDownReplacementSentinel(t *testing.T) {
+	silentLn := newTestSilentSentinelServer(t)
+	defer silentLn.Close()
+
+	healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+	defer healthyServer.Close()
+
+	sentinelAddrs := []string{silentLn.Addr().String(), healthyServer.Addr()}
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: sentinelAddrs,
+		DialTimeout:   100 * time.Millisecond,
+		ReadTimeout:   100 * time.Millisecond,
+	}, sentinelAddrs)
+	defer failover.Close()
+
+	// 1. Point cached sentinel to the dead/silent sentinel.
+	deadCli := redis.NewSentinelClient(&redis.Options{
+		Addr:        silentLn.Addr().String(),
+		DialTimeout: 100 * time.Millisecond,
+		ReadTimeout: 100 * time.Millisecond,
+	})
+	failover.SetSentinel(deadCli)
+
+	// 2. Replacement healthy sentinel client.
+	healthyCli := redis.NewSentinelClient(&redis.Options{
+		Addr:        healthyServer.Addr(),
+		DialTimeout: 100 * time.Millisecond,
+		ReadTimeout: 100 * time.Millisecond,
+	})
+
+	// 3. Caller 1 calls MasterAddr with a short context that will expire while querying deadCli.
+	queryCtx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	callerDone := make(chan error, 1)
+	go func() {
+		_, err := failover.MasterAddr(queryCtx)
+		callerDone <- err
+	}()
+
+	// 4. Give Caller 1 enough time to start querying deadCli under read lock.
+	time.Sleep(20 * time.Millisecond)
+
+	// 5. Concurrently, another caller discovers and installs the healthy replacement sentinel.
+	failover.SetSentinel(healthyCli)
+
+	// 6. Wait for Caller 1 to finish (fails due to queryCtx deadline expiration).
+	err := <-callerDone
+	if err == nil {
+		t.Fatal("expected error with expired context, got nil")
+	}
+
+	// 7. The healthy replacement sentinel MUST NOT have been torn down.
+	if !failover.HasSentinel() {
+		t.Fatal("expected replacement sentinel to remain cached")
+	}
+	if failover.Sentinel() != healthyCli {
+		t.Fatal("expected replacement sentinel client pointer to be preserved")
+	}
+
+	// 8. Healthy caller should immediately succeed using the cached replacement sentinel.
+	freshCtx := context.Background()
+	masterAddr, err := failover.MasterAddr(freshCtx)
+	if err != nil {
+		t.Fatalf("expected fresh MasterAddr to succeed, got %v", err)
+	}
+	if masterAddr != "127.0.0.1:6379" {
+		t.Fatalf("want 127.0.0.1:6379, got %s", masterAddr)
+	}
+}
+
+// TestSentinelFailover_ReplicaAddrs_ExpiredContextDoesNotTearDownReplacementSentinel
+// tests that replicaAddrs does not tear down a newly installed replacement sentinel
+// when invoked with an expired context.
+func TestSentinelFailover_ReplicaAddrs_ExpiredContextDoesNotTearDownReplacementSentinel(t *testing.T) {
+	silentLn := newTestSilentSentinelServer(t)
+	defer silentLn.Close()
+
+	healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+	defer healthyServer.Close()
+
+	sentinelAddrs := []string{silentLn.Addr().String(), healthyServer.Addr()}
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: sentinelAddrs,
+		DialTimeout:   100 * time.Millisecond,
+		ReadTimeout:   100 * time.Millisecond,
+	}, sentinelAddrs)
+	defer failover.Close()
+
+	// 1. Point cached sentinel to the dead/silent sentinel.
+	deadCli := redis.NewSentinelClient(&redis.Options{
+		Addr:        silentLn.Addr().String(),
+		DialTimeout: 100 * time.Millisecond,
+		ReadTimeout: 100 * time.Millisecond,
+	})
+	failover.SetSentinel(deadCli)
+
+	// 2. Replacement healthy sentinel client.
+	healthyCli := redis.NewSentinelClient(&redis.Options{
+		Addr:        healthyServer.Addr(),
+		DialTimeout: 100 * time.Millisecond,
+		ReadTimeout: 100 * time.Millisecond,
+	})
+
+	// 3. Caller 1 invokes ReplicaAddrs with a short context that expires while querying deadCli.
+	queryCtx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	callerDone := make(chan error, 1)
+	go func() {
+		_, err := failover.ReplicaAddrs(queryCtx)
+		callerDone <- err
+	}()
+
+	// 4. Give Caller 1 enough time to start querying deadCli under read lock.
+	time.Sleep(20 * time.Millisecond)
+
+	// 5. Concurrently, another caller installs the healthy replacement sentinel.
+	failover.SetSentinel(healthyCli)
+
+	// 6. Wait for Caller 1 to finish.
+	err := <-callerDone
+	if err == nil {
+		t.Fatal("expected error with expired context, got nil")
+	}
+
+	// 7. The healthy replacement sentinel MUST NOT have been torn down.
+	if !failover.HasSentinel() {
+		t.Fatal("expected replacement sentinel to remain cached")
+	}
+	if failover.Sentinel() != healthyCli {
+		t.Fatal("expected replacement sentinel pointer to be preserved")
+	}
+
+	// 8. Valid caller succeeds with cached sentinel.
+	replicas, err := failover.ReplicaAddrs(context.Background())
+	if err != nil {
+		t.Fatalf("expected ReplicaAddrs to succeed, got %v", err)
+	}
+	if len(replicas) != 1 || replicas[0] != "127.0.0.1:6380" {
+		t.Fatalf("want [127.0.0.1:6380], got %v", replicas)
+	}
+}
+
+// TestSentinelFailover_ConcurrentFailover_MixedContexts tests concurrent queries
+// during failover where multiple callers have expired contexts and others have valid contexts.
+// The healthy replacement sentinel must survive and remain cached.
+func TestSentinelFailover_ConcurrentFailover_MixedContexts(t *testing.T) {
+	silentLn := newTestSilentSentinelServer(t)
+	defer silentLn.Close()
+
+	healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+	defer healthyServer.Close()
+
+	sentinelAddrs := []string{silentLn.Addr().String(), healthyServer.Addr()}
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: sentinelAddrs,
+		DialTimeout:   100 * time.Millisecond,
+		ReadTimeout:   100 * time.Millisecond,
+	}, sentinelAddrs)
+	defer failover.Close()
+
+	// Cached sentinel points to dead silent server initially.
+	deadCli := redis.NewSentinelClient(&redis.Options{
+		Addr:        silentLn.Addr().String(),
+		DialTimeout: 100 * time.Millisecond,
+		ReadTimeout: 100 * time.Millisecond,
+	})
+	failover.SetSentinel(deadCli)
+
+	var wg sync.WaitGroup
+	numWorkers := 20
+
+	// Half workers have very short/expired contexts, half have long contexts.
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if workerID%2 == 0 {
+				ctx, cancel = context.WithTimeout(context.Background(), 10*time.Millisecond)
+			} else {
+				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			}
+			defer cancel()
+
+			addr, err := failover.MasterAddr(ctx)
+			if err == nil && addr != "127.0.0.1:6379" {
+				t.Errorf("worker %d: unexpected master addr: %s", workerID, addr)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// After all concurrent callers finish, failover must have settled on the healthy sentinel.
+	if !failover.HasSentinel() {
+		t.Fatal("expected healthy sentinel to remain cached after concurrent storm")
+	}
+
+	freshAddr, err := failover.MasterAddr(context.Background())
+	if err != nil {
+		t.Fatalf("expected MasterAddr to succeed after failover, got %v", err)
+	}
+	if freshAddr != "127.0.0.1:6379" {
+		t.Fatalf("want 127.0.0.1:6379, got %s", freshAddr)
 	}
 }
