@@ -2,6 +2,7 @@ package proto_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -24,6 +25,71 @@ func (s *testScanSliceStruct) MarshalBinary() ([]byte, error) {
 
 func (s *testScanSliceStruct) UnmarshalBinary(b []byte) error {
 	return json.Unmarshal(b, s)
+}
+
+func TestScanBool(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  bool
+	}{
+		{"1", true},
+		{"t", true},
+		{"T", true},
+		{"TRUE", true},
+		{"true", true},
+		{"True", true},
+		{"0", false},
+		{"f", false},
+		{"F", false},
+		{"FALSE", false},
+		{"false", false},
+		{"False", false},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			got := !tc.want
+			if err := proto.Scan([]byte(tc.input), &got); err != nil {
+				t.Fatalf("Scan(%q): unexpected error %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("Scan(%q): got %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScanBoolInvalid(t *testing.T) {
+	for _, input := range []string{"", "2", "yes", "true ", " true"} {
+		t.Run(input, func(t *testing.T) {
+			got := true
+			err := proto.Scan([]byte(input), &got)
+			if !errors.Is(err, strconv.ErrSyntax) {
+				t.Fatalf("Scan(%q): got error %v, want %v", input, err, strconv.ErrSyntax)
+			}
+			if !got {
+				t.Fatalf("Scan(%q) changed destination on error", input)
+			}
+		})
+	}
+}
+
+func TestScanBoolSlice(t *testing.T) {
+	var got []bool
+	if err := proto.ScanSlice([]string{"1", "0", "true", "false", "T", "F"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := []bool{true, false, true, false, true, false}
+	if len(got) != len(want) {
+		t.Fatalf("ScanSlice: got %v, want %v", got, want)
+	}
+	for i, value := range want {
+		if got[i] != value {
+			t.Fatalf("ScanSlice index %d: got %v, want %v", i, got[i], value)
+		}
+	}
+	err := proto.ScanSlice([]string{"1", "invalid"}, &got)
+	if !errors.Is(err, strconv.ErrSyntax) || !strings.Contains(err.Error(), "index=1") {
+		t.Fatalf("ScanSlice: got error %v, want syntax error at index 1", err)
+	}
 }
 
 var _ = Describe("ScanSlice", func() {
