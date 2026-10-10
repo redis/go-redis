@@ -130,3 +130,6 @@ fetch's
 loopback
 autopipeliner
 autopipeliner's
+AutoPipeline's
+uncached
+failback
