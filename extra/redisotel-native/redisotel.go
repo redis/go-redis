@@ -358,21 +358,19 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 	return recorder, nil
 }
 
-// parsePoolName extracts server address, port, and database index from a pool name.
-// Pool name format: "host:port/db" or "host/db" or "host:port" or "host"
-// Returns: (serverAddr, serverPort, dbIndex)
+// parsePoolName extracts the server endpoint from an addr_uniqueID pool name,
+// optionally suffixed with _pubsub or _pipeline.
 func parsePoolName(poolName string) (string, string, string) {
 	// Handle special pool names
 	if poolName == PoolNameMain || poolName == PoolNamePubSub {
 		return "", "", ""
 	}
 
-	parts := strings.Split(poolName, "/")
-	addrPart := parts[0]
-	dbIndex := ""
-	if len(parts) > 1 {
-		dbIndex = parts[1]
+	poolName = strings.TrimSuffix(poolName, "_pubsub")
+	poolName = strings.TrimSuffix(poolName, "_pipeline")
+	if i := strings.LastIndexByte(poolName, '_'); i >= 0 {
+		poolName = poolName[:i]
 	}
-	host, port := parseAddr(addrPart)
-	return host, port, dbIndex
+	host, port := parseAddr(poolName)
+	return host, port, ""
 }
