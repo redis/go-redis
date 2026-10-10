@@ -187,18 +187,21 @@ type UniversalOptions struct {
 	MaintNotificationsConfig *maintnotifications.Config
 
 	// ClientSideCacheConfig enables client-side caching when NewUniversalClient
-	// selects a standalone Client. See Options.ClientSideCacheConfig.
+	// selects a standalone Client or ClusterClient. Cluster limits apply per node.
+	// See Options.ClientSideCacheConfig.
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
 	// ClientSideCache supplies an explicit cache when NewUniversalClient selects
 	// a standalone Client. See Options.ClientSideCache.
+	// It is not distributed to Cluster nodes; use ClusterOptions.NewClient for
+	// independent custom node caches.
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCache Cache
 
-	// ClientSideCacheStrategy selects the standalone client's invalidation
+	// ClientSideCacheStrategy selects each node client's invalidation
 	// strategy. See Options.ClientSideCacheStrategy.
 	//
 	// Experimental: this API may change in a minor release.
@@ -231,10 +234,15 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 	}
 
 	return &ClusterOptions{
-		Addrs:      o.Addrs,
-		ClientName: o.ClientName,
-		Dialer:     o.Dialer,
-		OnConnect:  o.OnConnect,
+		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
+		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
+		ClientSideCacheInvalidationBatchWindow: o.ClientSideCacheInvalidationBatchWindow,
+		Addrs:                                  o.Addrs,
+		ClientName:                             o.ClientName,
+		Dialer:                                 o.Dialer,
+		OnConnect:                              o.OnConnect,
 
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,

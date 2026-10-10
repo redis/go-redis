@@ -1739,6 +1739,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// divert (same exception as the blocking-command divert).
 					if e != nil {
 						moved, ask, _ := isMovedError(e)
+						fd.client.observeCSCRedirect(e)
 						// Cluster full-duplex redirect: a MOVED/ASK is followable for EVERY
 						// command, including NoRetry ones (e.g. GetToBuffer, RawWriteTo). NoRetry
 						// guards against replaying a command whose partial response was already

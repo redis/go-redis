@@ -81,7 +81,7 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	// the reply, not the source node. startAttempt/writtenAt are unused here —
 	// cc.process owns its own MaxRedirects budget.
 	child.clusterReprocess = func(ctx context.Context, cmd Cmder, _ int, _ time.Time) error {
-		return cc.process(ctx, cmd)
+		return cc.process(clusterCSCBypass(ctx), cmd)
 	}
 	// Connection-failure recovery budget for each child engine. A node.Client
 	// normalizes MaxRetries to -1 (cluster retries live in MaxRedirects), which the
