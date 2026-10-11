@@ -31,10 +31,14 @@ type PubSubPool struct {
 // NewPubSubPool implements a pool for PubSub connections.
 // It intentionally does not implement the Pooler interface
 func NewPubSubPool(opt *Options, netDialer func(ctx context.Context, network, addr string) (net.Conn, error)) *PubSubPool {
-	return &PubSubPool{
+	p := &PubSubPool{
 		opt:       opt,
 		netDialer: netDialer,
 	}
+	livePoolsMu.Lock()
+	livePubSubPools[p] = struct{}{}
+	livePoolsMu.Unlock()
+	return p
 }
 
 func (p *PubSubPool) NewConn(ctx context.Context, network string, addr string, channels []string) (*Conn, error) {
@@ -79,6 +83,9 @@ func (p *PubSubPool) UntrackConn(cn *Conn) {
 
 func (p *PubSubPool) Close() error {
 	p.closed.Store(true)
+	livePoolsMu.Lock()
+	delete(livePubSubPools, p)
+	livePoolsMu.Unlock()
 	cb := getMetricConnectionCountCallback()
 	p.activeConns.Range(func(key, value interface{}) bool {
 		cn := value.(*Conn)

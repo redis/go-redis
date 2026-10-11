@@ -88,6 +88,11 @@ var (
 	// metricCallbackMu protects all global metric callback functions for thread-safe access.
 	metricCallbackMu sync.RWMutex
 
+	// livePoolsMu protects the pools whose connections are counted when metric callbacks change.
+	livePoolsMu     sync.Mutex
+	liveConnPools   = make(map[*ConnPool]struct{})
+	livePubSubPools = make(map[*PubSubPool]struct{})
+
 	// Global metric callbacks for connection state changes
 	metricConnectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
 
@@ -199,7 +204,32 @@ type MetricCallbacks struct {
 // acceptable for metrics - at most one event may go to the old recorder
 // or be missed during the transition. The callbacks themselves are immutable
 // function pointers, so calling an "old" callback is safe.
+//
+// Connections that already exist are counted when callbacks are set and
+// uncounted when they are cleared, so db.client.connection.count stays balanced.
 func SetAllMetricCallbacks(callbacks *MetricCallbacks) {
+	livePoolsMu.Lock()
+	defer livePoolsMu.Unlock()
+	for p := range liveConnPools {
+		p.connsMu.Lock()
+	}
+	defer func() {
+		for p := range liveConnPools {
+			p.connsMu.Unlock()
+		}
+	}()
+
+	ctx := context.Background()
+	if cb := getMetricConnectionCountCallback(); cb != nil {
+		recordLiveConnCounts(ctx, cb, -1)
+	}
+	setMetricCallbacks(callbacks)
+	if cb := getMetricConnectionCountCallback(); cb != nil {
+		recordLiveConnCounts(ctx, cb, 1)
+	}
+}
+
+func setMetricCallbacks(callbacks *MetricCallbacks) {
 	metricCallbackMu.Lock()
 	defer metricCallbackMu.Unlock()
 
@@ -306,6 +336,30 @@ func getMetricConnectionCountCallback() func(ctx context.Context, delta int, cn 
 	cb := metricConnectionCountCallback
 	metricCallbackMu.RUnlock()
 	return cb
+}
+
+// recordLiveConnCounts records delta for every connection in the live pools.
+// The caller must hold livePoolsMu and the connsMu of every live ConnPool.
+func recordLiveConnCounts(ctx context.Context, cb func(ctx context.Context, delta int, cn *Conn, state string, isPubSub bool), delta int) {
+	for p := range liveConnPools {
+		idle := make(map[uint64]struct{}, len(p.idleConns))
+		for _, cn := range p.idleConns {
+			idle[cn.GetID()] = struct{}{}
+		}
+		for id, cn := range p.conns {
+			state := MetricStateUsed
+			if _, ok := idle[id]; ok {
+				state = MetricStateIdle
+			}
+			cb(ctx, delta, cn, state, false)
+		}
+	}
+	for p := range livePubSubPools {
+		p.activeConns.Range(func(_, value any) bool {
+			cb(ctx, delta, value.(*Conn), MetricStateUsed, true)
+			return true
+		})
+	}
 }
 
 // getMetricPendingRequestsCallback returns the metric callback for pending requests changes (UpDownCounter).
@@ -466,6 +520,10 @@ func NewConnPool(opt *Options) *ConnPool {
 		dialsQueue:      newWantConnQueue(),
 		idleConns:       make([]*Conn, 0, opt.PoolSize),
 	}
+
+	livePoolsMu.Lock()
+	liveConnPools[p] = struct{}{}
+	livePoolsMu.Unlock()
 
 	// Only create MinIdleConns if explicitly requested (> 0)
 	// This avoids creating connections during pool initialization for tests
@@ -2027,6 +2085,10 @@ func (p *ConnPool) Close() error {
 	if !p._closed.CompareAndSwap(0, 1) {
 		return ErrClosed
 	}
+
+	livePoolsMu.Lock()
+	delete(liveConnPools, p)
+	livePoolsMu.Unlock()
 
 	var firstErr error
 	nowNs := time.Now().UnixNano()
