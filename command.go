@@ -807,6 +807,8 @@ func (cmd *Cmd) Float32() (float32, error) {
 
 func toFloat32(val interface{}) (float32, error) {
 	switch val := val.(type) {
+	case float64:
+		return float32(val), nil
 	case int64:
 		return float32(val), nil
 	case string:
@@ -831,6 +833,8 @@ func (cmd *Cmd) Float64() (float64, error) {
 
 func toFloat64(val interface{}) (float64, error) {
 	switch val := val.(type) {
+	case float64:
+		return val, nil
 	case int64:
 		return float64(val), nil
 	case string:
