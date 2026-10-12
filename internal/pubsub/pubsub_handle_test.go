@@ -409,3 +409,22 @@ func TestChannelSizeAppliesManagerWide(t *testing.T) {
 		t.Fatalf("subscribed handle events cap = %d, want 5", cap(h3.Events()))
 	}
 }
+
+// TestChannelSizeIgnoresNonPositive pins that WithChannelSize with a
+// non-positive size leaves the configured buffer alone: zero would make
+// every later delivery stream unbuffered, a negative size would panic.
+func TestChannelSizeIgnoresNonPositive(t *testing.T) {
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	for _, size := range []int{0, -1} {
+		m.NewHandle().Channel(func(c PubSubConfiger) { c.UpdateChannelSize(size) })
+		if got, _ := m.consumerSettings(); got != 16 {
+			t.Fatalf("ChanSize after UpdateChannelSize(%d) = %d, want the configured 16", size, got)
+		}
+	}
+	m.NewHandle().Channel(func(c PubSubConfiger) { c.UpdateChannelSize(7) })
+	if got, _ := m.consumerSettings(); got != 7 {
+		t.Fatalf("ChanSize after UpdateChannelSize(7) = %d, want 7", got)
+	}
+}

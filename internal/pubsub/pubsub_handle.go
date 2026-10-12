@@ -281,17 +281,10 @@ func (h *handle) ClientSetName(ctx context.Context, name string) error {
 // manager itself closed (closing a subscriber of a closed client is a
 // nil no-op).
 func (h *handle) Close() error {
-	ctx := context.TODO()
-
-	// The I/O slot first (lock order): the unsubscribes below may write,
-	// and holding it throughout keeps a racing Subscribe from landing on
-	// the dying handle. Like every writer, this waits behind an in-flight
-	// dial or write. A closed manager refuses the slot — its teardown
-	// closed every handle already, which the check below reports.
-	if err := h.m.acquireIO(ctx); err == nil {
-		defer h.m.releaseIO()
-	}
-
+	// One hold of the manager lock throughout, the unsubscribe writes
+	// included, keeps a racing Subscribe from landing on the dying
+	// handle. A closed manager's teardown closed every handle already,
+	// which the check below reports.
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()
 

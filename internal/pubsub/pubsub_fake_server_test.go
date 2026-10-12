@@ -11,25 +11,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-// testHandoffResolver mirrors the client's resolver: a connection
-// marked for handoff is retired, and the reconnect is redirected to the
-// handoff endpoint it names (a null endpoint keeps the address).
-type testHandoffResolver struct{}
+// testShouldHandoff and testResolveHandoff mirror the client's wiring:
+// a connection marked for handoff is retired, and the reconnect is
+// redirected to the handoff endpoint it names (a null endpoint keeps
+// the address).
+func testShouldHandoff(cn *pool.Conn) bool { return cn.ShouldHandoff() }
 
-func (testHandoffResolver) ShouldReplace(cn *pool.Conn) bool { return cn.ShouldHandoff() }
-
-func (testHandoffResolver) Resolve(_ context.Context, prev *pool.Conn, current string) string {
-	if prev != nil && prev.ShouldHandoff() {
-		if next := prev.GetHandoffEndpoint(); next != "" && next != internal.RedisNull {
-			return next
-		}
+func testResolveHandoff(prev *pool.Conn, current string) string {
+	if prev == nil {
+		return current
 	}
-	return current
+	return prev.ResolveAddress(current)
 }
 
 // fakeServer hands out net.Pipe-backed connections to the manager under
@@ -398,7 +394,8 @@ func newTestManagerReload(t *testing.T, srv *fakeServer, cfg Config, onReconnect
 		func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error { return nil },
 		testIsBadConn,
 		onReconnectFailure,
-		testHandoffResolver{},
+		testShouldHandoff,
+		testResolveHandoff,
 	)
 	t.Cleanup(func() { _ = m.Close() })
 	return m

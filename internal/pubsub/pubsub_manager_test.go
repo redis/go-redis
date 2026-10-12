@@ -312,7 +312,8 @@ func TestManagerReconnect(t *testing.T) {
 				default:
 				}
 			},
-			testHandoffResolver{},
+			testShouldHandoff,
+			testResolveHandoff,
 		)
 		t.Cleanup(func() { _ = m.Close() })
 
@@ -608,7 +609,8 @@ func TestManagerSubscribeWriteFailureRollsBackFreshHandle(t *testing.T) {
 		func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error { return nil },
 		testIsBadConn,
 		nil,
-		testHandoffResolver{},
+		testShouldHandoff,
+		testResolveHandoff,
 	)
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -820,7 +822,7 @@ func TestReadFailureNoSubscribersReleasesConn(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		m.mu.RLock()
-		released := m.conn == nil
+		released := m.conn.Load() == nil
 		m.mu.RUnlock()
 		if released {
 			break
@@ -1619,7 +1621,7 @@ func TestStaleConnErrorReplyDiscarded(t *testing.T) {
 	// that is no longer the manager's, exactly as when a drop lands
 	// between the reader's ReadReply and its routing lock.
 	m.mu.Lock()
-	m.conn = nil
+	m.conn.Store(nil)
 	m.mu.Unlock()
 
 	fsc1.sendError(t, "NOPERM this user has no permissions")
@@ -1638,5 +1640,44 @@ func TestStaleConnErrorReplyDiscarded(t *testing.T) {
 	case ev := <-bystander.Events():
 		t.Fatalf("stale error delivered to a bystander: %#v", ev)
 	default:
+	}
+}
+
+// TestManagerCloseClearsHandleOwnership pins that the manager's
+// teardown leaves no handle owning anything: a caller retaining a
+// handle across the client's Close must not read back names the
+// manager has already dropped along with the connection. (A handle's
+// own Close detaches its names one by one on the way out; the
+// manager's teardown closes handles wholesale.)
+func TestManagerCloseClearsHandleOwnership(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if _, err := h.PSubscribe(ctx, "p.*"); err != nil {
+		t.Fatalf("PSubscribe: %v", err)
+	}
+	if _, err := h.SSubscribe(ctx, "sch"); err != nil {
+		t.Fatalf("SSubscribe: %v", err)
+	}
+	srv.waitDial(t)
+	if c, p, s := h.Subscriptions(); len(c) != 1 || len(p) != 1 || len(s) != 1 {
+		t.Fatalf("Subscriptions before Close = %v %v %v, want one name each", c, p, s)
+	}
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if c, p, s := h.Subscriptions(); len(c)+len(p)+len(s) != 0 {
+		t.Fatalf("Subscriptions after the manager closed = %v %v %v, want none", c, p, s)
+	}
+	// Closing a handle of a closed manager stays a nil no-op.
+	if err := h.Close(); err != nil {
+		t.Fatalf("handle Close after the manager closed = %v, want nil", err)
 	}
 }

@@ -12,12 +12,18 @@ type Config struct {
 	Addr string
 
 	// WriteTimeout bounds every command write on the shared connection.
+	// Writes run under the manager lock, so they are always bounded:
+	// <= 0 means fallbackWriteTimeout, never "no deadline".
 	WriteTimeout time.Duration
 
 	// MinRetryBackoff and ReconnectMaxBackoff bound the read loop's
-	// exponential reconnect backoff.
+	// exponential reconnect backoff, and the dialer's between retries.
 	MinRetryBackoff     time.Duration
 	ReconnectMaxBackoff time.Duration
+
+	// DialRetries is the number of extra attempts a dial makes after a
+	// failed one before the failure is reported; <= 0 means none.
+	DialRetries int
 
 	// HealthCheckInterval is how long the shared connection may stay
 	// silent before a health-check PING; <= 0 disables the health
@@ -34,8 +40,8 @@ type Config struct {
 	// deadline (the write still honours WriteTimeout) and the reply
 	// requirement.
 	PingTimeout time.Duration
-	// ReconnectTimeout bounds the health checker's re-dial and
-	// subscription replay after a failed ping.
+	// ReconnectTimeout bounds each dial attempt of the shared
+	// connection; <= 0 leaves the dial function's own bound.
 	ReconnectTimeout time.Duration
 
 	// SendTimeout bounds each consumer-view send (see pump); <= 0 (the

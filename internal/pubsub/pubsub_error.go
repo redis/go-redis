@@ -16,15 +16,9 @@ const (
 
 	// errConnUnusable is the reconnect reason when the shared connection
 	// was made unusable by a background operation or retired by the
-	// owner's AddrResolver (in the client: a maintenance-notification
+	// owner's shouldReplaceConn (in the client: a maintenance-notification
 	// handoff).
 	errConnUnusable pubSubError = "redis: pubsub: connection is not usable"
-
-	// errConnExists is connectIdempotentLocked's way of saying the shared
-	// connection was already there, so the dial-time subscription replay
-	// did NOT run: subscribers must write their commands themselves. It
-	// never escapes the manager.
-	errConnExists pubSubError = "redis: pubsub: connection already established"
 
 	// errPingTimeout is the reconnect reason when the health-check PING
 	// got no reply within PingTimeout: replies on a connection are
@@ -32,11 +26,11 @@ const (
 	// the socket silently dead.
 	errPingTimeout pubSubError = "redis: pubsub: health-check ping got no reply in time"
 
-	// errPingNotSent is the health probe's "no verdict": the I/O slot
-	// stayed busy (a dial or a write in flight) for the whole
-	// PingTimeout, so the PING was never written and the connection is
-	// neither known good nor bad. The health checker skips that tick.
-	errPingNotSent pubSubError = "redis: pubsub: health-check ping not sent: I/O slot busy"
+	// errPingNotSent is the health probe's "no verdict": the manager
+	// lock stayed busy (a stalled write) for the whole PingTimeout, so
+	// the PING was never written and the connection is neither known
+	// good nor bad. The health checker skips that tick.
+	errPingNotSent pubSubError = "redis: pubsub: health-check ping not sent: manager busy"
 
 	// Subscribe-argument validation, one per namespace. Exported so the
 	// root package's client-level validation (e.g. Ring, which must pick

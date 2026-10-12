@@ -1417,3 +1417,22 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 
 	return noDeadline
 }
+
+// MarkPubSub marks the connection as used for PubSub. It must be called
+// before the connection handshake so that init-time decisions that
+// depend on IsPubSub (e.g. skipping client-side-cache tracking) apply.
+func (cn *Conn) MarkPubSub() {
+	cn.pubsub = true
+}
+
+func (cn *Conn) ResolveAddress(current string) string {
+	if !cn.ShouldHandoff() {
+		return current
+	}
+
+	handoff_address := cn.GetHandoffEndpoint()
+	if handoff_address == "" || handoff_address == internal.RedisNull {
+		return current
+	}
+	return handoff_address
+}
