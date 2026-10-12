@@ -431,6 +431,71 @@ func TestConnectionCountIncludesExistingConns(t *testing.T) {
 	}
 }
 
+func TestConnectionCountBalancedWhileCallbacksChange(t *testing.T) {
+	connPool := pool.NewConnPool(&pool.Options{
+		Name:               "callback-churn",
+		Dialer:             dummyDialer,
+		PoolSize:           8,
+		MinIdleConns:       2,
+		MaxConcurrentDials: 8,
+		PoolTimeout:        time.Second,
+		ConnMaxIdleTime:    -1,
+	})
+	t.Cleanup(func() { _ = connPool.Close() })
+
+	var mu sync.Mutex
+	count := 0
+	callbacks := &pool.MetricCallbacks{
+		ConnectionCount: func(_ context.Context, delta int, cn *pool.Conn, _ string, _ bool) {
+			if cn.PoolName() != "callback-churn" {
+				return
+			}
+			mu.Lock()
+			count += delta
+			mu.Unlock()
+		},
+	}
+
+	ctx := context.Background()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for n := 0; ; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				cn, err := connPool.Get(ctx)
+				if err != nil {
+					continue
+				}
+				if (n+i)%3 == 0 {
+					connPool.Remove(ctx, cn, nil)
+				} else {
+					connPool.Put(ctx, cn)
+				}
+			}
+		}(i)
+	}
+
+	for i := 0; i < 200; i++ {
+		pool.SetAllMetricCallbacks(callbacks)
+		pool.SetAllMetricCallbacks(nil)
+	}
+	close(stop)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 0 {
+		t.Fatalf("connection count after detach: got %d, want 0", count)
+	}
+}
+
 func TestDrainIdleConnsSkipsUninitializedMinIdleConns(t *testing.T) {
 	connPool := pool.NewConnPool(&pool.Options{
 		Dialer:             dummyDialer,

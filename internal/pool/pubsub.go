@@ -25,8 +25,10 @@ type PubSubPool struct {
 
 	// Map to track active PubSub connections
 	activeConns sync.Map // map[uint64]*Conn (connID -> conn)
-	closed      atomic.Bool
-	stats       PubSubStats
+	// trackMu pairs activeConns changes with the connection count callback they use.
+	trackMu sync.Mutex
+	closed  atomic.Bool
+	stats   PubSubStats
 }
 
 // NewPubSubPool implements a pool for PubSub connections.
@@ -60,10 +62,13 @@ func (p *PubSubPool) NewConn(ctx context.Context, network string, addr string, c
 }
 
 func (p *PubSubPool) TrackConn(cn *Conn) {
+	p.trackMu.Lock()
 	atomic.AddUint32(&p.stats.Active, 1)
 	p.activeConns.Store(cn.GetID(), cn)
+	cb := getMetricConnectionCountCallback()
+	p.trackMu.Unlock()
 	// Emit +1 used for PubSub connection
-	if cb := getMetricConnectionCountCallback(); cb != nil {
+	if cb != nil {
 		cb(context.Background(), 1, cn, "used", true)
 	}
 }
@@ -71,13 +76,17 @@ func (p *PubSubPool) TrackConn(cn *Conn) {
 func (p *PubSubPool) UntrackConn(cn *Conn) {
 	// LoadAndDelete ensures each connection is only decremented once,
 	// guarding against double-decrement if Close() already untracked it.
+	p.trackMu.Lock()
 	if _, loaded := p.activeConns.LoadAndDelete(cn.GetID()); !loaded {
+		p.trackMu.Unlock()
 		return
 	}
+	cb := getMetricConnectionCountCallback()
+	p.trackMu.Unlock()
 	atomic.AddUint32(&p.stats.Active, ^uint32(0))
 	atomic.AddUint32(&p.stats.Untracked, 1)
 	// Emit -1 used for PubSub connection
-	if cb := getMetricConnectionCountCallback(); cb != nil {
+	if cb != nil {
 		cb(context.Background(), -1, cn, "used", true)
 	}
 }
@@ -86,8 +95,10 @@ func (p *PubSubPool) Close() error {
 	p.closed.Store(true)
 	livePoolsMu.Lock()
 	delete(livePubSubPools, weak.Make(p))
-	livePoolsMu.Unlock()
+	p.trackMu.Lock()
+	defer p.trackMu.Unlock()
 	cb := getMetricConnectionCountCallback()
+	livePoolsMu.Unlock()
 	p.activeConns.Range(func(key, value interface{}) bool {
 		cn := value.(*Conn)
 		// Use LoadAndDelete to atomically claim ownership of this entry.
