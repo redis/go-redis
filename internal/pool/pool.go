@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/rand"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -546,9 +547,16 @@ func NewConnPool(opt *Options) *ConnPool {
 		idleConns:       make([]*Conn, 0, opt.PoolSize),
 	}
 
+	wp := weak.Make(p)
 	livePoolsMu.Lock()
-	liveConnPools[weak.Make(p)] = struct{}{}
+	liveConnPools[wp] = struct{}{}
 	livePoolsMu.Unlock()
+	// Drops the entry for a pool that is collected without Close.
+	runtime.AddCleanup(p, func(wp weak.Pointer[ConnPool]) {
+		livePoolsMu.Lock()
+		delete(liveConnPools, wp)
+		livePoolsMu.Unlock()
+	}, wp)
 
 	// Only create MinIdleConns if explicitly requested (> 0)
 	// This avoids creating connections during pool initialization for tests

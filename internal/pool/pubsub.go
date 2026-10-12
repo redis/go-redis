@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"weak"
@@ -38,9 +39,16 @@ func NewPubSubPool(opt *Options, netDialer func(ctx context.Context, network, ad
 		opt:       opt,
 		netDialer: netDialer,
 	}
+	wp := weak.Make(p)
 	livePoolsMu.Lock()
-	livePubSubPools[weak.Make(p)] = struct{}{}
+	livePubSubPools[wp] = struct{}{}
 	livePoolsMu.Unlock()
+	// Drops the entry for a pool that is collected without Close.
+	runtime.AddCleanup(p, func(wp weak.Pointer[PubSubPool]) {
+		livePoolsMu.Lock()
+		delete(livePubSubPools, wp)
+		livePoolsMu.Unlock()
+	}, wp)
 	return p
 }
 
