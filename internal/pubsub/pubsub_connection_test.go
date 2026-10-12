@@ -201,6 +201,55 @@ func TestAbandonedDialIsDiscarded(t *testing.T) {
 	}
 }
 
+// TestHandleClosedDuringDialReleasesConn pins that a handle closed while
+// its own call awaits the dial does not leave the dialed connection
+// behind: the Close found no connection to release, and the dial —
+// still demanded by the waiting call — installs one, so the call,
+// finding its handle closed, releases it in the Close's stead.
+func TestHandleClosedDuringDialReleasesConn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(h PubSuber) error
+	}{
+		{"ping", func(h PubSuber) error { return h.Ping(context.Background()) }},
+		{"client setname", func(h PubSuber) error { return h.ClientSetName(context.Background(), "n") }},
+		{"subscribe", func(h PubSuber) error {
+			_, err := h.Subscribe(context.Background(), "a")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newFakeServer()
+			srv.autoConfirm = true
+			srv.autoPong = true
+			m := newTestManager(t, srv, testConfig("node:6379"))
+
+			gate := make(chan struct{})
+			srv.setDialGate(gate)
+
+			h := m.NewHandle()
+			res := make(chan error, 1)
+			go func() { res <- tc.call(h) }()
+			srv.waitGateHit(t)
+
+			if err := h.Close(); err != nil {
+				t.Fatalf("handle Close during the dial: %v", err)
+			}
+			close(gate)
+			srv.waitDial(t).expectClosed(t)
+
+			select {
+			case err := <-res:
+				if !errors.Is(err, pool.ErrClosed) {
+					t.Fatalf("call on a handle closed mid-dial = %v, want pool.ErrClosed", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("call did not return after its handle closed")
+			}
+		})
+	}
+}
+
 // TestDialWaitPrefersSettledOutcome pins that a wait whose ctx is done
 // by the time the call has settled reports the call's outcome: the dial
 // was installed, so reporting ctx's error would have the caller roll
@@ -1264,4 +1313,60 @@ func TestReplacementRetriesBackOff(t *testing.T) {
 	if n := attempts.Load(); n == 0 || n >= frames {
 		t.Fatalf("replacement dial attempts = %d for %d frames, want a few, not one per frame", n, frames)
 	}
+}
+
+// TestFailedReplacementRetriedWithoutTraffic pins that a failed
+// replacement of a live connection is retried when its backoff ends even
+// if no frame arrives meanwhile: with the health check disabled a quiet
+// connection produces none, and waiting for one could miss the handoff
+// cutover entirely.
+func TestFailedReplacementRetriedWithoutTraffic(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	cfg := testConfig("node-a:6379") // health check disabled
+	cfg.MinRetryBackoff = 50 * time.Millisecond
+	cfg.ReconnectMaxBackoff = 50 * time.Millisecond
+
+	var targetUp atomic.Bool
+	failed := make(chan struct{}, 1)
+	newConn := func(ctx context.Context, addr string) (*pool.Conn, error) {
+		if addr == "next:6379" && !targetUp.Load() {
+			select {
+			case failed <- struct{}{}:
+			default:
+			}
+			return nil, errors.New("connection refused")
+		}
+		return srv.dial(ctx, addr)
+	}
+	r := stickyResolver{target: "next:6379"}
+	m := NewManager(cfg, newConn, func(cn *pool.Conn) error { return cn.Close() },
+		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
+		testIsBadConn, nil, r.ShouldReplace, r.Resolve)
+	t.Cleanup(func() { _ = m.Close() })
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	// The confirmation was the one frame: it asked for the replacement,
+	// whose dial failed. The connection stays quiet from here on.
+	select {
+	case <-failed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement was never attempted")
+	}
+	targetUp.Store(true)
+
+	next := srv.waitDial(t)
+	if next.addr != "next:6379" {
+		t.Fatalf("replacement dialed %s, want next:6379", next.addr)
+	}
+	next.expectCmd(t, "subscribe", "ch")
+	fsc.expectClosed(t)
 }

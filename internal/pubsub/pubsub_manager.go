@@ -137,6 +137,11 @@ type Manager struct {
 	// that does not dial yet must not cost a blocking dial per frame.
 	// Set from the reconnect backoff on failure, cleared on success.
 	nextReconnectAt time.Time
+	// retireRetry re-runs retireIfWanted once nextReconnectAt passes,
+	// after a failed replacement of a live connection: the frames that
+	// otherwise drive it may never come on a quiet connection with the
+	// health check disabled. Stopped by Close.
+	retireRetry *time.Timer
 	// errorLog paces the line logged for error replies on the shared
 	// connection: a persistently rejected subscribe is retried on a
 	// cadence and would otherwise log on every retry.
@@ -315,6 +320,7 @@ func (m *Manager) clientSetName(ctx context.Context, h *handle, name string) err
 	default:
 	}
 	if h != nil && h.closed {
+		m.releaseAfterClosedWaitLocked()
 		return pool.ErrClosed
 	}
 
@@ -483,9 +489,24 @@ func (m *Manager) stillOpenLocked(h *handle) error {
 	default:
 	}
 	if h.closed {
+		m.releaseAfterClosedWaitLocked()
 		return pool.ErrClosed
 	}
 	return nil
+}
+
+// releaseAfterClosedWaitLocked runs, for a caller whose handle closed
+// while it awaited a dial, the release that handle's Close could not:
+// the Close found no connection yet, and the dial — still demanded by
+// this caller — installed one regardless. With nothing subscribed and
+// no other caller still awaiting the dial, the connection (and the
+// health-check traffic on it) must not outlive the handle, just as when
+// the Close lands after the install (see handleUnsubscribeLocked).
+// Callers must hold m.mu, with the manager still open.
+func (m *Manager) releaseAfterClosedWaitLocked() {
+	if m.dialWaiters == 0 && m.conn.Load() != nil && m.noSubscribersLocked() {
+		m.dropConnLocked(errPubSubNoConn)
+	}
 }
 
 // Unsubscribe removes channel subscriptions across all handles;
@@ -570,6 +591,7 @@ func (m *Manager) pingLocked(ctx, writeCtx context.Context, issuer, waiter *hand
 		default:
 		}
 		if issuer != nil && issuer.closed {
+			m.releaseAfterClosedWaitLocked()
 			return nil, pool.ErrClosed
 		}
 	} else if m.conn.Load() == nil {
@@ -633,6 +655,9 @@ func (m *Manager) CloseIfIdle() bool {
 func (m *Manager) closeNowLocked() error {
 	close(m.done)
 	m.dialer.close()
+	if m.retireRetry != nil {
+		m.retireRetry.Stop()
+	}
 
 	var err error
 	if cn := m.conn.Load(); cn != nil {
@@ -1344,7 +1369,17 @@ func (m *Manager) dialFailedLocked(what string, reason, err error) {
 	if reason == nil {
 		return
 	}
-	m.nextReconnectAt = time.Now().Add(m.reconnectBackoffLocked())
+	backoff := m.reconnectBackoffLocked()
+	m.nextReconnectAt = time.Now().Add(backoff)
+	// A live connection still being retired is retried when the backoff
+	// ends, not on the next frame read from it, which may never come. A
+	// lost one (conn nil) is restored by the read loop instead.
+	if cn := m.conn.Load(); cn != nil {
+		if m.retireRetry != nil {
+			m.retireRetry.Stop()
+		}
+		m.retireRetry = time.AfterFunc(backoff, func() { m.retireIfWanted(cn) })
+	}
 	if m.requestTopologyRefresh != nil {
 		m.requestTopologyRefresh()
 	}
@@ -1844,7 +1879,8 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 // replacement whose dial keeps failing (a redirect to an endpoint not
 // accepting connections yet) is retried on the reconnect backoff, not on
 // every frame: the frames keep flowing from the connection being retired
-// meanwhile.
+// meanwhile, and with none arriving retireRetry re-runs it when the
+// backoff ends.
 func (m *Manager) retireIfWanted(cn *pool.Conn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
