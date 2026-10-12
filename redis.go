@@ -552,6 +552,9 @@ func (c *baseClient) clone() *baseClient {
 		// exited, which is harmless.
 		cscRefreshQueue: c.cscRefreshQueue,
 	}
+	if c.hooksMixin.state != nil {
+		clone.hooksMixin = c.hooksMixin.clone()
+	}
 	// The miss coalescer travels with the cache (an atomic.Pointer cannot appear
 	// in the literal above); a clone shares the OWNER's coalescer, whose
 	// lifecycle stays owner-only — a clone's Close does not stop it.
