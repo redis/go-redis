@@ -214,8 +214,9 @@ func SetGlobalRecorder(r Recorder) {
 		ConnectionClosed: func(ctx context.Context, cn *pool.Conn, reason string, err error) {
 			getRecorder().RecordConnectionClosed(ctx, cn, reason, err)
 		},
+		// Uses r, not getRecorder(), so a delta captured before Shutdown reaches the recorder that counted it.
 		ConnectionCount: func(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
-			getRecorder().RecordConnectionCount(ctx, delta, cn, state, isPubSub)
+			r.RecordConnectionCount(ctx, delta, cn, state, isPubSub)
 		},
 		PendingRequests: func(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
 			getRecorder().RecordPendingRequests(ctx, delta, cn, poolName)
