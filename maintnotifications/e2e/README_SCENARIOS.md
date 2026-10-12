@@ -7,16 +7,35 @@ This directory contains comprehensive end-to-end test scenarios for Redis push n
 
 ## Introduction
 
-To run those tests you would need a fault injector service, please review the client and feel free to implement your
-fault injector of choice. Those tests are tailored for Redis Enterprise, but can be adapted to other Redis distributions where
-a fault injector is available.
+These tests support two modes:
 
-Once you have fault injector service up and running, you can execute the tests by running the `run-e2e-tests.sh` script.
-there are three environment variables that need to be set before running the tests:
+### 1. Mock Proxy Mode (Default)
+Uses a local Docker-based proxy ([cae-resp-proxy](https://github.com/redis-developer/cae-resp-proxy)) to simulate Redis Enterprise behavior. This mode:
+- Runs entirely locally without external dependencies
+- Provides fast feedback for development
+- Simulates cluster topology changes
+- Supports SMIGRATING and SMIGRATED notifications
 
+To run in mock proxy mode:
+```bash
+make test.e2e
+```
+
+### 2. Real Fault Injector Mode
+Uses a real Redis Enterprise fault injector service for comprehensive testing. This mode:
+- Tests against actual Redis Enterprise clusters
+- Validates real-world scenarios
+- Requires external fault injector setup
+
+To run with a real fault injector, set these environment variables:
 - `REDIS_ENDPOINTS_CONFIG_PATH`: Path to Redis endpoints configuration
 - `FAULT_INJECTION_API_URL`: URL of the fault injector server
 - `E2E_SCENARIO_TESTS`: Set to `true` to enable scenario tests
+
+Then run:
+```bash
+./scripts/run-e2e-tests.sh
+```
 
 ## Test Scenarios Overview
 
@@ -44,7 +63,28 @@ there are three environment variables that need to be set before running the tes
   - Notification delivery consistency
   - Handoff behavior per endpoint type
 
-### 3. Database Management Scenario (`scenario_database_management_test.go`)
+### 3. Unified Injector Scenarios (`scenario_unified_injector_test.go`)
+**Mock proxy-based notification testing**
+- **Purpose**: Test SMIGRATING and SMIGRATED notifications with simulated cluster topology changes
+- **Features Tested**:
+  - SMIGRATING notifications (slot migration in progress)
+  - SMIGRATED notifications (slot migration completed)
+  - Cluster topology changes (node swap simulation)
+  - Complex multi-step migration scenarios
+- **Configuration**: Uses local Docker proxy (cae-resp-proxy) with 4 nodes
+- **Duration**: ~10 seconds
+- **Key Validations**:
+  - Notification delivery and parsing
+  - Cluster state reload callbacks
+  - Client resilience during migrations
+  - Topology change handling
+- **Topology Simulation**:
+  - Starts with 4 proxy nodes (17000-17003)
+  - Initially exposes 3 nodes in CLUSTER SLOTS (17000, 17001, 17002)
+  - On SMIGRATED, swaps node 2 for node 3 (simulates node replacement)
+  - Verifies client continues to function after topology change
+
+### 4. Database Management Scenario (`scenario_database_management_test.go`)
 **Dynamic database creation and deletion**
 - **Purpose**: Test database lifecycle management via fault injector
 - **Features Tested**: CREATE_DATABASE, DELETE_DATABASE endpoints

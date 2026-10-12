@@ -17,6 +17,7 @@ const defaultTestTimeout = 30 * time.Minute
 
 // Global fault injector client
 var faultInjector *FaultInjectorClient
+var faultInjectorCleanup func()
 
 func TestMain(m *testing.M) {
 	var err error
@@ -25,10 +26,22 @@ func TestMain(m *testing.M) {
 		return
 	}
 
-	faultInjector, err = CreateTestFaultInjector()
-	if err != nil {
-		panic("Failed to create fault injector: " + err.Error())
+	// Only create fault injector if we're not using the unified injector
+	// The unified injector tests use NewNotificationInjector() which auto-detects the mode
+	// and doesn't require the global faultInjector variable
+	// We can detect unified injector mode by checking if REDIS_ENDPOINTS_CONFIG_PATH is NOT set
+	// (which means we're using the proxy mock mode)
+	if os.Getenv("REDIS_ENDPOINTS_CONFIG_PATH") != "" {
+		// Real fault injector mode - create the global fault injector
+		faultInjector, faultInjectorCleanup, err = CreateTestFaultInjectorWithCleanup()
+		if err != nil {
+			panic("Failed to create fault injector: " + err.Error())
+		}
+		defer faultInjectorCleanup()
+	} else {
+		log.Println("Using proxy mock mode - skipping global fault injector setup")
 	}
+
 	// use log collector to capture logs from redis clients
 	logCollector = NewTestLogCollector()
 	redis.SetLogger(logCollector)

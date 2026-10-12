@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/zeebo/xxh3"
+	"github.com/redis/go-redis/v9/helper"
 )
 
 func main() {
@@ -75,7 +75,7 @@ func basicDigestExample(ctx context.Context, rdb *redis.Client) {
 	fmt.Printf("Digest: %d (0x%016x)\n", digest, digest)
 
 	// Verify with client-side calculation
-	clientDigest := xxh3.HashString(value)
+	clientDigest := helper.DigestString(value)
 	fmt.Printf("Client-calculated digest: %d (0x%016x)\n", clientDigest, clientDigest)
 
 	if digest == clientDigest {
@@ -130,7 +130,7 @@ func detectChangesExample(ctx context.Context, rdb *redis.Client) {
 
 	// Calculate digest of a DIFFERENT value (what we expect it NOT to be)
 	unwantedValue := "v0.9.0"
-	unwantedDigest := xxh3.HashString(unwantedValue)
+	unwantedDigest := helper.DigestString(unwantedValue)
 	fmt.Printf("Unwanted value digest: 0x%016x\n", unwantedDigest)
 
 	// Update to new value only if current value is NOT the unwanted value
@@ -165,7 +165,7 @@ func conditionalDeleteExample(ctx context.Context, rdb *redis.Client) {
 	fmt.Printf("Created session: %s\n", key)
 
 	// Calculate expected digest
-	expectedDigest := xxh3.HashString(value)
+	expectedDigest := helper.DigestString(value)
 	fmt.Printf("Expected digest: 0x%016x\n", expectedDigest)
 
 	// Try to delete with wrong digest (should fail)
@@ -209,7 +209,7 @@ func clientSideDigestExample(ctx context.Context, rdb *redis.Client) {
 	fmt.Printf("Current price: $%s\n", expectedCurrentValue)
 
 	// Calculate digest client-side (no need to fetch from Redis!)
-	expectedDigest := xxh3.HashString(expectedCurrentValue)
+	expectedDigest := helper.DigestString(expectedCurrentValue)
 	fmt.Printf("Expected digest (calculated client-side): 0x%016x\n", expectedDigest)
 
 	// Update price only if it matches our expectation
@@ -233,7 +233,7 @@ func clientSideDigestExample(ctx context.Context, rdb *redis.Client) {
 	rdb.Set(ctx, binaryKey, binaryData, 0)
 
 	// Calculate digest for binary data
-	binaryDigest := xxh3.Hash(binaryData)
+	binaryDigest := helper.DigestBytes(binaryData)
 	fmt.Printf("Binary data digest: 0x%016x\n", binaryDigest)
 
 	// Verify it matches Redis
@@ -242,4 +242,3 @@ func clientSideDigestExample(ctx context.Context, rdb *redis.Client) {
 		fmt.Println("✓ Binary digest matches!")
 	}
 }
-

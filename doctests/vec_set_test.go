@@ -345,6 +345,62 @@ func ExampleClient_vectorset() {
 	}
 
 	fmt.Println(res30) // >>> [pt:C pt:B]
+
+	res31, err := rdb.VIsMember(ctx, "points", "pt:A").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res31) // >>> true
+
+	res32, err := rdb.VIsMember(ctx, "points", "pt:W").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res32) // >>> false
+
+	res33, err := rdb.VSimWithArgsWithAttribs(ctx, "points",
+		&redis.VectorRef{Name: "pt:A"},
+		&redis.VSimArgs{Count: 1, Truth: true},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res33[0].Name, *res33[0].Attribs) // >>> pt:A {"price":18.99,"size":"large"}
+
+	res34, err := rdb.VSimWithArgsWithScoresWithAttribs(ctx, "points",
+		&redis.VectorRef{Name: "pt:A"},
+		&redis.VSimArgs{Count: 1, Truth: true},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res34[0].Name, res34[0].Score, *res34[0].Attribs) // >>> pt:A 1 {"price":18.99,"size":"large"}
+	// STEP_END
+
+	// STEP_START vlinks
+	res35, err := rdb.VLinks(ctx, "points", "pt:A").Result()
+	if err != nil {
+		panic(err)
+	}
+
+	// Print only the last layer (deterministic)
+	fmt.Println(res35[len(res35)-1]) // [pt:B pt:C pt:D pt:E]
+
+	res36, err := rdb.VLinksWithScores(ctx, "points", "pt:A").Result()
+	if err != nil {
+		panic(err)
+	}
+
+	// Print only the last layer (deterministic)
+	fmt.Println(res36[len(res36)-1]) // [{pt:B 0} {pt:C 0.5} {pt:D 0.5} {pt:E 0.8535534143447876}]
 	// STEP_END
 
 	// Output:
@@ -378,6 +434,12 @@ func ExampleClient_vectorset() {
 	// true
 	// [pt:A pt:C pt:B]
 	// [pt:C pt:B]
+	// true
+	// false
+	// pt:A {"price":18.99,"size":"large"}
+	// pt:A 1 {"price":18.99,"size":"large"}
+	// [pt:B pt:C pt:D pt:E]
+	// [{pt:B 0} {pt:C 0.5} {pt:D 0.5} {pt:E 0.8535534143447876}]
 }
 
 func ExampleClient_vectorset_quantization() {

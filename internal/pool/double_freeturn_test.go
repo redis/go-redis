@@ -47,7 +47,7 @@ func TestDoubleFreeTurnBug(t *testing.T) {
 
 	opt := &Options{
 		Dialer:             slowDialer,
-		PoolSize:           10,  // Small pool to make bug easier to trigger
+		PoolSize:           10, // Small pool to make bug easier to trigger
 		MaxConcurrentDials: 10,
 		MinIdleConns:       0,
 		PoolTimeout:        100 * time.Millisecond,
@@ -68,14 +68,14 @@ func TestDoubleFreeTurnBug(t *testing.T) {
 	// 8. Put() calls freeTurn() - SECOND FREE (BUG!)
 
 	var wg sync.WaitGroup
-	
+
 	// Request A: Short timeout, will timeout before dial completes
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		
+
 		cn, err := connPool.Get(ctx)
 		if err != nil {
 			// Expected to timeout
@@ -87,17 +87,17 @@ func TestDoubleFreeTurnBug(t *testing.T) {
 			putCount.Add(1)
 		}
 	}()
-	
+
 	// Wait a bit for Request A to start dialing
 	time.Sleep(10 * time.Millisecond)
-	
+
 	// Request B: Long timeout, will receive the connection from putIdleConn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		
+
 		cn, err := connPool.Get(ctx)
 		if err != nil {
 			t.Errorf("Request B should have succeeded but got error: %v", err)
@@ -109,7 +109,7 @@ func TestDoubleFreeTurnBug(t *testing.T) {
 			putCount.Add(1)
 		}
 	}()
-	
+
 	wg.Wait()
 
 	// Check results
@@ -226,4 +226,3 @@ func TestDoubleFreeTurnHighConcurrency(t *testing.T) {
 	t.Logf("✓ High concurrency test completed")
 	t.Logf("Note: This test exercises the putIdleConn delivery path where the bug occurs")
 }
-

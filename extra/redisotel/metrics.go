@@ -37,6 +37,25 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 			metric.WithInstrumentationVersion("semver:"+redis.Version()),
 		)
 	}
+	if conf.poolName == "" {
+		switch rdb := rdb.(type) {
+		case *redis.Client:
+			conf.poolName = rdb.Options().Addr
+		case *redis.ClusterClient:
+			for _, addr := range rdb.Options().Addrs {
+				conf.poolName = addr
+				break
+			}
+		case *redis.Ring:
+			for _, addr := range rdb.Options().Addrs {
+				conf.poolName = addr
+				break
+			}
+		default:
+			return fmt.Errorf("redisotel: %T not supported", rdb)
+		}
+	}
+	conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
 
 	var state *metricsState
 	if conf.closeChan != nil {
@@ -93,12 +112,6 @@ func registerClient(rdb *redis.Client, conf *config, state *metricsState) error 
 		}
 	}
 
-	if conf.poolName == "" {
-		opt := rdb.Options()
-		conf.poolName = opt.Addr
-	}
-	conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
-
 	registration, err := reportPoolStats(rdb, conf)
 	if err != nil {
 		return err
@@ -115,10 +128,35 @@ func registerClient(rdb *redis.Client, conf *config, state *metricsState) error 
 }
 
 func poolStatsAttrs(conf *config) (poolAttrs, idleAttrs, usedAttrs attribute.Set) {
-	poolAttrs = attribute.NewSet(conf.attrs...)
+	// attribute.NewSet sorts and de-duplicates its input slice in place.
+	// conf.attrs is shared with every metricsHook.attrs, which is read
+	// concurrently while MinIdleConns pre-warms connections in the background,
+	// so pass a copy to avoid mutating the shared backing array (issue #3880).
+	attrs := make([]attribute.KeyValue, len(conf.attrs))
+	copy(attrs, conf.attrs)
+	poolAttrs = attribute.NewSet(attrs...)
 	idleAttrs = attribute.NewSet(append(poolAttrs.ToSlice(), attribute.String("state", "idle"))...)
 	usedAttrs = attribute.NewSet(append(poolAttrs.ToSlice(), attribute.String("state", "used"))...)
 	return
+}
+
+// cumulativePoolStat creates an observable instrument for a monotonically
+// increasing pool statistic. By default it uses Int64ObservableUpDownCounter to
+// preserve backwards compatibility with existing exporters; when
+// conf.semconvCompliantMetrics is set it uses Int64ObservableCounter as the
+// OpenTelemetry database semantic conventions require. Both instrument types
+// satisfy metric.Int64Observable, so callers observe them uniformly. See #3612.
+func cumulativePoolStat(conf *config, name, description string) (metric.Int64Observable, error) {
+	if conf.semconvCompliantMetrics {
+		return conf.meter.Int64ObservableCounter(
+			name,
+			metric.WithDescription(description),
+		)
+	}
+	return conf.meter.Int64ObservableUpDownCounter(
+		name,
+		metric.WithDescription(description),
+	)
 }
 
 func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, error) {
@@ -156,9 +194,9 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	waits, err := conf.meter.Int64ObservableUpDownCounter(
+	waits, err := cumulativePoolStat(conf,
 		"db.client.connections.waits",
-		metric.WithDescription("The number of times a connection was waited for"),
+		"The number of times a connection was waited for",
 	)
 	if err != nil {
 		return nil, err
@@ -173,25 +211,25 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	timeouts, err := conf.meter.Int64ObservableUpDownCounter(
+	timeouts, err := cumulativePoolStat(conf,
 		"db.client.connections.timeouts",
-		metric.WithDescription("The number of connection timeouts that have occurred trying to obtain a connection from the pool"),
+		"The number of connection timeouts that have occurred trying to obtain a connection from the pool",
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	hits, err := conf.meter.Int64ObservableUpDownCounter(
+	hits, err := cumulativePoolStat(conf,
 		"db.client.connections.hits",
-		metric.WithDescription("The number of times free connection was found in the pool"),
+		"The number of times free connection was found in the pool",
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	misses, err := conf.meter.Int64ObservableUpDownCounter(
+	misses, err := cumulativePoolStat(conf,
 		"db.client.connections.misses",
-		metric.WithDescription("The number of times free connection was not found in the pool"),
+		"The number of times free connection was not found in the pool",
 	)
 	if err != nil {
 		return nil, err
@@ -330,7 +368,7 @@ func milliseconds(d time.Duration) float64 {
 
 func statusAttr(err error) attribute.KeyValue {
 	if err != nil {
-		if  err == redis.Nil {
+		if err == redis.Nil {
 			return attribute.String("status", "nil")
 		}
 		return attribute.String("status", "error")

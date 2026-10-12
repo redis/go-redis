@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -17,29 +18,40 @@ type JSONGetTestStruct struct {
 
 var _ = Describe("JSON Commands", Label("json"), func() {
 	ctx := context.TODO()
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
+		opt := &redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
 			Protocol:      protocolVersion,
 			UnstableResp3: true,
-		})
+		}
+		applyREConnection(opt)
+		return redis.NewClient(opt)
 	}
 
 	AfterEach(func() {
 		if client != nil {
-			client.FlushDB(ctx)
-			client.Close()
+			// Flush through the SUBJECT: on the async face the flush is
+			// ordered after any queued writes, and awaiting Err() forces it to
+			// execute — so no late fire-and-forget command can survive the
+			// flush, and the flush itself runs on a live client. Both steps
+			// are asserted so a failed teardown cannot silently leak state
+			// into later specs.
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			Expect(closeSubject()).NotTo(HaveOccurred())
 		}
 	})
 
 	protocols := []int{2, 3}
 	for _, protocol := range protocols {
 		BeforeEach(func() {
-			client = setupRedisClient(protocol)
-			Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
+			rawClient = setupRedisClient(protocol)
+			client, closeSubject = newUniversalSubject(rawClient)
+			Expect(rawClient.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 		})
 
 		Describe("arrays", Label("arrays"), func() {
@@ -260,6 +272,55 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				cmd := client.JSONSet(ctx, "set1", "$", `{"a": 1, "b": 2, "hello": "world"}`)
 				Expect(cmd.Err()).NotTo(HaveOccurred())
 				Expect(cmd.Val()).To(Equal("OK"))
+			})
+
+			It("should JSONSetWithArgs with FPHA", Label("json.set", "json"), func() {
+				SkipBeforeRedisVersion("8.8", "FPHA argument requires Redis 8.8+")
+
+				fpArray := `[1.1, 2.2, 3.3, 4.4]`
+				for _, fpha := range []redis.FPHAType{
+					redis.FPHATypeBF16,
+					redis.FPHATypeFP16,
+					redis.FPHATypeFP32,
+					redis.FPHATypeFP64,
+				} {
+					key := "fpha_" + string(fpha)
+					cmd := client.JSONSetWithArgs(ctx, key, "$", fpArray, &redis.JSONSetArgsOptions{FPHA: fpha})
+					Expect(cmd.Err()).NotTo(HaveOccurred())
+					Expect(cmd.Val()).To(Equal("OK"))
+
+					res, err := client.JSONGet(ctx, key, "$").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(res).NotTo(BeEmpty())
+				}
+			})
+
+			It("should JSONSetWithArgs with FPHA and NX/XX", Label("json.set", "json"), func() {
+				SkipBeforeRedisVersion("8.8", "FPHA argument requires Redis 8.8+")
+
+				key := "fpha_nx"
+				fpArray := `[1.5, 2.5, 3.5]`
+
+				// NX + FPHA succeeds when key does not exist
+				res, err := client.JSONSetWithArgs(ctx, key, "$", fpArray, &redis.JSONSetArgsOptions{
+					Mode: "NX", FPHA: redis.FPHATypeFP32,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal("OK"))
+
+				// NX + FPHA returns redis.Nil when key already exists
+				cmd := client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
+					Mode: "NX", FPHA: redis.FPHATypeFP32,
+				})
+				Expect(cmd.Err()).To(Equal(redis.Nil))
+				Expect(cmd.Val()).To(Equal(""))
+
+				// XX + FPHA succeeds when key exists
+				res, err = client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
+					Mode: "XX", FPHA: redis.FPHATypeFP32,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal("OK"))
 			})
 
 			It("should JSONGet", Label("json.get", "json", "NonRedisEnterprise"), func() {
@@ -733,22 +794,32 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 })
 
 var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 	var ctx = context.Background()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
+		opt := &redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
 			Protocol:      protocolVersion, // Setting RESP2 or RESP3 protocol
 			UnstableResp3: true,            // Enable RESP3 features
-		})
+		}
+		applyREConnection(opt)
+		return redis.NewClient(opt)
 	}
 
 	AfterEach(func() {
 		if client != nil {
-			client.FlushDB(ctx)
-			client.Close()
+			// Flush through the SUBJECT: on the async face the flush is
+			// ordered after any queued writes, and awaiting Err() forces it to
+			// execute — so no late fire-and-forget command can survive the
+			// flush, and the flush itself runs on a live client. Both steps
+			// are asserted so a failed teardown cannot silently leak state
+			// into later specs.
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			Expect(closeSubject()).NotTo(HaveOccurred())
 		}
 	})
 
@@ -758,7 +829,8 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 		for _, protocol := range protocols {
 			When("using protocol version", func() {
 				BeforeEach(func() {
-					client = setupRedisClient(protocol)
+					rawClient = setupRedisClient(protocol)
+					client, closeSubject = newUniversalSubject(rawClient)
 				})
 
 				It("should perform complex JSON and RediSearch operations", func() {
@@ -797,12 +869,12 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					getCmdRaw := client.JSONGet(ctx, "person:1", ".")
 					rawJSON, err := getCmdRaw.Result()
 					Expect(err).NotTo(HaveOccurred(), "JSON.GET (raw) failed")
-					GinkgoWriter.Printf("Raw JSON: %s\n", rawJSON)
+					fmt.Printf("Raw JSON: %s\n", rawJSON)
 
 					getCmdExpanded := client.JSONGet(ctx, "person:1", ".")
 					expandedJSON, err := getCmdExpanded.Expanded()
 					Expect(err).NotTo(HaveOccurred(), "JSON.GET (expanded) failed")
-					GinkgoWriter.Printf("Expanded JSON: %+v\n", expandedJSON)
+					fmt.Printf("Expanded JSON: %+v\n", expandedJSON)
 
 					Expect(rawJSON).To(MatchJSON(jsonMustMarshal(expandedJSON)))
 
@@ -832,7 +904,9 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					typeCmd := client.JSONType(ctx, "person:1", "$.person.nickname")
 					nicknameType, err := typeCmd.Result()
 					Expect(err).NotTo(HaveOccurred(), "JSON.TYPE failed")
-					Expect(nicknameType[0]).To(Equal([]interface{}{"string"}), "JSON.TYPE mismatch for nickname")
+					Expect(nicknameType).To(HaveLen(1), "JSON.TYPE should return one element")
+					// RESP2 v RESP3
+					Expect(nicknameType[0]).To(Or(Equal([]interface{}{"string"}), Equal("string")), "JSON.TYPE mismatch for nickname")
 
 					createIndexCmd := client.Do(ctx, "FT.CREATE", "person_idx", "ON", "JSON",
 						"PREFIX", "1", "person:", "SCHEMA",
@@ -846,7 +920,7 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					searchCmd := client.FTSearchWithArgs(ctx, "person_idx", "@contact_value:(alice\\@example\\.com alice_wonder)", &redis.FTSearchOptions{Return: []redis.FTSearchReturn{{FieldName: "$.person.name"}, {FieldName: "$.person.age"}, {FieldName: "$.person.address.city"}}})
 					searchResult, err := searchCmd.Result()
 					Expect(err).NotTo(HaveOccurred(), "FT.SEARCH failed")
-					GinkgoWriter.Printf("Advanced Search result: %+v\n", searchResult)
+					fmt.Printf("Advanced Search result: %+v\n", searchResult)
 
 					incrCmd := client.JSONNumIncrBy(ctx, "person:1", "$.person.age", 5)
 					incrResult, err := incrCmd.Result()
@@ -859,7 +933,10 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					typeCmd = client.JSONType(ctx, "person:1", "$.settings.notifications.email")
 					typeResult, err := typeCmd.Result()
 					Expect(err).ToNot(HaveOccurred())
-					Expect(typeResult[0]).To(BeEmpty(), "Expected JSON.TYPE to be empty for deleted field")
+					// After deletion, JSON.TYPE returns empty slice or slice with empty/nil value
+					if len(typeResult) > 0 {
+						Expect(typeResult[0]).To(Or(BeNil(), BeEmpty()), "Expected JSON.TYPE to be empty for deleted field")
+					}
 				})
 			})
 		}

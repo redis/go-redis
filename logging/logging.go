@@ -31,35 +31,38 @@ func (v *VoidLogger) Printf(_ context.Context, _ string, _ ...interface{}) {
 // This can be used to speed up the library if logging is not needed.
 // It will override any custom logger that was set before and set the VoidLogger.
 func Disable() {
-	internal.Logger = &VoidLogger{}
+	internal.Logger.Store(&VoidLogger{})
 }
 
 // Enable enables logging by setting the internal logger to the default logger.
 // This is the default behavior.
 // You can use redis.SetLogger to set a custom logger.
 //
-// NOTE: This function is not thread-safe.
 // It will override any custom logger that was set before and set the DefaultLogger.
 func Enable() {
-	internal.Logger = internal.NewDefaultLogger()
+	internal.Logger.Store(internal.NewDefaultLogger(internal.DefaultLoggerCalldepth))
 }
 
 // SetLogLevel sets the log level for the library.
 func SetLogLevel(logLevel LogLevelT) {
-	internal.LogLevel = logLevel
+	internal.LogLevel.Store(logLevel)
 }
 
 // NewBlacklistLogger returns a new logger that filters out messages containing any of the substrings.
 // This can be used to filter out messages containing sensitive information.
 func NewBlacklistLogger(substr []string) internal.Logging {
-	l := internal.NewDefaultLogger()
+	// filterLogger.Printf adds a frame on top of the atomicLogger.Printf
+	// forwarding frame.
+	l := internal.NewDefaultLogger(internal.FilterLoggerCalldepth)
 	return &filterLogger{logger: l, substr: substr, blacklist: true}
 }
 
 // NewWhitelistLogger returns a new logger that only logs messages containing any of the substrings.
 // This can be used to only log messages related to specific commands or patterns.
 func NewWhitelistLogger(substr []string) internal.Logging {
-	l := internal.NewDefaultLogger()
+	// filterLogger.Printf adds a frame on top of the atomicLogger.Printf
+	// forwarding frame.
+	l := internal.NewDefaultLogger(internal.FilterLoggerCalldepth)
 	return &filterLogger{logger: l, substr: substr, blacklist: false}
 }
 

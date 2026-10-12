@@ -3,8 +3,12 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 func TestVectorFP32_Value(t *testing.T) {
@@ -13,6 +17,51 @@ func TestVectorFP32_Value(t *testing.T) {
 	want := []any{"FP32", []byte{1, 2, 3}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("VectorFP32.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorFloat16_Value(t *testing.T) {
+	v := &VectorFloat16{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"FLOAT16", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorFloat16.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorBFloat16_Value(t *testing.T) {
+	v := &VectorBFloat16{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"BFLOAT16", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorBFloat16.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorFloat64_Value(t *testing.T) {
+	v := &VectorFloat64{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"FLOAT64", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorFloat64.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorInt8_Value(t *testing.T) {
+	v := &VectorInt8{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"INT8", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorInt8.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorUint8_Value(t *testing.T) {
+	v := &VectorUint8{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"UINT8", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorUint8.Value() = %v, want %v", got, want)
 	}
 }
 
@@ -122,7 +171,7 @@ func TestVLinks(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	c.VLinks(context.Background(), "k", "e")
-	cmd := m.lastCmd.(*StringSliceCmd)
+	cmd := m.lastCmd.(*StringSliceSliceCmd)
 	if cmd.args[0] != "vlinks" || cmd.args[1] != "k" || cmd.args[2] != "e" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
@@ -132,7 +181,7 @@ func TestVLinksWithScores(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	c.VLinksWithScores(context.Background(), "k", "e")
-	cmd := m.lastCmd.(*VectorScoreSliceCmd)
+	cmd := m.lastCmd.(*VectorScoreSliceSliceCmd)
 	if cmd.args[0] != "vlinks" || cmd.args[1] != "k" || cmd.args[2] != "e" || cmd.args[3] != "withscores" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
@@ -266,7 +315,7 @@ func TestVSimWithArgsWithScores_AllOptions(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	vec := &VectorValues{Val: []float64{1, 2}}
-	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
 	c.VSimWithArgsWithScores(context.Background(), "k", vec, args)
 	cmd := m.lastCmd.(*VectorScoreSliceCmd)
 	found := map[string]bool{}
@@ -275,11 +324,164 @@ func TestVSimWithArgsWithScores_AllOptions(t *testing.T) {
 			found[s] = true
 		}
 	}
-	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "withscores"} {
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withscores"} {
 		if !found[want] {
 			t.Errorf("missing arg: %s", want)
 		}
 	}
+}
+
+func TestVSimWithArgsWithAttribs_AllOptions(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
+
+	c.VSimWithArgsWithAttribs(context.Background(), "k", vec, args)
+	cmd := m.lastCmd.(*VectorAttribSliceCmd)
+
+	found := map[string]bool{}
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok {
+			found[s] = true
+		}
+	}
+
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withattribs"} {
+		if !found[want] {
+			t.Errorf("missing arg: %s", want)
+		}
+	}
+	if found["withscores"] {
+		t.Error("unexpected arg: withscores")
+	}
+}
+
+func TestVSimWithArgsWithAttribs_NilArgs(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+
+	c.VSimWithArgsWithAttribs(context.Background(), "k", vec, nil)
+	cmd := m.lastCmd.(*VectorAttribSliceCmd)
+
+	found := false
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok && s == "withattribs" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("missing withattribs arg")
+	}
+}
+
+func TestVSimWithArgsWithScoresWithAttribs_AllOptions(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
+
+	c.VSimWithArgsWithScoresWithAttribs(context.Background(), "k", vec, args)
+	cmd := m.lastCmd.(*VectorScoreAttribSliceCmd)
+
+	found := map[string]bool{}
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok {
+			found[s] = true
+		}
+	}
+
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withscores", "withattribs"} {
+		if !found[want] {
+			t.Errorf("missing arg: %s", want)
+		}
+	}
+}
+
+func TestVSimWithArgsWithScoresWithAttribs_NilArgs(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+
+	c.VSimWithArgsWithScoresWithAttribs(context.Background(), "k", vec, nil)
+	cmd := m.lastCmd.(*VectorScoreAttribSliceCmd)
+
+	foundScores := false
+	foundAttribs := false
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok && s == "withscores" {
+			foundScores = true
+		}
+		if s, ok := a.(string); ok && s == "withattribs" {
+			foundAttribs = true
+		}
+	}
+	if !foundScores {
+		t.Error("missing withscores arg")
+	}
+	if !foundAttribs {
+		t.Error("missing withattribs arg")
+	}
+}
+
+func TestVectorScoreAttribSliceCmd_readReply(t *testing.T) {
+	t.Run("resp3FlatArray", func(t *testing.T) {
+		// *6 -> two (name, score, attrib) triplets; second attrib is nil
+		reply := "*6\r\n" +
+			"$2\r\na1\r\n,1.5\r\n$4\r\nattr\r\n" +
+			"$2\r\na2\r\n,2.5\r\n_\r\n"
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader(reply))
+		if err := cmd.readReply(rd); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(cmd.val) != 2 {
+			t.Fatalf("len(val) = %d, want 2", len(cmd.val))
+		}
+
+		if cmd.val[0].Name != "a1" || cmd.val[0].Score != 1.5 || cmd.val[0].Attribs == nil || *cmd.val[0].Attribs != "attr" {
+			t.Errorf("first row = %+v, want {a1 1.5 %q}", cmd.val[0], "attr")
+		}
+
+		if cmd.val[1].Name != "a2" || cmd.val[1].Score != 2.5 || cmd.val[1].Attribs != nil {
+			t.Errorf("second row = %+v, want {a2 2.5 nil}", cmd.val[1])
+		}
+	})
+
+	t.Run("resp3Map", func(t *testing.T) {
+		// %2 -> two map entries; value each is *2 [score, attrib]
+		reply := "%2\r\n" +
+			"$2\r\nb1\r\n*2\r\n,0.5\r\n$1\r\na\r\n" +
+			"$2\r\nb2\r\n*2\r\n,1\r\n_\r\n"
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader(reply))
+		if err := cmd.readReply(rd); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(cmd.val) != 2 {
+			t.Fatalf("len(val) = %d, want 2", len(cmd.val))
+		}
+
+		if cmd.val[0].Name != "b1" || cmd.val[0].Score != 0.5 || cmd.val[0].Attribs == nil || *cmd.val[0].Attribs != "a" {
+			t.Errorf("first row = %+v, want {b1 0.5 %q}", cmd.val[0], "a")
+		}
+
+		if cmd.val[1].Name != "b2" || cmd.val[1].Score != 1 || cmd.val[1].Attribs != nil {
+			t.Errorf("second row = %+v, want {b2 1 nil}", cmd.val[1])
+		}
+	})
+
+	t.Run("flatArrayLenNotMultipleOf3", func(t *testing.T) {
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader("*1\r\n$1\r\nx\r\n"))
+		if err := cmd.readReply(rd); err == nil {
+			t.Fatal("expected error for array length not divisible by 3")
+		}
+	})
 }
 
 // Additional tests for missing coverage
@@ -518,6 +720,7 @@ func TestVSimArgs_IndividualOptions(t *testing.T) {
 		{"FilterEF", &VSimArgs{FilterEF: 15}, "filter-ef"},
 		{"Truth", &VSimArgs{Truth: true}, "truth"},
 		{"NoThread", &VSimArgs{NoThread: true}, "nothread"},
+		{"Epsilon", &VSimArgs{Epsilon: 0.5}, "epsilon"},
 	}
 
 	for _, tt := range tests {
@@ -536,6 +739,208 @@ func TestVSimArgs_IndividualOptions(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("missing arg: %s", tt.want)
+			}
+		})
+	}
+}
+
+func TestVRange(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	c.VRange(context.Background(), "k", "-", "+", int64(10))
+	cmd := m.lastCmd.(*StringSliceCmd)
+	if cmd.args[0] != "vrange" || cmd.args[1] != "k" || cmd.args[2] != "-" || cmd.args[3] != "+" || cmd.args[4] != int64(10) {
+		t.Errorf("unexpected args: %v", cmd.args)
+	}
+}
+
+func TestVIsMember(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	c.VIsMember(context.Background(), "k", "e")
+	cmd := m.lastCmd.(*BoolCmd)
+	if cmd.args[0] != "vismember" || cmd.args[1] != "k" || cmd.args[2] != "e" {
+		t.Errorf("unexpected args: %v", cmd.args)
+  }
+}
+
+// TestVectorScoreSliceCmdReadReply tests that VectorScoreSliceCmd.readReply handles
+// both RESP2 (flat array) and RESP3 (map) protocol responses.
+func TestVectorScoreSliceCmdReadReply(t *testing.T) {
+	tests := []struct {
+		name     string
+		respData []byte
+		want     []VectorScore
+		wantErr  bool
+	}{
+		{
+			// RESP3 map: %2\r\n +elem1\r\n ,0.9\r\n +elem2\r\n ,0.8\r\n
+			name:     "RESP3 map response",
+			respData: []byte("%2\r\n+elem1\r\n,0.9\r\n+elem2\r\n,0.8\r\n"),
+			want: []VectorScore{
+				{Name: "elem1", Score: 0.9},
+				{Name: "elem2", Score: 0.8},
+			},
+		},
+		{
+			// RESP2 flat array: *4\r\n $5\r\nelem1\r\n $3\r\n0.9\r\n $5\r\nelem2\r\n $3\r\n0.8\r\n
+			name: "RESP2 flat array response",
+			respData: []byte(fmt.Sprintf("*4\r\n$5\r\nelem1\r\n$%d\r\n%s\r\n$5\r\nelem2\r\n$%d\r\n%s\r\n",
+				len("0.9"), "0.9", len("0.8"), "0.8")),
+			want: []VectorScore{
+				{Name: "elem1", Score: 0.9},
+				{Name: "elem2", Score: 0.8},
+			},
+		},
+		{
+			// RESP3 empty map
+			name:     "RESP3 empty map",
+			respData: []byte("%0\r\n"),
+			want:     []VectorScore{},
+		},
+		{
+			// RESP2 empty array
+			name:     "RESP2 empty array",
+			respData: []byte("*0\r\n"),
+			want:     []VectorScore{},
+		},
+		{
+			// RESP2 odd-length array should return an error
+			name:     "RESP2 odd array returns error",
+			respData: []byte("*3\r\n$5\r\nelem1\r\n$3\r\n0.9\r\n$5\r\nelem2\r\n"),
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rd := proto.NewReader(newMockConn(tt.respData))
+			cmd := NewVectorScoreSliceCmd(context.Background(), "vsim", "key", "withscores")
+			err := cmd.readReply(rd)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("readReply() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && !reflect.DeepEqual(cmd.Val(), tt.want) {
+				t.Errorf("Val() = %v, want %v", cmd.Val(), tt.want)
+			}
+		})
+	}
+}
+
+// TestStringSliceSliceCmdReadReply covers the readReply parser used by VLINKS,
+// which returns an array of arrays of element names (one inner array per HNSW layer).
+func TestStringSliceSliceCmdReadReply(t *testing.T) {
+	tests := []struct {
+		name     string
+		respData []byte
+		want     [][]string
+		wantErr  bool
+	}{
+		{
+			name:     "two layers with elements",
+			respData: []byte("*2\r\n*2\r\n$2\r\ne1\r\n$2\r\ne2\r\n*1\r\n$2\r\ne3\r\n"),
+			want:     [][]string{{"e1", "e2"}, {"e3"}},
+		},
+		{
+			name:     "empty outer array",
+			respData: []byte("*0\r\n"),
+			want:     [][]string{},
+		},
+		{
+			name:     "outer array with empty inner",
+			respData: []byte("*1\r\n*0\r\n"),
+			want:     [][]string{{}},
+		},
+		{
+			name:     "nil element becomes empty string",
+			respData: []byte("*1\r\n*2\r\n$2\r\ne1\r\n$-1\r\n"),
+			want:     [][]string{{"e1", ""}},
+		},
+		{
+			name:     "malformed outer length",
+			respData: []byte("+notarray\r\n"),
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rd := proto.NewReader(newMockConn(tt.respData))
+			cmd := NewStringSliceSliceCmd(context.Background(), "vlinks", "key", "e")
+			err := cmd.readReply(rd)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("readReply() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && !reflect.DeepEqual(cmd.Val(), tt.want) {
+				t.Errorf("Val() = %v, want %v", cmd.Val(), tt.want)
+			}
+		})
+	}
+}
+
+// TestVectorScoreSliceSliceCmdReadReply covers the readReply parser used by
+// VLINKS WITHSCORES, which returns an array of layers; each layer is a map
+// (RESP3) or flat element/score array (RESP2).
+func TestVectorScoreSliceSliceCmdReadReply(t *testing.T) {
+	tests := []struct {
+		name     string
+		respData []byte
+		want     [][]VectorScore
+		wantErr  bool
+	}{
+		{
+			name:     "RESP3 two layers, maps",
+			respData: []byte("*2\r\n%2\r\n+a1\r\n,0.9\r\n+a2\r\n,0.8\r\n%1\r\n+b1\r\n,0.5\r\n"),
+			want: [][]VectorScore{
+				{{Name: "a1", Score: 0.9}, {Name: "a2", Score: 0.8}},
+				{{Name: "b1", Score: 0.5}},
+			},
+		},
+		{
+			name:     "RESP2 two layers, flat arrays",
+			respData: []byte("*2\r\n*4\r\n$2\r\na1\r\n$3\r\n0.9\r\n$2\r\na2\r\n$3\r\n0.8\r\n*2\r\n$2\r\nb1\r\n$3\r\n0.5\r\n"),
+			want: [][]VectorScore{
+				{{Name: "a1", Score: 0.9}, {Name: "a2", Score: 0.8}},
+				{{Name: "b1", Score: 0.5}},
+			},
+		},
+		{
+			name:     "RESP3 empty layer (empty map)",
+			respData: []byte("*1\r\n%0\r\n"),
+			want:     [][]VectorScore{{}},
+		},
+		{
+			name:     "RESP2 empty layer (empty array)",
+			respData: []byte("*1\r\n*0\r\n"),
+			want:     [][]VectorScore{{}},
+		},
+		{
+			name:     "empty outer",
+			respData: []byte("*0\r\n"),
+			want:     [][]VectorScore{},
+		},
+		{
+			name:     "RESP2 odd inner array returns error",
+			respData: []byte("*1\r\n*3\r\n$2\r\na1\r\n$3\r\n0.9\r\n$2\r\na2\r\n"),
+			wantErr:  true,
+		},
+		{
+			name:     "malformed outer length",
+			respData: []byte("+notarray\r\n"),
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rd := proto.NewReader(newMockConn(tt.respData))
+			cmd := NewVectorScoreSliceSliceCmd(context.Background(), "vlinks", "key", "e", "withscores")
+			err := cmd.readReply(rd)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("readReply() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && !reflect.DeepEqual(cmd.Val(), tt.want) {
+				t.Errorf("Val() = %v, want %v", cmd.Val(), tt.want)
 			}
 		})
 	}

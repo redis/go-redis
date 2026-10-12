@@ -2,11 +2,110 @@ package proto
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
+
+// segmentedReader delivers its payload one configured chunk per Read, so a bufio
+// reader over it observes the exact partial-buffer boundaries we want to test
+// (e.g. a push-notification header split across socket reads).
+type segmentedReader struct {
+	chunks [][]byte
+}
+
+func (s *segmentedReader) Read(p []byte) (int, error) {
+	for len(s.chunks) > 0 && len(s.chunks[0]) == 0 {
+		s.chunks = s.chunks[1:]
+	}
+	if len(s.chunks) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, s.chunks[0])
+	s.chunks[0] = s.chunks[0][n:]
+	return n, nil
+}
+
+// TestPeekPushNotificationName_LongName verifies that a notification name
+// longer than the historical 36-byte window still parses.
+func TestPeekPushNotificationName_LongName(t *testing.T) {
+	longName := strings.Repeat("A", 100)
+	buf := createValidPushNotification(longName, "data")
+	r := createReaderWithPrimedBuffer(buf)
+	name, err := r.PeekPushNotificationName()
+	if err != nil {
+		t.Fatalf("long name should parse, got error: %v", err)
+	}
+	if name != longName {
+		t.Fatalf("expected %d-char name, got %q", len(longName), name)
+	}
+}
+
+// TestPeekPushNotificationName_ExceedsBuffer verifies that when the header does
+// not fit the reader's buffer, PeekPushNotificationName reports
+// ErrPushNotificationNameTooLong (so the caller consumes the frame) instead of
+// returning bufio.ErrBufferFull or stalling.
+func TestPeekPushNotificationName_ExceedsBuffer(t *testing.T) {
+	// invalidate header (">2\r\n$10\r\ninvalidate\r\n") is ~21 bytes; use a 16-byte
+	// buffer so it cannot be peeked in full.
+	full := ">2\r\n$10\r\ninvalidate\r\n$1\r\nk\r\n"
+	r := NewReaderSize(bytes.NewReader([]byte(full)), 16)
+	if _, err := r.Peek(1); err != nil {
+		t.Fatalf("prime peek: %v", err)
+	}
+	_, err := r.PeekPushNotificationName()
+	if !errors.Is(err, ErrPushNotificationNameTooLong) {
+		t.Fatalf("expected ErrPushNotificationNameTooLong, got %v", err)
+	}
+	// The frame is still fully consumable via ReadReply (how the push processor
+	// makes progress in this case).
+	reply, err := r.ReadReply()
+	if err != nil {
+		t.Fatalf("ReadReply after too-long peek: %v", err)
+	}
+	if arr, ok := reply.([]interface{}); !ok || len(arr) != 2 || arr[0] != "invalidate" {
+		t.Fatalf("unexpected reply: %#v", reply)
+	}
+}
+
+// TestPeekPushNotificationName_SplitHeader reproduces a header split across reads:
+// the first read yields only part of the "$<len>\r\n<name>\r\n" name line. The
+// old implementation clamped its peek to the buffered bytes and never refilled,
+// so it returned a parse error (stalling repeated drain passes on the same bytes).
+// The fix grows the peek window, forcing a refill, so the name resolves.
+func TestPeekPushNotificationName_SplitHeader(t *testing.T) {
+	full := []byte(">2\r\n$10\r\ninvalidate\r\n$1\r\nk\r\n")
+	for _, split := range []int{1, 5, 9, 14, 19} { // cut before/inside the name line
+		t.Run(fmt.Sprintf("split_%d", split), func(t *testing.T) {
+			r := NewReader(&segmentedReader{chunks: [][]byte{full[:split], full[split:]}})
+			if _, err := r.Peek(1); err != nil {
+				t.Fatalf("prime peek: %v", err)
+			}
+			name, err := r.PeekPushNotificationName()
+			if err != nil {
+				t.Fatalf("split header must resolve, got error: %v", err)
+			}
+			if name != "invalidate" {
+				t.Fatalf("expected 'invalidate', got %q", name)
+			}
+			// Peek must not consume: the full frame is still readable.
+			reply, err := r.ReadReply()
+			if err != nil {
+				t.Fatalf("ReadReply after peek: %v", err)
+			}
+			arr, ok := reply.([]interface{})
+			if !ok || len(arr) != 2 || arr[0] != "invalidate" {
+				t.Fatalf("unexpected reply after split-header peek: %#v", reply)
+			}
+		})
+	}
+}
 
 // TestPeekPushNotificationName tests the updated PeekPushNotificationName method
 func TestPeekPushNotificationName(t *testing.T) {
@@ -620,4 +719,284 @@ func TestPeekPushNotificationNameBehavior(t *testing.T) {
 		t.Log("")
 		t.Log("Note: Buffer must be primed with a peek operation first")
 	})
+}
+
+// chunkedReader hands its data out in fixed-size chunks, one per Read. This
+// lets us deterministically reproduce the bufio fill boundary that landed in
+// the middle of a push frame header in issue #3839.
+type chunkedReader struct {
+	data      []byte
+	chunkSize int
+	off       int
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := r.chunkSize
+	if n > len(p) {
+		n = len(p)
+	}
+	if r.off+n > len(r.data) {
+		n = len(r.data) - r.off
+	}
+	copy(p, r.data[r.off:r.off+n])
+	r.off += n
+	return n, nil
+}
+
+// TestPeekPushNotificationName_TruncatedHeader covers issue #3839: when only
+// a prefix of a push frame is buffered, PeekPushNotificationName must NOT
+// return a truncated name. It should block to fetch the rest of the header
+// (so the caller can identify the notification correctly) or, when the
+// underlying read fails, return that error.
+func TestPeekPushNotificationName_TruncatedHeader(t *testing.T) {
+	const frame = ">3\r\n$7\r\nmessage\r\n$7\r\nchannel\r\n$5\r\nhello\r\n"
+
+	// Boundaries that previously caused PeekPushNotificationName to silently
+	// return a truncated name. `prefix` is the number of bytes the chunked
+	// reader hands out per Read call; with the bug, every chunk boundary that
+	// lands inside the frame header is a place where the function returned a
+	// truncated name instead of blocking for the rest.
+	cutpoints := []struct {
+		name   string
+		prefix int
+	}{
+		{"after_push_marker", 1},
+		{"inside_array_len_line", 3},
+		{"after_array_len_line", 4},
+		{"after_dollar", 5},
+		{"inside_bulk_len_line", 6},
+		{"after_bulk_len_line", 8},
+		{"inside_name", 13}, // the exact failure mode from #3839 ("messa")
+		{"before_name_crlf", 15},
+	}
+
+	for _, tc := range cutpoints {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(frame)
+			// Use a chunked reader that hands out tc.prefix bytes per Read
+			// call (not per fill). bufio's first fill therefore returns only
+			// tc.prefix bytes; satisfying a Peek that wants more forces
+			// additional Reads, each capped at tc.prefix bytes, until the
+			// peek window is full. That sequence reproduces the partial-fill
+			// boundary from issue #3839 where the buffered prefix landed in
+			// the middle of the push frame header.
+			rd := NewReader(&chunkedReader{data: data, chunkSize: tc.prefix})
+
+			if _, err := rd.PeekReplyType(); err != nil {
+				t.Fatalf("PeekReplyType: %v", err)
+			}
+
+			name, err := rd.PeekPushNotificationName()
+			if err != nil {
+				t.Fatalf("PeekPushNotificationName: unexpected error: %v", err)
+			}
+			if name != "message" {
+				t.Fatalf("PeekPushNotificationName: got %q, want %q", name, "message")
+			}
+
+			// And the full frame must still be readable afterwards.
+			reply, err := rd.ReadReply()
+			if err != nil {
+				t.Fatalf("ReadReply: %v", err)
+			}
+			arr, ok := reply.([]interface{})
+			if !ok || len(arr) != 3 || arr[0] != "message" || arr[1] != "channel" || arr[2] != "hello" {
+				t.Fatalf("ReadReply: got %#v, want [message channel hello]", reply)
+			}
+		})
+	}
+}
+
+// TestPeekPushNotificationName_TruncatedHeaderUnderlyingEOF covers the case
+// where the underlying connection delivers a partial frame and then closes.
+// PeekPushNotificationName must surface the read error rather than returning
+// a truncated name.
+func TestPeekPushNotificationName_TruncatedHeaderUnderlyingEOF(t *testing.T) {
+	// A push frame that ends mid-name.
+	data := []byte(">3\r\n$7\r\nmessa")
+	rd := NewReader(bytes.NewReader(data))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
+}
+
+// TestPeekPushNotificationName_EmptyArrayLength asserts that ">\r\n" is
+// reported as a malformed frame rather than an incomplete prefix. RESP
+// requires at least one digit after '>' for the array length; without the
+// empty-length check in parsePushNotificationName the parser would treat
+// ">\r\n" as a valid prefix and PeekPushNotificationName would block
+// waiting for the rest of a frame that is already corrupt.
+func TestPeekPushNotificationName_EmptyArrayLength(t *testing.T) {
+	rd := NewReader(bytes.NewReader([]byte(">\r\n")))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error for empty array length, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
+	if !strings.Contains(err.Error(), "empty push notification array length") {
+		t.Fatalf("PeekPushNotificationName: error should mention empty array length, got %v", err)
+	}
+}
+
+// TestPeekPushNotificationName_OverflowingNameLength asserts that a frame
+// advertising a name length near math.MaxInt does not panic. Computing
+// next+nameLen would overflow int and wrap negative, slipping past a naive
+// "end > len(buf)" guard and panicking the backing slice; the parser must
+// instead treat it as incomplete and surface an error without crashing.
+func TestPeekPushNotificationName_OverflowingNameLength(t *testing.T) {
+	data := []byte(">1\r\n$" + strconv.Itoa(math.MaxInt) + "\r\n")
+	rd := NewReader(bytes.NewReader(data))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error for overflowing name length, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
+}
+
+// idleConnReader serves scripted chunks and then blocks on the next Read, the
+// way an idle network connection does. Unlike the bytes/strings readers used
+// elsewhere in this file it never returns io.EOF on its own, so a Peek that
+// asks for more bytes than the server will ever send blocks instead of
+// erroring — the situation of issue #3935.
+type idleConnReader struct {
+	chunks   [][]byte
+	released chan struct{} // closed by the test to unblock a stuck Read
+}
+
+func (r *idleConnReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		<-r.released
+		return 0, io.EOF
+	}
+	chunk := r.chunks[0]
+	n := copy(p, chunk)
+	if n == len(chunk) {
+		r.chunks = r.chunks[1:]
+	} else {
+		r.chunks[0] = chunk[n:]
+	}
+	return n, nil
+}
+
+// peekNameWithTimeout runs PeekPushNotificationName in a goroutine and fails
+// the test if it does not return within the deadline, which is how the hang
+// of issue #3935 manifests.
+func peekNameWithTimeout(t *testing.T, rd *Reader) (string, error) {
+	t.Helper()
+
+	type result struct {
+		name string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		name, err := rd.PeekPushNotificationName()
+		done <- result{name, err}
+	}()
+
+	select {
+	case res := <-done:
+		return res.name, res.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("PeekPushNotificationName blocked waiting for bytes the server will not send")
+		return "", nil
+	}
+}
+
+// TestPeekPushNotificationName_ShortFrameIdleConnection reproduces issue
+// #3935: the subscribe confirmation for a channel name of six or fewer
+// characters is a complete push frame shorter than 36 bytes, the fixed
+// initial peek window, and with the connection otherwise idle
+// PeekPushNotificationName blocked forever inside bufio.Reader.Peek waiting
+// for bytes the server had no reason to send. The name must be identified
+// from the bytes actually available.
+func TestPeekPushNotificationName_ShortFrameIdleConnection(t *testing.T) {
+	testCases := []struct {
+		name  string
+		frame string
+		want  string
+	}{
+		// 35 bytes, one short of the old fixed 36-byte peek window.
+		{"subscribe six-char channel", ">3\r\n$9\r\nsubscribe\r\n$6\r\naaaaaa\r\n:1\r\n", "subscribe"},
+		{"subscribe one-char channel", ">3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n", "subscribe"},
+		{"message with short payload", ">3\r\n$7\r\nmessage\r\n$1\r\na\r\n$1\r\nb\r\n", "message"},
+		{"minimal push frame", ">1\r\n$1\r\nx\r\n", "x"},
+		{"simple-string name", ">2\r\n+MOVING\r\n:1\r\n", "MOVING"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &idleConnReader{
+				chunks:   [][]byte{[]byte(tc.frame)},
+				released: make(chan struct{}),
+			}
+			defer close(src.released)
+			rd := NewReader(src)
+
+			if _, err := rd.PeekReplyType(); err != nil {
+				t.Fatalf("PeekReplyType: %v", err)
+			}
+
+			name, err := peekNameWithTimeout(t, rd)
+			if err != nil {
+				t.Fatalf("PeekPushNotificationName: %v", err)
+			}
+			if name != tc.want {
+				t.Fatalf("PeekPushNotificationName: got %q, want %q", name, tc.want)
+			}
+		})
+	}
+}
+
+// TestPeekPushNotificationName_ByteByByteDelivery feeds the frame one byte
+// per Read, mimicking worst-case TCP fragmentation. The peek loop must keep
+// fetching single bytes until the name is parseable and never demand more
+// than the next byte.
+func TestPeekPushNotificationName_ByteByByteDelivery(t *testing.T) {
+	frame := ">3\r\n$9\r\nsubscribe\r\n$6\r\naaaaaa\r\n:1\r\n"
+	chunks := make([][]byte, 0, len(frame))
+	for i := 0; i < len(frame); i++ {
+		chunks = append(chunks, []byte{frame[i]})
+	}
+	src := &idleConnReader{chunks: chunks, released: make(chan struct{})}
+	defer close(src.released)
+	rd := NewReader(src)
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := peekNameWithTimeout(t, rd)
+	if err != nil {
+		t.Fatalf("PeekPushNotificationName: %v", err)
+	}
+	if name != "subscribe" {
+		t.Fatalf("PeekPushNotificationName: got %q, want %q", name, "subscribe")
+	}
 }

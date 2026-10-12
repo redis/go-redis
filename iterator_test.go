@@ -10,7 +10,9 @@ import (
 )
 
 var _ = Describe("ScanIterator", func() {
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 
 	seed := func(n int) error {
 		pipe := client.Pipeline()
@@ -44,12 +46,13 @@ var _ = Describe("ScanIterator", func() {
 	}
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		rawClient = redis.NewClient(redisOptions())
+		client, closeSubject = newUniversalSubject(rawClient)
+		Expect(rawClient.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(closeSubject()).NotTo(HaveOccurred())
 	})
 
 	It("should scan across empty DBs", func() {
@@ -85,7 +88,7 @@ var _ = Describe("ScanIterator", func() {
 	})
 
 	It("should hscan across multiple pages", func() {
-		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 		Expect(hashSeed(71)).NotTo(HaveOccurred())
 
 		var vals []string
@@ -101,7 +104,7 @@ var _ = Describe("ScanIterator", func() {
 	})
 
 	It("should hscan without values across multiple pages", Label("NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 		Expect(hashSeed(71)).NotTo(HaveOccurred())
 
 		var vals []string

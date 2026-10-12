@@ -166,4 +166,3 @@ func TestAllTryTransitionUsePredefinedSlices(t *testing.T) {
 		t.Errorf("Expected <= 2 allocations with predefined slices, got %.2f", allocs)
 	}
 }
-

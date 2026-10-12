@@ -26,15 +26,15 @@ import (
 // - With the fix: Only PoolSize succeed
 func TestDoubleFreeTurnSimple(t *testing.T) {
 	ctx := context.Background()
-	
+
 	var dialCount atomic.Int32
 	dialBComplete := make(chan struct{})
 	requestBGotConn := make(chan struct{})
 	requestBCalledPut := make(chan struct{})
-	
+
 	controlledDialer := func(ctx context.Context) (net.Conn, error) {
 		count := dialCount.Add(1)
-		
+
 		if count == 1 {
 			// Dial A: takes 150ms
 			time.Sleep(150 * time.Millisecond)
@@ -48,10 +48,10 @@ func TestDoubleFreeTurnSimple(t *testing.T) {
 			// Other dials: fast
 			time.Sleep(10 * time.Millisecond)
 		}
-		
+
 		return newDummyConn(), nil
 	}
-	
+
 	testPool := pool.NewConnPool(&pool.Options{
 		Dialer:             controlledDialer,
 		PoolSize:           2, // Only 2 concurrent operations allowed
@@ -60,38 +60,38 @@ func TestDoubleFreeTurnSimple(t *testing.T) {
 		PoolTimeout:        1 * time.Second,
 	})
 	defer testPool.Close()
-	
+
 	// Request A: Short timeout (100ms), will timeout before dial completes (150ms)
 	go func() {
 		shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		defer cancel()
-		
+
 		_, err := testPool.Get(shortCtx)
 		if err != nil {
 			t.Logf("Request A: Timed out as expected: %v", err)
 		}
 	}()
-	
+
 	// Wait for Request A to start
 	time.Sleep(20 * time.Millisecond)
-	
+
 	// Request B: Long timeout, will receive connection from Request A's dial
 	requestBDone := make(chan struct{})
 	go func() {
 		defer close(requestBDone)
-		
+
 		longCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		defer cancel()
-		
+
 		cn, err := testPool.Get(longCtx)
 		if err != nil {
 			t.Errorf("Request B: Should have received connection but got error: %v", err)
 			return
 		}
-		
+
 		t.Logf("Request B: Got connection from Request A's dial")
 		close(requestBGotConn)
-		
+
 		// Wait for dial B to complete
 		<-dialBComplete
 
@@ -110,7 +110,7 @@ func TestDoubleFreeTurnSimple(t *testing.T) {
 		testPool.Put(ctx, cn)
 		t.Logf("Request B: Put() called")
 	}()
-	
+
 	// Wait for Request B to get the connection
 	<-requestBGotConn
 
@@ -155,4 +155,3 @@ func TestDoubleFreeTurnSimple(t *testing.T) {
 		t.Logf("Unexpected QueueLen: %d (expected 1 with fix, 0 with bug)", queueLen)
 	}
 }
-

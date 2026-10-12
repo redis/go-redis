@@ -5,8 +5,6 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-
-	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 func TestGinkgoSuite(t *testing.T) {
@@ -15,7 +13,7 @@ func TestGinkgoSuite(t *testing.T) {
 }
 
 var _ = Describe("CRC16", func() {
-	// http://redis.io/topics/cluster-spec#keys-distribution-model
+	// https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec#key-distribution-model.
 	It("should calculate CRC16", func() {
 		tests := []struct {
 			s string
@@ -41,16 +39,17 @@ var _ = Describe("HashSlot", func() {
 			{"{}foo", 9500},
 			{"foo{}", 5542},
 			{"foo{}{bar}", 8363},
-			{"", 10503},
-			{"", 5176},
 			{string([]byte{83, 153, 134, 118, 229, 214, 244, 75, 140, 37, 215, 215}), 5463},
 		}
-		// Empty keys receive random slot.
-		rand.Seed(100)
 
 		for _, test := range tests {
 			Expect(Slot(test.key)).To(Equal(test.slot), "for %s", test.key)
 		}
+
+		// Empty keys receive random slot.
+		slot := Slot("")
+		Expect(slot).To(BeNumerically(">=", 0))
+		Expect(slot).To(BeNumerically("<", 16384))
 	})
 
 	It("should extract keys from tags", func() {
