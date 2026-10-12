@@ -1556,7 +1556,9 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 	} else {
 		err = c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
-	c.observeCSCRedirect(err)
+	if err != nil {
+		c.observeCSCRedirect(err, cmd)
+	}
 	return err
 }
 
@@ -2282,7 +2284,7 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
-		c.observeCSCRedirect(err)
+		c.observeCSCRedirect(err, cmd)
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
 			setCmdsErr(cmds[i+1:], err)

@@ -170,7 +170,6 @@ var cscRefreshCooldown time.Duration
 // form of the command that produced it, and redisKeys are already namespaced, so
 // both can be handed straight back to Reserve.
 type cscRefreshTarget struct {
-	scope     *clusterCSCScope
 	cacheKey  string
 	redisKeys []string
 	token     uint64
@@ -791,11 +790,8 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 		}
 	}()
 	for _, t := range targets {
-		if n := c.opt.clusterCSC; n != nil {
-			t.scope = n.refreshScope(t.cacheKey)
-			if t.scope == nil {
-				continue
-			}
+		if n := c.opt.clusterCSC; n != nil && !n.usable() {
+			continue
 		}
 		token, shouldFetch := c.csc.Reserve(t.cacheKey, t.redisKeys)
 		// token==0 with shouldFetch==true is Reserve's "fetch uncached" signal
@@ -848,11 +844,7 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 			for i := range kept {
 				// The cache key is the namespaced RESP encoding of the command that
 				// produced the entry; strip the namespace and it is already wire form.
-				commandPrefix := prefix
-				if kept[i].scope != nil {
-					commandPrefix = kept[i].scope.prefix
-				}
-				if _, err := wr.Write([]byte(kept[i].cacheKey[len(commandPrefix):])); err != nil {
+				if _, err := wr.Write([]byte(kept[i].cacheKey[len(prefix):])); err != nil {
 					return err
 				}
 			}
@@ -908,7 +900,7 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					return err
 				}
 				if !cscRefreshReplyCacheable(raw) {
-					c.observeCSCRedirect(classifyCachedReply(raw))
+					c.observeCSCCachedRedirect(classifyCachedReply(raw), kept[i].cacheKey)
 					// Not cacheable (WRONGTYPE after a type change, NOPERM, ...). A nil
 					// reply is NOT an error: a negative lookup is cacheable, and a key
 					// that has since been deleted should cache as missing. See
@@ -919,7 +911,6 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					continue
 				}
 				fc := &cscFetchCapture{
-					scope:   kept[i].scope,
 					raw:     raw,
 					connID:  connID,
 					initGen: capturedGen,

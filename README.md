@@ -341,10 +341,20 @@ AutoPipeline's existing ordered solo path can use CSC. Direct node handles
 (`MasterForKey`, `SlaveForKey`, `ForEachShard`) and their clones bypass caching.
 `ClusterClient.CSCStats()` and `CSCRefreshStats()` aggregate node statistics.
 
-Observed ownership/role changes retire the affected nodes' caches, including
+Observed ownership/role changes clear the affected nodes' caches, including
 both old and new owners; cached values are never transferred between nodes.
-MOVED and ASK retire scopes before retrying, and old requests or queued refreshes
-cannot fill a successor scope. Losing a tracking connection evicts only entries
+MOVED and ASK evict all cached replies depending on the redirected command's
+Redis keys across this ClusterClient's node caches, including GET/MGET replies
+and pending reservations; unrelated entries are retained. Unknown key layouts
+fall back to clearing the node caches when neither CSC key extraction nor cached
+command metadata identifies all keys safely. Redirects never trigger eager refresh.
+Redirected attempts bypass caching. A single background worker coalesces cleanup,
+and affected nodes bypass caching until their cleanup completes, without waiting
+for topology reload. The existing reservation tokens reject publication into
+reservations removed by a clear. There are no ownership epochs: old requests or
+queued refreshes can start fresh fetches after a clear, so this does not promise
+to fence all work started under an earlier topology.
+Losing a tracking connection evicts only entries
 dependent on that connection, not the entire node or Cluster cache. Reconnected
 connections establish tracking again for future reads.
 
@@ -352,15 +362,24 @@ CSC bypasses stale topology snapshots until a successful reload; the trust
 threshold is `ClusterStateReloadInterval` (default 60 seconds, negative means
 always expired). This protects against **observed** transitions, not changes the
 client never sees. A fresh slot map cannot rule out migration or failback between
-observations. Negative replies, including `redis.Nil`, are cached, and with
-`MaxStaleness=0` (the unchanged default), an absence-dependent result can remain
-usable indefinitely following an unobserved migration. A finite entry age bounds
-reuse but cannot repair missing server-side tracking coverage. Redis Enterprise
+observations. Negative replies, including `redis.Nil`, are cached. Cluster CSC
+defaults `MaxStaleness` to **one second** when its configured value is non-positive;
+a positive value is preserved. Standalone's default remains zero (unlimited).
+Shorter ages increase server refetches even when keys do not change.
+This bounds reuse of an absence-dependent result even if a different client
+creates the key on an importing node without invalidating the original node's
+tracked absence. Age is measured from cache publication, not from the server
+change or request start; a slow in-flight reply can therefore extend the window.
+This is bounded entry reuse, not linearizable reads or an ownership fence.
+Finite entry age cannot repair missing server-side tracking coverage. Redis Enterprise
 proxy deployments may require reconnecting caching clients after shard additions
-or same-node slot moves; cache scopes do not remove that operational requirement.
+or same-node slot moves; this policy does not remove that operational requirement.
 
 Custom per-node caches can be created with `ClusterOptions.NewClient`: preserve
 the supplied options and create a fresh cache for each node-client lifetime.
+Custom caches must enforce a positive maximum entry age themselves; the Cache
+interface does not expose an age policy for ClusterClient to enforce. For a
+built-in LocalCache created in a factory, use the supplied cache configuration.
 `UniversalOptions` forwards CSC configuration to Cluster, but its explicit
 `ClientSideCache` instance remains standalone-only. Refresh, miss coalescing and
 invalidation batching retain their standalone built-in-cache limitations.

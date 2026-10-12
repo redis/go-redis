@@ -55,8 +55,12 @@ type ClusterOptions struct {
 
 	// ClientSideCacheConfig enables an independent cache per node client. Capacity
 	// and memory limits apply to each node, not to the whole ClusterClient.
+	// MaxStaleness defaults to one second when non-positive; Cluster CSC requires
+	// a finite entry age because migration can hide behind cached missing keys.
+	// Standalone clients retain their existing zero (unlimited) default.
 	// A custom NewClient must preserve the supplied Options and create a fresh
-	// cache for each node-client lifetime. See Options.ClientSideCacheConfig.
+	// cache for each node-client lifetime, with a positive maximum entry age.
+	// See Options.ClientSideCacheConfig.
 	ClientSideCacheConfig *ClientSideCacheConfig
 	// ClientSideCacheStrategy shares tracking across a node's connections, not
 	// across cluster nodes. See Options.ClientSideCacheStrategy.
@@ -466,6 +470,15 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
+	// Do not mutate the caller's configuration or share it between node factories.
+	var cacheConfig *ClientSideCacheConfig
+	if opt.ClientSideCacheConfig != nil {
+		configClone := *opt.ClientSideCacheConfig
+		if configClone.MaxStaleness <= 0 {
+			configClone.MaxStaleness = time.Second
+		}
+		cacheConfig = &configClone
+	}
 	// Clone MaintNotificationsConfig to avoid sharing between cluster node clients
 	var maintNotificationsConfig *maintnotifications.Config
 	if opt.MaintNotificationsConfig != nil {
@@ -474,7 +487,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	}
 
 	return &Options{
-		ClientSideCacheConfig:                  opt.ClientSideCacheConfig,
+		ClientSideCacheConfig:                  cacheConfig,
 		ClientSideCacheStrategy:                opt.ClientSideCacheStrategy,
 		ClientSideCacheRefreshOnInvalidate:     opt.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          opt.ClientSideCacheCoalesceMisses,
@@ -917,7 +930,6 @@ type clusterSlot struct {
 }
 
 type clusterState struct {
-	cscScopes  map[*clusterNode]*clusterCSCScope
 	identities map[*clusterNode]string
 	nodes      *clusterNodes
 	Masters    []*clusterNode
@@ -1364,10 +1376,6 @@ func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error)
 func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) {
 	sequence := c.loadSequence.Add(1)
 	started := time.Now()
-	var revision uint64
-	if c.csc != nil {
-		revision = c.csc.observation()
-	}
 	state, err := c.load(ctx)
 	if err != nil {
 		return nil, err
@@ -1385,7 +1393,7 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 	}
 	state.createdAt = started
 	if c.csc != nil {
-		if !c.csc.publish(state, revision) {
+		if !c.csc.publish(state) {
 			if !c.csc.closed.Load() {
 				c.LazyReload()
 			}
@@ -2408,7 +2416,7 @@ func (c *ClusterClient) pipelineReadCmds(
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
-		node.Client.observeCSCRedirect(err)
+		node.Client.observeCSCRedirect(err, cmd)
 		cmd.SetErr(err)
 
 		if err == nil {
@@ -2829,19 +2837,20 @@ func (c *ClusterClient) readTxPipelineReplies(
 	readStatus := func() error {
 		c.txProcessPush(ctx, node, cn, rd)
 		err := scratch.readReply(rd)
-		node.Client.observeCSCRedirect(err)
 		return err
 	}
 
 	// Optional top-level ASKING reply (+OK, or a retryable error such as -LOADING).
 	if asking {
 		if err := readStatus(); err != nil {
+			node.Client.observeCSCRedirect(err, cmds...)
 			return c.txPreQueueErrorOutcome(err, cmds)
 		}
 	}
 
 	// MULTI reply (+OK, or an error such as -LOADING during failover).
 	if err := readStatus(); err != nil {
+		node.Client.observeCSCRedirect(err, cmds...)
 		return c.txPreQueueErrorOutcome(err, cmds)
 	}
 
@@ -2850,6 +2859,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 	var firstFatal error
 	for _, cmd := range cmds {
 		err := readStatus()
+		node.Client.observeCSCRedirect(err, cmd)
 		if err == nil {
 			continue // +QUEUED
 		}
@@ -2879,7 +2889,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 	// err means EXEC returned an error rather than the result array.
 	c.txProcessPush(ctx, node, cn, rd)
 	line, err := rd.ReadLine()
-	node.Client.observeCSCRedirect(err)
+	node.Client.observeCSCRedirect(err, cmds...)
 	if err != nil {
 		if !isRedisError(err) {
 			return c.txReadFatal(err) // IO error

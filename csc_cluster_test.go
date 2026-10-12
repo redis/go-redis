@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -62,7 +63,7 @@ func newClusterCSCTestServer(t testing.TB, reply func(string) string) string {
 func clusterCSCTestOptions(slots func() []ClusterSlot) *ClusterOptions {
 	return &ClusterOptions{
 		Protocol: 3, PoolSize: 2, DisableIdentity: true, DisableRoutingPolicies: true,
-		ClientSideCacheConfig:    &ClientSideCacheConfig{MaxEntries: 16},
+		ClientSideCacheConfig:    &ClientSideCacheConfig{MaxEntries: 16, MaxStaleness: time.Minute},
 		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 		ClusterSlots:             func(context.Context) ([]ClusterSlot, error) { return slots(), nil },
 	}
@@ -150,43 +151,412 @@ func TestClusterCSCIndependentCachesAndDirectHandles(t *testing.T) {
 	}
 }
 
+func TestClusterCSCEntryAgeConfiguration(t *testing.T) {
+	for _, age := range []time.Duration{0, -time.Second, 5 * time.Second} {
+		t.Run(age.String(), func(t *testing.T) {
+			cfg := &ClientSideCacheConfig{MaxEntries: 23, MaxStaleness: age}
+			opt := &ClusterOptions{ClientSideCacheConfig: cfg}
+			a, b := opt.clientOptions(), opt.clientOptions()
+			want := age
+			if want <= 0 {
+				want = time.Second
+			}
+			if a.ClientSideCacheConfig.MaxStaleness != want || b.ClientSideCacheConfig.MaxStaleness != want {
+				t.Fatal("node configuration did not apply bounded entry age")
+			}
+			if cfg.MaxStaleness != age || a.ClientSideCacheConfig == cfg || a.ClientSideCacheConfig == b.ClientSideCacheConfig {
+				t.Fatal("node configuration aliases another node or the caller")
+			}
+			a.ClientSideCacheConfig.MaxEntries++
+			if b.ClientSideCacheConfig.MaxEntries != 23 || cfg.MaxEntries != 23 {
+				t.Fatal("node factory can mutate another node's cache configuration")
+			}
+		})
+	}
+	if (&ClusterOptions{}).clientOptions().ClientSideCacheConfig != nil {
+		t.Fatal("default age enabled caching on a disabled cluster")
+	}
+	if NewLocalCache(CacheConfig{}).effectiveMaxStaleness() != 0 {
+		t.Fatal("standalone default age changed")
+	}
+}
+
+// There is no notification on A when another client creates an absent key on
+// importing B. Prove that the hit hides ASK, then advance entry age deterministically
+// and verify that the next miss discovers ASK and fetches B's actual reply.
+func TestClusterCSCUnobservedMigrationExpiresAbsence(t *testing.T) {
+	for _, coalesce := range []bool{false, true} {
+		for _, tc := range []struct {
+			command string
+			before  string
+			after   string
+			old     interface{}
+			want    interface{}
+			err     error
+		}{
+			{"get", "$-1\r\n", "$5\r\nvalue\r\n", nil, "value", Nil},
+			{"exists", ":0\r\n", ":1\r\n", int64(0), int64(1), nil},
+			{"mget", "*2\r\n$-1\r\n$0\r\n\r\n", "*2\r\n$5\r\nvalue\r\n$0\r\n\r\n", []interface{}{nil, ""}, []interface{}{"value", ""}, nil},
+		} {
+			t.Run(fmt.Sprintf("%s/coalesce=%v", tc.command, coalesce), func(t *testing.T) {
+				var migrating atomic.Bool
+				var readsA, readsB atomic.Int32
+				b := newClusterCSCTestServer(t, func(cmd string) string {
+					if cmd == "hello" {
+						return "%0\r\n"
+					}
+					if cmd == tc.command {
+						readsB.Add(1)
+						return tc.after
+					}
+					return "+OK\r\n"
+				})
+				key := "{option-b}:key"
+				a := newClusterCSCTestServer(t, func(cmd string) string {
+					if cmd == "hello" {
+						return "%0\r\n"
+					}
+					if cmd == tc.command {
+						readsA.Add(1)
+						if migrating.Load() {
+							return fmt.Sprintf("-ASK %d %s\r\n", hashtag.Slot(key), b)
+						}
+						return tc.before
+					}
+					return "+OK\r\n"
+				})
+				opt := clusterCSCTestOptions(func() []ClusterSlot {
+					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: a}}}}
+				})
+				opt.ClientSideCacheConfig.MaxStaleness = 0 // Exercise the cluster default.
+				opt.ClientSideCacheCoalesceMisses = coalesce
+				c := NewClusterClient(opt)
+				t.Cleanup(func() { _ = c.Close() })
+				ctx := context.Background()
+				args := []interface{}{tc.command, key}
+				if tc.command == "mget" {
+					args = append(args, "{option-b}:other")
+				}
+				read := func(want interface{}, wantErr error) {
+					t.Helper()
+					cmd := NewCmd(ctx, args...)
+					if err := c.Process(ctx, cmd); err != wantErr || !reflect.DeepEqual(cmd.Val(), want) {
+						t.Fatalf("read: value=%#v error=%v; want %#v, %v", cmd.Val(), err, want, wantErr)
+					}
+				}
+				read(tc.old, tc.err)
+				migrating.Store(true) // No invalidation or disconnect reaches our client.
+				read(tc.old, tc.err)
+				if readsA.Load() != 1 || readsB.Load() != 0 {
+					t.Fatal("expected the negative hit to hide the redirect before expiry")
+				}
+				node, _ := c.MasterForKey(ctx, key)
+				cache := node.csc.(*LocalCache)
+				entryKey, _ := buildCacheKeyNS(NewCmd(ctx, args...), node.cscKeyPrefix)
+				shard := cache.shardFor(entryKey)
+				shard.mu.Lock()
+				entry := shard.entries[entryKey]
+				if entry != nil {
+					entry.validAt = time.Now().Add(-2 * time.Second)
+				}
+				shard.mu.Unlock()
+				if entry == nil {
+					t.Fatal("missing cached absence")
+				}
+				read(tc.want, nil)
+				if readsA.Load() != 2 || readsB.Load() != 1 {
+					t.Fatalf("expiry did not expose ASK: A=%d B=%d", readsA.Load(), readsB.Load())
+				}
+				destination, _ := c.nodes.GetOrCreate(b)
+				if destination.Client.CSCStats().Entries != 0 {
+					t.Fatal("ASK-directed response populated destination cache")
+				}
+			})
+		}
+	}
+}
+
 type clusterCSCBlockingCache struct {
 	*LocalCache
 	armed   atomic.Bool
 	entered chan struct{}
 	release chan struct{}
+	flushes atomic.Int32
+	deletes atomic.Int32
+}
+
+func TestClusterCSCRefreshFirstRedirectObserver(t *testing.T) {
+	for _, redirect := range []string{"ASK", "MOVED"} {
+		t.Run(redirect, func(t *testing.T) {
+			var migrating atomic.Bool
+			b := newClusterCSCTestServer(t, func(cmd string) string {
+				if cmd == "hello" {
+					return "%0\r\n"
+				}
+				if cmd == "get" {
+					return "+value\r\n"
+				}
+				return "+OK\r\n"
+			})
+			a := newClusterCSCTestServer(t, func(cmd string) string {
+				if cmd == "hello" {
+					return "%0\r\n"
+				}
+				if cmd == "get" {
+					if migrating.Load() {
+						return fmt.Sprintf("-%s %d %s\r\n", redirect, hashtag.Slot("{bar}:refresh"), b)
+					}
+					return "$-1\r\n"
+				}
+				return "+OK\r\n"
+			})
+			c := NewClusterClient(clusterCSCTestOptions(func() []ClusterSlot {
+				return []ClusterSlot{
+					{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: a}}},
+					{Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: b}}},
+				}
+			}))
+			t.Cleanup(func() { _ = c.Close() })
+			ctx := context.Background()
+			for _, key := range []string{"{bar}:refresh", "{bar}:sibling"} {
+				if err := c.Get(ctx, key).Err(); err != Nil {
+					t.Fatal(err)
+				}
+			}
+			if value := c.Get(ctx, "{foo}:destination").Val(); value != "value" {
+				t.Fatal(value)
+			}
+			source, _ := c.MasterForKey(ctx, "{bar}:refresh")
+			destination, _ := c.MasterForKey(ctx, "{foo}:destination")
+			key, _ := buildCacheKeyNS(NewStringCmd(ctx, "get", "{bar}:refresh"), source.cscKeyPrefix)
+			dependency := cscNamespacedKey(source.cscKeyPrefix, "{bar}:refresh")
+			source.csc.DeleteByRedisKey(dependency)
+			migrating.Store(true)
+			// Only the refresh sees the redirect. It must evict dependencies
+			// without discarding the unrelated sibling or destination entry.
+			count, err := source.refreshInvalidatedBatch(ctx, []cscRefreshTarget{{cacheKey: key, redisKeys: []string{dependency}}})
+			if err != nil || count != 0 {
+				t.Fatalf("refresh: %d %v", count, err)
+			}
+			waitClusterCSCReady(t, source.opt.clusterCSC)
+			if source.CSCStats().Entries != 1 {
+				t.Fatal("refresh redirect evicted unrelated source entries")
+			}
+			waitClusterCSCReady(t, destination.opt.clusterCSC)
+			// The destination's unrelated key survives both redirect types.
+			wantEntries := int64(1)
+			if got := int64(destination.CSCStats().Entries); got != wantEntries {
+				t.Fatalf("destination entries after %s: %d, want %d", redirect, got, wantEntries)
+			}
+			if value, err := c.Get(ctx, "{bar}:refresh").Result(); err != nil || value != "value" {
+				t.Fatalf("foreground redirect: %q %v", value, err)
+			}
+		})
+	}
 }
 
 func (c *clusterCSCBlockingCache) Flush() int {
+	c.flushes.Add(1)
+	c.blockCleanup()
+	return c.LocalCache.Flush()
+}
+
+func (c *clusterCSCBlockingCache) DeleteByRedisKey(key string) int {
+	c.deletes.Add(1)
+	c.blockCleanup()
+	return c.LocalCache.DeleteByRedisKey(key)
+}
+
+func (c *clusterCSCBlockingCache) blockCleanup() {
 	if c.armed.CompareAndSwap(true, false) {
 		close(c.entered)
 		<-c.release
 	}
-	return c.LocalCache.Flush()
 }
 
-func waitClusterCSCScope(t testing.TB, n *clusterCSCNode) *clusterCSCScope {
+func waitClusterCSCReady(t testing.TB, n *clusterCSCNode) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		s := n.current.Load()
-		if s.usable() {
-			return s
-		}
-		time.Sleep(time.Millisecond)
-	}
-	s := n.current.Load()
-	n.owner.mu.Lock()
-	t.Logf("scope %p active=%v clean=%v reload=%d/%d primary=%v base=%p closed=%v", s, s.active.Load(), s.clean, s.reloadSeen, s.reloadAfter, n.primary, n.base, n.closed.Load())
-	n.owner.mu.Unlock()
-	t.Fatal("scope did not recover")
-	return nil
+	clusterCSCLiveEventually(t, n.usable)
 }
 
-func TestClusterCSCASKRetiresNegativeRepliesAndLateWork(t *testing.T) {
+func TestClusterCSCRedirectKeyExtraction(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cmd  Cmder
+		info *CommandInfo
+		want []string
+	}{
+		{"get", makeCmd("get", []byte("key")), nil, []string{"key"}},
+		{"mget", makeCmd("mget", "a", "b"), nil, []string{"a", "b"}},
+		{"exists", makeCmd("exists", "a", "b"), nil, []string{"a", "b"}},
+		{"json", makeCmd("json.mget", "a", "b", "$.value"), nil, []string{"a", "b"}},
+		{"set value is not a key", makeCmd("set", "a", "unrelated", "px", 1000), nil, []string{"a"}},
+		{"mset values are not keys", makeCmd("mset", "a", "value1", "b", "value2"), nil, []string{"a", "b"}},
+		{"del", makeCmd("del", "a", "b"), nil, []string{"a", "b"}},
+		{"eval arguments are not keys", makeCmd("eval", "return 1", 2, "a", "b", "unrelated"), nil, []string{"a", "b"}},
+		{"invalid eval count", makeCmd("eval", "return 1", -1, "a"), nil, nil},
+		{"metadata", makeCmd("hset", "a", "field", "unrelated"), &CommandInfo{FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1}, []string{"a"}},
+		{"metadata stride", makeCmd("module.mset", "a", "value1", "b", "value2"), &CommandInfo{FirstKeyPos: 1, LastKeyPos: -1, StepCount: 2}, []string{"a", "b"}},
+		{"unknown layout", makeCmd("module.dynamic", "a", "value"), nil, nil},
+		{"movable layout", makeCmd("module.dynamic", "a", "b"), &CommandInfo{FirstKeyPos: 1, LastKeyPos: -1, StepCount: 1, Flags: []string{"movablekeys"}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := clusterCSCRedirectKeys(tc.cmd, tc.info)
+			if ok != (tc.want != nil) || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("keys=%q known=%v, want %q", got, ok, tc.want)
+			}
+		})
+	}
+	key := []byte("key")
+	keys, _ := clusterCSCRedirectKeys(makeCmd("get", key), nil)
+	copy(key, "new")
+	if keys[0] != "key" {
+		t.Fatal("queued cleanup retained mutable caller bytes")
+	}
+}
+
+func TestClusterCSCRedirectEvictsDependenciesAcrossNodes(t *testing.T) {
+	for _, redirect := range []string{"ASK", "MOVED"} {
+		t.Run(redirect, func(t *testing.T) {
+			var calls atomic.Int32
+			addrs := []string{
+				newClusterCSCTestServer(t, clusterCSCTestReply(&calls)),
+				newClusterCSCTestServer(t, clusterCSCTestReply(&calls)),
+				newClusterCSCTestServer(t, clusterCSCTestReply(&calls)),
+			}
+			opt := clusterCSCTestOptions(func() []ClusterSlot {
+				return []ClusterSlot{
+					{Start: 0, End: 5460, Nodes: []ClusterNode{{Addr: addrs[0]}}},
+					{Start: 5461, End: 10922, Nodes: []ClusterNode{{Addr: addrs[1]}}},
+					{Start: 10923, End: 16383, Nodes: []ClusterNode{{Addr: addrs[2]}}},
+				}
+			})
+			opt.NewClient = func(o *Options) *Client {
+				// Factories can use different fixed identities per node. Apply
+				// each node's dependency namespace, not the observer's prefix.
+				o.Username = "node:" + o.Addr
+				o.ClientSideCache = &clusterCSCBlockingCache{LocalCache: NewLocalCache(*o.ClientSideCacheConfig)}
+				return NewClient(o)
+			}
+			c := NewClusterClient(opt)
+			t.Cleanup(func() { _ = c.Close() })
+			ctx := context.Background()
+			if _, err := c.state.Reload(ctx); err != nil {
+				t.Fatal(err)
+			}
+			commands := []Cmder{
+				makeCmd("get", "{key}:moved"),
+				makeCmd("mget", "{key}:moved", "{key}:sibling"),
+				makeCmd("get", "{key}:sibling"),
+				makeCmd("get", "unrelated"),
+			}
+			type reservation struct {
+				cache *clusterCSCBlockingCache
+				key   string
+				token uint64
+			}
+			var reservations []reservation
+			var nodes []*clusterNode
+			for _, addr := range addrs {
+				node, _ := c.nodes.GetOrCreate(addr)
+				nodes = append(nodes, node)
+				cache := node.Client.csc.(*clusterCSCBlockingCache)
+				for _, cmd := range commands {
+					key, _ := buildCacheKeyNS(cmd, node.Client.cscKeyPrefix)
+					lo, hi, _ := cscKeySpan(cmd)
+					token, _ := cache.Reserve(key, cscMissKeys(cmd, node.Client.cscKeyPrefix, lo, hi))
+					if !cache.FulfillOwned(key, token, 777, []byte("$-1\r\n")) {
+						t.Fatal("could not seed cache")
+					}
+				}
+				pending, _ := buildCacheKeyNS(makeCmd("exists", "{key}:moved"), node.Client.cscKeyPrefix)
+				token, _ := cache.Reserve(pending, []string{cscNamespacedKey(node.Client.cscKeyPrefix, "{key}:moved")})
+				reservations = append(reservations, reservation{cache, pending, token})
+			}
+			// SET's value deliberately matches another cached Redis key.
+			nodes[0].Client.observeCSCRedirect(fmt.Errorf("%s %d %s", redirect, hashtag.Slot("{key}:moved"), addrs[1]), makeCmd("set", "{key}:moved", "unrelated"))
+			for _, node := range nodes {
+				waitClusterCSCReady(t, node.Client.opt.clusterCSC)
+				cache := node.Client.csc.(*clusterCSCBlockingCache)
+				if cache.flushes.Load() != 0 {
+					t.Fatal("key redirect flushed unrelated entries")
+				}
+				for i, cmd := range commands {
+					key, _ := buildCacheKeyNS(cmd, node.Client.cscKeyPrefix)
+					_, hit := cache.Get(ctx, key)
+					if hit != (i >= 2) {
+						t.Fatalf("node %s command %v: hit=%v", node.Client.opt.Addr, cmd.Args(), hit)
+					}
+				}
+			}
+			for _, pending := range reservations {
+				if pending.cache.FulfillOwned(pending.key, pending.token, 777, []byte(":0\r\n")) {
+					t.Fatal("evicted reservation accepted a late reply")
+				}
+			}
+		})
+	}
+}
+
+func TestClusterCSCRedirectQueuesKeysDuringCleanup(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unknown-keys=%v", unknown), func(t *testing.T) {
+			var calls atomic.Int32
+			addr := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
+			cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16, MaxStaleness: time.Minute}), entered: make(chan struct{}), release: make(chan struct{})}
+			opt := clusterCSCTestOptions(func() []ClusterSlot { return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}} })
+			opt.NewClient = func(o *Options) *Client { o.ClientSideCache = cache; return NewClient(o) }
+			c := NewClusterClient(opt)
+			t.Cleanup(func() { _ = c.Close() })
+			ctx := context.Background()
+			for _, key := range []string{"first", "second", "unrelated"} {
+				if err := c.Get(ctx, key).Err(); err != Nil {
+					t.Fatal(err)
+				}
+			}
+			node, _ := c.nodes.GetOrCreate(addr)
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(cache.release) }) }
+			defer unblock()
+			cache.armed.Store(true)
+			node.Client.observeCSCRedirect(fmt.Errorf("ASK 1 %s", addr), makeCmd("get", "first"))
+			select {
+			case <-cache.entered:
+			case <-time.After(time.Second):
+				t.Fatal("first key cleanup did not start")
+			}
+			command := makeCmd("get", "second")
+			if unknown {
+				command = makeCmd("module.dynamic", "second", "arguments")
+			}
+			node.Client.observeCSCRedirect(fmt.Errorf("ASK 2 %s", addr), command)
+			// Repeat the second key while the first callback is blocked: it must be
+			// retained, but coalesced into one pending delete, not silently discarded.
+			node.Client.observeCSCRedirect(fmt.Errorf("ASK 2 %s", addr), makeCmd("get", "second"))
+			unblock()
+			waitClusterCSCReady(t, node.Client.opt.clusterCSC)
+			wantFlushes, wantDeletes := int32(0), int32(2)
+			if unknown {
+				wantFlushes, wantDeletes = 1, 1
+			}
+			if cache.flushes.Load() != wantFlushes || cache.deletes.Load() != wantDeletes {
+				t.Fatalf("flushes=%d deletes=%d", cache.flushes.Load(), cache.deletes.Load())
+			}
+			for _, key := range []string{"first", "second", "unrelated"} {
+				cacheKey, _ := buildCacheKeyNS(makeCmd("get", key), node.Client.cscKeyPrefix)
+				_, hit := cache.Get(ctx, cacheKey)
+				if hit != (key == "unrelated" && !unknown) {
+					t.Fatalf("key %s: hit=%v", key, hit)
+				}
+			}
+		})
+	}
+}
+
+func TestClusterCSCASKClearsNegativeRepliesAndReservations(t *testing.T) {
 	var calls atomic.Int32
 	addr := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
-	cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16}), entered: make(chan struct{}), release: make(chan struct{})}
+	cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16, MaxStaleness: time.Second}), entered: make(chan struct{}), release: make(chan struct{})}
 	opt := clusterCSCTestOptions(func() []ClusterSlot { return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}} })
 	opt.NewClient = func(o *Options) *Client { o.ClientSideCache = cache; return NewClient(o) }
 	c := NewClusterClient(opt)
@@ -197,40 +567,38 @@ func TestClusterCSCASKRetiresNegativeRepliesAndLateWork(t *testing.T) {
 	}
 	node, _ := c.nodes.GetOrCreate(addr)
 	control := node.Client.opt.clusterCSC
-	old := control.current.Load()
+	key, _ := buildCacheKeyNS(makeCmd("get", "late"), node.Client.cscKeyPrefix)
+	dependencies := []string{cscNamespacedKey(node.Client.cscKeyPrefix, "late")}
+	token, _ := cache.Reserve(key, dependencies)
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(cache.release) }) }
 	defer unblock()
 	cache.armed.Store(true)
-	control.observe(fmt.Errorf("ASK 7629 %s", addr)) // Wrapped redirects must also work.
+	control.observe(fmt.Errorf("ASK 7629 %s", addr), []string{"k", "late"})
 	select {
 	case <-cache.entered:
 	case <-time.After(time.Second):
 		t.Fatal("cleanup not scheduled")
 	}
-	// Always unblock cleanup before a test failure invokes ClusterClient.Close.
-	if old.usable() {
-		t.Fatal("old scope still usable")
+	if control.usable() {
+		t.Fatal("cache usable during clear")
 	}
 	if err := c.Get(ctx, "k").Err(); err != Nil {
 		t.Fatal(err)
 	}
 	if calls.Load() != 2 {
-		t.Fatalf("inactive successor server calls=%d, cache stats=%+v", calls.Load(), cache.Stats())
+		t.Fatal("read did not bypass pending cleanup")
 	}
-	key, _ := buildCacheKeyNS(makeCmd("get", "late"), old.prefix)
-	tok, _ := cache.Reserve(key, []string{cscNamespacedKey(node.Client.cscKeyPrefix, "late")})
-	if node.Client.fulfillCached(key, tok, &cscFetchCapture{scope: old, raw: []byte("+stale\r\n")}) {
-		t.Fatal("retired request published")
-	}
-	target := cscRefreshTarget{cacheKey: key, redisKeys: []string{cscNamespacedKey(node.Client.cscKeyPrefix, "late")}}
+	target := cscRefreshTarget{cacheKey: key, redisKeys: dependencies}
 	if n, err := node.Client.refreshInvalidatedBatch(ctx, []cscRefreshTarget{target}); err != nil || n != 0 {
-		t.Fatalf("old refresh: %d %v", n, err)
+		t.Fatalf("refresh during cleanup: %d %v", n, err)
 	}
 	unblock()
-	next := waitClusterCSCScope(t, control)
-	if next == old {
-		t.Fatal("ASK reused old namespace")
+	waitClusterCSCReady(t, control)
+	// The existing standalone reservation token, not an ownership scope,
+	// prevents a pre-clear fetch from fulfilling a deleted reservation.
+	if cache.FulfillOwned(key, token, 1, []byte("+stale\r\n")) {
+		t.Fatal("pre-clear reservation published after key eviction")
 	}
 	for i := 0; i < 2; i++ {
 		if err := c.Get(ctx, "k").Err(); err != Nil {
@@ -238,7 +606,7 @@ func TestClusterCSCASKRetiresNegativeRepliesAndLateWork(t *testing.T) {
 		}
 	}
 	if calls.Load() != 3 {
-		t.Fatal("new scope failed miss/fill/hit")
+		t.Fatal("ASK cleanup did not restore miss/fill/hit")
 	}
 }
 
@@ -262,15 +630,17 @@ func TestClusterCSCTopologyChangesRetireBothOwners(t *testing.T) {
 	}
 	na, _ := c.nodes.GetOrCreate(a)
 	nb, _ := c.nodes.GetOrCreate(b)
-	oldA := na.Client.opt.clusterCSC.current.Load()
-	oldB := nb.Client.opt.clusterCSC.current.Load()
+	// The gaining node may retain a value from an earlier ownership period.
+	key, _ := buildCacheKeyNS(makeCmd("get", "key"), nb.Client.cscKeyPrefix)
+	token, _ := nb.Client.csc.Reserve(key, []string{cscNamespacedKey(nb.Client.cscKeyPrefix, "key")})
+	nb.Client.csc.FulfillOwned(key, token, 0, []byte("+old-owner\r\n"))
 	owner.Store(1)
 	if _, err := c.state.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitClusterCSCScope(t, nb.Client.opt.clusterCSC)
-	if oldA.usable() || nb.Client.opt.clusterCSC.current.Load() == oldB {
-		t.Fatal("ownership/role transition not retired")
+	waitClusterCSCReady(t, nb.Client.opt.clusterCSC)
+	if na.Client.opt.clusterCSC.usable() {
+		t.Fatal("former primary remained cache eligible")
 	}
 	if err := c.Get(ctx, "key").Err(); err != Nil {
 		t.Fatal(err)
@@ -279,7 +649,7 @@ func TestClusterCSCTopologyChangesRetireBothOwners(t *testing.T) {
 	if _, err := c.state.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitClusterCSCScope(t, na.Client.opt.clusterCSC)
+	waitClusterCSCReady(t, na.Client.opt.clusterCSC)
 	if err := c.Get(ctx, "key").Err(); err != Nil {
 		t.Fatal(err)
 	}
@@ -309,7 +679,7 @@ func TestClusterCSCUniversalAndFactoryControls(t *testing.T) {
 	cfg := &ClientSideCacheConfig{MaxEntries: 23}
 	u := &UniversalOptions{ClientSideCacheConfig: cfg, ClientSideCacheCoalesceMisses: true, ClientSideCacheRefreshOnInvalidate: true, ClientSideCacheInvalidationBatchWindow: time.Millisecond}
 	o := u.Cluster().clientOptions()
-	if o.ClientSideCacheConfig != cfg || !o.ClientSideCacheCoalesceMisses || !o.ClientSideCacheRefreshOnInvalidate || o.ClientSideCacheInvalidationBatchWindow != time.Millisecond {
+	if o.ClientSideCacheConfig == cfg || o.ClientSideCacheConfig.MaxEntries != cfg.MaxEntries || o.ClientSideCacheConfig.MaxStaleness != time.Second || cfg.MaxStaleness != 0 || !o.ClientSideCacheCoalesceMisses || !o.ClientSideCacheRefreshOnInvalidate || o.ClientSideCacheInvalidationBatchWindow != time.Millisecond {
 		t.Fatal("configuration not propagated")
 	}
 	var calls atomic.Int32
@@ -491,7 +861,6 @@ func TestClusterCSCNewAndRemovedNodesAndPerNodeLimits(t *testing.T) {
 		_ = c.Get(ctx, fmt.Sprintf("key%d", i)).Err()
 	}
 	na, _ := c.nodes.GetOrCreate(a)
-	old := na.Client.opt.clusterCSC.current.Load()
 	if got := na.Client.CSCStats().Entries; got > 2 {
 		t.Fatalf("per-node capacity exceeded: %d", got)
 	}
@@ -499,11 +868,11 @@ func TestClusterCSCNewAndRemovedNodesAndPerNodeLimits(t *testing.T) {
 	if _, err := c.state.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if old.usable() {
+	if na.Client.opt.clusterCSC.usable() {
 		t.Fatal("removed owner remained cache eligible")
 	}
 	nb, _ := c.nodes.GetOrCreate(b)
-	waitClusterCSCScope(t, nb.Client.opt.clusterCSC)
+	waitClusterCSCReady(t, nb.Client.opt.clusterCSC)
 	for i := 0; i < 5; i++ {
 		_ = c.Get(ctx, fmt.Sprintf("key%d", i)).Err()
 	}
@@ -631,7 +1000,7 @@ func TestClusterCSCMOVEDRetiresEveryDestinationDuringCleanup(t *testing.T) {
 	a := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
 	b := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
 	d := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
-	cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16}), entered: make(chan struct{}), release: make(chan struct{})}
+	cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16, MaxStaleness: time.Minute}), entered: make(chan struct{}), release: make(chan struct{})}
 	opt := clusterCSCTestOptions(func() []ClusterSlot {
 		return []ClusterSlot{
 			{Start: 0, End: 5460, Nodes: []ClusterNode{{Addr: a}}}, {Start: 5461, End: 10922, Nodes: []ClusterNode{{Addr: b}}}, {Start: 10923, End: 16383, Nodes: []ClusterNode{{Addr: d}}},
@@ -651,18 +1020,17 @@ func TestClusterCSCMOVEDRetiresEveryDestinationDuringCleanup(t *testing.T) {
 	}
 	na, _ := c.nodes.GetOrCreate(a)
 	nd, _ := c.nodes.GetOrCreate(d)
-	oldD := nd.Client.opt.clusterCSC.current.Load()
 	var once sync.Once
 	defer once.Do(func() { close(cache.release) })
 	cache.armed.Store(true)
-	na.Client.observeCSCRedirect(fmt.Errorf("MOVED 1 %s", b))
+	na.Client.observeCSCRedirect(fmt.Errorf("MOVED 1 %s", b), makeCmd("get", "first"))
 	select {
 	case <-cache.entered:
 	case <-time.After(time.Second):
 		t.Fatal("cleanup did not start")
 	}
-	na.Client.observeCSCRedirect(fmt.Errorf("MOVED 2 %s", d))
-	if oldD.active.Load() {
+	na.Client.observeCSCRedirect(fmt.Errorf("MOVED 2 %s", d), makeCmd("get", "second"))
+	if !nd.Client.opt.clusterCSC.dirty.Load() {
 		t.Fatal("second destination was not retired")
 	}
 	once.Do(func() { close(cache.release) })
@@ -670,7 +1038,7 @@ func TestClusterCSCMOVEDRetiresEveryDestinationDuringCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitClusterCSCScope(t, nd.Client.opt.clusterCSC)
+	waitClusterCSCReady(t, nd.Client.opt.clusterCSC)
 }
 
 func TestClusterCSCStatisticsRetainOverlappingNodeLifetimes(t *testing.T) {
@@ -704,7 +1072,7 @@ func TestClusterCSCStatisticsRetainOverlappingNodeLifetimes(t *testing.T) {
 func TestClusterCSCConcurrentCloseJoinsCleanup(t *testing.T) {
 	var calls atomic.Int32
 	addr := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
-	cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16}), entered: make(chan struct{}), release: make(chan struct{})}
+	cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16, MaxStaleness: time.Minute}), entered: make(chan struct{}), release: make(chan struct{})}
 	opt := clusterCSCTestOptions(func() []ClusterSlot { return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}} })
 	opt.NewClient = func(o *Options) *Client { o.ClientSideCache = cache; return NewClient(o) }
 	c := NewClusterClient(opt)
@@ -714,7 +1082,7 @@ func TestClusterCSCConcurrentCloseJoinsCleanup(t *testing.T) {
 	defer once.Do(func() { close(cache.release) })
 	cache.armed.Store(true)
 	n, _ := c.nodes.GetOrCreate(addr)
-	n.Client.opt.clusterCSC.invalidateAll()
+	n.Client.observeCSCRedirect(fmt.Errorf("ASK 7629 %s", addr), makeCmd("get", "k"))
 	select {
 	case <-cache.entered:
 	case <-time.After(time.Second):
@@ -724,7 +1092,7 @@ func TestClusterCSCConcurrentCloseJoinsCleanup(t *testing.T) {
 	go func() { _ = c.Close(); close(first) }()
 	clusterCSCLiveEventually(t, func() bool { return c.csc.closed.Load() })
 	go func() { _ = c.Close(); close(second) }()
-	// Neither closer can finish until the deterministic Flush barrier opens.
+	// Neither closer can finish until the deterministic cleanup barrier opens.
 	select {
 	case <-first:
 		t.Fatal("first Close skipped cleanup")
@@ -843,85 +1211,61 @@ func TestClusterCSCConcurrentCloseWaitsForNodeTeardown(t *testing.T) {
 	}
 }
 
-func TestClusterCSCMOVEDRecoveryOrdering(t *testing.T) {
-	for _, cleanupFirst := range []bool{true, false} {
-		t.Run(fmt.Sprintf("cleanup-first=%v", cleanupFirst), func(t *testing.T) {
-			var calls atomic.Int32
-			addr := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
-			cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16}), entered: make(chan struct{}), release: make(chan struct{})}
-			opt := clusterCSCTestOptions(func() []ClusterSlot { return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}} })
-			opt.NewClient = func(o *Options) *Client { o.ClientSideCache = cache; return NewClient(o) }
-			c := NewClusterClient(opt)
-			t.Cleanup(func() { _ = c.Close() })
-			ctx := context.Background()
-			_ = c.Get(ctx, "k").Err()
-			original := c.state.load
-			loadStarted, allowLoad := make(chan struct{}, 1), make(chan struct{})
-			c.state.load = func(ctx context.Context) (*clusterState, error) {
-				select {
-				case loadStarted <- struct{}{}:
-				default:
-				}
-				<-allowLoad
-				return original(ctx)
-			}
-			var cacheOnce, loadOnce sync.Once
-			unblockCache := func() { cacheOnce.Do(func() { close(cache.release) }) }
-			defer unblockCache()
-			unblockLoad := func() { loadOnce.Do(func() { close(allowLoad) }) }
-			defer unblockLoad()
-			node, _ := c.nodes.GetOrCreate(addr)
-			control := node.Client.opt.clusterCSC
-			old := control.current.Load()
-			cache.armed.Store(true)
-			control.observe(fmt.Errorf("MOVED 7629 %s", addr))
-			select {
-			case <-cache.entered:
-			case <-time.After(time.Second):
-				t.Fatal("cleanup not started")
-			}
-			select {
-			case <-loadStarted:
-			case <-time.After(time.Second):
-				t.Fatal("reload not started")
-			}
-			if old.usable() {
-				t.Fatal("old scope survived redirect")
-			}
-			next := control.current.Load()
-			if cleanupFirst {
-				unblockCache()
-				clusterCSCLiveEventually(t, func() bool { control.owner.mu.Lock(); defer control.owner.mu.Unlock(); return next.clean })
-				if next.usable() {
-					t.Fatal("cleanup alone activated MOVED scope")
-				}
-				unblockLoad()
-			} else {
-				unblockLoad()
-				clusterCSCLiveEventually(t, func() bool {
-					control.owner.mu.Lock()
-					defer control.owner.mu.Unlock()
-					return next.reloadSeen >= next.reloadAfter
-				})
-				if next.usable() {
-					t.Fatal("reload alone activated dirty scope")
-				}
-				unblockCache()
-			}
-			waitClusterCSCScope(t, control)
-			// An unchanged accepted map can recover MOVED, and a later ASK/full
-			// invalidation must not inherit an already-satisfied reload barrier.
-			control.observe(fmt.Errorf("ASK 7629 %s", addr))
-			waitClusterCSCScope(t, control)
-			lookupInvalidateHandler(node.Client.pushProcessor).fullFlush(cache)
-			waitClusterCSCScope(t, control)
-			for i := 0; i < 2; i++ {
-				_ = c.Get(ctx, "k").Err()
-			}
-			if calls.Load() != 2 {
-				t.Fatalf("recovery did not restore miss/fill/hit: calls=%d", calls.Load())
-			}
-		})
+func TestClusterCSCMOVEDCleanupDoesNotWaitForReload(t *testing.T) {
+	var calls atomic.Int32
+	addr := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
+	cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16, MaxStaleness: time.Second}), entered: make(chan struct{}), release: make(chan struct{})}
+	opt := clusterCSCTestOptions(func() []ClusterSlot { return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}} })
+	opt.NewClient = func(o *Options) *Client { o.ClientSideCache = cache; return NewClient(o) }
+	c := NewClusterClient(opt)
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+	_ = c.Get(ctx, "k").Err()
+	original := c.state.load
+	loadStarted, allowLoad := make(chan struct{}, 1), make(chan struct{})
+	c.state.load = func(ctx context.Context) (*clusterState, error) {
+		select {
+		case loadStarted <- struct{}{}:
+		default:
+		}
+		<-allowLoad
+		return original(ctx)
+	}
+	defer close(allowLoad)
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(cache.release) }) }
+	defer unblock()
+	node, _ := c.nodes.GetOrCreate(addr)
+	control := node.Client.opt.clusterCSC
+	cache.armed.Store(true)
+	control.observe(fmt.Errorf("MOVED 7629 %s", addr), []string{"k"})
+	select {
+	case <-cache.entered:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup not started")
+	}
+	select {
+	case <-loadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reload not started")
+	}
+	if control.usable() {
+		t.Fatal("cache usable during cleanup")
+	}
+	unblock()
+	waitClusterCSCReady(t, control)
+	// The unchanged routing map is still trusted. A cleared cache may resume
+	// before reload completes: its next miss reaches Redis, not the old entry.
+	for i := 0; i < 2; i++ {
+		_ = c.Get(ctx, "k").Err()
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("cleanup did not restore miss/fill/hit: %d", calls.Load())
+	}
+	// Standalone full invalidation remains synchronous and clears the cache.
+	lookupInvalidateHandler(node.Client.pushProcessor).fullFlush(cache)
+	if cache.Stats().Entries != 0 {
+		t.Fatal("full invalidation did not clear node cache")
 	}
 }
 
@@ -993,7 +1337,6 @@ func TestClusterCSCRedirectObserversOnUncachedPaths(t *testing.T) {
 					t.Fatal(err)
 				}
 				node, _ := c.MasterForKey(ctx, key)
-				scope := node.opt.clusterCSC.current.Load()
 				var err error
 				switch path {
 				case "pipeline":
@@ -1011,9 +1354,7 @@ func TestClusterCSCRedirectObserversOnUncachedPaths(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if scope.active.Load() {
-					t.Fatal("uncached path failed to retire the original cache scope")
-				}
+				waitClusterCSCReady(t, node.opt.clusterCSC)
 				if got, err := c.Get(ctx, key).Result(); err != nil || got != "v" {
 					t.Fatalf("old negative cache hid redirect: %q %v", got, err)
 				}
@@ -1050,7 +1391,6 @@ func TestClusterCSCTokenValidatesSelectedSlotRole(t *testing.T) {
 	if err := c.Get(context.Background(), "{foo}:primary").Err(); err != Nil {
 		t.Fatal(err)
 	}
-	scope := node.Client.opt.clusterCSC.current.Load()
 	if _, err := c.state.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1058,7 +1398,7 @@ func TestClusterCSCTokenValidatesSelectedSlotRole(t *testing.T) {
 	if err := c.Get(context.Background(), "{foo}:primary").Err(); err != Nil {
 		t.Fatal(err)
 	}
-	if node.Client.opt.clusterCSC.current.Load() != scope || calls.Load() != before {
+	if calls.Load() != before {
 		t.Fatal("unchanged mixed-role map retired a primary's cache")
 	}
 }
@@ -1093,7 +1433,7 @@ func BenchmarkClientCSCHit(b *testing.B) {
 	})
 	c := NewClient(&Options{
 		Addr: addr, Protocol: 3, DisableIdentity: true,
-		ClientSideCacheConfig:    &ClientSideCacheConfig{MaxEntries: 16},
+		ClientSideCacheConfig:    &ClientSideCacheConfig{MaxEntries: 16, MaxStaleness: time.Minute},
 		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 	})
 	b.Cleanup(func() { _ = c.Close() })
@@ -1176,7 +1516,7 @@ func BenchmarkClusterCSCTopologyCleanup(b *testing.B) {
 			b.Fatal(err)
 		}
 		for _, node := range state.Masters {
-			for !node.Client.opt.clusterCSC.current.Load().usable() {
+			for !node.Client.opt.clusterCSC.usable() {
 				runtime.Gosched()
 			}
 		}
@@ -1446,8 +1786,8 @@ func TestClusterCSCLive(t *testing.T) {
 		}
 		before := c.CSCStats().Hits
 		_ = c.Get(ctx, key).Err()
-		if node.opt.clusterCSC.closed.Load() || !node.opt.clusterCSC.current.Load().usable() {
-			t.Fatalf("sticky wrapper Close retired parent node: scopeClosed=%v scopeUsable=%v active=%v stats=%+v", node.opt.clusterCSC.closed.Load(), node.opt.clusterCSC.current.Load().usable(), node.cscActive.Load(), c.CSCStats())
+		if node.opt.clusterCSC.closed.Load() || !node.opt.clusterCSC.usable() {
+			t.Fatalf("sticky wrapper Close retired parent node: nodeClosed=%v cacheUsable=%v active=%v stats=%+v", node.opt.clusterCSC.closed.Load(), node.opt.clusterCSC.usable(), node.cscActive.Load(), c.CSCStats())
 		}
 		clusterCSCLiveEventually(t, func() bool { _ = c.Get(ctx, key).Err(); return c.CSCStats().Hits > before })
 	})
@@ -1504,7 +1844,7 @@ func TestClusterCSCLive(t *testing.T) {
 		node, _ := r.MasterForKey(ctx, k1)
 		cache := node.csc.(*LocalCache)
 		owner := func(key string) uint64 {
-			entryKey, _ := buildCacheKeyNS(NewStringCmd(ctx, "get", key), node.opt.clusterCSC.current.Load().prefix)
+			entryKey, _ := buildCacheKeyNS(NewStringCmd(ctx, "get", key), node.cscKeyPrefix)
 			s := cache.shardFor(entryKey)
 			s.mu.RLock()
 			defer s.mu.RUnlock()
@@ -1648,6 +1988,95 @@ func TestClusterCSCLive(t *testing.T) {
 			t.Fatalf("replica-selected reads used CSC: %+v", stats)
 		}
 	})
+	t.Run("ASK observed by another client does not evict tracked absence", func(t *testing.T) {
+		newCachingClient := func() *ClusterClient {
+			client := NewClusterClient(&ClusterOptions{
+				Addrs: []string{nodes[0].opt.Addr}, Protocol: 3, PoolSize: 1,
+				DisableIdentity: true, DisableRoutingPolicies: true,
+				ClientSideCacheConfig:    &ClientSideCacheConfig{MaxEntries: 16, MaxStaleness: time.Hour},
+				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+			})
+			t.Cleanup(func() { _ = client.Close() })
+			return client
+		}
+		reader, writer := newCachingClient(), newCachingClient()
+		key := "{csc-external-ask}:absent"
+		slot := hashtag.Slot(key)
+		source, err := reader.MasterForKey(ctx, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var a, b *Client
+		for _, node := range nodes[:3] {
+			if node.opt.Addr == source.opt.Addr {
+				a = node
+			} else if b == nil {
+				b = node
+			}
+		}
+		if a == nil || b == nil {
+			t.Fatal("test owners not found")
+		}
+		aid, err := a.ClusterMyID(ctx).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		bid, err := b.ClusterMyID(ctx).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, client := range []*ClusterClient{reader, writer} {
+			if err := client.Get(ctx, key).Err(); err != Nil {
+				t.Fatal(err)
+			}
+		}
+		t.Cleanup(func() {
+			conn := b.Conn()
+			_ = conn.Do(ctx, "asking").Err()
+			_ = conn.Del(ctx, key).Err()
+			_ = conn.Close()
+			_ = a.Do(ctx, "cluster", "setslot", slot, "stable").Err()
+			_ = b.Do(ctx, "cluster", "setslot", slot, "stable").Err()
+		})
+		if err := b.Do(ctx, "cluster", "setslot", slot, "importing", aid).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Do(ctx, "cluster", "setslot", slot, "migrating", bid).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Set(ctx, key, "created-on-b", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := writer.Get(ctx, key).Result(); err != nil || got != "created-on-b" {
+			t.Fatalf("writer's ASK did not evict its own absence: %q %v", got, err)
+		}
+		// Read A's connection after the write; pending push frames would be
+		// consumed here. No invalidation for creating this key on B is sent to A.
+		if err := source.Ping(ctx).Err(); err != nil {
+			t.Fatal(err)
+		}
+		before := reader.CSCStats().Hits
+		if err := reader.Get(ctx, key).Err(); err != Nil || reader.CSCStats().Hits != before+1 {
+			t.Fatalf("expected the separate reader's cached absence: err=%v stats=%+v", err, reader.CSCStats())
+		}
+		// Expire deterministically: do not rely on a sleep or the one-second
+		// default while demonstrating the missing cross-client notification.
+		cache := source.csc.(*LocalCache)
+		cacheKey, _ := buildCacheKeyNS(makeCmd("get", key), source.cscKeyPrefix)
+		shard := cache.shardFor(cacheKey)
+		shard.mu.Lock()
+		entry := shard.entries[cacheKey]
+		if entry != nil {
+			entry.validAt = time.Now().Add(-2 * time.Hour)
+		}
+		shard.mu.Unlock()
+		if entry == nil {
+			t.Fatal("tracked absence unexpectedly evicted")
+		}
+		if got, err := reader.Get(ctx, key).Result(); err != nil || got != "created-on-b" {
+			t.Fatalf("expiry did not expose ASK: %q %v", got, err)
+		}
+	})
 	t.Run("ASK cached absence and MOVED migration", func(t *testing.T) {
 		// This slot must not also contain keys from earlier subtests: assigning
 		// its new owner is valid only after every source key has migrated.
@@ -1701,7 +2130,7 @@ func TestClusterCSCLive(t *testing.T) {
 			t.Fatal(err)
 		}
 		dest, _ := c.nodes.GetOrCreate(b.opt.Addr)
-		waitClusterCSCScope(t, dest.Client.opt.clusterCSC)
+		waitClusterCSCReady(t, dest.Client.opt.clusterCSC)
 		if got := c.Get(ctx, key).Val(); got != "imported" {
 			t.Fatal(got)
 		}
@@ -1720,7 +2149,7 @@ func TestClusterCSCLive(t *testing.T) {
 			t.Fatal(got)
 		}
 		refreshSource, _ := refreshClient.MasterForKey(ctx, existing)
-		refreshScope := refreshSource.opt.clusterCSC.current.Load()
+		refreshCacheKey, _ := buildCacheKeyNS(NewStringCmd(ctx, "get", existing), refreshSource.cscKeyPrefix)
 		if err := a.Do(ctx, "cluster", "setslot", slot, "importing", bid).Err(); err != nil {
 			t.Fatal(err)
 		}
@@ -1733,7 +2162,10 @@ func TestClusterCSCLive(t *testing.T) {
 		}
 		// No foreground call observes the redirect for refreshClient: its tracked
 		// source gets invalidated, and node-local refresh sees ASK first.
-		clusterCSCLiveEventually(t, func() bool { return !refreshScope.active.Load() })
+		clusterCSCLiveEventually(t, func() bool {
+			_, hit := refreshSource.csc.Get(ctx, refreshCacheKey)
+			return !hit
+		})
 		importConn := a.Conn()
 		if err := importConn.Process(ctx, NewCmd(ctx, "asking")); err != nil {
 			t.Fatal(err)
@@ -1769,7 +2201,7 @@ func TestClusterCSCLive(t *testing.T) {
 		if _, err := c.state.Reload(ctx); err != nil {
 			t.Fatal(err)
 		}
-		waitClusterCSCScope(t, source.opt.clusterCSC)
+		waitClusterCSCReady(t, source.opt.clusterCSC)
 		if got := c.Get(ctx, existing).Val(); got != "moved-updated" {
 			t.Fatal(got)
 		}
@@ -1786,7 +2218,6 @@ func TestClusterCSCLive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		oldScope := old.opt.clusterCSC.current.Load()
 		var replica *Client
 		for _, n := range nodes[3:] {
 			info, e := n.Info(ctx, "replication").Result()
@@ -1813,8 +2244,8 @@ func TestClusterCSCLive(t *testing.T) {
 			n, e := c.MasterForKey(ctx, key)
 			return e == nil && n.opt.Addr == replica.opt.Addr
 		})
-		if oldScope.usable() {
-			t.Fatal("former primary's scope survived promotion")
+		if old.opt.clusterCSC.usable() {
+			t.Fatal("former primary remained cache eligible after promotion")
 		}
 		if got := c.Get(ctx, key).Val(); got != "before" {
 			t.Fatal(got)
