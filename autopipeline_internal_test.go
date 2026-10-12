@@ -553,8 +553,9 @@ func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
 
 	cmd1 := NewStringCmd(ctx, "get", "k1")
 	cmd2 := NewStringCmd(ctx, "get", "k2")
+	cmds := []Cmder{cmd1, cmd2}
 	failed := newCmdsMap()
-	if err := cc.pipelineReadCmds(ctx, node, cn, rd, []Cmder{cmd1, cmd2}, failed); err != nil {
+	if err := cc.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failed, cc.resolvePipelineRouting(ctx, cmds)); err != nil {
 		t.Fatalf("pipelineReadCmds: %v", err)
 	}
 	if cmd1.Val() != "v1" || cmd2.Val() != "v2" {
@@ -2382,10 +2383,10 @@ func TestAutopipelineCSCEligibilityChecksInvocation(t *testing.T) {
 		{makeCmd("sort_ro", "key", "BY", "weight_*"), false},
 		{makeCmd("sort_ro", "key", []byte("GET"), "object_*"), false},
 		{makeCmd("get"), false},
-		{makeCmd("mget", "key", cscWireSmuggler{wire: "other"}), false},
+		{makeCmd("mget", "key", clusterBinaryKey("other")), false},
 		{makeCmd("zdiff", 2, "one", "two"), true},
 		{makeCmd("zdiff", 3, "one", "two"), false},
-		{makeCmd("hget", "key", cscWireSmuggler{wire: "field"}), false},
+		{makeCmd("hget", "key", clusterBinaryKey("field")), false},
 	} {
 		if got := c.autopipelineCSCEligible(tc.cmd); got != tc.want {
 			t.Errorf("%v: eligible=%v, want %v", tc.cmd.Args(), got, tc.want)
@@ -3237,4 +3238,44 @@ func (panicHook) ProcessHook(next ProcessHook) ProcessHook {
 
 func (panicHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error { panic("mq test panic") }
+}
+
+// A cluster command can acquire a pinned routing decision before the queue
+// limit is checked. Rejection must release that decision on both execution paths.
+func TestAutoPipelineQueueFullReleasesCommandState(t *testing.T) {
+	for _, blocking := range []bool{false, true} {
+		for _, diverted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("blocking=%v/diverted=%v", blocking, diverted), func(t *testing.T) {
+				ctx := context.Background()
+				cmd := NewStringCmd(ctx, "get", "key")
+				var pinned Cmder
+				completed := 0
+				ap := &AutoPipeliner{
+					blocking:  blocking,
+					maxQueued: 1,
+					mustDivert: func(_ context.Context, c Cmder) bool {
+						pinned = c
+						return diverted
+					},
+					commandDone: func(c Cmder) {
+						if pinned != c {
+							t.Fatalf("released %v, want pinned command %v", c, pinned)
+						}
+						pinned = nil
+						completed++
+					},
+				}
+				ap.queued.Store(1)
+				if err := ap.submit(ctx, cmd).Wait(); !errors.Is(err, ErrAutoPipelineQueueFull) {
+					t.Fatalf("submit error = %v, want ErrAutoPipelineQueueFull", err)
+				}
+				if pinned != nil || completed != 1 {
+					t.Fatalf("pinned = %v, completions = %d; want nil, 1", pinned, completed)
+				}
+				if got := ap.queued.Load(); got != 1 {
+					t.Fatalf("rejected command changed queued count to %d, want 1", got)
+				}
+			})
+		}
+	}
 }

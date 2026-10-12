@@ -318,16 +318,21 @@ func cmdArgAfterToken(cmd Cmder, from int, token string) int {
 
 // migrateKeysPos returns the position of the first key of a MIGRATE KEYS
 // clause, walking the options so an operand (an AUTH password that reads
-// "keys") is not taken for the clause. 0 when there is no key.
-func migrateKeysPos(cmd Cmder) int {
+// "keys") is not taken for the clause. The position is 0 when there is no
+// key; valid is false when an option token has no reproducible wire encoding.
+func migrateKeysPos(cmd Cmder) (pos int, valid bool) {
 	n := len(cmd.Args())
 	for i := 6; i < n; {
-		switch strings.ToLower(cmd.stringArg(i)) {
+		token, ok := routingArgText(cmd, i)
+		if !ok {
+			return 0, false
+		}
+		switch strings.ToLower(token) {
 		case "keys":
 			if i+1 < n {
-				return i + 1
+				return i + 1, true
 			}
-			return 0
+			return 0, true
 		case "auth":
 			i += 2 // AUTH password
 		case "auth2":
@@ -336,7 +341,7 @@ func migrateKeysPos(cmd Cmder) int {
 			i++ // COPY, REPLACE
 		}
 	}
-	return 0
+	return 0, true
 }
 
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
@@ -415,7 +420,8 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(3) != "" {
 			return 3
 		}
-		return migrateKeysPos(cmd)
+		pos, _ := migrateKeysPos(cmd)
+		return pos
 	case "bless":
 		// BLESS SCAN is keyless (cursor-based, server-wide); BLESS SET/GET/CLEAR
 		// take the key at position 2. The typed methods set this via
@@ -607,6 +613,8 @@ func (cmd *baseCmd) firstKeyPos() int8 {
 	return cmd.keyPos
 }
 
+// SetFirstKeyPos sets the key position used when server metadata for a command
+// is unavailable. Resolved metadata remains authoritative when present.
 func (cmd *baseCmd) SetFirstKeyPos(keyPos int8) {
 	cmd.keyPos = keyPos
 }
@@ -8484,6 +8492,11 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 							cmd.val[i].Nodes[k].ID, err = rd.ReadString()
 						case "endpoint":
 							cmd.val[i].Nodes[k].Endpoint, err = rd.ReadString()
+							if err == Nil {
+								// Null means reuse the connection's endpoint.
+								cmd.val[i].Nodes[k].Endpoint = ""
+								err = nil
+							}
 						case "ip":
 							cmd.val[i].Nodes[k].IP, err = rd.ReadString()
 						case "hostname":

@@ -1291,15 +1291,18 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	if c.cmdMeta.wantsServerHello() {
+	if c.cmdMeta.wantsServerHello() || c.opt.onServerHello != nil {
 		// Without HELLO, a reconnect must verify the old identity in the
-		// background.
+		// background. An empty fingerprint asks the cluster parent to do the same.
 		fingerprint := ""
 		if helloOK {
 			fingerprint = helloServerFingerprint(helloCmd.Val())
 			c.cmdMeta.onServerHello(fingerprint)
 		} else {
 			c.cmdMeta.requestVerification()
+		}
+		if c.opt.onServerHello != nil {
+			c.opt.onServerHello(fingerprint)
 		}
 	}
 
