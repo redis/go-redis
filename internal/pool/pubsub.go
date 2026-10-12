@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"weak"
 )
 
 // PubSubStats contains pub/sub connection pool stats.
@@ -36,7 +37,7 @@ func NewPubSubPool(opt *Options, netDialer func(ctx context.Context, network, ad
 		netDialer: netDialer,
 	}
 	livePoolsMu.Lock()
-	livePubSubPools[p] = struct{}{}
+	livePubSubPools[weak.Make(p)] = struct{}{}
 	livePoolsMu.Unlock()
 	return p
 }
@@ -84,7 +85,7 @@ func (p *PubSubPool) UntrackConn(cn *Conn) {
 func (p *PubSubPool) Close() error {
 	p.closed.Store(true)
 	livePoolsMu.Lock()
-	delete(livePubSubPools, p)
+	delete(livePubSubPools, weak.Make(p))
 	livePoolsMu.Unlock()
 	cb := getMetricConnectionCountCallback()
 	p.activeConns.Range(func(key, value interface{}) bool {

@@ -166,16 +166,17 @@ func Enabled() bool {
 
 // SetGlobalRecorder sets the global recorder (called by Init() in extra/redisotel-native)
 func SetGlobalRecorder(r Recorder) {
-	recorderMu.Lock()
 	if r == nil {
+		// Unregister pool callbacks first so their final deltas reach the current recorder.
+		pool.SetAllMetricCallbacks(nil)
+		recorderMu.Lock()
 		globalRecorder = noopRecorder{}
 		operationDurationCallback = nil
 		pipelineOperationDurationCallback = nil
 		recorderMu.Unlock()
-		// Unregister all pool metric callbacks atomically
-		pool.SetAllMetricCallbacks(nil)
 		return
 	}
+	recorderMu.Lock()
 	globalRecorder = r
 
 	// Register operation duration callbacks

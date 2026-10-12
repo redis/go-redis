@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -90,8 +91,8 @@ var (
 
 	// livePoolsMu protects the pools whose connections are counted when metric callbacks change.
 	livePoolsMu     sync.Mutex
-	liveConnPools   = make(map[*ConnPool]struct{})
-	livePubSubPools = make(map[*PubSubPool]struct{})
+	liveConnPools   = make(map[weak.Pointer[ConnPool]]struct{})
+	livePubSubPools = make(map[weak.Pointer[PubSubPool]]struct{})
 
 	// Global metric callbacks for connection state changes
 	metricConnectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
@@ -210,22 +211,38 @@ type MetricCallbacks struct {
 func SetAllMetricCallbacks(callbacks *MetricCallbacks) {
 	livePoolsMu.Lock()
 	defer livePoolsMu.Unlock()
-	for p := range liveConnPools {
+	connPools := make([]*ConnPool, 0, len(liveConnPools))
+	for wp := range liveConnPools {
+		if p := wp.Value(); p != nil {
+			connPools = append(connPools, p)
+		} else {
+			delete(liveConnPools, wp)
+		}
+	}
+	pubSubPools := make([]*PubSubPool, 0, len(livePubSubPools))
+	for wp := range livePubSubPools {
+		if p := wp.Value(); p != nil {
+			pubSubPools = append(pubSubPools, p)
+		} else {
+			delete(livePubSubPools, wp)
+		}
+	}
+	for _, p := range connPools {
 		p.connsMu.Lock()
 	}
 	defer func() {
-		for p := range liveConnPools {
+		for _, p := range connPools {
 			p.connsMu.Unlock()
 		}
 	}()
 
 	ctx := context.Background()
 	if cb := getMetricConnectionCountCallback(); cb != nil {
-		recordLiveConnCounts(ctx, cb, -1)
+		recordLiveConnCounts(ctx, cb, -1, connPools, pubSubPools)
 	}
 	setMetricCallbacks(callbacks)
 	if cb := getMetricConnectionCountCallback(); cb != nil {
-		recordLiveConnCounts(ctx, cb, 1)
+		recordLiveConnCounts(ctx, cb, 1, connPools, pubSubPools)
 	}
 }
 
@@ -338,10 +355,10 @@ func getMetricConnectionCountCallback() func(ctx context.Context, delta int, cn 
 	return cb
 }
 
-// recordLiveConnCounts records delta for every connection in the live pools.
-// The caller must hold livePoolsMu and the connsMu of every live ConnPool.
-func recordLiveConnCounts(ctx context.Context, cb func(ctx context.Context, delta int, cn *Conn, state string, isPubSub bool), delta int) {
-	for p := range liveConnPools {
+// recordLiveConnCounts records delta for every connection in the given pools.
+// The caller must hold the connsMu of every ConnPool.
+func recordLiveConnCounts(ctx context.Context, cb func(ctx context.Context, delta int, cn *Conn, state string, isPubSub bool), delta int, connPools []*ConnPool, pubSubPools []*PubSubPool) {
+	for _, p := range connPools {
 		idle := make(map[uint64]struct{}, len(p.idleConns))
 		for _, cn := range p.idleConns {
 			idle[cn.GetID()] = struct{}{}
@@ -354,7 +371,7 @@ func recordLiveConnCounts(ctx context.Context, cb func(ctx context.Context, delt
 			cb(ctx, delta, cn, state, false)
 		}
 	}
-	for p := range livePubSubPools {
+	for _, p := range pubSubPools {
 		p.activeConns.Range(func(_, value any) bool {
 			cb(ctx, delta, value.(*Conn), MetricStateUsed, true)
 			return true
@@ -522,7 +539,7 @@ func NewConnPool(opt *Options) *ConnPool {
 	}
 
 	livePoolsMu.Lock()
-	liveConnPools[p] = struct{}{}
+	liveConnPools[weak.Make(p)] = struct{}{}
 	livePoolsMu.Unlock()
 
 	// Only create MinIdleConns if explicitly requested (> 0)
@@ -2087,7 +2104,7 @@ func (p *ConnPool) Close() error {
 	}
 
 	livePoolsMu.Lock()
-	delete(liveConnPools, p)
+	delete(liveConnPools, weak.Make(p))
 	livePoolsMu.Unlock()
 
 	var firstErr error
