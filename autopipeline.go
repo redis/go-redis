@@ -924,10 +924,11 @@ type AutoPipeliner struct {
 	// tell whether flushing a tiny batch now would contend for a scarce pooled
 	// connection — see awaitExpectedArrivals / pipelineHasFreeConn.
 	pipelinePool pool.Pooler
-	// cscEligibleFn reports whether a command should use the cache-honoring
-	// Process path under the client's live CSC state and current metadata view.
-	// It must be evaluated per command: CSC can disable itself mid-life, and a
-	// live refresh or application override can change command eligibility.
+	// cscActiveFn checks the client's current CSC state before solo dispatch:
+	// CSC can disable itself after AutoPipeliner construction.
+	cscActiveFn func() bool
+	// cscEligibleFn checks eligibility under the client's current metadata view
+	// so live refreshes and application overrides take effect at dispatch.
 	cscEligibleFn func(Cmder) bool
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
 	// when true the command call itself blocks until the command has executed
@@ -1300,7 +1301,11 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		ap.pipelinePool = pp.getPipelinePool()
 	}
 	// CSC probe (in-package assertion; *ClusterClient does not expose it).
-	if cc, ok := pipeliner.(interface{ autopipelineCSCEligible(Cmder) bool }); ok {
+	if cc, ok := pipeliner.(interface {
+		autopipelineCSCActive() bool
+		autopipelineCSCEligible(Cmder) bool
+	}); ok {
+		ap.cscActiveFn = cc.autopipelineCSCActive
 		ap.cscEligibleFn = cc.autopipelineCSCEligible
 	}
 
@@ -3365,7 +3370,7 @@ func (s *apShard) flushBatchSlice() {
 				// is honored (processPipeline bypasses processCached). Gated on
 				// the LIVE CSC state: without active CSC, Process would just run on
 				// the MAIN pool, ignoring the pipeline pool the straggler gate probed.
-				if ap.cscEligibleFn != nil && ap.cscEligibleFn(cmd) {
+				if ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
 					return ap.pipeliner.process(ctx, cmd)
 				}
 				// One-command pipeline on the PIPELINE pool (falls back to the main

@@ -28,6 +28,7 @@ func testReadOnlyCommandInfo(name string) *CommandInfo {
 func testCommandMetadataFetchResult(records map[string]*CommandInfo) commandMetadataFetchResult {
 	return commandMetadataFetchResult{
 		records:           records,
+		serverName:        "redis",
 		serverVersion:     "8.10.0",
 		serverFingerprint: "8.10.0",
 	}
@@ -39,6 +40,7 @@ func testCommandMetadataFetchResultFor(
 ) commandMetadataFetchResult {
 	return commandMetadataFetchResult{
 		records:           records,
+		serverName:        "redis",
 		serverVersion:     version,
 		serverFingerprint: fingerprint,
 	}
@@ -156,6 +158,9 @@ func TestCommandMetadataRefreshReusesUnchangedView(t *testing.T) {
 		}},
 		{name: "server version", change: func(m *commandMetadataFetchResult) {
 			m.serverVersion = "7.4.0"
+		}},
+		{name: "server name", change: func(m *commandMetadataFetchResult) {
+			m.serverName = "other"
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -305,7 +310,7 @@ func TestCommandMetadataLegacyShapedUnknownIsNotCacheable(t *testing.T) {
 	view := buildCommandMetadataViewForServerWithLegacy(
 		map[string]*CommandInfo{"LEGACY.GET": legacy},
 		nil,
-		"8.10.0",
+		"redis", "8.10.0",
 		map[string]struct{}{"LEGACY.GET": {}},
 	)
 	cmd := makeCmd("legacy.get", "key")
@@ -336,7 +341,7 @@ func TestCommandMetadataLegacyShapeUsesServerVersionCompatibility(t *testing.T) 
 	legacy := map[string]struct{}{"get": {}, "ttl": {}, "xpending": {}}
 
 	pre810 := buildCommandMetadataViewForServerWithLegacy(
-		live, nil, "6.2.0", legacy,
+		live, nil, "redis", "6.2.0", legacy,
 	)
 	if !isCacheableInView(pre810, makeCmd("get", "key")) {
 		t.Error("known pre-8.10 legacy record should use its legacy key positions")
@@ -354,7 +359,7 @@ func TestCommandMetadataLegacyShapeUsesServerVersionCompatibility(t *testing.T) 
 	}
 
 	redis810 := buildCommandMetadataViewForServerWithLegacy(
-		live, nil, "8.10.0", legacy,
+		live, nil, "redis", "8.10.0", legacy,
 	)
 	if isCacheableInView(redis810, makeCmd("get", "key")) {
 		t.Error("legacy-shaped record from an 8.10+ server must fail closed for CSC")
@@ -408,7 +413,7 @@ func TestCommandMetadataLiveTombstonesBlockLowerLayers(t *testing.T) {
 	view := buildCommandMetadataViewForServer(map[string]*CommandInfo{
 		"GET":   nil,
 		"TOUCH": nil,
-	}, nil, "8.10.0")
+	}, nil, "redis", "8.10.0")
 	for _, name := range []string{"get", "touch"} {
 		if _, ok := view.records[name]; ok {
 			t.Errorf("live tombstone for %s exposed a lower-layer record", name)
@@ -425,7 +430,7 @@ func TestCommandMetadataLiveTombstonesBlockLowerLayers(t *testing.T) {
 	view = buildCommandMetadataViewForServer(
 		map[string]*CommandInfo{"myext.get": nil},
 		map[string]*CommandInfo{"MYEXT.GET": keyedGet},
-		"7.4.0",
+		"redis", "7.4.0",
 	)
 	if !isCacheableInView(view, makeCmd("myext.get", "k")) {
 		t.Error("the highest-priority application override did not replace a live tombstone")
@@ -439,7 +444,7 @@ func TestCommandMetadataTombstonedChildKeepsParentShadowed(t *testing.T) {
 	view := buildCommandMetadataViewForServer(map[string]*CommandInfo{
 		"container":       testReadOnlyCommandInfo("container"),
 		"container|child": nil,
-	}, nil, "8.10.0")
+	}, nil, "redis", "8.10.0")
 
 	cmd := makeCmd("container", "child", "key")
 	if _, ok := cscLookupMeta(view, cmd); ok {
@@ -547,65 +552,84 @@ func TestCommandMetadataStopCancelsInflightFetch(t *testing.T) {
 }
 
 func TestCommandMetadataFetchRejectsAndAdoptsDifferentServer(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	go func() {
-		conn, acceptErr := ln.Accept()
-		if acceptErr != nil {
-			return
-		}
-		serveTestRESPConn(conn, func(command string) string {
-			switch command {
-			case "hello":
-				return "%1\r\n+version\r\n+8.10.0-A\r\n"
-			case "command":
-				return "*0\r\n"
-			default:
-				return "+OK\r\n"
+	for _, tc := range []struct {
+		name, server, version, previous string
+	}{
+		{"version changed", "redis", "8.10.0-A", "redis:8.10.0-B"},
+		{"server changed", "other", "8.10.0", "redis:8.10.0"},
+		{"server unknown", "", "8.10.0", "redis:8.10.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fingerprint := tc.version
+			hello := commandInfoTestMap(commandInfoTestBulk("version"), commandInfoTestBulk(tc.version))
+			if tc.server != "" {
+				fingerprint = tc.server + ":" + fingerprint
+				hello = commandInfoTestMap(
+					commandInfoTestBulk("server"), commandInfoTestBulk(tc.server),
+					commandInfoTestBulk("version"), commandInfoTestBulk(tc.version),
+				)
+			}
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			go func() {
+				conn, acceptErr := ln.Accept()
+				if acceptErr != nil {
+					return
+				}
+				serveTestRESPConn(conn, func(command string) string {
+					switch command {
+					case "hello":
+						return hello
+					case "command":
+						return "*0\r\n"
+					default:
+						return "+OK\r\n"
+					}
+				})
+			}()
+
+			client := NewClient(&Options{
+				Addr:            ln.Addr().String(),
+				Protocol:        3,
+				DisableIdentity: true,
+				MaxRetries:      0,
+			})
+			store := newCommandMetadataStore(
+				&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, nil,
+			)
+			store.onServerHello(tc.previous)
+			client.baseClient.cmdMeta = store
+			t.Cleanup(func() {
+				store.stopAndJoin()
+				_ = client.Close()
+				_ = ln.Close()
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if _, err := client.baseClient.fetchCommandMetadata(ctx); err == nil {
+				t.Fatal("metadata fetched from a different server identity was accepted")
+			}
+			if got := store.serverFingerprint(); got != fingerprint {
+				t.Fatalf("metadata fetch did not record the newly observed identity: %q", got)
+			}
+
+			metadata, err := client.baseClient.fetchCommandMetadata(ctx)
+			if err != nil {
+				t.Fatalf("metadata fetch from the target server failed: %v", err)
+			}
+			if len(metadata.records) != 0 {
+				t.Fatalf("metadata fetch returned %d records, want 0", len(metadata.records))
+			}
+			if metadata.serverVersion != tc.version || metadata.serverName != tc.server {
+				t.Fatalf("metadata server = %q %q, want %q %q", metadata.serverName, metadata.serverVersion, tc.server, tc.version)
+			}
+			if metadata.serverFingerprint != fingerprint {
+				t.Fatalf("metadata server fingerprint = %q, want %q", metadata.serverFingerprint, fingerprint)
 			}
 		})
-	}()
-
-	client := NewClient(&Options{
-		Addr:            ln.Addr().String(),
-		Protocol:        3,
-		DisableIdentity: true,
-		MaxRetries:      0,
-	})
-	store := newCommandMetadataStore(
-		&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, nil,
-	)
-	store.onServerHello("8.10.0-B")
-	client.baseClient.cmdMeta = store
-	t.Cleanup(func() {
-		store.stopAndJoin()
-		_ = client.Close()
-		_ = ln.Close()
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err := client.baseClient.fetchCommandMetadata(ctx); err == nil {
-		t.Fatal("metadata fetched from a different server identity was accepted")
-	}
-	if got := store.serverFingerprint(); got != "8.10.0-A" {
-		t.Fatalf("metadata fetch did not record the newly observed identity: %q", got)
-	}
-
-	metadata, err := client.baseClient.fetchCommandMetadata(ctx)
-	if err != nil {
-		t.Fatalf("metadata fetch from the target server failed: %v", err)
-	}
-	if len(metadata.records) != 0 {
-		t.Fatalf("metadata fetch returned %d records, want 0", len(metadata.records))
-	}
-	if metadata.serverVersion != "8.10.0-A" {
-		t.Fatalf("metadata server version = %q, want 8.10.0-A", metadata.serverVersion)
-	}
-	if metadata.serverFingerprint != "8.10.0-A" {
-		t.Fatalf("metadata server fingerprint = %q, want 8.10.0-A", metadata.serverFingerprint)
 	}
 }
 
@@ -615,10 +639,16 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 		infoReply    string
 		moduleReply  string
 		commandReply string
+		version      string
 		retry        bool
 		wantErr      bool
 	}{
 		{name: "legacy module"},
+		{name: "new version without server identity", version: "8.10.0", commandReply: commandInfoTestArray(commandInfoTestEntry10(
+			"custom.read2", commandInfoTestArray(commandInfoTestBulk("readonly")), commandInfoTestArray(),
+			commandInfoTestArray(commandInfoTestRangeKeySpec(commandInfoTestArray(commandInfoTestBulk("RO")), commandInfoTestBulk("index"), commandInfoTestInt(1))),
+			commandInfoTestArray(),
+		))},
 		{name: "missing version", infoReply: commandInfoTestBulk("# Server\r\n"), wantErr: true},
 		{name: "retry without version", retry: true, wantErr: true},
 		{name: "info denied", infoReply: "-NOPERM INFO denied\r\n", wantErr: true},
@@ -628,6 +658,9 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 		{name: "command denied", commandReply: "-NOPERM COMMAND denied\r\n", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.version == "" {
+				tc.version = "5.0.14"
+			}
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -652,7 +685,7 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 							if tc.infoReply != "" {
 								return tc.infoReply
 							}
-							return commandInfoTestBulk("# Server\r\nredis_version:5.0.14\r\n")
+							return commandInfoTestBulk("# Server\r\nredis_version:" + tc.version + "\r\n")
 						case "module":
 							if tc.retry && id == 2 {
 								_ = conn.Close()
@@ -702,13 +735,13 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if metadata.serverVersion != "5.0.14" || metadata.serverFingerprint != "5.0.14|custom:2" ||
+			if metadata.serverName != "" || metadata.serverVersion != tc.version || metadata.serverFingerprint != tc.version+"|custom:2" ||
 				metadata.records["custom.read2"] == nil || metadata.records["custom.read1"] != nil {
 				t.Fatalf("metadata came from mismatched connections: %+v", metadata)
 			}
-			view := buildCommandMetadataViewForServerWithLegacy(metadata.records, nil, metadata.serverVersion, metadata.legacyRecords)
+			view := buildCommandMetadataViewForServerWithLegacy(metadata.records, nil, metadata.serverName, metadata.serverVersion, metadata.legacyRecords)
 			if isCacheableInView(view, makeCmd("custom.read2", "key")) {
-				t.Fatal("legacy module metadata must remain uncached")
+				t.Fatal("module metadata without server identification must remain uncached")
 			}
 		})
 	}
@@ -903,43 +936,62 @@ func TestCommandMetadataStraddledFetchNotPublished(t *testing.T) {
 	}
 }
 
-func TestCSCPre810CompatibilityCorrectionKeepsSnapshotNegatives(t *testing.T) {
-	// Pre-8.10 exclusions belong in the shared record, not only the CSC table.
+func TestCSCServerCompatibilityKeepsSnapshotNegatives(t *testing.T) {
+	// Compatibility exclusions belong in the shared record, not only the CSC table.
 	live := map[string]*CommandInfo{
-		"ts.info": testReadOnlyCommandInfo("ts.info"),
-		"eval_ro": testReadOnlyCommandInfo("eval_ro"),
-		"ttl":     testReadOnlyCommandInfo("ttl"),
+		"ts.info":     testReadOnlyCommandInfo("ts.info"),
+		"eval_ro":     testReadOnlyCommandInfo("eval_ro"),
+		"ttl":         testReadOnlyCommandInfo("ttl"),
+		"fcall_ro":    testReadOnlyCommandInfo("fcall_ro"),
+		"custom.read": testReadOnlyCommandInfo("custom.read"),
+		"get":         testReadOnlyCommandInfo("get"),
 	}
-	redis810 := buildCommandMetadataViewForServer(live, nil, "8.10.0")
+	redis810 := buildCommandMetadataViewForServer(live, nil, "redis", "8.10.0")
 	if !isCacheableInView(redis810, makeCmd("ts.info", "k")) {
 		t.Error("Redis 8.10+ live record did not remain authoritative")
 	}
-	view := buildCommandMetadataViewForServer(live, nil, "7.4.0")
-	if isCacheableInView(view, makeCmd("ts.info", "k")) {
-		t.Error("pre-8.10 live record cleared the snapshot's dont_cache signal")
-	}
-	if !commandRecordHas(view.records["ts.info"], "dont_cache", true) {
-		t.Error("pre-8.10 compatibility correction was not written to the shared record")
-	}
-	if !commandRecordHas(view.records["eval_ro"], "script_runner", false) {
-		t.Error("pre-8.10 script_runner correction was not written to the shared record")
-	}
-	if !commandRecordHas(view.records["ttl"], "nondeterministic_output", true) {
-		t.Error("pre-8.10 correction did not retain the snapshot's nondeterministic signal")
-	}
-	if isCacheableInView(view, makeCmd("ttl", "k")) {
-		t.Error("pre-8.10 live TTL record lost its snapshot exclusion")
-	}
-	if got, want := view.cscTable["ts.info"], cscDeriveMeta(view.records["ts.info"]); got != want {
-		t.Fatalf("CSC metadata was not derived solely from the resolved record: got %+v, want %+v", got, want)
-	}
-	if !commandRecordHas(commandInfoSnapshotByName()["ts.info"], "dont_cache", true) {
-		t.Fatal("test premise: snapshot ts.info must carry dont_cache")
-	}
-	// Application overrides may replace the correction.
-	view = buildCommandMetadataView(nil, map[string]*CommandInfo{"ts.info": live["ts.info"]})
-	if !isCacheableInView(view, makeCmd("ts.info", "k")) {
-		t.Error("an explicit application override must not be clamped")
+	for _, tc := range []struct{ name, server, version string }{
+		{"older Redis", "redis", "7.4.0"},
+		{"other server", "other", "8.10.0"},
+		{"unknown server", "", "8.10.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := buildCommandMetadataViewForServer(live, nil, tc.server, tc.version)
+			if !isCacheableInView(view, makeCmd("get", "k")) {
+				t.Error("known GET must remain cacheable")
+			}
+			for _, name := range []string{"eval_ro", "fcall_ro", "custom.read"} {
+				if isCacheableInView(view, makeCmd(name, "k")) {
+					t.Errorf("%s must remain uncached without complete CSC signals", name)
+				}
+			}
+			if isCacheableInView(view, makeCmd("ts.info", "k")) {
+				t.Error("conservative live record cleared the snapshot's dont_cache signal")
+			}
+			if !commandRecordHas(view.records["ts.info"], "dont_cache", true) {
+				t.Error("conservative compatibility correction was not written to the shared record")
+			}
+			if !commandRecordHas(view.records["eval_ro"], "script_runner", false) {
+				t.Error("conservative script_runner correction was not written to the shared record")
+			}
+			if !commandRecordHas(view.records["ttl"], "nondeterministic_output", true) {
+				t.Error("conservative correction did not retain the snapshot's nondeterministic signal")
+			}
+			if isCacheableInView(view, makeCmd("ttl", "k")) {
+				t.Error("conservative live TTL record lost its snapshot exclusion")
+			}
+			if got, want := view.cscTable["ts.info"], cscDeriveMeta(view.records["ts.info"]); got != want {
+				t.Fatalf("CSC metadata was not derived solely from the resolved record: got %+v, want %+v", got, want)
+			}
+			if !commandRecordHas(commandInfoSnapshotByName()["ts.info"], "dont_cache", true) {
+				t.Fatal("test premise: snapshot ts.info must carry dont_cache")
+			}
+			// Application overrides may replace the correction.
+			view = buildCommandMetadataViewForServer(live, map[string]*CommandInfo{"ts.info": live["ts.info"]}, tc.server, tc.version)
+			if !isCacheableInView(view, makeCmd("ts.info", "k")) {
+				t.Error("an explicit application override must not be clamped")
+			}
+		})
 	}
 }
 
@@ -1023,16 +1075,24 @@ func TestCommandsInfoRejectsExcessiveSubcommandDepth(t *testing.T) {
 }
 
 func TestHelloServerFingerprint(t *testing.T) {
-	fp := helloServerFingerprint(map[string]interface{}{
+	hello := map[string]interface{}{
+		"server":  "redis",
 		"version": "8.10.0",
 		"modules": []interface{}{
 			map[interface{}]interface{}{"name": "timeseries", "ver": int64(81000)},
 			map[string]interface{}{"name": "bf", "ver": int64(81000)},
 			[]interface{}{"name", "json", "ver", int64(81000)}, // RESP2
 		},
-	})
-	if fp != "8.10.0|bf:81000|json:81000|timeseries:81000" {
+	}
+	fp := helloServerFingerprint(hello)
+	if fp != "redis:8.10.0|bf:81000|json:81000|timeseries:81000" {
 		t.Errorf("fingerprint = %q", fp)
+	}
+	for _, server := range []interface{}{"other", nil, 42} {
+		hello["server"] = server
+		if helloServerFingerprint(hello) == fp {
+			t.Errorf("server %v kept Redis's fingerprint", server)
+		}
 	}
 	if helloServerFingerprint(map[string]interface{}{}) != "" {
 		t.Error("empty reply must produce an empty fingerprint")
@@ -1149,22 +1209,12 @@ func TestCommandMetadataPreferLiveE2E(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no server at %s: %v", addr, err)
 	}
-	info, err := client.Info(ctx, "server").Result()
+	identity, err := client.baseClient.fetchMetadataIdentity(ctx, nil)
 	if err != nil {
-		t.Fatalf("INFO server: %v", err)
+		t.Fatal(err)
 	}
-	version := ""
-	for _, line := range strings.Split(info, "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "redis_version:"); ok {
-			version = v
-			break
-		}
-	}
-	if version == "" {
-		t.Fatal("INFO server did not report a version")
-	}
-	if !commandMetadataSupportsCSC(version) {
-		t.Skipf("live command metadata requires Redis 8.10 or newer (server is %s)", version)
+	if !commandMetadataSupportsCSC(identity.serverName, identity.serverVersion) {
+		t.Skipf("live command metadata requires Redis 8.10 or newer (server is %s %s)", identity.serverName, identity.serverVersion)
 	}
 
 	if client.baseClient.cmdMeta == nil {

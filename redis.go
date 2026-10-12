@@ -1523,7 +1523,7 @@ func (c *baseClient) cscTrackingRequested() bool {
 }
 
 // autopipelineCSCActive reports whether client-side caching can currently serve
-// this client. AutoPipeline's per-command eligibility gate checks it at dispatch
+// this client. AutoPipeline checks it before command eligibility at dispatch
 // time because CSC can disable itself after client construction.
 func (c *baseClient) autopipelineCSCActive() bool {
 	return c.csc != nil && c.cscActive != nil && c.cscActive.Load()
@@ -1534,9 +1534,6 @@ func (c *baseClient) autopipelineCSCActive() bool {
 // view is resolved per dispatch so live metadata upgrades and application
 // overrides take effect without rebuilding the AutoPipeliner.
 func (c *baseClient) autopipelineCSCEligible(cmd Cmder) bool {
-	if !c.autopipelineCSCActive() {
-		return false
-	}
 	meta, ok := cscEligibleMeta(c.metadataView(), cmd)
 	return ok && commandArgsRepeatable(cmd) && cscCanExtractRedisKeys(meta, cmd)
 }

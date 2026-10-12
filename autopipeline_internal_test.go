@@ -2288,8 +2288,8 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}
 	defer ap.Close()
-	if ap.cscEligibleFn == nil || ap.cscEligibleFn(NewStringCmd(ctx, "get", "k")) {
-		t.Fatal("non-CSC client: GET is eligible for the cache-honoring solo path")
+	if ap.cscActiveFn == nil || ap.cscActiveFn() {
+		t.Fatal("non-CSC client: cache-honoring solo path is active")
 	}
 
 	// CSC client: needs a live RESP3 server for CLIENT TRACKING to attach.
@@ -2316,7 +2316,8 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 		t.Fatalf("AsyncAutoPipeline (csc): %v", err)
 	}
 	defer apc.Close()
-	if apc.cscEligibleFn == nil || !apc.cscEligibleFn(NewStringCmd(ctx, "get", "k")) {
+	if apc.cscActiveFn == nil || !apc.cscActiveFn() ||
+		apc.cscEligibleFn == nil || !apc.cscEligibleFn(NewStringCmd(ctx, "get", "k")) {
 		t.Fatal("CSC client: GET is not eligible for the cache-honoring solo path")
 	}
 	if apc.cscEligibleFn(NewDurationCmd(ctx, time.Second, "ttl", "k")) {
@@ -2325,14 +2326,12 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 	// Mid-life disable (RESP3 fallback, processor damping): the LIVE gate must
 	// flip so cacheable solos return to the pipeline pool.
 	cscC.disableCSCServing(ctx, "test: mid-life disable")
-	if apc.cscEligibleFn(NewStringCmd(ctx, "get", "k")) {
-		t.Fatal("eligibility gate still reports GET after CSC disabled itself mid-life")
+	if apc.cscActiveFn() {
+		t.Fatal("CSC gate still reports active after CSC disabled itself mid-life")
 	}
 }
 
 func TestAutopipelineCSCEligibilityUsesMetadataOverrides(t *testing.T) {
-	active := &atomic.Bool{}
-	active.Store(true)
 	store := newCommandMetadataStore(&CommandMetadataConfig{
 		Overrides: map[string]*CommandInfo{
 			"get": nil,
@@ -2344,11 +2343,7 @@ func TestAutopipelineCSCEligibilityUsesMetadataOverrides(t *testing.T) {
 	}, nil)
 	defer store.stopAndJoin()
 
-	c := &baseClient{
-		csc:       NewLocalCache(CacheConfig{MaxEntries: 8}),
-		cscActive: active,
-		cmdMeta:   store,
-	}
+	c := &baseClient{cmdMeta: store}
 	if c.autopipelineCSCEligible(NewStringCmd(context.Background(), "get", "k")) {
 		t.Fatal("nil GET override must disable the cache-honoring solo path")
 	}
@@ -2358,9 +2353,7 @@ func TestAutopipelineCSCEligibilityUsesMetadataOverrides(t *testing.T) {
 }
 
 func TestAutopipelineCSCEligibilityChecksInvocation(t *testing.T) {
-	active := &atomic.Bool{}
-	active.Store(true)
-	c := &baseClient{csc: NewLocalCache(CacheConfig{MaxEntries: 8}), cscActive: active}
+	c := &baseClient{}
 	for _, tc := range []struct {
 		cmd  Cmder
 		want bool

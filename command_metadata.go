@@ -37,7 +37,8 @@ const (
 	CommandMetadataStatic CommandMetadataMode = iota
 
 	// CommandMetadataPreferLive starts static and fetches live metadata after
-	// the first connection. Pre-8.10 records get conservative CSC exclusions.
+	// the first connection. Older Redis versions and servers not identified as
+	// Redis get conservative CSC exclusions.
 	//
 	// Security: live metadata controls caching. Use TLS because a
 	// compromised source can serve stale data or suppress a
@@ -152,17 +153,18 @@ var commandMetadataPre810Corrections = sync.OnceValue(func() map[string]commandM
 
 // buildCommandMetadataView builds a view, treating live input as Redis 8.10.
 func buildCommandMetadataView(live, overrides map[string]*CommandInfo) *commandMetadataView {
-	return buildCommandMetadataViewForServer(live, overrides, "8.10")
+	return buildCommandMetadataViewForServer(live, overrides, "redis", "8.10")
 }
 
 // buildCommandMetadataViewForServer resolves records and derived decisions.
 func buildCommandMetadataViewForServer(
 	live, overrides map[string]*CommandInfo,
-	serverVersion string,
+	serverName, serverVersion string,
 ) *commandMetadataView {
 	return buildCommandMetadataViewForServerWithLegacy(
 		live,
 		overrides,
+		serverName,
 		serverVersion,
 		nil,
 	)
@@ -170,7 +172,7 @@ func buildCommandMetadataViewForServer(
 
 func buildCommandMetadataViewForServerWithLegacy(
 	live, overrides map[string]*CommandInfo,
-	serverVersion string,
+	serverName, serverVersion string,
 	liveLegacyRecords map[string]struct{},
 ) *commandMetadataView {
 	records := make(map[string]*CommandInfo, len(commandInfoSnapshotRecords)+len(overrides))
@@ -201,7 +203,7 @@ func buildCommandMetadataViewForServerWithLegacy(
 	for name := range liveLegacyRecords {
 		legacyLive[internal.ToLower(name)] = struct{}{}
 	}
-	liveSupportsCSC := commandMetadataSupportsCSC(serverVersion)
+	liveSupportsCSC := commandMetadataSupportsCSC(serverName, serverVersion)
 	seenLive := make(map[string]struct{}, len(live))
 	for name, info := range live {
 		lower := internal.ToLower(name)
@@ -300,8 +302,11 @@ func commandMetadataAllowsBareInvocation(info *CommandInfo) bool {
 }
 
 // commandMetadataSupportsCSC reports whether live metadata has all CSC
-// exclusion signals.
-func commandMetadataSupportsCSC(version string) bool {
+// exclusion signals. Only Redis 8.10+ defines the complete set.
+func commandMetadataSupportsCSC(serverName, version string) bool {
+	if serverName != "redis" {
+		return false
+	}
 	parts := strings.SplitN(version, ".", 3)
 	if len(parts) < 2 {
 		return false
@@ -317,7 +322,7 @@ func commandMetadataSupportsCSC(version string) bool {
 	return major > 8 || major == 8 && minor >= 10
 }
 
-// resolveLiveCommandMetadata applies version-specific restrictions to the
+// resolveLiveCommandMetadata applies server-specific restrictions to the
 // shared record before consumers derive decisions.
 func resolveLiveCommandMetadata(
 	name string,
@@ -528,17 +533,19 @@ func cscTableFingerprint(table map[string]cscCommandMeta) string {
 	return hex.EncodeToString(h.Sum(digest[:0])[:16])
 }
 
-// commandMetadataFetchResult separates publication identity from the version
-// used for compatibility rules.
+// commandMetadataFetchResult separates publication identity from the server
+// name and version used for compatibility rules.
 type commandMetadataFetchResult struct {
 	records           map[string]*CommandInfo
 	legacyRecords     map[string]struct{}
+	serverName        string
 	serverVersion     string
 	serverFingerprint string
 }
 
 func (m commandMetadataFetchResult) equal(other commandMetadataFetchResult) bool {
-	return m.serverVersion == other.serverVersion &&
+	return m.serverName == other.serverName &&
+		m.serverVersion == other.serverVersion &&
 		m.serverFingerprint == other.serverFingerprint &&
 		maps.Equal(m.legacyRecords, other.legacyRecords) &&
 		maps.EqualFunc(m.records, other.records, func(a, b *CommandInfo) bool {
@@ -891,6 +898,7 @@ func (s *commandMetadataStore) refreshOnceLocked(parent context.Context) (err er
 		view = buildCommandMetadataViewForServerWithLegacy(
 			metadata.records,
 			s.overrides,
+			metadata.serverName,
 			metadata.serverVersion,
 			metadata.legacyRecords,
 		)
@@ -952,10 +960,18 @@ func (s *commandMetadataStore) stopAndJoin() {
 }
 
 // helloServerFingerprint condenses a HELLO reply into a server-identity
-// token (version plus sorted module name:ver pairs) for change detection.
+// token (server name, version and sorted module name:ver pairs) for change detection.
 func helloServerFingerprint(reply map[string]interface{}) string {
+	version := helloServerVersion(reply)
+	if version == "" {
+		return ""
+	}
 	var b strings.Builder
-	b.WriteString(helloServerVersion(reply))
+	if name := helloServerName(reply); name != "" {
+		b.WriteString(name)
+		b.WriteByte(':')
+	}
+	b.WriteString(version)
 	if mods, ok := reply["modules"].([]interface{}); ok {
 		names := make([]string, 0, len(mods))
 		for _, m := range mods {
@@ -985,6 +1001,11 @@ func helloServerFingerprint(reply map[string]interface{}) string {
 		}
 	}
 	return b.String()
+}
+
+func helloServerName(reply map[string]interface{}) string {
+	name, _ := reply["server"].(string)
+	return name
 }
 
 func helloServerVersion(reply map[string]interface{}) string {
@@ -1081,6 +1102,8 @@ func (c *baseClient) fetchMetadataIdentity(ctx context.Context, infoCmd *Command
 			modules[i] = module
 		}
 		hello = map[string]interface{}{
+			// INFO's redis_version does not identify the server as Redis.
+			// Leave the server name unknown so CSC uses conservative rules.
 			"version": serverCmd.Item("Server", "redis_version"),
 			"modules": modules,
 		}
@@ -1100,6 +1123,7 @@ func (c *baseClient) fetchMetadataIdentity(ctx context.Context, infoCmd *Command
 		)
 	}
 	return commandMetadataFetchResult{
+		serverName:        helloServerName(hello),
 		serverVersion:     serverVersion,
 		serverFingerprint: actualFp,
 	}, nil
