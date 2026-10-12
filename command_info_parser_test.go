@@ -228,9 +228,6 @@ func TestCommandsInfoNilTokensAreSkipped(t *testing.T) {
 			if _, ok := cscEligibleMeta(view, cmd); !ok {
 				t.Fatal("null tokens disabled otherwise valid CSC metadata")
 			}
-			if pos, ok := routingFirstKeyPos(view.routingTable["optional"], cmd); !ok || pos != 1 {
-				t.Fatalf("null tokens disabled valid routing metadata: key=%d ok=%v", pos, ok)
-			}
 		})
 	}
 }
@@ -289,9 +286,6 @@ func TestCommandsInfoUnknownKeySpecAlgorithmsArePreservedFailClosed(t *testing.T
 			}
 			if got := cscDeriveMeta(info); got.extract != cscKeyExtractNone {
 				t.Fatalf("unknown algorithm enabled CSC extraction: %+v", got)
-			}
-			if got := deriveRoutingCommandMeta("future", info); got.keyState != routingKeysUnknown {
-				t.Fatalf("unknown algorithm produced routing keys: %+v", got)
 			}
 		})
 	}
@@ -354,9 +348,6 @@ func TestCommandsInfoTrailingFieldsPreserveLiveMetadata(t *testing.T) {
 	parsed := commandInfoTestReadReply(t, commandInfoTestArray(extended))
 	view := buildCommandMetadataViewForServer(parsed.val, nil, "8.10.0")
 	cmd := NewCmd(context.Background(), "get", "key")
-	if pos, ok := routingFirstKeyPos(view.routingTable["get"], cmd); !ok || pos != 1 {
-		t.Fatalf("extended live record lost routing metadata: key=%d ok=%v", pos, ok)
-	}
 	if _, ok := cscEligibleMeta(view, cmd); !ok {
 		t.Fatal("extended live record lost CSC eligibility")
 	}

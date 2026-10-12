@@ -2,14 +2,34 @@ package redis
 
 import (
 	"bytes"
+	"encoding"
 	"math"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+// commandArgsRepeatable rejects marshalers whose wire bytes may change between uses.
+func commandArgsRepeatable(cmd Cmder) bool {
+	for _, arg := range cmd.Args() {
+		switch arg.(type) {
+		case nil, string, *string, []byte,
+			int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			float32, float64, bool,
+			time.Time, *time.Time, net.IP:
+			// proto.Writer encodes these directly.
+		case encoding.BinaryMarshaler:
+			return false
+		}
+	}
+	return true
+}
 
 // CSC eligibility: a command may be cached only when its COMMAND metadata
 // shows it is read-only, keyed, deterministic, non-blocking, not a script
@@ -65,7 +85,7 @@ type cscCommandMeta struct {
 }
 
 // commandMetadataCorrection patches a verified server metadata gap before CSC
-// and Cluster routing derive their decisions.
+// derives its eligibility decisions.
 type commandMetadataCorrection struct {
 	tips        []string
 	removeFlags []string
@@ -76,8 +96,7 @@ type commandMetadataCorrection struct {
 	stepCount   int8
 }
 
-// commandMetadataCorrections contains verified server metadata fixes shared by
-// CSC and routing. Remove entries only after probing the server fix.
+// commandMetadataCorrections contains verified server metadata fixes for CSC. Remove entries only after probing the server fix.
 var commandMetadataCorrections = map[string]commandMetadataCorrection{
 	// Read-only on paper, but its purpose is to bump key LRU/LFU state.
 	"touch": {tips: []string{"dont_cache"}},
@@ -85,11 +104,11 @@ var commandMetadataCorrections = map[string]commandMetadataCorrection{
 	// Random output; the server doesn't tag it yet (its siblings are tagged).
 	"vrandmember": {tips: []string{"nondeterministic_output"}},
 
-	// Marked readonly but rewrites the filter; disable caching and replica routing.
+	// Marked readonly but rewrites the filter; disable caching and correct the flag.
 	"cf.compact": {tips: []string{"dont_cache"}, removeFlags: []string{"readonly"}},
 
 	// The server reports and tracks only the first of N keys. Keep caching
-	// disabled and correct the routing range (N keys followed by a path).
+	// disabled and correct the key range (N keys followed by a path).
 	"json.mget": {
 		tips: []string{"dont_cache"},
 		keySpecs: []KeySpec{{
@@ -182,7 +201,7 @@ func cscSpecComplete(ks KeySpec) bool {
 		(ks.FindKeys != "range" && ks.FindKeys != "keynum") {
 		return false
 	}
-	return classifyCommandMetadataKeySpecFlags(ks.Flags).cscComplete
+	return cscKeySpecFlagsComplete(ks.Flags)
 }
 
 // cscDeriveMeta compresses a record into the hot-path form. Extraction is

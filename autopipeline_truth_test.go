@@ -556,7 +556,9 @@ func TestTruthClusterOrderAndDemux(t *testing.T) {
 	ctx := context.Background()
 	cc := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
 	defer cc.Close()
-	skipIfClusterUnhealthy(t, cc)
+	if err := cc.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
 	for _, n := range []string{":16600", ":16601", ":16602"} {
 		nc := redis.NewClient(&redis.Options{Addr: n})
 		nc.FlushDB(ctx)

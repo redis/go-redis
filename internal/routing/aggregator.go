@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"math"
 	"sync"
+
 	"sync/atomic"
+
+	"github.com/redis/go-redis/v9/internal/util"
+	uberAtomic "go.uber.org/atomic"
 )
 
 var (
@@ -27,8 +31,8 @@ type ResponseAggregator interface {
 
 	BatchSlice([]AggregatorResErr) error
 
-	// Aggregate returns the final aggregated result and any error.
-	Aggregate() (interface{}, error)
+	// Result returns the final aggregated result and any error.
+	Result() (interface{}, error)
 }
 
 type AggregatorResErr struct {
@@ -48,11 +52,17 @@ func NewResponseAggregator(policy ResponsePolicy, cmdName string) ResponseAggreg
 	case RespOneSucceeded:
 		return &OneSucceededAggregator{}
 	case RespAggSum:
-		return &AggSumAggregator{}
+		return &AggSumAggregator{
+			// res:
+		}
 	case RespAggMin:
-		return &AggMinAggregator{}
+		return &AggMinAggregator{
+			res: util.NewAtomicMin(),
+		}
 	case RespAggMax:
-		return &AggMaxAggregator{}
+		return &AggMaxAggregator{
+			res: util.NewAtomicMax(),
+		}
 	case RespAggLogicalAnd:
 		andAgg := &AggLogicalAndAggregator{}
 		andAgg.res.Store(true)
@@ -79,13 +89,13 @@ func NewDefaultAggregator(isKeyed bool) ResponseAggregator {
 // AllSucceededAggregator returns one non-error reply if every shard succeeded,
 // propagates the first error otherwise.
 type AllSucceededAggregator struct {
-	err atomic.Pointer[error]
+	err atomic.Value
 	res atomic.Value
 }
 
 func (a *AllSucceededAggregator) Add(result interface{}, err error) error {
 	if err != nil {
-		a.err.CompareAndSwap(nil, &err)
+		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
 
@@ -126,11 +136,11 @@ func (a *AllSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
 	return nil
 }
 
-func (a *AllSucceededAggregator) Aggregate() (interface{}, error) {
+func (a *AllSucceededAggregator) Result() (interface{}, error) {
 	var err error
 	res, e := a.res.Load(), a.err.Load()
 	if e != nil {
-		err = *e
+		err = e.(error)
 	}
 
 	return res, err
@@ -143,13 +153,13 @@ func (a *AllSucceededAggregator) AddWithKey(key string, result interface{}, err 
 // OneSucceededAggregator returns the first non-error reply,
 // if all shards errored, returns any one of those errors.
 type OneSucceededAggregator struct {
-	err atomic.Pointer[error]
+	err atomic.Value
 	res atomic.Value
 }
 
 func (a *OneSucceededAggregator) Add(result interface{}, err error) error {
 	if err != nil {
-		a.err.CompareAndSwap(nil, &err)
+		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
 
@@ -194,225 +204,263 @@ func (a *OneSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
 	return nil
 }
 
-func (a *OneSucceededAggregator) Aggregate() (interface{}, error) {
+func (a *OneSucceededAggregator) Result() (interface{}, error) {
 	res, e := a.res.Load(), a.err.Load()
-	if res == nil && e != nil {
-		return nil, *e
+	if res == nil {
+		return nil, e.(error)
 	}
 
 	return res, nil
 }
 
-type numericAggregation uint8
-
-const (
-	numericSum numericAggregation = iota
-	numericMin
-	numericMax
-)
-
-type aggregateNumber struct {
-	integer  int64
-	floating float64
-	isFloat  bool
+// AggSumAggregator sums numeric replies from all shards.
+type AggSumAggregator struct {
+	err atomic.Value
+	res uberAtomic.Float64
 }
-
-func parseAggregateNumber(value interface{}) (aggregateNumber, error) {
-	switch value := value.(type) {
-	case int:
-		return aggregateNumber{integer: int64(value)}, nil
-	case int32:
-		return aggregateNumber{integer: int64(value)}, nil
-	case int64:
-		return aggregateNumber{integer: value}, nil
-	case float32:
-		return aggregateNumber{floating: float64(value), isFloat: true}, nil
-	case float64:
-		return aggregateNumber{floating: value, isFloat: true}, nil
-	default:
-		return aggregateNumber{}, fmt.Errorf("cannot convert %T to number", value)
-	}
-}
-
-func (n aggregateNumber) float64() float64 {
-	if n.isFloat {
-		return n.floating
-	}
-	return float64(n.integer)
-}
-
-type numericAggregator struct {
-	mu     sync.Mutex
-	err    error
-	value  aggregateNumber
-	hasVal bool
-}
-
-func (a *numericAggregator) add(op numericAggregation, result interface{}, resultErr error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if resultErr != nil {
-		if a.err == nil {
-			a.err = resultErr
-		}
-		return nil
-	}
-	if result == nil {
-		return nil
-	}
-
-	value, err := parseAggregateNumber(result)
-	if err != nil {
-		if a.err == nil {
-			a.err = err
-		}
-		return err
-	}
-	if !a.hasVal {
-		a.value = value
-		a.hasVal = true
-		return nil
-	}
-
-	switch op {
-	case numericSum:
-		if a.value.isFloat || value.isFloat {
-			a.value = aggregateNumber{floating: a.value.float64() + value.float64(), isFloat: true}
-			return nil
-		}
-		if value.integer > 0 && a.value.integer > math.MaxInt64-value.integer ||
-			value.integer < 0 && a.value.integer < math.MinInt64-value.integer {
-			err = errors.New("integer overflow during numeric aggregation")
-			a.err = err
-			return err
-		}
-		a.value.integer += value.integer
-	case numericMin, numericMax:
-		if a.value.isFloat || value.isFloat {
-			current, candidate := a.value.float64(), value.float64()
-			if op == numericMin && candidate < current || op == numericMax && candidate > current {
-				current = candidate
-			}
-			a.value = aggregateNumber{floating: current, isFloat: true}
-		} else if op == numericMin && value.integer < a.value.integer ||
-			op == numericMax && value.integer > a.value.integer {
-			a.value = value
-		}
-	}
-	return nil
-}
-
-func (a *numericAggregator) batch(op numericAggregation, results []AggregatorResErr) error {
-	for _, result := range results {
-		if err := a.add(op, result.Result, result.Err); err != nil {
-			return err
-		}
-		if result.Err != nil {
-			return nil
-		}
-	}
-	return nil
-}
-
-func (a *numericAggregator) batchMap(op numericAggregation, results map[string]AggregatorResErr) error {
-	for _, result := range results {
-		if err := a.add(op, result.Result, result.Err); err != nil {
-			return err
-		}
-		if result.Err != nil {
-			return nil
-		}
-	}
-	return nil
-}
-
-func (a *numericAggregator) result(emptyErr error, emptyIsZero bool) (interface{}, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.err != nil {
-		return nil, a.err
-	}
-	if !a.hasVal {
-		if emptyIsZero {
-			return int64(0), nil
-		}
-		return nil, emptyErr
-	}
-	if a.value.isFloat {
-		return a.value.floating, nil
-	}
-	return a.value.integer, nil
-}
-
-// AggSumAggregator sums numeric replies without losing integer precision.
-type AggSumAggregator struct{ numericAggregator }
 
 func (a *AggSumAggregator) Add(result interface{}, err error) error {
-	return a.add(numericSum, result, err)
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
+	}
+
+	if result != nil {
+		val, err := toFloat64(result)
+		if err != nil {
+			a.err.CompareAndSwap(nil, err)
+			return err
+		}
+		a.res.Add(val)
+	}
+
+	return nil
 }
 
 func (a *AggSumAggregator) BatchAdd(results map[string]AggregatorResErr) error {
-	return a.batchMap(numericSum, results)
+	var sum int64
+
+	for _, res := range results {
+		if res.Err != nil {
+			return a.Add(res.Result, res.Err)
+		}
+
+		intRes, err := toInt64(res.Result)
+		if err != nil {
+			return a.Add(nil, err)
+		}
+
+		sum += intRes
+	}
+
+	return a.Add(sum, nil)
 }
 
-func (a *AggSumAggregator) AddWithKey(_ string, result interface{}, err error) error {
+func (a *AggSumAggregator) AddWithKey(key string, result interface{}, err error) error {
 	return a.Add(result, err)
 }
 
 func (a *AggSumAggregator) BatchSlice(results []AggregatorResErr) error {
-	return a.batch(numericSum, results)
+	var sum int64
+
+	for _, res := range results {
+		if res.Err != nil {
+			return a.Add(res.Result, res.Err)
+		}
+
+		intRes, err := toInt64(res.Result)
+		if err != nil {
+			return a.Add(nil, err)
+		}
+
+		sum += intRes
+	}
+
+	return a.Add(sum, nil)
 }
 
-func (a *AggSumAggregator) Aggregate() (interface{}, error) {
-	return a.result(nil, true)
+func (a *AggSumAggregator) Result() (interface{}, error) {
+	res, err := a.res.Load(), a.err.Load()
+	if err != nil {
+		return nil, err.(error)
+	}
+
+	return res, nil
 }
 
 // AggMinAggregator returns the minimum numeric value from all shards.
-type AggMinAggregator struct{ numericAggregator }
+type AggMinAggregator struct {
+	err atomic.Value
+	res *util.AtomicMin
+}
 
 func (a *AggMinAggregator) Add(result interface{}, err error) error {
-	_ = a.add(numericMin, result, err)
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
+		return nil
+	}
+
+	floatVal, e := toFloat64(result)
+	if e != nil {
+		a.err.CompareAndSwap(nil, e)
+		return nil
+	}
+
+	a.res.Value(floatVal)
+
 	return nil
 }
 
 func (a *AggMinAggregator) BatchAdd(results map[string]AggregatorResErr) error {
-	return a.batchMap(numericMin, results)
+	min := int64(math.MaxInt64)
+
+	for _, res := range results {
+		if res.Err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		resInt, err := toInt64(res.Result)
+		if err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		if resInt < min {
+			min = resInt
+		}
+
+	}
+
+	return a.Add(min, nil)
 }
 
-func (a *AggMinAggregator) AddWithKey(_ string, result interface{}, err error) error {
+func (a *AggMinAggregator) AddWithKey(key string, result interface{}, err error) error {
 	return a.Add(result, err)
 }
 
 func (a *AggMinAggregator) BatchSlice(results []AggregatorResErr) error {
-	return a.batch(numericMin, results)
+	min := float64(math.MaxFloat64)
+
+	for _, res := range results {
+		if res.Err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		floatVal, err := toFloat64(res.Result)
+		if err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		if floatVal < min {
+			min = floatVal
+		}
+
+	}
+
+	return a.Add(min, nil)
 }
 
-func (a *AggMinAggregator) Aggregate() (interface{}, error) {
-	return a.result(ErrMinAggregation, false)
+func (a *AggMinAggregator) Result() (interface{}, error) {
+	err := a.err.Load()
+	if err != nil {
+		return nil, err.(error)
+	}
+
+	val, hasVal := a.res.Min()
+	if !hasVal {
+		return nil, ErrMinAggregation
+	}
+	return val, nil
 }
 
 // AggMaxAggregator returns the maximum numeric value from all shards.
-type AggMaxAggregator struct{ numericAggregator }
+type AggMaxAggregator struct {
+	err atomic.Value
+	res *util.AtomicMax
+}
 
 func (a *AggMaxAggregator) Add(result interface{}, err error) error {
-	_ = a.add(numericMax, result, err)
+	if err != nil {
+		a.err.CompareAndSwap(nil, err)
+		return nil
+	}
+
+	floatVal, e := toFloat64(result)
+	if e != nil {
+		a.err.CompareAndSwap(nil, e)
+		return nil
+	}
+
+	a.res.Value(floatVal)
+
 	return nil
 }
 
 func (a *AggMaxAggregator) BatchAdd(results map[string]AggregatorResErr) error {
-	return a.batchMap(numericMax, results)
+	max := int64(math.MinInt64)
+
+	for _, res := range results {
+		if res.Err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		resInt, err := toInt64(res.Result)
+		if err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		if resInt > max {
+			max = resInt
+		}
+
+	}
+
+	return a.Add(max, nil)
 }
 
-func (a *AggMaxAggregator) AddWithKey(_ string, result interface{}, err error) error {
+func (a *AggMaxAggregator) AddWithKey(key string, result interface{}, err error) error {
 	return a.Add(result, err)
 }
 
 func (a *AggMaxAggregator) BatchSlice(results []AggregatorResErr) error {
-	return a.batch(numericMax, results)
+	max := int64(math.MinInt64)
+
+	for _, res := range results {
+		if res.Err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		resInt, err := toInt64(res.Result)
+		if err != nil {
+			_ = a.Add(nil, res.Err)
+			return nil
+		}
+
+		if resInt > max {
+			max = resInt
+		}
+
+	}
+
+	return a.Add(max, nil)
 }
 
-func (a *AggMaxAggregator) Aggregate() (interface{}, error) {
-	return a.result(ErrMaxAggregation, false)
+func (a *AggMaxAggregator) Result() (interface{}, error) {
+	err := a.err.Load()
+	if err != nil {
+		return nil, err.(error)
+	}
+
+	val, hasVal := a.res.Max()
+	if !hasVal {
+		return nil, ErrMaxAggregation
+	}
+	return val, nil
 }
 
 // AggLogicalAndAggregator performs logical AND on boolean values.
@@ -486,7 +534,7 @@ func (a *AggLogicalAndAggregator) BatchSlice(results []AggregatorResErr) error {
 	return a.Add(result, nil)
 }
 
-func (a *AggLogicalAndAggregator) Aggregate() (interface{}, error) {
+func (a *AggLogicalAndAggregator) Result() (interface{}, error) {
 	err := a.err.Load()
 	if err != nil {
 		return nil, err.(error)
@@ -569,7 +617,7 @@ func (a *AggLogicalOrAggregator) BatchSlice(results []AggregatorResErr) error {
 	return a.Add(result, nil)
 }
 
-func (a *AggLogicalOrAggregator) Aggregate() (interface{}, error) {
+func (a *AggLogicalOrAggregator) Result() (interface{}, error) {
 	err := a.err.Load()
 	if err != nil {
 		return nil, err.(error)
@@ -579,6 +627,48 @@ func (a *AggLogicalOrAggregator) Aggregate() (interface{}, error) {
 		return nil, ErrOrAggregation
 	}
 	return a.res.Load(), nil
+}
+
+func toInt64(val interface{}) (int64, error) {
+	if val == nil {
+		return 0, nil
+	}
+	switch v := val.(type) {
+	case int64:
+		return v, nil
+	case int:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case float64:
+		if v != math.Trunc(v) {
+			return 0, fmt.Errorf("cannot convert float %f to int64", v)
+		}
+		return int64(v), nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to int64", val)
+	}
+}
+
+func toFloat64(val interface{}) (float64, error) {
+	if val == nil {
+		return 0, nil
+	}
+
+	switch v := val.(type) {
+	case float64:
+		return v, nil
+	case int:
+		return float64(v), nil
+	case int32:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case float32:
+		return float64(v), nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to float64", val)
+	}
 }
 
 func toBool(val interface{}) (bool, error) {
@@ -662,7 +752,7 @@ func (a *DefaultKeylessAggregator) BatchSlice(results []AggregatorResErr) error 
 	return nil
 }
 
-func (a *DefaultKeylessAggregator) Aggregate() (interface{}, error) {
+func (a *DefaultKeylessAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -785,7 +875,7 @@ func (a *DefaultKeyedAggregator) BatchSlice(results []AggregatorResErr) error {
 	return nil
 }
 
-func (a *DefaultKeyedAggregator) Aggregate() (interface{}, error) {
+func (a *DefaultKeyedAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -873,7 +963,7 @@ func (a *SpecialAggregator) BatchSlice(results []AggregatorResErr) error {
 	return nil
 }
 
-func (a *SpecialAggregator) Aggregate() (interface{}, error) {
+func (a *SpecialAggregator) Result() (interface{}, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 

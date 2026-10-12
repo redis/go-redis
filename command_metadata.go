@@ -26,7 +26,7 @@ import (
 // In PreferLive mode a background worker upgrades the static view with the
 // server's live COMMAND output.
 
-// CommandMetadataMode selects metadata resolution for CSC and Cluster routing.
+// CommandMetadataMode selects metadata resolution for client-side caching.
 //
 // Experimental: this API may change in a minor release.
 type CommandMetadataMode int
@@ -39,14 +39,14 @@ const (
 	// CommandMetadataPreferLive starts static and fetches live metadata after
 	// the first connection. Pre-8.10 records get conservative CSC exclusions.
 	//
-	// Security: live metadata controls routing and caching. Use TLS because a
-	// compromised source can misroute commands, serve stale data, or suppress a
+	// Security: live metadata controls caching. Use TLS because a
+	// compromised source can serve stale data or suppress a
 	// write by falsely classifying it as cacheable. Redis 8.10+ records are
 	// authoritative except for built-in corrections.
 	CommandMetadataPreferLive
 )
 
-// CommandMetadataConfig configures metadata for Options and ClusterOptions.
+// CommandMetadataConfig configures the metadata used for client-side caching.
 // Its zero value is static.
 //
 // Experimental: this API may change in a minor release.
@@ -60,7 +60,7 @@ type CommandMetadataConfig struct {
 	Overrides map[string]*CommandInfo
 
 	// RefreshInterval periodically refreshes live metadata with jitter.
-	// Zero disables periodic refresh; detected server or topology changes
+	// Zero disables periodic refresh; detected server identity changes
 	// still trigger a refresh.
 	RefreshInterval time.Duration
 }
@@ -80,9 +80,8 @@ type commandMetadataView struct {
 	subcommandParents map[string]struct{}
 	shadowedParents   map[string]struct{}
 
-	// CSC and routing derive separate decisions from the shared records.
-	cscTable     map[string]cscCommandMeta
-	routingTable map[string]routingCommandMeta
+	// CSC eligibility is derived from the effective records.
+	cscTable map[string]cscCommandMeta
 
 	// cscFingerprint identifies the eligibility decisions. It is part of
 	// every cache-entry key — never of the Redis-key invalidation index — so
@@ -95,8 +94,8 @@ type commandMetadataView struct {
 	serverVersion string
 }
 
-// defaultCommandMetadataView is built only when CSC or metadata routing needs
-// it, and is shared by clients without overrides or live mode.
+// defaultCommandMetadataView is built only when CSC or metadata configuration
+// needs it, and is shared by clients without overrides or live mode.
 var defaultCommandMetadataView = sync.OnceValue(func() *commandMetadataView {
 	return buildCommandMetadataView(nil, nil)
 })
@@ -228,7 +227,7 @@ func buildCommandMetadataViewForServerWithLegacy(
 			legacy,
 		)
 	}
-	// Apply built-in corrections before deriving CSC and routing decisions.
+	// Apply built-in corrections before deriving CSC eligibility.
 	for name, correction := range commandMetadataCorrections {
 		markParent(name)
 		if _, tombstoned := tombstones[name]; tombstoned {
@@ -291,7 +290,6 @@ func buildCommandMetadataViewForServerWithLegacy(
 		subcommandParents: parents,
 		shadowedParents:   shadowedParents,
 		cscTable:          table,
-		routingTable:      deriveRoutingTable(records, shadowedParents),
 		cscFingerprint:    cscTableFingerprint(table),
 		serverVersion:     serverVersion,
 	}
@@ -328,16 +326,7 @@ func resolveLiveCommandMetadata(
 	legacy bool,
 ) *CommandInfo {
 	resolved := cloneCommandInfoForName(name, info)
-	snapshot, snapshotKnown := commandInfoSnapshotByName()[name]
-	if legacy && snapshotKnown {
-		// Redis 5/6 COMMAND records cannot advertise routing policies. Keep
-		// the known policies while retaining the server's flags and key positions.
-		for _, tip := range snapshot.Tips {
-			if strings.HasPrefix(tip, requestPolicy+":") || strings.HasPrefix(tip, responsePolicy+":") {
-				resolved.Tips = appendCommandMetadataTokens(resolved.Tips, tip)
-			}
-		}
-	}
+	_, snapshotKnown := commandInfoSnapshotByName()[name]
 	if !liveSupportsCSC {
 		if correction, ok := commandMetadataPre810Corrections()[name]; ok {
 			resolved.Flags = appendCommandMetadataTokens(resolved.Flags, correction.flags...)
@@ -345,8 +334,8 @@ func resolveLiveCommandMetadata(
 		}
 	}
 
-	// Preserve legacy records for routing, but exclude unprovable records from
-	// CSC. Snapshot-known pre-8.10 records keep their known exclusions above.
+	// Preserve legacy records, but exclude unprovable records from CSC.
+	// Snapshot-known pre-8.10 records keep their known exclusions above.
 	if (!liveSupportsCSC && !snapshotKnown) || (liveSupportsCSC && legacy) {
 		resolved.Tips = appendCommandMetadataTokens(resolved.Tips, "dont_cache")
 	}
@@ -448,62 +437,25 @@ func normalizeCommandMetadataKeyFlag(flag string) string {
 	}
 }
 
-// commandMetadataKeySpecFlags is the validated key-spec meaning shared by CSC
-// and Cluster routing. Unknown and prefix flags fail closed.
-type commandMetadataKeySpecFlags struct {
-	routingUsable bool
-	cscComplete   bool
-	planComplete  bool
-}
-
-func classifyCommandMetadataKeySpecFlags(flags []string) commandMetadataKeySpecFlags {
+// cscKeySpecFlagsComplete rejects flags that cannot prove complete invalidation.
+func cscKeySpecFlagsComplete(flags []string) bool {
 	seen := make(map[string]struct{}, len(flags))
 	accessModes := 0
-	actions := 0
-	incomplete := false
-	notKey := false
 	for _, flag := range flags {
 		if _, duplicate := seen[flag]; duplicate {
-			return commandMetadataKeySpecFlags{}
+			return false
 		}
 		seen[flag] = struct{}{}
 		switch flag {
 		case "RO", "RW", "OW", "RM":
 			accessModes++
-		case "access", "update", "insert", "delete":
-			actions++
-		case "variable_flags":
-		case "incomplete":
-			incomplete = true
-		case "not_key":
-			notKey = true
-		case "prefix":
-			return commandMetadataKeySpecFlags{}
+		case "access", "update", "insert", "delete", "variable_flags":
 		default:
-			return commandMetadataKeySpecFlags{}
+			// incomplete, not_key, prefix, and unknown flags cannot prove CSC safety.
+			return false
 		}
 	}
-
-	// not_key arguments can route by slot but cannot prove CSC invalidation.
-	if notKey {
-		if accessModes != 0 || actions != 0 {
-			return commandMetadataKeySpecFlags{}
-		}
-		return commandMetadataKeySpecFlags{
-			routingUsable: true,
-			planComplete:  !incomplete,
-		}
-	}
-
-	// Ordinary key specs require exactly one access mode.
-	if accessModes != 1 {
-		return commandMetadataKeySpecFlags{}
-	}
-	return commandMetadataKeySpecFlags{
-		routingUsable: true,
-		cscComplete:   !incomplete,
-		planComplete:  !incomplete,
-	}
+	return accessModes == 1
 }
 
 func appendCommandMetadataTokens(tokens []string, additions ...string) []string {
@@ -539,7 +491,9 @@ func cloneCommandInfo(info *CommandInfo) *CommandInfo {
 		}
 	}
 	if info.CommandPolicy != nil {
-		cp.CommandPolicy = cloneRoutingPolicy(info.CommandPolicy)
+		policy := *info.CommandPolicy
+		policy.Tips = maps.Clone(info.CommandPolicy.Tips)
+		cp.CommandPolicy = &policy
 	}
 	return &cp
 }
@@ -621,7 +575,7 @@ type commandMetadataStore struct {
 	refreshMu   sync.Mutex
 	started     bool
 	refresh     chan struct{}
-	refreshLive atomic.Bool // A node identity observation also needs a live-view refresh.
+	refreshLive atomic.Bool // An unverifiable reconnect needs a live-view refresh.
 	stop        chan struct{}
 	done        chan struct{}
 	stopOnce    sync.Once
@@ -639,26 +593,10 @@ func newCommandMetadataStore(
 	cfg *CommandMetadataConfig,
 	fetch commandMetadataFetchFunc,
 ) *commandMetadataStore {
-	return newCommandMetadataStoreWithLiveRequirement(cfg, fetch, false)
-}
-
-// newCommandMetadataStoreForLive creates a store even for static configuration.
-func newCommandMetadataStoreForLive(
-	cfg *CommandMetadataConfig,
-	fetch commandMetadataFetchFunc,
-) *commandMetadataStore {
-	return newCommandMetadataStoreWithLiveRequirement(cfg, fetch, true)
-}
-
-func newCommandMetadataStoreWithLiveRequirement(
-	cfg *CommandMetadataConfig,
-	fetch commandMetadataFetchFunc,
-	requireLive bool,
-) *commandMetadataStore {
 	if cfg == nil {
 		cfg = &CommandMetadataConfig{}
 	}
-	if !requireLive && cfg.Mode == CommandMetadataStatic && len(cfg.Overrides) == 0 {
+	if cfg.Mode == CommandMetadataStatic && len(cfg.Overrides) == 0 {
 		return nil
 	}
 	// Deep-copy the overrides: refreshOnce re-reads them on every rebuild,
@@ -731,22 +669,6 @@ func (s *commandMetadataStore) onConnInit() {
 	s.requestRefresh()
 }
 
-// ensureLive synchronously fetches metadata until a live view is published.
-func (s *commandMetadataStore) ensureLive(ctx context.Context) error {
-	if s == nil || s.fetch == nil {
-		return fmt.Errorf("redis: live command metadata fetch is unavailable")
-	}
-	if v := s.current.Load(); v != nil && v.live {
-		return nil
-	}
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
-	if v := s.current.Load(); v != nil && v.live {
-		return nil
-	}
-	return s.refreshOnceLocked(ctx)
-}
-
 // onServerHello retires live metadata when the server identity changes.
 func (s *commandMetadataStore) onServerHello(fp string) {
 	if s == nil || s.mode != CommandMetadataPreferLive {
@@ -768,20 +690,6 @@ func (s *commandMetadataStore) onServerHello(fp string) {
 		return
 	}
 	s.requestRefresh()
-}
-
-// onClusterServerHello schedules verification without adopting one node's
-// identity. The cluster fetch checks siblings before retiring the live view.
-// An empty fingerprint always requests verification, including during a fetch.
-func (s *commandMetadataStore) onClusterServerHello(fp string) {
-	if s == nil || s.mode != CommandMetadataPreferLive {
-		return
-	}
-	if fp != "" && fp == s.serverFingerprint() {
-		s.onConnInit()
-		return
-	}
-	s.requestVerification()
 }
 
 // requestVerification checks identity even when metadata is already live.
@@ -838,51 +746,6 @@ func (s *commandMetadataStore) requestRefresh() {
 	select {
 	case s.refresh <- struct{}{}:
 	default:
-	}
-}
-
-// invalidateLiveAndRequestRefresh retires old metadata and schedules a refresh.
-func (s *commandMetadataStore) invalidateLiveAndRequestRefresh() {
-	s.invalidateLive()
-	if s != nil && s.mode == CommandMetadataPreferLive {
-		s.requestRefresh()
-	}
-}
-
-// beginParentSourceChange blocks refresh publication across a topology change.
-func (s *commandMetadataStore) beginParentSourceChange() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.invalidateLiveLocked()
-}
-
-func (s *commandMetadataStore) finishParentSourceChange() {
-	if s == nil {
-		return
-	}
-	s.mu.Unlock()
-	if s.mode == CommandMetadataPreferLive {
-		s.requestRefresh()
-	}
-}
-
-// invalidateLive retires the live view without starting a fetch.
-func (s *commandMetadataStore) invalidateLive() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.invalidateLiveLocked()
-	s.mu.Unlock()
-}
-
-func (s *commandMetadataStore) invalidateLiveLocked() {
-	s.serverFp = ""
-	s.serverEpoch++
-	if view := s.current.Load(); view != nil && view.live {
-		s.current.Store(s.static)
 	}
 }
 
@@ -1183,7 +1046,6 @@ func (c *baseClient) fetchMetadataIdentity(ctx context.Context, infoCmd *Command
 	// identity while this fetch is validating it; the parent connection init
 	// already owns onServerHello notifications.
 	fetchClient.cmdMeta = nil
-	fetchClient.opt.onServerHello = nil
 
 	helloCmd := NewMapStringInterfaceCmd(ctx, "hello")
 	cmds := []Cmder{helloCmd}
