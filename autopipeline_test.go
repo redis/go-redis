@@ -20,6 +20,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/routing"
@@ -1446,6 +1447,7 @@ func (batchCountingHook) DialHook(next redis.DialHook) redis.DialHook { return n
 func (batchCountingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return next
 }
+
 func (h batchCountingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if len(cmds) >= 2 {
@@ -1463,9 +1465,11 @@ type fuzzOp struct {
 }
 
 func genOps(rng *rand.Rand, n int) []fuzzOp {
-	kinds := []string{"set", "get", "getdel", "incr", "incrby", "append", "strlen",
+	kinds := []string{
+		"set", "get", "getdel", "incr", "incrby", "append", "strlen",
 		"exists", "del", "hset", "hget", "hgetall", "lpush", "lrange", "llen",
-		"expire", "ttl", "type", "setbig", "setbin"}
+		"expire", "ttl", "type", "setbig", "setbin",
+	}
 	keys := make([]string, 8)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("fz:%d", i)
@@ -1473,8 +1477,10 @@ func genOps(rng *rand.Rand, n int) []fuzzOp {
 	ops := make([]fuzzOp, n)
 	for i := range ops {
 		k := keys[rng.Intn(len(keys))]
-		ops[i] = fuzzOp{kind: kinds[rng.Intn(len(kinds))], key: k,
-			val: fmt.Sprintf("v%d", rng.Intn(1000)), n: int64(rng.Intn(50))}
+		ops[i] = fuzzOp{
+			kind: kinds[rng.Intn(len(kinds))], key: k,
+			val: fmt.Sprintf("v%d", rng.Intn(1000)), n: int64(rng.Intn(50)),
+		}
 	}
 	return ops
 }
@@ -1853,7 +1859,7 @@ func TestAutoPipelineNoGoroutineLeak(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var wg = make([]redis.AutoFuture, 0, 200)
+				wg := make([]redis.AutoFuture, 0, 200)
 				for i := 0; i < 200; i++ {
 					if async {
 						wg = append(wg, ap.Submit(ctx, redis.NewCmd(ctx, "set", "leak:k", i)))
@@ -3447,6 +3453,7 @@ func (h shortCircuitHook) DialHook(next redis.DialHook) redis.DialHook { return 
 func (h shortCircuitHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error { return h.err }
 }
+
 func (h shortCircuitHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error { return h.err }
 }
@@ -3464,6 +3471,7 @@ func (h pipelineBreakerHook) DialHook(next redis.DialHook) redis.DialHook { retu
 func (h pipelineBreakerHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error { return next(ctx, cmd) }
 }
+
 func (h pipelineBreakerHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if !h.armed.Load() {
@@ -3774,9 +3782,7 @@ func TestClusterPipelineUsesDedicatedPool(t *testing.T) {
 		PipelineReadBufferSize: 64 * 1024,
 	})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		// Manual pipeline spanning many slots.
@@ -3894,9 +3900,8 @@ func TestClusterNodeHookShortCircuit(t *testing.T) {
 	// are pipelines too) and armed just before the asserted round.
 	var armed atomic.Bool
 	c.OnNewNode(func(cl *redis.Client) { cl.AddHook(pipelineBreakerHook{err: errBreaker, armed: &armed}) })
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+
+	skipIfClusterUnhealthy(t, c)
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		// Warm pooled connections on every node so the asserted round doesn't
@@ -3939,6 +3944,7 @@ func (h postNextErrorHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook
 		return h.err
 	}
 }
+
 func (h postNextErrorHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		_ = next(ctx, cmds)
@@ -4202,6 +4208,7 @@ func (h routeRecordingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHoo
 		return next(ctx, cmd)
 	}
 }
+
 func (h routeRecordingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		h.mu.Lock()
@@ -4275,6 +4282,7 @@ func (h armablePostNextPipelineHook) DialHook(next redis.DialHook) redis.DialHoo
 func (h armablePostNextPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return next
 }
+
 func (h armablePostNextPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		err := next(ctx, cmds)
@@ -4302,9 +4310,8 @@ func TestClusterNodeHookPostNextError(t *testing.T) {
 	c.OnNewNode(func(cl *redis.Client) {
 		cl.AddHook(armablePostNextPipelineHook{err: errVerdict, armed: &armed})
 	})
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+
+	skipIfClusterUnhealthy(t, c)
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		warm := c.Pipeline()
@@ -4429,9 +4436,7 @@ func TestAPClusterNonPipelinableRejectedAtSubmit(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 	markNonPipelinable(c, "getdel")
 
 	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
@@ -4512,6 +4517,7 @@ func (h batchSizeRecordingHook) ProcessHook(next redis.ProcessHook) redis.Proces
 		return next(ctx, cmd)
 	}
 }
+
 func (h batchSizeRecordingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		n := 0
@@ -4621,6 +4627,7 @@ func (h panicPipelineHook) DialHook(next redis.DialHook) redis.DialHook { return
 func (h panicPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return next
 }
+
 func (h panicPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if h.armed.Load() {
@@ -4813,9 +4820,7 @@ func TestAPClusterWideCommandsDelegate(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 	ap, err := c.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)
@@ -4909,6 +4914,7 @@ func (h gateHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		return next(ctx, cmd)
 	}
 }
+
 func (h gateHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if h.armed.Load() {

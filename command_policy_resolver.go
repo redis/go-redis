@@ -163,6 +163,39 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 	},
 }
 
+// CommandInfoResolveFunc resolves one command's Cluster routing policy.
+// Nil delegates to the fallback resolver.
+type CommandInfoResolveFunc func(ctx context.Context, cmd Cmder) *routing.CommandPolicy
+
+type commandInfoResolver struct {
+	resolveFunc      CommandInfoResolveFunc
+	fallBackResolver *commandInfoResolver
+
+	// metadataView marks a resolver backed by shared COMMAND metadata.
+	metadataView   func() *commandMetadataView
+	metadataEnsure func(context.Context) error
+}
+
+type commandRoutingResolution struct {
+	policy             *routing.CommandPolicy
+	policyFromMetadata bool
+	meta               routingCommandMeta
+	metaOK             bool
+}
+
+func NewCommandInfoResolver(resolveFunc CommandInfoResolveFunc) *commandInfoResolver {
+	return &commandInfoResolver{resolveFunc: resolveFunc}
+}
+
+// NewDefaultCommandPolicyResolver derives policies from the shipped COMMAND
+// metadata snapshot.
+func NewDefaultCommandPolicyResolver() *commandInfoResolver {
+	view := defaultCommandMetadataView()
+	return newCommandMetadataPolicyResolver(func() *commandMetadataView {
+		return view
+	})
+}
+
 // defaultPolicyKeyless reports whether name (e.g. "ft.aliaslist") is registered
 // in the static policy table as a plain keyless command: default request
 // routing with a keyless response policy. Commands whose slot comes from a key
@@ -183,58 +216,257 @@ func defaultPolicyKeyless(name string) bool {
 	return policy.Request == routing.ReqDefault && policy.Response == routing.RespDefaultKeyless
 }
 
-type CommandInfoResolveFunc func(ctx context.Context, cmd Cmder) *routing.CommandPolicy
-
-type commandInfoResolver struct {
-	resolveFunc      CommandInfoResolveFunc
-	fallBackResolver *commandInfoResolver
+// newCommandMetadataPolicyResolver loads the latest view for each invocation.
+func newCommandMetadataPolicyResolver(view func() *commandMetadataView) *commandInfoResolver {
+	return newCommandMetadataPolicyResolverWithEnsure(view, nil)
 }
 
-func NewCommandInfoResolver(resolveFunc CommandInfoResolveFunc) *commandInfoResolver {
-	return &commandInfoResolver{
-		resolveFunc: resolveFunc,
+func newCommandMetadataPolicyResolverWithEnsure(
+	view func() *commandMetadataView,
+	ensure func(context.Context) error,
+) *commandInfoResolver {
+	r := &commandInfoResolver{metadataView: view, metadataEnsure: ensure}
+	r.resolveFunc = func(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
+		// Direct dynamic resolvers fetch synchronously and fall back on failure.
+		if ensure != nil {
+			_ = ensure(ctx)
+		}
+		return r.commandPolicyInView(ctx, cmd, view())
 	}
-}
-
-func NewDefaultCommandPolicyResolver() *commandInfoResolver {
-	return NewCommandInfoResolver(func(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
-		module := "core"
-		command := cmd.Name()
-		// Split on the first '.' without allocating (strings.Split allocates a slice
-		// on every call; this resolver runs on the hot per-command path — twice per
-		// command for the autopipeline cluster gates — so the allocation showed up in
-		// CPU profiles). Only a single module.command form is recognized, matching the
-		// prior len==2 check.
-		if dot := strings.IndexByte(command, '.'); dot >= 0 && strings.IndexByte(command[dot+1:], '.') < 0 {
-			module = command[:dot]
-			command = command[dot+1:]
-		}
-
-		if policy, ok := defaultPolicies[module][command]; ok {
-			return policy
-		}
-
-		return nil
-	})
+	return r
 }
 
 func (r *commandInfoResolver) GetCommandPolicy(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
-	if r.resolveFunc == nil {
+	if r == nil || r.resolveFunc == nil {
 		return nil
 	}
-
-	policy := r.resolveFunc(ctx, cmd)
-	if policy != nil {
+	if policy := r.resolveFunc(ctx, cmd); policy != nil {
+		// Do not expose immutable view data to callers that may mutate it.
+		if r.metadataView != nil {
+			return cloneRoutingPolicy(policy)
+		}
 		return policy
 	}
-
 	if r.fallBackResolver != nil {
 		return r.fallBackResolver.GetCommandPolicy(ctx, cmd)
 	}
-
 	return nil
+}
+
+func cloneRoutingPolicy(policy *routing.CommandPolicy) *routing.CommandPolicy {
+	clone := *policy
+	if policy.Tips != nil {
+		clone.Tips = make(map[string]string, len(policy.Tips))
+		for key, value := range policy.Tips {
+			clone.Tips[key] = value
+		}
+	}
+	return &clone
 }
 
 func (r *commandInfoResolver) SetFallbackResolver(fallbackResolver *commandInfoResolver) {
 	r.fallBackResolver = fallbackResolver
+}
+
+// resolveCommandRoutingWithView resolves policy and metadata from one view.
+func (r *commandInfoResolver) resolveCommandRoutingWithView(
+	ctx context.Context,
+	cmd Cmder,
+	fallbackView func() *commandMetadataView,
+) (commandRoutingResolution, *commandMetadataView, error) {
+	var firstErr error
+	var resolution commandRoutingResolution
+	var view *commandMetadataView
+	resolveMeta := func() {
+		resolution.meta, resolution.metaOK = routingLookupMeta(view, cmd)
+	}
+	for current := r; current != nil; current = current.fallBackResolver {
+		// A resolver without a function terminates the chain.
+		if current.resolveFunc == nil {
+			break
+		}
+		if current.metadataView != nil {
+			if current.metadataEnsure != nil {
+				if err := current.metadataEnsure(ctx); err != nil {
+					// Keep routing with the current view and report the refresh error.
+					if firstErr == nil {
+						firstErr = err
+					}
+				}
+			}
+			// Prefer the client-owned view for a consistent invocation.
+			view = nil
+			if fallbackView != nil {
+				view = fallbackView()
+			}
+			if view == nil {
+				view = current.metadataView()
+			}
+			resolveMeta()
+			if policy, ok := routingPolicyFor(resolution.meta); resolution.metaOK && ok {
+				resolution.policy = policy
+				resolution.policyFromMetadata = true
+				return resolution, view, firstErr
+			}
+			continue
+		}
+
+		// Evaluate custom resolvers once, then capture key metadata.
+		if policy := current.resolveFunc(ctx, cmd); policy != nil {
+			view = nil
+			if fallbackView != nil {
+				view = fallbackView()
+			}
+			resolveMeta()
+			resolution.policy = policy
+			return resolution, view, firstErr
+		}
+	}
+
+	view = nil
+	if fallbackView != nil {
+		view = fallbackView()
+	}
+	resolveMeta()
+	return resolution, view, firstErr
+}
+
+func (r *commandInfoResolver) getCommandRoutingInView(
+	ctx context.Context,
+	cmd Cmder,
+	view *commandMetadataView,
+) commandRoutingResolution {
+	meta, metaOK := routingLookupMeta(view, cmd)
+	resolution := commandRoutingResolution{meta: meta, metaOK: metaOK}
+	if r == nil || r.resolveFunc == nil {
+		return resolution
+	}
+	for current := r; current != nil; current = current.fallBackResolver {
+		if current.resolveFunc == nil {
+			break
+		}
+		if current.metadataView != nil {
+			if metaOK {
+				resolution.policy, _ = routingPolicyFor(meta)
+				resolution.policyFromMetadata = resolution.policy != nil
+			}
+		} else {
+			resolution.policy = current.resolveFunc(ctx, cmd)
+			resolution.policyFromMetadata = false
+		}
+		if resolution.policy != nil {
+			break
+		}
+	}
+	return resolution
+}
+
+// resolveCommandRoutingsWithView resolves a batch in one captured generation,
+// invoking custom resolvers and metadata ensure hooks at most once as needed.
+func (r *commandInfoResolver) resolveCommandRoutingsWithView(
+	ctx context.Context,
+	cmds []Cmder,
+	fallbackView func() *commandMetadataView,
+) ([]commandRoutingResolution, *commandMetadataView, error) {
+	// Cache custom answers so a live refresh can restart metadata resolution
+	// without invoking application callbacks a second time.
+	type customLookup struct {
+		resolver *commandInfoResolver
+		index    int
+	}
+	customAnswers := make(map[customLookup]*routing.CommandPolicy)
+	ensured := make(map[*commandInfoResolver]struct{})
+	resolutions := make([]commandRoutingResolution, len(cmds))
+	var firstErr error
+	var view *commandMetadataView
+	captureView := func(resolver *commandInfoResolver) *commandMetadataView {
+		if fallbackView != nil {
+			if v := fallbackView(); v != nil {
+				return v
+			}
+		}
+		if resolver != nil {
+			return resolver.metadataView()
+		}
+		return nil
+	}
+
+	for {
+		restart := false
+		for i, cmd := range cmds {
+			resolution := commandRoutingResolution{}
+			for current := r; current != nil; current = current.fallBackResolver {
+				if current.resolveFunc == nil {
+					break
+				}
+				if current.metadataView != nil {
+					if _, done := ensured[current]; !done && current.metadataEnsure != nil {
+						ensured[current] = struct{}{}
+						if err := current.metadataEnsure(ctx); err != nil && firstErr == nil {
+							firstErr = err
+						}
+						next := captureView(current)
+						restart = view != nil && view != next
+						view = next
+						if restart {
+							// Earlier commands must use the same refreshed keys and
+							// policies as the command that reached this fallback.
+							break
+						}
+					}
+					if view == nil {
+						view = captureView(current)
+					}
+					resolution.meta, resolution.metaOK = routingLookupMeta(view, cmd)
+					if resolution.metaOK {
+						resolution.policy, _ = routingPolicyFor(resolution.meta)
+						resolution.policyFromMetadata = resolution.policy != nil
+					}
+				} else {
+					key := customLookup{resolver: current, index: i}
+					policy, known := customAnswers[key]
+					if !known {
+						policy = current.resolveFunc(ctx, cmd)
+						customAnswers[key] = policy
+					}
+					resolution.policy = policy
+				}
+				if resolution.policy != nil {
+					break
+				}
+			}
+			if restart {
+				break
+			}
+			resolutions[i] = resolution
+		}
+		if restart {
+			continue
+		}
+		if view == nil {
+			view = captureView(nil)
+		}
+		for i, cmd := range cmds {
+			if !resolutions[i].policyFromMetadata {
+				resolutions[i].meta, resolutions[i].metaOK = routingLookupMeta(view, cmd)
+			}
+		}
+		return resolutions, view, firstErr
+	}
+}
+
+func (r *commandInfoResolver) commandPolicyInView(
+	_ context.Context,
+	cmd Cmder,
+	view *commandMetadataView,
+) *routing.CommandPolicy {
+	meta, ok := routingLookupMeta(view, cmd)
+	if !ok {
+		return nil
+	}
+	policy, ok := routingPolicyFor(meta)
+	if !ok {
+		return nil
+	}
+	return policy
 }

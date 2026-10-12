@@ -204,8 +204,8 @@ type UniversalOptions struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
 
-	// CommandMetadata configures metadata when NewUniversalClient selects a
-	// standalone or Sentinel failover Client. See Options.CommandMetadata.
+	// CommandMetadata configures shared metadata for standalone and cluster clients.
+	// See Options.CommandMetadata and ClusterOptions.CommandMetadata.
 	//
 	// Experimental: this API may change in a minor release.
 	CommandMetadata *CommandMetadataConfig
@@ -295,6 +295,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		MaintNotificationsConfig:  o.MaintNotificationsConfig,
+		CommandMetadata:           o.CommandMetadata,
 	}
 }
 

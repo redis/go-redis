@@ -160,7 +160,7 @@ func TestCommandMetadataRefreshReusesUnchangedView(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
-			s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, func(context.Context) (commandMetadataFetchResult, error) {
+			s := newCommandMetadataStoreForLive(nil, func(context.Context) (commandMetadataFetchResult, error) {
 				// Each fetch owns distinct records, as separately parsed replies do.
 				m := testCommandMetadataFetchResult(map[string]*CommandInfo{
 					"get":    testReadOnlyCommandInfo("get"),
@@ -173,7 +173,7 @@ func TestCommandMetadataRefreshReusesUnchangedView(t *testing.T) {
 				return m, nil
 			})
 			defer s.stopAndJoin()
-			if err := s.refreshOnce(context.Background()); err != nil {
+			if err := s.ensureLive(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			first := s.view()
@@ -209,16 +209,12 @@ func TestCommandMetadataUnchangedRefreshValidatesIdentity(t *testing.T) {
 			m.serverFingerprint = "other-server"
 		}},
 		{"invalidated during fetch", func(s *commandMetadataStore, _ *commandMetadataFetchResult) {
-			// Simulate an identity epoch change while the fetch is in progress.
-			s.mu.Lock()
-			s.serverEpoch++
-			s.current.Store(s.static)
-			s.mu.Unlock()
+			s.invalidateLive()
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var duringFetch func(*commandMetadataFetchResult)
-			s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, func(context.Context) (commandMetadataFetchResult, error) {
+			s := newCommandMetadataStoreForLive(nil, func(context.Context) (commandMetadataFetchResult, error) {
 				m := testCommandMetadataFetchResult(map[string]*CommandInfo{"get": testReadOnlyCommandInfo("get")})
 				if duringFetch != nil {
 					duringFetch(&m)
@@ -226,7 +222,7 @@ func TestCommandMetadataUnchangedRefreshValidatesIdentity(t *testing.T) {
 				return m, nil
 			})
 			defer s.stopAndJoin()
-			if err := s.refreshOnce(context.Background()); err != nil {
+			if err := s.ensureLive(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			duringFetch = func(m *commandMetadataFetchResult) { tc.change(s, m) }
@@ -295,9 +291,17 @@ func TestCommandMetadataNormalizesEffectiveRecords(t *testing.T) {
 		record.KeySpecs[0].Flags[3] != "Future_Key_Flag" {
 		t.Fatalf("unknown extensions were not preserved verbatim: %+v", record)
 	}
+	upperRouting := upperView.routingTable["module.get"]
+	lowerRouting := lowerView.routingTable["module.get"]
+	if !upperRouting.valid || !lowerRouting.valid ||
+		upperRouting.policy.Request != lowerRouting.policy.Request ||
+		upperRouting.policy.Response != lowerRouting.policy.Response ||
+		upperRouting.keyState != lowerRouting.keyState {
+		t.Fatalf("equivalent normalized records produced different routing metadata: upper=%+v lower=%+v", upperRouting, lowerRouting)
+	}
 }
 
-func TestCommandMetadataLegacyShapedUnknownIsNotCacheable(t *testing.T) {
+func TestCommandMetadataLegacyShapedUnknownIsRoutingOnly(t *testing.T) {
 	legacy := &CommandInfo{
 		Name: "legacy.get", Flags: []string{"readonly"},
 		FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
@@ -314,6 +318,13 @@ func TestCommandMetadataLegacyShapedUnknownIsNotCacheable(t *testing.T) {
 	}
 	if !commandRecordHas(view.records["legacy.get"], "dont_cache", true) {
 		t.Fatal("legacy-shaped live-only record must carry a shared dont_cache correction")
+	}
+	meta, ok := routingLookupMeta(view, cmd)
+	if !ok {
+		t.Fatal("legacy-shaped record was not retained for routing")
+	}
+	if pos, ok := routingFirstKeyPos(meta, cmd); !ok || pos != 1 {
+		t.Fatalf("legacy routing key = (%d, %v), want (1, true)", pos, ok)
 	}
 }
 
@@ -361,6 +372,55 @@ func TestCommandMetadataLegacyShapeUsesServerVersionCompatibility(t *testing.T) 
 	}
 	if !commandRecordHas(redis810.records["get"], "dont_cache", true) {
 		t.Error("8.10+ legacy inconsistency was not represented in the shared record")
+	}
+}
+
+func TestCommandMetadataLegacyRoutingPolicies(t *testing.T) {
+	for _, fields := range []int{6, 7, 10} {
+		t.Run(fmt.Sprint(fields), func(t *testing.T) {
+			var entries []string
+			for _, name := range []string{"dbsize", "flushall", "mget"} {
+				info := commandInfoSnapshotByName()[name]
+				first, last, step := info.FirstKeyPos, info.LastKeyPos, info.StepCount
+				if name == "mget" {
+					first = 2 // Live positions must win over the snapshot's position 1.
+				}
+				entry := []string{
+					commandInfoTestBulk(name), commandInfoTestInt(int64(info.Arity)),
+					commandInfoTestArray(commandInfoTestBulk(info.Flags[0])),
+					commandInfoTestInt(int64(first)), commandInfoTestInt(int64(last)), commandInfoTestInt(int64(step)),
+				}
+				for len(entry) < fields {
+					entry = append(entry, commandInfoTestArray())
+				}
+				entries = append(entries, commandInfoTestArray(entry...))
+			}
+			parsed := commandInfoTestReadReply(t, commandInfoTestArray(entries...))
+			view := buildCommandMetadataViewForServerWithLegacy(parsed.Val(), nil, "6.2.0", parsed.legacyRecords)
+			for _, tc := range []struct {
+				name     string
+				request  routing.RequestPolicy
+				response routing.ResponsePolicy
+			}{
+				{"dbsize", routing.ReqAllShards, routing.RespAggSum},
+				{"flushall", routing.ReqAllShards, routing.RespAllSucceeded},
+				{"mget", routing.ReqMultiShard, routing.RespDefaultHashSlot},
+			} {
+				policy := view.routingTable[tc.name].policy
+				if fields == 10 {
+					// Modern records explicitly supply tips, even when empty.
+					if policy != nil && policy.Request != routing.ReqDefault {
+						t.Errorf("%s: snapshot policy replaced modern live tips: %+v", tc.name, policy)
+					}
+				} else if policy == nil || policy.Request != tc.request || policy.Response != tc.response {
+					t.Errorf("%s: policy=%+v, want %v/%v", tc.name, policy, tc.request, tc.response)
+				}
+			}
+			plan, ok := routingResolveKeyPlan(view.routingTable["mget"], makeCmd("mget", "prefix", "{a}k", "{b}k"))
+			if !ok || len(plan.positions) != 2 || plan.positions[0] != 2 || plan.positions[1] != 3 {
+				t.Fatalf("live key plan=%+v, ok=%v", plan, ok)
+			}
+		})
 	}
 }
 
@@ -445,6 +505,9 @@ func TestCommandMetadataTombstonedChildKeepsParentShadowed(t *testing.T) {
 	if _, ok := cscLookupMeta(view, cmd); ok {
 		t.Fatal("tombstoned child fell back to the bare parent for CSC")
 	}
+	if _, ok := routingLookupMeta(view, cmd); ok {
+		t.Fatal("tombstoned child fell back to the bare parent for routing")
+	}
 	if _, ok := view.shadowedParents["container"]; !ok {
 		t.Fatal("container parent was not kept explicitly shadowed")
 	}
@@ -474,6 +537,9 @@ func TestCommandMetadataNormalizedCollisionsFailClosed(t *testing.T) {
 			}
 			if isCacheableInView(view, makeCmd("get", "key")) {
 				t.Fatal("ambiguous or tombstoned command enabled CSC")
+			}
+			if _, ok := routingLookupMeta(view, makeCmd("get", "key")); ok {
+				t.Fatal("ambiguous or tombstoned command enabled routing")
 			}
 		})
 	}
@@ -707,8 +773,8 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 				t.Fatalf("metadata came from mismatched connections: %+v", metadata)
 			}
 			view := buildCommandMetadataViewForServerWithLegacy(metadata.records, nil, metadata.serverVersion, metadata.legacyRecords)
-			if isCacheableInView(view, makeCmd("custom.read2", "key")) {
-				t.Fatal("legacy module metadata must remain uncached")
+			if !view.routingTable["custom.read2"].valid || isCacheableInView(view, makeCmd("custom.read2", "key")) {
+				t.Fatal("legacy module metadata must enable routing but remain uncached")
 			}
 		})
 	}
@@ -852,6 +918,10 @@ func TestCommandMetadataServerUpgradeEnablesLiveOnlyCSC(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if calls.Load() != settled {
 		t.Errorf("live store refetched without a server change: %d -> %d", settled, calls.Load())
+	}
+	meta, ok := routingLookupMeta(s.view(), makeCmd("myext.get", "k"))
+	if !ok || !meta.readOnly {
+		t.Fatal("pre-8.10 record was lost to the routing consumer")
 	}
 	// An upgrade can enable a live-only command after refresh.
 	upgraded.Store(true)
@@ -1072,7 +1142,7 @@ func TestCommandMetadataViewChangeCancelsFulfill(t *testing.T) {
 	for _, coalesced := range []bool{false, true} {
 		t.Run(fmt.Sprintf("coalesced=%v", coalesced), func(t *testing.T) {
 			cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-			s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, nil)
+			s := newCommandMetadataStoreForLive(nil, nil)
 			c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cmdMeta: s}
 			view := c.metadataView()
 			for _, changed := range []bool{true, false} {
