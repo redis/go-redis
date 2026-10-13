@@ -107,6 +107,10 @@ func (c *ClusterClient) executeOnAllNodes(
 	policy *routing.CommandPolicy,
 	decision clusterRoutingDecision,
 ) error {
+	if err := clusterFanoutCommandError(cmd); err != nil {
+		return err
+	}
+
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		return err
@@ -134,6 +138,10 @@ func (c *ClusterClient) executeOnAllShards(
 	policy *routing.CommandPolicy,
 	decision clusterRoutingDecision,
 ) error {
+	if err := clusterFanoutCommandError(cmd); err != nil {
+		return err
+	}
+
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		return err
@@ -249,6 +257,10 @@ func (c *ClusterClient) executeMultiSlot(
 			}
 			return nil
 		}
+	}
+
+	if err := clusterFanoutCommandError(cmd); err != nil {
+		return err
 	}
 
 	results := make(chan slotResult, len(slotMap))

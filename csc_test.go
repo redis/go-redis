@@ -5375,7 +5375,7 @@ func TestCommandMetadataSnapshotNormalizedAndImmutable(t *testing.T) {
 
 	// All mutable layers may take their inputs from the shared snapshot.
 	buildCommandMetadataView(nil, nil)
-	buildCommandMetadataViewForServer(commandInfoSnapshotByName(), nil, "6.2.0")
+	buildCommandMetadataViewForServer(commandInfoSnapshotByName(), nil, "redis", "6.2.0")
 	buildCommandMetadataView(commandInfoSnapshotByName(), commandInfoSnapshotByName())
 	if !reflect.DeepEqual(commandInfoSnapshotByName(), before) {
 		t.Fatal("building metadata views mutated the snapshot")

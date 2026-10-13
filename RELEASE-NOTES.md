@@ -1,5 +1,21 @@
 # Release Notes
 
+# Unreleased
+
+- Cluster routing shares command metadata with client-side caching for key
+  extraction and read-only status. Existing default routing and cluster-wide
+  `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers are preserved.
+  Install `NewCommandMetadataResolver()` or `client.NewDynamicResolver()` with
+  `SetCommandInfoResolver` to enable metadata-based fan-out and aggregation.
+  `CommandMetadata` configuration alone does not enable them. Cross-slot
+  fan-out is not atomic.
+- Explicit pipelines and transactions retain node-local command execution;
+  AutoPipeline preserves direct-command fan-out semantics. `SCAN`, `INFO`, and
+  known diagnostics remain node-local. Single-slot raw commands and binary
+  marshaler values are accepted when no fan-out is needed.
+- Cluster routing decisions are stored on commands without using commands as
+  map keys, and concurrent topology reloads share one in-flight load.
+
 # 9.23.0 (2026-10-05)
 
 This is a minor release. It contains everything from 9.23.0-beta.1, so these notes cover the full 9.22.0 → 9.23.0 upgrade. The release adds:

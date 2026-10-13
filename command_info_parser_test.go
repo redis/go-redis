@@ -223,7 +223,7 @@ func TestCommandsInfoNilTokensAreSkipped(t *testing.T) {
 			if info == nil || !reflect.DeepEqual(info, clean) || parsed.val["after"] == nil {
 				t.Fatalf("null tokens changed metadata or lost the next record: got=%+v want=%+v", info, clean)
 			}
-			view := buildCommandMetadataViewForServer(parsed.val, nil, "8.10.0")
+			view := buildCommandMetadataViewForServer(parsed.val, nil, "redis", "8.10.0")
 			cmd := NewCmd(context.Background(), "optional", "key")
 			if _, ok := cscEligibleMeta(view, cmd); !ok {
 				t.Fatal("null tokens disabled otherwise valid CSC metadata")
@@ -352,7 +352,7 @@ func TestCommandsInfoTrailingFieldsPreserveLiveMetadata(t *testing.T) {
 		commandInfoTestArray(), commandInfoTestArray(commandInfoTestValidRangeKeySpec()), commandInfoTestArray())
 	extended := strings.Replace(entry, "*10\r\n", "*11\r\n", 1) + commandInfoTestArray(commandInfoTestBulk("future"))
 	parsed := commandInfoTestReadReply(t, commandInfoTestArray(extended))
-	view := buildCommandMetadataViewForServer(parsed.val, nil, "8.10.0")
+	view := buildCommandMetadataViewForServer(parsed.val, nil, "redis", "8.10.0")
 	cmd := NewCmd(context.Background(), "get", "key")
 	if pos, ok := routingFirstKeyPos(view.routingTable["get"], cmd); !ok || pos != 1 {
 		t.Fatalf("extended live record lost routing metadata: key=%d ok=%v", pos, ok)

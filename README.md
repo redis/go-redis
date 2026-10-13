@@ -292,6 +292,34 @@ rdb := redis.NewClient(&redis.Options{
 
 ### Redis Cluster fan-out safety
 
+Cluster routing uses shared command metadata for key positions and read-only
+status. The default resolver preserves existing routing behavior, including the
+cluster-wide `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers.
+`CommandMetadata` configuration alone does not enable new fan-out policies.
+
+Opt into metadata-based fan-out and aggregation explicitly, before using the client:
+
+```go
+c := redis.NewClusterClient(&redis.ClusterOptions{
+    Addrs: []string{"localhost:7000", "localhost:7001", "localhost:7002"},
+})
+c.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+```
+
+The resolver uses the client's metadata view, including configured overrides and
+live metadata. To request a live metadata attempt during resolution, install
+`c.NewDynamicResolver()` instead; this is also an explicit fan-out opt-in.
+Supported policies can send `PING` to all masters or split commands such as
+`MGET`, `DEL`, and `MSET` across slots. Without opt-in, their existing routing
+and server-side `CROSSSLOT` behavior remain unchanged.
+
+Explicit `Pipeline` and `TxPipeline` calls keep each command local to its selected
+node; automatic metadata fan-out is suppressed inside these batches. A transaction
+still requires all keys to share a slot. AutoPipeline retains direct-command
+semantics and executes commands requiring fan-out outside the merged node batch.
+`SCAN`, `INFO`, and known diagnostic commands remain node-local; use
+`ForEachMaster` for whole-cluster inspection or scanning.
+
 Cluster-wide operations and distributed DDL can affect multiple shards and are
 not atomic across them, whether fan-out is performed by go-redis or by a Redis
 server/coordinator. If one shard fails, earlier shards may already have applied

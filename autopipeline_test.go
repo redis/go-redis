@@ -4393,11 +4393,9 @@ func markNonPipelinable(c *redis.ClusterClient, name string) {
 	}))
 }
 
-// TestClusterPipelineNonPipelinableAllOrNothing pins user Pipeline() atomicity:
-// a command whose request policy cannot ride a pipeline fails the WHOLE batch
-// before anything dispatches — existing users rely on all-or-nothing (review
-// decision on #3942; an earlier revision executed the rest and returned an
-// error, silently landing partial writes).
+// An explicitly configured custom fan-out policy unsupported by Pipeline is
+// rejected before batch dispatch. This validation does not make ordinary
+// pipelines atomic; Redis command errors can still accompany successful writes.
 func TestClusterPipelineNonPipelinableAllOrNothing(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
@@ -4428,40 +4426,79 @@ func TestClusterPipelineNonPipelinableAllOrNothing(t *testing.T) {
 	}
 }
 
-// TestAPClusterNonPipelinableRejectedAtSubmit pins the autopipeline side of the
-// same decision: the offending command is rejected at submit (before it can
-// join a merged batch), while unrelated batch-mates execute normally — one
-// caller's bad command must not poison everyone else's batch.
-func TestAPClusterNonPipelinableRejectedAtSubmit(t *testing.T) {
-	ctx := context.Background()
-	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
-	defer c.Close()
-	skipIfClusterUnhealthy(t, c)
-	markNonPipelinable(c, "getdel")
+// AutoPipeline preserves direct-call fan-out semantics while neighboring
+// commands continue through the batching path.
+func TestAPClusterFanoutDivertsWithoutAffectingBatch(t *testing.T) {
+	for _, fullDuplex := range []bool{false, true} {
+		t.Run(fmt.Sprintf("full-duplex=%v", fullDuplex), func(t *testing.T) {
+			ctx := context.Background()
+			c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
+			defer c.Close()
+			skipIfClusterUnhealthy(t, c)
+			c.SetCommandInfoResolver(redis.NewCommandInfoResolver(func(_ context.Context, cmd redis.Cmder) *routing.CommandPolicy {
+				if cmd.Name() == "ping" {
+					return &routing.CommandPolicy{Request: routing.ReqAllShards, Response: routing.RespAllSucceeded}
+				}
+				return nil
+			}))
 
-	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
-		MaxBatchSize:  100,
-		MaxFlushDelay: 20 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
+			var hooksMu sync.Mutex
+			var hooks []routeRecordingHook
+			if err := c.ForEachMaster(ctx, func(_ context.Context, node *redis.Client) error {
+				hook := routeRecordingHook{mu: &sync.Mutex{}, pipeline: map[string]bool{}, direct: map[string]bool{}}
+				node.AddHook(hook)
+				hooksMu.Lock()
+				hooks = append(hooks, hook)
+				hooksMu.Unlock()
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(hooks) < 2 {
+				t.Fatal("fan-out test requires multiple masters")
+			}
+
+			ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+				MaxBatchSize:  100,
+				MaxFlushDelay: 20 * time.Millisecond,
+				FullDuplex:    fullDuplex,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			key1 := fmt.Sprintf("apfanout:%v:{a}:1", fullDuplex)
+			key2 := fmt.Sprintf("apfanout:%v:{a}:2", fullDuplex)
+			defer c.Del(ctx, key1, key2)
+
+			runWithWatchdog(t, 30*time.Second, func() {
+				set1 := ap.Set(ctx, key1, "v1", 0)
+				ping := ap.Ping(ctx)
+				set2 := ap.Set(ctx, key2, "v2", 0)
+
+				if got, err := ping.Result(); err != nil || got != "PONG" {
+					t.Fatalf("fan-out PING = %q, %v; want PONG", got, err)
+				}
+				if err := set1.Err(); err != nil {
+					t.Fatalf("neighboring set1 failed: %v", err)
+				}
+				if err := set2.Err(); err != nil {
+					t.Fatalf("neighboring set2 failed: %v", err)
+				}
+			})
+			for i, hook := range hooks {
+				hook.mu.Lock()
+				direct, pipelined := hook.direct["ping"], hook.pipeline["ping"]
+				hook.mu.Unlock()
+				if !direct || pipelined {
+					t.Fatalf("master %d: PING direct=%v pipelined=%v; want direct fan-out", i, direct, pipelined)
+				}
+			}
+			values, err := c.MGet(ctx, key1, key2).Result()
+			if err != nil || len(values) != 2 || values[0] != "v1" || values[1] != "v2" {
+				t.Fatalf("neighboring writes = %v, %v; want [v1 v2]", values, err)
+			}
+		})
 	}
-
-	runWithWatchdog(t, 30*time.Second, func() {
-		set1 := ap.Set(ctx, "apnp:{a}:1", "v1", 0)
-		bad := ap.GetDel(ctx, "apnp:{a}:marked")
-		set2 := ap.Set(ctx, "apnp:{a}:2", "v2", 0)
-
-		if err := bad.Err(); err == nil || !strings.Contains(err.Error(), "cannot pipeline command") {
-			t.Fatalf("marked command: err = %v, want the request-policy rejection", err)
-		}
-		if err := set1.Err(); err != nil {
-			t.Fatalf("batch-mate set1 poisoned: %v", err)
-		}
-		if err := set2.Err(); err != nil {
-			t.Fatalf("batch-mate set2 poisoned: %v", err)
-		}
-	})
 }
 
 // Regression: reading a Submit()-ed command's result accessors BEFORE calling

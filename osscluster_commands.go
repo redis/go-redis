@@ -6,9 +6,25 @@ import (
 	"sync/atomic"
 )
 
+// Preserve the existing cluster-wide helpers unless a resolver selects a policy
+// for this invocation. A resolver for an unrelated command must not change them.
+func (c *ClusterClient) usesLegacyClusterHelpers(ctx context.Context, cmd Cmder) bool {
+	if c.opt.DisableRoutingPolicies || c.cmdInfoResolver == nil ||
+		(c.cmdInfoResolver.legacyDefault && c.cmdInfoResolver.fallBackResolver == nil) {
+		return true
+	}
+	decision := c.resolveCommandRoutingDecision(ctx, cmd)
+	if decision.policy == nil && !decision.policyFromMetadata {
+		return true
+	}
+	// Process consumes this decision without invoking a custom resolver twice.
+	cmd.setClusterRoutingDecision(&decision)
+	return false
+}
+
 func (c *ClusterClient) DBSize(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd(ctx, "dbsize")
-	if c.opt.DisableRoutingPolicies {
+	if c.usesLegacyClusterHelpers(ctx, cmd) {
 		_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 			var size atomic.Int64
 			err := c.ForEachMaster(ctx, func(ctx context.Context, master *Client) error {
@@ -29,12 +45,13 @@ func (c *ClusterClient) DBSize(ctx context.Context) *IntCmd {
 		return cmd
 	}
 	_ = c.Process(ctx, cmd)
+	cmd.setClusterRoutingDecision(nil) // A process hook may have short-circuited.
 	return cmd
 }
 
 func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	cmd := NewStringCmd(ctx, "script", "load", script)
-	if c.opt.DisableRoutingPolicies {
+	if c.usesLegacyClusterHelpers(ctx, cmd) {
 		_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 			var mu sync.Mutex
 			err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
@@ -59,12 +76,13 @@ func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCm
 		return cmd
 	}
 	_ = c.Process(ctx, cmd)
+	cmd.setClusterRoutingDecision(nil) // A process hook may have short-circuited.
 	return cmd
 }
 
 func (c *ClusterClient) ScriptFlush(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "script", "flush")
-	if c.opt.DisableRoutingPolicies {
+	if c.usesLegacyClusterHelpers(ctx, cmd) {
 		_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 			err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
 				return shard.ScriptFlush(ctx).Err()
@@ -77,6 +95,7 @@ func (c *ClusterClient) ScriptFlush(ctx context.Context) *StatusCmd {
 		return cmd
 	}
 	_ = c.Process(ctx, cmd)
+	cmd.setClusterRoutingDecision(nil) // A process hook may have short-circuited.
 	return cmd
 }
 
@@ -88,7 +107,7 @@ func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		args[2+i] = hash
 	}
 	cmd := NewBoolSliceCmd(ctx, args...)
-	if c.opt.DisableRoutingPolicies {
+	if c.usesLegacyClusterHelpers(ctx, cmd) {
 		result := make([]bool, len(hashes))
 		for i := range result {
 			result[i] = true
@@ -120,5 +139,6 @@ func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		return cmd
 	}
 	_ = c.Process(ctx, cmd)
+	cmd.setClusterRoutingDecision(nil) // A process hook may have short-circuited.
 	return cmd
 }

@@ -129,7 +129,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// re-run that same classification, hit its nil preflight, and build a finish
 	// closure: pure per-command CPU on the hot path (measured ~1/3 of submit cost is
 	// this second pass). child.fd is non-nil (getOrCreateChild screened it).
-	b := child.fd.submitWithCompletion(ctx, cmd, r.parent.commandDone)
+	b := child.fd.submit(ctx, cmd)
 	if b == completedBatch && errors.Is(cmd.Err(), ErrClosed) {
 		// Topology GC (a cluster reload dropping this node, or the node's own pool
 		// close hook) can close this child at any point up to and including while
@@ -167,10 +167,10 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// inline completion unconditionally overwrites cmd's error with the
 		// reply outcome.
 		cmd.SetErr(nil)
-		b = child.fd.submitWithCompletion(ctx, cmd, r.parent.commandDone)
+		b = child.fd.submit(ctx, cmd)
 	}
 	if b == completedBatch {
-		r.parent.notifyCommandDone(cmd)
+		cmd.setClusterRoutingDecision(nil)
 	}
 	if !r.blocking {
 		cmd.setReady(b)
@@ -183,7 +183,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 // completedBatch sentinel immediately (no host goroutine, nothing to wait on).
 func (r *clusterFDRouter) rejectClosed(cmd Cmder) AutoFuture {
 	cmd.SetErr(ErrClosed)
-	r.parent.notifyCommandDone(cmd)
+	cmd.setClusterRoutingDecision(nil)
 	if !r.blocking {
 		cmd.setReady(completedBatch)
 	}
