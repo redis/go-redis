@@ -2426,6 +2426,9 @@ type clusterPipelineRouting struct {
 	// recompute means unpinned commands were not resolved up front; see
 	// pureRoutingChain.
 	recompute bool
+	// allTemplates means every command is pinned to a shared template: no
+	// policy, no routing error, so mapping needs no validation pass.
+	allTemplates bool
 }
 
 // pureRoutingChain reports whether resolving a command calls only built-in,
@@ -2454,6 +2457,11 @@ func (c *ClusterClient) autoPipelineRoutingDecision(
 	}
 	if decision := cmd.clusterRoutingDecision(); decision != nil {
 		return decision
+	}
+	if template, slot := c.fastRoutingTemplate(cmd); template != nil {
+		cmd.setCachedSlot(slot)
+		cmd.setClusterRoutingDecision(template)
+		return template
 	}
 	resolved := c.resolveCommandRoutingDecision(ctx, cmd)
 	if template := pinRoutingTemplate(cmd, &resolved); template != nil {
@@ -2504,12 +2512,21 @@ func (c *ClusterClient) resolvePipelineRouting(
 		route.recompute = true
 		// Fast-path commands pin the shared template plus their slot, so
 		// mapping computes no slot twice. Other commands are recomputed.
+		route.allTemplates = true
 		for _, cmd := range cmds {
-			if cmd.clusterRoutingDecision() != nil {
+			if pin := cmd.clusterRoutingDecision(); pin != nil {
+				route.allTemplates = route.allTemplates && pin.template
+				continue
+			}
+			if template, slot := c.fastRoutingTemplate(cmd); template != nil {
+				cmd.setCachedSlot(slot)
+				cmd.setClusterRoutingDecision(template)
 				continue
 			}
 			var scratch clusterRoutingDecision
-			pinRoutingTemplate(cmd, c.pipelineDecision(ctx, cmd, route, &scratch))
+			if pinRoutingTemplate(cmd, c.pipelineDecision(ctx, cmd, route, &scratch)) == nil {
+				route.allTemplates = false
+			}
 		}
 		return route
 	}
@@ -2681,6 +2698,10 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 		return err
 	}
 
+	if route.allTemplates && !c.opt.ReadOnly {
+		return c.mapTemplateCmdsByNode(state, cmdsMap, cmds)
+	}
+
 	// Pinned decisions are read in place; they stay valid until route.clear.
 	// Only commands without a pin (internal commands added after batch
 	// resolution) get a decision stored here, so both passes see the same one.
@@ -2764,6 +2785,50 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 			return c.noteTopologySelectionError(err)
 		}
 		cmdsMap.Add(node, cmd)
+	}
+	return nil
+}
+
+// mapTemplateCmdsByNode maps commands that are all pinned to shared templates
+// on a client without ReadOnly. Such decisions carry no policy and no routing
+// error, so the validation pass of mapCmdsByNodeInView has nothing to check,
+// and every command goes to its slot's master. Runs of commands in the same
+// slot range share one node lookup and one cmdsMap.Add.
+func (c *ClusterClient) mapTemplateCmdsByNode(state *clusterState, cmdsMap *cmdsMap, cmds []Cmder) error {
+	var (
+		runNode  *clusterNode
+		runStart int
+		lastIdx  uint16
+	)
+	for i, cmd := range cmds {
+		slot := cmd.clusterRoutingDecision().slotFor(cmd)
+		var node *clusterNode
+		var idx uint16
+		if state.slotIndex != nil && slot >= 0 && slot < clusterSlotCount {
+			idx = state.slotIndex[slot]
+		}
+		if idx != 0 && idx == lastIdx {
+			node = runNode
+		} else {
+			var err error
+			node, err = state.slotMasterNode(slot)
+			if err != nil {
+				if runNode != nil {
+					cmdsMap.Add(runNode, cmds[runStart:i]...)
+				}
+				return c.noteTopologySelectionError(err)
+			}
+			lastIdx = idx
+		}
+		if node != runNode {
+			if runNode != nil {
+				cmdsMap.Add(runNode, cmds[runStart:i]...)
+			}
+			runNode, runStart = node, i
+		}
+	}
+	if runNode != nil {
+		cmdsMap.Add(runNode, cmds[runStart:]...)
 	}
 	return nil
 }
@@ -3917,6 +3982,41 @@ func (d *clusterRoutingDecision) slotFor(cmd Cmder) int {
 	return cmdSlot(cmd, d.firstKey, -1)
 }
 
+// fastRoutingTemplate resolves a plain keyed command on the default chain
+// without building a decision: it returns the shared template and the slot,
+// exactly what resolveCommandRoutingDecision + pinRoutingTemplate would give.
+// It returns nil for anything else, and the caller takes the full path.
+func (c *ClusterClient) fastRoutingTemplate(cmd Cmder) (*clusterRoutingDecision, int) {
+	if !c.pureRoutingChain() {
+		return nil, 0
+	}
+	args := cmd.Args()
+	if len(args) == 0 || !routingCommandToken(args[0]) {
+		return nil, 0
+	}
+	name := cmd.Name()
+	// The default resolver has policies only for MODULE.CMD names.
+	if c.cmdInfoResolver != nil && strings.IndexByte(name, '.') >= 0 {
+		return nil, 0
+	}
+	view := c.metadataView()
+	if view == nil {
+		return nil, 0
+	}
+	if _, parent := view.subcommandParents[name]; parent {
+		return nil, 0
+	}
+	meta := view.routingTable[name]
+	if meta == nil || meta.fast == nil {
+		return nil, 0
+	}
+	_, key, ok := routingSimpleFirstKey(meta, cmd)
+	if !ok {
+		return nil, 0
+	}
+	return meta.fast, clusterKeySlot(key)
+}
+
 // pinRoutingTemplate pins d on cmd without allocating when d is a fast-path
 // decision: the shared template is pinned and the slot goes on the command.
 // It returns the pinned decision, or nil when d needs its own storage.
@@ -4139,6 +4239,11 @@ func (c *ClusterClient) commandRoutingDecision(ctx context.Context, cmd Cmder) c
 		return c.legacyRoutingDecision(cmd)
 	}
 	if decision, ok := c.takeAutoPipelineRoutingDecision(cmd); ok {
+		return decision
+	}
+	if template, slot := c.fastRoutingTemplate(cmd); template != nil {
+		decision := *template
+		decision.template, decision.naturalSlot = false, slot
 		return decision
 	}
 	return c.resolveCommandRoutingDecision(ctx, cmd)

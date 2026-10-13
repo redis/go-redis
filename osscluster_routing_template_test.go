@@ -70,6 +70,55 @@ func TestAutoPipelineAdmissionPinsTemplate(t *testing.T) {
 	cmd.setClusterRoutingDecision(nil)
 }
 
+// sameRoutingDecision compares decisions, with errors compared by text.
+func sameRoutingDecision(a, b clusterRoutingDecision) bool {
+	if (a.policyErr == nil) != (b.policyErr == nil) ||
+		a.policyErr != nil && a.policyErr.Error() != b.policyErr.Error() {
+		return false
+	}
+	a.policyErr, b.policyErr = nil, nil
+	return a == b
+}
+
+// fastRoutingTemplate must agree with the full resolver path for every
+// snapshot command and argument shape: same template and slot when it
+// applies, and the same value decision through commandRoutingDecision.
+func TestFastRoutingTemplateMatchesFullPath(t *testing.T) {
+	c := newRoutingPerfTestClient(t)
+	defer c.Close()
+	ctx := context.Background()
+	view := c.metadataView()
+	shapes := [][]interface{}{
+		{}, {"k"}, {"{a}k", "v"}, {"k", "v", "w"}, {"k", 1, 2, 3}, {7}, {[]byte("bk"), "v"},
+		{"", "v"}, {nil}, {struct{}{}}, {"sub", "k"}, {"info", "k"},
+	}
+	names := []string{"GET", "Get", "ft.search", "json.get", "unknown.cmd", "nosuchcmd"}
+	for name := range view.records {
+		names = append(names, name)
+	}
+	hits := 0
+	for _, name := range names {
+		for _, shape := range shapes {
+			args := append([]interface{}{name}, shape...)
+			cmd := NewCmd(ctx, args...)
+			full := c.resolveCommandRoutingDecision(ctx, cmd)
+			template, slot := c.fastRoutingTemplate(cmd)
+			if template != nil {
+				hits++
+				if pinned := pinRoutingTemplate(NewCmd(ctx, args...), &full); pinned != template || full.naturalSlot != slot {
+					t.Fatalf("%v: fast (%p, %d), full %+v", args, template, slot, full)
+				}
+			}
+			if got := c.commandRoutingDecision(ctx, cmd); !sameRoutingDecision(got, full) {
+				t.Fatalf("%v: commandRoutingDecision %+v, full %+v", args, got, full)
+			}
+		}
+	}
+	if hits == 0 {
+		t.Fatal("fast path never applied")
+	}
+}
+
 // A plain pipeline pins templates; mapping must group by the slots the full
 // decision computes, and route.clear must drop every pin.
 func TestPipelineMappingWithTemplates(t *testing.T) {
@@ -81,6 +130,14 @@ func TestPipelineMappingWithTemplates(t *testing.T) {
 		NewIntCmd(ctx, "del", "c1", "c2"), NewStringCmd(ctx, "get", 12345),
 		NewCmd(ctx, "object", "encoding", "d"),
 	}
+	for i := 0; i < 300; i++ { // runs of same and different slot ranges
+		cmds = append(cmds, NewStringCmd(ctx, "get", "k"+string(rune('a'+i%7))+string(rune('a'+i/7%26))))
+	}
+	route := c.resolvePipelineRouting(ctx, cmds)
+	if !route.allTemplates {
+		t.Fatal("plain pipeline should be all templates")
+	}
+	route.clear(cmds)
 	for round := 0; round < 2; round++ { // the second round reuses the commands
 		m := newCmdsMap()
 		if err := c.mapCmdsByNode(ctx, m, cmds); err != nil {
