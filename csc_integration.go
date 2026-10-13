@@ -1007,6 +1007,9 @@ func (c *baseClient) cscCommandError(cmd Cmder) error {
 	if !c.cscTrackingRequested() || c.allowClientTracking {
 		return nil
 	}
+	if c.allowSessionCommands && !isSubscribeCmd(cmd) {
+		return nil
+	}
 	switch {
 	case isClientTrackingCmd(cmd):
 		return errClientTrackingWithCSC

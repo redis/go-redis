@@ -445,6 +445,161 @@ func TestCSCReadYourWrites(t *testing.T) {
 	}
 }
 
+// rawClientDB returns the db= field of CLIENT INFO, parsed from the raw line
+// for the same reason as rawClientHasTrackingFlag.
+func rawClientDB(t *testing.T, c *redis.Client) string {
+	t.Helper()
+	raw, err := c.Do(context.Background(), "client", "info").Text()
+	if err != nil {
+		t.Fatalf("CLIENT INFO: %v", err)
+	}
+	for _, kv := range strings.Fields(raw) {
+		if strings.HasPrefix(kv, "db=") {
+			return kv[3:]
+		}
+	}
+	t.Fatalf("CLIENT INFO has no db field: %q", raw)
+	return ""
+}
+
+// newCSCEphemeralTestClient returns a CSC client against cscNativeAddr, or
+// skips the test when Redis or CLIENT TRACKING is unavailable.
+func newCSCEphemeralTestClient(t *testing.T, poolSize int) (*redis.Client, *redis.LocalCache) {
+	t.Helper()
+	if err := probeRedis(cscNativeAddr()); err != nil {
+		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
+	}
+	cache := redis.NewLocalCache(redis.CacheConfig{MaxEntries: 32})
+	c := redis.NewClient(&redis.Options{
+		Addr:            cscNativeAddr(),
+		Protocol:        3,
+		ClientSideCache: cache,
+		PoolSize:        poolSize,
+		PoolTimeout:     time.Second,
+		MaxRetries:      -1,
+	})
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("redis not available at %s: %v", cscNativeAddr(), err)
+	}
+	// Probe through a plain client: the CSC client rejects CLIENT TRACKING.
+	plain := redis.NewClient(&redis.Options{Addr: cscNativeAddr()})
+	defer plain.Close()
+	unavailable, err := probeClientTracking(ctx, plain)
+	if unavailable {
+		t.Skipf("CLIENT TRACKING is unavailable: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("probe CLIENT TRACKING: %v", err)
+	}
+	return c, cache
+}
+
+// TestCSCEphemeralConnSelect verifies that SELECT works on an EphemeralConn
+// with CSC on, and that the pooled connection serving the next command is
+// still on DB 0 and tracked.
+func TestCSCEphemeralConnSelect(t *testing.T) {
+	c, _ := newCSCEphemeralTestClient(t, 1) // one slot: Close must not hand db=1 back
+	ctx := context.Background()
+
+	eph := c.EphemeralConn()
+	if err := eph.Select(ctx, 1).Err(); err != nil {
+		t.Fatalf("EphemeralConn SELECT 1: %v", err)
+	}
+	if err := eph.Close(); err != nil {
+		t.Fatalf("EphemeralConn Close: %v", err)
+	}
+
+	if db := rawClientDB(t, c); db != "0" {
+		t.Fatalf("pooled conn after EphemeralConn Close: db=%s, want 0", db)
+	}
+	if !rawClientHasTrackingFlag(t, c) {
+		t.Fatalf("pooled conn after EphemeralConn Close must have CLIENT TRACKING on")
+	}
+}
+
+// TestCSCEphemeralConnResetNoStaleRead verifies that RESET on an EphemeralConn
+// (which turns CLIENT TRACKING off on its connection) cannot make the parent
+// cache serve a stale value. The entry owned by the claimed connection is
+// evicted when the EphemeralConn claims it.
+func TestCSCEphemeralConnResetNoStaleRead(t *testing.T) {
+	c, cache := newCSCEphemeralTestClient(t, 2)
+	ctx := context.Background()
+
+	mutator := redis.NewClient(&redis.Options{Addr: cscNativeAddr()})
+	t.Cleanup(func() { _ = mutator.Close() })
+
+	key := "csc-ephemeral-reset:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() { _ = mutator.Del(context.Background(), key).Err() })
+	if err := mutator.Set(ctx, key, "v1", 0).Err(); err != nil {
+		t.Fatalf("SET v1: %v", err)
+	}
+	// The only pooled conn fetches and owns the entry. Re-drive the GET in
+	// case an unrelated invalidation suppressed the first fill.
+	deadline := time.Now().Add(2 * time.Second)
+	for cache.Len() < 1 && time.Now().Before(deadline) {
+		if got := c.Get(ctx, key).Val(); got != "v1" {
+			t.Fatalf("GET: got %q want v1", got)
+		}
+	}
+	if cache.Len() < 1 {
+		t.Fatalf("entry was never cached")
+	}
+
+	eph := c.EphemeralConn()
+	t.Cleanup(func() { _ = eph.Close() })
+	if err := eph.Ping(ctx).Err(); err != nil { // claims the idle conn that owns the entry
+		t.Fatalf("EphemeralConn PING: %v", err)
+	}
+	if n := cache.Len(); n != 0 {
+		t.Fatalf("entry owned by the claimed conn must be evicted on claim, cache.Len=%d", n)
+	}
+	if err := eph.Do(ctx, "reset").Err(); err != nil {
+		t.Fatalf("EphemeralConn RESET: %v", err)
+	}
+
+	if err := mutator.Set(ctx, key, "v2", 0).Err(); err != nil {
+		t.Fatalf("SET v2: %v", err)
+	}
+	if got := c.Get(ctx, key).Val(); got != "v2" {
+		t.Fatalf("GET while EphemeralConn is open: got %q want v2", got)
+	}
+	if err := eph.Close(); err != nil {
+		t.Fatalf("EphemeralConn Close: %v", err)
+	}
+	if got := c.Get(ctx, key).Val(); got != "v2" {
+		t.Fatalf("GET after EphemeralConn Close: got %q want v2", got)
+	}
+}
+
+// TestCSCEphemeralConnPoolAccounting verifies that repeated EphemeralConn
+// open/close cycles with session commands leave the pool at its baseline: a
+// leaked or double-freed turn would show up as a blocked or oversized pool.
+func TestCSCEphemeralConnPoolAccounting(t *testing.T) {
+	c, _ := newCSCEphemeralTestClient(t, 1)
+	ctx := context.Background()
+
+	base := *c.PoolStats()
+	for i := 0; i < 20; i++ {
+		eph := c.EphemeralConn()
+		if err := eph.Select(ctx, 1).Err(); err != nil {
+			t.Fatalf("cycle %d: EphemeralConn SELECT 1: %v", i, err)
+		}
+		if err := eph.Close(); err != nil {
+			t.Fatalf("cycle %d: EphemeralConn Close: %v", i, err)
+		}
+	}
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Fatalf("PING after EphemeralConn cycles: %v", err)
+	}
+	got := *c.PoolStats()
+	if got.TotalConns != base.TotalConns || got.IdleConns != base.IdleConns {
+		t.Fatalf("pool after cycles: total=%d idle=%d, want total=%d idle=%d",
+			got.TotalConns, got.IdleConns, base.TotalConns, base.IdleConns)
+	}
+}
+
 func TestCSCStrategyDefaultIsSharedTracking(t *testing.T) {
 	var strategy redis.CSCStrategy
 	if strategy != redis.CSCStrategySharedTracking {
