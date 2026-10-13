@@ -807,7 +807,7 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 			}
 			view := buildCommandMetadataViewForServerWithLegacy(metadata.records, nil, metadata.serverName, metadata.serverVersion, metadata.legacyRecords)
 			if !view.routingTable["custom.read2"].valid || isCacheableInView(view, makeCmd("custom.read2", "key")) {
-				t.Fatal("legacy module metadata must enable routing but remain uncached")
+				t.Fatal("module metadata without server identification must enable routing but remain uncached")
 			}
 		})
 	}
