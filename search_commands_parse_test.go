@@ -731,11 +731,13 @@ func ptrFloat64(f float64) *float64 {
 // produce semantically equivalent results as per the spec requirement R.1.1
 func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 	tests := []struct {
-		name       string
-		resp2Data  []interface{}
-		resp3Data  map[string]interface{}
-		noContent  bool
-		withScores bool
+		name         string
+		resp2Data    []interface{}
+		resp3Data    map[string]interface{}
+		noContent    bool
+		withScores   bool
+		withPayloads bool
+		withSortKeys bool
 	}{
 		{
 			name: "simple hash query",
@@ -848,6 +850,97 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 			withScores: false,
 		},
 		{
+			name: "NOCONTENT query with scores",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:2",
+				"0.25",
+				"doc:1",
+				"0.125",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":     "doc:2",
+						"score":  float64(0.25),
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"id":     "doc:1",
+						"score":  float64(0.125),
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:  true,
+			withScores: true,
+		},
+		{
+			name: "NOCONTENT query with sort keys",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				"#1",
+				"doc:2",
+				"#2",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":      "doc:1",
+						"sortkey": "#1",
+						"values":  []interface{}{},
+					},
+					map[string]interface{}{
+						"id":      "doc:2",
+						"sortkey": "#2",
+						"values":  []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:    true,
+			withSortKeys: true,
+		},
+		{
+			name: "query with empty payloads",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:2",
+				nil,
+				[]interface{}{"n", "2"},
+				"doc:1",
+				nil,
+				[]interface{}{"n", "1"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:2",
+						"extra_attributes": map[string]interface{}{"n": "2"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:1",
+						"extra_attributes": map[string]interface{}{"n": "1"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withPayloads: true,
+		},
+		{
 			name: "empty result",
 			resp2Data: []interface{}{
 				int64(0),
@@ -867,7 +960,7 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Parse RESP2
-			resp2Result, err := parseFTSearch(tt.resp2Data, tt.noContent, tt.withScores, false, false)
+			resp2Result, err := parseFTSearch(tt.resp2Data, tt.noContent, tt.withScores, tt.withPayloads, tt.withSortKeys)
 			if err != nil {
 				t.Fatalf("parseFTSearch() error = %v", err)
 			}
@@ -905,6 +998,12 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 						t.Errorf("Docs[%d].Score mismatch: RESP2=%v, RESP3=nil", i, *resp2Doc.Score)
 					} else if resp2Doc.Score != nil && resp3Doc.Score != nil && *resp2Doc.Score != *resp3Doc.Score {
 						t.Errorf("Docs[%d].Score mismatch: RESP2=%v, RESP3=%v", i, *resp2Doc.Score, *resp3Doc.Score)
+					}
+				}
+
+				if tt.withSortKeys {
+					if resp2Doc.SortKey == nil || resp3Doc.SortKey == nil || *resp2Doc.SortKey != *resp3Doc.SortKey {
+						t.Errorf("Docs[%d].SortKey mismatch: RESP2=%v, RESP3=%v", i, resp2Doc.SortKey, resp3Doc.SortKey)
 					}
 				}
 
