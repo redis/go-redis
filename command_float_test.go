@@ -2,7 +2,10 @@ package redis
 
 import (
 	"context"
+	"errors"
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,5 +43,28 @@ func TestCmdFloatFromDoubleReply(t *testing.T) {
 		if got, err := cmd.Float32Slice(); err != nil || !reflect.DeepEqual(got, []float32{1.5, 2}) {
 			t.Errorf("Float32Slice() for %q = %v, %v; want [1.5 2], nil", reply, got, err)
 		}
+	}
+}
+
+// A double outside the float32 range must give the same range error from
+// Float32 for a RESP3 double as for a RESP2 bulk string. An infinity sent by
+// the server is not an error.
+func TestCmdFloat32FromDoubleReplyOutOfRange(t *testing.T) {
+	for _, reply := range []string{",1e100\r\n", "$5\r\n1e100\r\n"} {
+		cmd := NewCmd(context.Background())
+		if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err != nil {
+			t.Fatalf("readReply(%q): %v", reply, err)
+		}
+		if got, err := cmd.Float32(); !errors.Is(err, strconv.ErrRange) {
+			t.Errorf("Float32() for %q = %v, %v; want strconv.ErrRange", reply, got, err)
+		}
+	}
+
+	cmd := NewCmd(context.Background())
+	if err := cmd.readReply(proto.NewReader(strings.NewReader(",inf\r\n"))); err != nil {
+		t.Fatalf("readReply: %v", err)
+	}
+	if got, err := cmd.Float32(); err != nil || !math.IsInf(float64(got), 1) {
+		t.Errorf("Float32() for inf = %v, %v; want +Inf, nil", got, err)
 	}
 }
