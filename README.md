@@ -315,7 +315,7 @@ and server-side `CROSSSLOT` behavior remain unchanged.
 
 Explicit `Pipeline` and `TxPipeline` calls keep each command local to its selected
 node; automatic metadata fan-out is suppressed inside these batches. A transaction
-still requires all keys to share a slot. AutoPipeline retains direct-command
+still requires all keys to share a slot. `AutoPipeline` retains direct-command
 semantics and executes commands requiring fan-out outside the merged node batch.
 `SCAN`, `INFO`, and known diagnostic commands remain node-local; use
 `ForEachMaster` for whole-cluster inspection or scanning.
