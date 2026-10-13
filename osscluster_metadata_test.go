@@ -78,8 +78,127 @@ func newMetadataTestCluster(t *testing.T, cfg *CommandMetadataConfig) *ClusterCl
 		Addrs:           []string{"127.0.0.1:1"},
 		CommandMetadata: cfg,
 	})
+	c.SetCommandInfoResolver(NewCommandMetadataResolver())
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+func TestClusterDefaultPoliciesRequireFanoutOptIn(t *testing.T) {
+	c := NewClusterClient(&ClusterOptions{CommandMetadata: &CommandMetadataConfig{
+		Overrides: map[string]*CommandInfo{
+			"ping": {Name: "ping", Tips: []string{"request_policy:all_nodes", "response_policy:all_succeeded"}},
+		},
+	}})
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+	commands := [][]interface{}{
+		{"ping"}, {"dbsize"}, {"keys", "*"}, {"script", "load", "return 1"},
+		{"config", "set", "maxmemory", 0}, {"client", "setname", "name"},
+		{"flushdb"}, {"info"}, {"scan", 0}, {"mget", "{a}one", "{b}two"},
+	}
+	for _, args := range commands {
+		cmd := NewCmd(ctx, args...)
+		d := c.commandRoutingDecision(ctx, cmd)
+		if d.policy != nil || d.policyErr != nil || !d.metaOK {
+			t.Fatalf("default %v: policy=%v error=%v metadata=%v", args, d.policy, d.policyErr, d.metaOK)
+		}
+		if err := c.pipelineRoutingError(cmd, d); err != nil {
+			t.Fatalf("default pipeline %v: %v", args, err)
+		}
+	}
+	c.SetCommandInfoResolver(NewCommandMetadataResolver())
+	ping := c.commandRoutingDecision(ctx, NewCmd(ctx, "ping"))
+	if ping.policy == nil || ping.policy.Request != routing.ReqAllNodes || ping.policyErr != nil {
+		t.Fatalf("explicit metadata resolver ignored override: %+v", ping)
+	}
+}
+
+func TestClusterTypedHelpersPreserveUnrelatedResolverBehavior(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback=%v", fallback), func(t *testing.T) {
+			c := newMetadataTestCluster(t, nil)
+			resolver := NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy { return nil })
+			if fallback {
+				legacy := NewDefaultCommandPolicyResolver()
+				legacy.SetFallbackResolver(resolver)
+				resolver = legacy
+			}
+			c.SetCommandInfoResolver(resolver)
+			var calls [4]atomic.Int32
+			var nodes []*clusterNode
+			for i := 0; i < 2; i++ {
+				node, err := c.nodes.GetOrCreate(fmt.Sprintf("127.0.0.1:%d", 7501+i))
+				if err != nil {
+					t.Fatal(err)
+				}
+				nodes = append(nodes, node)
+				node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+					switch cmd := cmd.(type) {
+					case *IntCmd:
+						calls[0].Add(1)
+						cmd.SetVal(int64(i + 1))
+					case *StringCmd:
+						calls[1].Add(1)
+						cmd.SetVal("sha")
+					case *StatusCmd:
+						calls[2].Add(1)
+						cmd.SetVal("OK")
+					case *BoolSliceCmd:
+						calls[3].Add(1)
+						cmd.SetVal([]bool{i == 0})
+					}
+					return nil
+				}})
+			}
+			installMetadataClusterState(c, nodes)
+			ctx := context.Background()
+			if size, err := c.DBSize(ctx).Result(); err != nil || size != 3 {
+				t.Fatalf("DBSize=%d, %v, want 3", size, err)
+			}
+			if _, err := c.ScriptLoad(ctx, "return 1").Result(); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.ScriptFlush(ctx).Err(); err != nil {
+				t.Fatal(err)
+			}
+			if exists, err := c.ScriptExists(ctx, "sha").Result(); err != nil || !reflect.DeepEqual(exists, []bool{false}) {
+				t.Fatalf("ScriptExists=%v, %v", exists, err)
+			}
+			for i := range calls {
+				if got := calls[i].Load(); got != 2 {
+					t.Fatalf("helper %d called %d nodes, want 2", i, got)
+				}
+			}
+		})
+	}
+}
+
+func TestClusterAutoPipelineCustomSingleSlotMultiShard(t *testing.T) {
+	for _, fullDuplex := range []bool{false, true} {
+		t.Run(fmt.Sprintf("full-duplex=%v", fullDuplex), func(t *testing.T) {
+			c := newMetadataTestCluster(t, nil)
+			var resolutions, calls atomic.Int32
+			c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
+				resolutions.Add(1)
+				return &routing.CommandPolicy{Request: routing.ReqMultiShard, Response: routing.RespAggSum}
+			}))
+			node, _ := c.nodes.GetOrCreate("127.0.0.1:7510")
+			installMetadataClusterState(c, []*clusterNode{node}, &clusterSlot{start: 0, end: 16383, nodes: []*clusterNode{node}})
+			node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+				calls.Add(1)
+				cmd.(*IntCmd).SetVal(2)
+				return nil
+			}})
+			ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: fullDuplex})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := ap.Del(context.Background(), "{same}one", "{same}two").Result()
+			if err != nil || got != 2 || calls.Load() != 1 || resolutions.Load() != 1 {
+				t.Fatalf("DEL=%d error=%v calls=%d resolutions=%d", got, err, calls.Load(), resolutions.Load())
+			}
+		})
+	}
 }
 
 func TestClusterNodeCallbacksPrecedeLatencyProbes(t *testing.T) {
@@ -233,11 +352,13 @@ func TestClusterMultiShardSumAggregatesOncePerShard(t *testing.T) {
 }
 
 func TestClusterSpecialPoliciesFailClosed(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
+	c := newMetadataTestCluster(t, &CommandMetadataConfig{Overrides: map[string]*CommandInfo{
+		"custom.special": {Name: "custom.special", Tips: []string{"request_policy:special", "response_policy:special"}},
+	}})
 	ctx := context.Background()
-	unsupported := c.commandRoutingDecision(ctx, NewCmd(ctx, "info"))
+	unsupported := c.commandRoutingDecision(ctx, NewCmd(ctx, "custom.special"))
 	if !errors.Is(unsupported.policyErr, errUnsupportedRoutingPolicy) {
-		t.Fatalf("INFO special policy error=%v, want %v", unsupported.policyErr, errUnsupportedRoutingPolicy)
+		t.Fatalf("unimplemented special policy error=%v, want %v", unsupported.policyErr, errUnsupportedRoutingPolicy)
 	}
 
 	supported := c.commandRoutingDecision(ctx, NewCmd(ctx, "ft.cursor", "read", "idx", "1"))
@@ -282,6 +403,7 @@ func TestClusterBlessScanUsesOneNode(t *testing.T) {
 
 func TestClusterPipelineRejectsSpecialRequestBeforeDispatch(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
+	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 	c.state.state.Store(&clusterState{generation: 1, nodes: c.nodes})
 	ctx := context.Background()
 	cmd := NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", 42)
@@ -292,7 +414,7 @@ func TestClusterPipelineRejectsSpecialRequestBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestClusterPipelineAllowsOnlySingleSlotMultiShardInvocations(t *testing.T) {
+func TestClusterPipelineKeepsMetadataMultiShardCommandsLocal(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	ctx := context.Background()
 
@@ -307,8 +429,8 @@ func TestClusterPipelineAllowsOnlySingleSlotMultiShardInvocations(t *testing.T) 
 
 	crossSlot := NewIntCmd(ctx, "del", "{one}key", "{two}key")
 	decision = c.commandRoutingDecision(ctx, crossSlot)
-	if err := c.pipelineRoutingError(crossSlot, decision); err == nil {
-		t.Fatal("cross-slot DEL was admitted to a single-node pipeline")
+	if err := c.pipelineRoutingError(crossSlot, decision); err != nil {
+		t.Fatalf("cross-slot DEL must reach Redis for a command-local error: %v", err)
 	}
 
 	constructorConflict := NewStatusCmd(ctx, "mset", "{same}one", "other-slot", "{same}two", "value")
@@ -331,7 +453,7 @@ func TestClusterPipelineAllowsOnlySingleSlotMultiShardInvocations(t *testing.T) 
 	}
 }
 
-func TestClusterTxRoutingOnlyAdaptsConnectionLocalPing(t *testing.T) {
+func TestClusterTxRoutingKeepsMetadataPoliciesLocal(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	ctx := context.Background()
 
@@ -349,8 +471,8 @@ func TestClusterTxRoutingOnlyAdaptsConnectionLocalPing(t *testing.T) {
 	if decision.policy == nil || decision.policy.Request != routing.ReqAllShards {
 		t.Fatalf("FLUSHALL policy=%#v, want all_shards", decision.policy)
 	}
-	if err := c.txRoutingError(flushAll, decision); err == nil {
-		t.Fatal("transaction-local FLUSHALL unexpectedly bypassed its all-shards policy")
+	if err := c.txRoutingError(flushAll, decision); err != nil {
+		t.Fatalf("transaction-local FLUSHALL was rejected: %v", err)
 	}
 }
 
@@ -746,8 +868,11 @@ func TestClusterTransactionRejectsMalformedCompleteKeyPlan(t *testing.T) {
 	}
 }
 
-func TestClusterTransactionRejectsNonLocalRoutingPolicies(t *testing.T) {
+func TestClusterTransactionRejectsCustomNonLocalRoutingPolicies(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
+	c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
+		return &routing.CommandPolicy{Request: routing.ReqAllShards, Response: routing.RespAllSucceeded}
+	}))
 	ctx := context.Background()
 	tests := []Cmder{
 		NewStatusCmd(ctx, "flushall"),
@@ -818,7 +943,7 @@ func TestClusterDisabledRoutingPoliciesUseLegacyMetadataFreeRoute(t *testing.T) 
 	}
 
 	batchRoute := c.resolvePipelineRouting(context.Background(), []Cmder{cmd})
-	if got := batchRoute.decisions[cmd]; !got.keyless || got.firstKey != 0 || got.policy != nil {
+	if got := c.pipelineDecision(context.Background(), cmd, batchRoute); !got.keyless || got.firstKey != 0 || got.policy != nil {
 		t.Fatalf("disabled pipeline route=%#v, want legacy keyless", got)
 	}
 	if resolverCalls != 0 {
@@ -897,14 +1022,14 @@ func TestClusterAutoPipelineReusesAndCleansAdmissionDecision(t *testing.T) {
 		t.Fatal("completed AutoPipeline command retained its admission decision")
 	}
 
-	// Preflight releases admission state because rejected commands never dispatch.
-	c.SetCommandInfoResolver(newCommandMetadataPolicyResolver(c.metadataView))
-	rejected := NewStringSliceCmd(ctx, "mget", "one", "two")
-	if err := ap.Process(ctx, rejected); err == nil {
-		t.Fatal("cross-slot AutoPipeline command was not rejected")
+	// Cross-slot commands use the direct fan-out path instead of failing admission.
+	c.SetCommandInfoResolver(NewCommandMetadataResolver())
+	crossSlot := NewStringSliceCmd(ctx, "mget", "one", "two")
+	if err := ap.Process(ctx, crossSlot); err != nil {
+		t.Fatalf("cross-slot AutoPipeline command was rejected: %v", err)
 	}
-	if _, cached := c.peekAutoPipelineRoutingDecision(rejected); cached {
-		t.Fatal("rejected AutoPipeline command retained its admission decision")
+	if _, cached := c.peekAutoPipelineRoutingDecision(crossSlot); cached {
+		t.Fatal("completed cross-slot AutoPipeline command retained its admission decision")
 	}
 
 	sameSlot := NewStringSliceCmd(ctx, "mget", "{same}one", "{same}two")
@@ -954,7 +1079,7 @@ func TestClusterAutoPipelinePinsAdmissionMetadataGeneration(t *testing.T) {
 				t.Fatalf("shard=%d, want admission-generation shard %d", got, wantShard)
 			}
 			route := c.resolvePipelineRouting(ctx, []Cmder{cmd})
-			decision := route.decisions[cmd]
+			decision := c.pipelineDecision(ctx, cmd, route)
 			wantView := first
 			if disablePolicies {
 				wantView = nil
@@ -1634,12 +1759,8 @@ func TestClusterRejectsUnsafeFanoutBeforeDispatch(t *testing.T) {
 		NewIntCmd(ctx, "msetex", 2, "{one}a", value, "{two}b", value, "ex", 60),
 	}
 	for _, cmd := range tests {
-		decision := c.commandRoutingDecision(ctx, cmd)
-		if decision.policyErr == nil {
-			t.Fatalf("%T was not rejected before fanout", cmd)
-		}
-		if err := c.process(ctx, cmd); err == nil {
-			t.Fatalf("%T unexpectedly reached routing", cmd)
+		if err := c.process(ctx, cmd); err == nil || !strings.Contains(err.Error(), "cannot fan out") {
+			t.Fatalf("%T error=%v, want non-repeatable fan-out rejection", cmd, err)
 		}
 	}
 }

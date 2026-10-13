@@ -351,8 +351,9 @@ func TestAggLogicalOrBatchAdd(t *testing.T) {
 	})
 }
 
-func TestAggMinMaxAggregatorNonNumericReply(t *testing.T) {
+func TestNumericAggregatorsNonNumericReply(t *testing.T) {
 	policies := map[string]ResponsePolicy{
+		"sum": RespAggSum,
 		"min": RespAggMin,
 		"max": RespAggMax,
 	}
@@ -361,12 +362,13 @@ func TestAggMinMaxAggregatorNonNumericReply(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			agg := NewResponseAggregator(policy, "")
 
-			if err := agg.Add("not a number", nil); err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			addErr := agg.Add("not a number", nil)
+			if addErr == nil {
+				t.Fatal("Add accepted a non-numeric reply")
 			}
 
-			if _, err := agg.Aggregate(); err == nil {
-				t.Fatal("expected an error for a non-numeric reply, got nil")
+			if _, err := agg.Aggregate(); err != addErr {
+				t.Fatalf("Aggregate error = %v, want Add error %v", err, addErr)
 			}
 		})
 	}

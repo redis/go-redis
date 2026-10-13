@@ -19,6 +19,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/routing"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -3248,34 +3249,73 @@ func TestAutoPipelineQueueFullReleasesCommandState(t *testing.T) {
 			t.Run(fmt.Sprintf("blocking=%v/diverted=%v", blocking, diverted), func(t *testing.T) {
 				ctx := context.Background()
 				cmd := NewStringCmd(ctx, "get", "key")
-				var pinned Cmder
-				completed := 0
+				// A sequentially reused command cannot retain its old decision.
+				cmd.setClusterRoutingDecision(&clusterRoutingDecision{})
 				ap := &AutoPipeliner{
 					blocking:  blocking,
 					maxQueued: 1,
 					mustDivert: func(_ context.Context, c Cmder) bool {
-						pinned = c
-						return diverted
-					},
-					commandDone: func(c Cmder) {
-						if pinned != c {
-							t.Fatalf("released %v, want pinned command %v", c, pinned)
+						if c.clusterRoutingDecision() != nil {
+							t.Fatal("reused command retained its previous routing decision")
 						}
-						pinned = nil
-						completed++
+						c.setClusterRoutingDecision(&clusterRoutingDecision{})
+						return diverted
 					},
 				}
 				ap.queued.Store(1)
 				if err := ap.submit(ctx, cmd).Wait(); !errors.Is(err, ErrAutoPipelineQueueFull) {
 					t.Fatalf("submit error = %v, want ErrAutoPipelineQueueFull", err)
 				}
-				if pinned != nil || completed != 1 {
-					t.Fatalf("pinned = %v, completions = %d; want nil, 1", pinned, completed)
+				if cmd.clusterRoutingDecision() != nil {
+					t.Fatal("rejected command retained its routing decision")
 				}
 				if got := ap.queued.Load(); got != 1 {
 					t.Fatalf("rejected command changed queued count to %d, want 1", got)
 				}
 			})
 		}
+	}
+}
+
+func TestClusterRoutingDecisionNonComparableCommand(t *testing.T) {
+	// Cmder does not require comparability. Applications can embed it in a
+	// value containing a slice, which cannot be used as a map key.
+	type customCommand struct {
+		Cmder
+		data []byte
+	}
+	ctx := context.Background()
+	c := newMetadataTestCluster(t, nil)
+	cmd := customCommand{Cmder: NewStringCmd(ctx, "get", "key"), data: []byte("value")}
+	calls := 0
+	c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
+		calls++
+		return nil
+	}))
+
+	admitted := c.autoPipelineRoutingDecision(ctx, cmd)
+	if calls != 1 {
+		t.Fatalf("admission resolved policy %d times, want 1", calls)
+	}
+	route := c.resolvePipelineRouting(ctx, []Cmder{cmd})
+	flushed := c.pipelineDecision(ctx, cmd, route)
+	if calls != 1 || admitted.view != flushed.view || admitted.naturalSlot != flushed.naturalSlot {
+		t.Fatal("pipeline did not retain its admission decision")
+	}
+	route.clear([]Cmder{cmd})
+	if cmd.clusterRoutingDecision() != nil {
+		t.Fatal("finished pipeline retained the command decision")
+	}
+
+	// Regular pipelines resolve duplicate references only once, and a later
+	// direct invocation resolves afresh after the batch releases its state.
+	route = c.resolvePipelineRouting(ctx, []Cmder{cmd, cmd})
+	if calls != 2 {
+		t.Fatalf("duplicate command resolved policy %d times, want 2 total", calls)
+	}
+	route.clear([]Cmder{cmd, cmd})
+	c.commandRoutingDecision(ctx, cmd)
+	if calls != 3 || cmd.clusterRoutingDecision() != nil {
+		t.Fatal("direct command did not resolve afresh without retaining state")
 	}
 }

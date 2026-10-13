@@ -233,6 +233,9 @@ type Cmder interface {
 	// (in the autopipeline shard router) and reused at pipeline-flush routing.
 	cachedSlot() (int, bool)
 	setCachedSlot(int)
+	clusterRoutingDecision() *clusterRoutingDecision
+	setClusterRoutingDecision(*clusterRoutingDecision)
+	takeClusterRoutingDecision() *clusterRoutingDecision
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
@@ -495,6 +498,22 @@ type baseCmd struct {
 	// with reply processing). ready stays
 	// nil for ordinary synchronous commands, whose accessors never block.
 	ready atomic.Pointer[apBatch]
+
+	// routing pins admission metadata until cluster dispatch completes. Keeping
+	// it on the command avoids retaining commands in a client-wide lookup table.
+	routing atomic.Pointer[clusterRoutingDecision]
+}
+
+func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
+	return cmd.routing.Load()
+}
+
+func (cmd *baseCmd) setClusterRoutingDecision(decision *clusterRoutingDecision) {
+	cmd.routing.Store(decision)
+}
+
+func (cmd *baseCmd) takeClusterRoutingDecision() *clusterRoutingDecision {
+	return cmd.routing.Swap(nil)
 }
 
 // setReady publishes the batch gating this command's result accessors. The

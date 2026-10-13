@@ -170,6 +170,7 @@ type CommandInfoResolveFunc func(ctx context.Context, cmd Cmder) *routing.Comman
 type commandInfoResolver struct {
 	resolveFunc      CommandInfoResolveFunc
 	fallBackResolver *commandInfoResolver
+	legacyDefault    bool
 
 	// metadataView marks a resolver backed by shared COMMAND metadata.
 	metadataView   func() *commandMetadataView
@@ -177,7 +178,10 @@ type commandInfoResolver struct {
 }
 
 type commandRoutingResolution struct {
-	policy             *routing.CommandPolicy
+	policy *routing.CommandPolicy
+	// Also true when metadata was reached but its policy requires an
+	// unsupported handler. Dispatch must validate that policy rather than
+	// silently treating an explicit metadata opt-in as ordinary routing.
 	policyFromMetadata bool
 	meta               routingCommandMeta
 	metaOK             bool
@@ -187,9 +191,28 @@ func NewCommandInfoResolver(resolveFunc CommandInfoResolveFunc) *commandInfoReso
 	return &commandInfoResolver{resolveFunc: resolveFunc}
 }
 
-// NewDefaultCommandPolicyResolver derives policies from the shipped COMMAND
-// metadata snapshot.
+// NewDefaultCommandPolicyResolver preserves the built-in Search routing policies.
+// It does not enable new fan-out policies for other commands. Use
+// NewCommandMetadataResolver to opt into metadata-based fan-out and aggregation.
 func NewDefaultCommandPolicyResolver() *commandInfoResolver {
+	r := NewCommandInfoResolver(func(_ context.Context, cmd Cmder) *routing.CommandPolicy {
+		name := cmd.Name()
+		dot := strings.IndexByte(name, '.')
+		if dot < 0 || strings.IndexByte(name[dot+1:], '.') >= 0 {
+			return nil
+		}
+		return defaultPolicies[name[:dot]][name[dot+1:]]
+	})
+	r.legacyDefault = true
+	return r
+}
+
+// NewCommandMetadataResolver derives routing policies from the shared COMMAND
+// metadata. Install it with ClusterClient.SetCommandInfoResolver to opt into
+// fan-out and aggregation, including non-atomic cross-slot multi-key commands.
+// A ClusterClient uses its current metadata view, including configured overrides
+// and live metadata. Used directly, the resolver uses the shipped snapshot.
+func NewCommandMetadataResolver() *commandInfoResolver {
 	view := defaultCommandMetadataView()
 	return newCommandMetadataPolicyResolver(func() *commandMetadataView {
 		return view
@@ -286,6 +309,7 @@ func (r *commandInfoResolver) resolveCommandRoutingWithView(
 			break
 		}
 		if current.metadataView != nil {
+			resolution.policyFromMetadata = true
 			if current.metadataEnsure != nil {
 				if err := current.metadataEnsure(ctx); err != nil {
 					// Keep routing with the current view and report the refresh error.
@@ -305,7 +329,6 @@ func (r *commandInfoResolver) resolveCommandRoutingWithView(
 			resolveMeta()
 			if policy, ok := routingPolicyFor(resolution.meta); resolution.metaOK && ok {
 				resolution.policy = policy
-				resolution.policyFromMetadata = true
 				return resolution, view, firstErr
 			}
 			continue
@@ -313,19 +336,22 @@ func (r *commandInfoResolver) resolveCommandRoutingWithView(
 
 		// Evaluate custom resolvers once, then capture key metadata.
 		if policy := current.resolveFunc(ctx, cmd); policy != nil {
-			view = nil
 			if fallbackView != nil {
-				view = fallbackView()
+				if currentView := fallbackView(); currentView != nil {
+					view = currentView
+				}
 			}
 			resolveMeta()
 			resolution.policy = policy
+			resolution.policyFromMetadata = false
 			return resolution, view, firstErr
 		}
 	}
 
-	view = nil
 	if fallbackView != nil {
-		view = fallbackView()
+		if currentView := fallbackView(); currentView != nil {
+			view = currentView
+		}
 	}
 	resolveMeta()
 	return resolution, view, firstErr
@@ -346,13 +372,15 @@ func (r *commandInfoResolver) getCommandRoutingInView(
 			break
 		}
 		if current.metadataView != nil {
+			resolution.policyFromMetadata = true
 			if metaOK {
 				resolution.policy, _ = routingPolicyFor(meta)
-				resolution.policyFromMetadata = resolution.policy != nil
 			}
 		} else {
 			resolution.policy = current.resolveFunc(ctx, cmd)
-			resolution.policyFromMetadata = false
+			if resolution.policy != nil {
+				resolution.policyFromMetadata = false
+			}
 		}
 		if resolution.policy != nil {
 			break
@@ -400,6 +428,7 @@ func (r *commandInfoResolver) resolveCommandRoutingsWithView(
 					break
 				}
 				if current.metadataView != nil {
+					resolution.policyFromMetadata = true
 					if _, done := ensured[current]; !done && current.metadataEnsure != nil {
 						ensured[current] = struct{}{}
 						if err := current.metadataEnsure(ctx); err != nil && firstErr == nil {
@@ -420,7 +449,6 @@ func (r *commandInfoResolver) resolveCommandRoutingsWithView(
 					resolution.meta, resolution.metaOK = routingLookupMeta(view, cmd)
 					if resolution.metaOK {
 						resolution.policy, _ = routingPolicyFor(resolution.meta)
-						resolution.policyFromMetadata = resolution.policy != nil
 					}
 				} else {
 					key := customLookup{resolver: current, index: i}
@@ -430,6 +458,9 @@ func (r *commandInfoResolver) resolveCommandRoutingsWithView(
 						customAnswers[key] = policy
 					}
 					resolution.policy = policy
+					if policy != nil {
+						resolution.policyFromMetadata = false
+					}
 				}
 				if resolution.policy != nil {
 					break

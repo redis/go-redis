@@ -371,8 +371,7 @@ func (a *AggSumAggregator) Aggregate() (interface{}, error) {
 type AggMinAggregator struct{ numericAggregator }
 
 func (a *AggMinAggregator) Add(result interface{}, err error) error {
-	_ = a.add(numericMin, result, err)
-	return nil
+	return a.add(numericMin, result, err)
 }
 
 func (a *AggMinAggregator) BatchAdd(results map[string]AggregatorResErr) error {
@@ -395,8 +394,7 @@ func (a *AggMinAggregator) Aggregate() (interface{}, error) {
 type AggMaxAggregator struct{ numericAggregator }
 
 func (a *AggMaxAggregator) Add(result interface{}, err error) error {
-	_ = a.add(numericMax, result, err)
-	return nil
+	return a.add(numericMax, result, err)
 }
 
 func (a *AggMaxAggregator) BatchAdd(results map[string]AggregatorResErr) error {

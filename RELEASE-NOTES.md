@@ -3,6 +3,19 @@
 ## Unreleased
 
 - **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
+- Cluster routing shares command metadata with client-side caching for key
+  extraction and read-only status. Existing default routing and cluster-wide
+  `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers are preserved.
+  Install `NewCommandMetadataResolver()` or `client.NewDynamicResolver()` with
+  `SetCommandInfoResolver` to enable metadata-based fan-out and aggregation.
+  `CommandMetadata` configuration alone does not enable them. Cross-slot
+  fan-out is not atomic.
+- Explicit pipelines and transactions retain node-local command execution;
+  AutoPipeline preserves direct-command fan-out semantics. `SCAN`, `INFO`, and
+  known diagnostics remain node-local. Single-slot raw commands and binary
+  marshaler values are accepted when no fan-out is needed.
+- Cluster routing decisions are stored on commands without using commands as
+  map keys, and concurrent topology reloads share one in-flight load.
 
 # 9.23.0 (2026-10-05)
 

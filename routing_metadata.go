@@ -90,12 +90,6 @@ const (
 	routingSpecialResponseDeclared
 )
 
-type routingTransactionSupport uint8
-
-const (
-	routingTransactionSingleNode routingTransactionSupport = 1 << iota
-)
-
 // routingCommandMeta ignores CommandInfo's compatibility CommandPolicy field.
 type routingCommandMeta struct {
 	name            string
@@ -105,7 +99,6 @@ type routingCommandMeta struct {
 	keySpecs        []routingKeySpec
 	keyPlanComplete bool
 	special         routingSpecialSupport
-	tx              routingTransactionSupport
 	valid           bool
 }
 
@@ -118,32 +111,25 @@ type routingKeyPlan struct {
 	splittable bool
 }
 
-// routingSpecialPolicies lists supported handlers; declared-only entries fail closed.
+// routingSpecialPolicies lists the implemented command-specific handlers.
 var routingSpecialPolicies = map[string]routingSpecialSupport{
 	"ft.cursor|del":  routingSpecialRequestDeclared | routingSpecialRequestSupported,
 	"ft.cursor|read": routingSpecialRequestDeclared | routingSpecialRequestSupported,
 	"randomkey":      routingSpecialResponseDeclared | routingSpecialResponseSupported,
-
-	"function|stats":      routingSpecialResponseDeclared,
-	"hotkeys|get":         routingSpecialRequestDeclared | routingSpecialResponseDeclared,
-	"hotkeys|reset":       routingSpecialRequestDeclared,
-	"hotkeys|start":       routingSpecialRequestDeclared,
-	"hotkeys|stop":        routingSpecialRequestDeclared,
-	"info":                routingSpecialResponseDeclared,
-	"latency|doctor":      routingSpecialResponseDeclared,
-	"latency|graph":       routingSpecialResponseDeclared,
-	"latency|histogram":   routingSpecialResponseDeclared,
-	"latency|history":     routingSpecialResponseDeclared,
-	"latency|latest":      routingSpecialResponseDeclared,
-	"memory|doctor":       routingSpecialResponseDeclared,
-	"memory|malloc-stats": routingSpecialResponseDeclared,
-	"memory|stats":        routingSpecialResponseDeclared,
-	"scan":                routingSpecialRequestDeclared | routingSpecialResponseDeclared,
 }
 
-// routingTransactionPolicies lists fan-out commands valid on one transaction connection.
-var routingTransactionPolicies = map[string]routingTransactionSupport{
-	"ping": routingTransactionSingleNode,
+// These keyless commands retain their node-local replies and cursors. Their
+// special metadata does not define an implemented cluster-wide aggregation.
+func routingLocalSpecialCommand(name string) bool {
+	switch name {
+	case "info", "scan", "bless|scan", "function|stats",
+		"hotkeys|get", "hotkeys|reset", "hotkeys|start", "hotkeys|stop",
+		"latency|doctor", "latency|graph", "latency|histogram", "latency|history", "latency|latest",
+		"memory|doctor", "memory|malloc-stats", "memory|stats":
+		return true
+	default:
+		return false
+	}
 }
 
 // deriveRoutingTable omits tombstones and shadowed containers.
@@ -168,7 +154,7 @@ func deriveRoutingTable(records map[string]*CommandInfo, shadowedParents map[str
 func deriveRoutingCommandMeta(name string, info *CommandInfo) routingCommandMeta {
 	meta := routingCommandMeta{
 		name: name, valid: info != nil,
-		special: routingSpecialPolicies[name], tx: routingTransactionPolicies[name],
+		special: routingSpecialPolicies[name],
 	}
 	if info == nil {
 		return meta
@@ -243,11 +229,12 @@ func deriveRoutingCommandMeta(name string, info *CommandInfo) routingCommandMeta
 		// Preserve a keyed response default, but disable multi-shard below.
 		resp = routing.RespDefaultHashSlot
 	}
-	if name == "bless|scan" && meta.keyState == routingKeysNone &&
-		req == routing.ReqSpecial && resp == routing.RespSpecial {
-		// Preserve BLESS SCAN's node-local behavior. Its cursor and reply
-		// belong to one server, so use ordinary keyless routing without
-		// aggregating pages or interpreting the cursor as a routing key.
+	if meta.keyState == routingKeysNone && routingLocalSpecialCommand(name) &&
+		req != routing.ReqMultiShard &&
+		(resp == routing.RespDefaultKeyless || resp == routing.RespSpecial) {
+		// Server tips may broadcast these diagnostics, but there is no
+		// supported cluster-wide interpretation of their replies or cursors.
+		// Preserve the known local forms without accepting a keyed split.
 		req, resp = routing.ReqDefault, routing.RespDefaultKeyless
 	}
 	meta.policy = &routing.CommandPolicy{Request: req, Response: resp, Tips: tips}
@@ -421,17 +408,6 @@ func routingPolicyFor(meta routingCommandMeta) (*routing.CommandPolicy, bool) {
 		return nil, false
 	}
 	return meta.policy, true
-}
-
-func routingSpecialPolicyError(meta routingCommandMeta) error {
-	if _, ok := routingPolicyFor(meta); ok {
-		return nil
-	}
-	if meta.valid && meta.policy != nil &&
-		(meta.policy.Request == routing.ReqSpecial || meta.policy.Response == routing.RespSpecial) {
-		return errUnsupportedRoutingPolicy
-	}
-	return nil
 }
 
 // routingFirstKeyPos returns a proven key position, or zero for proven keyless.

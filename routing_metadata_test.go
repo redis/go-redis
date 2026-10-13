@@ -80,7 +80,7 @@ func TestRoutingMetadataMigrateKeys(t *testing.T) {
 	}
 }
 
-func TestRoutingMetadataBlessScanPolicy(t *testing.T) {
+func TestRoutingMetadataLocalSpecialPolicies(t *testing.T) {
 	for _, tt := range []struct {
 		name, request, response string
 		firstKey                int8
@@ -88,16 +88,26 @@ func TestRoutingMetadataBlessScanPolicy(t *testing.T) {
 		wantResponse            routing.ResponsePolicy
 	}{
 		{"bless|scan", "special", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
-		{"scan", "special", "special", 0, routing.ReqSpecial, routing.RespSpecial},
+		{"scan", "special", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"info", "default", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"memory|stats", "default", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"latency|history", "default", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"function|stats", "default", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"hotkeys|get", "special", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"hotkeys|start", "special", "default(keyless)", 0, routing.ReqDefault, routing.RespDefaultKeyless},
 		{"bless|unknown", "special", "special", 0, routing.ReqSpecial, routing.RespSpecial},
-		{"bless|scan", "all_shards", "special", 0, routing.ReqAllShards, routing.RespSpecial},
+		{"bless|scan", "all_shards", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"info", "all_nodes", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
+		{"info", "multi_shard", "special", 0, routing.ReqMultiShard, routing.RespSpecial},
 		{"bless|scan", "special", "special", 2, routing.ReqSpecial, routing.RespSpecial},
 	} {
 		t.Run(tt.name+"/"+tt.request, func(t *testing.T) {
 			info := &CommandInfo{
 				Name: tt.name, Tips: []string{"request_policy:" + tt.request, "response_policy:" + tt.response},
+				Flags:       []string{"readonly"},
 				FirstKeyPos: tt.firstKey, LastKeyPos: tt.firstKey, StepCount: tt.firstKey,
 			}
+			before := cloneCommandInfo(info)
 			meta := deriveRoutingCommandMeta(tt.name, info)
 			if meta.policy.Request != tt.wantRequest || meta.policy.Response != tt.wantResponse {
 				t.Fatalf("policy = %v, want (%s, %s)", meta.policy, tt.wantRequest, tt.wantResponse)
@@ -106,7 +116,50 @@ func TestRoutingMetadataBlessScanPolicy(t *testing.T) {
 			if supported != (tt.wantRequest == routing.ReqDefault) {
 				t.Fatalf("policy supported = %v", supported)
 			}
+			if !meta.readOnly || !meta.policy.IsReadOnly() {
+				t.Fatal("routing interpretation lost the readonly flag")
+			}
+			if !reflect.DeepEqual(info, before) {
+				t.Fatal("routing interpretation mutated the shared command record")
+			}
 		})
+	}
+	for _, name := range []string{"info", "scan", "memory|stats", "function|stats", "latency|latest", "hotkeys|get"} {
+		t.Run("snapshot/"+name, func(t *testing.T) {
+			meta, ok := defaultCommandMetadataView().routingTable[name]
+			if !ok {
+				t.Fatalf("snapshot metadata is missing for %s", name)
+			}
+			policy, ok := routingPolicyFor(meta)
+			if !ok || policy.Request != routing.ReqDefault || policy.Response != routing.RespDefaultKeyless {
+				t.Fatalf("snapshot local policy = %#v, supported = %v", policy, ok)
+			}
+		})
+	}
+}
+
+func TestCommandPolicyResolverMetadataOptIn(t *testing.T) {
+	ctx := context.Background()
+	legacy := NewDefaultCommandPolicyResolver()
+	metadata := NewCommandMetadataResolver()
+	for _, name := range []string{"ping", "dbsize", "keys", "mget", "mset", "del"} {
+		t.Run(name, func(t *testing.T) {
+			cmd := NewCmd(ctx, name)
+			if policy := legacy.GetCommandPolicy(ctx, cmd); policy != nil {
+				t.Fatalf("legacy resolver enabled metadata policy: %#v", policy)
+			}
+			if policy := metadata.GetCommandPolicy(ctx, cmd); policy == nil || policy.Request == routing.ReqDefault {
+				t.Fatalf("metadata resolver did not enable fan-out: %#v", policy)
+			}
+		})
+	}
+	search := NewCmd(ctx, "ft.search", "index", "*")
+	if policy := legacy.GetCommandPolicy(ctx, search); policy == nil || policy.Request != routing.ReqDefault || !policy.IsReadOnly() {
+		t.Fatalf("legacy Search policy changed: %#v", policy)
+	}
+	legacy.SetFallbackResolver(metadata)
+	if policy := legacy.GetCommandPolicy(ctx, NewCmd(ctx, "ping")); policy == nil || policy.Request != routing.ReqAllShards {
+		t.Fatalf("explicit metadata fallback was ignored: %#v", policy)
 	}
 }
 
@@ -149,7 +202,7 @@ func TestRoutingMetadataDerivesPoliciesFromSharedRecords(t *testing.T) {
 }
 
 func TestRoutingMetadataResolvesContainerInvocation(t *testing.T) {
-	resolver := NewDefaultCommandPolicyResolver()
+	resolver := NewCommandMetadataResolver()
 
 	for _, child := range []string{"READ", "del"} {
 		cmd := NewCmd(context.Background(), "FT.CURSOR", child, "idx", "42")
@@ -192,7 +245,7 @@ func TestRoutingMetadataResolvesBareContainerInvocation(t *testing.T) {
 }
 
 func TestMetadataResolverDoesNotExposeImmutablePolicy(t *testing.T) {
-	resolver := NewDefaultCommandPolicyResolver()
+	resolver := NewCommandMetadataResolver()
 	ctx := context.Background()
 	cmd := NewCmd(ctx, "get", "key")
 
@@ -463,6 +516,39 @@ func TestCommandInfoResolverUsesStaticViewAfterEnsureFailure(t *testing.T) {
 	}
 	if view != defaultCommandMetadataView() || resolution.policy == nil || resolution.policy.Response != routing.RespDefaultHashSlot {
 		t.Fatalf("static fallback = (%#v, %p), want hash-slot/%p", resolution.policy, view, defaultCommandMetadataView())
+	}
+}
+
+func TestCommandInfoResolverUnsupportedMetadataFallback(t *testing.T) {
+	ctx := context.Background()
+	view := buildCommandMetadataView(nil, map[string]*CommandInfo{
+		"module.special": {Name: "module.special", Tips: []string{"response_policy:special"}},
+	})
+	cmd := NewCmd(ctx, "module.special")
+	metadata := newCommandMetadataPolicyResolver(func() *commandMetadataView { return view })
+	customPolicy := &routing.CommandPolicy{Request: routing.ReqDefault}
+	for _, custom := range []bool{false, true} {
+		if custom {
+			metadata.SetFallbackResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
+				return customPolicy
+			}))
+		}
+		single, _, err := metadata.resolveCommandRoutingWithView(ctx, cmd, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch, _, err := metadata.resolveCommandRoutingsWithView(ctx, []Cmder{cmd}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, resolution := range []commandRoutingResolution{single, batch[0], metadata.getCommandRoutingInView(ctx, cmd, view)} {
+			if !resolution.metaOK || resolution.policyFromMetadata == custom {
+				t.Fatalf("custom=%v: lost metadata provenance: %+v", custom, resolution)
+			}
+			if custom && resolution.policy != customPolicy || !custom && resolution.policy != nil {
+				t.Fatalf("custom=%v: unexpected selected policy: %#v", custom, resolution.policy)
+			}
+		}
 	}
 }
 

@@ -1663,16 +1663,6 @@ var _ = Describe("ClusterClient", func() {
 			}))
 		})
 
-		It("should reject ping command in pipeline", func() {
-			// Test that ping command fails in pipeline as expected
-			_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Ping(ctx)
-				return nil
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("redis: cannot pipeline command \"ping\" with request policy ReqAllNodes/ReqAllShards/ReqMultiShard"))
-		})
-
 		It("should support TxPipeline hook", func() {
 			err := client.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -2268,6 +2258,145 @@ var _ = Describe("Command Tips tests", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
+	for _, metadataPolicies := range []bool{false, true} {
+		mode := "default policies"
+		if metadataPolicies {
+			mode = "metadata policies"
+		}
+		Describe("routing compatibility with "+mode, func() {
+			const firstKey, secondKey = "routing-review:{a}:one", "routing-review:{b}:two"
+			const serializedKey = "routing-review:{a}:serialized"
+			configure := func(c *redis.ClusterClient) {
+				// The shared cluster fixture installs a dynamic resolver. Reset it
+				// explicitly so each case exercises the intended public mode.
+				if metadataPolicies {
+					c.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+				} else {
+					c.SetCommandInfoResolver(redis.NewDefaultCommandPolicyResolver())
+				}
+			}
+			BeforeEach(func() {
+				configure(client)
+				Expect(client.Set(ctx, firstKey, "one", 0).Err()).NotTo(HaveOccurred())
+				Expect(client.Set(ctx, secondKey, "two", 0).Err()).NotTo(HaveOccurred())
+			})
+			AfterEach(func() {
+				for _, key := range []string{firstKey, secondKey, serializedKey} {
+					Expect(client.Del(ctx, key).Err()).NotTo(HaveOccurred())
+				}
+			})
+
+			It("keeps ordinary direct commands available and makes cross-slot fan-out opt-in", func() {
+				Expect(client.Ping(ctx).Val()).To(Equal("PONG"))
+				info, err := client.Info(ctx, "server").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(info).To(ContainSubstring("redis_version:"))
+				_, _, err = client.Scan(ctx, 0, "routing-review:*", 10).Result()
+				Expect(err).NotTo(HaveOccurred())
+				values, err := client.MGet(ctx, secondKey, firstKey).Result()
+				if metadataPolicies {
+					Expect(err).NotTo(HaveOccurred())
+					Expect(values).To(Equal([]interface{}{"two", "one"}))
+				} else {
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("CROSSSLOT"))
+				}
+			})
+
+			It("runs a mixed pipeline despite one cross-slot command", func() {
+				pipe := client.Pipeline()
+				first := pipe.Get(ctx, firstKey)
+				ping := pipe.Ping(ctx)
+				size := pipe.DBSize(ctx)
+				script := pipe.ScriptLoad(ctx, "return 1")
+				info := pipe.Info(ctx, "server")
+				crossSlot := pipe.MGet(ctx, firstKey, secondKey)
+				last := pipe.Get(ctx, secondKey)
+				cmds, err := pipe.Exec(ctx)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("CROSSSLOT"))
+				for _, cmd := range cmds {
+					if cmd == crossSlot {
+						Expect(cmd.Err()).To(HaveOccurred())
+					} else {
+						Expect(cmd.Err()).NotTo(HaveOccurred())
+					}
+				}
+				Expect(first.Val()).To(Equal("one"))
+				Expect(last.Val()).To(Equal("two"))
+				Expect(ping.Val()).To(Equal("PONG"))
+				Expect(size.Val()).To(BeNumerically(">=", 0))
+				Expect(script.Val()).To(HaveLen(40))
+				Expect(info.Val()).To(ContainSubstring("redis_version:"))
+			})
+
+			It("runs administrative commands on the transaction connection", func() {
+				pipe := client.TxPipeline()
+				value := pipe.Get(ctx, firstKey)
+				ping := pipe.Ping(ctx)
+				size := pipe.DBSize(ctx)
+				script := pipe.ScriptLoad(ctx, "return 1")
+				info := pipe.Info(ctx, "server")
+				cmds, err := pipe.Exec(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				for _, cmd := range cmds {
+					Expect(cmd.Err()).NotTo(HaveOccurred())
+				}
+				Expect(value.Val()).To(Equal("one"))
+				Expect(ping.Val()).To(Equal("PONG"))
+				Expect(size.Val()).To(BeNumerically(">=", 1))
+				Expect(script.Val()).To(HaveLen(40))
+				Expect(info.Val()).To(ContainSubstring("redis_version:"))
+			})
+
+			It("accepts BinaryMarshaler values when MSET needs only one slot", func() {
+				Expect(client.MSet(ctx, firstKey, numberStruct{Number: 7}).Err()).NotTo(HaveOccurred())
+				Expect(client.Get(ctx, firstKey).Val()).To(Equal(`{"Number":7}`))
+				Expect(client.MSet(ctx,
+					firstKey, numberStruct{Number: 8}, serializedKey, numberStruct{Number: 9},
+				).Err()).NotTo(HaveOccurred())
+				values, err := client.MGet(ctx, firstKey, serializedKey).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(values).To(Equal([]interface{}{`{"Number":8}`, `{"Number":9}`}))
+			})
+
+			It("preserves direct command behavior across AutoPipeline modes", func() {
+				for _, fullDuplex := range []bool{false, true} {
+					opt := *client.Options()
+					apClient := redis.NewClusterClient(&opt)
+					configure(apClient)
+					defer apClient.Close()
+					cfg := &redis.AutoPipelineOptions{FullDuplex: fullDuplex}
+					blocking, err := apClient.AutoPipelineWithOptions(cfg)
+					Expect(err).NotTo(HaveOccurred())
+					async, err := apClient.AsyncAutoPipelineWithOptions(cfg)
+					Expect(err).NotTo(HaveOccurred())
+					for i, ap := range []*redis.AutoPipeliner{blocking, async} {
+						By(fmt.Sprintf("full duplex=%v, async=%v", fullDuplex, i == 1))
+						ping := ap.Ping(ctx)
+						values := ap.MGet(ctx, secondKey, firstKey)
+						value := ap.Get(ctx, firstKey)
+						size := ap.DBSize(ctx)
+						Expect(ping.Err()).NotTo(HaveOccurred())
+						Expect(ping.Val()).To(Equal("PONG"))
+						Expect(value.Err()).NotTo(HaveOccurred())
+						Expect(value.Val()).To(Equal("one"))
+						Expect(size.Err()).NotTo(HaveOccurred())
+						Expect(size.Val()).To(BeNumerically(">=", 0))
+						if metadataPolicies {
+							Expect(size.Val()).To(BeNumerically(">=", 2))
+							Expect(values.Err()).NotTo(HaveOccurred())
+							Expect(values.Val()).To(Equal([]interface{}{"two", "one"}))
+						} else {
+							Expect(values.Err()).To(HaveOccurred())
+							Expect(values.Err().Error()).To(ContainSubstring("CROSSSLOT"))
+						}
+					}
+				}
+			})
+		})
+	}
+
 	It("should verify COMMAND tips match router policy types", func() {
 		SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 		expectedPolicies := map[string]struct {
@@ -2399,7 +2528,8 @@ var _ = Describe("Command Tips tests", func() {
 	Describe("DDL Commands Routing Policy Tests", func() {
 		BeforeEach(func() {
 			info := client.Info(ctx, "modules")
-			if info.Err() != nil || !strings.Contains(info.Val(), "search") {
+			Expect(info.Err()).NotTo(HaveOccurred())
+			if !strings.Contains(info.Val(), "search") {
 				Skip("Search module not available")
 			}
 		})
@@ -3258,7 +3388,7 @@ var _ = Describe("Command Tips tests", func() {
 				// MGET with no keys should return an error
 				result := client.MGet(ctx)
 				Expect(result.Err()).To(HaveOccurred())
-				Expect(result.Err().Error()).To(ContainSubstring("multi-shard command mget has no key arguments"))
+				Expect(result.Err().Error()).To(ContainSubstring("cannot determine all key arguments for multi-shard command mget"))
 			})
 
 			It("should test MGET integration with MSET across multiple shards", func() {
@@ -3303,36 +3433,10 @@ var _ = Describe("Command Tips tests", func() {
 				}
 			})
 
-			It("should test multi-shard commands cannot be used in pipeline", func() {
-				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
-
-				// Create keys across multiple shards
-				keys := []string{
-					"pipeline_test_1111",
-					"pipeline_test_2222",
-					"pipeline_test_3333",
-				}
-
-				// Verify keys are on different shards
-				slotMap := make(map[int]bool)
-				for _, key := range keys {
-					slot := hashtag.Slot(key)
-					slotMap[slot] = true
-				}
-				Expect(len(slotMap)).To(BeNumerically(">", 1))
-
-				// Try to use MGET in pipeline - should fail
-				pipe := client.Pipeline()
-				pipe.MGet(ctx, keys...)
-				_, err := pipe.Exec(ctx)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("cannot pipeline command"))
-			})
-
 			It("should test DisableRoutingPolicies option disables routing policies", func() {
 				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
-				// Test 1: With routing policies enabled (default), MGET should work across slots
+				// The fixture explicitly enables metadata policies, so MGET works across slots.
 				testData := map[string]string{
 					"disable_routing_key_1111": "value1",
 					"disable_routing_key_2222": "value2",
