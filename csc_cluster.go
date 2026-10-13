@@ -18,15 +18,16 @@ import (
 // This is deliberately not an ownership epoch. Absence-dependent replies are
 // excluded by the cluster reply policy, including for background fetches.
 type clusterCSC struct {
-	client         weak.Pointer[ClusterClient]
-	trustInterval  time.Duration
-	mu             sync.Mutex
-	closed         atomic.Bool
-	enabled        atomic.Bool
-	freshness      atomic.Pointer[time.Time]
-	nodes          map[string]*clusterCSCNode
-	lifetimes      map[*clusterCSCNode]struct{}
-	pending        map[*clusterCSCNode]*clusterCSCCleanup
+	client        weak.Pointer[ClusterClient]
+	trustInterval time.Duration
+	mu            sync.Mutex
+	closed        atomic.Bool
+	enabled       atomic.Bool
+	freshness     atomic.Pointer[time.Time]
+	lifetimes     map[*clusterCSCNode]struct{}
+	// A present nil value requests a full clear; otherwise the set contains
+	// unprefixed Redis keys. An absent node has no queued cleanup.
+	pending        map[*clusterCSCNode]map[string]struct{}
 	wake           chan struct{}
 	stop           chan struct{}
 	done           chan struct{}
@@ -36,14 +37,8 @@ type clusterCSC struct {
 	retiredRefresh CSCRefreshStats
 }
 
-type clusterCSCCleanup struct {
-	// nil means a full clear; otherwise keys are unprefixed Redis keys.
-	keys map[string]struct{}
-}
-
 type clusterCSCNode struct {
 	owner   *clusterCSC
-	addr    string
 	base    *baseClient
 	closed  atomic.Bool
 	primary atomic.Bool
@@ -55,15 +50,9 @@ type clusterCSCNode struct {
 	misses *cscMissCoalescer
 }
 
-// Permission is per routed attempt, not per ownership period. Direct node
-// handles and replicas receive no permission, even when their pool is tracked.
-type clusterCSCToken struct {
-	node   *clusterCSCNode
-	state  *clusterState
-	bypass bool
-}
-
 type (
+	// The value is the permitted *clusterCSCNode, or a typed nil to force
+	// bypass across retries. The routing snapshot stays under its own key.
 	clusterCSCContextKey struct{}
 	clusterCSCRouteKey   struct{}
 )
@@ -71,8 +60,8 @@ type (
 func newClusterCSC(c *ClusterClient) *clusterCSC {
 	g := &clusterCSC{
 		client: weak.Make(c), trustInterval: c.opt.ClusterStateReloadInterval,
-		nodes: make(map[string]*clusterCSCNode), lifetimes: make(map[*clusterCSCNode]struct{}),
-		pending: make(map[*clusterCSCNode]*clusterCSCCleanup), wake: make(chan struct{}, 1),
+		lifetimes: make(map[*clusterCSCNode]struct{}),
+		pending:   make(map[*clusterCSCNode]map[string]struct{}), wake: make(chan struct{}, 1),
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
 	g.enabled.Store(c.opt.ClientSideCacheConfig != nil)
@@ -91,7 +80,6 @@ func (g *clusterCSC) register(n *clusterCSCNode, c *Client) {
 		n.drain = n.base.cscDrainHandle
 		n.misses = n.base.cscMissCoalescer.Load()
 	}
-	g.nodes[n.addr] = n
 	g.lifetimes[n] = struct{}{}
 	g.statsRevision++
 	if c.csc != nil {
@@ -125,22 +113,25 @@ func (c *baseClient) clusterCSCAllowed(ctx context.Context) bool {
 	if n == nil {
 		return true
 	}
-	t, _ := ctx.Value(clusterCSCContextKey{}).(*clusterCSCToken)
+	allowed, _ := ctx.Value(clusterCSCContextKey{}).(*clusterCSCNode)
+	if allowed != n || !n.ready() {
+		return false
+	}
 	// Admission checks the captured route's age. Hit/publication checks use the
 	// latest accepted topology, so do not check both timestamps here on every hit.
-	return t != nil && !t.bypass && t.node == n && t.state != nil &&
-		n.ready() && n.owner.fresh(t.state.createdAt)
+	state, _ := ctx.Value(clusterCSCRouteKey{}).(*clusterState)
+	return state != nil && n.owner.fresh(state.createdAt)
 }
 
 func clusterCSCBypass(ctx context.Context) context.Context {
-	return context.WithValue(ctx, clusterCSCContextKey{}, &clusterCSCToken{bypass: true})
+	return context.WithValue(ctx, clusterCSCContextKey{}, (*clusterCSCNode)(nil))
 }
 
 func (c *ClusterClient) cscNodeContext(ctx context.Context, n *clusterNode, cmd Cmder) context.Context {
 	if !c.csc.enabled.Load() {
 		return ctx
 	}
-	if old, _ := ctx.Value(clusterCSCContextKey{}).(*clusterCSCToken); old != nil && old.bypass {
+	if allowed, ok := ctx.Value(clusterCSCContextKey{}).(*clusterCSCNode); ok && allowed == nil {
 		return ctx
 	}
 	state, _ := ctx.Value(clusterCSCRouteKey{}).(*clusterState)
@@ -153,7 +144,7 @@ func (c *ClusterClient) cscNodeContext(ctx context.Context, n *clusterNode, cmd 
 	if entry == nil || len(entry.nodes) == 0 || entry.nodes[0] != n {
 		return clusterCSCBypass(ctx)
 	}
-	return context.WithValue(ctx, clusterCSCContextKey{}, &clusterCSCToken{node: control, state: state})
+	return context.WithValue(ctx, clusterCSCContextKey{}, control)
 }
 
 func (c *ClusterClient) cscRoutingState(ctx context.Context) (*clusterState, error) {
@@ -170,21 +161,18 @@ func (g *clusterCSC) scheduleLocked(n *clusterCSCNode, keys []string) {
 		return
 	}
 	n.dirty.Store(true)
-	job, queued := g.pending[n]
-	if !queued {
-		job = &clusterCSCCleanup{}
-		if keys != nil {
-			job.keys = make(map[string]struct{}, len(keys))
-		}
-		g.pending[n] = job
+	pending, queued := g.pending[n]
+	if !queued && keys != nil {
+		pending = make(map[string]struct{}, len(keys))
 	}
 	if keys == nil {
-		job.keys = nil
-	} else if job.keys != nil {
+		pending = nil
+	} else if pending != nil {
 		for _, key := range keys {
-			job.keys[key] = struct{}{}
+			pending[key] = struct{}{}
 		}
 	}
+	g.pending[n] = pending
 	if !g.started {
 		g.started = true
 		go g.cleanup()
@@ -430,10 +418,10 @@ func (g *clusterCSC) cleanup() {
 		for {
 			g.mu.Lock()
 			var n *clusterCSCNode
-			var job *clusterCSCCleanup
+			var keys map[string]struct{}
 			for node, pending := range g.pending {
 				n = node
-				job = pending
+				keys = pending
 				delete(g.pending, node)
 				break
 			}
@@ -442,7 +430,7 @@ func (g *clusterCSC) cleanup() {
 				break
 			}
 			if !g.closed.Load() && !n.closed.Load() {
-				n.cleanCache(job)
+				n.cleanCache(keys)
 			}
 			// No reload prerequisite: removed dependencies will miss and expose
 			// any redirect; unaffected entries can be served again immediately.
@@ -457,21 +445,21 @@ func (g *clusterCSC) cleanup() {
 	}
 }
 
-func (n *clusterCSCNode) cleanCache(job *clusterCSCCleanup) {
+func (n *clusterCSCNode) cleanCache(keys map[string]struct{}) {
 	n.flushMu.Lock()
 	defer n.flushMu.Unlock()
 	if n.base != nil && n.base.csc != nil {
-		if job.keys == nil {
+		if keys == nil {
 			n.base.csc.Flush()
 		} else {
-			for key := range job.keys {
+			for key := range keys {
 				n.base.csc.DeleteByRedisKey(cscNamespacedKey(n.base.cscKeyPrefix, key))
 			}
 		}
 	}
 }
 
-func (n *clusterCSCNode) flushCache() { n.cleanCache(&clusterCSCCleanup{}) }
+func (n *clusterCSCNode) flushCache() { n.cleanCache(nil) }
 
 func (n *clusterCSCNode) close() { n.closed.Store(true) }
 
@@ -515,9 +503,6 @@ func (g *clusterCSC) finishNode(n *clusterCSCNode) {
 	g.retired.Hits += stats.Hits
 	g.retired.Misses += stats.Misses
 	addCSCRefreshStats(&g.retiredRefresh, refresh)
-	if g.nodes[n.addr] == n {
-		delete(g.nodes, n.addr)
-	}
 	delete(g.lifetimes, n)
 	delete(g.pending, n)
 	g.statsRevision++

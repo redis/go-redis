@@ -563,7 +563,7 @@ type clusterNode struct {
 func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress string, controls ...*clusterCSC) *clusterNode {
 	opt := clOpt.clientOptions()
 	if len(controls) != 0 && controls[0] != nil {
-		opt.clusterCSC = &clusterCSCNode{owner: controls[0], addr: addr}
+		opt.clusterCSC = &clusterCSCNode{owner: controls[0]}
 	}
 	opt.Addr = addr
 	opt.NodeAddress = nodeAddress

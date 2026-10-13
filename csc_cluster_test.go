@@ -1347,7 +1347,68 @@ func TestClusterCSCRedirectObserversOnUncachedPaths(t *testing.T) {
 	}
 }
 
-func TestClusterCSCTokenValidatesSelectedSlotRole(t *testing.T) {
+func TestClusterCSCRoutePermission(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(context.Context, *clusterCSCNode) context.Context
+		want  bool
+	}{
+		{"primary", func(ctx context.Context, _ *clusterCSCNode) context.Context { return ctx }, true},
+		{"direct handle", func(_ context.Context, _ *clusterCSCNode) context.Context { return context.Background() }, false},
+		{"route without permission", func(ctx context.Context, _ *clusterCSCNode) context.Context {
+			return context.WithValue(context.Background(), clusterCSCRouteKey{}, ctx.Value(clusterCSCRouteKey{}))
+		}, false},
+		{"permission without route", func(_ context.Context, n *clusterCSCNode) context.Context {
+			return context.WithValue(context.Background(), clusterCSCContextKey{}, n)
+		}, false},
+		{"different node", func(ctx context.Context, _ *clusterCSCNode) context.Context {
+			return context.WithValue(ctx, clusterCSCContextKey{}, &clusterCSCNode{})
+		}, false},
+		{"explicit bypass", func(ctx context.Context, _ *clusterCSCNode) context.Context {
+			return clusterCSCBypass(ctx)
+		}, false},
+		{"expired route despite fresh topology", func(ctx context.Context, _ *clusterCSCNode) context.Context {
+			return context.WithValue(ctx, clusterCSCRouteKey{}, &clusterState{createdAt: time.Now().Add(-2 * time.Minute)})
+		}, false},
+		{"cleanup pending", func(ctx context.Context, n *clusterCSCNode) context.Context {
+			n.dirty.Store(true)
+			return ctx
+		}, false},
+		{"replica", func(ctx context.Context, n *clusterCSCNode) context.Context {
+			n.primary.Store(false)
+			return ctx
+		}, false},
+		{"node closed", func(ctx context.Context, n *clusterCSCNode) context.Context {
+			n.closed.Store(true)
+			return ctx
+		}, false},
+		{"cluster closed", func(ctx context.Context, n *clusterCSCNode) context.Context {
+			n.owner.closed.Store(true)
+			return ctx
+		}, false},
+		{"tracking stopped", func(ctx context.Context, n *clusterCSCNode) context.Context {
+			n.base.cscActive.Store(false)
+			return ctx
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			g := &clusterCSC{trustInterval: time.Minute}
+			g.freshness.Store(&now)
+			n := &clusterCSCNode{owner: g}
+			n.base = &baseClient{opt: &Options{clusterCSC: n}, cscActive: &atomic.Bool{}}
+			n.base.cscActive.Store(true)
+			n.primary.Store(true)
+			ctx := context.WithValue(context.Background(), clusterCSCRouteKey{}, &clusterState{createdAt: now})
+			ctx = context.WithValue(ctx, clusterCSCContextKey{}, n)
+			if got := n.base.clusterCSCAllowed(tc.setup(ctx, n)); got != tc.want {
+				t.Fatalf("cache permission=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClusterCSCRoutePermissionValidatesSelectedSlotRole(t *testing.T) {
 	var calls atomic.Int32
 	a := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
 	b := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
@@ -1384,6 +1445,18 @@ func TestClusterCSCTokenValidatesSelectedSlotRole(t *testing.T) {
 	}
 	if calls.Load() != before {
 		t.Fatal("unchanged mixed-role map retired a primary's cache")
+	}
+	// Explicit bypass must survive another dispatch to an otherwise eligible
+	// primary, as happens when a full-duplex retry re-enters Cluster routing.
+	ctx = clusterCSCBypass(ctx)
+	for i := 0; i < 2; i++ {
+		cmd := NewStringCmd(ctx, "get", "{foo}:primary")
+		if err := node.Client.Process(c.cscNodeContext(ctx, node, cmd), cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls.Load() != before+2 {
+		t.Fatal("primary dispatch replaced explicit cache bypass")
 	}
 }
 
