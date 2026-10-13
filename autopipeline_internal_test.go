@@ -2870,7 +2870,7 @@ func TestClusterRoutingDecisionNonComparableCommand(t *testing.T) {
 		t.Fatalf("admission resolved policy %d times, want 1", calls)
 	}
 	route := c.resolvePipelineRouting(ctx, []Cmder{cmd})
-	flushed := c.pipelineDecision(ctx, cmd, route)
+	flushed := c.pipelineDecision(ctx, cmd, route, new(clusterRoutingDecision))
 	if calls != 1 || admitted.view != flushed.view || admitted.naturalSlot != flushed.naturalSlot {
 		t.Fatal("pipeline did not retain its admission decision")
 	}

@@ -507,10 +507,16 @@ func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
 	return cmd.routing.Load()
 }
 
+// setClusterRoutingDecision replaces the pin. A replaced pooled decision goes
+// back to its pool, so callers must not keep a peeked pointer past the pin.
 func (cmd *baseCmd) setClusterRoutingDecision(decision *clusterRoutingDecision) {
-	cmd.routing.Store(decision)
+	if old := cmd.routing.Swap(decision); old != decision {
+		releaseClusterRoutingDecision(old)
+	}
 }
 
+// takeClusterRoutingDecision transfers the pin to the caller, which must pass
+// it to releaseClusterRoutingDecision after its last use.
 func (cmd *baseCmd) takeClusterRoutingDecision() *clusterRoutingDecision {
 	return cmd.routing.Swap(nil)
 }

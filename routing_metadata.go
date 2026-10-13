@@ -100,6 +100,9 @@ type routingCommandMeta struct {
 	keyPlanComplete bool
 	special         routingSpecialSupport
 	valid           bool
+	// simpleFirstKey marks one fixed-index range key spec (GET, SET, HGET,
+	// MGET, ...), whose first key needs no search. See routingSimpleFirstKey.
+	simpleFirstKey bool
 }
 
 // routingKeyPlan contains all keys and split fields for one invocation.
@@ -133,8 +136,8 @@ func routingLocalSpecialCommand(name string) bool {
 }
 
 // deriveRoutingTable omits tombstones and shadowed containers.
-func deriveRoutingTable(records map[string]*CommandInfo, shadowedParents map[string]struct{}) map[string]routingCommandMeta {
-	table := make(map[string]routingCommandMeta, len(records))
+func deriveRoutingTable(records map[string]*CommandInfo, shadowedParents map[string]struct{}) map[string]*routingCommandMeta {
+	table := make(map[string]*routingCommandMeta, len(records))
 	for rawName, info := range records {
 		name := internal.ToLower(rawName)
 		if info == nil {
@@ -145,7 +148,7 @@ func deriveRoutingTable(records map[string]*CommandInfo, shadowedParents map[str
 		}
 		meta := deriveRoutingCommandMeta(name, info)
 		if meta.valid {
-			table[name] = meta
+			table[name] = &meta
 		}
 	}
 	return table
@@ -238,7 +241,37 @@ func deriveRoutingCommandMeta(name string, info *CommandInfo) routingCommandMeta
 		req, resp = routing.ReqDefault, routing.RespDefaultKeyless
 	}
 	meta.policy = &routing.CommandPolicy{Request: req, Response: resp, Tips: tips}
+	if meta.keyState == routingKeysKnown && len(meta.keySpecs) == 1 &&
+		// CLUSTER subcommands carry slot arguments; JSON.DEBUG has a keyless form.
+		name != "json.debug" && name != "cluster" && !strings.HasPrefix(name, "cluster|") {
+		spec := meta.keySpecs[0]
+		meta.simpleFirstKey = spec.begin == routingBeginIndex && spec.index > 0 &&
+			spec.find == routingFindRange && spec.limit == 0 && spec.step > 0
+	}
 	return meta
+}
+
+// routingSimpleFirstKey is routingFirstKeyPos for a simpleFirstKey record. It
+// applies the same bounds and wire checks; ok is false when they fail, and the
+// caller must then take the full path to get its error.
+func routingSimpleFirstKey(meta *routingCommandMeta, cmd Cmder) (pos int, key string, ok bool) {
+	spec := &meta.keySpecs[0]
+	argsLen := len(cmd.Args())
+	begin := spec.index
+	if begin >= argsLen {
+		return 0, "", false
+	}
+	last := spec.lastKey
+	if last >= 0 {
+		last += begin
+	} else {
+		last += argsLen
+	}
+	if last < begin || last >= argsLen {
+		return 0, "", false
+	}
+	key, ok = routingArgText(cmd, begin)
+	return begin, key, ok
 }
 
 func deriveRoutingKeySpecs(info *CommandInfo) (routingKeyState, []routingKeySpec, bool) {
@@ -330,7 +363,7 @@ func deriveRoutingKeySpecs(info *CommandInfo) (routingKeyState, []routingKeySpec
 }
 
 // routingLookupMeta resolves exact wire command and subcommand tokens.
-func routingLookupMeta(view *commandMetadataView, cmd Cmder) (routingCommandMeta, bool) {
+func routingLookupMeta(view *commandMetadataView, cmd Cmder) (*routingCommandMeta, bool) {
 	meta, state := routingLookupMetaState(view, cmd)
 	return meta, state == routingMetadataUsable
 }
@@ -338,43 +371,43 @@ func routingLookupMeta(view *commandMetadataView, cmd Cmder) (routingCommandMeta
 func routingLookupMetaState(
 	view *commandMetadataView,
 	cmd Cmder,
-) (routingCommandMeta, routingMetadataState) {
+) (*routingCommandMeta, routingMetadataState) {
 	if view == nil || len(cmd.Args()) == 0 || !routingCommandToken(cmd.Args()[0]) {
-		return routingCommandMeta{}, routingMetadataMissing
+		return nil, routingMetadataMissing
 	}
 	name := cmd.Name()
 	if _, parent := view.subcommandParents[name]; parent {
 		if len(cmd.Args()) > 1 {
 			if !routingCommandToken(cmd.Args()[1]) {
-				return routingCommandMeta{}, routingMetadataMissing
+				return nil, routingMetadataMissing
 			}
 			child := internal.ToLower(cmd.stringArg(1))
 			if child == "" {
-				return routingCommandMeta{}, routingMetadataMissing
+				return nil, routingMetadataMissing
 			}
 			childName := name + "|" + child
 			if meta, ok := view.routingTable[childName]; ok {
 				return meta, routingMetadataUsable
 			}
 			if _, tombstoned := view.tombstones[childName]; tombstoned {
-				return routingCommandMeta{}, routingMetadataUnusable
+				return nil, routingMetadataUnusable
 			}
 			if _, resolved := view.records[childName]; resolved {
-				return routingCommandMeta{}, routingMetadataUnusable
+				return nil, routingMetadataUnusable
 			}
-			return routingCommandMeta{}, routingMetadataMissing
+			return nil, routingMetadataMissing
 		}
 	}
 	if meta, ok := view.routingTable[name]; ok {
 		return meta, routingMetadataUsable
 	}
 	if _, tombstoned := view.tombstones[name]; tombstoned {
-		return routingCommandMeta{}, routingMetadataUnusable
+		return nil, routingMetadataUnusable
 	}
 	if _, resolved := view.records[name]; resolved {
-		return routingCommandMeta{}, routingMetadataUnusable
+		return nil, routingMetadataUnusable
 	}
-	return routingCommandMeta{}, routingMetadataMissing
+	return nil, routingMetadataMissing
 }
 
 func routingCommandToken(arg interface{}) bool {
@@ -389,8 +422,8 @@ func routingCommandToken(arg interface{}) bool {
 }
 
 // routingPolicyFor rejects special policies without implemented handlers.
-func routingPolicyFor(meta routingCommandMeta) (*routing.CommandPolicy, bool) {
-	if !meta.valid || meta.policy == nil {
+func routingPolicyFor(meta *routingCommandMeta) (*routing.CommandPolicy, bool) {
+	if meta == nil || !meta.valid || meta.policy == nil {
 		return nil, false
 	}
 	if meta.policy.Request == routing.ReqSpecial &&
@@ -412,8 +445,8 @@ func routingPolicyFor(meta routingCommandMeta) (*routing.CommandPolicy, bool) {
 
 // routingFirstKeyPos returns a proven key position, or zero for proven keyless.
 // Multi-shard routing uses routingResolveKeyPlan.
-func routingFirstKeyPos(meta routingCommandMeta, cmd Cmder) (pos int, ok bool) {
-	if !meta.valid {
+func routingFirstKeyPos(meta *routingCommandMeta, cmd Cmder) (pos int, ok bool) {
+	if meta == nil || !meta.valid {
 		return 0, false
 	}
 	if meta.keyState == routingKeysNone {
@@ -497,17 +530,21 @@ func routingFirstKeyForSpec(spec routingKeySpec, cmd Cmder) (int, bool, bool) {
 
 // routingResolveTransactionKeyPlan also accepts the known stream layout: all
 // keys can be checked for one slot, but keys and IDs cannot be split by fan-out.
-func routingResolveTransactionKeyPlan(meta routingCommandMeta, cmd Cmder) (routingKeyPlan, bool) {
-	if len(meta.keySpecs) == 1 && meta.keySpecs[0].begin == routingBeginStreams {
-		meta.keyPlanComplete = true
+func routingResolveTransactionKeyPlan(meta *routingCommandMeta, cmd Cmder) (routingKeyPlan, bool) {
+	if meta != nil && len(meta.keySpecs) == 1 && meta.keySpecs[0].begin == routingBeginStreams &&
+		!meta.keyPlanComplete {
+		// The view's records are shared and immutable: adjust a copy.
+		streams := *meta
+		streams.keyPlanComplete = true
+		return routingResolveKeyPlan(&streams, cmd)
 	}
 	return routingResolveKeyPlan(meta, cmd)
 }
 
 // routingResolveKeyPlan returns all key positions or no plan.
-func routingResolveKeyPlan(meta routingCommandMeta, cmd Cmder) (routingKeyPlan, bool) {
+func routingResolveKeyPlan(meta *routingCommandMeta, cmd Cmder) (routingKeyPlan, bool) {
 	plan := routingKeyPlan{numKeysPos: -1}
-	if !meta.valid {
+	if meta == nil || !meta.valid {
 		return plan, false
 	}
 	if meta.keyState == routingKeysNone {

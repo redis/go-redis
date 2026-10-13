@@ -195,7 +195,7 @@ func (c *ClusterClient) executeMultiShard(
 	decision clusterRoutingDecision,
 ) error {
 	plan := decision.plan
-	if !decision.planOK || !plan.splittable || len(plan.positions) == 0 {
+	if !decision.planOK || plan == nil || !plan.splittable || len(plan.positions) == 0 {
 		return fmt.Errorf("redis: cannot determine all key arguments for multi-shard command %s", cmd.Name())
 	}
 	args := cmd.Args()
@@ -220,7 +220,7 @@ func (c *ClusterClient) executeMultiShard(
 		group.keys = append(group.keys, key)
 		keyOrder = append(keyOrder, key)
 	}
-	if len(slotMap) > 1 && decision.meta.name == "msetex" && msetexHasCondition(cmd, plan) {
+	if len(slotMap) > 1 && decision.meta != nil && decision.meta.name == "msetex" && msetexHasCondition(cmd, *plan) {
 		// NX/XX covers all keys; splitting could update only some of them.
 		return ErrCrossSlot
 	}
@@ -272,7 +272,7 @@ func (c *ClusterClient) executeMultiSlot(
 		go func(slot int, group *clusterSlotArgs) {
 			defer wg.Done()
 
-			subCmd, err := c.createSlotSpecificCommand(ctx, cmd, group.args, len(group.keys), decision.plan)
+			subCmd, err := c.createSlotSpecificCommand(ctx, cmd, group.args, len(group.keys), *decision.plan)
 			if err != nil {
 				results <- slotResult{nil, group.keys, err}
 				return
@@ -313,9 +313,9 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		if node == nil {
 			var err error
 			if c.opt.ShardPicker != nil {
-				node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, decision)
+				node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, &decision)
 			} else {
-				node, err = c.cmdNodeWithDecision(ctx, slot, decision)
+				node, err = c.cmdNodeWithDecision(ctx, slot, &decision)
 			}
 			if err != nil {
 				lastErr = err
@@ -500,6 +500,9 @@ func (c *ClusterClient) executeSpecialCommand(
 	node *clusterNode,
 	decision clusterRoutingDecision,
 ) error {
+	if decision.meta == nil {
+		return errUnsupportedRoutingPolicy
+	}
 	if handler := clusterSpecialRequestHandlers[decision.meta.name]; handler != nil {
 		return handler(c, ctx, cmd, node, decision)
 	}
@@ -525,7 +528,7 @@ func (c *ClusterClient) executeCursorCommand(
 	if node == nil {
 		// Reuse redirected nodes; otherwise route by cursor ID.
 		slot := clusterKeySlot(cursorID)
-		node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, decision)
+		node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, &decision)
 		if err != nil {
 			return err
 		}
@@ -760,8 +763,8 @@ func (c *ClusterClient) aggregateResponses(
 	if len(cmds) == 0 {
 		return errNoCmdsToAggregate
 	}
-	name := decision.name
-	if decision.metaOK {
+	name := cmd.Name()
+	if decision.metaOK && decision.meta != nil {
 		name = decision.meta.name
 	}
 	response := routing.RespDefaultKeyless

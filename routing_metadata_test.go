@@ -75,7 +75,7 @@ func TestRoutingMetadataMigrateKeys(t *testing.T) {
 	info := cloneCommandInfoForName("migrate", commandInfoSnapshotByName()["migrate"])
 	info.KeySpecs[0].Index = 1
 	override := deriveRoutingCommandMeta("migrate", info)
-	if pos, ok := routingFirstKeyPos(override, NewCmd(context.Background(), "migrate", "key", 6379, "", 0, 1000, "KEYS", "other")); !ok || pos != 1 {
+	if pos, ok := routingFirstKeyPos(&override, NewCmd(context.Background(), "migrate", "key", 6379, "", 0, 1000, "KEYS", "other")); !ok || pos != 1 {
 		t.Fatalf("overridden first key = (%d, %v), want (1, true)", pos, ok)
 	}
 }
@@ -112,7 +112,7 @@ func TestRoutingMetadataLocalSpecialPolicies(t *testing.T) {
 			if meta.policy.Request != tt.wantRequest || meta.policy.Response != tt.wantResponse {
 				t.Fatalf("policy = %v, want (%s, %s)", meta.policy, tt.wantRequest, tt.wantResponse)
 			}
-			_, supported := routingPolicyFor(meta)
+			_, supported := routingPolicyFor(&meta)
 			if supported != (tt.wantRequest == routing.ReqDefault) {
 				t.Fatalf("policy supported = %v", supported)
 			}
@@ -338,7 +338,7 @@ func TestRoutingMetadataNoMatchingKeySpecIsNotKeyless(t *testing.T) {
 			FindKeys: "range", LastKey: -1, KeyStep: 1,
 		}},
 	})
-	if pos, ok := routingFirstKeyPos(meta, NewCmd(context.Background(), "keyword", "arg")); ok || pos != 0 {
+	if pos, ok := routingFirstKeyPos(&meta, NewCmd(context.Background(), "keyword", "arg")); ok || pos != 0 {
 		t.Fatalf("unmatched keyed invocation = (%d, %v), want unresolved", pos, ok)
 	}
 }
@@ -407,7 +407,7 @@ func TestRoutingMetadataKeywordSearchesBackwardForNegativeStart(t *testing.T) {
 	}}}
 	meta := deriveRoutingCommandMeta(info.Name, info)
 	cmd := NewCmd(context.Background(), "keyword-backward", "KEYS", "early", "value", "KEYS", "late", "tail")
-	plan, ok := routingResolveKeyPlan(meta, cmd)
+	plan, ok := routingResolveKeyPlan(&meta, cmd)
 	if !ok || !reflect.DeepEqual(plan.positions, []int{5, 6}) {
 		t.Fatalf("backward keyword plan = %#v, ok=%v", plan, ok)
 	}
@@ -432,10 +432,11 @@ func TestRoutingMetadataPartialKeyPlans(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			meta := defaultCommandMetadataView().routingTable[tc.name]
 			if tc.name == "limited" {
-				meta = deriveRoutingCommandMeta(tc.name, &CommandInfo{KeySpecs: []KeySpec{{
+				derived := deriveRoutingCommandMeta(tc.name, &CommandInfo{KeySpecs: []KeySpec{{
 					Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1,
 					FindKeys: "range", LastKey: -1, KeyStep: 1, Limit: 2,
 				}}})
+				meta = &derived
 			}
 			if !meta.valid || meta.keyState != routingKeysKnown || meta.keyPlanComplete {
 				t.Fatalf("metadata=%#v, want usable first key but incomplete plan", meta)
@@ -464,7 +465,7 @@ func TestRoutingStreamAdaptationRejectsChangedMetadata(t *testing.T) {
 		append(append([]KeySpec(nil), commandInfoSnapshotByName()["xread"].KeySpecs...), KeySpec{BeginSearch: "unknown", FindKeys: "unknown"}),
 	} {
 		meta := deriveRoutingCommandMeta("xread", &CommandInfo{Name: "xread", KeySpecs: specs})
-		if _, ok := routingResolveTransactionKeyPlan(meta, makeCmd("xread", "streams", "key", "0")); ok {
+		if _, ok := routingResolveTransactionKeyPlan(&meta, makeCmd("xread", "streams", "key", "0")); ok {
 			t.Fatal("changed stream metadata authorized an incomplete transaction plan")
 		}
 	}

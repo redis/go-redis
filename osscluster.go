@@ -1886,7 +1886,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	if decision.policyErr != nil && !c.opt.DisableRoutingPolicies {
 		return decision.policyErr
 	}
-	slot := c.cmdSlotWithDecision(cmd, decision, -1)
+	slot := c.cmdSlotWithDecision(cmd, &decision, -1)
 	var node *clusterNode
 	var moved bool
 	var ask bool
@@ -1905,9 +1905,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		if node == nil && needsInitialNode {
 			var err error
 			if !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
-				node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, decision)
+				node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, &decision)
 			} else {
-				node, err = c.cmdNodeWithDecision(ctx, slot, decision)
+				node, err = c.cmdNodeWithDecision(ctx, slot, &decision)
 			}
 			if err != nil {
 				lastErr = err
@@ -2331,7 +2331,7 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 	ap.setShardFn(func(cmd Cmder) int {
 		// Reuse the admission slot so refreshes cannot change the flush shard.
 		var slot int
-		if decision, ok := c.peekAutoPipelineRoutingDecision(cmd); ok {
+		if decision := c.peekAutoPipelineRoutingDecision(cmd); decision != nil {
 			slot = c.cmdSlotWithDecision(cmd, decision, -1)
 		} else {
 			slot = c.cmdSlot(cmd, -1)
@@ -2387,6 +2387,17 @@ func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error)
 
 type clusterPipelineRouting struct {
 	view *commandMetadataView
+	// recompute means unpinned commands were not resolved up front; see
+	// pureRoutingChain.
+	recompute bool
+}
+
+// pureRoutingChain reports whether resolving a command calls only built-in,
+// side-effect-free code: no resolver, or the default policy resolver alone.
+// Its decisions depend only on the command and the view.
+func (c *ClusterClient) pureRoutingChain() bool {
+	r := c.cmdInfoResolver
+	return r == nil || r.legacyDefault && r.fallBackResolver == nil
 }
 
 func (r *clusterPipelineRouting) clear(cmds []Cmder) {
@@ -2398,26 +2409,27 @@ func (r *clusterPipelineRouting) clear(cmds []Cmder) {
 func (c *ClusterClient) autoPipelineRoutingDecision(
 	ctx context.Context,
 	cmd Cmder,
-) clusterRoutingDecision {
+) *clusterRoutingDecision {
 	if c.opt.DisableRoutingPolicies {
 		// Disabled policy routing must not invoke custom or dynamic resolvers.
 		cmd.setClusterRoutingDecision(nil)
-		return c.legacyRoutingDecision(cmd)
+		decision := c.legacyRoutingDecision(cmd)
+		return &decision
 	}
-	if decision, ok := c.peekAutoPipelineRoutingDecision(cmd); ok {
+	if decision := cmd.clusterRoutingDecision(); decision != nil {
 		return decision
 	}
-	decision := c.resolveCommandRoutingDecision(ctx, cmd)
-	cmd.setClusterRoutingDecision(&decision)
+	decision := acquireClusterRoutingDecision()
+	*decision = c.resolveCommandRoutingDecision(ctx, cmd)
+	decision.pooled = true
+	cmd.setClusterRoutingDecision(decision)
 	return decision
 }
 
-func (c *ClusterClient) peekAutoPipelineRoutingDecision(cmd Cmder) (clusterRoutingDecision, bool) {
-	decision := cmd.clusterRoutingDecision()
-	if decision == nil {
-		return clusterRoutingDecision{}, false
-	}
-	return *decision, true
+// peekAutoPipelineRoutingDecision returns the pinned decision, or nil. The
+// caller must not modify it or keep it past the pin's lifetime.
+func (c *ClusterClient) peekAutoPipelineRoutingDecision(cmd Cmder) *clusterRoutingDecision {
+	return cmd.clusterRoutingDecision()
 }
 
 func (c *ClusterClient) takeAutoPipelineRoutingDecision(cmd Cmder) (clusterRoutingDecision, bool) {
@@ -2425,7 +2437,11 @@ func (c *ClusterClient) takeAutoPipelineRoutingDecision(cmd Cmder) (clusterRouti
 	if decision == nil {
 		return clusterRoutingDecision{}, false
 	}
-	return *decision, true
+	// Copy out, then return a pooled pin: the caller owns only the copy.
+	taken := *decision
+	taken.pooled = false
+	releaseClusterRoutingDecision(decision)
+	return taken, true
 }
 
 func (c *ClusterClient) resolvePipelineRouting(
@@ -2439,6 +2455,13 @@ func (c *ClusterClient) resolvePipelineRouting(
 			decision := c.legacyRoutingDecision(cmd)
 			cmd.setClusterRoutingDecision(&decision)
 		}
+		return route
+	}
+	if c.pureRoutingChain() {
+		// The default chain calls no user code and reads only route.view, so
+		// mapping recomputes each unpinned decision instead of storing one per
+		// command. AutoPipeline admission pins are still used as they are.
+		route.recompute = true
 		return route
 	}
 
@@ -2488,20 +2511,24 @@ func (c *ClusterClient) pipelineDecision(
 	ctx context.Context,
 	cmd Cmder,
 	route *clusterPipelineRouting,
-) clusterRoutingDecision {
+	scratch *clusterRoutingDecision,
+) *clusterRoutingDecision {
+	// Read the pinned decision in place; it stays valid until route.clear.
 	if decision := cmd.clusterRoutingDecision(); decision != nil {
-		return *decision
+		return decision
 	}
 	// Handle internal commands added after batch resolution.
 	var resolution commandRoutingResolution
 	if c.cmdInfoResolver != nil {
 		resolution = c.cmdInfoResolver.getCommandRoutingInView(ctx, cmd, route.view)
-		return c.routingDecisionWithMeta(
+		*scratch = c.routingDecisionWithMeta(
 			cmd, route.view, resolution.policy, resolution.policyFromMetadata,
 			resolution.meta, resolution.metaOK,
 		)
+		return scratch
 	}
-	return c.routingDecisionInView(ctx, cmd, route.view, nil)
+	*scratch = c.routingDecisionInView(ctx, cmd, route.view, nil)
+	return scratch
 }
 
 func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
@@ -2605,22 +2632,48 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 		return err
 	}
 
-	decisions := make([]clusterRoutingDecision, len(cmds))
+	// Pinned decisions are read in place; they stay valid until route.clear.
+	// Only commands without a pin (internal commands added after batch
+	// resolution) get a decision stored here, so both passes see the same one.
+	// With route.recompute, an unpinned decision is rebuilt in each pass instead.
+	var unpinned []clusterRoutingDecision
+	decisionAt := func(i int, cmd Cmder, computed *clusterRoutingDecision) *clusterRoutingDecision {
+		if decision := cmd.clusterRoutingDecision(); decision != nil {
+			return decision
+		}
+		if route.recompute {
+			return c.pipelineDecision(ctx, cmd, route, computed)
+		}
+		return &unpinned[i]
+	}
 	allReadOnly := c.opt.ReadOnly
 	for i, cmd := range cmds {
-		decisions[i] = c.pipelineRoutingDecision(cmd, c.pipelineDecision(ctx, cmd, route))
-		if decisions[i].policyErr != nil && !c.opt.DisableRoutingPolicies {
-			setCmdsErr(cmds, decisions[i].policyErr)
-			return decisions[i].policyErr
+		var computed, scratch clusterRoutingDecision
+		decision := cmd.clusterRoutingDecision()
+		if decision == nil {
+			if route.recompute {
+				decision = c.pipelineDecision(ctx, cmd, route, &computed)
+			} else {
+				if unpinned == nil {
+					unpinned = make([]clusterRoutingDecision, len(cmds))
+				}
+				decision = c.pipelineDecision(ctx, cmd, route, &unpinned[i])
+			}
 		}
-		if !decisions[i].readOnly {
+		decision = c.pipelineRoutingDecision(cmd, decision, &scratch)
+		if decision.policyErr != nil && !c.opt.DisableRoutingPolicies {
+			setCmdsErr(cmds, decision.policyErr)
+			return decision.policyErr
+		}
+		if !decision.readOnly {
 			allReadOnly = false
 		}
 	}
 
 	if allReadOnly {
 		for i, cmd := range cmds {
-			decision := decisions[i]
+			var computed, scratch clusterRoutingDecision
+			decision := c.pipelineRoutingDecision(cmd, decisionAt(i, cmd, &computed), &scratch)
 			if err := c.pipelineRoutingError(cmd, decision); err != nil {
 				// Explicit custom policies retain their pre-dispatch validation.
 				setCmdsErr(cmds, err)
@@ -2643,7 +2696,8 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 	}
 
 	for i, cmd := range cmds {
-		decision := decisions[i]
+		var computed, scratch clusterRoutingDecision
+		decision := c.pipelineRoutingDecision(cmd, decisionAt(i, cmd, &computed), &scratch)
 		if err := c.pipelineRoutingError(cmd, decision); err != nil {
 			// Explicit custom policies retain their pre-dispatch validation.
 			setCmdsErr(cmds, err)
@@ -2668,15 +2722,22 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 // pipelineRoutingDecision keeps metadata key selection without applying automatic
 // fan-out inside explicit pipelines and transactions. Custom policies retain their
 // existing restrictions. AutoPipeline diverts actual fan-out before forming a batch.
-func (c *ClusterClient) pipelineRoutingDecision(cmd Cmder, decision clusterRoutingDecision) clusterRoutingDecision {
+// A rewritten decision is stored in scratch; decision itself is never modified.
+func (c *ClusterClient) pipelineRoutingDecision(
+	cmd Cmder,
+	decision *clusterRoutingDecision,
+	scratch *clusterRoutingDecision,
+) *clusterRoutingDecision {
 	if !decision.policyFromMetadata {
 		return decision
 	}
-	return c.routingDecisionWithMeta(cmd, decision.view, nil, false, decision.meta, decision.metaOK)
+	*scratch = c.routingDecisionWithMeta(cmd, decision.view, nil, false, decision.meta, decision.metaOK)
+	return scratch
 }
 
-func (c *ClusterClient) pipelineRoutingError(cmd Cmder, decision clusterRoutingDecision) error {
-	decision = c.pipelineRoutingDecision(cmd, decision)
+func (c *ClusterClient) pipelineRoutingError(cmd Cmder, decision *clusterRoutingDecision) error {
+	var scratch clusterRoutingDecision
+	decision = c.pipelineRoutingDecision(cmd, decision, &scratch)
 	if c.opt.DisableRoutingPolicies {
 		return nil
 	}
@@ -2696,7 +2757,7 @@ func (c *ClusterClient) pipelineRoutingError(cmd Cmder, decision clusterRoutingD
 }
 
 // pipelineMultiShardFitsOneSlot allows an unchanged request when all keys share its slot.
-func pipelineMultiShardFitsOneSlot(cmd Cmder, decision clusterRoutingDecision) bool {
+func pipelineMultiShardFitsOneSlot(cmd Cmder, decision *clusterRoutingDecision) bool {
 	if !decision.planOK || !decision.plan.splittable || len(decision.plan.positions) == 0 {
 		return false
 	}
@@ -3161,7 +3222,8 @@ func (c *ClusterClient) slottedKeyedCommandsInRouting(
 
 	prefferedRandomSlot := -1
 	for _, cmd := range cmds {
-		decision := c.pipelineRoutingDecision(cmd, c.pipelineDecision(ctx, cmd, route))
+		var scratch, rewritten clusterRoutingDecision
+		decision := c.pipelineRoutingDecision(cmd, c.pipelineDecision(ctx, cmd, route, &scratch), &rewritten)
 		if err := c.txRoutingError(cmd, decision); err != nil {
 			return nil, err
 		}
@@ -3220,8 +3282,9 @@ func (c *ClusterClient) legacySlottedKeyedCommands(cmds []Cmder) map[int][]Cmder
 	return cmdsSlots
 }
 
-func (c *ClusterClient) txRoutingError(cmd Cmder, decision clusterRoutingDecision) error {
-	decision = c.pipelineRoutingDecision(cmd, decision)
+func (c *ClusterClient) txRoutingError(cmd Cmder, decision *clusterRoutingDecision) error {
+	var scratch clusterRoutingDecision
+	decision = c.pipelineRoutingDecision(cmd, decision, &scratch)
 	if c.opt.DisableRoutingPolicies {
 		return nil
 	}
@@ -3767,21 +3830,58 @@ func (c *ClusterClient) isTopologyGeneration(generation uint32) bool {
 }
 
 // clusterRoutingDecision is one invocation's immutable routing result.
+// It points at the view's immutable metadata record instead of copying it, so
+// it stays small enough to copy and pin cheaply.
 type clusterRoutingDecision struct {
-	view               *commandMetadataView
-	name               string
-	meta               routingCommandMeta
-	metadataState      routingMetadataState
-	metaOK             bool
-	plan               routingKeyPlan
-	planOK             bool
+	view *commandMetadataView
+	// meta is nil unless metaOK. The record is shared and must not be modified.
+	meta *routingCommandMeta
+	// plan is nil unless planOK (only resolved for ReqMultiShard).
+	plan               *routingKeyPlan
+	policy             *routing.CommandPolicy
+	policyErr          error
 	firstKey           int
 	naturalSlot        int
+	metadataState      routingMetadataState
+	metaOK             bool
+	planOK             bool
 	keyless            bool
 	readOnly           bool
-	policy             *routing.CommandPolicy
 	policyFromMetadata bool
-	policyErr          error
+	// pooled marks a decision owned by clusterRoutingDecisionPool. Only the pin
+	// owner returns it, through releaseClusterRoutingDecision.
+	pooled bool
+}
+
+// clusterRoutingDecisionPool recycles AutoPipeline admission pins, which live
+// from submit until the command's flush clears its pin.
+var clusterRoutingDecisionPool = sync.Pool{
+	New: func() any { return new(clusterRoutingDecision) },
+}
+
+// routingDecisionPoison is a test hook: when set, released decisions are
+// poisoned and never reused, so a read after release fails loudly.
+var routingDecisionPoison bool
+
+var errRoutingDecisionReleased = errors.New("redis: internal error: routing decision used after release")
+
+func acquireClusterRoutingDecision() *clusterRoutingDecision {
+	return clusterRoutingDecisionPool.Get().(*clusterRoutingDecision)
+}
+
+func releaseClusterRoutingDecision(d *clusterRoutingDecision) {
+	if d == nil || !d.pooled {
+		return
+	}
+	if routingDecisionPoison {
+		*d = clusterRoutingDecision{
+			policyErr: errRoutingDecisionReleased, firstKey: -1 << 20, naturalSlot: -1 << 20,
+			policy: &routing.CommandPolicy{Request: routing.ReqSpecial},
+		}
+		return
+	}
+	*d = clusterRoutingDecision{}
+	clusterRoutingDecisionPool.Put(d)
 }
 
 func (c *ClusterClient) routingDecisionInView(
@@ -3799,9 +3899,23 @@ func (c *ClusterClient) routingDecisionWithMeta(
 	view *commandMetadataView,
 	policy *routing.CommandPolicy,
 	policyFromMetadata bool,
-	meta routingCommandMeta,
+	meta *routingCommandMeta,
 	metaOK bool,
 ) clusterRoutingDecision {
+	if !metaOK {
+		meta = nil
+	}
+	// Fast path for plain keyed commands with no policy (the default resolver
+	// for GET, SET, HGET, ...). Same result as the full path below.
+	if policy == nil && !policyFromMetadata && meta != nil && meta.simpleFirstKey {
+		if pos, key, ok := routingSimpleFirstKey(meta, cmd); ok {
+			return clusterRoutingDecision{
+				view: view, meta: meta, firstKey: pos, naturalSlot: clusterKeySlot(key),
+				metadataState: routingMetadataUsable, metaOK: true,
+				readOnly: meta.policy != nil && meta.readOnly,
+			}
+		}
+	}
 	// Unsupported metadata policies still need validation when explicitly selected.
 	// Merely knowing a command's metadata does not enable its execution policy.
 	if policy == nil && policyFromMetadata && metaOK {
@@ -3812,7 +3926,7 @@ func (c *ClusterClient) routingDecisionWithMeta(
 		_, metadataState = routingLookupMetaState(view, cmd)
 	}
 	d := clusterRoutingDecision{
-		view: view, name: cmd.Name(), meta: meta, metaOK: metaOK,
+		view: view, meta: meta, metaOK: metaOK,
 		metadataState: metadataState,
 		firstKey:      -1, policy: policy, policyFromMetadata: policyFromMetadata,
 	}
@@ -3829,7 +3943,9 @@ func (c *ClusterClient) routingDecisionWithMeta(
 		}
 		needsFullPlan := policy != nil && policy.Request == routing.ReqMultiShard
 		if needsFullPlan {
-			d.plan, d.planOK = routingResolveKeyPlan(d.meta, cmd)
+			if plan, ok := routingResolveKeyPlan(d.meta, cmd); ok {
+				d.plan, d.planOK = &plan, true
+			}
 		}
 	} else if policy != nil && policy.Request == routing.ReqDefault &&
 		policy.Response == routing.RespDefaultKeyless {
@@ -3854,7 +3970,7 @@ func (c *ClusterClient) routingDecisionWithMeta(
 	// Metadata routing never falls back to constructor key hints.
 	d.naturalSlot = c.cmdSlotWithPos(cmd, d.firstKey, -1)
 
-	d.policyErr = clusterRoutingPolicyError(d)
+	d.policyErr = clusterRoutingPolicyError(cmd, &d)
 	return d
 }
 
@@ -3872,7 +3988,7 @@ func clusterPolicyFansOut(policy *routing.CommandPolicy) bool {
 
 // clusterCommandFansOut distinguishes a multi-slot invocation from a command
 // whose policy permits splitting but whose keys all belong to one slot.
-func clusterCommandFansOut(cmd Cmder, d clusterRoutingDecision) bool {
+func clusterCommandFansOut(cmd Cmder, d *clusterRoutingDecision) bool {
 	if !clusterPolicyFansOut(d.policy) {
 		return false
 	}
@@ -3898,25 +4014,25 @@ func unsafeClusterFanoutCommand(cmd Cmder) bool {
 	return !commandArgsRepeatable(cmd)
 }
 
-func clusterRoutingPolicyError(d clusterRoutingDecision) error {
+func clusterRoutingPolicyError(cmd Cmder, d *clusterRoutingDecision) error {
 	if d.firstKey > 0 && d.naturalSlot < 0 {
-		return fmt.Errorf("redis: cannot reproduce the routing key for command %s", d.name)
+		return fmt.Errorf("redis: cannot reproduce the routing key for command %s", cmd.Name())
 	}
 	// Custom policies may route without metadata; default metadata routing may not.
 	if !d.metaOK && d.policy == nil {
 		switch d.metadataState {
 		case routingMetadataUnusable:
-			return fmt.Errorf("%w for command %s", errClusterCommandMetadataUnusable, d.name)
+			return fmt.Errorf("%w for command %s", errClusterCommandMetadataUnusable, cmd.Name())
 		default:
 			return nil
 		}
 	}
 	if d.firstKey < 0 && (d.policy == nil || d.policy.Request == routing.ReqDefault) {
-		return fmt.Errorf("redis: cannot determine the routing key for command %s", d.name)
+		return fmt.Errorf("redis: cannot determine the routing key for command %s", cmd.Name())
 	}
 	if d.policy != nil && d.policy.Request == routing.ReqMultiShard &&
 		(!d.planOK || !d.plan.splittable || len(d.plan.positions) == 0) {
-		return fmt.Errorf("redis: cannot determine all key arguments for multi-shard command %s", d.name)
+		return fmt.Errorf("redis: cannot determine all key arguments for multi-shard command %s", cmd.Name())
 	}
 	if d.policy == nil {
 		return nil
@@ -3948,7 +4064,6 @@ func (c *ClusterClient) commandRoutingDecision(ctx context.Context, cmd Cmder) c
 func (c *ClusterClient) legacyRoutingDecision(cmd Cmder) clusterRoutingDecision {
 	firstKey := cmdFirstKeyPosWithInfo(cmd, nil)
 	d := clusterRoutingDecision{
-		name:     cmd.Name(),
 		firstKey: firstKey,
 		keyless:  firstKey == 0,
 	}
@@ -3987,10 +4102,10 @@ func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
 	}
 	view := c.metadataView()
 	d := c.routingDecisionInView(context.Background(), cmd, view, nil)
-	return c.cmdSlotWithDecision(cmd, d, prefferedSlot)
+	return c.cmdSlotWithDecision(cmd, &d, prefferedSlot)
 }
 
-func (c *ClusterClient) cmdSlotWithDecision(cmd Cmder, d clusterRoutingDecision, prefferedSlot int) int {
+func (c *ClusterClient) cmdSlotWithDecision(cmd Cmder, d *clusterRoutingDecision, prefferedSlot int) int {
 	if prefferedSlot == -1 {
 		return d.naturalSlot
 	}
@@ -4060,7 +4175,7 @@ func clusterKeySlot(key string) int {
 func (c *ClusterClient) cmdNodeWithDecision(
 	ctx context.Context,
 	slot int,
-	d clusterRoutingDecision,
+	d *clusterRoutingDecision,
 ) (*clusterNode, error) {
 	state, err := c.state.Get(ctx)
 	if err != nil {
@@ -4079,7 +4194,7 @@ func (c *ClusterClient) cmdNodeWithShardPickerAndDecision(
 	ctx context.Context,
 	slot int,
 	shardPicker routing.ShardPicker,
-	d clusterRoutingDecision,
+	d *clusterRoutingDecision,
 ) (*clusterNode, error) {
 	state, err := c.state.Get(ctx)
 	if err != nil {

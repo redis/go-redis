@@ -183,7 +183,7 @@ type commandRoutingResolution struct {
 	// unsupported handler. Dispatch must validate that policy rather than
 	// silently treating an explicit metadata opt-in as ordinary routing.
 	policyFromMetadata bool
-	meta               routingCommandMeta
+	meta               *routingCommandMeta
 	metaOK             bool
 }
 
@@ -402,8 +402,17 @@ func (r *commandInfoResolver) resolveCommandRoutingsWithView(
 		resolver *commandInfoResolver
 		index    int
 	}
-	customAnswers := make(map[customLookup]*routing.CommandPolicy)
-	ensured := make(map[*commandInfoResolver]struct{})
+	// Only a metadataEnsure hook can restart resolution, so only then are the
+	// caches needed. Walk the chain per call: SetFallbackResolver can change it.
+	var customAnswers map[customLookup]*routing.CommandPolicy
+	var ensured map[*commandInfoResolver]struct{}
+	for current := r; current != nil && current.resolveFunc != nil; current = current.fallBackResolver {
+		if current.metadataView != nil && current.metadataEnsure != nil {
+			customAnswers = make(map[customLookup]*routing.CommandPolicy)
+			ensured = make(map[*commandInfoResolver]struct{})
+			break
+		}
+	}
 	resolutions := make([]commandRoutingResolution, len(cmds))
 	var firstErr error
 	var view *commandMetadataView
@@ -455,7 +464,9 @@ func (r *commandInfoResolver) resolveCommandRoutingsWithView(
 					policy, known := customAnswers[key]
 					if !known {
 						policy = current.resolveFunc(ctx, cmd)
-						customAnswers[key] = policy
+						if customAnswers != nil {
+							customAnswers[key] = policy
+						}
 					}
 					resolution.policy = policy
 					if policy != nil {

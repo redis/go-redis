@@ -43,7 +43,7 @@ func TestPickKeylessReadOnlyNodeConcurrent(t *testing.T) {
 			for j := 0; j < 200; j++ {
 				node, err := c.cmdNodeWithShardPickerAndDecision(
 					context.Background(), -1, c.opt.ShardPicker,
-					clusterRoutingDecision{readOnly: true},
+					&clusterRoutingDecision{readOnly: true},
 				)
 				if err != nil || node == nil {
 					t.Errorf("keyless readonly selection node=%v err=%v", node, err)

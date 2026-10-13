@@ -102,7 +102,7 @@ func TestClusterDefaultPoliciesRequireFanoutOptIn(t *testing.T) {
 		if d.policy != nil || d.policyErr != nil || !d.metaOK {
 			t.Fatalf("default %v: policy=%v error=%v metadata=%v", args, d.policy, d.policyErr, d.metaOK)
 		}
-		if err := c.pipelineRoutingError(cmd, d); err != nil {
+		if err := c.pipelineRoutingError(cmd, &d); err != nil {
 			t.Fatalf("default pipeline %v: %v", args, err)
 		}
 	}
@@ -278,7 +278,7 @@ func TestClusterRoutingUsesCommandMetadataOverride(t *testing.T) {
 	if decision.policy == nil || decision.policy.Response != routing.RespDefaultHashSlot {
 		t.Fatalf("metadata policy was not derived: %#v", decision.policy)
 	}
-	if got, want := c.cmdSlotWithDecision(cmd, decision, -1), hashtag.Slot("actual"); got != want {
+	if got, want := c.cmdSlotWithDecision(cmd, &decision, -1), hashtag.Slot("actual"); got != want {
 		t.Fatalf("slot=%d, want %d", got, want)
 	}
 	if got, want := c.cmdSlot(cmd, -1), hashtag.Slot("actual"); got != want {
@@ -304,7 +304,7 @@ func TestClusterMSetEXSplitPreservesSuffixAndWireArgs(t *testing.T) {
 	}
 
 	sub, err := c.createSlotSpecificCommand(ctx, cmd,
-		[]interface{}{cmd.Args()[2], cmd.Args()[3]}, 1, decision.plan)
+		[]interface{}{cmd.Args()[2], cmd.Args()[3]}, 1, *decision.plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,13 +423,13 @@ func TestClusterPipelineKeepsMetadataMultiShardCommandsLocal(t *testing.T) {
 	if decision.policy == nil || decision.policy.Request != routing.ReqMultiShard {
 		t.Fatalf("DEL policy=%#v, want multi_shard", decision.policy)
 	}
-	if err := c.pipelineRoutingError(singleSlot, decision); err != nil {
+	if err := c.pipelineRoutingError(singleSlot, &decision); err != nil {
 		t.Fatalf("single-slot DEL was rejected from pipeline: %v", err)
 	}
 
 	crossSlot := NewIntCmd(ctx, "del", "{one}key", "{two}key")
 	decision = c.commandRoutingDecision(ctx, crossSlot)
-	if err := c.pipelineRoutingError(crossSlot, decision); err != nil {
+	if err := c.pipelineRoutingError(crossSlot, &decision); err != nil {
 		t.Fatalf("cross-slot DEL must reach Redis for a command-local error: %v", err)
 	}
 
@@ -439,7 +439,7 @@ func TestClusterPipelineKeepsMetadataMultiShardCommandsLocal(t *testing.T) {
 	if decision.firstKey != 1 {
 		t.Fatalf("constructor position overrode metadata: first key=%d, want 1", decision.firstKey)
 	}
-	if err := c.pipelineRoutingError(constructorConflict, decision); err != nil {
+	if err := c.pipelineRoutingError(constructorConflict, &decision); err != nil {
 		t.Fatalf("metadata-consistent MSET was rejected because of a constructor hint: %v", err)
 	}
 
@@ -448,7 +448,7 @@ func TestClusterPipelineKeepsMetadataMultiShardCommandsLocal(t *testing.T) {
 	}))
 	custom := NewIntCmd(ctx, "del", "{same}one", "{same}two")
 	decision = c.commandRoutingDecision(ctx, custom)
-	if err := c.pipelineRoutingError(custom, decision); err == nil {
+	if err := c.pipelineRoutingError(custom, &decision); err == nil {
 		t.Fatal("custom multi-shard DEL policy was weakened by matching static metadata")
 	}
 }
@@ -462,7 +462,7 @@ func TestClusterTxRoutingKeepsMetadataPoliciesLocal(t *testing.T) {
 	if decision.policy == nil || decision.policy.Request != routing.ReqAllShards {
 		t.Fatalf("PING policy=%#v, want all_shards", decision.policy)
 	}
-	if err := c.txRoutingError(ping, decision); err != nil {
+	if err := c.txRoutingError(ping, &decision); err != nil {
 		t.Fatalf("transaction-local PING was rejected: %v", err)
 	}
 
@@ -471,7 +471,7 @@ func TestClusterTxRoutingKeepsMetadataPoliciesLocal(t *testing.T) {
 	if decision.policy == nil || decision.policy.Request != routing.ReqAllShards {
 		t.Fatalf("FLUSHALL policy=%#v, want all_shards", decision.policy)
 	}
-	if err := c.txRoutingError(flushAll, decision); err != nil {
+	if err := c.txRoutingError(flushAll, &decision); err != nil {
 		t.Fatalf("transaction-local FLUSHALL was rejected: %v", err)
 	}
 }
@@ -943,7 +943,7 @@ func TestClusterDisabledRoutingPoliciesUseLegacyMetadataFreeRoute(t *testing.T) 
 	}
 
 	batchRoute := c.resolvePipelineRouting(context.Background(), []Cmder{cmd})
-	if got := c.pipelineDecision(context.Background(), cmd, batchRoute); !got.keyless || got.firstKey != 0 || got.policy != nil {
+	if got := c.pipelineDecision(context.Background(), cmd, batchRoute, new(clusterRoutingDecision)); !got.keyless || got.firstKey != 0 || got.policy != nil {
 		t.Fatalf("disabled pipeline route=%#v, want legacy keyless", got)
 	}
 	if resolverCalls != 0 {
@@ -953,7 +953,7 @@ func TestClusterDisabledRoutingPoliciesUseLegacyMetadataFreeRoute(t *testing.T) 
 	if !autoDecision.keyless || autoDecision.firstKey != 0 || autoDecision.view != nil {
 		t.Fatalf("disabled AutoPipeline route=%#v, want legacy keyless", autoDecision)
 	}
-	if _, cached := c.peekAutoPipelineRoutingDecision(cmd); cached {
+	if cached := c.peekAutoPipelineRoutingDecision(cmd) != nil; cached {
 		t.Fatal("disabled AutoPipeline retained a metadata admission decision")
 	}
 	if resolverCalls != 0 {
@@ -988,8 +988,8 @@ func TestClusterPipelineResolvesCustomPoliciesOnceAndSkipsUnusedDynamicFallback(
 		t.Fatalf("custom calls=%d fetches=%d, want %d/0", customCalls, fetches, len(cmds))
 	}
 	for _, cmd := range cmds {
-		_ = c.pipelineDecision(ctx, cmd, route)
-		_ = c.pipelineDecision(ctx, cmd, route)
+		_ = c.pipelineDecision(ctx, cmd, route, new(clusterRoutingDecision))
+		_ = c.pipelineDecision(ctx, cmd, route, new(clusterRoutingDecision))
 	}
 	if customCalls != len(cmds) {
 		t.Fatalf("cached pipeline decisions re-invoked custom resolver: calls=%d", customCalls)
@@ -1018,7 +1018,7 @@ func TestClusterAutoPipelineReusesAndCleansAdmissionDecision(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("custom resolver calls=%d, want 1 across admission, sharding, and flush", calls)
 	}
-	if _, cached := c.peekAutoPipelineRoutingDecision(cmd); cached {
+	if cached := c.peekAutoPipelineRoutingDecision(cmd) != nil; cached {
 		t.Fatal("completed AutoPipeline command retained its admission decision")
 	}
 
@@ -1028,7 +1028,7 @@ func TestClusterAutoPipelineReusesAndCleansAdmissionDecision(t *testing.T) {
 	if err := ap.Process(ctx, crossSlot); err != nil {
 		t.Fatalf("cross-slot AutoPipeline command was rejected: %v", err)
 	}
-	if _, cached := c.peekAutoPipelineRoutingDecision(crossSlot); cached {
+	if cached := c.peekAutoPipelineRoutingDecision(crossSlot) != nil; cached {
 		t.Fatal("completed cross-slot AutoPipeline command retained its admission decision")
 	}
 
@@ -1036,7 +1036,7 @@ func TestClusterAutoPipelineReusesAndCleansAdmissionDecision(t *testing.T) {
 	if err := ap.Process(ctx, sameSlot); err != nil {
 		t.Fatalf("same-slot AutoPipeline command was rejected: %v", err)
 	}
-	if _, cached := c.peekAutoPipelineRoutingDecision(sameSlot); cached {
+	if cached := c.peekAutoPipelineRoutingDecision(sameSlot) != nil; cached {
 		t.Fatal("completed same-slot AutoPipeline command retained its admission decision")
 	}
 }
@@ -1079,7 +1079,7 @@ func TestClusterAutoPipelinePinsAdmissionMetadataGeneration(t *testing.T) {
 				t.Fatalf("shard=%d, want admission-generation shard %d", got, wantShard)
 			}
 			route := c.resolvePipelineRouting(ctx, []Cmder{cmd})
-			decision := c.pipelineDecision(ctx, cmd, route)
+			decision := c.pipelineDecision(ctx, cmd, route, new(clusterRoutingDecision))
 			wantView := first
 			if disablePolicies {
 				wantView = nil
@@ -1141,7 +1141,7 @@ func TestClusterFullDuplexPinsAndReleasesMetadata(t *testing.T) {
 			if calls.Load() != wantCalls {
 				t.Fatalf("resolver ran %d times, want %d", calls.Load(), wantCalls)
 			}
-			if _, retained := c.peekAutoPipelineRoutingDecision(cmd); retained {
+			if retained := c.peekAutoPipelineRoutingDecision(cmd) != nil; retained {
 				t.Fatal("completed full-duplex command retained its metadata")
 			}
 		})
@@ -1514,7 +1514,7 @@ func TestClusterRoutingUsesWireFaithfulSupportedKeyTypes(t *testing.T) {
 			if decision.firstKey != 1 || decision.keyless {
 				t.Fatalf("key was not resolved: first=%d keyless=%v", decision.firstKey, decision.keyless)
 			}
-			if got, want := c.cmdSlotWithDecision(cmd, decision, -1), hashtag.Slot(tc.wire); got != want {
+			if got, want := c.cmdSlotWithDecision(cmd, &decision, -1), hashtag.Slot(tc.wire); got != want {
 				t.Fatalf("slot=%d, want %d for wire key %q", got, want, tc.wire)
 			}
 		})
