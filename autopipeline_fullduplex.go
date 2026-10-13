@@ -819,6 +819,15 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	} else {
 		fd.reprocess = client.processStartingAt
 	}
+	// Keep one warm spare in the dedicated pipeline pool. The engine holds one
+	// pipeline connection for its whole session, so without an idle spare the
+	// replacement after a connection error must dial first, while every unacked
+	// command waits. The pool refills the spare in the background whenever it is
+	// leased. A negative PipelineMinIdleConns opts out; on the main pool (no
+	// dedicated pipeline pool) the user's MinIdleConns applies instead.
+	if ref := client.loadPipelinePool(); ref != nil && client.opt.PipelineMinIdleConns >= 0 {
+		ref.pool.RaiseMinIdleConns(1)
+	}
 	return fd
 }
 

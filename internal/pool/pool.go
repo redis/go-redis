@@ -433,6 +433,10 @@ type ConnPool struct {
 	idleCheckInProgress atomic.Bool
 	idleCheckNeeded     atomic.Bool
 
+	// minIdleFloor is a runtime lower bound on cfg.MinIdleConns, raised by
+	// RaiseMinIdleConns (the full-duplex engine keeps a warm spare). 0 = none.
+	minIdleFloor atomic.Int32
+
 	stats          Stats
 	waitDurationNs atomic.Int64
 
@@ -527,6 +531,36 @@ func (p *ConnPool) RemovePoolHook(hook PoolHook) {
 	}
 }
 
+// minIdleConns returns the effective minimum idle connections: the configured
+// MinIdleConns, or the runtime floor if higher.
+func (p *ConnPool) minIdleConns() int32 {
+	if f := p.minIdleFloor.Load(); f > p.cfg.MinIdleConns {
+		return f
+	}
+	return p.cfg.MinIdleConns
+}
+
+// RaiseMinIdleConns raises the pool's minimum idle connections to at least n
+// and starts filling it in the background. It never lowers the configured
+// MinIdleConns or an earlier raise. Like MinIdleConns, the idle connections
+// count against PoolSize and are dialed but not initialized: init runs on
+// first Get.
+func (p *ConnPool) RaiseMinIdleConns(n int32) {
+	for {
+		cur := p.minIdleFloor.Load()
+		if n <= cur {
+			return
+		}
+		if p.minIdleFloor.CompareAndSwap(cur, n) {
+			break
+		}
+	}
+	if p.closed() {
+		return
+	}
+	p.checkMinIdleConns()
+}
+
 func (p *ConnPool) checkMinIdleConns() {
 	// If a check is already in progress, mark that we need another check and return
 	if !p.idleCheckInProgress.CompareAndSwap(false, true) {
@@ -534,7 +568,7 @@ func (p *ConnPool) checkMinIdleConns() {
 		return
 	}
 
-	if p.cfg.MinIdleConns == 0 {
+	if p.minIdleConns() == 0 {
 		p.idleCheckInProgress.Store(false)
 		return
 	}
@@ -544,10 +578,13 @@ func (p *ConnPool) checkMinIdleConns() {
 	for {
 		// Clear the "check needed" flag before we start
 		p.idleCheckNeeded.Store(false)
+		// Re-read each pass: a RaiseMinIdleConns during a check only sets
+		// idleCheckNeeded, so the new floor must be picked up here.
+		minIdle := p.minIdleConns()
 
 		// Only create idle connections if we haven't reached the total pool size limit
 		// MinIdleConns should be a subset of PoolSize, not additional connections
-		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
+		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < minIdle {
 			// Try to acquire a semaphore token
 			if !p.semaphore.TryAcquire() {
 				// Semaphore is full, can't create more connections right now

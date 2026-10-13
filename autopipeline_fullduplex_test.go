@@ -326,23 +326,27 @@ func TestFullDuplexIdleReturnsConn(t *testing.T) {
 		t.Fatalf("initial set: %v", err)
 	}
 	// Immediately after the command the engine still holds the conn (idle gap not
-	// yet elapsed) — it is checked out of the pool, so IdleLen is 0. This is the
-	// baseline that makes the return below meaningful (the assertion would not
-	// hold if lease/return were removed — the conn would stay held, never idle).
-	if got := pp.IdleLen(); got != 0 {
-		t.Fatalf("expected the FD conn held (IdleLen=0) right after a command, got %d", got)
+	// yet elapsed). This is the baseline that makes the return below meaningful
+	// (it would not hold if lease/return were removed — the conn would stay held).
+	// Checked on the engine, not the pool: the pool also keeps the engine's warm
+	// spare idle, and its refill dial is asynchronous.
+	if ap.fd.curConn.Load() == nil {
+		t.Fatal("expected the FD conn held right after a command")
 	}
 
+	// Returned: the engine holds nothing and the pool has the returned conn plus
+	// the warm spare idle.
 	returned := false
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		if pp.IdleLen() >= 1 {
+		if ap.fd.curConn.Load() == nil && pp.IdleLen() >= 2 {
 			returned = true
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !returned {
-		t.Fatalf("pipeline conn not returned to the pool after idle (IdleLen=%d)", pp.IdleLen())
+		t.Fatalf("pipeline conn not returned to the pool after idle (held=%v, IdleLen=%d)",
+			ap.fd.curConn.Load() != nil, pp.IdleLen())
 	}
 
 	if v, err := ap.Get(ctx, "fd:idle:k").Result(); err != nil || v != "v" {

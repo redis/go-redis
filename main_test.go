@@ -630,6 +630,14 @@ func cleanupTLSCluster() {
 // any) and then the underlying *redis.Client — so callers just defer/AfterEach
 // one call. Admin/connection-only calls not on UniversalClient (FlushDB,
 // Config*, Ping, Info, Conn, ...) should use the underlying client directly.
+// isFullDuplexSubject reports whether GOREDIS_TEST_SUBJECT selects a
+// full-duplex face (ap-fd, ap-fd-blocking). Those keep a warm spare in the
+// pipeline pool, so exact pipeline-pool counts differ.
+func isFullDuplexSubject() bool {
+	s := os.Getenv("GOREDIS_TEST_SUBJECT")
+	return s == "ap-fd" || s == "ap-fd-blocking"
+}
+
 func newUniversalSubject(c *redis.Client) (redis.UniversalClient, func() error) {
 	// closeWith closes the optional autopipeliner then the underlying client,
 	// returning the first error.

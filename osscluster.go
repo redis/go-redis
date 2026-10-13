@@ -156,13 +156,15 @@ type ClusterOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
-	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// PipelineReadBufferSize, PipelineWriteBufferSize, PipelinePoolSize and
+	// PipelineMinIdleConns
 	// configure an optional separate connection pool used for pipelining on
 	// each node, with its own (typically larger) buffers. See the same-named
 	// fields on Options for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
+	PipelineMinIdleConns    int
 
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces
 	// (AutoPipeline and AsyncAutoPipeline), applied when they are called
@@ -413,6 +415,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	// Pipeline pool (per node, created by default): allow URL opt-out
 	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
 	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineMinIdleConns = q.int("pipeline_min_idle_conns")
 	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
 	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.PoolTimeout = q.duration("pool_timeout")
@@ -495,6 +498,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
+		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
 		DisableIdentity:         opt.DisableIdentity,
 		DisableIndentity:        opt.DisableIndentity,
 		IdentitySuffix:          opt.IdentitySuffix,

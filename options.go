@@ -268,9 +268,10 @@ type Options struct {
 	//
 	// The dedicated pipeline pool is created unconditionally at NewClient —
 	// like the pubsub pool — so pipelines never compete with regular commands
-	// for main-pool connections. It never pre-dials (MinIdleConns is forced
-	// to 0 on it), so the size is a cap on burst capacity, not a standing
-	// footprint: an unused pipeline pool holds zero connections. A burst of
+	// for main-pool connections. By default it never pre-dials (it does not
+	// inherit MinIdleConns; see PipelineMinIdleConns), so the size is a cap on
+	// burst capacity, not a standing footprint: an unused pipeline pool holds
+	// zero connections. A burst of
 	// concurrent pipelines wider than the cap spills to the main pool IMMEDIATELY
 	// (a non-blocking TryGet on the pipeline pool) rather than waiting a grace
 	// period — so a saturated pipeline pool never adds latency before falling back,
@@ -289,6 +290,20 @@ type Options struct {
 	//
 	// default: DefaultPipelinePoolSize (10) connections
 	PipelinePoolSize int
+
+	// PipelineMinIdleConns is the minimum number of idle connections kept in the
+	// dedicated pipeline pool, like MinIdleConns for the main pool. They count
+	// against PipelinePoolSize and are dialed but not initialized (init runs on
+	// first use).
+	//
+	// A full-duplex autopipeliner (AutoPipelineOptions.FullDuplex) raises it to
+	// at least 1 while it runs: it holds one pipeline connection for its whole
+	// session, so without an idle spare a replacement after a connection error
+	// must dial first. Set a negative value to keep the pool at zero idle
+	// connections even with full-duplex.
+	//
+	// default: 0
+	PipelineMinIdleConns int
 
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
 	// AutoPipeline and AsyncAutoPipeline use it when called without an
@@ -589,9 +604,10 @@ const (
 // DefaultPipelinePoolSize is the pipeline pool size used when
 // PipelinePoolSize is not set. Pipelining batches many commands per round
 // trip, so it needs far fewer connections than regular traffic. The pool is
-// pure burst capacity: it never pre-dials idle connections (MinIdleConns is
-// forced to 0 on it), so an unused pipeline pool holds no connections at all
-// and the size is only a cap — bursts wider than it spill to the main pool.
+// pure burst capacity: by default it never pre-dials idle connections (it does
+// not inherit MinIdleConns; see PipelineMinIdleConns), so an unused pipeline
+// pool holds no connections at all and the size is only a cap — bursts wider
+// than it spill to the main pool.
 const DefaultPipelinePoolSize = 10
 
 // DefaultPipelineBufferSize is the per-connection read/write buffer size for
@@ -608,9 +624,9 @@ const DefaultPipelinePoolSize = 10
 // (see MaxBatchBytes's default) — more bufio headroom before a write() to a
 // slow-draining peer blocks widens the margin before that guardrail's cap is
 // reached. The aggregate memory cost stays negligible because the pool this
-// backs holds few connections: the dedicated pipeline pool never pre-dials
-// (DefaultPipelinePoolSize, MinIdleConns forced to 0), and full-duplex holds
-// exactly one connection per node regardless of pool size.
+// backs holds few connections: the dedicated pipeline pool does not pre-dial by
+// default (DefaultPipelinePoolSize, PipelineMinIdleConns 0), and full-duplex
+// holds one connection per engine plus one idle spare, regardless of pool size.
 const DefaultPipelineBufferSize = 128 * 1024
 
 // DefaultPipelinePoolTimeout is the dedicated pipeline pool's PoolTimeout
@@ -1104,6 +1120,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	// (pipeline_pool_size=-1) or tune it, otherwise these would be rejected as
 	// unexpected options. q.int accepts a negative value.
 	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineMinIdleConns = q.int("pipeline_min_idle_conns")
 	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
 	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	if q.has("conn_max_idle_time") {

@@ -127,7 +127,8 @@ type FailoverOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
-	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// PipelineReadBufferSize, PipelineWriteBufferSize, PipelinePoolSize and
+	// PipelineMinIdleConns
 	// configure the separate connection pool used for pipelining, with its own
 	// (typically larger) buffers. See the same-named fields on Options for
 	// details. NewFailoverClient creates this pool by default; set
@@ -135,6 +136,7 @@ type FailoverOptions struct {
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
+	PipelineMinIdleConns    int
 
 	// AutoPipelineOptions is the default config for the client's autopipeliner
 	// faces. See Options.AutoPipelineOptions.
@@ -222,6 +224,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
+		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
 		AutoPipelineOptions:     opt.AutoPipelineOptions,
 
 		DialTimeout:        opt.DialTimeout,
@@ -344,6 +347,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
+		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
 		AutoPipelineOptions:     opt.AutoPipelineOptions,
 
 		DialTimeout:        opt.DialTimeout,
@@ -490,6 +494,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	// Pipeline pool (created by default): allow URL opt-out
 	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
 	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineMinIdleConns = q.int("pipeline_min_idle_conns")
 	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
 	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
