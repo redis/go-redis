@@ -2,9 +2,48 @@ package redis
 
 import (
 	"context"
+	"math/rand"
 	"reflect"
+	"strconv"
 	"testing"
 )
+
+// The O(1) slot index must return what the binary search returns, including
+// gaps, overlaps, unsorted input and out-of-range slots.
+func TestClusterStateSlotIndexMatchesSearch(t *testing.T) {
+	c := newRoutingPerfTestClient(t)
+	defer c.Close()
+	rng := rand.New(rand.NewSource(1))
+	for round := 0; round < 200; round++ {
+		var slots []ClusterSlot
+		for n := rng.Intn(12); n >= 0; n-- {
+			start := rng.Intn(16384)
+			end := start + rng.Intn(4000) - 200 // sometimes end < start
+			if end > 16383 {
+				end = 16383
+			}
+			nodes := []ClusterNode{{Addr: "127.0.0.1:" + strconv.Itoa(1000+rng.Intn(8))}}
+			if rng.Intn(2) == 0 {
+				nodes = append(nodes, ClusterNode{Addr: "127.0.0.1:" + strconv.Itoa(2000+rng.Intn(8))})
+			}
+			slots = append(slots, ClusterSlot{Start: start, End: end, Nodes: nodes})
+		}
+		state, err := newClusterState(c.nodes, slots, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(state.slots) > 0 && state.slotIndex == nil {
+			t.Fatal("slot index not built")
+		}
+		for slot := -2; slot < 16386; slot++ {
+			want := state.searchSlotEntry(slot)
+			got := state.slotEntry(slot)
+			if (want < 0) != (got == nil) || want >= 0 && got != state.slots[want] {
+				t.Fatalf("round %d slot %d: index %v, search %d (%v)", round, slot, got, want, slots)
+			}
+		}
+	}
+}
 
 func newRoutingPerfTestClient(t testing.TB) *ClusterClient {
 	t.Helper()

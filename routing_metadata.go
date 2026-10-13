@@ -103,6 +103,24 @@ type routingCommandMeta struct {
 	// simpleFirstKey marks one fixed-index range key spec (GET, SET, HGET,
 	// MGET, ...), whose first key needs no search. See routingSimpleFirstKey.
 	simpleFirstKey bool
+	// fast is the shared, immutable decision for a simpleFirstKey record with
+	// no policy, built with its view. Pinning it costs no allocation; the
+	// command carries its slot (see clusterRoutingDecision.template).
+	fast *clusterRoutingDecision
+}
+
+// linkRoutingTemplates builds the shared fast-path decisions of a new view.
+func linkRoutingTemplates(view *commandMetadataView) {
+	for _, meta := range view.routingTable {
+		if !meta.simpleFirstKey {
+			continue
+		}
+		meta.fast = &clusterRoutingDecision{
+			view: view, meta: meta, firstKey: meta.keySpecs[0].index, naturalSlot: -1,
+			metadataState: routingMetadataUsable, metaOK: true,
+			readOnly: meta.policy != nil && meta.readOnly, template: true,
+		}
+	}
 }
 
 // routingKeyPlan contains all keys and split fields for one invocation.

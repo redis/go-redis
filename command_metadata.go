@@ -286,7 +286,7 @@ func buildCommandMetadataViewForServerWithLegacy(
 			shadowedParents[parent] = struct{}{}
 		}
 	}
-	return &commandMetadataView{
+	view := &commandMetadataView{
 		generation:        commandMetadataGeneration.Add(1),
 		records:           records,
 		tombstones:        tombstones,
@@ -297,6 +297,8 @@ func buildCommandMetadataViewForServerWithLegacy(
 		cscFingerprint:    cscTableFingerprint(table),
 		serverVersion:     serverVersion,
 	}
+	linkRoutingTemplates(view)
+	return view
 }
 
 func commandMetadataAllowsBareInvocation(info *CommandInfo) bool {

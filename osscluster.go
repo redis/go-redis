@@ -891,6 +891,9 @@ type clusterState struct {
 	health     map[*clusterNode]string
 
 	slots []*clusterSlot
+	// slotIndex maps a slot to 1 + its index in slots (0 = unassigned). It is
+	// nil for a state built without newClusterState; slotEntry then searches.
+	slotIndex []uint16
 
 	generation uint32
 	createdAt  time.Time
@@ -1007,6 +1010,7 @@ func newClusterState(
 	slices.SortFunc(c.slots, func(a, b *clusterSlot) int {
 		return cmp.Compare(a.start, b.start)
 	})
+	c.buildSlotIndex()
 	sortClusterNodes(c.Masters)
 	sortClusterNodes(c.Slaves)
 
@@ -1557,17 +1561,49 @@ func (c *clusterState) slotShardPickerSlaveNode(slot int, shardPicker routing.Sh
 }
 
 func (c *clusterState) slotEntry(slot int) *clusterSlot {
+	if c.slotIndex != nil && slot >= 0 && slot < clusterSlotCount {
+		if i := c.slotIndex[slot]; i != 0 {
+			return c.slots[i-1]
+		}
+		return nil
+	}
+	if i := c.searchSlotEntry(slot); i >= 0 {
+		return c.slots[i]
+	}
+	return nil
+}
+
+const clusterSlotCount = 16384
+
+// searchSlotEntry is the binary-search lookup behind slotIndex. It returns the
+// index into c.slots, or -1.
+func (c *clusterState) searchSlotEntry(slot int) int {
 	i := sort.Search(len(c.slots), func(i int) bool {
 		return c.slots[i].end >= slot
 	})
 	if i >= len(c.slots) {
-		return nil
+		return -1
 	}
 	x := c.slots[i]
 	if slot >= x.start && slot <= x.end {
-		return x
+		return i
 	}
-	return nil
+	return -1
+}
+
+// buildSlotIndex precomputes searchSlotEntry for every slot, so per-command
+// slot lookups are O(1). c.slots must not change afterwards.
+func (c *clusterState) buildSlotIndex() {
+	if len(c.slots) == 0 || len(c.slots) >= math.MaxUint16 {
+		return
+	}
+	index := make([]uint16, clusterSlotCount)
+	for slot := range index {
+		if i := c.searchSlotEntry(slot); i >= 0 {
+			index[slot] = uint16(i + 1)
+		}
+	}
+	c.slotIndex = index
 }
 
 func (c *clusterState) slotNodes(slot int) []*clusterNode {
@@ -2419,8 +2455,12 @@ func (c *ClusterClient) autoPipelineRoutingDecision(
 	if decision := cmd.clusterRoutingDecision(); decision != nil {
 		return decision
 	}
+	resolved := c.resolveCommandRoutingDecision(ctx, cmd)
+	if template := pinRoutingTemplate(cmd, &resolved); template != nil {
+		return template
+	}
 	decision := acquireClusterRoutingDecision()
-	*decision = c.resolveCommandRoutingDecision(ctx, cmd)
+	*decision = resolved
 	decision.pooled = true
 	cmd.setClusterRoutingDecision(decision)
 	return decision
@@ -2462,6 +2502,15 @@ func (c *ClusterClient) resolvePipelineRouting(
 		// mapping recomputes each unpinned decision instead of storing one per
 		// command. AutoPipeline admission pins are still used as they are.
 		route.recompute = true
+		// Fast-path commands pin the shared template plus their slot, so
+		// mapping computes no slot twice. Other commands are recomputed.
+		for _, cmd := range cmds {
+			if cmd.clusterRoutingDecision() != nil {
+				continue
+			}
+			var scratch clusterRoutingDecision
+			pinRoutingTemplate(cmd, c.pipelineDecision(ctx, cmd, route, &scratch))
+		}
 		return route
 	}
 
@@ -2777,7 +2826,7 @@ func pipelineMultiShardFitsOneSlot(cmd Cmder, decision *clusterRoutingDecision) 
 		}
 	}
 	// Require a complete plan that matches the admitted slot.
-	return slot >= 0 && slot == decision.naturalSlot
+	return slot >= 0 && slot == decision.slotFor(cmd)
 }
 
 func (c *ClusterClient) processPipelineNode(
@@ -3851,6 +3900,40 @@ type clusterRoutingDecision struct {
 	// pooled marks a decision owned by clusterRoutingDecisionPool. Only the pin
 	// owner returns it, through releaseClusterRoutingDecision.
 	pooled bool
+	// template marks a shared routingCommandMeta.fast decision. It holds no
+	// slot; the pinning command carries it (baseCmd.slotCache). Read the slot
+	// with slotFor.
+	template bool
+}
+
+// slotFor returns the decision's natural slot for cmd.
+func (d *clusterRoutingDecision) slotFor(cmd Cmder) int {
+	if !d.template {
+		return d.naturalSlot
+	}
+	if slot, ok := cmd.cachedSlot(); ok {
+		return slot
+	}
+	return cmdSlot(cmd, d.firstKey, -1)
+}
+
+// pinRoutingTemplate pins d on cmd without allocating when d is a fast-path
+// decision: the shared template is pinned and the slot goes on the command.
+// It returns the pinned decision, or nil when d needs its own storage.
+func pinRoutingTemplate(cmd Cmder, d *clusterRoutingDecision) *clusterRoutingDecision {
+	if d.meta == nil || d.meta.fast == nil || d.naturalSlot < 0 || d.naturalSlot >= clusterSlotCount {
+		return nil
+	}
+	t := d.meta.fast
+	probe := *d
+	probe.naturalSlot, probe.template = t.naturalSlot, true
+	if probe != *t {
+		return nil
+	}
+	// Publish the slot before the pin: readers load the pin first.
+	cmd.setCachedSlot(d.naturalSlot)
+	cmd.setClusterRoutingDecision(t)
+	return t
 }
 
 // clusterRoutingDecisionPool recycles AutoPipeline admission pins, which live
@@ -4107,7 +4190,7 @@ func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
 
 func (c *ClusterClient) cmdSlotWithDecision(cmd Cmder, d *clusterRoutingDecision, prefferedSlot int) int {
 	if prefferedSlot == -1 {
-		return d.naturalSlot
+		return d.slotFor(cmd)
 	}
 	if c.opt != nil && c.opt.DisableRoutingPolicies {
 		return c.legacyCmdSlotWithPos(cmd, d.firstKey, prefferedSlot)
