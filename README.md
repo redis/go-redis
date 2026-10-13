@@ -344,7 +344,7 @@ AutoPipeline's existing ordered solo path can use CSC. Direct node handles
 Observed ownership/role changes clear the affected nodes' caches, including
 both old and new owners; cached values are never transferred between nodes.
 MOVED and ASK evict all cached replies depending on the redirected command's
-Redis keys across this ClusterClient's node caches, including GET/MGET replies
+Redis keys across this `ClusterClient`'s node caches, including `GET`/`MGET` replies
 and pending reservations; unrelated entries are retained. Unknown key layouts
 fall back to clearing the node caches when neither CSC key extraction nor cached
 command metadata identifies all keys safely. Redirects never trigger eager refresh.
@@ -362,24 +362,35 @@ CSC bypasses stale topology snapshots until a successful reload; the trust
 threshold is `ClusterStateReloadInterval` (default 60 seconds, negative means
 always expired). This protects against **observed** transitions, not changes the
 client never sees. A fresh slot map cannot rule out migration or failback between
-observations. Negative replies, including `redis.Nil`, are cached. Cluster CSC
-defaults `MaxStaleness` to **one second** when its configured value is non-positive;
-a positive value is preserved. Standalone's default remains zero (unlimited).
-Shorter ages increase server refetches even when keys do not change.
-This bounds reuse of an absence-dependent result even if a different client
-creates the key on an importing node without invalidating the original node's
-tracked absence. Age is measured from cache publication, not from the server
-change or request start; a slow in-flight reply can therefore extend the window.
-This is bounded entry reuse, not linearizable reads or an ownership fence.
+observations. Cluster caches only replies establishing that all Redis keys they
+depend on exist. During migration, a different client can create a missing key
+on an importing node without invalidating the source node's tracked absence.
+Therefore `GET` null replies and `MGET`/`JSON.MGET` replies containing any null element
+are returned normally but not cached. `EXISTS` is cached only when its count equals
+the number of key arguments (including duplicates). Single-key commands use
+command-specific presence checks: an empty `GET` string is cached, but an empty
+`GETRANGE` reply or zero `STRLEN` is not, since it can also represent a missing key.
+`HMGET` can be cached when at least one field is present: its fields belong to one
+Redis key, unlike `MGET`'s separate keys. Ambiguous commands (`SDIFF`, `SUNION`, `ZDIFF`,
+`ZUNION`, `LCS`, `BITPOS`, `BITFIELD_RO`, and `JSON` commands other than `GET`/`MGET`) bypass
+Cluster caching. This trades cache hits on ambiguous/absent results for safety
+without extra existence probes. The same filter applies to refresh and
+coalesced fills, including custom per-node caches.
+
+Standalone negative caching is unchanged. `MaxStaleness` is optional for both
+clients and defaults to zero (unlimited); a configured positive value still
+limits entry reuse from cache publication. Shorter ages increase server reads
+even when keys do not change. Neither presence filtering nor an entry-age limit
+guarantees immediate consistency or an ownership fence.
 Finite entry age cannot repair missing server-side tracking coverage. Redis Enterprise
 proxy deployments may require reconnecting caching clients after shard additions
 or same-node slot moves; this policy does not remove that operational requirement.
 
 Custom per-node caches can be created with `ClusterOptions.NewClient`: preserve
 the supplied options and create a fresh cache for each node-client lifetime.
-Custom caches must enforce a positive maximum entry age themselves; the Cache
-interface does not expose an age policy for ClusterClient to enforce. For a
-built-in LocalCache created in a factory, use the supplied cache configuration.
+Custom caches remain responsible for any optional entry-age policy; the Cache
+interface does not expose one for `ClusterClient` to enforce. For a built-in
+`LocalCache` created in a factory, use the supplied cache configuration.
 `UniversalOptions` forwards CSC configuration to Cluster, but its explicit
 `ClientSideCache` instance remains standalone-only. Refresh, miss coalescing and
 invalidation batching retain their standalone built-in-cache limitations.

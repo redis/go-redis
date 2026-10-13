@@ -15,8 +15,8 @@ import (
 
 // Storage, tracking and reservation safety stay with Client. Cluster only gates
 // routed access and evicts dependencies after redirects or topology changes.
-// This is deliberately not an ownership epoch: entry age bounds reuse when a
-// change is unobserved or old work starts another fetch after a clear.
+// This is deliberately not an ownership epoch. Absence-dependent replies are
+// excluded by the cluster reply policy, including for background fetches.
 type clusterCSC struct {
 	client         weak.Pointer[ClusterClient]
 	trustInterval  time.Duration

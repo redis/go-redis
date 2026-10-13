@@ -1502,8 +1502,9 @@ func classifyCachedReply(raw []byte) error {
 }
 
 // isCacheableReplyResult reports whether a fully read Redis reply can be
-// cached. redis.Nil is a normal negative lookup, not a transport/protocol
-// failure; tracking will invalidate it if the key is later created.
+// considered for caching. redis.Nil is a normal negative lookup, not a
+// transport/protocol failure. Cluster publication additionally requires a reply
+// that establishes key existence; standalone retains negative caching.
 func isCacheableReplyResult(err error) bool {
 	return err == nil || err == Nil
 }
@@ -1564,7 +1565,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// the namespace already in it, in one allocation, so the prefix has to be
 	// known first.
 	keyPrefix := c.cscKeyPrefix
-	if c.opt.clusterCSC != nil && !c.clusterCSCAllowed(ctx) {
+	if c.opt.clusterCSC != nil && (!c.clusterCSCAllowed(ctx) || clusterCSCCommandPolicy(cmd.Name()) == clusterCSCReplyBypass) {
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 	if keyPrefix == "" {
@@ -1795,7 +1796,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 // was already lost never becomes visible and never wakes waiters with stale
 // data.
 func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture) bool {
-	if n := c.opt.clusterCSC; n != nil && !n.usable() {
+	if n := c.opt.clusterCSC; n != nil && (!n.usable() || !c.clusterCSCReplyCacheable(key, fc.raw)) {
 		c.csc.Cancel(key, token)
 		return false
 	}

@@ -55,11 +55,11 @@ type ClusterOptions struct {
 
 	// ClientSideCacheConfig enables an independent cache per node client. Capacity
 	// and memory limits apply to each node, not to the whole ClusterClient.
-	// MaxStaleness defaults to one second when non-positive; Cluster CSC requires
-	// a finite entry age because migration can hide behind cached missing keys.
-	// Standalone clients retain their existing zero (unlimited) default.
+	// Replies depending on missing keys are not cached. Commands whose replies
+	// cannot establish key existence bypass caching. MaxStaleness is optional,
+	// with the same zero (unlimited) default as standalone clients.
 	// A custom NewClient must preserve the supplied Options and create a fresh
-	// cache for each node-client lifetime, with a positive maximum entry age.
+	// cache for each node-client lifetime.
 	// See Options.ClientSideCacheConfig.
 	ClientSideCacheConfig *ClientSideCacheConfig
 	// ClientSideCacheStrategy shares tracking across a node's connections, not
@@ -474,9 +474,6 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	var cacheConfig *ClientSideCacheConfig
 	if opt.ClientSideCacheConfig != nil {
 		configClone := *opt.ClientSideCacheConfig
-		if configClone.MaxStaleness <= 0 {
-			configClone.MaxStaleness = time.Second
-		}
 		cacheConfig = &configClone
 	}
 	// Clone MaintNotificationsConfig to avoid sharing between cluster node clients
