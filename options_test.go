@@ -743,3 +743,30 @@ func TestParseURLPipelinePoolOptions(t *testing.T) {
 		t.Fatalf("ParseFailoverURL pipeline opts: size=%d rbuf=%d wbuf=%d", fo.PipelinePoolSize, fo.PipelineReadBufferSize, fo.PipelineWriteBufferSize)
 	}
 }
+
+func TestParseClusterURLSkipVerify(t *testing.T) {
+	opt, err := ParseClusterURL("rediss://localhost:6379?skip_verify=true")
+	if err != nil {
+		t.Fatalf("ParseClusterURL(skip_verify=true): unexpected error: %v", err)
+	}
+	if opt.TLSConfig == nil || !opt.TLSConfig.InsecureSkipVerify {
+		t.Fatalf("expected TLSConfig.InsecureSkipVerify=true, got %+v", opt.TLSConfig)
+	}
+
+	optFalse, err := ParseClusterURL("rediss://localhost:6379?skip_verify=false")
+	if err != nil {
+		t.Fatalf("ParseClusterURL(skip_verify=false): unexpected error: %v", err)
+	}
+	if optFalse.TLSConfig == nil || optFalse.TLSConfig.InsecureSkipVerify {
+		t.Fatalf("expected TLSConfig.InsecureSkipVerify=false, got %+v", optFalse.TLSConfig)
+	}
+
+	_, err = ParseClusterURL("rediss://localhost:6379?skip_verify=yes")
+	if err == nil {
+		t.Fatal("expected error for invalid skip_verify value, got nil")
+	}
+	wantErr := `redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`
+	if err.Error() != wantErr {
+		t.Fatalf("got error %q, want %q", err.Error(), wantErr)
+	}
+}
