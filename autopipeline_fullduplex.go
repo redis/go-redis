@@ -308,6 +308,7 @@ func (o *fdLimiterReport) settle(err error) {
 // caller directly, or (when hooks are present) hands off to the command's host
 // goroutine, which runs the hook chain and then wakes the caller.
 func (r fdReq) complete() {
+	r.cmd.setClusterRoutingDecision(nil)
 	if r.hookDone != nil {
 		close(r.hookDone)
 		return

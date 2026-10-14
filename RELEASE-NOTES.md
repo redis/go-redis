@@ -1,5 +1,39 @@
 # Release Notes
 
+# Unreleased
+
+- Cluster routing shares command metadata with client-side caching for key
+  extraction and read-only status. Existing default routing and cluster-wide
+  `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers are preserved.
+  Install `NewCommandMetadataResolver()` or `client.NewDynamicResolver()` with
+  `SetCommandInfoResolver` to enable metadata-based fan-out and aggregation.
+  `CommandMetadata` configuration alone does not enable them. Cross-slot
+  fan-out is not atomic.
+- Explicit pipelines and transactions retain node-local command execution;
+  ordered `AsyncAutoPipeline` rejects fan-out before dispatch. Same-slot
+  metadata commands remain batchable. Automatic fan-out is available through
+  the blocking face or unordered half-duplex mode. Existing direct helpers
+  and special routing retain their separate execution path.
+  `SCAN`, `INFO`, and
+  known diagnostics remain node-local. Single-slot raw commands and binary
+  marshaler values are accepted when no fan-out is needed.
+- Numeric sum/min/max fan-out preserves integer replies as exact `int64`
+  results, including raw `Do` results; integer overflow returns an error.
+  Aggregates containing floating-point replies return `float64`.
+- Resolved command key specifications take precedence over `SetFirstKeyPos`.
+  Missing snapshot commands retain the legacy key-position fallback; configure
+  `CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` for full
+  metadata. The default `CommandMetadataStatic` mode performs no network lookup.
+- Cluster routing decisions are stored on commands without using commands as
+  map keys, and concurrent topology reloads share one in-flight load.
+- Topology loading prefers `CLUSTER SHARDS` and falls back to `CLUSTER SLOTS`
+  for unsupported commands or unusable replies, including missing or unknown
+  node health. Connection failures try another node without repeating `SLOTS`
+  on the failed connection.
+- Existing `FT.CURSOR` routing still hashes the cursor ID and does not track
+  the node that created the cursor. Correct origin tracking is a follow-up;
+  use the same node client for creation and continuation in the meantime.
+
 # 9.23.0 (2026-10-05)
 
 This is a minor release. It contains everything from 9.23.0-beta.1, so these notes cover the full 9.22.0 → 9.23.0 upgrade. The release adds:
