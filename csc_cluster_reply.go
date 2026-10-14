@@ -144,7 +144,8 @@ func (p clusterCSCReplyPolicy) accepts(raw []byte, keys int) bool {
 			if err != nil {
 				return false
 			}
-			if p == clusterCSCReplyMembers {
+			switch p {
+			case clusterCSCReplyMembers:
 				if line[0] != proto.RespInt {
 					return false
 				}
@@ -155,9 +156,9 @@ func (p clusterCSCReplyPolicy) accepts(raw []byte, keys int) bool {
 				if n == 1 {
 					return true
 				}
-			} else if p == clusterCSCReplyAnyPresent {
+			case clusterCSCReplyAnyPresent:
 				return true
-			} else {
+			case clusterCSCReplyAllPresent:
 				// MGET/JSON.MGET return a string (possibly empty) for every
 				// present input; even one null rejects the whole cache entry.
 				if line[0] != proto.RespString || r.Discard(line) != nil {

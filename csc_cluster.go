@@ -356,6 +356,11 @@ func (c *baseClient) observeCSCCachedRedirect(err error, cacheKey string) {
 // command metadata. The small fallback covers common writes with cold metadata;
 // it does not guess that every argument is a key (SET values, script args, etc.).
 func clusterCSCRedirectKeys(cmd Cmder, info *CommandInfo) ([]string, bool) {
+	// BY/GET patterns depend on the source's contents, not just its key.
+	// Use the unknown-layout fallback rather than evicting a partial key set.
+	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd) {
+		return nil, false
+	}
 	args := cmd.Args()
 	lo, hi, step := 0, 0, 1
 	if _, cacheable := defaultCacheableCommands[cmd.Name()]; cacheable {

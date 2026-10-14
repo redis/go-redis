@@ -374,6 +374,9 @@ func TestClusterCSCRedirectKeyExtraction(t *testing.T) {
 		{"mget", makeCmd("mget", "a", "b"), nil, []string{"a", "b"}},
 		{"exists", makeCmd("exists", "a", "b"), nil, []string{"a", "b"}},
 		{"json", makeCmd("json.mget", "a", "b", "$.value"), nil, []string{"a", "b"}},
+		{"plain sort", makeCmd("sort_ro", "a", "alpha"), nil, []string{"a"}},
+		{"sort by pattern", makeCmd("sort_ro", "a", "BY", "weight:*"), nil, nil},
+		{"sort get pattern", makeCmd("sort_ro", "a", []byte("gEt"), "value:*"), &CommandInfo{FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1}, nil},
 		{"set value is not a key", makeCmd("set", "a", "unrelated", "px", 1000), nil, []string{"a"}},
 		{"mset values are not keys", makeCmd("mset", "a", "value1", "b", "value2"), nil, []string{"a", "b"}},
 		{"del", makeCmd("del", "a", "b"), nil, []string{"a", "b"}},
@@ -400,8 +403,12 @@ func TestClusterCSCRedirectKeyExtraction(t *testing.T) {
 }
 
 func TestClusterCSCRedirectEvictsDependenciesAcrossNodes(t *testing.T) {
-	for _, redirect := range []string{"ASK", "MOVED"} {
-		t.Run(redirect, func(t *testing.T) {
+	for _, tc := range []struct {
+		redirect  string
+		patterned bool
+	}{{"ASK", false}, {"ASK", true}, {"MOVED", false}, {"MOVED", true}} {
+		redirect, patterned := tc.redirect, tc.patterned
+		t.Run(fmt.Sprintf("%s/patterned=%v", redirect, patterned), func(t *testing.T) {
 			var calls atomic.Int32
 			addrs := []string{
 				newClusterCSCTestServer(t, clusterCSCTestReply(&calls)),
@@ -458,17 +465,25 @@ func TestClusterCSCRedirectEvictsDependenciesAcrossNodes(t *testing.T) {
 				reservations = append(reservations, reservation{cache, pending, token})
 			}
 			// SET's value deliberately matches another cached Redis key.
-			nodes[0].Client.observeCSCRedirect(fmt.Errorf("%s %d %s", redirect, hashtag.Slot("{key}:moved"), addrs[1]), makeCmd("set", "{key}:moved", "unrelated"))
+			command := makeCmd("set", "{key}:moved", "unrelated")
+			if patterned {
+				command = makeCmd("sort_ro", "{key}:moved", "GET", "value:*")
+			}
+			nodes[0].Client.observeCSCRedirect(fmt.Errorf("%s %d %s", redirect, hashtag.Slot("{key}:moved"), addrs[1]), command)
 			for _, node := range nodes {
 				waitClusterCSCReady(t, node.Client.opt.clusterCSC)
 				cache := node.Client.csc.(*clusterCSCBlockingCache)
-				if cache.flushes.Load() != 0 {
-					t.Fatal("key redirect flushed unrelated entries")
+				wantFlushes := int32(0)
+				if patterned {
+					wantFlushes = 1
+				}
+				if cache.flushes.Load() != wantFlushes {
+					t.Fatalf("flushes=%d, want %d", cache.flushes.Load(), wantFlushes)
 				}
 				for i, cmd := range commands {
 					key, _ := buildCacheKeyNS(cmd, node.Client.cscKeyPrefix)
 					_, hit := cache.Get(ctx, key)
-					if hit != (i >= 2) {
+					if hit != (i >= 2 && !patterned) {
 						t.Fatalf("node %s command %v: hit=%v", node.Client.opt.Addr, cmd.Args(), hit)
 					}
 				}
@@ -483,8 +498,17 @@ func TestClusterCSCRedirectEvictsDependenciesAcrossNodes(t *testing.T) {
 }
 
 func TestClusterCSCRedirectQueuesKeysDuringCleanup(t *testing.T) {
-	for _, unknown := range []bool{false, true} {
-		t.Run(fmt.Sprintf("unknown-keys=%v", unknown), func(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		command   Cmder
+		fullFlush bool
+	}{
+		{"known keys", makeCmd("get", "second"), false},
+		{"unknown keys", makeCmd("module.dynamic", "second", "arguments"), true},
+		{"sort by pattern", makeCmd("sort_ro", "second", "BY", "weight:*"), true},
+		{"sort get pattern", makeCmd("sort_ro", "second", "GET", "value:*"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
 			addr := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
 			cache := &clusterCSCBlockingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 16, MaxStaleness: time.Minute}), entered: make(chan struct{}), release: make(chan struct{})}
@@ -509,18 +533,14 @@ func TestClusterCSCRedirectQueuesKeysDuringCleanup(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("first key cleanup did not start")
 			}
-			command := makeCmd("get", "second")
-			if unknown {
-				command = makeCmd("module.dynamic", "second", "arguments")
-			}
-			node.Client.observeCSCRedirect(fmt.Errorf("ASK 2 %s", addr), command)
+			node.Client.observeCSCRedirect(fmt.Errorf("ASK 2 %s", addr), tc.command)
 			// Repeat the second key while the first callback is blocked: it must be
 			// retained, but coalesced into one pending delete, not silently discarded.
 			node.Client.observeCSCRedirect(fmt.Errorf("ASK 2 %s", addr), makeCmd("get", "second"))
 			unblock()
 			waitClusterCSCReady(t, node.Client.opt.clusterCSC)
 			wantFlushes, wantDeletes := int32(0), int32(2)
-			if unknown {
+			if tc.fullFlush {
 				wantFlushes, wantDeletes = 1, 1
 			}
 			if cache.flushes.Load() != wantFlushes || cache.deletes.Load() != wantDeletes {
@@ -529,7 +549,7 @@ func TestClusterCSCRedirectQueuesKeysDuringCleanup(t *testing.T) {
 			for _, key := range []string{"first", "second", "unrelated"} {
 				cacheKey, _ := buildCacheKeyNS(makeCmd("get", key), node.Client.cscKeyPrefix)
 				_, hit := cache.Get(ctx, cacheKey)
-				if hit != (key == "unrelated" && !unknown) {
+				if hit != (key == "unrelated" && !tc.fullFlush) {
 					t.Fatalf("key %s: hit=%v", key, hit)
 				}
 			}
@@ -679,6 +699,115 @@ func TestClusterCSCUniversalAndFactoryControls(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatal("factory discarded controls but retained active CSC")
+	}
+}
+
+func TestClusterCSCFailoverConfiguration(t *testing.T) {
+	cfg := &ClientSideCacheConfig{MaxEntries: 23, MaxStaleness: time.Minute}
+	u := &UniversalOptions{
+		MasterName: "csc-primary", Addrs: []string{":26379"},
+		ClientSideCacheConfig:                  cfg,
+		ClientSideCacheStrategy:                CSCStrategySharedTracking,
+		ClientSideCacheRefreshOnInvalidate:     true,
+		ClientSideCacheCoalesceMisses:          true,
+		ClientSideCacheInvalidationBatchWindow: time.Millisecond,
+	}
+	f := u.Failover()
+	o := f.clusterOptions().clientOptions()
+	if o.ClientSideCacheConfig == nil || !reflect.DeepEqual(*o.ClientSideCacheConfig, *cfg) ||
+		o.ClientSideCacheConfig == cfg || o.ClientSideCacheStrategy != u.ClientSideCacheStrategy ||
+		!o.ClientSideCacheRefreshOnInvalidate || !o.ClientSideCacheCoalesceMisses ||
+		o.ClientSideCacheInvalidationBatchWindow != u.ClientSideCacheInvalidationBatchWindow {
+		t.Fatal("failover cluster dropped or aliased CSC configuration")
+	}
+	// Sentinel discovery connections and single-node failover clients do not
+	// participate in Cluster CSC.
+	if f.sentinelOptions(":26379").ClientSideCacheConfig != nil || f.clientOptions().ClientSideCacheConfig != nil {
+		t.Fatal("Cluster CSC configuration enabled caching on a non-cluster connection")
+	}
+}
+
+func TestClusterCSCUniversalFailoverCluster(t *testing.T) {
+	for _, route := range []string{"latency", "random", "cluster mode"} {
+		for _, tc := range []struct {
+			db    int
+			cache bool
+		}{{0, true}, {3, true}, {0, false}, {3, false}} {
+			t.Run(fmt.Sprintf("%s/db=%d/cache=%v", route, tc.db, tc.cache), func(t *testing.T) {
+				db := tc.db
+				var calls, selects, connects atomic.Int32
+				addr := newClusterCSCTestServer(t, func(cmd string) string {
+					if cmd == "command" {
+						return "*0\r\n" // Valid empty metadata; no failed discovery sockets.
+					}
+					if cmd == "select" {
+						selects.Add(1)
+					}
+					return clusterCSCTestReply(&calls)(cmd)
+				})
+				u := &UniversalOptions{
+					MasterName: "csc-primary", Addrs: []string{":26379"}, DB: db,
+					Protocol: 3, PoolSize: 1, DisableIdentity: true,
+					OnConnect: func(_ context.Context, cn *Conn) error {
+						connects.Add(1)
+						if cn.opt.DB != db {
+							return fmt.Errorf("connection DB=%d, want %d", cn.opt.DB, db)
+						}
+						return nil
+					},
+				}
+				if tc.cache {
+					u.ClientSideCacheConfig = &ClientSideCacheConfig{MaxEntries: 16}
+				}
+				switch route {
+				case "latency":
+					u.RouteByLatency = true
+				case "random":
+					u.RouteRandomly = true
+				default:
+					u.IsClusterMode = true
+				}
+				client := NewUniversalClient(u)
+				t.Cleanup(func() { _ = client.Close() })
+				c, ok := client.(*ClusterClient)
+				if !ok {
+					t.Fatal("universal failover path did not construct a ClusterClient")
+				}
+				// Replace discovery, not construction, with a deterministic primary.
+				// There is no replica, so every routing mode selects this primary.
+				c.opt.ClusterSlots = func(context.Context) ([]ClusterSlot, error) {
+					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+				}
+				ctx := context.Background()
+				for i := 0; i < 2; i++ {
+					if err := c.Get(ctx, "key").Err(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// SharedTracking remains DB-0-only. Other databases must execute
+				// normally, without attempting a SELECT from a CSC OnConnect hook.
+				wantCalls, wantHits := int32(2), uint64(0)
+				if tc.cache && db == 0 {
+					wantCalls, wantHits = 1, 1
+				}
+				if calls.Load() != wantCalls || c.CSCStats().Hits != wantHits || connects.Load() == 0 {
+					t.Fatalf("calls=%d connects=%d stats=%+v", calls.Load(), connects.Load(), c.CSCStats())
+				}
+				node, err := c.MasterForKey(ctx, "key")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if node.opt.DB != db || (tc.cache && db == 0 && node.cscKeyPrefix != cscNamespacePrefix(db, "")) {
+					t.Fatal("node cache namespace does not match the selected database")
+				}
+				if wantHits == 0 && node.csc != nil {
+					t.Fatal("disabled or nonzero-DB client attached CSC")
+				}
+				if db != 0 && selects.Load() == 0 {
+					t.Fatal("node connection did not select the configured database")
+				}
+			})
+		}
 	}
 }
 

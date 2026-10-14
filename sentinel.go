@@ -89,6 +89,25 @@ type FailoverOptions struct {
 	StreamingCredentialsProvider auth.StreamingCredentialsProvider
 	DB                           int
 
+	// ClientSideCacheConfig enables an independent cache per node when using
+	// NewFailoverClusterClient. Limits apply per node. Single-node failover
+	// clients and Sentinel discovery connections do not support CSC.
+	// As with standalone CSC, caching is disabled when DB is not zero.
+	// See ClusterOptions.ClientSideCacheConfig.
+	ClientSideCacheConfig *ClientSideCacheConfig
+	// ClientSideCacheStrategy selects the node clients' tracking strategy.
+	// Only supported by NewFailoverClusterClient.
+	ClientSideCacheStrategy CSCStrategy
+	// ClientSideCacheRefreshOnInvalidate enables node-local background refresh.
+	// Only supported by NewFailoverClusterClient.
+	ClientSideCacheRefreshOnInvalidate bool
+	// ClientSideCacheCoalesceMisses coalesces concurrent node-local cache misses.
+	// Only supported by NewFailoverClusterClient.
+	ClientSideCacheCoalesceMisses bool
+	// ClientSideCacheInvalidationBatchWindow batches node-local invalidations.
+	// Only supported by NewFailoverClusterClient.
+	ClientSideCacheInvalidationBatchWindow time.Duration
+
 	MaxRetries      int
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
@@ -316,7 +335,12 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 	return &ClusterOptions{
-		ClientName: opt.ClientName,
+		ClientSideCacheConfig:                  opt.ClientSideCacheConfig,
+		ClientSideCacheStrategy:                opt.ClientSideCacheStrategy,
+		ClientSideCacheRefreshOnInvalidate:     opt.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          opt.ClientSideCacheCoalesceMisses,
+		ClientSideCacheInvalidationBatchWindow: opt.ClientSideCacheInvalidationBatchWindow,
+		ClientName:                             opt.ClientName,
 
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -1334,18 +1358,11 @@ func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 
 	opt := failoverOpt.clusterOptions()
 	if failoverOpt.DB != 0 {
-		onConnect := opt.OnConnect
-
-		opt.OnConnect = func(ctx context.Context, cn *Conn) error {
-			if err := cn.Select(ctx, failoverOpt.DB).Err(); err != nil {
-				return err
-			}
-
-			if onConnect != nil {
-				return onConnect(ctx, cn)
-			}
-
-			return nil
+		// Set DB before construction so both connection initialization and the
+		// CSC namespace agree. A SELECT in OnConnect is rejected by CSC.
+		opt.NewClient = func(nodeOpt *Options) *Client {
+			nodeOpt.DB = failoverOpt.DB
+			return NewClient(nodeOpt)
 		}
 	}
 

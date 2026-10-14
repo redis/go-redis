@@ -341,6 +341,11 @@ AutoPipeline's existing ordered solo path can use CSC. Direct node handles
 (`MasterForKey`, `SlaveForKey`, `ForEachShard`) and their clones bypass caching.
 `ClusterClient.CSCStats()` and `CSCRefreshStats()` aggregate node statistics.
 
+`NewFailoverClusterClient` also accepts CSC configuration, including when selected
+by `NewUniversalClient`. Sentinel discovery connections remain uncached, and
+`NewFailoverClient` does not support CSC. The existing DB-0-only CSC
+restriction applies; nonzero databases execute normally without caching.
+
 Observed ownership/role changes clear the affected nodes' caches, including
 both old and new owners; cached values are never transferred between nodes.
 MOVED and ASK evict all cached replies depending on the redirected command's
