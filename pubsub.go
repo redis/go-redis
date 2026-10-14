@@ -28,11 +28,13 @@ type PubSub struct {
 	newConn   func(ctx context.Context, addr string, channels []string) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
-	mu        sync.Mutex
-	cn        *pool.Conn
-	channels  map[string]struct{}
-	patterns  map[string]struct{}
-	schannels map[string]struct{}
+	mu         sync.Mutex
+	cn         *pool.Conn
+	channels   map[string]struct{}
+	patterns   map[string]struct{}
+	schannels  map[string]struct{}
+	acks       map[*pool.Conn]map[string][]pubSubAckEntry
+	ackInvalid *pool.Conn
 
 	closed bool
 	exit   chan struct{}
@@ -105,6 +107,7 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	}
 
 	if err := c.resubscribe(ctx, cn); err != nil {
+		c.failAcks(cn, err)
 		_ = c.closeConn(cn)
 		return nil, err
 	}
@@ -120,38 +123,37 @@ func (c *PubSub) writeCmd(ctx context.Context, cn *pool.Conn, cmd Cmder) error {
 }
 
 func (c *PubSub) resubscribe(ctx context.Context, cn *pool.Conn) error {
-	var firstErr error
-
-	if len(c.channels) > 0 {
-		firstErr = c._subscribe(ctx, cn, "subscribe", slices.Collect(maps.Keys(c.channels)))
-	}
-
-	if len(c.patterns) > 0 {
-		err := c._subscribe(ctx, cn, "psubscribe", slices.Collect(maps.Keys(c.patterns)))
-		if err != nil && firstErr == nil {
-			firstErr = err
+	for _, sub := range []struct {
+		kind     string
+		channels map[string]struct{}
+	}{
+		{"subscribe", c.channels}, {"psubscribe", c.patterns}, {"ssubscribe", c.schannels},
+	} {
+		if len(sub.channels) > 0 {
+			if err := c._subscribe(ctx, cn, sub.kind, slices.Collect(maps.Keys(sub.channels))); err != nil {
+				return err
+			}
 		}
 	}
-
-	if len(c.schannels) > 0 {
-		err := c._subscribe(ctx, cn, "ssubscribe", slices.Collect(maps.Keys(c.schannels)))
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-
-	return firstErr
+	return nil
 }
 
 func (c *PubSub) _subscribe(
 	ctx context.Context, cn *pool.Conn, redisCmd string, channels []string,
 ) error {
+	return c.subscribeWithAck(ctx, cn, redisCmd, channels, nil)
+}
+
+func (c *PubSub) subscribeWithAck(ctx context.Context, cn *pool.Conn, redisCmd string, channels []string, ack *PubSubAck) error {
 	args := make([]interface{}, 0, 1+len(channels))
 	args = append(args, redisCmd)
 	for _, channel := range channels {
 		args = append(args, channel)
 	}
 	cmd := NewSliceCmd(ctx, args...)
+	if redisCmd == "subscribe" {
+		c.registerAck(cn, channels, ack)
+	}
 	return c.writeCmd(ctx, cn, cmd)
 }
 
@@ -162,7 +164,19 @@ func (c *PubSub) releaseConnWithLock(
 	allowTimeout bool,
 ) {
 	c.mu.Lock()
-	c.releaseConn(ctx, cn, err, allowTimeout)
+	if err != nil && isRedisError(err) && c.cn == cn {
+		// Redis errors carry no command or channel identity. Any pending
+		// confirmation on this stream is now ambiguous.
+		if c.hasPendingAck(cn) {
+			_ = c.closeTheCn(err)
+		} else {
+			c.ackInvalid = cn
+			delete(c.acks, cn)
+			c.releaseConn(ctx, cn, err, allowTimeout)
+		}
+	} else {
+		c.releaseConn(ctx, cn, err, allowTimeout)
+	}
 	c.mu.Unlock()
 }
 
@@ -204,6 +218,8 @@ func (c *PubSub) closeTheCn(reason error) error {
 	if c.cn == nil {
 		return nil
 	}
+	c.failAcks(c.cn, reason)
+	c.ackInvalid = nil
 	err := c.closeConn(c.cn)
 	c.cn = nil
 	return err
@@ -338,7 +354,12 @@ func (c *PubSub) subscribe(ctx context.Context, redisCmd string, channels ...str
 	}
 
 	err = c._subscribe(ctx, cn, redisCmd, channels)
-	c.releaseConn(ctx, cn, err, false)
+	if err != nil {
+		// A partial command write has no provable reply count.
+		_ = c.closeTheCn(err)
+	} else {
+		c.releaseConn(ctx, cn, nil, false)
+	}
 	return err
 }
 
@@ -389,6 +410,10 @@ type Subscription struct {
 	Channel string
 	// Number of channels we are currently subscribed to.
 	Count int
+
+	// Ack identifies the SubscribeWithAck operation confirmed by this message.
+	// It is nil for ordinary Subscribe and automatic resubscription messages.
+	Ack *PubSubAck
 }
 
 func (m *Subscription) String() string {
@@ -513,7 +538,11 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		return nil, err
 	}
 
-	return c.newMessage(ctx, cn, c.cmd.Val())
+	msg, err := c.newMessage(ctx, cn, c.cmd.Val())
+	if sub, ok := msg.(*Subscription); ok {
+		c.receiveAck(cn, sub)
+	}
+	return msg, err
 }
 
 // Receive returns a message as a Subscription, Message, Pong or error.
