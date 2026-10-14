@@ -8,7 +8,9 @@ type Subscription struct {
 	Kind string
 	// Channel name we have subscribed to.
 	Channel string
-	// Number of channels we are currently subscribed to.
+	// Number of channels we are currently subscribed to: on a shared
+	// connection, the receiving handle's own names across all
+	// namespaces, not the server's connection-wide count.
 	Count int
 }
 

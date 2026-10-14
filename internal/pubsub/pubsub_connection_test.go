@@ -850,41 +850,39 @@ func TestNilResolverIgnoresHandoffMarks(t *testing.T) {
 }
 
 // lockCheckingResolver is a redirectingResolver that also records
-// whether each callback found the manager lock held — the
-// serialization the manager promises, which lets a resolver decide
-// both callbacks from shared state without locking of its own.
+// whether each Resolve found the manager lock held — the serialization
+// the manager promises resolveAddress. ShouldReplace is only counted:
+// it runs without the lock, and a TryLock there could not tell "free"
+// from "held by some other path" anyway.
 type lockCheckingResolver struct {
 	redirectingResolver
-	m        *Manager
-	calls    atomic.Int32
-	unlocked atomic.Int32 // callbacks that found the manager lock free
+	m               *Manager
+	shouldCalls     atomic.Int32
+	resolveCalls    atomic.Int32
+	resolveUnlocked atomic.Int32 // Resolve calls that found the manager lock free
 }
 
 func (r *lockCheckingResolver) ShouldReplace(cn *pool.Conn) bool {
-	r.observe()
+	r.shouldCalls.Add(1)
 	return r.redirectingResolver.ShouldReplace(cn)
 }
 
+// Resolve notes whether the manager lock was free: TryLock succeeds
+// only then (and is undone right away).
 func (r *lockCheckingResolver) Resolve(prev *pool.Conn, current string) string {
-	r.observe()
+	r.resolveCalls.Add(1)
+	if r.m.mu.TryLock() {
+		r.m.mu.Unlock()
+		r.resolveUnlocked.Add(1)
+	}
 	return r.redirectingResolver.Resolve(prev, current)
 }
 
-// observe counts a callback, noting whether the manager lock was free:
-// TryLock succeeds only then (and is undone right away).
-func (r *lockCheckingResolver) observe() {
-	r.calls.Add(1)
-	if r.m.mu.TryLock() {
-		r.m.mu.Unlock()
-		r.unlocked.Add(1)
-	}
-}
-
-// TestResolverCallbacksRunUnderManagerLock pins the serialization the
-// manager promises: shouldReplaceConn (consulted after a
-// frame read) and resolveAddress (consulted by a reconnect) both run under the
-// manager lock, so they can never overlap.
-func TestResolverCallbacksRunUnderManagerLock(t *testing.T) {
+// TestResolveAddressRunsUnderManagerLock pins the callback contract:
+// resolveAddress (consulted by a reconnect) runs under the manager
+// lock, while shouldReplaceConn (consulted after a frame read) is
+// lock-free and still drives the retirement.
+func TestResolveAddressRunsUnderManagerLock(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	srv.autoConfirm = true
@@ -911,11 +909,14 @@ func TestResolverCallbacksRunUnderManagerLock(t *testing.T) {
 	fsc2.expectCmd(t, "subscribe", "ch")
 	fsc1.expectClosed(t)
 
-	if got := r.calls.Load(); got < 2 {
-		t.Fatalf("resolver consulted %d time(s), want both ShouldReplace and Resolve", got)
+	if r.shouldCalls.Load() == 0 {
+		t.Fatal("ShouldReplace was never consulted")
 	}
-	if n := r.unlocked.Load(); n != 0 {
-		t.Fatalf("%d resolver callback(s) ran without the manager lock", n)
+	if r.resolveCalls.Load() == 0 {
+		t.Fatal("Resolve was never consulted")
+	}
+	if n := r.resolveUnlocked.Load(); n != 0 {
+		t.Fatalf("%d Resolve call(s) ran without the manager lock", n)
 	}
 }
 

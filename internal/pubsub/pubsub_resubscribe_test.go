@@ -125,6 +125,50 @@ func TestRejectedNameDoesNotPoisonBatch(t *testing.T) {
 	}
 }
 
+// TestRejectedBatchSparesEstablishedName pins that a rejection caused by
+// a new name does not demote a name another handle already has
+// Subscribed on the same connection: only the new name is retried, and
+// the established name's owner hears no spurious confirmation.
+func TestRejectedBatchSparesEstablishedName(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // answers by hand
+	cfg := testConfig("node:6379")
+	cfg.SubscribeRetryInterval = 30 * time.Millisecond
+	m := newTestManager(t, srv, cfg)
+
+	owner, err := m.Subscribe(ctx, "est")
+	if err != nil {
+		t.Fatalf("Subscribe est: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "est")
+	fsc.sendConfirm(t, "subscribe", "est", 1)
+	waitForConfirmation(t, owner.Events(), "subscribe", "est")
+
+	h, err := m.Subscribe(ctx, "est", "bad")
+	if err != nil {
+		t.Fatalf("Subscribe est, bad: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "est", "bad")
+	fsc.sendError(t, "NOPERM no access to 'bad'")
+	if err := waitForError(t, h.Events()); !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("issuer got %v, want the NOPERM reply", err)
+	}
+
+	// Only the new name is retried; the established one stays put.
+	if cmd := fsc.waitCmd(t); !slices.Equal(cmd, []string{"subscribe", "bad"}) {
+		t.Fatalf("retry sent %v, want [subscribe bad] alone", cmd)
+	}
+	fsc.expectNoCmd(t, 100*time.Millisecond)
+	select {
+	case ev := <-owner.Events():
+		if sub, ok := ev.(*Subscription); ok {
+			t.Fatalf("established name's owner got a spurious confirmation: %#v", sub)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // TestReplayWritesKnownRejectedNamesAlone pins that the knowledge of a
 // rejection survives a reconnect: the replay batches the names that were
 // never rejected and writes a known-rejected one alone, so the good

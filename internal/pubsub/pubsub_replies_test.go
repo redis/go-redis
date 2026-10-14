@@ -1025,6 +1025,48 @@ func TestFreshDialConfirmationReachesNewOwner(t *testing.T) {
 	waitForConfirmation(t, b.Events(), "subscribe", "x")
 }
 
+// TestConfirmationCountIsPerHandle pins that Subscription.Count is the
+// receiving handle's own name count, as on a dedicated connection — not
+// the server's connection-wide count, which includes other handles'
+// names — for server confirmations and synthesized ones alike.
+func TestConfirmationCountIsPerHandle(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // answers by hand
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	a, err := m.Subscribe(ctx, "a")
+	if err != nil {
+		t.Fatalf("Subscribe a: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "a")
+	fsc.sendConfirm(t, "subscribe", "a", 1)
+	waitForConfirmation(t, a.Events(), "subscribe", "a")
+
+	b, err := m.Subscribe(ctx, "b")
+	if err != nil {
+		t.Fatalf("Subscribe b: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "b")
+	// The server counts the connection: a and b.
+	fsc.sendConfirm(t, "subscribe", "b", 2)
+	sub, ok := recvEvent(t, b.Events()).(*Subscription)
+	if !ok || sub.Kind != "subscribe" || sub.Channel != "b" || sub.Count != 1 {
+		t.Fatalf("event = %#v, want subscribe b with count 1", sub)
+	}
+
+	// A synthesized confirmation (b does not own a, so nothing is
+	// written) counts the same way.
+	if err := b.Unsubscribe(ctx, "a"); err != nil {
+		t.Fatalf("Unsubscribe a on b: %v", err)
+	}
+	sub, ok = recvEvent(t, b.Events()).(*Subscription)
+	if !ok || sub.Kind != "unsubscribe" || sub.Channel != "a" || sub.Count != 1 {
+		t.Fatalf("event = %#v, want unsubscribe a with count 1", sub)
+	}
+	fsc.expectNoCmd(t, 100*time.Millisecond)
+}
+
 // TestUnsubscribeUnownedNameConfirms pins that an unsubscribe of a name
 // the handle does not own, or a bare unsubscribe on a handle owning
 // nothing, still produces the confirmation the server would have sent,

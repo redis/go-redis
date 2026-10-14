@@ -3,11 +3,13 @@ package pubsub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1679,5 +1681,134 @@ func TestManagerCloseClearsHandleOwnership(t *testing.T) {
 	// Closing a handle of a closed manager stays a nil no-op.
 	if err := h.Close(); err != nil {
 		t.Fatalf("handle Close after the manager closed = %v, want nil", err)
+	}
+}
+
+// TestUnparsableFrameIsSkipped pins that a frame the parser rejects is
+// logged and skipped, not treated as a connection error: the connection
+// stays, and the next frames are delivered at once instead of after
+// listen's reconnect backoff (long here, so a backoff would show).
+func TestUnparsableFrameIsSkipped(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	cfg := testConfig("node:6379")
+	cfg.MinRetryBackoff = 5 * time.Second
+	cfg.ReconnectMaxBackoff = 5 * time.Second
+	m := newTestManager(t, srv, cfg)
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	// Unknown kinds, one after another: with the old error path, the
+	// second would already sleep out the backoff.
+	for range 3 {
+		fsc.write(t, "*2\r\n$7\r\nunknown\r\n$1\r\nx\r\n")
+	}
+	fsc.sendMessage(t, "message", "ch", "after")
+	select {
+	case ev := <-h.Events():
+		if msg, ok := ev.(*Message); !ok || msg.Payload != "after" {
+			t.Fatalf("event = %#v, want the message after the skipped frames", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("message after unparsable frames was not delivered promptly")
+	}
+	select {
+	case fsc2 := <-srv.dialCh:
+		t.Fatalf("an unparsable frame reconnected to %q", fsc2.addr)
+	default:
+	}
+}
+
+// TestCloseInterruptsListenBackoff pins that Close ends the listen
+// goroutine even while it sleeps out the reconnect backoff, instead of
+// leaving it parked for up to ReconnectMaxBackoff.
+func TestCloseInterruptsListenBackoff(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	cfg := testConfig("node:6379")
+	cfg.MinRetryBackoff = 30 * time.Second
+	cfg.ReconnectMaxBackoff = 30 * time.Second
+	m := newTestManager(t, srv, cfg)
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	// Lose the connection with every redial failing: listen keeps
+	// erroring and backs off.
+	srv.mu.Lock()
+	srv.dialErr = errors.New("dial refused")
+	srv.mu.Unlock()
+	_ = fsc.conn.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	frame := fmt.Sprintf("(*Manager).listen(%p", m)
+	listening := func() bool {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		return strings.Contains(string(buf[:n]), frame)
+	}
+	if !listening() {
+		t.Fatal("listen goroutine not found before Close")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	waitUntil(t, "listen to exit after Close", func() bool { return !listening() })
+}
+
+// TestCloseReportsConnCloseError pins that Close reports the error of
+// closing the shared connection. Close closes it before taking the lock
+// and the teardown must not close it again: like pool.Conn.Close, a
+// repeat close returns nil, and the real error would be lost.
+func TestCloseReportsConnCloseError(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	errClose := errors.New("close failed")
+	var closes atomic.Int32
+	m := NewManager(
+		testConfig("node:6379"),
+		srv.dial,
+		func(cn *pool.Conn) error {
+			_ = cn.Close()
+			if closes.Add(1) == 1 {
+				return errClose
+			}
+			return nil
+		},
+		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
+		testIsBadConn,
+		nil, nil, nil,
+	)
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	if err := m.Close(); !errors.Is(err, errClose) {
+		t.Fatalf("Close = %v, want the connection's close error", err)
+	}
+	if n := closes.Load(); n != 1 {
+		t.Fatalf("connection closed %d times, want once", n)
+	}
+	if err := m.Close(); !errors.Is(err, pool.ErrClosed) {
+		t.Fatalf("second Close = %v, want pool.ErrClosed", err)
 	}
 }

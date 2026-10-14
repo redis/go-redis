@@ -1430,9 +1430,9 @@ func (cn *Conn) ResolveAddress(current string) string {
 		return current
 	}
 
-	handoff_address := cn.GetHandoffEndpoint()
-	if handoff_address == "" || handoff_address == internal.RedisNull {
+	handoffAddr := cn.GetHandoffEndpoint()
+	if handoffAddr == "" || handoffAddr == internal.RedisNull {
 		return current
 	}
-	return handoff_address
+	return handoffAddr
 }

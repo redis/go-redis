@@ -174,9 +174,13 @@ func (h *handle) deliverLocked(ev any) {
 // deliverSubscriptionLocked delivers the handle its own copy of a
 // subscription confirmation: handles are independent consumers, and a
 // broadcast fan-out must not share one mutable value across them (see
-// deliverLocked).
+// deliverLocked). Count is the handle's own (see ownedTotal), never the
+// server's: that one is connection-wide and counts other handles' names
+// too. Every confirmation passes through here, server-sent or
+// synthesized, so all of them agree.
 func (h *handle) deliverSubscriptionLocked(sub *Subscription) {
 	c := *sub
+	c.Count = h.ownedTotal()
 	h.deliverLocked(&c)
 }
 
@@ -195,7 +199,7 @@ func (h *handle) deliverPongLocked(pong *Pong) {
 }
 
 // ownedTotal is the number of names the handle owns across all
-// namespaces — the Count in synthesized unsubscribe confirmations.
+// namespaces — the Count of every confirmation it is delivered.
 func (h *handle) ownedTotal() int {
 	return len(h.channels) + len(h.patterns) + len(h.schannels)
 }
