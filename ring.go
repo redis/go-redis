@@ -846,6 +846,9 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	// the warm-cache branch in cmdFirstKeyPosWithInfo is reachable for Ring,
 	// mirroring how ClusterClient.cmdInfo works. For now pass nil
 	pos := cmdFirstKeyPosWithInfo(cmd, nil)
+	if pos < 0 {
+		return nil, fmt.Errorf("redis: cannot determine the routing key for command %s", cmd.Name())
+	}
 	if pos == 0 {
 		return c.sharding.Random()
 	}
@@ -941,7 +944,17 @@ func (c *Ring) generalProcessPipeline(
 	cmdsMap := make(map[string][]Cmder)
 
 	for _, cmd := range cmds {
-		hash := cmd.stringArg(cmdFirstKeyPosWithInfo(cmd, nil))
+		pos := cmdFirstKeyPosWithInfo(cmd, nil)
+		if pos < 0 {
+			err := fmt.Errorf("redis: cannot determine the routing key for command %s", cmd.Name())
+			cmd.SetErr(err)
+			if tx {
+				setCmdsErr(cmds, err)
+				return err
+			}
+			continue
+		}
+		hash := cmd.stringArg(pos)
 		if hash != "" {
 			hash = c.sharding.Hash(hash)
 		}

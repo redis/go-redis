@@ -44,7 +44,7 @@ var ErrFDPipelineUnavailable = errors.New(
 
 // ErrFDPipelineDiverts is returned when a batch contains a command the engine
 // cannot stream (blocking, per-command read timeout, runs-outside-pipeline,
-// HIMPORT, or one the caller's own mustDivert rejects). Such a command has to
+// HIMPORT, or one the routing callback rejects). Such a command has to
 // leave the pipe, which would break the batch's contiguity, so the whole call is
 // refused instead of being silently split. A NoRetry command (e.g. RawWriteTo)
 // is refused too: it makes the batch unreplayable as a unit, which the pipe's
@@ -240,9 +240,13 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeR
 		if cmd == nil {
 			return fdPipeResult{}, ErrFDPipelineDiverts
 		}
+		if ap.routeCommand != nil {
+			if divert, err := ap.routeCommand(ctx, cmd); divert || err != nil {
+				return fdPipeResult{}, ErrFDPipelineDiverts
+			}
+		}
 		if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) ||
-			isBlockingCmd(cmd) || isHImportCmd(cmd) ||
-			(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) {
+			isBlockingCmd(cmd) || isHImportCmd(cmd) {
 			return fdPipeResult{}, ErrFDPipelineDiverts
 		}
 		// A NoRetry command makes the whole batch unreplayable: an ordinary

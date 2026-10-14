@@ -313,12 +313,30 @@ Supported policies can send `PING` to all masters or split commands such as
 `MGET`, `DEL`, and `MSET` across slots. Without opt-in, their existing routing
 and server-side `CROSSSLOT` behavior remain unchanged.
 
+The default `CommandMetadataStatic` mode performs no metadata network requests.
+For commands missing from the bundled snapshot, configure
+`CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` to supply their
+key positions and read-only flags. Resolved key specifications take precedence
+over `SetFirstKeyPos`; that hint applies when command metadata is unavailable.
+
+For opted-in numeric fan-out, sum/min/max preserve integer replies as `int64`,
+including raw `Do(...).Result()` values; integer overflow returns an error.
+Aggregates containing floating-point replies return `float64`.
+
 Explicit `Pipeline` and `TxPipeline` calls keep each command local to its selected
 node; automatic metadata fan-out is suppressed inside these batches. A transaction
-still requires all keys to share a slot. `AutoPipeline` retains direct-command
-semantics and executes commands requiring fan-out outside the merged node batch.
+still requires all keys to share a slot. Ordered `AsyncAutoPipeline` rejects
+metadata fan-out before dispatch; same-slot metadata commands remain batchable.
+Use the blocking face or unordered half-duplex mode for automatic fan-out.
+Existing direct helpers and special routing retain their separate execution
+path: await prior async results before a dependent direct call.
 `SCAN`, `INFO`, and known diagnostic commands remain node-local; use
 `ForEachMaster` for whole-cluster inspection or scanning.
+
+The existing `FT.CURSOR` routing hashes the cursor ID; it does not track which
+node served `FT.AGGREGATE`. This does not guarantee cursor ownership across
+cluster nodes. Origin tracking remains a separate follow-up; use the same
+node client for cursor creation and continuation when that guarantee is needed.
 
 Cluster-wide operations and distributed DDL can affect multiple shards and are
 not atomic across them, whether fan-out is performed by go-redis or by a Redis
@@ -518,7 +536,15 @@ overlapping batches without deepening them.
 They work on `ClusterClient` too: commands are routed to the correct shard per
 key, so a single batch may span many slots; ordering across nodes is per key
 (same-key commands stay in order, different nodes' sub-pipelines run
-concurrently). Because batches share a few pipeline connections, autopipelining
+concurrently). Ordered `AsyncAutoPipeline` rejects metadata fan-out and custom
+multi-shard policies that would bypass its batch stream. Same-slot commands
+with metadata policies remain batchable. Use the blocking face, or
+`Unordered: true` in half-duplex mode, for automatic fan-out. Alternatively,
+await pending results and execute the dependent command through `ClusterClient`.
+Existing direct helpers (`DBSize`, script-management methods, and `Do`) and
+special routing still bypass the batch stream; await dependent results when
+mixing these with async batches. Because batches share
+a few pipeline connections, autopipelining
 also needs far fewer connections than a plain client at the same concurrency
 (see `PipelinePoolSize`). Autopipelining is only a win under concurrency (or
 windowed submission) — a single goroutine issuing one blocking command at a

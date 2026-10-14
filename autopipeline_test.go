@@ -4426,11 +4426,19 @@ func TestClusterPipelineNonPipelinableAllOrNothing(t *testing.T) {
 	}
 }
 
-// AutoPipeline preserves direct-call fan-out semantics while neighboring
-// commands continue through the batching path.
-func TestAPClusterFanoutDivertsWithoutAffectingBatch(t *testing.T) {
-	for _, fullDuplex := range []bool{false, true} {
-		t.Run(fmt.Sprintf("full-duplex=%v", fullDuplex), func(t *testing.T) {
+// Fan-out is rejected on ordered async streams and remains available with an
+// explicit Unordered opt-in. Neither outcome affects neighboring batches.
+func TestAPClusterFanoutRespectsOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		fullDuplex bool
+		unordered  bool
+	}{
+		{name: "ordered"},
+		{name: "ordered-full-duplex", fullDuplex: true},
+		{name: "unordered", unordered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
 			defer c.Close()
@@ -4461,13 +4469,14 @@ func TestAPClusterFanoutDivertsWithoutAffectingBatch(t *testing.T) {
 			ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 				MaxBatchSize:  100,
 				MaxFlushDelay: 20 * time.Millisecond,
-				FullDuplex:    fullDuplex,
+				FullDuplex:    tc.fullDuplex,
+				Unordered:     tc.unordered,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			key1 := fmt.Sprintf("apfanout:%v:{a}:1", fullDuplex)
-			key2 := fmt.Sprintf("apfanout:%v:{a}:2", fullDuplex)
+			key1 := fmt.Sprintf("apfanout:%s:{a}:1", tc.name)
+			key2 := fmt.Sprintf("apfanout:%s:{a}:2", tc.name)
 			defer c.Del(ctx, key1, key2)
 
 			runWithWatchdog(t, 30*time.Second, func() {
@@ -4475,8 +4484,13 @@ func TestAPClusterFanoutDivertsWithoutAffectingBatch(t *testing.T) {
 				ping := ap.Ping(ctx)
 				set2 := ap.Set(ctx, key2, "v2", 0)
 
-				if got, err := ping.Result(); err != nil || got != "PONG" {
-					t.Fatalf("fan-out PING = %q, %v; want PONG", got, err)
+				got, err := ping.Result()
+				if tc.unordered {
+					if err != nil || got != "PONG" {
+						t.Fatalf("fan-out PING = %q, %v; want PONG", got, err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "ordered AsyncAutoPipeline") {
+					t.Fatalf("fan-out PING = %q, %v; want ordering rejection", got, err)
 				}
 				if err := set1.Err(); err != nil {
 					t.Fatalf("neighboring set1 failed: %v", err)
@@ -4489,8 +4503,8 @@ func TestAPClusterFanoutDivertsWithoutAffectingBatch(t *testing.T) {
 				hook.mu.Lock()
 				direct, pipelined := hook.direct["ping"], hook.pipeline["ping"]
 				hook.mu.Unlock()
-				if !direct || pipelined {
-					t.Fatalf("master %d: PING direct=%v pipelined=%v; want direct fan-out", i, direct, pipelined)
+				if direct != tc.unordered || pipelined {
+					t.Fatalf("master %d: PING direct=%v pipelined=%v; want direct=%v and no pipelining", i, direct, pipelined, tc.unordered)
 				}
 			}
 			values, err := c.MGet(ctx, key1, key2).Result()

@@ -83,7 +83,7 @@ type commandMetadataView struct {
 
 	// CSC and routing derive separate decisions from the shared records.
 	cscTable     map[string]cscCommandMeta
-	routingTable map[string]routingCommandMeta
+	routingTable map[string]*routingCommandMeta
 
 	// cscFingerprint identifies the eligibility decisions. It is part of
 	// every cache-entry key — never of the Redis-key invalidation index — so
