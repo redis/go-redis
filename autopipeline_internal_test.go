@@ -2141,11 +2141,11 @@ func TestSuccessfulHookShortCircuitIsHonored(t *testing.T) {
 	}
 }
 
-// TestMustDivertKeepsCommandOffTheBatchPath pins the hook cluster wiring uses
+// TestRoutingKeepsCommandOffTheBatchPath pins the hook cluster wiring uses
 // for commands whose routing is not slot-derived (ReqSpecial, e.g. FT.CURSOR
 // READ): batched, mapCmdsByNode would route them by slot and reach the wrong
 // shard, so they must leave the batching path entirely (codex on #3942).
-func TestMustDivertKeepsCommandOffTheBatchPath(t *testing.T) {
+func TestRoutingKeepsCommandOffTheBatchPath(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
@@ -2162,11 +2162,11 @@ func TestMustDivertKeepsCommandOffTheBatchPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ap.setMustDivert(func(_ context.Context, cmd Cmder) bool { return cmd.Name() == "echo" })
+	ap.routeCommand = func(_ context.Context, cmd Cmder) (bool, error) { return cmd.Name() == "echo", nil }
 
 	// Diverted: executes despite the hour-long flush window.
 	done := make(chan error, 1)
-	go func() { done <- ap.Do(ctx, "echo", "diverted").Err() }()
+	go func() { done <- ap.Echo(ctx, "diverted").Err() }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -3254,12 +3254,12 @@ func TestAutoPipelineQueueFullReleasesCommandState(t *testing.T) {
 				ap := &AutoPipeliner{
 					blocking:  blocking,
 					maxQueued: 1,
-					mustDivert: func(_ context.Context, c Cmder) bool {
+					routeCommand: func(_ context.Context, c Cmder) (bool, error) {
 						if c.clusterRoutingDecision() != nil {
 							t.Fatal("reused command retained its previous routing decision")
 						}
 						c.setClusterRoutingDecision(&clusterRoutingDecision{})
-						return diverted
+						return diverted, nil
 					},
 				}
 				ap.queued.Store(1)
@@ -3298,7 +3298,7 @@ func TestClusterRoutingDecisionNonComparableCommand(t *testing.T) {
 		t.Fatalf("admission resolved policy %d times, want 1", calls)
 	}
 	route := c.resolvePipelineRouting(ctx, []Cmder{cmd})
-	flushed := c.pipelineDecision(ctx, cmd, route)
+	flushed := c.pipelineDecision(ctx, cmd, route, &clusterRoutingDecision{})
 	if calls != 1 || admitted.view != flushed.view || admitted.naturalSlot != flushed.naturalSlot {
 		t.Fatal("pipeline did not retain its admission decision")
 	}

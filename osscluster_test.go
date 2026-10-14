@@ -66,7 +66,6 @@ func (s *clusterScenario) newClusterClient(
 	ctx context.Context, opt *redis.ClusterOptions,
 ) *redis.ClusterClient {
 	client := s.newClusterClientUnstable(opt)
-	client.SetCommandInfoResolver(client.NewDynamicResolver())
 	err := eventually(func() error {
 		if opt.ClusterSlots != nil {
 			return nil
@@ -2172,7 +2171,7 @@ var _ = Describe("ClusterClient timeout", func() {
 
 		It("should timeout Pipeline", func() {
 			_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Echo(ctx, "timeout")
+				pipe.Ping(ctx)
 				return nil
 			})
 			Expect(err).To(HaveOccurred())
@@ -2252,6 +2251,7 @@ var _ = Describe("Command Tips tests", func() {
 	BeforeEach(func() {
 		opt := redisClusterOptions()
 		client = cluster.newClusterClient(ctx, opt)
+		client.SetCommandInfoResolver(client.NewDynamicResolver())
 	})
 
 	AfterEach(func() {
@@ -2267,7 +2267,7 @@ var _ = Describe("Command Tips tests", func() {
 			const firstKey, secondKey = "routing-review:{a}:one", "routing-review:{b}:two"
 			const serializedKey = "routing-review:{a}:serialized"
 			configure := func(c *redis.ClusterClient) {
-				// The shared cluster fixture installs a dynamic resolver. Reset it
+				// The command-tips suite installs a dynamic resolver. Reset it
 				// explicitly so each case exercises the intended public mode.
 				if metadataPolicies {
 					c.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
@@ -2349,6 +2349,19 @@ var _ = Describe("Command Tips tests", func() {
 				Expect(info.Val()).To(ContainSubstring("redis_version:"))
 			})
 
+			It("runs SORT transactions with incomplete key metadata", func() {
+				Expect(client.Del(ctx, firstKey).Err()).NotTo(HaveOccurred())
+				Expect(client.RPush(ctx, firstKey, "3", "1", "2").Err()).NotTo(HaveOccurred())
+				pipe := client.TxPipeline()
+				sorted := pipe.Sort(ctx, firstKey, &redis.Sort{})
+				stored := pipe.SortStore(ctx, firstKey, serializedKey, &redis.Sort{})
+				_, err := pipe.Exec(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sorted.Val()).To(Equal([]string{"1", "2", "3"}))
+				Expect(stored.Val()).To(Equal(int64(3)))
+				Expect(client.LRange(ctx, serializedKey, 0, -1).Val()).To(Equal([]string{"1", "2", "3"}))
+			})
+
 			It("accepts BinaryMarshaler values when MSET needs only one slot", func() {
 				Expect(client.MSet(ctx, firstKey, numberStruct{Number: 7}).Err()).NotTo(HaveOccurred())
 				Expect(client.Get(ctx, firstKey).Val()).To(Equal(`{"Number":7}`))
@@ -2360,7 +2373,7 @@ var _ = Describe("Command Tips tests", func() {
 				Expect(values).To(Equal([]interface{}{`{"Number":8}`, `{"Number":9}`}))
 			})
 
-			It("preserves direct command behavior across AutoPipeline modes", func() {
+			It("enforces fan-out ordering across AutoPipeline modes", func() {
 				for _, fullDuplex := range []bool{false, true} {
 					opt := *client.Options()
 					apClient := redis.NewClusterClient(&opt)
@@ -2375,18 +2388,29 @@ var _ = Describe("Command Tips tests", func() {
 						By(fmt.Sprintf("full duplex=%v, async=%v", fullDuplex, i == 1))
 						ping := ap.Ping(ctx)
 						values := ap.MGet(ctx, secondKey, firstKey)
+						sameSlot := ap.MGet(ctx, firstKey, firstKey)
 						value := ap.Get(ctx, firstKey)
 						size := ap.DBSize(ctx)
-						Expect(ping.Err()).NotTo(HaveOccurred())
-						Expect(ping.Val()).To(Equal("PONG"))
+						if metadataPolicies && i == 1 {
+							Expect(ping.Err()).To(MatchError(ContainSubstring("ordered AsyncAutoPipeline")))
+						} else {
+							Expect(ping.Err()).NotTo(HaveOccurred())
+							Expect(ping.Val()).To(Equal("PONG"))
+						}
+						Expect(sameSlot.Err()).NotTo(HaveOccurred())
+						Expect(sameSlot.Val()).To(Equal([]interface{}{"one", "one"}))
 						Expect(value.Err()).NotTo(HaveOccurred())
 						Expect(value.Val()).To(Equal("one"))
 						Expect(size.Err()).NotTo(HaveOccurred())
 						Expect(size.Val()).To(BeNumerically(">=", 0))
 						if metadataPolicies {
 							Expect(size.Val()).To(BeNumerically(">=", 2))
-							Expect(values.Err()).NotTo(HaveOccurred())
-							Expect(values.Val()).To(Equal([]interface{}{"two", "one"}))
+							if i == 1 {
+								Expect(values.Err()).To(MatchError(ContainSubstring("ordered AsyncAutoPipeline")))
+							} else {
+								Expect(values.Err()).NotTo(HaveOccurred())
+								Expect(values.Val()).To(Equal([]interface{}{"two", "one"}))
+							}
 						} else {
 							Expect(values.Err()).To(HaveOccurred())
 							Expect(values.Err().Error()).To(ContainSubstring("CROSSSLOT"))

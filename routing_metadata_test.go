@@ -1,14 +1,65 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/routing"
 )
+
+func TestRoutingMetadataCanonicalNumKeys(t *testing.T) {
+	meta := defaultCommandMetadataView().routingTable["msetex"]
+	for _, count := range []interface{}{"+2", "02", "-0", "", []byte("+2"), []byte("02"), []byte("-0"), []byte{}} {
+		cmd := NewCmd(context.Background(), "msetex", count, "{a}:one", 1, "{b}:two", 2)
+		if _, ok := routingResolveKeyPlan(meta, cmd); ok {
+			t.Errorf("noncanonical count %T(%q) authorized a split", count, count)
+		}
+	}
+	for _, count := range []interface{}{2, "2", []byte("2")} {
+		cmd := NewCmd(context.Background(), "msetex", count, "{a}:one", 1, "{b}:two", 2)
+		plan, ok := routingResolveKeyPlan(meta, cmd)
+		if !ok || !plan.splittable || !reflect.DeepEqual(plan.positions, []int{2, 4}) {
+			t.Errorf("canonical count %T(%v): plan=%+v valid=%v", count, count, plan, ok)
+		}
+	}
+}
+
+func TestCommandArgsRepeatableWriterTypes(t *testing.T) {
+	scalars := []interface{}{
+		"value", int(1), int8(1), int16(1), int32(1), int64(1),
+		uint(1), uint8(1), uint16(1), uint32(1), uint64(1), uintptr(1),
+		float32(1.5), float64(1.5), true, time.Unix(1, 0), time.Second,
+	}
+	values := []interface{}{nil, []byte("value"), []byte(nil), net.IPv4(127, 0, 0, 1), net.IP(nil)}
+	// Every scalar also has a direct pointer and nil-pointer encoding.
+	for _, value := range scalars {
+		pointer := reflect.New(reflect.TypeOf(value))
+		pointer.Elem().Set(reflect.ValueOf(value))
+		values = append(values, value, pointer.Interface(), reflect.Zero(pointer.Type()).Interface())
+	}
+	for _, value := range values {
+		cmd := NewCmd(context.Background(), "set", "key", value)
+		var buf bytes.Buffer
+		if err := proto.NewWriter(&buf).WriteArgs(cmd.Args()); err != nil {
+			t.Fatalf("Writer rejected supported value %T: %v", value, err)
+		}
+		if !commandArgsRepeatable(cmd) {
+			t.Errorf("supported value %T was rejected", value)
+		}
+	}
+	for _, value := range []interface{}{struct{}{}, map[string]string{"key": "value"}, clusterBinaryKey("value")} {
+		if commandArgsRepeatable(NewCmd(context.Background(), "set", "key", value)) {
+			t.Errorf("unsupported or marshaled value %T was accepted", value)
+		}
+	}
+}
 
 func TestRoutingMetadataUintptrKeys(t *testing.T) {
 	key := uintptr(42)
@@ -413,6 +464,24 @@ func TestRoutingMetadataKeywordSearchesBackwardForNegativeStart(t *testing.T) {
 	}
 }
 
+func TestRoutingMetadataOverlappingKeySpecs(t *testing.T) {
+	meta := deriveRoutingCommandMeta("overlap", &CommandInfo{KeySpecs: []KeySpec{
+		{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 3, FindKeys: "range", LastKey: 1, KeyStep: 1},
+		{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1, FindKeys: "range", LastKey: 2, KeyStep: 1},
+	}})
+	cmd := NewCmd(context.Background(), "overlap", "first", "second", "third", "fourth")
+	plan, ok := routingResolveKeyPlan(meta, cmd)
+	if !ok || !reflect.DeepEqual(plan.positions, []int{1, 2, 3, 4}) || plan.splittable {
+		t.Fatalf("overlapping key specs: plan=%#v valid=%v", plan, ok)
+	}
+
+	// The overlapping position must still have a reproducible wire encoding.
+	cmd.Args()[3] = struct{}{}
+	if _, ok := routingResolveKeyPlan(meta, cmd); ok {
+		t.Fatal("overlapping key position bypassed argument validation")
+	}
+}
+
 // Partial metadata may prove a routing key without authorizing multi-shard splitting.
 func TestRoutingMetadataPartialKeyPlans(t *testing.T) {
 	for _, tc := range []struct {
@@ -447,9 +516,12 @@ func TestRoutingMetadataPartialKeyPlans(t *testing.T) {
 			if _, ok := routingResolveKeyPlan(meta, cmd); ok {
 				t.Fatal("partial metadata authorized a complete key plan")
 			}
-			_, txOK := routingResolveTransactionKeyPlan(meta, cmd)
-			if want := tc.name == "xread" || tc.name == "xreadgroup"; txOK != want {
-				t.Fatalf("transaction plan=%v, want %v", txOK, want)
+			plan, txOK := routingResolveTransactionKeyPlan(meta, cmd)
+			if !txOK || !reflect.DeepEqual(plan.positions, []int{tc.first}) || plan.splittable {
+				t.Fatalf("transaction plan=%#v, valid=%v, want only the proven key at %d", plan, txOK, tc.first)
+			}
+			if meta.keyPlanComplete {
+				t.Fatal("transaction resolution modified the shared routing metadata")
 			}
 			if policy, ok := routingPolicyFor(meta); !ok || policy.Request != routing.ReqDefault {
 				t.Fatalf("partial key metadata lost its routing policy: %#v", policy)
@@ -458,14 +530,19 @@ func TestRoutingMetadataPartialKeyPlans(t *testing.T) {
 	}
 }
 
-func TestRoutingStreamAdaptationRejectsChangedMetadata(t *testing.T) {
+func TestRoutingStreamAdaptationKeepsChangedMetadataIncomplete(t *testing.T) {
 	for _, specs := range [][]KeySpec{
 		{{Flags: []string{"RO", "incomplete"}, BeginSearch: "index", Index: 2, FindKeys: "range", LastKey: -1, KeyStep: 1, Limit: 2}},
 		append(append([]KeySpec(nil), commandInfoSnapshotByName()["xread"].KeySpecs...), KeySpec{BeginSearch: "unknown", FindKeys: "unknown"}),
 	} {
 		meta := deriveRoutingCommandMeta("xread", &CommandInfo{Name: "xread", KeySpecs: specs})
-		if _, ok := routingResolveTransactionKeyPlan(meta, makeCmd("xread", "streams", "key", "0")); ok {
-			t.Fatal("changed stream metadata authorized an incomplete transaction plan")
+		cmd := makeCmd("xread", "streams", "key", "0")
+		if _, ok := routingResolveKeyPlan(meta, cmd); ok {
+			t.Fatal("changed stream metadata authorized a complete key plan")
+		}
+		plan, ok := routingResolveTransactionKeyPlan(meta, cmd)
+		if !ok || !reflect.DeepEqual(plan.positions, []int{2}) || plan.splittable {
+			t.Fatalf("transaction plan=%#v valid=%v, want only the proven first key", plan, ok)
 		}
 	}
 }

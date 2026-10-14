@@ -2,6 +2,7 @@ package routing
 
 import (
 	"errors"
+	"math"
 	"net"
 	"sync"
 	"testing"
@@ -371,5 +372,20 @@ func TestNumericAggregatorsNonNumericReply(t *testing.T) {
 				t.Fatalf("Aggregate error = %v, want Add error %v", err, addErr)
 			}
 		})
+	}
+}
+
+func TestNumericAggregatorsUnsignedReplies(t *testing.T) {
+	for policy, want := range map[ResponsePolicy]int64{RespAggSum: 5, RespAggMin: 2, RespAggMax: 3} {
+		agg := NewResponseAggregator(policy, "")
+		if err := agg.BatchSlice([]AggregatorResErr{{Result: uint64(2)}, {Result: uint64(3)}}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := agg.Aggregate(); got != want || err != nil {
+			t.Fatalf("%s unsigned aggregate=%v, %v; want %d", policy, got, err, want)
+		}
+		if err := agg.Add(uint64(math.MaxInt64)+1, nil); err == nil {
+			t.Fatalf("%s accepted integer outside Redis integer range", policy)
+		}
 	}
 }

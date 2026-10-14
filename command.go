@@ -215,6 +215,7 @@ type Cmder interface {
 	// all args of the command.
 	// e.g. "set k v ex 10" -> "[set k v ex 10]".
 	Args() []interface{}
+	setArgs([]interface{})
 
 	// format request and response string.
 	// e.g. "set k v ex 10" -> "set k v ex 10: OK", "get k" -> "get k: v".
@@ -303,9 +304,6 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
-// cmdFirstKeyPosWithInfo returns the first key position in a command's args (0 if none).
-// Uses CommandInfo.FirstKeyPos when available (via cache peek, no network call), falling
-// back to a hardcoded table. eval/evalsha variants are resolved from the runtime numkeys arg.
 // cmdArgAfterToken returns the position after the first argument, from
 // position from on, that equals token (case-insensitive), or 0 when there is
 // none or nothing follows it.
@@ -347,6 +345,9 @@ func migrateKeysPos(cmd Cmder) (pos int, valid bool) {
 	return 0, true
 }
 
+// cmdFirstKeyPosWithInfo returns the first key position (0 if none, -1 if
+// MIGRATE options cannot be inspected safely). It uses CommandInfo when supplied
+// and otherwise falls back to the legacy command table and runtime arguments.
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
@@ -423,7 +424,10 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(3) != "" {
 			return 3
 		}
-		pos, _ := migrateKeysPos(cmd)
+		pos, valid := migrateKeysPos(cmd)
+		if !valid {
+			return -1
+		}
 		return pos
 	case "bless":
 		// BLESS SCAN is keyless (cursor-based, server-wide); BLESS SET/GET/CLEAR
@@ -693,6 +697,11 @@ func (cmd *baseCmd) NoRetry() bool {
 
 func (cmd *baseCmd) GetCmdType() CmdType {
 	return cmd.cmdType
+}
+
+func (cmd *baseCmd) setArgs(args []interface{}) {
+	cmd.args = args
+	cmd.slotCache = 0
 }
 
 func (cmd *baseCmd) cloneBaseCmd() baseCmd {

@@ -225,6 +225,81 @@ func newClusterBenchClient(b *testing.B) *redis.ClusterClient {
 	return c
 }
 
+// BenchmarkClusterRoutingThroughput compares the normal routing paths against
+// the same cluster. Batch100 reports time and allocations per 100 commands.
+func BenchmarkClusterRoutingThroughput(b *testing.B) {
+	ctx := context.Background()
+	for _, mode := range []string{"Direct", "PipelineBatch100", "AsyncBatch100", "FullDuplexBatch100"} {
+		b.Run(mode, func(b *testing.B) {
+			c := newClusterBenchClient(b)
+			defer c.Close()
+			keys := make([]string, 100)
+			for i := range keys {
+				keys[i] = fmt.Sprintf("routing-bench:%d", i)
+			}
+			// Slot discovery can finish before the freshly formed cluster is ready.
+			if err := eventually(func() error {
+				pipe := c.Pipeline()
+				for _, key := range keys {
+					pipe.Set(ctx, key, "value", 0)
+				}
+				_, err := pipe.Exec(ctx)
+				return err
+			}, 10*time.Second); err != nil {
+				b.Fatal(err)
+			}
+			var ap *redis.AutoPipeliner
+			if mode == "AsyncBatch100" || mode == "FullDuplexBatch100" {
+				var err error
+				ap, err = c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+					MaxBatchSize: 100, FullDuplex: mode == "FullDuplexBatch100",
+				})
+				if err != nil {
+					b.Fatal(err)
+				}
+				defer ap.Close()
+				if err := ap.Get(ctx, keys[0]).Err(); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				pipe := c.Pipeline()
+				cmds := make([]*redis.StringCmd, len(keys))
+				for pb.Next() {
+					if mode == "Direct" {
+						if err := c.Get(ctx, keys[0]).Err(); err != nil {
+							b.Error(err)
+							return
+						}
+						continue
+					}
+					for i, key := range keys {
+						if ap != nil {
+							cmds[i] = ap.Get(ctx, key)
+						} else {
+							cmds[i] = pipe.Get(ctx, key)
+						}
+					}
+					if ap == nil {
+						if _, err := pipe.Exec(ctx); err != nil {
+							b.Error(err)
+							return
+						}
+					}
+					for _, cmd := range cmds {
+						if err := cmd.Err(); err != nil {
+							b.Error(err)
+							return
+						}
+					}
+				}
+			})
+		})
+	}
+}
+
 // BenchmarkClusterAutoPipelineThroughput measures executed throughput against a
 // 3-master cluster. ClusterClient.AutoPipeline routes commands to shards by slot
 // so each shard's batch stays on one node (keeping per-node pipelines deep), which

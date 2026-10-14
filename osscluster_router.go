@@ -45,6 +45,7 @@ var clusterFanoutResponseHandlers = map[clusterFanoutResponseHandlerKey]clusterF
 	{name: "waitaof", response: routing.RespAggMin}:              aggregateClusterWaitAOF,
 }
 
+// Pass a value across the callback boundary so ordinary routing decisions stay on the stack.
 type clusterSpecialRequestHandler func(*ClusterClient, context.Context, Cmder, *clusterNode, clusterRoutingDecision) error
 
 var clusterSpecialRequestHandlers = map[string]clusterSpecialRequestHandler{
@@ -77,7 +78,7 @@ func (c *ClusterClient) routeAndRun(
 	ctx context.Context,
 	cmd Cmder,
 	node *clusterNode,
-	decision clusterRoutingDecision,
+	decision *clusterRoutingDecision,
 ) error {
 	policy := decision.policy
 	if decision.policyErr != nil {
@@ -95,8 +96,10 @@ func (c *ClusterClient) routeAndRun(
 		return c.executeMultiShard(ctx, cmd, policy, decision)
 	case routing.ReqSpecial:
 		return c.executeSpecialCommand(ctx, cmd, policy, node, decision)
-	default:
+	case routing.ReqDefault:
 		return node.Client.Process(ctx, cmd)
+	default:
+		return fmt.Errorf("%w: request policy %d", errUnsupportedRoutingPolicy, policy.Request)
 	}
 }
 
@@ -105,7 +108,7 @@ func (c *ClusterClient) executeOnAllNodes(
 	ctx context.Context,
 	cmd Cmder,
 	policy *routing.CommandPolicy,
-	decision clusterRoutingDecision,
+	decision *clusterRoutingDecision,
 ) error {
 	if err := clusterFanoutCommandError(cmd); err != nil {
 		return err
@@ -117,9 +120,6 @@ func (c *ClusterClient) executeOnAllNodes(
 	}
 	nodes := make([]*clusterNode, 0, len(state.Masters)+len(state.Slaves))
 	if err := state.requireOnline(state.declaredMasters()); err != nil {
-		return c.noteTopologySelectionError(err)
-	}
-	if err := state.requireOnline(state.declaredSlaves()); err != nil {
 		return c.noteTopologySelectionError(err)
 	}
 	nodes = append(nodes, state.Masters...)
@@ -136,7 +136,7 @@ func (c *ClusterClient) executeOnAllShards(
 	ctx context.Context,
 	cmd Cmder,
 	policy *routing.CommandPolicy,
-	decision clusterRoutingDecision,
+	decision *clusterRoutingDecision,
 ) error {
 	if err := clusterFanoutCommandError(cmd); err != nil {
 		return err
@@ -192,7 +192,7 @@ func (c *ClusterClient) executeMultiShard(
 	ctx context.Context,
 	cmd Cmder,
 	policy *routing.CommandPolicy,
-	decision clusterRoutingDecision,
+	decision *clusterRoutingDecision,
 ) error {
 	plan := decision.plan
 	if !decision.planOK || !plan.splittable || len(plan.positions) == 0 {
@@ -212,10 +212,10 @@ func (c *ClusterClient) executeMultiShard(
 			group = &clusterSlotArgs{}
 			slotMap[slot] = group
 		}
-		groupEnd := pos + plan.step
-		if groupEnd > plan.keyArgsEnd || groupEnd > len(args) {
+		if plan.step > plan.keyArgsEnd-pos || plan.step > len(args)-pos {
 			return fmt.Errorf("redis: incomplete key argument group at position %d for command %s", pos, cmd.Name())
 		}
+		groupEnd := pos + plan.step
 		group.args = append(group.args, args[pos:groupEnd]...)
 		group.keys = append(group.keys, key)
 		keyOrder = append(keyOrder, key)
@@ -224,10 +224,10 @@ func (c *ClusterClient) executeMultiShard(
 		// NX/XX covers all keys; splitting could update only some of them.
 		return ErrCrossSlot
 	}
-	return c.executeMultiSlot(ctx, cmd, slotMap, keyOrder, policy, decision)
+	return c.executeMultiSlot(ctx, cmd, slotMap, keyOrder, policy, *decision)
 }
 
-func msetexHasCondition(cmd Cmder, plan routingKeyPlan) bool {
+func msetexHasCondition(cmd Cmder, plan *routingKeyPlan) bool {
 	for pos := plan.keyArgsEnd; pos < len(cmd.Args()); pos++ {
 		arg, ok := routingArgText(cmd, pos)
 		if !ok {
@@ -240,7 +240,7 @@ func msetexHasCondition(cmd Cmder, plan routingKeyPlan) bool {
 	return false
 }
 
-// executeMultiSlot executes commands across multiple slots concurrently
+// executeMultiSlot copies the decision before capturing it for concurrent slot execution.
 func (c *ClusterClient) executeMultiSlot(
 	ctx context.Context,
 	cmd Cmder,
@@ -252,7 +252,7 @@ func (c *ClusterClient) executeMultiSlot(
 	if len(slotMap) == 1 {
 		// Keep single-slot execution and retries local.
 		for slot := range slotMap {
-			if err := c.executeMultiSlotCommand(ctx, cmd, slot, decision); err != nil {
+			if err := c.executeMultiSlotCommand(ctx, cmd, slot, &decision); err != nil {
 				return &clusterFanoutExecutionError{err: err}
 			}
 			return nil
@@ -272,12 +272,12 @@ func (c *ClusterClient) executeMultiSlot(
 		go func(slot int, group *clusterSlotArgs) {
 			defer wg.Done()
 
-			subCmd, err := c.createSlotSpecificCommand(ctx, cmd, group.args, len(group.keys), decision.plan)
+			subCmd, err := c.createSlotSpecificCommand(ctx, cmd, group.args, len(group.keys), *decision.plan)
 			if err != nil {
 				results <- slotResult{nil, group.keys, err}
 				return
 			}
-			err = c.executeMultiSlotCommand(ctx, subCmd, slot, decision)
+			err = c.executeMultiSlotCommand(ctx, subCmd, slot, &decision)
 			results <- slotResult{subCmd, group.keys, err}
 		}(slot, group)
 	}
@@ -298,7 +298,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	ctx context.Context,
 	cmd Cmder,
 	slot int,
-	decision clusterRoutingDecision,
+	decision *clusterRoutingDecision,
 ) error {
 	var node *clusterNode
 	var moved, ask bool
@@ -410,86 +410,11 @@ func (c *ClusterClient) createSlotSpecificCommand(
 	}
 	newArgs = append(newArgs, keyArgs...)
 	newArgs = append(newArgs, originalArgs[plan.keyArgsEnd:]...)
-	return createCommandByType(ctx, originalCmd.GetCmdType(), newArgs...), nil
-}
-
-// createCommandByType creates a new command of the specified type with the given arguments
-func createCommandByType(ctx context.Context, cmdType CmdType, args ...interface{}) Cmder {
-	switch cmdType {
-	case CmdTypeString:
-		return NewStringCmd(ctx, args...)
-	case CmdTypeInt:
-		return NewIntCmd(ctx, args...)
-	case CmdTypeBool:
-		return NewBoolCmd(ctx, args...)
-	case CmdTypeFloat:
-		return NewFloatCmd(ctx, args...)
-	case CmdTypeStringSlice:
-		return NewStringSliceCmd(ctx, args...)
-	case CmdTypeIntSlice:
-		return NewIntSliceCmd(ctx, args...)
-	case CmdTypeFloatSlice:
-		return NewFloatSliceCmd(ctx, args...)
-	case CmdTypeBoolSlice:
-		return NewBoolSliceCmd(ctx, args...)
-	case CmdTypeStatus:
-		return NewStatusCmd(ctx, args...)
-	case CmdTypeTime:
-		return NewTimeCmd(ctx, args...)
-	case CmdTypeMapStringString:
-		return NewMapStringStringCmd(ctx, args...)
-	case CmdTypeMapStringInt:
-		return NewMapStringIntCmd(ctx, args...)
-	case CmdTypeMapStringInterface:
-		return NewMapStringInterfaceCmd(ctx, args...)
-	case CmdTypeMapStringInterfaceSlice:
-		return NewMapStringInterfaceSliceCmd(ctx, args...)
-	case CmdTypeSlice:
-		return NewSliceCmd(ctx, args...)
-	case CmdTypeStringStructMap:
-		return NewStringStructMapCmd(ctx, args...)
-	case CmdTypeXMessageSlice:
-		return NewXMessageSliceCmd(ctx, args...)
-	case CmdTypeXStreamSlice:
-		return NewXStreamSliceCmd(ctx, args...)
-	case CmdTypeXPending:
-		return NewXPendingCmd(ctx, args...)
-	case CmdTypeXPendingExt:
-		return NewXPendingExtCmd(ctx, args...)
-	case CmdTypeXAutoClaim:
-		return NewXAutoClaimCmd(ctx, args...)
-	case CmdTypeXAutoClaimWithDeleted:
-		return NewXAutoClaimWithDeletedCmd(ctx, args...)
-	case CmdTypeXAutoClaimJustID:
-		return NewXAutoClaimJustIDCmd(ctx, args...)
-	case CmdTypeXInfoStreamFull:
-		return NewXInfoStreamFullCmd(ctx, args...)
-	case CmdTypeZSlice:
-		return NewZSliceCmd(ctx, args...)
-	case CmdTypeZWithKey:
-		return NewZWithKeyCmd(ctx, args...)
-	case CmdTypeClusterSlots:
-		return NewClusterSlotsCmd(ctx, args...)
-	case CmdTypeGeoPos:
-		return NewGeoPosCmd(ctx, args...)
-	case CmdTypeCommandsInfo:
-		return NewCommandsInfoCmd(ctx, args...)
-	case CmdTypeSlowLog:
-		return NewSlowLogCmd(ctx, args...)
-	case CmdTypeKeyValues:
-		return NewKeyValuesCmd(ctx, args...)
-	case CmdTypeZSliceWithKey:
-		return NewZSliceWithKeyCmd(ctx, args...)
-	case CmdTypeFunctionList:
-		return NewFunctionListCmd(ctx, args...)
-	case CmdTypeFunctionStats:
-		return NewFunctionStatsCmd(ctx, args...)
-	case CmdTypeKeyFlags:
-		return NewKeyFlagsCmd(ctx, args...)
-	case CmdTypeDuration:
-		return NewDurationCmd(ctx, time.Millisecond, args...)
-	}
-	return NewCmd(ctx, args...)
+	// Clone preserves the reply parser and command-specific options (for example
+	// DurationCmd precision) without maintaining a separate constructor table.
+	cmd := originalCmd.Clone()
+	cmd.setArgs(newArgs)
+	return cmd, nil
 }
 
 // executeSpecialCommand handles commands with special routing requirements
@@ -498,10 +423,10 @@ func (c *ClusterClient) executeSpecialCommand(
 	cmd Cmder,
 	policy *routing.CommandPolicy,
 	node *clusterNode,
-	decision clusterRoutingDecision,
+	decision *clusterRoutingDecision,
 ) error {
 	if handler := clusterSpecialRequestHandlers[decision.meta.name]; handler != nil {
-		return handler(c, ctx, cmd, node, decision)
+		return handler(c, ctx, cmd, node, *decision)
 	}
 	return errUnsupportedRoutingPolicy
 }
@@ -525,7 +450,7 @@ func (c *ClusterClient) executeCursorCommand(
 	if node == nil {
 		// Reuse redirected nodes; otherwise route by cursor ID.
 		slot := clusterKeySlot(cursorID)
-		node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, decision)
+		node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, &decision)
 		if err != nil {
 			return err
 		}
@@ -552,7 +477,7 @@ func (c *ClusterClient) executeParallel(
 	nodes []*clusterNode,
 	targetSlots map[*clusterNode]int,
 	policy *routing.CommandPolicy,
-	decision clusterRoutingDecision,
+	decision *clusterRoutingDecision,
 ) error {
 	if len(nodes) == 0 {
 		return errClusterNoNodes
@@ -755,12 +680,12 @@ func (c *ClusterClient) aggregateResponses(
 	cmd Cmder,
 	cmds []Cmder,
 	policy *routing.CommandPolicy,
-	decision clusterRoutingDecision,
+	decision *clusterRoutingDecision,
 ) error {
 	if len(cmds) == 0 {
 		return errNoCmdsToAggregate
 	}
-	name := decision.name
+	name := cmd.Name()
 	if decision.metaOK {
 		name = decision.meta.name
 	}
@@ -1549,6 +1474,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 // normalizeAggregatedCommandValue rejects mismatched results before SetVal.
 func normalizeAggregatedCommandValue(cmd Cmder, value interface{}) (interface{}, error) {
 	switch cmd.GetCmdType() {
+	case CmdTypeUint:
+		if n, ok := value.(int64); ok {
+			if n < 0 {
+				return nil, fanoutTypeError(cmd, value, "non-negative uint64")
+			}
+			value = uint64(n)
+		}
 	case CmdTypeInt:
 		if valueFloat, ok := value.(float64); ok {
 			if valueFloat != math.Trunc(valueFloat) || valueFloat < math.MinInt64 || valueFloat >= math.MaxInt64 {

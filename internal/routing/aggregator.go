@@ -225,6 +225,12 @@ func parseAggregateNumber(value interface{}) (aggregateNumber, error) {
 		return aggregateNumber{integer: int64(value)}, nil
 	case int64:
 		return aggregateNumber{integer: value}, nil
+	case uint64:
+		// Redis integer replies and integer aggregates are signed 64-bit.
+		if value > math.MaxInt64 {
+			return aggregateNumber{}, fmt.Errorf("integer aggregate overflows int64: %d", value)
+		}
+		return aggregateNumber{integer: int64(value)}, nil
 	case float32:
 		return aggregateNumber{floating: float64(value), isFloat: true}, nil
 	case float64:

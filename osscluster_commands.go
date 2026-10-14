@@ -24,78 +24,54 @@ func (c *ClusterClient) usesLegacyClusterHelpers(ctx context.Context, cmd Cmder)
 
 func (c *ClusterClient) DBSize(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd(ctx, "dbsize")
-	if c.usesLegacyClusterHelpers(ctx, cmd) {
-		_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
-			var size atomic.Int64
-			err := c.ForEachMaster(ctx, func(ctx context.Context, master *Client) error {
-				n, err := master.DBSize(ctx).Result()
-				if err != nil {
-					return err
-				}
-				size.Add(n)
-				return nil
-			})
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+		var size atomic.Int64
+		err := c.ForEachMaster(ctx, func(ctx context.Context, master *Client) error {
+			n, err := master.DBSize(ctx).Result()
 			if err != nil {
-				cmd.SetErr(err)
-			} else {
-				cmd.val = size.Load()
+				return err
 			}
+			size.Add(n)
 			return nil
 		})
-		return cmd
-	}
-	_ = c.Process(ctx, cmd)
-	cmd.setClusterRoutingDecision(nil) // A process hook may have short-circuited.
+		if err == nil {
+			cmd.val = size.Load()
+		}
+		return err
+	})
 	return cmd
 }
 
 func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	cmd := NewStringCmd(ctx, "script", "load", script)
-	if c.usesLegacyClusterHelpers(ctx, cmd) {
-		_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
-			var mu sync.Mutex
-			err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
-				val, err := shard.ScriptLoad(ctx, script).Result()
-				if err != nil {
-					return err
-				}
-
-				mu.Lock()
-				if cmd.Val() == "" {
-					cmd.val = val
-				}
-				mu.Unlock()
-
-				return nil
-			})
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+		var mu sync.Mutex
+		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
+			val, err := shard.ScriptLoad(ctx, script).Result()
 			if err != nil {
-				cmd.SetErr(err)
+				return err
 			}
+
+			mu.Lock()
+			if cmd.Val() == "" {
+				cmd.val = val
+			}
+			mu.Unlock()
+
 			return nil
 		})
-		return cmd
-	}
-	_ = c.Process(ctx, cmd)
-	cmd.setClusterRoutingDecision(nil) // A process hook may have short-circuited.
+		return err
+	})
 	return cmd
 }
 
 func (c *ClusterClient) ScriptFlush(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "script", "flush")
-	if c.usesLegacyClusterHelpers(ctx, cmd) {
-		_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
-			err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
-				return shard.ScriptFlush(ctx).Err()
-			})
-			if err != nil {
-				cmd.SetErr(err)
-			}
-			return nil
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+		return c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
+			return shard.ScriptFlush(ctx).Err()
 		})
-		return cmd
-	}
-	_ = c.Process(ctx, cmd)
-	cmd.setClusterRoutingDecision(nil) // A process hook may have short-circuited.
+	})
 	return cmd
 }
 
@@ -107,38 +83,43 @@ func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		args[2+i] = hash
 	}
 	cmd := NewBoolSliceCmd(ctx, args...)
-	if c.usesLegacyClusterHelpers(ctx, cmd) {
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 		result := make([]bool, len(hashes))
 		for i := range result {
 			result[i] = true
 		}
-
-		_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
-			var mu sync.Mutex
-			err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
-				val, err := shard.ScriptExists(ctx, hashes...).Result()
-				if err != nil {
-					return err
-				}
-
-				mu.Lock()
-				for i, v := range val {
-					result[i] = result[i] && v
-				}
-				mu.Unlock()
-
-				return nil
-			})
+		var mu sync.Mutex
+		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
+			val, err := shard.ScriptExists(ctx, hashes...).Result()
 			if err != nil {
-				cmd.SetErr(err)
-			} else {
-				cmd.val = result
+				return err
 			}
+
+			mu.Lock()
+			for i, v := range val {
+				result[i] = result[i] && v
+			}
+			mu.Unlock()
+
 			return nil
 		})
-		return cmd
-	}
-	_ = c.Process(ctx, cmd)
-	cmd.setClusterRoutingDecision(nil) // A process hook may have short-circuited.
+		if err == nil {
+			cmd.val = result
+		}
+		return err
+	})
 	return cmd
+}
+
+// processClusterHelper resolves the helper policy only after process hooks
+// continue. Legacy helper fan-out and policy routing share the same hook call.
+func (c *ClusterClient) processClusterHelper(ctx context.Context, cmd Cmder, legacy ProcessHook) {
+	err := c.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
+		if c.usesLegacyClusterHelpers(ctx, cmd) {
+			return legacy(ctx, cmd)
+		}
+		return c.process(ctx, cmd)
+	})
+	cmd.SetErr(err)
+	cmd.setClusterRoutingDecision(nil)
 }
