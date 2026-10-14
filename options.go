@@ -299,8 +299,9 @@ type Options struct {
 	// A full-duplex autopipeliner (AutoPipelineOptions.FullDuplex) raises it to
 	// at least 1 while it runs: it holds one pipeline connection for its whole
 	// session, so without an idle spare a replacement after a connection error
-	// must dial first. Set a negative value to keep the pool at zero idle
-	// connections even with full-duplex.
+	// must dial first. The spare is replaced once it is half-way to
+	// ConnMaxIdleTime, so it does not age out unused. Set a negative value to
+	// keep the pool at zero idle connections even with full-duplex.
 	//
 	// default: 0
 	PipelineMinIdleConns int

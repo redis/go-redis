@@ -36,15 +36,17 @@ func warmSpareClient(t *testing.T, minIdle int, slow *atomic.Bool) *Client {
 const slowDial = 500 * time.Millisecond
 
 // waitFDSession waits until the engine holds a session connection and the
-// pipeline pool has want idle connections.
+// pipeline pool has want idle connections whose dials have finished. IdleLen
+// counts a min-idle connection as soon as its dial starts; Len only once it is
+// in the pool, so Len must also reach the held connection plus the idle ones.
 func waitFDSession(t *testing.T, ap *AutoPipeliner, client *Client, want int) {
 	t.Helper()
 	pp := client.loadPipelinePool().pool
 	deadline := time.Now().Add(5 * time.Second)
-	for ap.fd.curConn.Load() == nil || pp.IdleLen() != want {
+	for ap.fd.curConn.Load() == nil || pp.IdleLen() != want || pp.Len() != want+1 {
 		if time.Now().After(deadline) {
-			t.Fatalf("session held=%v, pipeline IdleLen=%d, want held with %d idle",
-				ap.fd.curConn.Load() != nil, pp.IdleLen(), want)
+			t.Fatalf("session held=%v, pipeline Len=%d IdleLen=%d, want held with %d idle",
+				ap.fd.curConn.Load() != nil, pp.Len(), pp.IdleLen(), want)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -120,9 +122,9 @@ func TestPipelineMinIdleConnsWithoutFD(t *testing.T) {
 	client := warmSpareClient(t, 2, &slow)
 	pp := client.loadPipelinePool().pool
 	deadline := time.Now().Add(5 * time.Second)
-	for pp.IdleLen() != 2 {
+	for pp.IdleLen() != 2 || pp.Len() != 2 {
 		if time.Now().After(deadline) {
-			t.Fatalf("pipeline IdleLen = %d, want 2", pp.IdleLen())
+			t.Fatalf("pipeline Len=%d IdleLen=%d, want 2/2", pp.Len(), pp.IdleLen())
 		}
 		time.Sleep(time.Millisecond)
 	}

@@ -544,7 +544,7 @@ func (p *ConnPool) minIdleConns() int32 {
 // and starts filling it in the background. It never lowers the configured
 // MinIdleConns or an earlier raise. Like MinIdleConns, the idle connections
 // count against PoolSize and are dialed but not initialized: init runs on
-// first Get.
+// first Get. A raised pool also keeps its spare fresh: see refreshStaleSpare.
 func (p *ConnPool) RaiseMinIdleConns(n int32) {
 	for {
 		cur := p.minIdleFloor.Load()
@@ -558,6 +558,36 @@ func (p *ConnPool) RaiseMinIdleConns(n int32) {
 	if p.closed() {
 		return
 	}
+	p.checkMinIdleConns()
+}
+
+// refreshStaleSpare replaces the oldest idle connection once it is half-way to
+// ConnMaxIdleTime, in a pool whose min-idle floor was raised (RaiseMinIdleConns,
+// the full-duplex warm spare). Under LIFO such a spare is never leased, so it
+// would age past ConnMaxIdleTime and be discarded by the very lease it exists
+// for, which then dials. It runs only when another idle connection is there for
+// this lease, so it never closes the spare a lease needs. O(1): under LIFO the
+// oldest idle connection is idleConns[0].
+func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
+	if p.minIdleFloor.Load() == 0 || p.cfg.PoolFIFO || p.cfg.ConnMaxIdleTime <= 0 {
+		return
+	}
+	p.connsMu.Lock()
+	if len(p.idleConns) < 2 {
+		p.connsMu.Unlock()
+		return
+	}
+	oldest := p.idleConns[0]
+	if nowNs-oldest.UsedAtNs() < int64(p.cfg.ConnMaxIdleTime/2) || !oldest.TryAcquire() {
+		p.connsMu.Unlock()
+		return
+	}
+	copy(p.idleConns, p.idleConns[1:])
+	p.idleConns = p.idleConns[:len(p.idleConns)-1]
+	p.idleConnsLen.Add(-1)
+	p.connsMu.Unlock()
+
+	_ = p.CloseConn(ctx, oldest, CloseReasonStale, MetricStateIdle)
 	p.checkMinIdleConns()
 }
 
@@ -963,6 +993,8 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
+
+	p.refreshStaleSpare(ctx, nowNs)
 
 retryIdle:
 	drainGeneration := p.drainGeneration.Load()
