@@ -1287,11 +1287,7 @@ func (c *baseClient) stopBackgroundDrainer() {
 		// The drainer's exit defer revoked and evicted this pool's coverage
 		// before closing done, including for injected caches shared elsewhere.
 		if c.cscOwnsCache && c.csc != nil {
-			if n := c.opt.clusterCSC; n != nil {
-				n.flushCache()
-			} else {
-				c.csc.Flush()
-			}
+			c.csc.Flush()
 		}
 	})
 }

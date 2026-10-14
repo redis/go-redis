@@ -3,18 +3,14 @@ package redis
 import (
 	"context"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"weak"
-
-	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // Storage, tracking and reservation safety stay with Client. Cluster only gates
-// routed access and evicts dependencies after redirects or topology changes.
+// routed access and clears affected caches after accepted topology changes.
 // This is deliberately not an ownership epoch. Absence-dependent replies are
 // excluded by the cluster reply policy, including for background fetches.
 type clusterCSC struct {
@@ -25,9 +21,8 @@ type clusterCSC struct {
 	enabled       atomic.Bool
 	freshness     atomic.Pointer[time.Time]
 	lifetimes     map[*clusterCSCNode]struct{}
-	// A present nil value requests a full clear; otherwise the set contains
-	// unprefixed Redis keys. An absent node has no queued cleanup.
-	pending        map[*clusterCSCNode]map[string]struct{}
+	// Topology cleanup keeps at most one pending flush per node.
+	pending        map[*clusterCSCNode]struct{}
 	wake           chan struct{}
 	stop           chan struct{}
 	done           chan struct{}
@@ -43,7 +38,6 @@ type clusterCSCNode struct {
 	closed  atomic.Bool
 	primary atomic.Bool
 	dirty   atomic.Bool
-	flushMu sync.Mutex
 	// Immutable handles let a collected Cluster wrapper stop node workers
 	// without retaining Client or racing teardown's mutable worker pointers.
 	drain  *cscDrainHandle
@@ -61,7 +55,7 @@ func newClusterCSC(c *ClusterClient) *clusterCSC {
 	g := &clusterCSC{
 		client: weak.Make(c), trustInterval: c.opt.ClusterStateReloadInterval,
 		lifetimes: make(map[*clusterCSCNode]struct{}),
-		pending:   make(map[*clusterCSCNode]map[string]struct{}), wake: make(chan struct{}, 1),
+		pending:   make(map[*clusterCSCNode]struct{}), wake: make(chan struct{}, 1),
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
 	g.enabled.Store(c.opt.ClientSideCacheConfig != nil)
@@ -154,25 +148,14 @@ func (c *ClusterClient) cscRoutingState(ctx context.Context) (*clusterState, err
 	return c.state.Get(ctx)
 }
 
-// A single worker keeps custom cache callbacks out of redirect readers and
-// topology publication locks. A nil keys slice requests a full clear.
-func (g *clusterCSC) scheduleLocked(n *clusterCSCNode, keys []string) {
+// A single worker keeps custom cache callbacks outside topology publication
+// locks. Redirects do not schedule cache cleanup.
+func (g *clusterCSC) scheduleFlushLocked(n *clusterCSCNode) {
 	if n == nil || n.base == nil || n.base.csc == nil || g.closed.Load() || n.closed.Load() {
 		return
 	}
 	n.dirty.Store(true)
-	pending, queued := g.pending[n]
-	if !queued && keys != nil {
-		pending = make(map[string]struct{}, len(keys))
-	}
-	if keys == nil {
-		pending = nil
-	} else if pending != nil {
-		for _, key := range keys {
-			pending[key] = struct{}{}
-		}
-	}
-	g.pending[n] = pending
+	g.pending[n] = struct{}{}
 	if !g.started {
 		g.started = true
 		go g.cleanup()
@@ -263,7 +246,7 @@ func (g *clusterCSC) publish(state *clusterState) bool {
 	}
 	for node := range affected {
 		if node != nil {
-			g.scheduleLocked(node.Client.opt.clusterCSC, nil)
+			g.scheduleFlushLocked(node.Client.opt.clusterCSC)
 		}
 	}
 	for node := range present {
@@ -277,139 +260,18 @@ func (g *clusterCSC) publish(state *clusterState) bool {
 	return true
 }
 
-func (n *clusterCSCNode) observe(err error, keys []string) {
-	if err == nil || err == Nil {
+// Background CSC work stays node-local. A permanent redirect can still prompt
+// discovery when its foreground caller has already gone away.
+func (c *baseClient) reloadCSCOnMoved(err error) {
+	n := c.opt.clusterCSC
+	if err == nil || n == nil || n.closed.Load() || n.owner.closed.Load() {
 		return
 	}
-	moved, ask, _ := isMovedError(err)
-	if !moved && !ask {
-		return
-	}
-	g := n.owner
-	g.mu.Lock()
-	if g.closed.Load() {
-		g.mu.Unlock()
-		return
-	}
-	// A previous owner may still have GET, MGET or other dependent replies.
-	// Include retiring node lifetimes, not just the current address registry.
-	for node := range g.lifetimes {
-		g.scheduleLocked(node, keys)
-	}
-	g.mu.Unlock()
-	if moved {
-		if c := g.client.Value(); c != nil {
-			c.state.LazyReload()
+	if moved, _, _ := isMovedError(err); moved {
+		if cluster := n.owner.client.Value(); cluster != nil {
+			cluster.state.LazyReload()
 		}
 	}
-}
-
-func (c *baseClient) observeCSCRedirect(err error, cmds ...Cmder) {
-	if err == nil || err == Nil {
-		return
-	}
-	if n := c.opt.clusterCSC; n != nil && n.base != nil {
-		moved, ask, _ := isMovedError(err)
-		if !moved && !ask {
-			return
-		}
-		var keys []string
-		for _, cmd := range cmds {
-			var info *CommandInfo
-			if client := n.owner.client.Value(); client != nil {
-				info = client.cmdInfoPeek(cmd.Name())
-			}
-			part, ok := clusterCSCRedirectKeys(cmd, info)
-			if !ok {
-				// Unknown/movable key specifications must not leave stale
-				// dependencies behind. No network lookup on a reply reader.
-				keys = nil
-				break
-			}
-			keys = append(keys, part...)
-		}
-		n.observe(err, keys)
-	}
-}
-
-// Background callers use the immutable cache key, not a possibly abandoned
-// caller's Cmder or mutable arguments. Decode only on a redirect, never on hits.
-func (c *baseClient) observeCSCCachedRedirect(err error, cacheKey string) {
-	if err == nil || err == Nil || c.opt.clusterCSC == nil {
-		return
-	}
-	moved, ask, _ := isMovedError(err)
-	if !moved && !ask {
-		return
-	}
-	wire, ok := strings.CutPrefix(cacheKey, c.cscKeyPrefix)
-	if ok {
-		if args, decodeErr := proto.NewReader(strings.NewReader(wire)).ReadSlice(); decodeErr == nil {
-			c.observeCSCRedirect(err, NewCmd(context.Background(), args...))
-			return
-		}
-	}
-	c.observeCSCRedirect(err)
-}
-
-// clusterCSCRedirectKeys reuses CSC's read-key spans and the existing cached
-// command metadata. The small fallback covers common writes with cold metadata;
-// it does not guess that every argument is a key (SET values, script args, etc.).
-func clusterCSCRedirectKeys(cmd Cmder, info *CommandInfo) ([]string, bool) {
-	// BY/GET patterns depend on the source's contents, not just its key.
-	// Use the unknown-layout fallback rather than evicting a partial key set.
-	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd) {
-		return nil, false
-	}
-	args := cmd.Args()
-	lo, hi, step := 0, 0, 1
-	if _, cacheable := defaultCacheableCommands[cmd.Name()]; cacheable {
-		var ok bool
-		lo, hi, ok = cscKeySpan(cmd)
-		if !ok {
-			return nil, false
-		}
-	} else {
-		switch cmd.Name() {
-		case "set", "setnx", "setex", "psetex", "getset", "getdel", "getex", "append", "incr", "incrby", "incrbyfloat", "decr", "decrby":
-			lo, hi = 1, 1
-		case "del", "unlink", "touch":
-			lo, hi = 1, len(args)-1
-		case "mset", "msetnx":
-			lo, hi, step = 1, len(args)-2, 2
-		case "eval", "evalsha", "eval_ro", "evalsha_ro", "fcall", "fcall_ro":
-			count, err := strconv.Atoi(cmd.stringArg(2))
-			if err != nil || count <= 0 || count > len(args)-3 {
-				return nil, false
-			}
-			lo, hi = 3, 3+count-1
-		default:
-			if info == nil || info.FirstKeyPos <= 0 || info.StepCount <= 0 {
-				return nil, false
-			}
-			for _, flag := range info.Flags {
-				if flag == "movablekeys" {
-					return nil, false
-				}
-			}
-			lo, hi, step = int(info.FirstKeyPos), int(info.LastKeyPos), int(info.StepCount)
-			if hi < 0 {
-				hi += len(args)
-			}
-		}
-	}
-	if lo <= 0 || hi < lo || hi >= len(args) {
-		return nil, false
-	}
-	keys := make([]string, 0, (hi-lo)/step+1)
-	for i := lo; i <= hi; i += step {
-		if !isWireKeyType(args[i]) {
-			return nil, false
-		}
-		// Own the bytes before an asynchronous cleanup outlives this command.
-		keys = append(keys, strings.Clone(cmd.stringArg(i)))
-	}
-	return keys, true
 }
 
 func (g *clusterCSC) cleanup() {
@@ -423,10 +285,8 @@ func (g *clusterCSC) cleanup() {
 		for {
 			g.mu.Lock()
 			var n *clusterCSCNode
-			var keys map[string]struct{}
-			for node, pending := range g.pending {
+			for node := range g.pending {
 				n = node
-				keys = pending
 				delete(g.pending, node)
 				break
 			}
@@ -435,12 +295,10 @@ func (g *clusterCSC) cleanup() {
 				break
 			}
 			if !g.closed.Load() && !n.closed.Load() {
-				n.cleanCache(keys)
+				n.base.csc.Flush()
 			}
-			// No reload prerequisite: removed dependencies will miss and expose
-			// any redirect; unaffected entries can be served again immediately.
 			g.mu.Lock()
-			// New keys/clears arriving during the callback need another pass.
+			// A topology change during the callback needs another pass.
 			// Keep bypass enabled until that pass has completed too.
 			if _, queued := g.pending[n]; !queued {
 				n.dirty.Store(false)
@@ -449,22 +307,6 @@ func (g *clusterCSC) cleanup() {
 		}
 	}
 }
-
-func (n *clusterCSCNode) cleanCache(keys map[string]struct{}) {
-	n.flushMu.Lock()
-	defer n.flushMu.Unlock()
-	if n.base != nil && n.base.csc != nil {
-		if keys == nil {
-			n.base.csc.Flush()
-		} else {
-			for key := range keys {
-				n.base.csc.DeleteByRedisKey(cscNamespacedKey(n.base.cscKeyPrefix, key))
-			}
-		}
-	}
-}
-
-func (n *clusterCSCNode) flushCache() { n.cleanCache(nil) }
 
 func (n *clusterCSCNode) close() { n.closed.Store(true) }
 

@@ -901,7 +901,7 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					return err
 				}
 				if !cscRefreshReplyCacheable(raw) {
-					c.observeCSCCachedRedirect(classifyCachedReply(raw), kept[i].cacheKey)
+					c.reloadCSCOnMoved(classifyCachedReply(raw))
 					// Not cacheable (WRONGTYPE after a type change, NOPERM, ...). A nil
 					// reply is NOT an error: standalone can cache negative lookups;
 					// Cluster filters these later in fulfillCached. See

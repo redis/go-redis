@@ -773,7 +773,7 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 		c.fulfillCached(req.cacheKey, req.token, fc)
 	} else {
 		// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
-		c.observeCSCCachedRedirect(applyErr, req.cacheKey)
+		c.reloadCSCOnMoved(applyErr)
 		c.csc.Cancel(req.cacheKey, req.token)
 	}
 	// No error-metric emission here: the CALLER emits at its req.done receive

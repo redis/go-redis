@@ -2413,7 +2413,6 @@ func (c *ClusterClient) pipelineReadCmds(
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
-		node.Client.observeCSCRedirect(err, cmd)
 		cmd.SetErr(err)
 
 		if err == nil {
@@ -2833,21 +2832,18 @@ func (c *ClusterClient) readTxPipelineReplies(
 
 	readStatus := func() error {
 		c.txProcessPush(ctx, node, cn, rd)
-		err := scratch.readReply(rd)
-		return err
+		return scratch.readReply(rd)
 	}
 
 	// Optional top-level ASKING reply (+OK, or a retryable error such as -LOADING).
 	if asking {
 		if err := readStatus(); err != nil {
-			node.Client.observeCSCRedirect(err, cmds...)
 			return c.txPreQueueErrorOutcome(err, cmds)
 		}
 	}
 
 	// MULTI reply (+OK, or an error such as -LOADING during failover).
 	if err := readStatus(); err != nil {
-		node.Client.observeCSCRedirect(err, cmds...)
 		return c.txPreQueueErrorOutcome(err, cmds)
 	}
 
@@ -2856,7 +2852,6 @@ func (c *ClusterClient) readTxPipelineReplies(
 	var firstFatal error
 	for _, cmd := range cmds {
 		err := readStatus()
-		node.Client.observeCSCRedirect(err, cmd)
 		if err == nil {
 			continue // +QUEUED
 		}
@@ -2886,7 +2881,6 @@ func (c *ClusterClient) readTxPipelineReplies(
 	// err means EXEC returned an error rather than the result array.
 	c.txProcessPush(ctx, node, cn, rd)
 	line, err := rd.ReadLine()
-	node.Client.observeCSCRedirect(err, cmds...)
 	if err != nil {
 		if !isRedisError(err) {
 			return c.txReadFatal(err) // IO error

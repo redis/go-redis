@@ -1545,21 +1545,15 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
-	var err error
 	if c.csc != nil && isCacheable(cmd) {
 		// A cacheable command can still reach the cached path on the full-duplex
 		// divert (retryOnNormalConn). The command spent its first attempt on the FD
 		// socket. So startAttempt must go into processCached. On a cache miss
 		// processCached runs the MaxRetries loop. If startAttempt is lost, the
 		// diverted command runs one attempt more than MaxRetries+1.
-		err = c.processCached(ctx, cmd, state, startAttempt)
-	} else {
-		err = c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+		return c.processCached(ctx, cmd, state, startAttempt)
 	}
-	if err != nil {
-		c.observeCSCRedirect(err, cmd)
-	}
-	return err
+	return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 }
 
 // processWithRetry runs cmd through the retry loop. capture (optional) is
@@ -2284,7 +2278,6 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
-		c.observeCSCRedirect(err, cmd)
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
 			setCmdsErr(cmds[i+1:], err)

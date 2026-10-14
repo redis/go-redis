@@ -346,16 +346,16 @@ by `NewUniversalClient`. Sentinel discovery connections remain uncached, and
 `NewFailoverClient` does not support CSC. The existing DB-0-only CSC
 restriction applies; nonzero databases execute normally without caching.
 
-Observed ownership/role changes clear the affected nodes' caches, including
-both old and new owners; cached values are never transferred between nodes.
-MOVED and ASK evict all cached replies depending on the redirected command's
-Redis keys across this `ClusterClient`'s node caches, including `GET`/`MGET` replies
-and pending reservations; unrelated entries are retained. Unknown key layouts
-fall back to clearing the node caches when neither CSC key extraction nor cached
-command metadata identifies all keys safely. Redirects never trigger eager refresh.
-Redirected attempts bypass caching. A single background worker coalesces cleanup,
-and affected nodes bypass caching until their cleanup completes, without waiting
-for topology reload. The existing reservation tokens reject publication into
+Accepted topology changes affecting ownership, role or server identity clear
+the affected nodes' caches, including both old and new owners; cached values are
+never transferred between nodes. MOVED and ASK alone do not evict cached entries
+or suspend caching on other nodes. Invalidations and connection loss use each
+node client's existing standalone eviction machinery. Redirected attempts bypass
+caching. Background refresh stays node-local: a MOVED reply requests a topology
+reload, but the refresh does not follow the redirect or cache the error.
+A single background worker coalesces topology cleanup, retaining at most one
+pending clear per node. Affected nodes bypass caching until cleanup completes.
+The existing reservation tokens reject publication into
 reservations removed by a clear. There are no ownership epochs: old requests or
 queued refreshes can start fresh fetches after a clear, so this does not promise
 to fence all work started under an earlier topology.
