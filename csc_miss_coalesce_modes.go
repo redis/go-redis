@@ -355,13 +355,6 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			// the writer's own state, never put back on mc.ch, so a shutdown cannot
 			// strand it there. The error paths below settle it if this batch fails.
 			buf, pending = mc.grabInto(buf[:0], req)
-			if n := mc.c.opt.clusterCSC; n != nil && !n.usable() {
-				for _, r := range buf {
-					mc.settleErr(r, errCSCRetryUncached)
-				}
-				buf = buf[:0]
-				continue
-			}
 			mc.countBatch(buf)
 
 			// Attribute every request in this batch to the session connection up

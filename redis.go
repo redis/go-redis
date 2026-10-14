@@ -1954,9 +1954,6 @@ func (c *baseClient) disableMaintNotificationsUpgrades() error {
 // It is rare to Close a Client, as the Client is meant to be
 // long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
-	if n := c.opt.clusterCSC; n != nil && n.base != nil && c.connPool == n.base.connPool {
-		n.close()
-	}
 	// The pools this baseClient owns are shared with every WithTimeout/
 	// WithReadTimeout clone. Once ANY sharer closes them, no wrapper may
 	// build a fresh autopipeliner against them — its flushers would run

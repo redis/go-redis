@@ -128,7 +128,7 @@ func TestClusterCSCReplyPolicyProcess(t *testing.T) {
 					opt.ClientSideCacheCoalesceMisses = coalesce
 					if custom {
 						opt.NewClient = func(o *Options) *Client {
-							o.ClientSideCache = &clusterCSCBlockingCache{LocalCache: NewLocalCache(*o.ClientSideCacheConfig)}
+							o.ClientSideCache = &clusterCSCRecordingCache{LocalCache: NewLocalCache(*o.ClientSideCacheConfig)}
 							return NewClient(o)
 						}
 					}

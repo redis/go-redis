@@ -335,40 +335,37 @@ defer rdb.Close()
 Each internal node client owns an independent cache shared by its connections.
 Limits apply **per node**: discovering more nodes can increase total memory.
 Cluster cache hits still perform slot routing, but do not acquire a connection.
-Only primary-routed reads are cached; replica routing is preserved without CSC.
+Primary and replica reads use their selected node's cache. Replica routing and
+its replication-lag trade-off are unchanged.
 Ordinary pipelines, transactions and full-duplex batches remain uncached;
 AutoPipeline's existing ordered solo path can use CSC. Direct node handles
-(`MasterForKey`, `SlaveForKey`, `ForEachShard`) and their clones bypass caching.
-`ClusterClient.CSCStats()` and `CSCRefreshStats()` aggregate node statistics.
+(`MasterForKey`, `SlaveForKey`, `ForEachShard`) and their clones behave as standalone
+clients, including caching when enabled. `ClusterClient.CSCStats()` and
+`CSCRefreshStats()` aggregate currently registered node statistics; counters of
+removed nodes are not retained.
 
 `NewFailoverClusterClient` also accepts CSC configuration, including when selected
 by `NewUniversalClient`. Sentinel discovery connections remain uncached, and
 `NewFailoverClient` does not support CSC. The existing DB-0-only CSC
 restriction applies; nonzero databases execute normally without caching.
 
-Accepted topology changes affecting ownership, role or server identity clear
-the affected nodes' caches, including both old and new owners; cached values are
-never transferred between nodes. MOVED and ASK alone do not evict cached entries
-or suspend caching on other nodes. Invalidations and connection loss use each
-node client's existing standalone eviction machinery. Redirected attempts bypass
-caching. Background refresh stays node-local: a MOVED reply requests a topology
-reload, but the refresh does not follow the redirect or cache the error.
-A single background worker coalesces topology cleanup, retaining at most one
-pending clear per node. Affected nodes bypass caching until cleanup completes.
-The existing reservation tokens reject publication into
-reservations removed by a clear. There are no ownership epochs: old requests or
-queued refreshes can start fresh fetches after a clear, so this does not promise
-to fence all work started under an earlier topology.
-Losing a tracking connection evicts only entries
+Cache lifecycle belongs to each standalone node client. There is no Cluster CSC
+manager, topology-driven cache flush, or transfer of cached values between nodes.
+When a cache miss, coalesced fetch or background refresh receives MOVED or ASK,
+the node client evicts results depending on that fetch's known Redis keys across
+its local cache, including pending reservations. Unknown keys and uncached
+commands rely on server invalidations; they never trigger a whole-cache flush.
+Unrelated entries and other nodes' caches are untouched. Redirected attempts bypass caching.
+Background refresh stays node-local: it applies the same key eviction but does
+not follow redirects or cache errors. Ordinary Cluster routing and topology reload
+remain unchanged. Losing a tracking connection evicts only entries
 dependent on that connection, not the entire node or Cluster cache. Reconnected
 connections establish tracking again for future reads.
 
-CSC bypasses stale topology snapshots until a successful reload; the trust
-threshold is `ClusterStateReloadInterval` (default 60 seconds, negative means
-always expired). This protects against **observed** transitions, not changes the
-client never sees. A fresh slot map cannot rule out migration or failback between
-observations. Cluster caches only replies establishing that all Redis keys they
-depend on exist. During migration, a different client can create a missing key
+Cache correctness relies on server tracking invalidations and connection-loss
+eviction, not on topology polling. A fresh slot map cannot rule out migration or
+failback between observations. Cluster caches only replies establishing that all
+Redis keys they depend on exist. During migration, a different client can create a missing key
 on an importing node without invalidating the source node's tracked absence.
 Therefore `GET` null replies and `MGET`/`JSON.MGET` replies containing any null element
 are returned normally but not cached. `EXISTS` is cached only when its count equals
@@ -382,14 +379,20 @@ Cluster caching. This trades cache hits on ambiguous/absent results for safety
 without extra existence probes. The same filter applies to refresh and
 coalesced fills, including custom per-node caches.
 
-Standalone negative caching is unchanged. `MaxStaleness` is optional for both
-clients and defaults to zero (unlimited); a configured positive value still
-limits entry reuse from cache publication. Shorter ages increase server reads
-even when keys do not change. Neither presence filtering nor an entry-age limit
-guarantees immediate consistency or an ownership fence.
-Finite entry age cannot repair missing server-side tracking coverage. Redis Enterprise
+Standalone negative caching is unchanged. Cluster adds no cache-age policy or
+topology trust window; by default, entries do not expire based on age.
+Presence filtering and asynchronous invalidations do not
+guarantee immediate consistency or an ownership fence. Redis Enterprise
 proxy deployments may require reconnecting caching clients after shard additions
 or same-node slot moves; this policy does not remove that operational requirement.
+
+With atomic slot migration (`CLUSTER MIGRATION`, Redis 8.4+), the importing node
+can accept writes before the source sends invalidations for the moved keys.
+Cached reads can return the previous value during that window; tens of
+milliseconds have been observed. This implementation relies on the server's
+invalidations and does not eliminate that handoff window.
+Legacy `MIGRATE`-based slot migration does not use this atomic-migration handoff;
+ordinary asynchronous invalidation delays still apply.
 
 Custom per-node caches can be created with `ClusterOptions.NewClient`: preserve
 the supplied options and create a fresh cache for each node-client lifetime.

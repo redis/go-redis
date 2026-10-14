@@ -147,6 +147,8 @@ type cscMissReq struct {
 	cacheKey string
 	token    uint64
 	done     chan error
+	// Already namespaced, immutable dependencies survive caller abandonment.
+	redisKeys []string
 	// servedBy is the session connection that served (or failed) this request,
 	// set by the engine BEFORE settling done (the channel receive is the
 	// happens-before edge for the caller's read). Feeds the native OTel
@@ -505,8 +507,11 @@ func (mc *cscMissCoalescer) emitReplyErr(ctx context.Context, req *cscMissReq, e
 	errorCallback(ctx, errorType, req.servedBy, statusCode, isInternal, 0)
 }
 
-func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) (served *pool.Conn, err error) {
+func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64, redisKeys []string) (served *pool.Conn, err error) {
 	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
+	if mc.c.opt.cscPresenceOnly {
+		req.redisKeys = redisKeys
+	}
 	// Bound total in-flight serialized bytes before allocating this command's wire
 	// snapshot: reserve its approximate encoded size and, if that would exceed
 	// cscMissWireBudgetBytes, shed to the ordinary pooled path (errCSCRetryUncached)
@@ -773,7 +778,7 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 		c.fulfillCached(req.cacheKey, req.token, fc)
 	} else {
 		// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
-		c.reloadCSCOnMoved(applyErr)
+		c.cscEvictOnRedirect(req.redisKeys, applyErr)
 		c.csc.Cancel(req.cacheKey, req.token)
 	}
 	// No error-metric emission here: the CALLER emits at its req.done receive

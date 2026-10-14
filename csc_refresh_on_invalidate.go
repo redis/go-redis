@@ -791,9 +791,6 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 		}
 	}()
 	for _, t := range targets {
-		if n := c.opt.clusterCSC; n != nil && !n.usable() {
-			continue
-		}
 		token, shouldFetch := c.csc.Reserve(t.cacheKey, t.redisKeys)
 		// token==0 with shouldFetch==true is Reserve's "fetch uncached" signal
 		// (oversized entry / over-capacity / lost race), not an owned reservation.
@@ -901,7 +898,7 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					return err
 				}
 				if !cscRefreshReplyCacheable(raw) {
-					c.reloadCSCOnMoved(classifyCachedReply(raw))
+					c.cscEvictOnRedirect(kept[i].redisKeys, classifyCachedReply(raw))
 					// Not cacheable (WRONGTYPE after a type change, NOPERM, ...). A nil
 					// reply is NOT an error: standalone can cache negative lookups;
 					// Cluster filters these later in fulfillCached. See

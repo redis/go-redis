@@ -103,6 +103,19 @@ func cscRegisterCleanups(c *Client) {
 	}, h)
 }
 
+// A bypass applies only to this execution (a redirect or pipeline fallback),
+// never to the cache or its connection tracking lifetime.
+type cscBypassKey struct{}
+
+func cscBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cscBypassKey{}, true)
+}
+
+func cscIsBypassed(ctx context.Context) bool {
+	bypass, _ := ctx.Value(cscBypassKey{}).(bool)
+	return bypass
+}
+
 // ClientSideCacheConfig configures the built-in client-side cache. Pass a
 // non-nil value to Options.ClientSideCacheConfig to enable caching on a RESP3
 // client.
@@ -719,9 +732,6 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 		ih.setInvalBatchWindow(c.opt.ClientSideCacheInvalidationBatchWindow)
 	}
 	c.csc = cache
-	if n := c.opt.clusterCSC; n != nil {
-		n.bind(c)
-	}
 	c.registerConnEvictHook(cache, reg)
 	c.startBackgroundDrainer()
 	c.startCSCRefresher()
@@ -1561,7 +1571,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// the namespace already in it, in one allocation, so the prefix has to be
 	// known first.
 	keyPrefix := c.cscKeyPrefix
-	if c.opt.clusterCSC != nil && (!c.clusterCSCAllowed(ctx) || clusterCSCCommandPolicy(cmd.Name()) == clusterCSCReplyBypass) {
+	if c.opt.cscPresenceOnly && (cscIsBypassed(ctx) || clusterCSCCommandPolicy(cmd.Name()) == clusterCSCReplyBypass) {
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 	if keyPrefix == "" {
@@ -1593,9 +1603,6 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 
 	// Serve hits straight from the cache.
 	if data, ok := c.cscGet(ctx, key); ok {
-		if n := c.opt.clusterCSC; n != nil && !n.usable() {
-			return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
-		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1616,17 +1623,11 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 
 	// Miss path: now the key list is actually needed.
 	nsRedisKeys := cscMissKeys(cmd, c.cscKeyPrefix, keyLo, keyHi)
-	if n := c.opt.clusterCSC; n != nil && !n.usable() {
-		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
-	}
 
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
 		// Another goroutine is fetching; Get below waits until it completes.
 		if data, ok := c.cscGet(ctx, key); ok {
-			if n := c.opt.clusterCSC; n != nil && !n.usable() {
-				return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
-			}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -1645,7 +1646,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// off). Load the pointer ONCE: a concurrent Close swaps it to nil, and a
 	// second load after the nil-check would call fetch on a nil receiver.
 	if mc := c.cscMissCoalescer.Load(); shouldFetch && mc != nil {
-		served, err := mc.fetch(ctx, cmd, key, token)
+		served, err := mc.fetch(ctx, cmd, key, token, nsRedisKeys)
 		// Re-run on the normal path when the coalescer bailed (errCSCRetryUncached)
 		// or hit a session or transport failure (tagged cscSessionError by
 		// settleErr). Then a coalesced miss gets the same MaxRetries and backoff as
@@ -1719,9 +1720,6 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 				// coalescing this path exists for. Same shape (and 2x-RTT churn
 				// tradeoff) as the first-Reserve loser path above.
 				if data, ok := c.cscGet(ctx, key); ok {
-					if n := c.opt.clusterCSC; n != nil && !n.usable() {
-						return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
-					}
 					if err := ctx.Err(); err != nil {
 						return err
 					}
@@ -1771,6 +1769,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	}
 
 	err := c.processWithRetry(ctx, cmd, capture, state, startAttempt)
+	c.cscEvictOnRedirect(nsRedisKeys, err)
 
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel
@@ -1783,6 +1782,20 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	return err
 }
 
+// A redirect invalidates the known dependencies of this fetch, not the whole
+// node cache or the connection's tracking coverage. Unknown keys are left to
+// server invalidations; this path never reconstructs command key layouts.
+func (c *baseClient) cscEvictOnRedirect(redisKeys []string, err error) {
+	if !c.opt.cscPresenceOnly || err == nil || c.csc == nil {
+		return
+	}
+	if moved, ask, _ := isMovedError(err); moved || ask {
+		for _, key := range redisKeys {
+			c.csc.DeleteByRedisKey(key)
+		}
+	}
+}
+
 // fulfillCached stores a fetched value, attributing it to its serving conn when
 // an evict-on-remove hook is active so EvictByConn can drop it if that conn is
 // removed. It also closes the attribute-vs-coverage races: the conn is released
@@ -1792,7 +1805,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 // was already lost never becomes visible and never wakes waiters with stale
 // data.
 func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture) bool {
-	if n := c.opt.clusterCSC; n != nil && (!n.usable() || !c.clusterCSCReplyCacheable(key, fc.raw)) {
+	if c.opt.cscPresenceOnly && !c.clusterCSCReplyCacheable(key, fc.raw) {
 		c.csc.Cancel(key, token)
 		return false
 	}
