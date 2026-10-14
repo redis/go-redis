@@ -73,6 +73,11 @@ func TestRaiseMinIdleConnsFillsAndRefills(t *testing.T) {
 // the returned connection, which the next Get should hand out.
 func spareRefreshPool(t *testing.T, raise bool, dials *atomic.Int32) (*pool.ConnPool, *pool.Conn) {
 	t.Helper()
+	return spareRefreshPoolWith(t, raise, dials, 400*time.Millisecond, 0)
+}
+
+func spareRefreshPoolWith(t *testing.T, raise bool, dials *atomic.Int32, maxIdle, maxLife time.Duration) (*pool.ConnPool, *pool.Conn) {
+	t.Helper()
 	p := pool.NewConnPool(&pool.Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			dials.Add(1)
@@ -82,7 +87,8 @@ func spareRefreshPool(t *testing.T, raise bool, dials *atomic.Int32) (*pool.Conn
 		MaxConcurrentDials: 4,
 		PoolTimeout:        time.Second,
 		DialTimeout:        time.Second,
-		ConnMaxIdleTime:    400 * time.Millisecond,
+		ConnMaxIdleTime:    maxIdle,
+		ConnMaxLifetime:    maxLife,
 	})
 	t.Cleanup(func() { _ = p.Close() })
 	ctx := context.Background()
@@ -121,6 +127,29 @@ func TestRefreshStaleSpareReplacesAgedSpare(t *testing.T) {
 	waitPool(t, p, 2, 1)
 	if got := dials.Load() - before; got != 1 {
 		t.Fatalf("dials after refresh = %d, want 1", got)
+	}
+	p.Put(context.Background(), cn)
+}
+
+// TestRefreshStaleSpareBeforeLifetimeEnds checks the spare is also replaced
+// once less than half of its ConnMaxLifetime is left, with ConnMaxIdleTime off
+// (Codex on #4101).
+func TestRefreshStaleSpareBeforeLifetimeEnds(t *testing.T) {
+	var dials atomic.Int32
+	p, returned := spareRefreshPoolWith(t, true, &dials, -1, 800*time.Millisecond)
+	before := dials.Load()
+
+	time.Sleep(500 * time.Millisecond) // < half of the lifetime left, not expired
+	cn, err := p.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cn != returned {
+		t.Fatal("Get did not return the newest idle connection")
+	}
+	waitPool(t, p, 2, 1)
+	if got := dials.Load() - before; got != 1 {
+		t.Fatalf("dials after lifetime refresh = %d, want 1", got)
 	}
 	p.Put(context.Background(), cn)
 }

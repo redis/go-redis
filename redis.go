@@ -726,11 +726,12 @@ func (c *baseClient) poolForConn(cn *pool.Conn) pool.Pooler {
 //     plateaus around 64 KiB and very large buffers can regress it). The
 //     RESP3 minimum clamp applies as on the main pool.
 //   - PoolSize: PipelinePoolSize when set, DefaultPipelinePoolSize otherwise.
-//   - MinIdleConns: always 0. The pipeline pool is burst capacity — its
-//     connections dial on demand and there is nothing to keep warm before
-//     the first pipeline runs. Without this the clone would inherit the
-//     main pool's MinIdleConns and pre-dial that many pipeline connections
-//     at creation, silently doubling a client's idle footprint.
+//   - MinIdleConns: PipelineMinIdleConns (negative means 0), never the main
+//     pool's MinIdleConns. The pipeline pool is burst capacity — by default its
+//     connections dial on demand. Inheriting MinIdleConns would pre-dial that
+//     many pipeline connections at creation, silently doubling a client's idle
+//     footprint. A full-duplex engine raises the floor at runtime
+//     (RaiseMinIdleConns) to keep a warm spare.
 func pipelinePoolOptions(opt *Options) *Options {
 	pipelineOpt := opt.clone()
 	if opt.PipelineReadBufferSize > 0 {

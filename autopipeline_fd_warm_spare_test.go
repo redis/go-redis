@@ -115,6 +115,76 @@ func TestFDWarmSpareOptOut(t *testing.T) {
 	}
 }
 
+// TestFDSpareFits checks the spare is only added when it does not take a slot
+// an engine needs and the idle limit can hold it next to a returned session
+// connection (Codex on #4101).
+func TestFDSpareFits(t *testing.T) {
+	for _, tc := range []struct {
+		poolSize, maxIdle, engines int
+		want                       bool
+	}{
+		{10, 0, 1, true},  // defaults
+		{1, 0, 1, false},  // the only slot belongs to the engine
+		{2, 0, 2, false},  // NumShards == PipelinePoolSize
+		{3, 0, 2, true},   // room for two engines and a spare
+		{10, 1, 1, false}, // spare would fill the only idle slot
+		{10, 2, 1, true},  // spare + returned session conn
+		{10, 2, 2, false}, // two engines need both idle slots
+	} {
+		if got := fdSpareFits(tc.poolSize, tc.maxIdle, tc.engines); got != tc.want {
+			t.Errorf("fdSpareFits(pool=%d, maxIdle=%d, engines=%d) = %v, want %v",
+				tc.poolSize, tc.maxIdle, tc.engines, got, tc.want)
+		}
+	}
+}
+
+// TestFDNoSpareWhenItDoesNotFit checks a client whose pipeline pool cannot fit
+// a spare gets none, and that the full-duplex session then stays on the
+// pipeline pool instead of spilling to the main pool.
+func TestFDNoSpareWhenItDoesNotFit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opt  func(*Options)
+	}{
+		{"PipelinePoolSize 1", func(o *Options) { o.PipelinePoolSize = 1 }},
+		{"MaxIdleConns 1", func(o *Options) { o.MaxIdleConns = 1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if err := probeRedis(internalTestRedisAddr()); err != nil {
+				t.Skipf("no redis: %v", err)
+			}
+			opt := &Options{Addr: internalTestRedisAddr()}
+			tc.opt(opt)
+			client := NewClient(opt)
+			defer client.Close()
+			if err := client.Ping(ctx).Err(); err != nil {
+				t.Skipf("no redis: %v", err)
+			}
+			ap, err := newAutoPipeliner(client, &AutoPipelineOptions{FullDuplex: true}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ap.Close()
+			if ap.fd == nil {
+				t.Skip("full-duplex engine not enabled for this client")
+			}
+			if err := ap.Set(ctx, "fdspare:fit", "1", 0).Err(); err != nil {
+				t.Fatal(err)
+			}
+			waitFDSession(t, ap, client, 0)
+			time.Sleep(50 * time.Millisecond)
+			pp := client.loadPipelinePool().pool
+			if n := pp.IdleLen(); n != 0 {
+				t.Fatalf("pipeline IdleLen = %d, want 0 (no spare)", n)
+			}
+			if ap.fd.curConnSpilled.Load() {
+				t.Fatal("full-duplex session spilled to the main pool")
+			}
+		})
+	}
+}
+
 // TestPipelineMinIdleConnsWithoutFD checks PipelineMinIdleConns alone keeps
 // idle connections in the pipeline pool, and the default keeps none.
 func TestPipelineMinIdleConnsWithoutFD(t *testing.T) {

@@ -296,12 +296,21 @@ type Options struct {
 	// against PipelinePoolSize and are dialed but not initialized (init runs on
 	// first use).
 	//
-	// A full-duplex autopipeliner (AutoPipelineOptions.FullDuplex) raises it to
-	// at least 1 while it runs: it holds one pipeline connection for its whole
-	// session, so without an idle spare a replacement after a connection error
-	// must dial first. The spare is replaced once it is half-way to
-	// ConnMaxIdleTime, so it does not age out unused. Set a negative value to
-	// keep the pool at zero idle connections even with full-duplex.
+	// Creating a full-duplex autopipeliner (AutoPipelineOptions.FullDuplex)
+	// raises it to at least 1 for the rest of the client's life: the engine
+	// holds one pipeline connection for its whole session, so without an idle
+	// spare a replacement after a connection error must dial first. The spare is
+	// added only when it fits: PipelinePoolSize and MaxIdleConns (if set) must
+	// both exceed the number of full-duplex engines (NumShards).
+	//
+	// The spare is replaced when the session connection is returned and leased
+	// again (at least every FullDuplexMaxHold) once it is half-way to
+	// ConnMaxIdleTime or to the end of ConnMaxLifetime, so it does not age out
+	// unused. Keep FullDuplexMaxHold below half of those limits for that to
+	// hold; the defaults (5s against 30m) do.
+	//
+	// Set a negative value to keep the pool at zero idle connections even with
+	// full-duplex.
 	//
 	// default: 0
 	PipelineMinIdleConns int

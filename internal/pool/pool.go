@@ -562,14 +562,15 @@ func (p *ConnPool) RaiseMinIdleConns(n int32) {
 }
 
 // refreshStaleSpare replaces the oldest idle connection once it is half-way to
-// ConnMaxIdleTime, in a pool whose min-idle floor was raised (RaiseMinIdleConns,
-// the full-duplex warm spare). Under LIFO such a spare is never leased, so it
-// would age past ConnMaxIdleTime and be discarded by the very lease it exists
-// for, which then dials. It runs only when another idle connection is there for
-// this lease, so it never closes the spare a lease needs. O(1): under LIFO the
-// oldest idle connection is idleConns[0].
+// ConnMaxIdleTime or to the end of its ConnMaxLifetime, in a pool whose min-idle
+// floor was raised (RaiseMinIdleConns, the full-duplex warm spare). Under LIFO
+// such a spare is never leased, so it would age out and be discarded by the
+// very lease it exists for, which then dials. It runs only when another idle
+// connection is there for this lease, so it never closes the spare a lease
+// needs. O(1): under LIFO the oldest idle connection is idleConns[0].
 func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
-	if p.minIdleFloor.Load() == 0 || p.cfg.PoolFIFO || p.cfg.ConnMaxIdleTime <= 0 {
+	if p.minIdleFloor.Load() == 0 || p.cfg.PoolFIFO ||
+		(p.cfg.ConnMaxIdleTime <= 0 && p.cfg.ConnMaxLifetime <= 0) {
 		return
 	}
 	p.connsMu.Lock()
@@ -578,7 +579,7 @@ func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
 		return
 	}
 	oldest := p.idleConns[0]
-	if nowNs-oldest.UsedAtNs() < int64(p.cfg.ConnMaxIdleTime/2) || !oldest.TryAcquire() {
+	if !p.spareAging(oldest, nowNs) || !oldest.TryAcquire() {
 		p.connsMu.Unlock()
 		return
 	}
@@ -591,6 +592,19 @@ func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
 	p.checkMinIdleConns()
 }
 
+// spareAging reports whether cn is half-way to ConnMaxIdleTime or has less than
+// half of its ConnMaxLifetime left, so a refresh now lands before isHealthyConn
+// would reject it.
+func (p *ConnPool) spareAging(cn *Conn, nowNs int64) bool {
+	if idle := p.cfg.ConnMaxIdleTime; idle > 0 && nowNs-cn.UsedAtNs() >= int64(idle/2) {
+		return true
+	}
+	if life := p.cfg.ConnMaxLifetime; life > 0 && cn.expiresAt.UnixNano()-nowNs < int64(life/2) {
+		return true
+	}
+	return false
+}
+
 func (p *ConnPool) checkMinIdleConns() {
 	// If a check is already in progress, mark that we need another check and return
 	if !p.idleCheckInProgress.CompareAndSwap(false, true) {
@@ -600,6 +614,12 @@ func (p *ConnPool) checkMinIdleConns() {
 
 	if p.minIdleConns() == 0 {
 		p.idleCheckInProgress.Store(false)
+		// A RaiseMinIdleConns between the read above and the store may have
+		// found the check in progress and only set idleCheckNeeded: run again
+		// so the new floor is filled now, not on a later Get.
+		if p.idleCheckNeeded.Load() && p.minIdleConns() > 0 {
+			p.checkMinIdleConns()
+		}
 		return
 	}
 

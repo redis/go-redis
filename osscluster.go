@@ -157,10 +157,11 @@ type ClusterOptions struct {
 	WriteBufferSize int
 
 	// PipelineReadBufferSize, PipelineWriteBufferSize, PipelinePoolSize and
-	// PipelineMinIdleConns
-	// configure an optional separate connection pool used for pipelining on
-	// each node, with its own (typically larger) buffers. See the same-named
-	// fields on Options for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
+	// PipelineMinIdleConns configure the separate connection pool used for
+	// pipelining on each node, with its own (typically larger) buffers. See the
+	// same-named fields on Options for details. Each node client creates this
+	// pool by default; set PipelinePoolSize < 0 to opt out (pipelines run on the
+	// main pool).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
