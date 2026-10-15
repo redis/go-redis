@@ -331,3 +331,24 @@ func TestRelaxedTimeoutCounterRaceCondition(t *testing.T) {
 		t.Errorf("Expected relaxed deadline to be cleared, got %d", deadline)
 	}
 }
+
+// TestRelaxedTimeoutDoesNotTightenBlockingRead pins the read-side
+// carve-out: a relaxed timeout may only loosen deadlines, so a blocking
+// read (normal timeout 0 — the pub/sub read loop) must stay
+// deadline-free while finite reads still get the relaxed value.
+func TestRelaxedTimeoutDoesNotTightenBlockingRead(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	cn := NewConn(client)
+	defer cn.Close()
+
+	cn.SetRelaxedTimeout(10*time.Second, 10*time.Second)
+
+	if got := cn.getEffectiveReadTimeout(0); got != 0 {
+		t.Fatalf("blocking read got deadline %v, want 0 (no deadline)", got)
+	}
+	if got := cn.getEffectiveReadTimeout(3 * time.Second); got != 10*time.Second {
+		t.Fatalf("finite read got %v, want the relaxed 10s", got)
+	}
+}

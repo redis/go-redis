@@ -143,6 +143,12 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 		}
 		// same as current endpoint
 		newEndpoint = snh.manager.options.GetAddr()
+		if poolConn.IsPubSub() {
+			// A pub/sub connection's owner may have been redirected away
+			// from the configured address by an earlier handoff: a null
+			// endpoint tells it to reconnect to wherever it is now.
+			newEndpoint = internal.RedisNull
+		}
 		// delay the handoff for timeS/2 seconds to the same endpoint
 		// do this in a goroutine to avoid blocking the notification handler
 		// NOTE: This timer is started while parsing the notification, so the connection is not marked for handoff
@@ -160,7 +166,10 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 			// Queue the handoff immediately if the connection is idle in the pool.
 			// If the connection is in use (StateInUse), it will be queued when returned to the pool via OnPut.
 			// This handles the case where the connection is idle and might never be retrieved again.
-			if poolConn.GetStateMachine().GetState() == pool.StateIdle {
+			// A pub/sub connection is idle for its whole life but unpooled: no
+			// worker may hand it off (its owner reads from it concurrently);
+			// the owner reconnects on the mark itself.
+			if poolConn.GetStateMachine().GetState() == pool.StateIdle && !poolConn.IsPubSub() {
 				// Queue on the hook that owns this connection's pool, not
 				// unconditionally on the primary one: the request carries the
 				// hook's pool, and a failed handoff removes the connection
