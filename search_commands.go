@@ -2729,8 +2729,8 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 		if withSortKeys && i < len(data) {
 			if sortKey, ok := data[i].(string); ok {
 				doc.SortKey = &sortKey
-				i++
 			}
+			i++
 		}
 
 		if noContent {

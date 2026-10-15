@@ -941,6 +941,39 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 			withPayloads: true,
 		},
 		{
+			name: "query with sort keys and a missing sort field",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				"#5",
+				[]interface{}{"n", "5"},
+				"doc:2",
+				nil,
+				[]interface{}{"txt", "hello"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:1",
+						"sortkey":          "#5",
+						"extra_attributes": map[string]interface{}{"n": "5"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:2",
+						"sortkey":          nil,
+						"extra_attributes": map[string]interface{}{"txt": "hello"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withSortKeys: true,
+		},
+		{
 			name: "empty result",
 			resp2Data: []interface{}{
 				int64(0),
@@ -1002,7 +1035,8 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 				}
 
 				if tt.withSortKeys {
-					if resp2Doc.SortKey == nil || resp3Doc.SortKey == nil || *resp2Doc.SortKey != *resp3Doc.SortKey {
+					if (resp2Doc.SortKey == nil) != (resp3Doc.SortKey == nil) ||
+						(resp2Doc.SortKey != nil && *resp2Doc.SortKey != *resp3Doc.SortKey) {
 						t.Errorf("Docs[%d].SortKey mismatch: RESP2=%v, RESP3=%v", i, resp2Doc.SortKey, resp3Doc.SortKey)
 					}
 				}
