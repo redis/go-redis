@@ -374,10 +374,15 @@ func TestRuntimeMembershipUnderFaults(t *testing.T) {
 	mdb := newE2EClient(t, opts)
 	ctx := context.Background()
 
+	// The spare's weight sits between member 0 and member 1, so when member 0
+	// goes down the failover must pick the member that only exists at
+	// runtime. One fault is enough: the real fault injector runs actions one
+	// at a time and each network_failure blocks for its delay, so two faults
+	// would not overlap.
 	spare := len(e2eTopology.Endpoints) - 1
 	id, err := mdb.AddDatabase(ctx, redis.MultiDBClientConfig{
 		Options: endpointOptions(e2eTopology.Endpoints[spare]),
-		Weight:  1,
+		Weight:  (opts.Clients[0].Weight + opts.Clients[1].Weight) / 2,
 	})
 	if err != nil {
 		t.Fatalf("AddDatabase: %v", err)
@@ -386,10 +391,7 @@ func TestRuntimeMembershipUnderFaults(t *testing.T) {
 		t.Fatalf("AddDatabase id = %d, want %d", id, spare)
 	}
 
-	// With both original members down, traffic must land on the member that
-	// only ever existed at runtime.
 	triggerNetworkFailure(t, 0, 60*time.Second)
-	triggerNetworkFailure(t, 1, 60*time.Second)
 	eventually(t, 20*time.Second, "commands succeeding on the runtime-added member", func() bool {
 		return mdb.Set(ctx, "e2e:member", "x", 0).Err() == nil && mdb.ActiveDatabaseID() == spare
 	})
