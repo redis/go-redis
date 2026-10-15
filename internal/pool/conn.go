@@ -696,6 +696,15 @@ func (cn *Conn) EffectiveWriteTimeout(normalTimeout time.Duration) time.Duration
 // then reads the window again. A surviving notification holder's relaxed timeout
 // still takes priority over normalTimeout.
 func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
+	// A zero normal timeout is a deliberately blocking read — pub/sub
+	// waits for pushes with no deadline. A relaxed timeout may only ever
+	// loosen a deadline, and nothing is looser than none: substituting a
+	// finite value here would tighten the read and fail a healthy idle
+	// connection exactly during the maintenance window that set it.
+	if normalTimeout == 0 {
+		return normalTimeout
+	}
+
 	cur := cn.relaxed.Load()
 	if cur == nil || cur.readNs <= 0 {
 		return normalTimeout
@@ -1407,4 +1416,23 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	}
 
 	return noDeadline
+}
+
+// MarkPubSub marks the connection as used for PubSub. It must be called
+// before the connection handshake so that init-time decisions that
+// depend on IsPubSub (e.g. skipping client-side-cache tracking) apply.
+func (cn *Conn) MarkPubSub() {
+	cn.pubsub = true
+}
+
+func (cn *Conn) ResolveAddress(current string) string {
+	if !cn.ShouldHandoff() {
+		return current
+	}
+
+	handoffAddr := cn.GetHandoffEndpoint()
+	if handoffAddr == "" || handoffAddr == internal.RedisNull {
+		return current
+	}
+	return handoffAddr
 }
