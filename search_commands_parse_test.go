@@ -974,6 +974,73 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 			withSortKeys: true,
 		},
 		{
+			name: "NOCONTENT query with a missing sort field before another document",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				nil,
+				"doc:2",
+				"#5",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":      "doc:1",
+						"sortkey": nil,
+						"values":  []interface{}{},
+					},
+					map[string]interface{}{
+						"id":      "doc:2",
+						"sortkey": "#5",
+						"values":  []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:    true,
+			withSortKeys: true,
+		},
+		{
+			name: "query with empty payload and missing sort field",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				nil,
+				nil,
+				[]interface{}{"txt", "hello"},
+				"doc:2",
+				"p",
+				"#5",
+				[]interface{}{"n", "5"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:1",
+						"sortkey":          nil,
+						"extra_attributes": map[string]interface{}{"txt": "hello"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:2",
+						"payload":          "p",
+						"sortkey":          "#5",
+						"extra_attributes": map[string]interface{}{"n": "5"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withPayloads: true,
+			withSortKeys: true,
+		},
+		{
 			name: "empty result",
 			resp2Data: []interface{}{
 				int64(0),
