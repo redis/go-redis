@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -265,6 +266,31 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 	}
 	if actual.MaxConcurrentDials != expected.MaxConcurrentDials {
 		t.Errorf("MaxConcurrentDials: got %v, expected %v", actual.MaxConcurrentDials, expected.MaxConcurrentDials)
+	}
+}
+
+func TestParseURLErrorRedactsPassword(t *testing.T) {
+	urls := []string{
+		"redis://user:s3cr3t@localhost:6379x/0",
+		"rediss://:s3cr3t@[::1/0",
+		"redis://user:s3cr3t%zz@localhost/0",
+		"redis://user:s3/cr@t@localhost:bad/0",
+	}
+	parsers := map[string]func(string) error{
+		"ParseURL":         func(u string) error { _, err := ParseURL(u); return err },
+		"ParseClusterURL":  func(u string) error { _, err := ParseClusterURL(u); return err },
+		"ParseFailoverURL": func(u string) error { _, err := ParseFailoverURL(u); return err },
+	}
+	for name, parse := range parsers {
+		for _, u := range urls {
+			err := parse(u)
+			if err == nil {
+				t.Fatalf("%s(%q): expected an error", name, u)
+			}
+			if msg := err.Error(); strings.Contains(msg, "s3") {
+				t.Errorf("%s(%q): error leaks the password: %s", name, u, msg)
+			}
+		}
 	}
 }
 
