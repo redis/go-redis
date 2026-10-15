@@ -70,8 +70,26 @@ type UniversalOptions struct {
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
 
-	ReadTimeout           time.Duration
-	WriteTimeout          time.Duration
+	// ReadTimeout for socket reads. If reached, commands will fail
+	// with a timeout instead of blocking. Supported values:
+	//
+	//	- `-1` - no timeout (block indefinitely).
+	//	- `-2` - disables SetReadDeadline calls completely.
+	//
+	// default: 5 seconds
+	ReadTimeout time.Duration
+
+	// WriteTimeout for socket writes. If reached, commands will fail
+	// with a timeout instead of blocking. Supported values:
+	//
+	//	- `-1` - no timeout (block indefinitely).
+	//	- `-2` - disables SetWriteDeadline calls completely.
+	//
+	// default: 5 seconds (same as ReadTimeout, which it follows when unset)
+	WriteTimeout time.Duration
+
+	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
+	// See https://redis.io/docs/latest/develop/clients/go/produsage/#timeouts
 	ContextTimeoutEnabled bool
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
@@ -185,6 +203,25 @@ type UniversalOptions struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
+
+	// ClientSideCacheRefreshOnInvalidate re-fetches every cached entry of an
+	// invalidated key as soon as its invalidation arrives, whether or not it was
+	// read recently. See Options.ClientSideCacheRefreshOnInvalidate.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheRefreshOnInvalidate bool
+
+	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses onto a held
+	// full-duplex connection. See Options.ClientSideCacheCoalesceMisses.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceMisses bool
+
+	// ClientSideCacheInvalidationBatchWindow batches invalidation-driven deletes.
+	// See Options.ClientSideCacheInvalidationBatchWindow.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheInvalidationBatchWindow time.Duration
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -391,6 +428,10 @@ func (o *UniversalOptions) Simple() *Options {
 		ClientSideCacheConfig:     o.ClientSideCacheConfig,
 		ClientSideCache:           o.ClientSideCache,
 		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
+
+		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
+		ClientSideCacheInvalidationBatchWindow: o.ClientSideCacheInvalidationBatchWindow,
 	}
 }
 

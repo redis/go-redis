@@ -524,6 +524,127 @@ func TestFTCreateHNSWRerank_Args(t *testing.T) {
 	}
 }
 
+// TestFTCreateHNSWCompression_Args verifies the COMPRESSION and
+// TRAINING_THRESHOLD attributes (Redis 8.12+, scalar-quantized HNSW) are
+// emitted as key-value pairs counted in the attribute-count token.
+// TRAINING_THRESHOLD is emitted for a positive value, or for an explicit zero
+// when HasTrainingThreshold is set, and omitted otherwise.
+func TestFTCreateHNSWCompression_Args(t *testing.T) {
+	tests := []struct {
+		name string
+		opts *FTHNSWOptions
+		want []any
+	}{
+		{
+			name: "unset",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+			want: []any{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 6,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2",
+			},
+		},
+		{
+			name: "compression_only",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2", Compression: "SQ8"},
+			want: []any{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 8,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2", "COMPRESSION", "SQ8",
+			},
+		},
+		{
+			name: "compression_and_training_threshold",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2", Compression: "SQ8", TrainingThreshold: 1024},
+			want: []any{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 10,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2", "COMPRESSION", "SQ8", "TRAINING_THRESHOLD", 1024,
+			},
+		},
+		{
+			name: "training_threshold_explicit_zero",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2", Compression: "SQ8", HasTrainingThreshold: true},
+			want: []any{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 10,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2", "COMPRESSION", "SQ8", "TRAINING_THRESHOLD", 0,
+			},
+		},
+		{
+			name: "training_threshold_zero_without_has_flag_omitted",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2", Compression: "SQ8", TrainingThreshold: 0},
+			want: []any{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 8,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2", "COMPRESSION", "SQ8",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &mockCmdable{}
+			c := m.asCmdable()
+			cmd := c.FTCreate(context.Background(), "idx", nil, &FieldSchema{
+				FieldName:  "v",
+				FieldType:  SearchFieldTypeVector,
+				VectorArgs: &FTVectorArgs{HNSWOptions: tt.opts},
+			})
+			if cmd.Err() != nil {
+				t.Fatalf("unexpected error: %v", cmd.Err())
+			}
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
+// TestParseFTInfoHNSWCompression checks that FT.INFO populates
+// FTAttribute.Compression and FTAttribute.TrainingThreshold from both the
+// RESP2 flat-slice attribute shape and the RESP3 map attribute shape.
+func TestParseFTInfoHNSWCompression(t *testing.T) {
+	t.Run("resp2 slice", func(t *testing.T) {
+		data := map[string]any{
+			"attributes": []any{
+				[]any{
+					"identifier", "v", "attribute", "v", "type", "VECTOR",
+					"algorithm", "HNSW", "data_type", "FLOAT32", "dim", int64(2),
+					"distance_metric", "L2", "M", int64(16), "ef_construction", int64(200),
+					"compression", "SQ8", "training_threshold", int64(1024),
+				},
+			},
+		}
+		info, err := parseFTInfo(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(info.Attributes) != 1 {
+			t.Fatalf("expected 1 attribute, got %d", len(info.Attributes))
+		}
+		att := info.Attributes[0]
+		if att.Compression != "SQ8" {
+			t.Errorf("Compression = %q, want %q", att.Compression, "SQ8")
+		}
+		if att.TrainingThreshold != 1024 {
+			t.Errorf("TrainingThreshold = %d, want %d", att.TrainingThreshold, 1024)
+		}
+	})
+
+	t.Run("resp3 map", func(t *testing.T) {
+		att := parseFTAttributeFromMap(map[any]any{
+			"identifier":         "v",
+			"attribute":          "v",
+			"type":               "VECTOR",
+			"algorithm":          "HNSW",
+			"compression":        "SQ8",
+			"training_threshold": int64(1024),
+		})
+		if att.Compression != "SQ8" {
+			t.Errorf("Compression = %q, want %q", att.Compression, "SQ8")
+		}
+		if att.TrainingThreshold != 1024 {
+			t.Errorf("TrainingThreshold = %d, want %d", att.TrainingThreshold, 1024)
+		}
+	})
+}
+
 // TestParseFTHybridWarnings checks that FT.HYBRID warnings populate from either
 // the "warning" or "warnings" key.
 func TestParseFTHybridWarnings(t *testing.T) {

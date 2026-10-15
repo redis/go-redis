@@ -870,7 +870,7 @@ func (c *MultiDBClient) AutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, nil, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, nil, nil, "", config,
 		DefaultBlockingAutoPipelineOptions,
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
 			return c.trackAutopipelinerLocked(c.newMultiDBAutoPipeliner(cfg, true))
@@ -933,7 +933,7 @@ func (c *MultiDBClient) AsyncAutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, nil, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, nil, nil, "", config,
 		DefaultAutoPipelineOptions,
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
 			return c.trackAutopipelinerLocked(c.newMultiDBAutoPipeliner(cfg, false))

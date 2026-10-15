@@ -382,7 +382,7 @@ func TestMultiDBTxPipelineNotRetriedByMemberClient(t *testing.T) {
 		Options: &redis.Options{
 			Addr:          "127.0.0.1:1",
 			MaxRetries:    2, // member-level retries that must NOT apply to transactions
-			DialerRetries: 1, // exactly one dial per member pipeline attempt
+			DialerRetries: 1, // one dial per pool per member pipeline attempt
 			DialTimeout:   200 * time.Millisecond,
 			Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				dials.Add(1)
@@ -409,8 +409,13 @@ func TestMultiDBTxPipelineNotRetriedByMemberClient(t *testing.T) {
 	// EXEC may have committed before a transport error surfaced: the member
 	// client must not replay the transaction either — at-most-once holds for
 	// the whole stack, not only the MultiDB retry layer.
-	if got := dials.Load(); got != 1 {
-		t.Errorf("transaction dialed %d times, want 1 (member retries must be suppressed)", got)
+	//
+	// One attempt dials twice: the pipeline-pool dial fails and
+	// withPipelineConn spills to the main pool. Both are pre-write. With member
+	// retries (MaxRetries: 2) the count would be 6.
+	const dialsPerAttempt = 2
+	if got := dials.Load(); got != dialsPerAttempt {
+		t.Errorf("transaction dialed %d times, want %d (member retries must be suppressed)", got, dialsPerAttempt)
 	}
 }
 

@@ -91,6 +91,40 @@ func TestLocalCache_DeleteByRedisKey_MultiKey(t *testing.T) {
 	}
 }
 
+// TestLocalCache_DeletionStats locks the applied-delete counters at both cache
+// choke points: DeleteByRedisKey (refresh-off path) and
+// deleteByRedisKeyCollectingHot (refresh-on path). A delete that matches a live
+// entry bumps deletions; one that matches nothing bumps deletions AND noop. The
+// incoming-push counter (InvalidationStats) is independent and must not move.
+func TestLocalCache_DeletionStats(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache.set("get:a", []string{"a"}, []byte("1"))
+
+	if removed := cache.DeleteByRedisKey("a"); removed != 1 {
+		t.Fatalf("DeleteByRedisKey(matching) removed = %d, want 1", removed)
+	}
+	if removed := cache.DeleteByRedisKey("a"); removed != 0 {
+		t.Fatalf("DeleteByRedisKey(missing) removed = %d, want 0", removed)
+	}
+	if del, noop := cache.DeletionStats(); del != 2 || noop != 1 {
+		t.Fatalf("after DeleteByRedisKey: DeletionStats = (%d, %d), want (2, 1)", del, noop)
+	}
+
+	// The collecting variant counts on the SAME counters (no double count: the two
+	// delete paths are disjoint).
+	cache.set("get:b", []string{"b"}, []byte("2"))
+	cache.deleteByRedisKeyCollectingHot("b", 0, ^uint64(0), nil) // matches -> deletion, not noop
+	cache.deleteByRedisKeyCollectingHot("b", 0, ^uint64(0), nil) // missing -> deletion + noop
+	if del, noop := cache.DeletionStats(); del != 4 || noop != 2 {
+		t.Fatalf("after collecting deletes: DeletionStats = (%d, %d), want (4, 2)", del, noop)
+	}
+
+	// Applied deletes are NOT incoming pushes: the invalidation counter stays 0.
+	if inv := cache.InvalidationStats(); inv != 0 {
+		t.Fatalf("InvalidationStats = %d, want 0 (deletes must not bump the incoming count)", inv)
+	}
+}
+
 func TestLocalCache_Flush(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
 	cache.set("get:a", []string{"a"}, []byte("1"))
@@ -734,6 +768,95 @@ func TestLocalCache_ReserveHonorsCapWithoutEvictingPeers(t *testing.T) {
 		key := fmt.Sprintf("get:k%d", i)
 		if !cache.FulfillOwned(key, tokens[i], 0, []byte("v")) {
 			t.Fatalf("Fulfill(%s) must succeed: peer placeholder was wrongly evicted", key)
+		}
+	}
+}
+
+// TestLocalCache_SecondChanceIsConsumed pins the half of the second-chance
+// contract the existing eviction tests do not reach: a read buys an entry
+// exactly ONE eviction pass, not permanent immunity.
+//
+// Reads no longer stamp a recency token (that store was the dominant cost of a
+// cache hit under concurrency; see cacheEntry.readSinceSweep). They set a bit,
+// and eviction picks the oldest entry whose bit is CLEAR. If nothing ever
+// cleared those bits, a cache whose whole working set had been read once would
+// have no clear-bit candidate and would fall back to insertion order forever,
+// silently losing LRU behaviour. oldestLocked clears them when every candidate
+// has been read, which is what this test drives.
+// A memory-capped shard whose resident entries have all been read must still
+// admit a new key. The placeholder costs nothing, so Reserve does not evict;
+// the value only goes over the cap in fulfill. The fresh entry used to be born
+// with its second-chance bit clear, which made it the only clear-bit candidate:
+// it was evicted on the spot and a warm shard could not admit anything. A fresh
+// entry is now born referenced, as a page is in second-chance eviction, so the
+// sweep takes the oldest entry instead.
+func TestLocalCache_WarmMemoryCappedShardAdmitsNewKeys(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{
+		MaxMemoryBytes: 6,
+		Sizer: func(_ string, _ []string, value []byte) int64 {
+			return int64(len(value))
+		},
+	})
+	for _, k := range []string{"a", "b"} {
+		if !cache.set(k, []string{k}, []byte(k+k)) { // 2 bytes each
+			t.Fatalf("failed to set %s", k)
+		}
+	}
+	for round, k := range []string{"c", "d", "e", "f"} {
+		// Read everything resident, so no entry has a clear bit.
+		for _, r := range []string{"a", "b", "c", "d", "e", "f"} {
+			_, _ = cache.Get(ctx, r)
+		}
+		if !cache.set(k, []string{k}, []byte(k+k+k)) { // 3 bytes: over the cap
+			t.Fatalf("round %d: a warm memory-capped shard rejected new key %q", round, k)
+		}
+		if _, ok := cache.Get(ctx, k); !ok {
+			t.Fatalf("round %d: %q was admitted but is not cached", round, k)
+		}
+	}
+}
+
+func TestLocalCache_SecondChanceIsConsumed(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 3})
+	for _, k := range []string{"a", "b", "c"} {
+		if !cache.set(k, []string{k}, []byte(k)) {
+			t.Fatalf("failed to set %s", k)
+		}
+	}
+	// Every resident entry has now been read, so every second-chance bit is set
+	// and there is no clear-bit victim available.
+	for _, k := range []string{"a", "b", "c"} {
+		if _, ok := cache.Get(ctx, k); !ok {
+			t.Fatalf("%s should exist", k)
+		}
+	}
+
+	// First insert over capacity: no candidate has a clear bit, so this pass
+	// sweeps the bits and evicts the oldest by token -- "a", inserted first.
+	if !cache.set("d", []string{"d"}, []byte("d")) {
+		t.Fatal("failed to set d")
+	}
+	if _, ok := cache.Get(ctx, "a"); ok {
+		t.Fatal("a should be evicted: oldest entry once every second chance was consumed")
+	}
+
+	// The sweep cleared b and c. Reading only c re-arms c alone, so the next
+	// insert must take b -- proving the bits really were cleared (otherwise b
+	// would still look protected and the newest entry would be taken instead).
+	if _, ok := cache.Get(ctx, "c"); !ok {
+		t.Fatal("c should still be cached")
+	}
+	if !cache.set("e", []string{"e"}, []byte("e")) {
+		t.Fatal("failed to set e")
+	}
+	if _, ok := cache.Get(ctx, "b"); ok {
+		t.Fatal("b should be evicted: its second chance was consumed by the sweep and not renewed")
+	}
+	for _, k := range []string{"c", "d", "e"} {
+		if _, ok := cache.Get(ctx, k); !ok {
+			t.Fatalf("%s should remain cached", k)
 		}
 	}
 }

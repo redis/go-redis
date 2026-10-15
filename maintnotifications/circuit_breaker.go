@@ -65,19 +65,19 @@ func newCircuitBreaker(endpoint string, config *Config) *CircuitBreaker {
 		switch {
 		case oldState == circuitbreaker.StateClosed && newState == circuitbreaker.StateOpen:
 			if internal.LogLevel.WarnOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.CircuitBreakerOpened(endpoint, int64(stats.Failures)))
+				internal.Logger.Printf(context.Background(), "%s", logs.CircuitBreakerOpened(endpoint, int64(stats.Failures)))
 			}
 		case oldState == circuitbreaker.StateOpen && newState == circuitbreaker.StateHalfOpen:
 			if internal.LogLevel.InfoOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.CircuitBreakerTransitioningToHalfOpen(endpoint))
+				internal.Logger.Printf(context.Background(), "%s", logs.CircuitBreakerTransitioningToHalfOpen(endpoint))
 			}
 		case oldState == circuitbreaker.StateHalfOpen && newState == circuitbreaker.StateClosed:
 			if internal.LogLevel.InfoOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.CircuitBreakerClosed(endpoint, int64(stats.Successes)))
+				internal.Logger.Printf(context.Background(), "%s", logs.CircuitBreakerClosed(endpoint, int64(stats.Successes)))
 			}
 		case oldState == circuitbreaker.StateHalfOpen && newState == circuitbreaker.StateOpen:
 			if internal.LogLevel.WarnOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.CircuitBreakerReopened(endpoint))
+				internal.Logger.Printf(context.Background(), "%s", logs.CircuitBreakerReopened(endpoint))
 			}
 		}
 	})
@@ -290,7 +290,7 @@ func (cbm *CircuitBreakerManager) cleanup() {
 
 	// Log cleanup results
 	if len(toDelete) > 0 && internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(context.Background(), logs.CircuitBreakerCleanup(len(toDelete), count))
+		internal.Logger.Printf(context.Background(), "%s", logs.CircuitBreakerCleanup(len(toDelete), count))
 	}
 
 	cbm.lastCleanup.Store(now.Unix())

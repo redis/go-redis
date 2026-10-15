@@ -2,10 +2,13 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+var errCMSInvalidCellSize = errors.New("redis: invalid cell size (must be 1, 2, 4 or 8)")
 
 type ProbabilisticCmdable interface {
 	BFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
@@ -48,7 +51,9 @@ type ProbabilisticCmdable interface {
 	CMSIncrBy(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
 	CMSInfo(ctx context.Context, key string) *CMSInfoCmd
 	CMSInitByDim(ctx context.Context, key string, width, height int64) *StatusCmd
+	CMSInitByDimCellSize(ctx context.Context, key string, width, depth, cellSize int64) *StatusCmd
 	CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd
+	CMSInitByProbCellSize(ctx context.Context, key string, errorRate, probability float64, cellSize int64) *StatusCmd
 	CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd
 	CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd
 	CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
@@ -350,10 +355,15 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 		"EXPANSION":                &result.ExpansionRate,
 	}
 
-	// Helper function to read and assign a value based on the key
-	readAndAssignValue := func(key string) error {
+	// Helper function to read and assign a value based on the key.
+	// Unknown keys are drained and skipped when skipUnknown is set so that
+	// fields added by newer servers don't break the parser.
+	readAndAssignValue := func(key string, skipUnknown bool) error {
 		fieldPtr, exists := respMapping[key]
 		if !exists {
+			if skipUnknown {
+				return rd.DiscardNext()
+			}
 			return fmt.Errorf("redis: BLOOM.INFO unexpected key %s", key)
 		}
 
@@ -377,7 +387,7 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			return err
 		}
 		if key, ok := cmd.args[2].(string); ok && n == 1 {
-			if err := readAndAssignValue(key); err != nil {
+			if err := readAndAssignValue(key, false); err != nil {
 				return err
 			}
 		} else {
@@ -393,7 +403,7 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			if err != nil {
 				return err
 			}
-			if err := readAndAssignValue(key); err != nil {
+			if err := readAndAssignValue(key, true); err != nil {
 				return err
 			}
 		}
@@ -706,7 +716,8 @@ func (cmd *CFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			result.MaxIteration, err = rd.ReadInt()
 
 		default:
-			return fmt.Errorf("redis: CF.INFO unexpected key %s", key)
+			// skip unknown fields so newer servers don't break the parser
+			err = rd.DiscardNext()
 		}
 
 		if err != nil {
@@ -809,6 +820,10 @@ type CMSInfo struct {
 	Width int64
 	Depth int64
 	Count int64
+	// CellSize is the size in bytes of each counter (1, 2, 4 or 8).
+	// Reported since Redis 8.12, alongside the CELL_SIZE option of
+	// CMS.INITBYDIM / CMS.INITBYPROB; zero on older servers.
+	CellSize int64
 }
 
 type CMSInfoCmd struct {
@@ -867,8 +882,11 @@ func (cmd *CMSInfoCmd) readReply(rd *proto.Reader) (err error) {
 			result.Depth, err = rd.ReadInt()
 		case "count":
 			result.Count, err = rd.ReadInt()
+		case "cell_size":
+			result.CellSize, err = rd.ReadInt()
 		default:
-			return fmt.Errorf("redis: CMS.INFO unexpected key %s", key)
+			// skip unknown fields so newer servers don't break the parser
+			err = rd.DiscardNext()
 		}
 
 		if err != nil {
@@ -899,8 +917,21 @@ func (c cmdable) CMSInfo(ctx context.Context, key string) *CMSInfoCmd {
 // CMSInitByDim creates an empty Count-Min Sketch filter with the specified dimensions.
 // For more information - https://redis.io/commands/cms.initbydim/
 func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int64) *StatusCmd {
-	args := []interface{}{"CMS.INITBYDIM", key, width, depth}
+	args := []any{"CMS.INITBYDIM", key, width, depth}
 	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// CMSInitByDimCellSize creates an empty Count-Min Sketch filter with the specified dimensions and number of bytes per cell (valid cell sizes: 1,2,4,8).
+// For more information - https://redis.io/commands/cms.initbydim/
+func (c cmdable) CMSInitByDimCellSize(ctx context.Context, key string, width, depth, cellSize int64) *StatusCmd {
+	args := []any{"CMS.INITBYDIM", key, width, depth, "CELL_SIZE", cellSize}
+	cmd := NewStatusCmd(ctx, args...)
+	if !isValidCMSCellSize(cellSize) {
+		cmd.SetErr(errCMSInvalidCellSize)
+		return cmd
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -908,10 +939,31 @@ func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int6
 // CMSInitByProb creates an empty Count-Min Sketch filter with the specified error rate and probability.
 // For more information - https://redis.io/commands/cms.initbyprob/
 func (c cmdable) CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd {
-	args := []interface{}{"CMS.INITBYPROB", key, errorRate, probability}
+	args := []any{"CMS.INITBYPROB", key, errorRate, probability}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+// CMSInitByProbCellSize creates an empty Count-Min Sketch filter with the specified error rate, probability and number of bytes per cell (valid cell sizes: 1,2,4,8).
+// For more information - https://redis.io/commands/cms.initbyprob/
+func (c cmdable) CMSInitByProbCellSize(ctx context.Context, key string, errorRate, probability float64, cellSize int64) *StatusCmd {
+	args := []any{"CMS.INITBYPROB", key, errorRate, probability, "CELL_SIZE", cellSize}
+	cmd := NewStatusCmd(ctx, args...)
+	if !isValidCMSCellSize(cellSize) {
+		cmd.SetErr(errCMSInvalidCellSize)
+		return cmd
+	}
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func isValidCMSCellSize(cellSize int64) bool {
+	switch cellSize {
+	case 1, 2, 4, 8:
+		return true
+	}
+	return false
 }
 
 // CMSMerge merges multiple Count-Min Sketch filters into a single filter.
@@ -1074,7 +1126,8 @@ func (cmd *TopKInfoCmd) readReply(rd *proto.Reader) (err error) {
 		case "decay":
 			result.Decay, err = rd.ReadFloat()
 		default:
-			return fmt.Errorf("redis: topk.info unexpected key %s", key)
+			// skip unknown fields so newer servers don't break the parser
+			err = rd.DiscardNext()
 		}
 
 		if err != nil {
@@ -1342,7 +1395,8 @@ func (cmd *TDigestInfoCmd) readReply(rd *proto.Reader) (err error) {
 		case "Memory usage":
 			result.MemoryUsage, err = rd.ReadInt()
 		default:
-			return fmt.Errorf("redis: tdigest.info unexpected key %s", key)
+			// skip unknown fields so newer servers don't break the parser
+			err = rd.DiscardNext()
 		}
 
 		if err != nil {

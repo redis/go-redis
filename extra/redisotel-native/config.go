@@ -15,6 +15,7 @@ const (
 	MetricGroupConnectionAdvanced MetricGroup = "connection-advanced"
 	MetricGroupPubSub             MetricGroup = "pubsub"
 	MetricGroupStream             MetricGroup = "stream"
+	MetricGroupMultiDB            MetricGroup = "multidb"
 )
 
 type HistogramAggregation string
@@ -39,6 +40,9 @@ type config struct {
 	// Cardinality reduction
 	hidePubSubChannelNames bool
 	hideStreamNames        bool
+
+	// Record redis.Nil replies as client errors
+	recordNilErrors bool
 
 	// Histogram settings
 	histAggregation HistogramAggregation
@@ -105,6 +109,10 @@ const (
 	MetricGroupFlagConnectionAdvanced MetricGroupFlags = 1 << 3
 	MetricGroupFlagPubSub             MetricGroupFlags = 1 << 4
 	MetricGroupFlagStream             MetricGroupFlags = 1 << 5
+	// MetricGroupFlagMultiDB enables the MultiDB (Active-Active failover)
+	// metrics: failovers, active database changes, member circuit breaker
+	// transitions and health checks.
+	MetricGroupFlagMultiDB MetricGroupFlags = 1 << 6
 
 	// MetricGroupAll enables all metric groups
 	MetricGroupAll MetricGroupFlags = MetricGroupFlagCommand |
@@ -112,7 +120,8 @@ const (
 		MetricGroupFlagResiliency |
 		MetricGroupFlagConnectionAdvanced |
 		MetricGroupFlagPubSub |
-		MetricGroupFlagStream
+		MetricGroupFlagStream |
+		MetricGroupFlagMultiDB
 )
 
 // Use NewConfig() to create a new instance with defaults, then chain
@@ -143,6 +152,10 @@ type Config struct {
 	HidePubSubChannelNames bool
 	HideStreamNames        bool
 
+	// RecordNilErrors records redis.Nil replies (e.g. GET on a missing key) as
+	// client errors. Off by default: a Nil reply is a successful command.
+	RecordNilErrors bool
+
 	// Histogram settings
 	HistogramAggregation HistogramAggregation
 
@@ -156,7 +169,7 @@ type Config struct {
 // NewConfig creates a new Config with default values.
 // Default configuration:
 // - Enabled: false (must explicitly enable)
-// - MetricGroups: all metric groups (command, connection, resiliency, pubsub, stream)
+// - MetricGroups: all metric groups (command, connection, resiliency, pubsub, stream, multidb)
 // - HistogramAggregation: explicit bucket
 // - Buckets: 0.1ms to 10s (suitable for Redis operations)
 //
@@ -246,6 +259,13 @@ func (c *Config) WithHidePubSubChannelNames(hide bool) *Config {
 // WithHideStreamNames omits stream label from stream metrics to reduce cardinality.
 func (c *Config) WithHideStreamNames(hide bool) *Config {
 	c.HideStreamNames = hide
+	return c
+}
+
+// WithRecordNilErrors records redis.Nil replies as client errors with the
+// error type "NIL". Default: false, so a cache miss is not counted as an error.
+func (c *Config) WithRecordNilErrors(record bool) *Config {
+	c.RecordNilErrors = record
 	return c
 }
 

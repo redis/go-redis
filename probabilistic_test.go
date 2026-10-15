@@ -482,6 +482,17 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 					Expect(info.Depth).To(BeEquivalentTo(int64(10)))
 				})
 
+				It("should report CMSInfo cell size", Label("cms", "cmsinfo"), func() {
+					SkipBeforeRedisVersion("8.11", "CMS.INFO reports cell_size since Redis 8.12 (8.11 pre-release)")
+
+					err := client.CMSInitByDim(ctx, "testcms1", 5, 10).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					info, err := client.CMSInfo(ctx, "testcms1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(info.CellSize).To(BeEquivalentTo(int64(4)))
+				})
+
 				It("should CMSInitByProb", Label("cms", "cmsinitbyprob"), func() {
 					err := client.CMSInitByProb(ctx, "testcms1", 0.002, 0.01).Err()
 					Expect(err).NotTo(HaveOccurred())
@@ -489,6 +500,43 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 					info, err := client.CMSInfo(ctx, "testcms1").Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(info).To(BeAssignableToTypeOf(redis.CMSInfo{}))
+				})
+
+				It("should CMSInitByDimCellSize", Label("cms", "cmsinitbydim", "cmsinfo"), func() {
+					SkipBeforeRedisVersion("8.12", "CMS.INITBYDIM CELL_SIZE since Redis 8.12")
+
+					err := client.CMSInitByDimCellSize(ctx, "testcms1", 5, 10, 8).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					info, err := client.CMSInfo(ctx, "testcms1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(info.Width).To(BeEquivalentTo(int64(5)))
+					Expect(info.Depth).To(BeEquivalentTo(int64(10)))
+					Expect(info.CellSize).To(BeEquivalentTo(int64(8)))
+				})
+
+				It("should CMSInitByProbCellSize", Label("cms", "cmsinitbyprob", "cmsinfo"), func() {
+					SkipBeforeRedisVersion("8.12", "CMS.INITBYPROB CELL_SIZE since Redis 8.12")
+
+					err := client.CMSInitByProbCellSize(ctx, "testcms1", 0.002, 0.01, 2).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					info, err := client.CMSInfo(ctx, "testcms1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(info).To(BeAssignableToTypeOf(redis.CMSInfo{}))
+					Expect(info.CellSize).To(BeEquivalentTo(int64(2)))
+				})
+
+				It("should reject invalid cell size without calling the server", Label("cms", "cmsinitbydim", "cmsinitbyprob"), func() {
+					err := client.CMSInitByDimCellSize(ctx, "testcms1", 5, 10, 3).Err()
+					Expect(err).To(MatchError("redis: invalid cell size (must be 1, 2, 4 or 8)"))
+
+					err = client.CMSInitByProbCellSize(ctx, "testcms1", 0.002, 0.01, 0).Err()
+					Expect(err).To(MatchError("redis: invalid cell size (must be 1, 2, 4 or 8)"))
+
+					exists, err := client.Exists(ctx, "testcms1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(exists).To(BeEquivalentTo(int64(0)))
 				})
 
 				It("should CMSMerge, CMSMergeWithWeight and CMSQuery", Label("cms", "cmsmerge", "cmsquery", "NonRedisEnterprise"), func() {

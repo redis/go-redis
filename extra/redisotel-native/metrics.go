@@ -55,6 +55,14 @@ type metricsRecorder struct {
 
 	streamLag metric.Float64Histogram
 
+	// MultiDB (Active-Active failover); see metrics_multidb.go
+	multiDBFailovers             metric.Int64Counter
+	multiDBFailoverDuration      metric.Float64Histogram
+	multiDBActiveDatabaseChanges metric.Int64Counter
+	multiDBCircuitStateChanges   metric.Int64Counter
+	multiDBHealthChecks          metric.Int64Counter
+	multiDBHealthCheckDuration   metric.Float64Histogram
+
 	// Configuration
 	cfg *config
 }
@@ -113,7 +121,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 		}
 	}
 
-	if err != nil {
+	if err != nil && !r.skipNilReply(err) {
 		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
 		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
@@ -176,7 +184,7 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	}
 
 	// Add error attributes if pipeline failed
-	if err != nil {
+	if err != nil && !r.skipNilReply(err) {
 		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
 		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
@@ -188,11 +196,25 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
+// skipNilReply reports whether err is redis.Nil and Nil replies are not
+// recorded as errors. A Nil reply is a successful command with no value.
+func (r *metricsRecorder) skipNilReply(err error) bool {
+	return !r.recordNilErrors() && errors.Is(err, redis.Nil)
+}
+
+func (r *metricsRecorder) recordNilErrors() bool {
+	return r.cfg != nil && r.cfg.recordNilErrors
+}
+
 // classifyError returns the error.type attribute value
 // Format: <category>:<subcategory>:<error_name>
 func classifyError(err error) string {
 	if err == nil {
 		return ""
+	}
+
+	if errors.Is(err, redis.Nil) {
+		return redis.ErrorTypeNil
 	}
 
 	// Timeout errors
@@ -309,6 +331,10 @@ func extractRedisErrorPrefix(err error) string {
 		return ""
 	}
 
+	if errors.Is(err, redis.Nil) {
+		return redis.ErrorTypeNil
+	}
+
 	errStr := err.Error()
 
 	// Redis errors typically start with an uppercase prefix
@@ -364,6 +390,10 @@ func getErrorCategory(err error) string {
 		return ""
 	}
 
+	if errors.Is(err, redis.Nil) {
+		return redis.ErrorTypeNil
+	}
+
 	errStr := err.Error()
 
 	// For actual errors, also check error types
@@ -384,6 +414,10 @@ func getErrorCategory(err error) string {
 func getErrorCategoryFromString(errStr string) string {
 	if errStr == "" {
 		return ""
+	}
+
+	if errStr == redis.ErrorTypeNil {
+		return redis.ErrorTypeNil
 	}
 
 	errLower := strings.ToLower(errStr)
@@ -589,6 +623,9 @@ func (r *metricsRecorder) RecordError(
 	retryAttempts int,
 ) {
 	if r.clientErrors == nil {
+		return
+	}
+	if errorType == redis.ErrorTypeNil && !r.recordNilErrors() {
 		return
 	}
 

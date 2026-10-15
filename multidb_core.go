@@ -665,15 +665,6 @@ func (c *multidbCore) candidates(excludeID int) []MultiDBDatabaseState {
 	return out
 }
 
-// isHImportCmd matches the rejected HIMPORT family both by the typed marker
-// interface and by command name, so raw Do/NewCmd submissions are covered.
-func isHImportCmd(cmd Cmder) bool {
-	if _, ok := cmd.(interface{ himportCmd() }); ok {
-		return true
-	}
-	return cmd.Name() == "himport"
-}
-
 // selectCandidate runs the failover strategy with panic recovery: strategies
 // are user code and also run on the library-owned background loop, where an
 // escaped panic would crash the process. A panicking strategy selects
