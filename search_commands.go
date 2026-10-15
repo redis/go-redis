@@ -24,8 +24,8 @@ type SearchCmdable interface {
 	FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd
 	FTConfigSet(ctx context.Context, option string, value interface{}) *StatusCmd
 	FTCreate(ctx context.Context, index string, options *FTCreateOptions, schema ...*FieldSchema) *StatusCmd
-	FTCursorDel(ctx context.Context, index string, cursorId int) *StatusCmd
-	FTCursorRead(ctx context.Context, index string, cursorId int, count int) *AggregateCmd
+	FTCursorDel(ctx context.Context, index string, cursorId int64) *StatusCmd
+	FTCursorRead(ctx context.Context, index string, cursorId int64, count int) *AggregateCmd
 	FTDictAdd(ctx context.Context, dict string, term ...interface{}) *IntCmd
 	FTDictDel(ctx context.Context, dict string, term ...interface{}) *IntCmd
 	FTDictDump(ctx context.Context, dict string) *StringSliceCmd
@@ -563,7 +563,8 @@ type FTAggregateResult struct {
 	Rows  []AggregateRow
 	// Cursor is the FT.AGGREGATE / FT.CURSOR READ cursor id when WITHCURSOR
 	// was used. Zero means the cursor is finished (or was not requested).
-	Cursor int
+	// Stored as int64 so IDs above math.MaxInt32 stay intact on 32-bit Go.
+	Cursor int64
 	// Warnings holds server warnings for a partial result (search-on-timeout
 	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
@@ -1113,11 +1114,11 @@ func parseFTAggregateReply(data []interface{}) (*FTAggregateResult, error) {
 // unwrapFTAggregateCursor returns the aggregate payload and cursor id.
 // Without WITHCURSOR, data is the aggregate array itself. With it (and on
 // FT.CURSOR READ), Redis returns [payload, cursor_id]; cursor_id 0 means done.
-func unwrapFTAggregateCursor(data []interface{}) (payload interface{}, cursor int, err error) {
+func unwrapFTAggregateCursor(data []interface{}) (payload interface{}, cursor int64, err error) {
 	if len(data) == 2 {
 		switch data[0].(type) {
 		case []interface{}, map[interface{}]interface{}:
-			c, ok := toInt(data[1])
+			c, ok := aggregateCursorID(data[1])
 			if !ok {
 				return nil, 0, fmt.Errorf("invalid FT.AGGREGATE cursor format: %T", data[1])
 			}
@@ -1127,14 +1128,14 @@ func unwrapFTAggregateCursor(data []interface{}) (payload interface{}, cursor in
 	return data, 0, nil
 }
 
-func toInt(v interface{}) (int, bool) {
+func aggregateCursorID(v interface{}) (int64, bool) {
 	switch n := v.(type) {
 	case int64:
-		return int(n), true
-	case int:
 		return n, true
+	case int:
+		return int64(n), true
 	case uint64:
-		return int(n), true
+		return int64(n), true
 	default:
 		return 0, false
 	}
@@ -1235,7 +1236,8 @@ func (cmd *AggregateCmd) Clone() Cmder {
 	var val *FTAggregateResult
 	if cmd.val != nil {
 		val = &FTAggregateResult{
-			Total: cmd.val.Total,
+			Total:  cmd.val.Total,
+			Cursor: cmd.val.Cursor,
 		}
 		if cmd.val.Rows != nil {
 			val.Rows = make([]AggregateRow, len(cmd.val.Rows))
@@ -1753,7 +1755,7 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 // The 'index' parameter specifies the index from which to delete the cursor, and the 'cursorId' parameter specifies the ID of the cursor to delete.
 // For more information, please refer to the Redis documentation:
 // [FT.CURSOR DEL]: (https://redis.io/commands/ft.cursor-del/)
-func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *StatusCmd {
+func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int64) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "FT.CURSOR", "DEL", index, cursorId)
 	_ = c(ctx, cmd)
 	return cmd
@@ -1764,7 +1766,7 @@ func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *S
 // The reply is the same shape as FT.AGGREGATE WITHCURSOR ([result, cursor_id]), so this returns *AggregateCmd; Cursor is 0 when paging is finished.
 // For more information, please refer to the Redis documentation:
 // [FT.CURSOR READ]: (https://redis.io/commands/ft.cursor-read/)
-func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int, count int) *AggregateCmd {
+func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int64, count int) *AggregateCmd {
 	args := []interface{}{"FT.CURSOR", "READ", index, cursorId}
 	if count > 0 {
 		args = append(args, "COUNT", count)

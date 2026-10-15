@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"math"
 	"testing"
 )
@@ -1766,5 +1767,43 @@ func TestParseFTAggregateReplyWithCursorRESP3(t *testing.T) {
 	}
 	if got.Cursor != 42 || got.Total != 1 || len(got.Rows) != 1 {
 		t.Fatalf("got %+v rows=%+v", got, got.Rows)
+	}
+}
+
+func TestAggregateCmdCloneCopiesCursor(t *testing.T) {
+	cmd := NewAggregateCmd(context.Background(), "FT.AGGREGATE", "idx", "*")
+	cmd.SetVal(&FTAggregateResult{
+		Total:  1,
+		Cursor: 1684311970,
+		Rows:   []AggregateRow{{Fields: map[string]interface{}{"a": "1"}}},
+	})
+	cloned := cmd.Clone().(*AggregateCmd)
+	got, err := cloned.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Cursor != 1684311970 {
+		t.Fatalf("Clone Cursor = %d, want 1684311970", got.Cursor)
+	}
+	if got.Total != 1 || len(got.Rows) != 1 {
+		t.Fatalf("Clone lost aggregate payload: %+v", got)
+	}
+}
+
+func TestUnwrapFTAggregateCursorKeepsInt64Width(t *testing.T) {
+	// Above math.MaxInt32 — must not truncate on 32-bit or via int conversion.
+	const want int64 = 3000000000
+	payload, cursor, err := unwrapFTAggregateCursor([]interface{}{
+		[]interface{}{int64(1), []interface{}{"a", "1"}},
+		want,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor != want {
+		t.Fatalf("cursor = %d, want %d", cursor, want)
+	}
+	if payload == nil {
+		t.Fatal("payload is nil")
 	}
 }

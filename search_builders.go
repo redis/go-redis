@@ -860,10 +860,10 @@ func (b *CursorBuilder) Count(count int) *CursorBuilder { b.count = count; retur
 func (b *CursorBuilder) Run() (interface{}, error) {
 	switch b.action {
 	case "read":
-		cmd := b.c.FTCursorRead(b.ctx, b.index, int(b.cursorId), b.count)
+		cmd := b.c.FTCursorRead(b.ctx, b.index, b.cursorId, b.count)
 		return cmd.Result()
 	case "del":
-		cmd := b.c.FTCursorDel(b.ctx, b.index, int(b.cursorId))
+		cmd := b.c.FTCursorDel(b.ctx, b.index, b.cursorId)
 		return cmd.Result()
 	}
 	return nil, nil
