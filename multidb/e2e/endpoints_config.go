@@ -10,7 +10,7 @@ import (
 // the same JSON shape cae-client-testing writes for redis-py's and
 // go-redis's other e2e suites (one bdb_id, N region endpoints).
 type EndpointEntry struct {
-	BDBID     int      `json:"bdb_id"`
+	BDBID     int      `json:"bdb_id,string"`
 	Username  string   `json:"username"`
 	Password  string   `json:"password"`
 	Endpoints []string `json:"endpoints"`
