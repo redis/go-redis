@@ -1699,3 +1699,72 @@ func TestFTInfoRESP2AndRESP3Equivalence(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessAggregateResultWithCursorRESP2(t *testing.T) {
+	// WITHCURSOR reply: [[total, row...], cursor_id]
+	data := []interface{}{
+		[]interface{}{
+			int64(1),
+			[]interface{}{"n", "1"},
+		},
+		int64(1684311970),
+	}
+	got, err := parseFTAggregateReply(data)
+	if err != nil {
+		t.Fatalf("parseFTAggregateReply: %v", err)
+	}
+	if got.Total != 1 || got.Cursor != 1684311970 || len(got.Rows) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	if got.Rows[0].Fields["n"] != "1" {
+		t.Fatalf("row fields: %+v", got.Rows[0].Fields)
+	}
+}
+
+func TestProcessAggregateResultWithCursorFinished(t *testing.T) {
+	data := []interface{}{
+		[]interface{}{int64(0)},
+		int64(0),
+	}
+	got, err := parseFTAggregateReply(data)
+	if err != nil {
+		t.Fatalf("parseFTAggregateReply: %v", err)
+	}
+	if got.Cursor != 0 || got.Total != 0 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestProcessAggregateResultWithoutCursorUnchanged(t *testing.T) {
+	data := []interface{}{
+		int64(2),
+		[]interface{}{"n", "1"},
+		[]interface{}{"n", "2"},
+	}
+	got, err := parseFTAggregateReply(data)
+	if err != nil {
+		t.Fatalf("parseFTAggregateReply: %v", err)
+	}
+	if got.Cursor != 0 || got.Total != 2 || len(got.Rows) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestParseFTAggregateReplyWithCursorRESP3(t *testing.T) {
+	payload := map[interface{}]interface{}{
+		"total_results": int64(1),
+		"results": []interface{}{
+			map[interface{}]interface{}{
+				"extra_attributes": map[interface{}]interface{}{"n": "1"},
+			},
+		},
+	}
+	data := []interface{}{payload, int64(42)}
+	got, err := parseFTAggregateReply(data)
+	if err != nil {
+		t.Fatalf("parseFTAggregateReply: %v", err)
+	}
+	if got.Cursor != 42 || got.Total != 1 || len(got.Rows) != 1 {
+		t.Fatalf("got %+v rows=%+v", got, got.Rows)
+	}
+}

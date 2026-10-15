@@ -25,7 +25,7 @@ type SearchCmdable interface {
 	FTConfigSet(ctx context.Context, option string, value interface{}) *StatusCmd
 	FTCreate(ctx context.Context, index string, options *FTCreateOptions, schema ...*FieldSchema) *StatusCmd
 	FTCursorDel(ctx context.Context, index string, cursorId int) *StatusCmd
-	FTCursorRead(ctx context.Context, index string, cursorId int, count int) *MapStringInterfaceCmd
+	FTCursorRead(ctx context.Context, index string, cursorId int, count int) *AggregateCmd
 	FTDictAdd(ctx context.Context, dict string, term ...interface{}) *IntCmd
 	FTDictDel(ctx context.Context, dict string, term ...interface{}) *IntCmd
 	FTDictDump(ctx context.Context, dict string) *StringSliceCmd
@@ -561,6 +561,9 @@ type FTSynDumpCmd struct {
 type FTAggregateResult struct {
 	Total int
 	Rows  []AggregateRow
+	// Cursor is the FT.AGGREGATE / FT.CURSOR READ cursor id when WITHCURSOR
+	// was used. Zero means the cursor is finished (or was not requested).
+	Cursor int
 	// Warnings holds server warnings for a partial result (search-on-timeout
 	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
@@ -1054,7 +1057,8 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 
-	// RESP3 returns a map, RESP2 returns an array
+	// RESP3 returns a map, RESP2 returns an array. WITHCURSOR wraps either as
+	// [result, cursor_id] (see redis/go-redis#4098).
 	if readType == proto.RespMap {
 		// Read raw response first for backwards compatibility
 		cmd.rawVal, err = rd.ReadReply()
@@ -1077,10 +1081,63 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	}
 	cmd.rawVal = data // Store raw value for debugging
 	if dataSlice, ok := data.([]interface{}); ok {
-		cmd.val, err = ProcessAggregateResult(dataSlice)
+		cmd.val, err = parseFTAggregateReply(dataSlice)
 		return err
 	}
 	return fmt.Errorf("unexpected response type: %T", data)
+}
+
+// parseFTAggregateReply parses a RESP2 FT.AGGREGATE reply, including the
+// WITHCURSOR / FT.CURSOR READ wrapper [aggregate_array_or_map, cursor_id].
+func parseFTAggregateReply(data []interface{}) (*FTAggregateResult, error) {
+	payload, cursor, err := unwrapFTAggregateCursor(data)
+	if err != nil {
+		return nil, err
+	}
+	var result *FTAggregateResult
+	switch v := payload.(type) {
+	case []interface{}:
+		result, err = ProcessAggregateResult(v)
+	case map[interface{}]interface{}:
+		result, err = parseFTAggregateMapRESP3(v)
+	default:
+		return nil, fmt.Errorf("unexpected FT.AGGREGATE payload type: %T", payload)
+	}
+	if err != nil {
+		return nil, err
+	}
+	result.Cursor = cursor
+	return result, nil
+}
+
+// unwrapFTAggregateCursor returns the aggregate payload and cursor id.
+// Without WITHCURSOR, data is the aggregate array itself. With it (and on
+// FT.CURSOR READ), Redis returns [payload, cursor_id]; cursor_id 0 means done.
+func unwrapFTAggregateCursor(data []interface{}) (payload interface{}, cursor int, err error) {
+	if len(data) == 2 {
+		switch data[0].(type) {
+		case []interface{}, map[interface{}]interface{}:
+			c, ok := toInt(data[1])
+			if !ok {
+				return nil, 0, fmt.Errorf("invalid FT.AGGREGATE cursor format: %T", data[1])
+			}
+			return data[0], c, nil
+		}
+	}
+	return data, 0, nil
+}
+
+func toInt(v interface{}) (int, bool) {
+	switch n := v.(type) {
+	case int64:
+		return int(n), true
+	case int:
+		return n, true
+	case uint64:
+		return int(n), true
+	default:
+		return 0, false
+	}
 }
 
 // parseFTAggregateMapRESP3 parses the RESP3 format response from FT.AGGREGATE.
@@ -1704,14 +1761,15 @@ func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *S
 
 // FTCursorRead - Reads the next results from an existing cursor.
 // The 'index' parameter specifies the index from which to read the cursor, the 'cursorId' parameter specifies the ID of the cursor to read, and the 'count' parameter specifies the number of results to read.
+// The reply is the same shape as FT.AGGREGATE WITHCURSOR ([result, cursor_id]), so this returns *AggregateCmd; Cursor is 0 when paging is finished.
 // For more information, please refer to the Redis documentation:
 // [FT.CURSOR READ]: (https://redis.io/commands/ft.cursor-read/)
-func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int, count int) *MapStringInterfaceCmd {
+func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int, count int) *AggregateCmd {
 	args := []interface{}{"FT.CURSOR", "READ", index, cursorId}
 	if count > 0 {
 		args = append(args, "COUNT", count)
 	}
-	cmd := NewMapStringInterfaceCmd(ctx, args...)
+	cmd := NewAggregateCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
