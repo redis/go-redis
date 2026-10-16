@@ -99,3 +99,33 @@ func (m *mockPooler) Size() int                                                 
 func (m *mockPooler) AddPoolHook(hook pool.PoolHook)                                       {}
 func (m *mockPooler) RemovePoolHook(hook pool.PoolHook)                                    {}
 func (m *mockPooler) Close() error                                                         { return nil }
+
+// RemoveConn is the cleanup for connections that never reach OnRemove, such
+// as pub/sub connections: it must drop the listener and a pending re-auth.
+func TestManager_RemoveConn_DropsListenerAndPendingReAuth(t *testing.T) {
+	manager := NewManager(&mockPooler{}, time.Second)
+	conn := pool.NewConn(nil)
+
+	listener, err := manager.Listener(conn,
+		func(*pool.Conn, auth.Credentials) error { return nil },
+		func(*pool.Conn, error) {},
+	)
+	if err != nil {
+		t.Fatalf("Listener: %v", err)
+	}
+	listener.OnNext(auth.NewBasicCredentials("user", "rotated"))
+	if !manager.IsTracking(conn.GetID()) {
+		t.Fatal("expected the manager to track the connection after a rotation")
+	}
+
+	manager.RemoveConn(conn.GetID())
+	if manager.IsTracking(conn.GetID()) {
+		t.Fatal("RemoveConn left re-auth state behind")
+	}
+	if _, ok := manager.credentialsListeners.Get(conn.GetID()); ok {
+		t.Fatal("RemoveConn left the credentials listener behind")
+	}
+	if manager.poolHookRef.hasReAuth(conn.GetID()) {
+		t.Fatal("RemoveConn left the pending re-auth behind")
+	}
+}

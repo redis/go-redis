@@ -148,3 +148,21 @@ func (m *Manager) MarkForReAuth(poolCn *pool.Conn, reAuthFn func(error)) {
 func (m *Manager) RemoveListener(connID uint64) {
 	m.credentialsListeners.Remove(connID)
 }
+
+// RemoveConn drops all re-auth state of a connection that is closed outside
+// the pools the pool hook is registered on. Pub/sub connections are such
+// connections: they never return to a pool, so OnRemove never runs for them.
+//
+// Thread-safe: Called when a connection is closed.
+func (m *Manager) RemoveConn(connID uint64) {
+	m.poolHookRef.removeConn(connID)
+}
+
+// IsTracking reports whether the manager holds re-auth state for a
+// connection: a credentials listener, or a pending or active re-auth.
+func (m *Manager) IsTracking(connID uint64) bool {
+	if _, ok := m.credentialsListeners.Get(connID); ok {
+		return true
+	}
+	return m.poolHookRef.hasReAuth(connID)
+}
