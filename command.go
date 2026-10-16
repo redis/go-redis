@@ -4802,7 +4802,7 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 			}
 
 			ip, err := rd.ReadString()
-			if err != nil {
+			if err != nil && err != Nil {
 				return err
 			}
 
