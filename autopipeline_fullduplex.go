@@ -3009,6 +3009,16 @@ func (fd *fdEngine) failPipelines(failed, keep []fdReq, err error) []fdReq {
 }
 
 func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
+	fd.failReqsAcct(reqs, err, true)
+}
+
+// failReqsAcct is failReqs with account: false completes the commands without
+// reporting their outcome to the owner (fdOutcome). For commands the owner's
+// path was given but never ran (a reroute or owner flush aborted before their
+// chunk): the owner settles what it ran, and the failed attempt on this
+// engine's connection was reported already (rerouteReqs), so a report here
+// would count one attempt twice.
+func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 	// Error-metric parity: commands terminated here (lease failure, retry
 	// exhaustion, a NoRetry tail, Close) never reach the reader's inline
 	// completion, so emit the native error callback per command. One classification
@@ -3047,7 +3057,11 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 				errorCallback(octx, errorType, nil, statusCode, isInternal, retries)
 			})
 		}
-		fd.finish(reqs[i])
+		if account {
+			fd.finish(reqs[i])
+		} else {
+			reqs[i].complete()
+		}
 	}
 }
 
@@ -3177,7 +3191,9 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 		}
 		if err := fd.flushReqs(bg, group, rem); err != nil {
 			if i < len(carry) {
-				fd.failReqs(carry[i:], err) // transport failure: fail the rest of the carry too
+				// Transport failure: fail the rest of the carry too. Not
+				// accounted when the flush went to the owner (see failReqsAcct).
+				fd.failReqsAcct(carry[i:], err, !fd.flushesViaOwner())
 			}
 			return err
 		}
@@ -3206,6 +3222,7 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 	if fd.runPipeline != nil {
 		return fd.flushReqsVia(bg, reqs, maxRetries, fd.runPipeline, true)
 	}
+	// Keep in sync with flushesViaOwner.
 	// An owner takes the Close-time flush too: this engine closes when its
 	// endpoint goes away (a cluster node dropped by topology GC, a MultiDB
 	// member that failed), and this engine's own client cannot follow the
@@ -3215,6 +3232,12 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 		return fd.flushReqsVia(bg, reqs, maxRetries, fd.runReroute, false)
 	}
 	return fd.flushReqsVia(bg, reqs, maxRetries, fd.client.processPipelineRetries, true)
+}
+
+// flushesViaOwner reports whether flushReqs runs commands through the owner's
+// path (fd.reroute), which settles their outcomes itself.
+func (fd *fdEngine) flushesViaOwner() bool {
+	return fd.runPipeline == nil && fd.reroute != nil
 }
 
 // rerouteReqs runs reqs, in order, through the owner's path (fd.reroute) and
@@ -3273,7 +3296,7 @@ func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries in
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("%w: shutdown flush: %v", errFDPanicRecovered, r)
 			internal.Logger.Printf(bg, "autopipeline: recovered shutdown-flush panic: %v\n%s", r, debug.Stack())
-			fd.failReqs(reqs[i:], retErr)
+			fd.failReqsAcct(reqs[i:], retErr, account)
 		}
 	}()
 	// Same MaxBatchSize/MaxBatchBytes chunking as normal FD writes: reqs can hold a
@@ -3375,7 +3398,7 @@ func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries in
 		// errConnUnusable precedence used in generalProcessPipeline; a plain
 		// per-command Redis error is a normal result and does not abort.
 		if err != nil && pipelineErrShouldStamp(err) {
-			fd.failReqs(reqs[i:], err)
+			fd.failReqsAcct(reqs[i:], err, account)
 			return err
 		}
 	}

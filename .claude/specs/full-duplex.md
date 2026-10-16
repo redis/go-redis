@@ -137,8 +137,11 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
   member's child, or a private ordered half-duplex MultiDB autopipeliner (`hd`)
   for commands off the fast path. Switching lanes Closes the old lane and waits
   for its drain first, so submit order holds across failover, fallback and
-  breaker transitions (pinned by `TestMultiDBFullDuplexOrderAcrossMemberDeath`).
-  Submitters stall for the drain. The blocking face needs no lanes (each caller
+  breaker transitions. Only the fast path (picked lane == current lane) runs
+  without `laneMu`; a switch picks, drains and submits under it
+  (`submitLocked`), so a stale pick cannot switch back. If no lane takes the
+  command, the current lane is drained before it diverts to MultiDB's path
+  (pinned by `TestMultiDBFullDuplexOrderAcrossMemberDeath`). Submitters stall for the drain. The blocking face needs no lanes (each caller
   waits for its command).
 - **No-FD members** (no pipeline pool, replica routing): remembered in `noFD`,
   their commands divert without rebuilding a child.

@@ -149,46 +149,71 @@ func (r *multidbFDRouter) target() (child *AutoPipeliner, reject bool) {
 // Close completes every accepted command, in order (a dead member's backlog
 // reroutes through MultiDB), before any command reaches the new lane. Lane
 // switches happen on failover, fallback and breaker transitions; the switch
-// stalls submitters for the drain. A command that lands on a lane another
-// caller just closed comes back ErrClosed and picks its lane again.
+// stalls submitters for the drain.
+//
+// Fast path: the lane picked now is the current lane, so submit without
+// laneMu. Anything else (a lane switch, a lane closed under the command) takes
+// submitLocked, which picks, switches and submits under laneMu, so no caller
+// can act on a stale pick.
 func (r *multidbFDRouter) submitOrdered(ctx context.Context, cmd Cmder) AutoFuture {
+	want, reject := r.target()
+	if reject {
+		return r.rejectClosed(cmd)
+	}
+	if want == nil {
+		want = r.hd.Load()
+	}
+	if want != nil && r.lane.Load() == want {
+		fut := want.submit(ctx, cmd)
+		if fut.batch != completedBatch || !errors.Is(cmd.Err(), ErrClosed) {
+			return fut
+		}
+		// The lane closed under this command (a switch by another caller):
+		// pick again under laneMu.
+		cmd.SetErr(nil)
+	}
+	return r.submitLocked(ctx, cmd)
+}
+
+// fdLaneAttempts bounds submitLocked's retries when the picked lane keeps
+// closing under the command.
+const fdLaneAttempts = 4
+
+// submitLocked picks the lane, switches to it and submits cmd, all under
+// laneMu. If no lane can take the command (no hd lane could be built, or the
+// picked lane kept closing), it drains the current lane first and then runs
+// cmd on MultiDB's normal path: every command accepted before it has
+// completed by then, so the fallback keeps submit order.
+func (r *multidbFDRouter) submitLocked(ctx context.Context, cmd Cmder) AutoFuture {
+	r.laneMu.Lock()
+	defer r.laneMu.Unlock()
 	for attempt := 0; ; attempt++ {
 		want, reject := r.target()
+		if !reject && want == nil {
+			want, reject = r.hdLaneLocked()
+		}
 		if reject {
 			return r.rejectClosed(cmd)
 		}
-		if want == nil {
-			if want, reject = r.hdLane(); reject {
-				return r.rejectClosed(cmd)
-			}
-			if want == nil {
-				return r.divert(ctx, cmd)
-			}
+		if want == nil || attempt >= fdLaneAttempts {
+			r.drainLaneLocked()
+			return r.divert(ctx, cmd)
 		}
 		if r.lane.Load() != want {
-			if r.switchLane(want) {
-				return r.rejectClosed(cmd)
-			}
+			r.drainLaneLocked()
+			r.lane.Store(want)
 		}
 		fut := want.submit(ctx, cmd)
 		if fut.batch != completedBatch || !errors.Is(cmd.Err(), ErrClosed) {
 			return fut
 		}
-		if attempt >= 3 {
-			// Lanes keep closing under this command (repeated switches):
-			// stop chasing them and take MultiDB's path, unordered.
-			cmd.SetErr(nil)
-			return r.divert(ctx, cmd)
-		}
 		cmd.SetErr(nil)
 	}
 }
 
-// hdLane returns the ordered half-duplex lane, building it on first use. reject
-// is true when the router is closed.
-func (r *multidbFDRouter) hdLane() (ap *AutoPipeliner, reject bool) {
-	r.laneMu.Lock()
-	defer r.laneMu.Unlock()
+// hdLaneLocked returns the ordered half-duplex lane, building it on first
+// use. reject is true when the router is closed. laneMu MUST be held.
+func (r *multidbFDRouter) hdLaneLocked() (ap *AutoPipeliner, reject bool) {
 	if r.isClosed() {
 		return nil, true
 	}
@@ -204,28 +229,19 @@ func (r *multidbFDRouter) hdLane() (ap *AutoPipeliner, reject bool) {
 	return hd, false
 }
 
-// switchLane makes want the current lane after draining the previous one. It
-// reports true when the router is closed.
-func (r *multidbFDRouter) switchLane(want *AutoPipeliner) (closed bool) {
-	r.laneMu.Lock()
-	defer r.laneMu.Unlock()
-	if r.isClosed() {
-		return true
-	}
+// drainLaneLocked closes the current lane and waits for its drain: every
+// command it accepted completes (or is rerouted through MultiDB) before this
+// returns. A closed member child is rebuilt by childFor on its next use; a
+// closed hd by hdLaneLocked. laneMu MUST be held.
+func (r *multidbFDRouter) drainLaneLocked() {
 	cur := r.lane.Load()
-	if cur == want {
-		return false
+	if cur == nil {
+		return
 	}
-	if cur != nil {
-		// Close drains: every command the old lane accepted completes (or is
-		// rerouted through MultiDB) before this returns. A closed member child
-		// is rebuilt by childFor on its next use; a closed hd by hdLane.
-		_ = cur.Close()
-		_ = cur.WaitClosed()
-		r.hd.CompareAndSwap(cur, nil)
-	}
-	r.lane.Store(want)
-	return false
+	_ = cur.Close()
+	_ = cur.WaitClosed()
+	r.hd.CompareAndSwap(cur, nil)
+	r.lane.Store(nil)
 }
 
 func (r *multidbFDRouter) isClosed() bool {

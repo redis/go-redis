@@ -529,12 +529,11 @@ func TestMultiDBFullDuplexLenCountsHalfDuplexLane(t *testing.T) {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}
 	ctx := context.Background()
-	hd, reject := ap.mdbFD.hdLane()
+	ap.mdbFD.laneMu.Lock()
+	hd, reject := ap.mdbFD.hdLaneLocked()
+	ap.mdbFD.laneMu.Unlock()
 	if reject || hd == nil {
 		t.Fatal("no half-duplex lane")
-	}
-	if ap.mdbFD.switchLane(hd) {
-		t.Fatal("router closed")
 	}
 	const n = 10
 	cmds := make([]*StatusCmd, n)
@@ -787,4 +786,76 @@ func BenchmarkFDSetMultiDBHalfDuplex(b *testing.B) {
 		b.Fatal(err)
 	}
 	benchmarkFDSet(b, ap)
+}
+
+// A reroute that aborts after a transport failure does not report the
+// commands it never ran a second time: rerouteReqs already reported their
+// failed attempt on the FD connection, and the owner settles what it ran.
+func TestFDRerouteAbortReportsOncePerAttempt(t *testing.T) {
+	ctx := context.Background()
+	fd, _ := fdRerouteTestEngine(3, func(cmds []Cmder) error {
+		for _, c := range cmds {
+			c.SetErr(io.EOF)
+		}
+		return io.EOF
+	})
+	reports := 0
+	fd.outcome = func(context.Context, Cmder, error) { reports++ }
+	fd.maxBatch = 2 // two chunks: the second never runs
+	reqs := make([]fdReq, 4)
+	for i := range reqs {
+		reqs[i] = fdReq{cmd: NewStatusCmd(ctx, "set", "k"+strconv.Itoa(i), "v"), batch: newAPBatch(), attempts: 1}
+	}
+	fd.rerouteReqs(ctx, reqs, io.EOF)
+	if reports != len(reqs) {
+		t.Fatalf("outcome reports = %d, want %d (one per failed FD attempt)", reports, len(reqs))
+	}
+	for i, r := range reqs {
+		if err := r.cmd.rawErr(); !errors.Is(err, io.EOF) {
+			t.Fatalf("reqs[%d] err = %v, want io.EOF", i, err)
+		}
+	}
+}
+
+// A lane left over from before a failover (here: the non-active member's
+// child) is drained and replaced by the active member's child on the next
+// submit, under laneMu; the command lands on the new lane.
+func TestMultiDBFullDuplexLaneSwitchesToActive(t *testing.T) {
+	requireLocalRedis(t)
+	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	ctx := context.Background()
+	r := ap.mdbFD
+	active, _ := mdb.core.activeSnapshot()
+	var other *multidbDatabase
+	for _, id := range []int{0, 1} {
+		if db := mdb.core.dbByID(id); db != active {
+			other = db
+		}
+	}
+	old, _ := r.childFor(other)
+	if old == nil {
+		t.Fatal("no child for the other member")
+	}
+	if err := old.Set(ctx, "mdbfd:laneswitch", "old", 0).Err(); err != nil {
+		t.Fatalf("Set on the old lane: %v", err)
+	}
+	r.lane.Store(old)
+
+	if err := ap.Set(ctx, "mdbfd:laneswitch", "new", 0).Err(); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	want, _ := r.childFor(active)
+	if r.lane.Load() != want {
+		t.Fatal("lane did not move to the active member's child")
+	}
+	if !old.IsClosed() {
+		t.Fatal("old lane not drained and closed")
+	}
+	if got, err := ap.Get(ctx, "mdbfd:laneswitch").Result(); err != nil || got != "new" {
+		t.Fatalf("Get = %q, %v; want new", got, err)
+	}
 }
