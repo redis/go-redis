@@ -2904,6 +2904,16 @@ func (c *Client) TxPipeline() Pipeliner {
 	return &pipe
 }
 
+// removeStreamingCredentialsState drops the re-auth state that initConn
+// registered for a pub/sub connection. Pub/sub connections never return to
+// the pool, so the re-auth pool hook never removes it, and every closed
+// connection would otherwise stay referenced, buffers included.
+func (c *baseClient) removeStreamingCredentialsState(cn *pool.Conn) {
+	if c.streamingCredentialsManager != nil {
+		c.streamingCredentialsManager.RemoveConn(cn.GetID())
+	}
+}
+
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
@@ -2915,6 +2925,7 @@ func (c *Client) pubSub() *PubSub {
 			// will return nil if already initialized
 			err = c.initConn(ctx, cn)
 			if err != nil {
+				c.removeStreamingCredentialsState(cn)
 				_ = cn.Close()
 				return nil, err
 			}
@@ -2925,6 +2936,7 @@ func (c *Client) pubSub() *PubSub {
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
 			c.pubSubPool.UntrackConn(cn)
+			c.removeStreamingCredentialsState(cn)
 			_ = cn.Close()
 			return nil
 		},

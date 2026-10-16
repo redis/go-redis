@@ -226,7 +226,12 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 //
 // Thread-safe: Called when connections are removed due to errors, timeouts, or pool closure.
 func (r *ReAuthPoolHook) OnRemove(_ context.Context, conn *pool.Conn, _ error) {
-	connID := conn.GetID()
+	r.removeConn(conn.GetID())
+}
+
+// removeConn drops all re-auth state of a connection: its pending and active
+// re-auth and its credentials listener.
+func (r *ReAuthPoolHook) removeConn(connID uint64) {
 	r.shouldReAuthLock.Lock()
 	r.scheduledLock.Lock()
 	delete(r.scheduledReAuth, connID)
@@ -236,6 +241,17 @@ func (r *ReAuthPoolHook) OnRemove(_ context.Context, conn *pool.Conn, _ error) {
 	if r.manager != nil {
 		r.manager.RemoveListener(connID)
 	}
+}
+
+// hasReAuth reports whether a re-auth is pending or active for a connection.
+func (r *ReAuthPoolHook) hasReAuth(connID uint64) bool {
+	r.shouldReAuthLock.RLock()
+	_, pending := r.shouldReAuth[connID]
+	r.shouldReAuthLock.RUnlock()
+	r.scheduledLock.RLock()
+	_, scheduled := r.scheduledReAuth[connID]
+	r.scheduledLock.RUnlock()
+	return pending || scheduled
 }
 
 var _ pool.PoolHook = (*ReAuthPoolHook)(nil)

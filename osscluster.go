@@ -2967,6 +2967,7 @@ func (c *ClusterClient) pubSub() *PubSub {
 			// will return nil if already initialized
 			err = node.Client.initConn(ctx, cn)
 			if err != nil {
+				node.Client.removeStreamingCredentialsState(cn)
 				_ = cn.Close()
 				node = nil
 				return nil, err
@@ -2977,6 +2978,7 @@ func (c *ClusterClient) pubSub() *PubSub {
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
 			node.Client.pubSubPool.UntrackConn(cn)
+			node.Client.removeStreamingCredentialsState(cn)
 			err := cn.Close()
 			node = nil
 			return err
