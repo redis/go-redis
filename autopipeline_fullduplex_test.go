@@ -2094,6 +2094,12 @@ func (r *fdOtelRecorder) RecordStreamLag(context.Context, time.Duration, *pool.C
 }
 func (r *fdOtelRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
 func (r *fdOtelRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
+func (r *fdOtelRecorder) RecordMultiDBFailover(context.Context, string, string, string, time.Duration) {
+}
+func (r *fdOtelRecorder) RecordMultiDBActiveDatabaseChange(context.Context, string, string) {}
+func (r *fdOtelRecorder) RecordMultiDBCircuitStateChange(context.Context, string, string, string) {
+}
+func (r *fdOtelRecorder) RecordMultiDBHealthCheck(context.Context, string, bool, time.Duration) {}
 
 // TestFullDuplexRecordsOTelOperationDuration verifies the FD reader records the
 // native per-command OTel duration metric (redisotel-native) itself, which it
@@ -6589,9 +6595,11 @@ func TestFullDuplexGroupPanicDoesNotReplayReadReplies(t *testing.T) {
 		}
 	}()
 
-	cl := NewClient(&Options{Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
+	cl := NewClient(&Options{
+		Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
 		PipelinePoolSize: 2, MaxRetries: 1,
-		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond})
+		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond,
+	})
 	defer cl.Close()
 	ap, err := cl.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
