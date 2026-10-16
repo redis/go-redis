@@ -51,6 +51,21 @@ func apKey(workload string, worker, seq int) string {
 	return fmt.Sprintf("e2e:ap:%s:%d:%d", workload, worker, seq%8)
 }
 
+// fullDuplex builds a full-duplex autopipeliner and fails the build when full
+// duplex did not engage, so the FD rows cannot silently test half-duplex.
+func fullDuplex(get func(*redis.MultiDBClient, *redis.AutoPipelineOptions) (*redis.AutoPipeliner, error)) func(*redis.MultiDBClient) (*redis.AutoPipeliner, error) {
+	return func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) {
+		ap, err := get(m, &redis.AutoPipelineOptions{FullDuplex: true})
+		if err != nil {
+			return nil, err
+		}
+		if !ap.Config().FullDuplex {
+			return nil, errors.New("full duplex did not engage on the MultiDB client")
+		}
+		return ap, nil
+	}
+}
+
 // blockingFace drives SET+GET on the blocking face, one command at a time.
 func blockingFace(name string, get func(*redis.MultiDBClient) (*redis.AutoPipeliner, error)) apWorkload {
 	return apWorkload{name: name, workers: 4, setup: func(t *testing.T, mdb *redis.MultiDBClient) apStepFunc {
@@ -274,6 +289,12 @@ func TestAutoPipelineAndTransactionsAcrossFailover(t *testing.T) {
 		asyncFace("async-shards", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) {
 			return m.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{Unordered: true, NumShards: 4})
 		}),
+		blockingFace("fd-blocking", fullDuplex(func(m *redis.MultiDBClient, o *redis.AutoPipelineOptions) (*redis.AutoPipeliner, error) {
+			return m.AutoPipelineWithOptions(o)
+		})),
+		asyncFace("fd-async", fullDuplex(func(m *redis.MultiDBClient, o *redis.AutoPipelineOptions) (*redis.AutoPipeliner, error) {
+			return m.AsyncAutoPipelineWithOptions(o)
+		})),
 		pipelinedFace("pipelined", false),
 		pipelinedFace("tx-pipelined", true),
 		txIncr("tx-incr"),

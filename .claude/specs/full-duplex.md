@@ -98,6 +98,44 @@ aggregating correctly; only single-node commands route through a child.
   dispatch call, not a lock held across it — a second, much rarer double-unlucky
   race on the retry itself is not further retried and does surface `ErrClosed`.
 
+## MultiDB support
+
+`multidbFDRouter` (`multidb_fd.go`) runs FD on a `*MultiDBClient`, which has no
+connection of its own: one FD child per member, built privately (never through
+the member's cached getters) — a standalone engine on a `*Client` member, a
+`clusterFDRouter` on a `*ClusterClient` member. The parent keeps diversion.
+
+- **Admission**: a command takes the fast path only on a closed-state breaker
+  admission (`!res.Held()`) with the detector not tripped; otherwise it runs on
+  MultiDB's path, which owns failover and half-open probes.
+- **Owner seams** (internal `AutoPipelineOptions` fields, copied into cluster node
+  children, stripped by `Config()`):
+  - `fdOutcome` — the engine reports every final outcome it settles itself
+    (`fdEngine.finish`; reader, retries, fail paths, shutdown flush) and the failed
+    attempt of every command it reroutes. The router settles it into the member's
+    breaker (`CurrentClosedReservation`: current closed episode only) and the
+    detector (only while the member is active, current window). `reportOutcome`
+    reads `rawErr()`: `Err()` waits on the async face's batch, which the engine
+    completes after reporting.
+  - `fdReroute` = `core.processPipeline` — dropped tail, lease failure and the
+    close-time backlog go through MultiDB to whichever member it selects.
+  - `fdOwnerRetries` + `fdRetryBudget` = `CommandRetries` (0 = none): bounds
+    re-issues; a failed lease reroutes at once (no lease retries against a dead
+    member; `CommandRetries=MaxInt` must not hang).
+- **Ordered async face (lanes)**: commands go to ONE lane at a time — the active
+  member's child, or a private ordered half-duplex MultiDB autopipeliner (`hd`)
+  for commands off the fast path. Switching lanes Closes the old lane and waits
+  for its drain first, so submit order holds across failover, fallback and
+  breaker transitions (pinned by `TestMultiDBFullDuplexOrderAcrossMemberDeath`).
+  Submitters stall for the drain. The blocking face needs no lanes (each caller
+  waits for its command).
+- **No-FD members** (no pipeline pool, replica routing): remembered in `noFD`,
+  their commands divert without rebuilding a child.
+- **v1 limits**: `MultiDBClient.AddHook` hooks do not run on the FD path (member
+  hooks do); `Pipeline()`/`TxPipeline()` stay on MultiDB's pipeline path;
+  NumShards forced to 1; outcomes count toward the episode/window current when
+  the reply lands.
+
 ## Panic boundaries
 
 User code runs on the engine goroutine (a `Cmder`'s `Args()`/encoder, `Options.OnConnect`,
