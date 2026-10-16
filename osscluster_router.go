@@ -122,8 +122,11 @@ func (c *ClusterClient) executeMultiShard(ctx context.Context, cmd Cmder, policy
 		return fmt.Errorf("redis: multi-shard command %s has no key arguments", cmd.Name())
 	}
 
-	// Group keys by slot
-	slotMap := make(map[int][]string)
+	// Group keys by slot. slotArgs keeps each key's step arguments (e.g. the
+	// MSET value) as passed, since they need not be strings; slotKeys holds
+	// just the keys, used to map replies back.
+	slotArgs := make(map[int][]interface{})
+	slotKeys := make(map[int][]string)
 	keyOrder := make([]string, 0)
 
 	for i := firstKeyPos; i < len(args); i += stepCount {
@@ -133,28 +136,23 @@ func (c *ClusterClient) executeMultiShard(ctx context.Context, cmd Cmder, policy
 		}
 
 		slot := hashtag.Slot(key)
-		slotMap[slot] = append(slotMap[slot], key)
-		for j := 1; j < stepCount; j++ {
-			if i+j >= len(args) {
-				break
-			}
-			slotMap[slot] = append(slotMap[slot], args[i+j].(string))
-		}
+		slotArgs[slot] = append(slotArgs[slot], args[i:min(i+stepCount, len(args))]...)
+		slotKeys[slot] = append(slotKeys[slot], key)
 		keyOrder = append(keyOrder, key)
 	}
 
-	return c.executeMultiSlot(ctx, cmd, slotMap, keyOrder, policy, firstKeyPos)
+	return c.executeMultiSlot(ctx, cmd, slotArgs, slotKeys, keyOrder, policy, firstKeyPos)
 }
 
 // executeMultiSlot executes commands across multiple slots concurrently
-func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap map[int][]string, keyOrder []string, policy *routing.CommandPolicy, firstKeyPos int) error {
-	results := make(chan slotResult, len(slotMap))
+func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotArgs map[int][]interface{}, slotKeys map[int][]string, keyOrder []string, policy *routing.CommandPolicy, firstKeyPos int) error {
+	results := make(chan slotResult, len(slotArgs))
 	var wg sync.WaitGroup
 
 	// Execute on each slot concurrently
-	for slot, keys := range slotMap {
+	for slot, keyArgs := range slotArgs {
 		wg.Add(1)
-		go func(slot int, keys []string) {
+		go func(slot int, keyArgs []interface{}, keys []string) {
 			defer wg.Done()
 
 			node, err := c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
@@ -164,10 +162,10 @@ func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap
 			}
 
 			// Create a command for this specific slot's keys
-			subCmd := c.createSlotSpecificCommand(ctx, cmd, keys, firstKeyPos)
+			subCmd := c.createSlotSpecificCommand(ctx, cmd, keyArgs, firstKeyPos)
 			err = node.Client.Process(ctx, subCmd)
 			results <- slotResult{subCmd, keys, err}
-		}(slot, keys)
+		}(slot, keyArgs, slotKeys[slot])
 	}
 
 	go func() {
@@ -182,19 +180,17 @@ func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap
 // firstKeyPos is passed in from the caller (computed once in executeMultiShard)
 // so this function never independently re-peeks the cache — avoids the
 // cold --> warm inconsistency the reviewer flagged.
-func (c *ClusterClient) createSlotSpecificCommand(ctx context.Context, originalCmd Cmder, keys []string, firstKeyPos int) Cmder {
+func (c *ClusterClient) createSlotSpecificCommand(ctx context.Context, originalCmd Cmder, keyArgs []interface{}, firstKeyPos int) Cmder {
 	originalArgs := originalCmd.Args()
 
 	// Build new args with only the specified keys
-	newArgs := make([]interface{}, 0, firstKeyPos+len(keys))
+	newArgs := make([]interface{}, 0, firstKeyPos+len(keyArgs))
 
 	// Copy command name and arguments before the keys
 	newArgs = append(newArgs, originalArgs[:firstKeyPos]...)
 
-	// Add the slot-specific keys
-	for _, key := range keys {
-		newArgs = append(newArgs, key)
-	}
+	// Add the slot-specific keys (and their step arguments)
+	newArgs = append(newArgs, keyArgs...)
 
 	// Create a new command of the same type using the helper function
 	return createCommandByType(ctx, originalCmd.GetCmdType(), newArgs...)
