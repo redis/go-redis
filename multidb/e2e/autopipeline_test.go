@@ -154,151 +154,218 @@ func pipelinedFace(run, name string, tx bool) apWorkload {
 	}}
 }
 
-// atMostOnceCounter counts INCRs that a transaction reported as applied
-// (succeeded) and those whose outcome is unknown (errored). The final counter
-// must lie in [succeeded, succeeded+errored]: above means a transaction was
-// applied twice, below means an acknowledged one was lost. INCR merges across
-// Active-Active members (CRDB counter), so both bounds hold after convergence.
+// atMostOnceCounter checks that transactions are applied at most once and
+// that acknowledged ones are not lost. Each attempt runs, in one MULTI, an
+// INCR of key and an HINCRBY of its own field (worker:seq) in attempts. A
+// field above 1 is an attempt applied twice, a missing field for an
+// acknowledged attempt is a lost one, and the counter must equal the sum of
+// the fields. INCR and HINCRBY merge across Active-Active members (CRDB
+// counters), so these checks hold after convergence.
 type atMostOnceCounter struct {
-	key       string
-	succeeded atomic.Int64
-	errored   atomic.Int64
+	key      string
+	attempts string
+
+	mu        sync.Mutex
+	succeeded []string
+	errored   int
 }
 
-// verify waits until every member reports the same counter value for
-// stablePolls consecutive polls, then checks it against the bounds. It reads
-// each member directly, not through MultiDB, so a member that has not merged
-// yet cannot pass the check.
+func newAtMostOnceCounter(run, name string) *atMostOnceCounter {
+	tag := "e2e:ap:{" + run + ":" + name + "}:"
+	return &atMostOnceCounter{key: tag + "counter", attempts: tag + "attempts"}
+}
+
+func attemptField(worker, seq int) string { return fmt.Sprintf("%d:%d", worker, seq) }
+
+// queue adds the attempt's writes to a MULTI.
+func (c *atMostOnceCounter) queue(ctx context.Context, p redis.Pipeliner, worker, seq int) {
+	p.Incr(ctx, c.key)
+	p.HIncrBy(ctx, c.attempts, attemptField(worker, seq), 1)
+}
+
+func (c *atMostOnceCounter) record(worker, seq int, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
+		c.errored++
+		return
+	}
+	c.succeeded = append(c.succeeded, attemptField(worker, seq))
+}
+
+func (c *atMostOnceCounter) cleanup(t *testing.T, mdb *redis.MultiDBClient) {
+	t.Cleanup(func() { _ = mdb.Del(context.Background(), c.key, c.attempts).Err() })
+}
+
+// counterState is one member's view of a counter.
+type counterState struct {
+	n      int64
+	fields map[string]string
+	err    error
+}
+
+// summary identifies a state for the convergence check.
+func (s counterState) summary() string {
+	if s.err != nil {
+		return s.err.Error()
+	}
+	var sum int64
+	for _, v := range s.fields {
+		n, _ := strconv.ParseInt(v, 10, 64)
+		sum += n
+	}
+	return fmt.Sprintf("counter=%d fields=%d sum=%d", s.n, len(s.fields), sum)
+}
+
+func readCounter(m *redis.Client, c *atMostOnceCounter) counterState {
+	ctx := context.Background()
+	n, err := m.Get(ctx, c.key).Int64()
+	if errors.Is(err, redis.Nil) {
+		n, err = 0, nil
+	}
+	if err != nil {
+		return counterState{err: err}
+	}
+	fields, err := m.HGetAll(ctx, c.attempts).Result()
+	return counterState{n: n, fields: fields, err: err}
+}
+
+// verify waits until every member reports the same state for stablePolls
+// consecutive polls, then checks it. It reads each member directly, not
+// through MultiDB, so a member that has not merged yet cannot pass.
 func (c *atMostOnceCounter) verify(t *testing.T, _ *redis.MultiDBClient) {
 	t.Helper()
 	const (
 		stablePolls = 3
 		interval    = 500 * time.Millisecond
+		maxReported = 5
 	)
-	lo, hi := c.succeeded.Load(), c.succeeded.Load()+c.errored.Load()
+	c.mu.Lock()
+	succeeded, errored := c.succeeded, c.errored
+	c.mu.Unlock()
 
 	members := make([]*redis.Client, len(e2eTopology.Endpoints))
 	for i, addr := range e2eTopology.Endpoints {
 		members[i] = redis.NewClient(endpointOptions(addr))
 		defer members[i].Close()
 	}
-	read := func() ([]string, int64, bool) {
-		vals := make([]string, len(members))
-		var first int64
-		agree := true
-		for i, m := range members {
-			v, err := m.Get(context.Background(), c.key).Int64()
-			switch {
-			case errors.Is(err, redis.Nil):
-				v, err = 0, nil
-			case err != nil:
-				vals[i] = err.Error()
-				agree = false
-				continue
-			}
-			vals[i] = fmt.Sprint(v)
-			if i == 0 {
-				first = v
-			} else if v != first {
-				agree = false
-			}
-		}
-		return vals, first, agree
-	}
 
 	var (
-		vals   []string
-		got    int64
+		st     counterState
+		last   string
 		stable int
 	)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		var (
-			n     int64
-			agree bool
-		)
-		vals, n, agree = read()
+		views := make([]string, len(members))
+		agree := true
+		for i, m := range members {
+			s := readCounter(m, c)
+			views[i] = s.summary()
+			if s.err != nil || views[i] != views[0] {
+				agree = false
+			}
+			if i == 0 {
+				st = s
+			}
+		}
 		switch {
 		case !agree:
 			stable = 0
-		case stable > 0 && n == got:
+		case stable > 0 && views[0] == last:
 			stable++
 		default:
-			got, stable = n, 1
+			last, stable = views[0], 1
 		}
 		if stable >= stablePolls {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Errorf("%s did not converge across members: %v", c.key, vals)
+			t.Errorf("%s did not converge across members: %v", c.key, views)
 			return
 		}
 		time.Sleep(interval)
 	}
-	switch {
-	case got > hi:
-		t.Errorf("%s = %d, above succeeded+errored = %d: a transaction was applied more than once", c.key, got, hi)
-	case got < lo:
-		t.Errorf("%s = %d, below succeeded = %d: an acknowledged transaction was lost", c.key, got, lo)
+
+	var sum int64
+	reported := 0
+	for f, v := range st.fields {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			t.Errorf("%s field %s = %q: not an integer", c.attempts, f, v)
+			continue
+		}
+		sum += n
+		if n > 1 && reported < maxReported {
+			reported++
+			t.Errorf("%s: attempt %s applied %d times", c.key, f, n)
+		}
+	}
+	if sum != st.n {
+		t.Errorf("%s = %d, but its attempt fields sum to %d", c.key, st.n, sum)
+	}
+	lost := 0
+	for _, f := range succeeded {
+		if _, ok := st.fields[f]; !ok {
+			if lost < maxReported {
+				t.Errorf("%s: acknowledged attempt %s was lost", c.key, f)
+			}
+			lost++
+		}
+	}
+	if hi := int64(len(succeeded) + errored); st.n > hi {
+		t.Errorf("%s = %d, above succeeded+errored = %d: a transaction was applied more than once", c.key, st.n, hi)
+	}
+	if lost > maxReported {
+		t.Errorf("%s: %d acknowledged attempts lost in total", c.key, lost)
 	}
 }
 
-// txIncr runs MULTI/INCR/EXEC through the MultiDB client.
+// txIncr runs MULTI/INCR/HINCRBY/EXEC through the MultiDB client.
 func txIncr(run, name string) apWorkload {
-	c := &atMostOnceCounter{key: "e2e:ap:{" + run + ":" + name + "}:counter"}
+	c := newAtMostOnceCounter(run, name)
 	return apWorkload{
 		name: name, workers: 2,
 		setup: func(t *testing.T, mdb *redis.MultiDBClient) apStepFunc {
-			t.Cleanup(func() { _ = mdb.Del(context.Background(), c.key).Err() })
-			return func(ctx context.Context, _, _ int) (bool, error) {
+			c.cleanup(t, mdb)
+			return func(ctx context.Context, w, seq int) (bool, error) {
 				_, err := mdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
-					p.Incr(ctx, c.key)
+					c.queue(ctx, p, w, seq)
 					return nil
 				})
-				if err != nil {
-					c.errored.Add(1)
-					return false, nil
-				}
-				c.succeeded.Add(1)
-				return true, nil
+				c.record(w, seq, err)
+				return err == nil, nil
 			}
 		},
 		verify: c.verify,
 	}
 }
 
-// watchIncr runs WATCH/GET/MULTI/INCR/EXEC through the MultiDB client. The
-// GET makes it a read-then-write under WATCH; INCR makes a replayed EXEC
-// visible in the counter. A TxFailedErr (lost the optimistic race) applied
-// nothing.
+// watchIncr runs WATCH/GET/MULTI/INCR/HINCRBY/EXEC through the MultiDB
+// client. The GET makes it a read-then-write under WATCH. A TxFailedErr (lost
+// the optimistic race) applied nothing and is not progress.
 func watchIncr(run, name string) apWorkload {
-	c := &atMostOnceCounter{key: "e2e:ap:{" + run + ":" + name + "}:counter"}
+	c := newAtMostOnceCounter(run, name)
 	return apWorkload{
 		name: name, workers: 2,
 		setup: func(t *testing.T, mdb *redis.MultiDBClient) apStepFunc {
-			t.Cleanup(func() { _ = mdb.Del(context.Background(), c.key).Err() })
-			return func(ctx context.Context, _, _ int) (bool, error) {
+			c.cleanup(t, mdb)
+			return func(ctx context.Context, w, seq int) (bool, error) {
 				err := mdb.Watch(ctx, func(tx *redis.Tx) error {
 					if err := tx.Get(ctx, c.key).Err(); err != nil && !errors.Is(err, redis.Nil) {
 						return err
 					}
 					_, err := tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
-						p.Incr(ctx, c.key)
+						c.queue(ctx, p, w, seq)
 						return nil
 					})
 					return err
 				}, c.key)
-				switch {
-				case err == nil:
-					c.succeeded.Add(1)
-					return true, nil
-				case errors.Is(err, redis.TxFailedErr):
-					// Applied nothing; not progress either.
-					return false, nil
-				default:
-					c.errored.Add(1)
+				if errors.Is(err, redis.TxFailedErr) {
 					return false, nil
 				}
+				c.record(w, seq, err)
+				return err == nil, nil
 			}
 		},
 		verify: c.verify,
