@@ -552,6 +552,8 @@ func (c *baseClient) clone() *baseClient {
 		// exited, which is harmless.
 		cscRefreshQueue: c.cscRefreshQueue,
 	}
+	// A baseClient built without NewClient (e.g. internal CSC tests) has no
+	// hook state; keep the zero mixin instead of nil-dereferencing in clone.
 	if c.hooksMixin.state != nil {
 		clone.hooksMixin = c.hooksMixin.clone()
 	}

@@ -80,6 +80,9 @@ func TestWithTimeoutPreservesHooks(t *testing.T) {
 	if parent.Options().ReadTimeout == 100*time.Millisecond || parent.Options().WriteTimeout == 100*time.Millisecond {
 		t.Error("clone changed parent timeouts")
 	}
+	if clone.Options().ReadTimeout != 100*time.Millisecond || clone.Options().WriteTimeout != 100*time.Millisecond {
+		t.Error("clone did not apply its timeouts")
+	}
 }
 
 func (h *countingHook) DialHook(next redis.DialHook) redis.DialHook {
