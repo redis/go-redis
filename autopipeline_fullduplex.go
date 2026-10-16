@@ -826,7 +826,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	// leased. A negative PipelineMinIdleConns opts out; on the main pool (no
 	// dedicated pipeline pool) the user's MinIdleConns applies instead.
 	if ref := client.loadPipelinePool(); ref != nil && client.opt.PipelineMinIdleConns >= 0 &&
-		fdSpareFits(ref.pool.Size(), client.opt.MaxIdleConns, fdShardCount(ap.config)) {
+		fdSpareFits(ref.pool.Size(), client.opt.MaxIdleConns, fdPipeCount(ap.config)) {
 		ref.pool.RaiseMinIdleConns(1)
 	}
 	return fd
