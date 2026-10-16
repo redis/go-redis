@@ -887,7 +887,10 @@ func (c *MultiDBClient) canPipeline(ctx context.Context, cmd Cmder) bool {
 //   - On the async face, submit order still holds across a failover or a
 //     breaker transition: the switch to the new member waits until the
 //     commands already accepted for the old one have completed, so submitters
-//     stall briefly at that point.
+//     stall briefly at that point. On a cluster member, order holds per key
+//     (slot), as with full duplex on a plain ClusterClient: keyless commands
+//     and routing misses (topology not loaded, a node without full duplex)
+//     run on MultiDB's normal path and are not ordered against the lane.
 //   - Process hooks added with MultiDBClient.AddHook do not run on the
 //     full-duplex path. A standalone member's process hooks
 //     (AddDatabaseHook) do. On a cluster member, AddDatabaseHook installs

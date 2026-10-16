@@ -3248,11 +3248,16 @@ func (fd *fdEngine) flushesViaOwner() bool {
 // the Close-time carry, so flushCarryBudgeted gives each group its remaining
 // budget (fdCarryRemainingRetries) and flushReqs sends it to the owner.
 func (fd *fdEngine) rerouteReqs(bg context.Context, reqs []fdReq, cause error) {
-	// Each command failed its attempt on this engine's connection: report that
-	// to the owner first. The rerouted attempt is settled by the owner's path.
+	// Each command that may have reached this engine's connection failed its
+	// attempt there: report that to the owner first. A never-sent command (the
+	// refunded unwritten suffix, a queue drained on lease failure) made no
+	// attempt on this member and reports nothing; the owner's path settles
+	// the rerouted attempt of every command.
 	if fd.outcome != nil {
 		for i := range reqs {
-			fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause)
+			if reqs[i].sent {
+				fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause)
+			}
 		}
 	}
 	_ = fd.flushCarryBudgeted(bg, reqs)

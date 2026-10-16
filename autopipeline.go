@@ -765,6 +765,9 @@ func getFDBlockingBatch() *apBatch {
 	b.dispGid.Store(0)
 	b.nodeCount.Store(0)
 	b.nodeGids = nil
+	// Never set on a pooled batch today (pooled only on the hook-free path,
+	// owed only on the hooked one); cleared so reuse cannot inherit it.
+	b.fdOutcomeOwed = false
 	// Drain any stray signal so the reused channel starts empty. Insurance: the
 	// blocking face always drains done in Wait, so this is normally a no-op.
 	select {

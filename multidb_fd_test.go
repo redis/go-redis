@@ -804,7 +804,7 @@ func TestFDRerouteAbortReportsOncePerAttempt(t *testing.T) {
 	fd.maxBatch = 2 // two chunks: the second never runs
 	reqs := make([]fdReq, 4)
 	for i := range reqs {
-		reqs[i] = fdReq{cmd: NewStatusCmd(ctx, "set", "k"+strconv.Itoa(i), "v"), batch: newAPBatch(), attempts: 1}
+		reqs[i] = fdReq{cmd: NewStatusCmd(ctx, "set", "k"+strconv.Itoa(i), "v"), batch: newAPBatch(), attempts: 1, sent: true}
 	}
 	fd.rerouteReqs(ctx, reqs, io.EOF)
 	if reports != len(reqs) {
@@ -930,5 +930,58 @@ func TestMultiDBFullDuplexDivertKeepsOrder(t *testing.T) {
 	}
 	if err := cmd.Err(); err != nil {
 		t.Fatalf("diverted SET: %v", err)
+	}
+}
+
+// A rerouted command that never reached the FD connection (the refunded
+// unwritten suffix) reports no failure to the owner: it made no attempt on
+// the member.
+func TestFDRerouteNeverSentReportsNothing(t *testing.T) {
+	ctx := context.Background()
+	fd, _ := fdRerouteTestEngine(3, fdServeOK)
+	var reported []string
+	fd.outcome = func(_ context.Context, cmd Cmder, _ error) {
+		reported = append(reported, fmt.Sprint(cmd.Args()[1]))
+	}
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "sent", "v"), batch: newAPBatch(), attempts: 2, sent: true},
+		{cmd: NewStatusCmd(ctx, "set", "unsent", "v"), batch: newAPBatch(), attempts: 1},
+	}
+	fd.rerouteReqs(ctx, reqs, io.EOF)
+	if got := fmt.Sprint(reported); got != "[sent]" {
+		t.Fatalf("reported = %s, want [sent]", got)
+	}
+}
+
+// The childFor sweep leaves a removed member's child to its onRemove hook:
+// RemoveDatabase must find it and drain it before the member's client closes.
+func TestMultiDBFullDuplexSweepLeavesRemovedChildToRemoval(t *testing.T) {
+	requireLocalRedis(t)
+	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+	r := ap.mdbFD
+	db0, db1 := mdb.core.dbByID(0), mdb.core.dbByID(1)
+	child, _ := r.childFor(db1)
+	if child == nil {
+		t.Fatal("no child for member 1")
+	}
+	// RemoveDatabase marks the member removed before it runs onRemove; a
+	// cache miss for another member in that window runs the sweep.
+	db1.removed.Store(true)
+	if c, _ := r.childFor(db0); c == nil {
+		t.Fatal("no child for member 0")
+	}
+	r.mu.RLock()
+	kept := r.children[db1]
+	r.mu.RUnlock()
+	if kept != child || child.IsClosed() {
+		t.Fatal("sweep dropped or closed the removed member's child before its removal hook")
+	}
+	_ = db1.onRemove.run()
+	if !child.IsClosed() {
+		t.Fatal("removal hook did not close the child")
 	}
 }

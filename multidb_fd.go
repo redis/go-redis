@@ -296,18 +296,13 @@ func (r *multidbFDRouter) childFor(db *multidbDatabase) (*AutoPipeliner, bool) {
 	if child := r.children[db]; child != nil && !child.IsClosed() {
 		return child, false
 	}
-	// Drop children of removed members while the write lock is held anyway. A
-	// removed member's client is closed, so its child has nothing left to
-	// serve; close it off the lock (its drain may take a moment).
+	// Drop closed children while the write lock is held anyway (a lane switch
+	// closed them). A removed member's child is left alone: its onRemove hook
+	// (dropChild) drains it before RemoveDatabase closes the member's client,
+	// and closing it here instead would let the client close mid-drain.
 	for m, ch := range r.children {
-		if m.removed.Load() || ch.IsClosed() {
+		if ch.IsClosed() {
 			delete(r.children, m)
-			go func() { _ = ch.Close() }()
-		}
-	}
-	for m := range r.noFD {
-		if m.removed.Load() {
-			delete(r.noFD, m)
 		}
 	}
 	if db.removed.Load() {
@@ -329,6 +324,8 @@ func (r *multidbFDRouter) childFor(db *multidbDatabase) (*AutoPipeliner, bool) {
 		return nil, false
 	}
 	if !registered {
+		// db's removal already ran: the child was never published, so it has
+		// accepted nothing and its Close has nothing to drain.
 		go func() { _ = child.Close() }()
 		return nil, false
 	}

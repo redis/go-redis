@@ -148,7 +148,11 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
   and the divert completes before `laneMu` is released (pinned by
   `TestMultiDBFullDuplexOrderAcrossMemberDeath` and
   `TestMultiDBFullDuplexDivertKeepsOrder`). Submitters stall for the drain. The
-  blocking face needs no lanes (each caller waits for its command).
+  blocking face needs no lanes (each caller waits for its command). On a cluster
+  member the lane orders per key (slot), like plain cluster FD: commands the
+  cluster router cannot place (keyless, topology miss, non-FD node) leave
+  through `ownerDivert` and are not ordered against the lane, and a lane drain
+  does not wait for them.
 - **No-FD members** (no pipeline pool, replica routing): remembered in `noFD`,
   their commands divert without rebuilding a child.
 - **Cluster member misses**: a command the member's `clusterFDRouter` cannot
