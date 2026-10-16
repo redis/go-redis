@@ -930,7 +930,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //		MaxRetries:  2,
 //	}
 func ParseURL(redisURL string) (*Options, error) {
-	u, err := url.Parse(redisURL)
+	u, err := parseURL(redisURL)
 	if err != nil {
 		return nil, err
 	}
@@ -943,6 +943,49 @@ func ParseURL(redisURL string) (*Options, error) {
 	default:
 		return nil, fmt.Errorf("redis: invalid URL scheme: %s", u.Scheme)
 	}
+}
+
+// parseURL is url.Parse with the password removed from the error. A
+// *url.Error prints the whole input, so a malformed URL would otherwise
+// return its credentials in the error, which callers typically log.
+func parseURL(redisURL string) (*url.URL, error) {
+	u, err := url.Parse(redisURL)
+	if err != nil {
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			var password string
+			uerr.URL, password = redactRawURL(uerr.URL)
+			// url.Parse ends the authority at the first '/', '?' or '#', so
+			// with one of them unescaped in the password it parses part of
+			// the password as host or port and quotes it in uerr.Err.
+			if strings.ContainsAny(password, "/?#") {
+				uerr.Err = errors.New("password contains unescaped '/', '?' or '#'")
+			}
+		}
+		return nil, err
+	}
+	return u, nil
+}
+
+// redactRawURL replaces the password in a URL that failed to parse with
+// "xxxxx", like url.URL.Redacted, and returns the password it removed. The
+// userinfo ends at the last '@', so a password containing unescaped '@' or
+// '/' is still covered.
+func redactRawURL(s string) (string, string) {
+	start := 0
+	if i := strings.Index(s, "://"); i >= 0 {
+		start = i + len("://")
+	}
+	at := strings.LastIndexByte(s, '@')
+	if at < start {
+		return s, ""
+	}
+	userinfo := s[start:at]
+	i := strings.IndexByte(userinfo, ':')
+	if i < 0 {
+		return s, ""
+	}
+	return s[:start] + userinfo[:i] + ":xxxxx" + s[at:], userinfo[i+1:]
 }
 
 func setupTCPConn(u *url.URL) (*Options, error) {
