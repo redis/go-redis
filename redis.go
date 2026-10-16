@@ -423,8 +423,9 @@ type baseClient struct {
 	// operations (Pipeline, TxPipeline and autopipeline batches), created
 	// unconditionally at NewClient/NewFailoverClient — like pubSubPool — with
 	// pipeline-appropriate options (see pipelinePoolOptions): larger buffers,
-	// no pre-dialing, a small connection cap. It is pure burst capacity: an
-	// unused pipeline pool holds zero connections. PipelinePoolSize < 0 opts
+	// no pre-dialing by default (PipelineMinIdleConns), a small connection cap.
+	// It is pure burst capacity: an unused pipeline pool holds zero connections
+	// (a full-duplex engine keeps one idle spare). PipelinePoolSize < 0 opts
 	// out; nil means pipelines use connPool (opt-out, and the internal
 	// Conn/Tx/Sentinel wrappers which never create one). The field is set
 	// before the client is visible to any goroutine and never mutated after,
@@ -725,11 +726,12 @@ func (c *baseClient) poolForConn(cn *pool.Conn) pool.Pooler {
 //     plateaus around 64 KiB and very large buffers can regress it). The
 //     RESP3 minimum clamp applies as on the main pool.
 //   - PoolSize: PipelinePoolSize when set, DefaultPipelinePoolSize otherwise.
-//   - MinIdleConns: always 0. The pipeline pool is burst capacity — its
-//     connections dial on demand and there is nothing to keep warm before
-//     the first pipeline runs. Without this the clone would inherit the
-//     main pool's MinIdleConns and pre-dial that many pipeline connections
-//     at creation, silently doubling a client's idle footprint.
+//   - MinIdleConns: PipelineMinIdleConns (negative means 0), never the main
+//     pool's MinIdleConns. The pipeline pool is burst capacity — by default its
+//     connections dial on demand. Inheriting MinIdleConns would pre-dial that
+//     many pipeline connections at creation, silently doubling a client's idle
+//     footprint. A full-duplex engine raises the floor at runtime
+//     (RaiseMinIdleConns) to keep a warm spare.
 func pipelinePoolOptions(opt *Options) *Options {
 	pipelineOpt := opt.clone()
 	if opt.PipelineReadBufferSize > 0 {
@@ -753,7 +755,9 @@ func pipelinePoolOptions(opt *Options) *Options {
 	} else {
 		pipelineOpt.PoolSize = DefaultPipelinePoolSize
 	}
-	pipelineOpt.MinIdleConns = 0
+	// No pre-dial by default (an unused pipeline pool holds nothing); a negative
+	// value means 0 here and also turns off the full-duplex spare.
+	pipelineOpt.MinIdleConns = max(opt.PipelineMinIdleConns, 0)
 	// Re-resolve MaxConcurrentDials for the pipeline pool. Options.init capped it to
 	// the MAIN pool size, so a pipeline pool larger than the main pool (e.g.
 	// PoolSize:1 with the default 10-slot pipeline pool) would otherwise dial one
@@ -2483,7 +2487,7 @@ func NewClient(opt *Options) *Client {
 	c.pubSubPool = pubSubPool
 
 	// Create the dedicated pipeline pool unconditionally, like pubSubPool: it
-	// is pure burst capacity (no pre-dialing, small cap, larger buffers — see
+	// is pure burst capacity (no pre-dialing by default, small cap, larger buffers — see
 	// pipelinePoolOptions), so an unused pipeline pool holds zero connections
 	// and costs nothing. Pipelines stop competing with regular commands for
 	// main-pool connections; a burst wider than the pool's cap spills back to
@@ -2676,11 +2680,34 @@ func (c *Client) Close() error {
 	return firstErr
 }
 
+// Conn returns a Conn that runs every command on a single connection borrowed
+// from this client's pool. Close returns that connection to the pool, so any
+// session state left on it (AUTH, SELECT, CLIENT SETNAME, CLIENT TRACKING, ...)
+// is still there for the next pooled caller. Use EphemeralConn when the Conn
+// changes session state.
 func (c *Client) Conn() *Conn {
+	return c.conn(false)
+}
+
+// EphemeralConn is Conn, except Close discards the underlying connection
+// instead of returning it to the pool. Session state a Conn sets (AUTH,
+// SELECT, CLIENT SETNAME, CLIENT TRACKING, RESET, ...) cannot be undone
+// generically on release, so a connection that carried it must not go on to
+// serve unrelated callers. The cost is one dial per EphemeralConn lifetime;
+// Get still reuses an idle pooled connection.
+func (c *Client) EphemeralConn() *Conn {
+	return c.conn(true)
+}
+
+func (c *Client) conn(discardOnClose bool) *Conn {
+	sticky := c.baseClient.newStickyConnPool()
+	if discardOnClose {
+		sticky.DiscardOnClose()
+	}
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
-	conn := newConn(c.opt, c.baseClient.newStickyConnPool(), &c.hooksMixin, c.himport)
+	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
 	// A sticky client does not serve cache hits, but a new pool connection first
 	// initialized through it may later be reused by the parent. Share the
 	// successful-attachment signal so that connection is tracked exactly when

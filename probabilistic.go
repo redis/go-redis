@@ -2,10 +2,13 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+var errCMSInvalidCellSize = errors.New("redis: invalid cell size (must be 1, 2, 4 or 8)")
 
 type ProbabilisticCmdable interface {
 	BFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
@@ -48,7 +51,9 @@ type ProbabilisticCmdable interface {
 	CMSIncrBy(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
 	CMSInfo(ctx context.Context, key string) *CMSInfoCmd
 	CMSInitByDim(ctx context.Context, key string, width, height int64) *StatusCmd
+	CMSInitByDimCellSize(ctx context.Context, key string, width, depth, cellSize int64) *StatusCmd
 	CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd
+	CMSInitByProbCellSize(ctx context.Context, key string, errorRate, probability float64, cellSize int64) *StatusCmd
 	CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd
 	CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd
 	CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd
@@ -912,8 +917,21 @@ func (c cmdable) CMSInfo(ctx context.Context, key string) *CMSInfoCmd {
 // CMSInitByDim creates an empty Count-Min Sketch filter with the specified dimensions.
 // For more information - https://redis.io/commands/cms.initbydim/
 func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int64) *StatusCmd {
-	args := []interface{}{"CMS.INITBYDIM", key, width, depth}
+	args := []any{"CMS.INITBYDIM", key, width, depth}
 	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// CMSInitByDimCellSize creates an empty Count-Min Sketch filter with the specified dimensions and number of bytes per cell (valid cell sizes: 1,2,4,8).
+// For more information - https://redis.io/commands/cms.initbydim/
+func (c cmdable) CMSInitByDimCellSize(ctx context.Context, key string, width, depth, cellSize int64) *StatusCmd {
+	args := []any{"CMS.INITBYDIM", key, width, depth, "CELL_SIZE", cellSize}
+	cmd := NewStatusCmd(ctx, args...)
+	if !isValidCMSCellSize(cellSize) {
+		cmd.SetErr(errCMSInvalidCellSize)
+		return cmd
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -921,10 +939,31 @@ func (c cmdable) CMSInitByDim(ctx context.Context, key string, width, depth int6
 // CMSInitByProb creates an empty Count-Min Sketch filter with the specified error rate and probability.
 // For more information - https://redis.io/commands/cms.initbyprob/
 func (c cmdable) CMSInitByProb(ctx context.Context, key string, errorRate, probability float64) *StatusCmd {
-	args := []interface{}{"CMS.INITBYPROB", key, errorRate, probability}
+	args := []any{"CMS.INITBYPROB", key, errorRate, probability}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+// CMSInitByProbCellSize creates an empty Count-Min Sketch filter with the specified error rate, probability and number of bytes per cell (valid cell sizes: 1,2,4,8).
+// For more information - https://redis.io/commands/cms.initbyprob/
+func (c cmdable) CMSInitByProbCellSize(ctx context.Context, key string, errorRate, probability float64, cellSize int64) *StatusCmd {
+	args := []any{"CMS.INITBYPROB", key, errorRate, probability, "CELL_SIZE", cellSize}
+	cmd := NewStatusCmd(ctx, args...)
+	if !isValidCMSCellSize(cellSize) {
+		cmd.SetErr(errCMSInvalidCellSize)
+		return cmd
+	}
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func isValidCMSCellSize(cellSize int64) bool {
+	switch cellSize {
+	case 1, 2, 4, 8:
+		return true
+	}
+	return false
 }
 
 // CMSMerge merges multiple Count-Min Sketch filters into a single filter.

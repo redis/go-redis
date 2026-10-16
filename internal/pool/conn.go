@@ -1069,11 +1069,19 @@ func (cn *Conn) TryAcquire() bool {
 //
 // NOTE: We directly access cn.stateMachine.state here instead of using the state machine's
 // methods. This breaks encapsulation but is necessary for performance.
-// If the state machine ever needs to notify waiters
-// on this transition, update this to use TryTransitionFast().
+// Waiters parked in AwaitAndTransition for IDLE (re-auth, handoff) are notified
+// after a successful transition; notifyWaiters costs one atomic load when nobody waits.
 func (cn *Conn) Release() bool {
 	// Inline the hot path - single CAS operation
-	return cn.stateMachine.state.CompareAndSwap(uint32(StateInUse), uint32(StateIdle))
+	if !cn.stateMachine.state.CompareAndSwap(uint32(StateInUse), uint32(StateIdle)) {
+		return false
+	}
+	// The connection just became IDLE: wake anyone waiting for that state, such
+	// as a re-auth worker parked in AwaitAndTransition. notifyWaiters starts
+	// with an atomic load of waiterCount, so this costs one load when nobody
+	// is waiting.
+	cn.stateMachine.notifyWaiters()
+	return true
 }
 
 // ClearHandoffState clears the handoff state after successful handoff.

@@ -572,6 +572,10 @@ func TestParseSentinelURL(t *testing.T) {
 			err: errors.New("redis: unexpected option: abc"),
 		},
 		{
+			url: "rediss://localhost:6379/5?master_name=test&skip_verify=yes",
+			err: errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
+		},
+		{
 			url: "http://google.com",
 			err: errors.New("redis: invalid URL scheme: http"),
 		},

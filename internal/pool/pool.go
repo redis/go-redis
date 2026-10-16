@@ -433,6 +433,10 @@ type ConnPool struct {
 	idleCheckInProgress atomic.Bool
 	idleCheckNeeded     atomic.Bool
 
+	// minIdleFloor is a runtime lower bound on cfg.MinIdleConns, raised by
+	// RaiseMinIdleConns (the full-duplex engine keeps a warm spare). 0 = none.
+	minIdleFloor atomic.Int32
+
 	stats          Stats
 	waitDurationNs atomic.Int64
 
@@ -527,6 +531,80 @@ func (p *ConnPool) RemovePoolHook(hook PoolHook) {
 	}
 }
 
+// minIdleConns returns the effective minimum idle connections: the configured
+// MinIdleConns, or the runtime floor if higher.
+func (p *ConnPool) minIdleConns() int32 {
+	if f := p.minIdleFloor.Load(); f > p.cfg.MinIdleConns {
+		return f
+	}
+	return p.cfg.MinIdleConns
+}
+
+// RaiseMinIdleConns raises the pool's minimum idle connections to at least n
+// and starts filling it in the background. It never lowers the configured
+// MinIdleConns or an earlier raise. Like MinIdleConns, the idle connections
+// count against PoolSize and are dialed but not initialized: init runs on
+// first Get. A raised pool also keeps its spare fresh: see refreshStaleSpare.
+func (p *ConnPool) RaiseMinIdleConns(n int32) {
+	for {
+		cur := p.minIdleFloor.Load()
+		if n <= cur {
+			return
+		}
+		if p.minIdleFloor.CompareAndSwap(cur, n) {
+			break
+		}
+	}
+	if p.closed() {
+		return
+	}
+	p.checkMinIdleConns()
+}
+
+// refreshStaleSpare replaces the oldest idle connection once it is half-way to
+// ConnMaxIdleTime or to the end of its ConnMaxLifetime, in a pool whose min-idle
+// floor was raised (RaiseMinIdleConns, the full-duplex warm spare). Under LIFO
+// such a spare is never leased, so it would age out and be discarded by the
+// very lease it exists for, which then dials. Get runs it only after the lease
+// has its healthy connection, so it never closes this lease's connection or its
+// fallback. O(1): under LIFO the oldest idle connection is idleConns[0].
+func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
+	if p.minIdleFloor.Load() == 0 || p.cfg.PoolFIFO ||
+		(p.cfg.ConnMaxIdleTime <= 0 && p.cfg.ConnMaxLifetime <= 0) {
+		return
+	}
+	p.connsMu.Lock()
+	if len(p.idleConns) == 0 {
+		p.connsMu.Unlock()
+		return
+	}
+	oldest := p.idleConns[0]
+	if !p.spareAging(oldest, nowNs) || !oldest.TryAcquire() {
+		p.connsMu.Unlock()
+		return
+	}
+	copy(p.idleConns, p.idleConns[1:])
+	p.idleConns = p.idleConns[:len(p.idleConns)-1]
+	p.idleConnsLen.Add(-1)
+	p.connsMu.Unlock()
+
+	_ = p.CloseConn(ctx, oldest, CloseReasonStale, MetricStateIdle)
+	p.checkMinIdleConns()
+}
+
+// spareAging reports whether cn is half-way to ConnMaxIdleTime or has less than
+// half of its ConnMaxLifetime left, so a refresh now lands before isHealthyConn
+// would reject it.
+func (p *ConnPool) spareAging(cn *Conn, nowNs int64) bool {
+	if idle := p.cfg.ConnMaxIdleTime; idle > 0 && nowNs-cn.UsedAtNs() >= int64(idle/2) {
+		return true
+	}
+	if life := p.cfg.ConnMaxLifetime; life > 0 && cn.expiresAt.UnixNano()-nowNs < int64(life/2) {
+		return true
+	}
+	return false
+}
+
 func (p *ConnPool) checkMinIdleConns() {
 	// If a check is already in progress, mark that we need another check and return
 	if !p.idleCheckInProgress.CompareAndSwap(false, true) {
@@ -534,8 +612,14 @@ func (p *ConnPool) checkMinIdleConns() {
 		return
 	}
 
-	if p.cfg.MinIdleConns == 0 {
+	if p.minIdleConns() == 0 {
 		p.idleCheckInProgress.Store(false)
+		// A RaiseMinIdleConns between the read above and the store may have
+		// found the check in progress and only set idleCheckNeeded: run again
+		// so the new floor is filled now, not on a later Get.
+		if p.idleCheckNeeded.Load() && p.minIdleConns() > 0 {
+			p.checkMinIdleConns()
+		}
 		return
 	}
 
@@ -544,10 +628,13 @@ func (p *ConnPool) checkMinIdleConns() {
 	for {
 		// Clear the "check needed" flag before we start
 		p.idleCheckNeeded.Store(false)
+		// Re-read each pass: a RaiseMinIdleConns during a check only sets
+		// idleCheckNeeded, so the new floor must be picked up here.
+		minIdle := p.minIdleConns()
 
 		// Only create idle connections if we haven't reached the total pool size limit
 		// MinIdleConns should be a subset of PoolSize, not additional connections
-		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
+		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < minIdle {
 			// Try to acquire a semaphore token
 			if !p.semaphore.TryAcquire() {
 				// Semaphore is full, can't create more connections right now
@@ -996,6 +1083,8 @@ retryIdle:
 			cb(ctx, -1, cn, poolName)
 		}
 
+		// Only now, with this lease's connection taken and checked.
+		p.refreshStaleSpare(ctx, nowNs)
 		return cn, nil
 	}
 
@@ -1469,8 +1558,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
 		// put them at the opposite end of the queue
-		// Optimization: if we just transitioned to IDLE, we know it's usable - skip the check
-		if !transitionedToIdle && !cn.IsUsable() {
+		// Check even if Release() succeeded: it notifies waiters, which may have
+		// already moved the conn out of IDLE (e.g. re-auth to UNUSABLE).
+		if !cn.IsUsable() {
 			p.connsMu.Lock()
 			// Check if Close() already removed this connection from p.conns.
 			// If so, skip the append and metrics — Close() already accounted for it.

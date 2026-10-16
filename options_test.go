@@ -129,6 +129,10 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost/?pool_fifo=yes",
 			err: errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
 		}, {
+			// invalid skip_verify value
+			url: "rediss://localhost/?skip_verify=yes",
+			err: errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
+		}, {
 			// it returns first error
 			url: "redis://localhost/?db=foo&pool_size=five",
 			err: errors.New(`redis: invalid database number: strconv.Atoi: parsing "foo": invalid syntax`),
@@ -737,5 +741,16 @@ func TestParseURLPipelinePoolOptions(t *testing.T) {
 	}
 	if fo.PipelinePoolSize != -1 || fo.PipelineReadBufferSize != 131072 || fo.PipelineWriteBufferSize != 65536 {
 		t.Fatalf("ParseFailoverURL pipeline opts: size=%d rbuf=%d wbuf=%d", fo.PipelinePoolSize, fo.PipelineReadBufferSize, fo.PipelineWriteBufferSize)
+	}
+
+	const mi = "pipeline_min_idle_conns=2"
+	if o, err := ParseURL("redis://localhost:6379?" + mi); err != nil || o.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseURL pipeline_min_idle_conns: %v, %+v", err, o)
+	}
+	if co, err := ParseClusterURL("redis://localhost:6379?" + mi); err != nil || co.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseClusterURL pipeline_min_idle_conns: %v, %+v", err, co)
+	}
+	if fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + mi); err != nil || fo.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseFailoverURL pipeline_min_idle_conns: %v, %+v", err, fo)
 	}
 }
