@@ -1598,7 +1598,9 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 		hookManager.ProcessOnRemove(ctx, cn, reason)
 	}
 
-	removed := p.removeConnWithLock(cn)
+	p.connsMu.Lock()
+	removed, wasIdle := p.removeConnState(cn)
+	p.connsMu.Unlock()
 
 	if freeTurn {
 		p.freeTurn()
@@ -1607,13 +1609,17 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	// Only emit metric decrements if we actually removed the connection from the map.
 	// If removed is false, Close() already removed it and emitted the -1 delta.
 	if removed {
-		// Notify metrics: connection removed (assume from used state)
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, MetricStateUsed, "")
+		// A connection still in idleConns is counted idle (e.g. one a
+		// handoff claimed straight from the idle list); any other is used.
+		fromState := MetricStateUsed
+		if wasIdle {
+			fromState = MetricStateIdle
 		}
-		// Record connection count decrement (connection removed, assume from used state)
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, fromState, "")
+		}
 		if cb := getMetricConnectionCountCallback(); cb != nil {
-			cb(ctx, -1, cn, "used", false)
+			cb(ctx, -1, cn, fromState, false)
 		}
 	}
 
@@ -1689,9 +1695,16 @@ func (p *ConnPool) removeConnWithLock(cn *Conn) bool {
 // removeConn removes a connection from the pool's internal data structures.
 // Returns true if the connection was present and removed, false otherwise.
 func (p *ConnPool) removeConn(cn *Conn) bool {
+	removed, _ := p.removeConnState(cn)
+	return removed
+}
+
+// removeConnState is removeConn that also reports whether the connection was
+// in idleConns, i.e. counted in the idle metric state. Caller holds connsMu.
+func (p *ConnPool) removeConnState(cn *Conn) (removed, wasIdle bool) {
 	cid := cn.GetID()
 	if _, exists := p.conns[cid]; !exists {
-		return false
+		return false, false
 	}
 	delete(p.conns, cid)
 	atomic.AddUint32(&p.stats.StaleConns, 1)
@@ -1704,11 +1717,12 @@ func (p *ConnPool) removeConn(cn *Conn) bool {
 			if ic == cn {
 				p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
 				p.idleConnsLen.Add(-1)
+				wasIdle = true
 				break
 			}
 		}
 	}
-	return true
+	return true, wasIdle
 }
 
 func (p *ConnPool) closeConn(cn *Conn) error {
