@@ -1,8 +1,12 @@
 package redis
 
 import (
+	"context"
 	"math"
+	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // TestParseFTInfo tests the parseFTInfo function with a comprehensive FT.INFO response
@@ -1697,5 +1701,139 @@ func TestFTInfoRESP2AndRESP3Equivalence(t *testing.T) {
 		if attr2.NoStem != attr3.NoStem {
 			t.Errorf("NoStem mismatch: RESP2=%v, RESP3=%v", attr2.NoStem, attr3.NoStem)
 		}
+	}
+}
+
+func TestParseFTAggregateReplyWithCursor(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       interface{}
+		wantTotal  int
+		wantRows   int
+		wantCursor int64
+	}{
+		{
+			name:      "RESP2 without cursor",
+			data:      []interface{}{int64(2), []interface{}{"n", "1"}, []interface{}{"n", "2"}},
+			wantTotal: 2,
+			wantRows:  2,
+		},
+		{
+			// A plain reply with one row also has two elements.
+			name:      "RESP2 without cursor, one row",
+			data:      []interface{}{int64(1), []interface{}{"n", "1"}},
+			wantTotal: 1,
+			wantRows:  1,
+		},
+		{
+			name: "RESP2 with cursor",
+			data: []interface{}{
+				[]interface{}{int64(1), []interface{}{"n", "1"}},
+				int64(1684311970),
+			},
+			wantTotal:  1,
+			wantRows:   1,
+			wantCursor: 1684311970,
+		},
+		{
+			name:      "RESP2 exhausted cursor",
+			data:      []interface{}{[]interface{}{int64(0)}, int64(0)},
+			wantTotal: 0,
+			wantRows:  0,
+		},
+		{
+			name: "RESP3 with cursor",
+			data: []interface{}{
+				map[interface{}]interface{}{
+					"total_results": int64(1),
+					"results": []interface{}{
+						map[interface{}]interface{}{
+							"extra_attributes": map[interface{}]interface{}{"n": "1"},
+						},
+					},
+				},
+				int64(3000000000),
+			},
+			wantTotal:  1,
+			wantRows:   1,
+			wantCursor: 3000000000,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseFTAggregateReply(tt.data)
+			if err != nil {
+				t.Fatalf("parseFTAggregateReply: %v", err)
+			}
+			if got.Total != tt.wantTotal || len(got.Rows) != tt.wantRows || got.Cursor != tt.wantCursor {
+				t.Fatalf("got total=%d rows=%d cursor=%d, want total=%d rows=%d cursor=%d",
+					got.Total, len(got.Rows), got.Cursor, tt.wantTotal, tt.wantRows, tt.wantCursor)
+			}
+			if tt.wantRows > 0 && got.Rows[0].Fields["n"] != "1" {
+				t.Fatalf("row fields: %+v", got.Rows[0].Fields)
+			}
+		})
+	}
+}
+
+func TestParseFTAggregateReplyInvalidCursor(t *testing.T) {
+	data := []interface{}{[]interface{}{int64(0)}, "not-an-int"}
+	if _, err := parseFTAggregateReply(data); err == nil {
+		t.Fatal("expected error for non-integer cursor id")
+	}
+}
+
+// Cursor replies as sent by the server: [payload, cursor_id].
+var ftCursorReplies = []struct {
+	name  string
+	reply string
+}{
+	{"RESP2", "*2\r\n*2\r\n:1\r\n*2\r\n$1\r\nn\r\n$1\r\n1\r\n:42\r\n"},
+	{"RESP3", "*2\r\n%2\r\n$13\r\ntotal_results\r\n:1\r\n$7\r\nresults\r\n*1\r\n%1\r\n$16\r\nextra_attributes\r\n%1\r\n$1\r\nn\r\n$1\r\n1\r\n:42\r\n"},
+}
+
+func TestAggregateCmdReadReplyWithCursor(t *testing.T) {
+	for _, tt := range ftCursorReplies {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := NewAggregateCmd(context.Background(), "FT.AGGREGATE", "idx", "*", "WITHCURSOR")
+			if err := cmd.readReply(proto.NewReader(strings.NewReader(tt.reply))); err != nil {
+				t.Fatalf("readReply: %v", err)
+			}
+			for _, c := range []*AggregateCmd{cmd, cmd.Clone().(*AggregateCmd)} {
+				got := c.Val()
+				if got.Cursor != 42 || got.Total != 1 || len(got.Rows) != 1 || got.Rows[0].Fields["n"] != "1" {
+					t.Fatalf("got %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestFTCursorReadReply(t *testing.T) {
+	for _, tt := range ftCursorReplies {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := NewMapStringInterfaceCmd(context.Background(), "FT.CURSOR", "READ", "idx", 42)
+			cmd.parse = readFTCursorReadReply
+			if err := cmd.readReply(proto.NewReader(strings.NewReader(tt.reply))); err != nil {
+				t.Fatalf("readReply: %v", err)
+			}
+			clone := cmd.Clone().(*MapStringInterfaceCmd)
+			if clone.parse == nil {
+				t.Fatal("Clone did not copy parse")
+			}
+			for _, c := range []*MapStringInterfaceCmd{cmd, clone} {
+				got := c.Val()
+				if got["cursor"] != int64(42) || got["total_results"] != 1 {
+					t.Fatalf("got %+v", got)
+				}
+				rows, ok := got["results"].([]map[string]interface{})
+				if !ok || len(rows) != 1 || rows[0]["n"] != "1" {
+					t.Fatalf("results: %#v", got["results"])
+				}
+				if _, ok := got["warning"].([]string); !ok {
+					t.Fatalf("warning: %#v", got["warning"])
+				}
+			}
+		})
 	}
 }

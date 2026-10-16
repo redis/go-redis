@@ -6234,6 +6234,10 @@ type MapStringInterfaceCmd struct {
 	baseCmd
 
 	val map[string]interface{}
+
+	// parse, when set, replaces the default map reader for commands whose
+	// reply is not a map (e.g. FT.CURSOR READ).
+	parse func(rd *proto.Reader) (map[string]interface{}, error)
 }
 
 var _ Cmder = (*MapStringInterfaceCmd)(nil)
@@ -6268,6 +6272,12 @@ func (cmd *MapStringInterfaceCmd) String() string {
 }
 
 func (cmd *MapStringInterfaceCmd) readReply(rd *proto.Reader) error {
+	if cmd.parse != nil {
+		val, err := cmd.parse(rd)
+		cmd.val = val
+		return err
+	}
+
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err
@@ -6307,6 +6317,7 @@ func (cmd *MapStringInterfaceCmd) Clone() Cmder {
 	return &MapStringInterfaceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
+		parse:   cmd.parse,
 	}
 }
 
