@@ -83,4 +83,4 @@ request-response wait between batches. Two examples cover it:
   and pipelines on the full-duplex connection.
 - [`autopipeline-fullduplex-async`](../autopipeline-fullduplex-async): the
   async face, `Submit` and submission windows, on one connection and on
-  several (`NumShards > 1`).
+  several (`FullDuplexPipes > 1`).
