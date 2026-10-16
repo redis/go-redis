@@ -703,6 +703,13 @@ type fdEngine struct {
 	// cluster mode (redirectAware): the ClusterClient's MaxRedirects, injected by the
 	// router. See retryBudget().
 	clusterRetryBudget int
+	// reroute, when set by the engine's owner (AutoPipelineOptions.fdReroute),
+	// runs commands this engine cannot complete on its own connection through the
+	// owner's path, in order: the replayable tail after a connection error (in
+	// place of the same-connection replay) and the carry plus the queue once
+	// lease retries are spent (in place of failing them). nil keeps the
+	// standalone behavior. Set once in newFDEngine.
+	reroute func(ctx context.Context, cmds []Cmder) error
 }
 
 // retryBudget bounds the engine's OWN connection-failure recovery: the lease retry
@@ -819,6 +826,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	} else {
 		fd.reprocess = client.processStartingAt
 	}
+	fd.reroute = ap.config.fdReroute
 	return fd
 }
 
@@ -1337,8 +1345,17 @@ func (fd *fdEngine) run() {
 				fd.sleepBackoff(leaseAttempts)
 				continue // carry unchanged; re-lease
 			}
-			fd.failReqs(carry, aerr)
-			fd.failQueue(aerr)
+			if fd.reroute != nil {
+				// This connection's endpoint cannot be leased, but the owner may
+				// still serve the commands (e.g. through the slot's new master): run
+				// the carry, then the queue, through it in order instead of failing
+				// them. The carry holds no sent NoRetry command (the split already
+				// failed those).
+				fd.rerouteReqs(bg, append(carry, fd.q.drainAll(nil)...))
+			} else {
+				fd.failReqs(carry, aerr)
+				fd.failQueue(aerr)
+			}
 			carry = nil
 			leaseAttempts++
 			fd.sleepBackoff(leaseAttempts)
@@ -1423,6 +1440,13 @@ func (fd *fdEngine) run() {
 						if carry[i].pipelined {
 							carry[i].batch.fdAttempts = carry[i].attempts
 						}
+					}
+					if fd.reroute != nil {
+						// Re-issue through the owner rather than on a fresh connection to
+						// this same endpoint, which may be gone (a cluster node replaced
+						// by topology change). Same set, same order as the replay.
+						fd.rerouteReqs(bg, carry)
+						carry = nil
 					}
 					continue
 				}
@@ -3113,7 +3137,28 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 // fails the remainder so an ordered flush stops rather than running later chunks
 // out of order. Every accepted command still settles (it is failed, not left
 // hanging), honoring accepted⇒completes. See TestFDShutdownFlushAbortsAfterRecoveredPanic.
-func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) (retErr error) {
+func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) error {
+	// Test seam: nil in production, so this is exactly client.processPipelineRetries.
+	run := fd.runPipeline
+	if run == nil {
+		run = fd.client.processPipelineRetries
+	}
+	return fd.flushReqsVia(bg, reqs, maxRetries, run)
+}
+
+// rerouteReqs runs reqs, in order, through the owner's path (fd.reroute) and
+// completes them, with flushReqs' chunking and abort-on-transport-failure. The
+// commands may have been sent once on this engine's connection: the same
+// at-most-once rule as the same-connection replay applies (callers pass only
+// the replayable set, never a sent NoRetry command).
+func (fd *fdEngine) rerouteReqs(bg context.Context, reqs []fdReq) {
+	_ = fd.flushReqsVia(bg, reqs, 0, func(ctx context.Context, cmds []Cmder, _ int) error {
+		return fd.reroute(ctx, cmds)
+	})
+}
+
+// flushReqsVia is flushReqs with an explicit pipeline executor.
+func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries int, run func(context.Context, []Cmder, int) error) (retErr error) {
 	if len(reqs) == 0 {
 		return nil
 	}
@@ -3132,11 +3177,6 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 			fd.failReqs(reqs[i:], retErr)
 		}
 	}()
-	// Test seam: nil in production, so this is exactly client.processPipelineRetries.
-	run := fd.runPipeline
-	if run == nil {
-		run = fd.client.processPipelineRetries
-	}
 	// Same MaxBatchSize/MaxBatchBytes chunking as normal FD writes: reqs can hold a
 	// large window, and one unchunked pipeline would ignore MaxBatchBytes and burst
 	// the connection.
