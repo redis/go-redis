@@ -399,4 +399,51 @@ func TestTracingHook_StatementTruncation_Binary(t *testing.T) {
 			t.Fatalf("expected suffix %q, got %q", expectedSuffix, stmt[len(stmt)-30:])
 		}
 	})
+
+	t.Run("binary payload with remaining budget of 1 byte is not hex expanded", func(t *testing.T) {
+		defer imsb.Reset()
+
+		hook1 := newTracingHook(
+			"redis://localhost:6379",
+			WithTracerProvider(provider),
+			WithDBStatementMaxLen(9),
+		)
+
+		binaryData := bytes.Repeat([]byte{0x00, 0x01, 0x02, 0xff}, 250*1024)
+		cmd := redis.NewCmd(context.Background(), "SET", "key", binaryData)
+		processHook := hook1.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+
+		assertEqual(t, 1, len(imsb.GetSpans()))
+		stmt := getDBStatement(imsb.GetSpans()[0])
+
+		expected := fmt.Sprintf("SET key …(+%d bytes)", len(binaryData))
+		assertEqual(t, expected, stmt)
+	})
+
+	t.Run("large 5MB JSON string with small limit does not copy entire payload", func(t *testing.T) {
+		defer imsb.Reset()
+
+		largeJSON := `{"data":"` + strings.Repeat("a", 5*1024*1024) + `"}`
+		cmd := redis.NewCmd(context.Background(), "SET", "json", largeJSON)
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+
+		assertEqual(t, 1, len(imsb.GetSpans()))
+		stmt := getDBStatement(imsb.GetSpans()[0])
+
+		remaining := 64 - len("SET json ")
+		expected := "SET json " + largeJSON[:remaining] + fmt.Sprintf("…(+%d bytes)", len(largeJSON)-remaining)
+		assertEqual(t, expected, stmt)
+	})
 }

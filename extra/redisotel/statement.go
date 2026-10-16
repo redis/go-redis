@@ -212,27 +212,38 @@ func appendArgTruncated(b []byte, v interface{}, limit int) []byte {
 	case nil:
 		return append(b, "<nil>"...)
 	case string:
-		bytesVal := []byte(v)
-		isHex := !isSimple(bytesVal)
+		checkLen := len(v)
+		if limit > 0 && checkLen > limit {
+			checkLen = limit
+		}
+		isHex := !isSimpleString(v[:checkLen])
 		charLimit := limit
 		if isHex && limit > 0 {
 			charLimit = limit / 2
 		}
-		if charLimit > 0 && len(v) > charLimit {
-			b = appendUTF8String(b, bytesVal[:charLimit])
+		if limit > 0 && len(v) > charLimit {
+			if charLimit > 0 {
+				b = appendUTF8String(b, []byte(v[:charLimit]))
+			}
 			b = append(b, "…(+"...)
 			b = strconv.AppendInt(b, int64(len(v)-charLimit), 10)
 			return append(b, " bytes)"...)
 		}
-		return appendUTF8String(b, bytesVal)
+		return appendUTF8String(b, []byte(v))
 	case []byte:
-		isHex := !isSimple(v)
+		checkLen := len(v)
+		if limit > 0 && checkLen > limit {
+			checkLen = limit
+		}
+		isHex := !isSimple(v[:checkLen])
 		byteLimit := limit
 		if isHex && limit > 0 {
 			byteLimit = limit / 2
 		}
-		if byteLimit > 0 && len(v) > byteLimit {
-			b = appendUTF8String(b, v[:byteLimit])
+		if limit > 0 && len(v) > byteLimit {
+			if byteLimit > 0 {
+				b = appendUTF8String(b, v[:byteLimit])
+			}
 			b = append(b, "…(+"...)
 			b = strconv.AppendInt(b, int64(len(v)-byteLimit), 10)
 			return append(b, " bytes)"...)
@@ -271,10 +282,21 @@ func appendArgTruncated(b []byte, v interface{}, limit int) []byte {
 		return v.AppendFormat(b, time.RFC3339Nano)
 	default:
 		s := fmt.Sprint(v)
-		if limit > 0 && len(s) > limit {
-			b = appendUTF8String(b, []byte(s[:limit]))
+		checkLen := len(s)
+		if limit > 0 && checkLen > limit {
+			checkLen = limit
+		}
+		isHex := !isSimpleString(s[:checkLen])
+		charLimit := limit
+		if isHex && limit > 0 {
+			charLimit = limit / 2
+		}
+		if limit > 0 && len(s) > charLimit {
+			if charLimit > 0 {
+				b = appendUTF8String(b, []byte(s[:charLimit]))
+			}
 			b = append(b, "…(+"...)
-			b = strconv.AppendInt(b, int64(len(s)-limit), 10)
+			b = strconv.AppendInt(b, int64(len(s)-charLimit), 10)
 			return append(b, " bytes)"...)
 		}
 		return appendUTF8String(b, []byte(s))
@@ -291,6 +313,15 @@ func appendUTF8String(dst []byte, src []byte) []byte {
 	dst = append(dst, make([]byte, hex.EncodedLen(len(src)))...)
 	hex.Encode(dst[s:], src)
 	return dst
+}
+
+func isSimpleString(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isSimpleByte(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func isSimple(b []byte) bool {
