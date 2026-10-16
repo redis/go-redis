@@ -481,6 +481,8 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
 	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
+	o.ReadBufferSize = q.int("read_buffer_size")
+	o.WriteBufferSize = q.int("write_buffer_size")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
@@ -498,8 +500,18 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	}
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.PoolTimeout = q.duration("pool_timeout")
-	o.DisableIdentity = q.bool("disableIdentity")
-	o.IdentitySuffix = q.string("identitySuffix")
+	// disableIdentity and identitySuffix are the original camelCase spellings;
+	// the snake_case names match the other URL parsers and the ParseURL docs.
+	if q.has("disable_identity") {
+		o.DisableIdentity = q.bool("disable_identity")
+	} else {
+		o.DisableIdentity = q.bool("disableIdentity")
+	}
+	if q.has("identity_suffix") {
+		o.IdentitySuffix = q.string("identity_suffix")
+	} else {
+		o.IdentitySuffix = q.string("identitySuffix")
+	}
 	o.UnstableResp3 = q.bool("unstable_resp3")
 
 	if q.err != nil {
