@@ -3,6 +3,7 @@ package redisotel
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -65,12 +66,7 @@ func secretArgs(args []interface{}) []bool {
 		// ACL SETUSER username rule...; the >pass, <pass, #hash and !hash rules
 		// embed the credential in the rule itself.
 		for i := 3; i < len(args); i++ {
-			rule := argString(args, i)
-			if len(rule) < 2 {
-				continue
-			}
-			switch rule[0] {
-			case '>', '<', '#', '!':
+			if hasSecretRulePrefix(args[i]) {
 				mark(i)
 			}
 		}
@@ -115,6 +111,24 @@ func equalFoldArg(args []interface{}, i int, want string) bool {
 	return strings.EqualFold(argString(args, i), want)
 }
 
+func hasSecretRulePrefix(v interface{}) bool {
+	switch s := v.(type) {
+	case string:
+		return len(s) >= 2 && isRulePrefix(s[0])
+	case []byte:
+		return len(s) >= 2 && isRulePrefix(s[0])
+	}
+	return false
+}
+
+func isRulePrefix(b byte) bool {
+	switch b {
+	case '>', '<', '#', '!':
+		return true
+	}
+	return false
+}
+
 func argString(args []interface{}, i int) string {
 	if i < 0 || i >= len(args) {
 		return ""
@@ -143,8 +157,14 @@ func buildPipelineStatement(cmds []redis.Cmder, maxLen int) string {
 		return cmdsString
 	}
 	bufCap := 64 * len(cmds)
-	if maxLen > 0 && bufCap > maxLen+64 {
-		bufCap = maxLen + 64
+	if maxLen > 0 {
+		target := maxLen
+		if target < math.MaxInt-64 {
+			target += 64
+		}
+		if bufCap > target {
+			bufCap = target
+		}
 	}
 	b := make([]byte, 0, bufCap)
 	for i, cmd := range cmds {
