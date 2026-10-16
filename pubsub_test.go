@@ -1,7 +1,6 @@
 package redis_test
 
 import (
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -446,80 +445,13 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Payload).To(Equal("world"))
 	})
 
-	It("returns an error when subscribe fails", func() {
-		pubsub := client.Subscribe(ctx)
-		defer pubsub.Close()
-
-		pubsub.SetNetConn(&badConn{
-			readErr:  io.EOF,
-			writeErr: io.EOF,
-		})
-
-		err := pubsub.Subscribe(ctx, "mychannel")
-		Expect(err).To(MatchError("EOF"))
-
-		err = pubsub.Subscribe(ctx, "mychannel")
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	expectReceiveMessageOnError := func(pubsub *redis.PubSub) {
-		pubsub.SetNetConn(&badConn{
-			readErr:  io.EOF,
-			writeErr: io.EOF,
-		})
-
-		step := make(chan struct{}, 3)
-
-		go func() {
-			defer GinkgoRecover()
-
-			Eventually(step).Should(Receive())
-			err := client.Publish(ctx, "mychannel", "hello").Err()
-			Expect(err).NotTo(HaveOccurred())
-			step <- struct{}{}
-		}()
-
-		_, err := pubsub.ReceiveMessage(ctx)
-		Expect(err).To(Equal(io.EOF))
-		step <- struct{}{}
-
-		msg, err := pubsub.ReceiveMessage(ctx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(msg.Channel).To(Equal("mychannel"))
-		Expect(msg.Payload).To(Equal("hello"))
-
-		Eventually(step).Should(Receive())
-	}
-
-	It("Subscribe should reconnect on ReceiveMessage error", func() {
-		pubsub := client.Subscribe(ctx, "mychannel")
-		defer pubsub.Close()
-
-		subscr, err := pubsub.ReceiveTimeout(ctx, time.Second)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(subscr).To(Equal(&redis.Subscription{
-			Kind:    "subscribe",
-			Channel: "mychannel",
-			Count:   1,
-		}))
-
-		expectReceiveMessageOnError(pubsub)
-	})
-
-	It("PSubscribe should reconnect on ReceiveMessage error", func() {
-		pubsub := client.PSubscribe(ctx, "mychannel")
-		defer pubsub.Close()
-
-		subscr, err := pubsub.ReceiveTimeout(ctx, time.Second)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(subscr).To(Equal(&redis.Subscription{
-			Kind:    "psubscribe",
-			Channel: "mychannel",
-			Count:   1,
-		}))
-
-		expectReceiveMessageOnError(pubsub)
-	})
+	// The legacy specs "returns an error when subscribe fails" and
+	// "Subscribe/PSubscribe should reconnect on ReceiveMessage error"
+	// manipulated the PubSub's private connection via SetNetConn. That
+	// connection is now owned by the client's shared pub/sub manager:
+	// reconnect-and-replay is covered by the engine unit tests in
+	// internal/pubsub, and subscribe write failures surface from
+	// Subscribe as before.
 
 	It("should return on Close", func() {
 		pubsub := client.Subscribe(ctx, "mychannel")

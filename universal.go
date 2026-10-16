@@ -114,6 +114,17 @@ type UniversalOptions struct {
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
 
+	// The PubSub* fields configure the pub/sub engine of the failover and
+	// standalone clients. See the same-named fields on Options for
+	// details and defaults. Not used by the cluster client yet.
+	PubSubChanSize               int
+	PubSubHealthCheckInterval    time.Duration
+	PubSubSubscribeRetryInterval time.Duration
+	PubSubPingTimeout            time.Duration
+	PubSubReconnectTimeout       time.Duration
+	PubSubReconnectMaxBackoff    time.Duration
+	PubSubLogInterval            time.Duration
+
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
@@ -340,6 +351,14 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
 		PipelinePoolSize:        o.PipelinePoolSize,
 
+		PubSubChanSize:               o.PubSubChanSize,
+		PubSubHealthCheckInterval:    o.PubSubHealthCheckInterval,
+		PubSubSubscribeRetryInterval: o.PubSubSubscribeRetryInterval,
+		PubSubPingTimeout:            o.PubSubPingTimeout,
+		PubSubReconnectTimeout:       o.PubSubReconnectTimeout,
+		PubSubReconnectMaxBackoff:    o.PubSubReconnectMaxBackoff,
+		PubSubLogInterval:            o.PubSubLogInterval,
+
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
 		MaxConcurrentDials:    o.MaxConcurrentDials,
@@ -404,6 +423,14 @@ func (o *UniversalOptions) Simple() *Options {
 		PipelineReadBufferSize:  o.PipelineReadBufferSize,
 		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
 		PipelinePoolSize:        o.PipelinePoolSize,
+
+		PubSubChanSize:               o.PubSubChanSize,
+		PubSubHealthCheckInterval:    o.PubSubHealthCheckInterval,
+		PubSubSubscribeRetryInterval: o.PubSubSubscribeRetryInterval,
+		PubSubPingTimeout:            o.PubSubPingTimeout,
+		PubSubReconnectTimeout:       o.PubSubReconnectTimeout,
+		PubSubReconnectMaxBackoff:    o.PubSubReconnectMaxBackoff,
+		PubSubLogInterval:            o.PubSubLogInterval,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
