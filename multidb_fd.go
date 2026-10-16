@@ -311,26 +311,40 @@ func (r *multidbFDRouter) childFor(db *multidbDatabase) (*AutoPipeliner, bool) {
 		return nil, false
 	}
 	child, err := r.newChild(db)
+	// Tie the entry (child or noFD mark) to the member's removal before
+	// publishing it, under r.mu: the hook takes r.mu, so a removal racing this
+	// either finds the entry published, or has already run and register
+	// reports false.
+	registered := r.registerRemoveLocked(db)
 	if err != nil || child == nil {
-		r.noFD[db] = struct{}{}
+		if registered {
+			r.noFD[db] = struct{}{}
+		}
 		return nil, false
 	}
-	// Tie the child to the member's removal before publishing it, under r.mu:
-	// the hook takes r.mu, so a removal racing this either finds the child
-	// published, or has already run and register reports false.
+	if !registered {
+		go func() { _ = child.Close() }()
+		return nil, false
+	}
+	r.children[db] = child
+	return child, false
+}
+
+// registerRemoveLocked registers this router's onRemove hook on db (dropChild,
+// which clears both the child and the noFD mark). It reports false when db's
+// removal already ran. r.mu MUST be held.
+func (r *multidbFDRouter) registerRemoveLocked(db *multidbDatabase) bool {
 	if !db.onRemove.register(r.removeHookID(), func() error {
 		r.dropChild(db)
 		return nil
 	}) {
-		go func() { _ = child.Close() }()
-		return nil, false
+		return false
 	}
 	if r.removeHooks == nil {
 		r.removeHooks = make(map[*multidbDatabase]struct{})
 	}
 	r.removeHooks[db] = struct{}{}
-	r.children[db] = child
-	return child, false
+	return true
 }
 
 func (r *multidbFDRouter) removeHookID() string {

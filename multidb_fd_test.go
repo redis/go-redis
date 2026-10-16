@@ -859,3 +859,39 @@ func TestMultiDBFullDuplexLaneSwitchesToActive(t *testing.T) {
 		t.Fatalf("Get = %q, %v; want new", got, err)
 	}
 }
+
+// Removing a member that could not run full duplex drops its noFD mark at
+// once, without waiting for a later cache miss.
+func TestMultiDBFullDuplexRemoveClearsNoFD(t *testing.T) {
+	requireLocalRedis(t)
+	noPool := MultiDBClientConfig{
+		Options: &Options{Addr: ":6379", PipelinePoolSize: -1, MaxRetries: -1},
+		Weight:  1,
+	}
+	mdb := newFDTestMultiDB(t, member(":6379", 2), noPool)
+	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+	ctx := context.Background()
+	r := ap.mdbFD
+	db1 := mdb.core.dbByID(1)
+	if child, _ := r.childFor(db1); child != nil {
+		t.Fatal("member without a pipeline pool got an FD child")
+	}
+	r.mu.RLock()
+	_, marked := r.noFD[db1]
+	r.mu.RUnlock()
+	if !marked {
+		t.Fatal("member without FD not marked")
+	}
+	if err := mdb.RemoveDatabase(ctx, 1); err != nil {
+		t.Fatalf("RemoveDatabase: %v", err)
+	}
+	r.mu.RLock()
+	_, marked = r.noFD[db1]
+	r.mu.RUnlock()
+	if marked {
+		t.Fatal("removed member still in the noFD cache")
+	}
+}

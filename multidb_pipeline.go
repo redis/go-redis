@@ -898,6 +898,13 @@ func (c *MultiDBClient) canPipeline(ctx context.Context, cmd Cmder) bool {
 //   - Pipeline() and TxPipeline() keep using MultiDB's pipeline path.
 //   - The breaker episode and detector window an outcome counts toward are
 //     the ones current when the reply lands.
+//   - Config().FullDuplex reports that the full-duplex router is installed,
+//     not that every member runs full duplex. A member whose own config
+//     cannot host it (PipelinePoolSize < 0; a cluster member with ReadOnly,
+//     RouteByLatency or RouteRandomly; a child build error) always takes
+//     MultiDB's half-duplex path. Any member does so for a while when there
+//     is no active member, a failover is pending, or its breaker is open or
+//     half-open.
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AutoPipeline() (*AutoPipeliner, error) {

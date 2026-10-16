@@ -86,6 +86,10 @@ aggregating correctly; only single-node commands route through a child.
   `flushReqsVia` reports per-command metrics before it completes a command, as the
   reader does. Standalone FD (no owner) keeps the same-connection replay and
   fail-fast paths.
+- **Hooks on recovery**: recovery attempts (the reroute and the MOVED/ASK
+  reprocess) run nested inside the command's `hostHook`, so node pipeline/process
+  hooks see them as nested spans. Making internal recovery hookless is a separate
+  hook-semantics change.
 - **Fallback to `Process`**: routing (`childFor`/`getOrCreateChild`) resolves the
   owning node from live cluster state on every submit. A keyless command, an
   unresolved slot, a not-yet-loaded topology, or a node whose client turns out
@@ -161,7 +165,11 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
   "Cluster-level process hooks on the cluster FD fast path"; register per node
   via `OnNewNode`). `Pipeline()`/`TxPipeline()` stay on MultiDB's pipeline path;
   NumShards forced to 1; outcomes count toward the episode/window current when
-  the reply lands.
+  the reply lands. `Config().FullDuplex` means the router is installed, not that
+  every member runs FD: a member that cannot host it (`PipelinePoolSize < 0`,
+  replica routing on a cluster member, a build error) always goes half-duplex,
+  and any member does while the fast path is unavailable (no active member,
+  failover pending, breaker open/half-open).
 
 ## Panic boundaries
 

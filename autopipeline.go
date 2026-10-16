@@ -1424,6 +1424,11 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// MultiDB full duplex: like cluster FD, a router over per-member FD children
 	// (multidbFDRouter) and one flusherless shard. The parent keeps diversion;
 	// each child is a standalone or cluster FD autopipeliner on its member.
+	// Config().FullDuplex then reports that the router is installed: a member
+	// that cannot host full duplex (no pipeline pool, replica routing on a
+	// cluster member, a build error) takes MultiDB's half-duplex path, as does
+	// any member while the fast path is unavailable (see
+	// MultiDBClient.AutoPipeline).
 	var mdbFDClient *MultiDBClient
 	if !fdOn && !clusterFDOn && mdbFDReq {
 		if mc, ok := pipeliner.(*MultiDBClient); ok {
