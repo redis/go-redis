@@ -259,16 +259,19 @@ type AutoPipelineOptions struct {
 	// that connection or failed: the replayable tail after a connection error,
 	// and the carry plus the queue once lease retries are spent. A cluster child
 	// reroutes through the ClusterClient, so a node that went away does not
-	// strand its accepted commands. Never set by users (unexported). See
+	// strand its accepted commands. maxRetries bounds the owner's retry loop
+	// (0 = one execution): the commands' remaining retry budget, so a command
+	// already issued on the child's connection does not get a fresh one. Shutdown
+	// flushes run through it too. Never set by users (unexported). See
 	// fdEngine.reroute.
-	fdReroute func(ctx context.Context, cmds []Cmder) error
+	fdReroute func(ctx context.Context, cmds []Cmder, maxRetries int) error
 
 	// fdOutcome is set internally by an owner that accounts per command (the
 	// MultiDB full-duplex router: breaker and failure detector). The engine
 	// calls it with every command's final outcome it settles itself, and with
 	// the failed attempt of every command it reroutes. Never set by users
-	// (unexported). See fdEngine.finish.
-	fdOutcome func(cmd Cmder, err error)
+	// (unexported). ctx is the command's submit context. See fdEngine.finish.
+	fdOutcome func(ctx context.Context, cmd Cmder, err error)
 
 	// fdOwnerRetries and fdRetryBudget are set internally by an owner that has
 	// its own retry policy (the MultiDB full-duplex router, from CommandRetries;
@@ -595,6 +598,12 @@ type apBatch struct {
 	// fdFlushed is set when the Close-time flush ran this pipelined command
 	// through the pooled pipeline, which recorded the pipeline metric itself.
 	fdFlushed bool
+	// fdOutcomeOwed is set by the full-duplex engine, before it releases a
+	// hooked command's host, when the owner's outcome report (fdOutcome) is
+	// still owed: the host reports it after the hook chain returns, so the
+	// owner sees the chain's final result. False for commands whose outcome
+	// the owner's own path settled (a reroute).
+	fdOutcomeOwed bool
 	// closed makes close() idempotent: on the async faces the dispatch closes
 	// the batch at the innermost exec seam (under the user hooks, so a hook
 	// reading a result after next() does not block on a channel its own
@@ -1307,8 +1316,12 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			fdOn, fdClient = true, c
 		}
 	}
+	// MultiDB full duplex forces NumShards to 1 (see the mdbFD branch below), so
+	// it is exempt here: rejecting first would make that coercion unreachable.
+	_, isMultiDB := pipeliner.(*MultiDBClient)
+	mdbFDReq := isMultiDB && config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1
 	if config.NumShards > 1 && !config.Unordered && !blocking &&
-		!config.contentSharded && !fdOn {
+		!config.contentSharded && !fdOn && !mdbFDReq {
 		return nil, fmt.Errorf(
 			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
@@ -1412,7 +1425,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// (multidbFDRouter) and one flusherless shard. The parent keeps diversion;
 	// each child is a standalone or cluster FD autopipeliner on its member.
 	var mdbFDClient *MultiDBClient
-	if !fdOn && !clusterFDOn && config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 {
+	if !fdOn && !clusterFDOn && mdbFDReq {
 		if mc, ok := pipeliner.(*MultiDBClient); ok {
 			mdbFDClient = mc
 			nShards = 1
@@ -1468,7 +1481,8 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 					"redis: AutoPipelineOptions.NumShards=%d needs a pipeline pool of at "+
 						"least %d connections (each full-duplex engine holds one), but "+
 						"PipelinePoolSize gives %d; raise Options.PipelinePoolSize or lower "+
-						"NumShards", n, n, pp.Size())
+						"NumShards", n, n, pp.Size(),
+				)
 			}
 		}
 		// One flusherless shard, exactly as the single-engine path does: no

@@ -710,7 +710,10 @@ func (c *MultiDBClient) AddHook(hook Hook) {
 // process and pipeline chains only. It does not reach the per-node *Client
 // instances the cluster dials internally, so a DialHook never runs for a
 // cluster member's connections. There is currently no MultiDB API to reach
-// those per-node clients.
+// those per-node clients. For the same reason a cluster member's hook does
+// not run on a full-duplex autopipeliner (AutoPipelineOptions.FullDuplex),
+// which sends through the node clients; use ClusterOptions.OnNewNode in the
+// member's config for hooks that must run there.
 func (c *MultiDBClient) AddDatabaseHook(id int, hook Hook) error {
 	return c.core.addDatabaseHook(id, hook)
 }

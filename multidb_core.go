@@ -55,6 +55,11 @@ type multidbDatabase struct {
 	// otherwise ping-pong. Re-checked lock-free in tryFallbackToPrimary.
 	noFallbackBefore atomic.Int64
 
+	// onRemove runs when RemoveDatabase takes the member out, before its
+	// client is closed. Full-duplex routers register here to drain and close
+	// the private child they built for the member (see multidbFDRouter).
+	onRemove onCloseHooks
+
 	// cbq delivers user circuit-state callbacks asynchronously (FIFO). Breaker
 	// state changes fire deep inside locked sections (failoverMu is held
 	// during manual selection, pre-failover probes and AddDatabase probes);
@@ -1684,6 +1689,9 @@ func (c *multidbCore) removeDatabase(ctx context.Context, id int) error {
 	if err != nil {
 		return err
 	}
+	// Drain what was built on the member (full-duplex children) while its
+	// client is still open, then close the client.
+	_ = db.onRemove.run()
 	return db.closeClient()
 }
 

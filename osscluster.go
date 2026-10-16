@@ -2015,6 +2015,15 @@ func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error)
 }
 
 func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.processPipelineRetries(ctx, cmds, c.opt.MaxRedirects)
+}
+
+// processPipelineRetries is processPipeline with an explicit bound on the
+// redirect/retry loop in place of MaxRedirects: the pipeline runs at most
+// maxRedirects+1 times. A full-duplex node child reroutes through it with the
+// commands' remaining budget, so a command already issued on the child's
+// connection is not given a fresh MaxRedirects+1 executions.
+func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder, maxRedirects int) error {
 	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
 	var operationStart time.Time
 	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
@@ -2035,7 +2044,7 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+	for attempt := 0; attempt <= maxRedirects; attempt++ {
 		totalAttempts++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {

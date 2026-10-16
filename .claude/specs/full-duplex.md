@@ -70,15 +70,22 @@ aggregating correctly; only single-node commands route through a child.
   `clusterRetryBudget`, which `fdEngine.retryBudget()` substitutes in when
   `redirectAware`.
 - **Connection-error and lease-failure recovery (`fdReroute`)**: the router sets
-  each child's `AutoPipelineOptions.fdReroute` to `cc.processPipeline`. When a
+  each child's `AutoPipelineOptions.fdReroute` to `cc.processPipelineRetries`. When a
   child's session drops, the replayable tail (after the budget partition and the
   sent-`NoRetry` split, same set and order as the same-connection replay) runs
   through the ClusterClient pipeline instead, which routes each command by its slot
   against live topology. When lease retries are spent, the carry and then the queue
   go the same way instead of failing. So a node that topology GC closed or replaced
-  does not strand its accepted commands. `fdEngine.rerouteReqs` reuses `flushReqs`'
-  chunking and abort-on-transport-failure; standalone FD (no owner) keeps the
-  same-connection replay and fail-fast paths.
+  does not strand its accepted commands. The Close-time flush (`flushReqs`) also
+  goes through the owner, so a child closed by topology GC does not flush through
+  its dropped node. `fdEngine.rerouteReqs` reuses `flushCarryBudgeted`: each group
+  passes its remaining budget (`fdCarryRemainingRetries`) as the owner's retry
+  bound, so a command never runs more than budget+1 times in total. `runReroute`
+  returns a per-command transport error even when the owner returns an earlier
+  Redis error (`redis.Nil`), so the abort-on-transport-failure rule still holds.
+  `flushReqsVia` reports per-command metrics before it completes a command, as the
+  reader does. Standalone FD (no owner) keeps the same-connection replay and
+  fail-fast paths.
 - **Fallback to `Process`**: routing (`childFor`/`getOrCreateChild`) resolves the
   owning node from live cluster state on every submit. A keyless command, an
   unresolved slot, a not-yet-loaded topology, or a node whose client turns out
@@ -116,9 +123,13 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
     breaker (`CurrentClosedReservation`: current closed episode only) and the
     detector (only while the member is active, current window). `reportOutcome`
     reads `rawErr()`: `Err()` waits on the async face's batch, which the engine
-    completes after reporting.
-  - `fdReroute` = `core.processPipeline` — dropped tail, lease failure and the
-    close-time backlog go through MultiDB to whichever member it selects.
+    completes after reporting. A hooked command reports from `hostHook` after
+    the member hook chain returns (`apBatch.fdOutcomeOwed`), so the owner sees
+    the chain's final result. An error is skipped only when the caller's own
+    ctx ended (as in `core.process`).
+  - `fdReroute` = `core.processPipelineRetries` — dropped tail, lease failure and
+    the close-time backlog go through MultiDB to whichever member it selects,
+    bounded by the commands' remaining `CommandRetries` budget.
   - `fdOwnerRetries` + `fdRetryBudget` = `CommandRetries` (0 = none): bounds
     re-issues; a failed lease reroutes at once (no lease retries against a dead
     member; `CommandRetries=MaxInt` must not hang).
@@ -131,8 +142,21 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
   waits for its command).
 - **No-FD members** (no pipeline pool, replica routing): remembered in `noFD`,
   their commands divert without rebuilding a child.
-- **v1 limits**: `MultiDBClient.AddHook` hooks do not run on the FD path (member
-  hooks do); `Pipeline()`/`TxPipeline()` stay on MultiDB's pipeline path;
+- **Cluster member misses**: a command the member's `clusterFDRouter` cannot
+  place on a node child (keyless, topology miss, non-FD node) runs through
+  `clusterFDRouter.ownerDivert` = the MultiDB router's divert, not
+  `db.cc.Process`, so MultiDB admission, accounting and failover still apply.
+- **Member removal**: each child registers on `multidbDatabase.onRemove`;
+  `RemoveDatabase` runs it before closing the member's client, which drains and
+  closes the child.
+- `Len` counts the children and the `hd` lane (`hd` is atomic so `Len` does not
+  wait out a lane switch's drain).
+- **v1 limits**: `MultiDBClient.AddHook` hooks do not run on the FD path. A
+  standalone member's hooks (`AddDatabaseHook`) do; a cluster member's do not,
+  because `AddDatabaseHook` installs them on the `ClusterClient` and the cluster
+  FD router sends through node clients (same as plain cluster FD, see
+  "Cluster-level process hooks on the cluster FD fast path"; register per node
+  via `OnNewNode`). `Pipeline()`/`TxPipeline()` stay on MultiDB's pipeline path;
   NumShards forced to 1; outcomes count toward the episode/window current when
   the reply lands.
 

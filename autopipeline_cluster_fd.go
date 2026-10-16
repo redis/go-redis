@@ -52,6 +52,13 @@ type clusterFDRouter struct {
 	// the stale-child sweep and the hook itself drop children entries while the
 	// registration on the node client stays live.
 	evictHooks map[*Client]struct{}
+
+	// ownerDivert, when set by an owner above this router (MultiDB), runs a
+	// command this router cannot place on a node child through the owner's
+	// path instead of cc.Process, so it keeps the owner's admission,
+	// accounting, retries and failover. Set once before the router serves
+	// traffic.
+	ownerDivert func(ctx context.Context, cmd Cmder) AutoFuture
 }
 
 // clusterFDRouterEvictID is the onClose registry id of this router's evict
@@ -95,9 +102,10 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	// connection to this node. A node removed or replaced by topology change
 	// would otherwise exhaust the budget and fail every accepted command on it.
 	// An owner above this router (MultiDB) may have set its own reroute, which
-	// already covers this cluster: keep it.
+	// already covers this cluster: keep it. The engine passes each group's
+	// remaining budget as the redirect bound.
 	if child.fdReroute == nil {
-		child.fdReroute = cc.processPipeline
+		child.fdReroute = cc.processPipelineRetries
 	}
 	return &clusterFDRouter{
 		parent:   parent,
@@ -201,6 +209,9 @@ func (r *clusterFDRouter) rejectClosed(cmd Cmder) AutoFuture {
 // ready itself on the deferred face and returns a batch that completes when
 // the command has executed.
 func (r *clusterFDRouter) divertToProcess(ctx context.Context, cmd Cmder) AutoFuture {
+	if r.ownerDivert != nil {
+		return r.ownerDivert(ctx, cmd)
+	}
 	return AutoFuture{cmd: cmd, batch: r.parent.runOutsidePipeline(ctx, cmd)}
 }
 

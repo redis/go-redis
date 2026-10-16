@@ -225,6 +225,15 @@ func cmdsContainHImport(cmds []Cmder) bool {
 // a failover. Delivery is at-least-once when retries are enabled: a
 // connection that broke mid-pipeline may have executed a prefix server-side.
 func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.processPipelineRetries(ctx, cmds, c.opts.CommandRetries)
+}
+
+// processPipelineRetries is processPipeline with an explicit retry bound in
+// place of CommandRetries: the batch runs at most maxRetries+1 times. The
+// full-duplex router reroutes through it with the commands' remaining budget,
+// so a command already issued on the member's FD connection does not get a
+// fresh CommandRetries+1 executions.
+func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, maxRetries int) error {
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -255,8 +264,11 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		cmds = kept
 		himportRejected = true
 	}
-	attempts := c.opts.CommandRetries + 1
-	if c.opts.CommandRetries == math.MaxInt {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	attempts := maxRetries + 1
+	if maxRetries == math.MaxInt {
 		// Guard the +1 against wrapping to a negative attempt count — which
 		// would skip the loop and silently drop the batch (returning nil).
 		// Mirrors the single-command path in process().
@@ -877,7 +889,12 @@ func (c *MultiDBClient) canPipeline(ctx context.Context, cmd Cmder) bool {
 //     commands already accepted for the old one have completed, so submitters
 //     stall briefly at that point.
 //   - Process hooks added with MultiDBClient.AddHook do not run on the
-//     full-duplex path; member hooks (AddDatabaseHook) do.
+//     full-duplex path. A standalone member's process hooks
+//     (AddDatabaseHook) do. On a cluster member, AddDatabaseHook installs
+//     the hook on the *ClusterClient, which the full-duplex path bypasses:
+//     only the node clients' hooks run, as with full duplex on a plain
+//     ClusterClient. Register such hooks per node with
+//     ClusterOptions.OnNewNode in the member's config.
 //   - Pipeline() and TxPipeline() keep using MultiDB's pipeline path.
 //   - The breaker episode and detector window an outcome counts toward are
 //     the ones current when the reply lands.

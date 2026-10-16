@@ -314,11 +314,20 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 // in the current closed episode, and nothing while the circuit is open or
 // half-open, so a late outcome cannot re-open or close a recovery episode it
 // never probed.
+//
+// The state and generation are read as a seqlock: generation, state,
+// generation again. Every transition into a new episode (Reset, Open ->
+// HalfOpen) bumps the generation before it publishes the new state, so an
+// unchanged generation around a Closed read means the generation belongs to
+// that closed episode. Without the re-check, a Closed read followed by a
+// Closed -> Open -> HalfOpen cycle would pair the old Closed state with the
+// new episode's generation. Lock-free: this runs once per reply.
 func (cb *CircuitBreaker) CurrentClosedReservation() (Reservation, bool) {
-	if State(cb.state.Load()) != StateClosed {
+	gen := cb.generation.Load()
+	if State(cb.state.Load()) != StateClosed || cb.generation.Load() != gen {
 		return Reservation{}, false
 	}
-	return Reservation{gen: cb.generation.Load()}, true
+	return Reservation{gen: gen}, true
 }
 
 // Held reports whether the reservation holds a half-open probe slot (a

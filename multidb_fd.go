@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -53,11 +54,16 @@ type multidbFDRouter struct {
 	// Async face only: one ordered lane at a time (see submitOrdered). lane is
 	// the autopipeliner commands go to now: the active member's FD child, or hd,
 	// an ordered half-duplex MultiDB autopipeliner for commands that cannot
-	// take the fast path. laneMu serializes lane switches and guards hd.
+	// take the fast path. laneMu serializes lane switches and hd writes; hd is
+	// atomic so len can read it without waiting out a lane switch's drain.
 	lane   atomic.Pointer[AutoPipeliner]
 	laneMu sync.Mutex
-	hd     *AutoPipeliner
+	hd     atomic.Pointer[AutoPipeliner]
 	hdCfg  AutoPipelineOptions
+
+	// removeHooks holds the members this router registered an onRemove hook
+	// on (see childFor), so close can unregister them. Guarded by mu.
+	removeHooks map[*multidbDatabase]struct{}
 }
 
 func newMultiDBFDRouter(parent *AutoPipeliner, c *MultiDBClient, cfg *AutoPipelineOptions, blocking bool) *multidbFDRouter {
@@ -186,15 +192,15 @@ func (r *multidbFDRouter) hdLane() (ap *AutoPipeliner, reject bool) {
 	if r.isClosed() {
 		return nil, true
 	}
-	if r.hd != nil && !r.hd.IsClosed() {
-		return r.hd, false
+	if hd := r.hd.Load(); hd != nil && !hd.IsClosed() {
+		return hd, false
 	}
 	cfg := r.hdCfg
 	hd, err := r.c.newMultiDBAutoPipeliner(&cfg, false)
 	if err != nil {
 		return nil, false
 	}
-	r.hd = hd
+	r.hd.Store(hd)
 	return hd, false
 }
 
@@ -216,9 +222,7 @@ func (r *multidbFDRouter) switchLane(want *AutoPipeliner) (closed bool) {
 		// is rebuilt by childFor on its next use; a closed hd by hdLane.
 		_ = cur.Close()
 		_ = cur.WaitClosed()
-		if cur == r.hd {
-			r.hd = nil
-		}
+		r.hd.CompareAndSwap(cur, nil)
 	}
 	r.lane.Store(want)
 	return false
@@ -295,8 +299,42 @@ func (r *multidbFDRouter) childFor(db *multidbDatabase) (*AutoPipeliner, bool) {
 		r.noFD[db] = struct{}{}
 		return nil, false
 	}
+	// Tie the child to the member's removal before publishing it, under r.mu:
+	// the hook takes r.mu, so a removal racing this either finds the child
+	// published, or has already run and register reports false.
+	if !db.onRemove.register(r.removeHookID(), func() error {
+		r.dropChild(db)
+		return nil
+	}) {
+		go func() { _ = child.Close() }()
+		return nil, false
+	}
+	if r.removeHooks == nil {
+		r.removeHooks = make(map[*multidbDatabase]struct{})
+	}
+	r.removeHooks[db] = struct{}{}
 	r.children[db] = child
 	return child, false
+}
+
+func (r *multidbFDRouter) removeHookID() string {
+	return fmt.Sprintf("multidbFDRouter#%p", r)
+}
+
+// dropChild drains and closes db's child when db is removed. It runs before
+// the member's client is closed, so the child flushes its accepted commands
+// while the member is still open.
+func (r *multidbFDRouter) dropChild(db *multidbDatabase) {
+	r.mu.Lock()
+	ch := r.children[db]
+	delete(r.children, db)
+	delete(r.noFD, db)
+	delete(r.removeHooks, db)
+	r.mu.Unlock()
+	if ch != nil {
+		_ = ch.Close()
+		_ = ch.WaitClosed()
+	}
 }
 
 // newChild builds db's FD child with the owner wiring: outcomes settle into
@@ -306,8 +344,11 @@ func (r *multidbFDRouter) childFor(db *multidbDatabase) (*AutoPipeliner, bool) {
 func (r *multidbFDRouter) newChild(db *multidbDatabase) (*AutoPipeliner, error) {
 	core := r.c.core
 	cfg := r.childCfg
-	cfg.fdOutcome = func(cmd Cmder, err error) { core.settleFDOutcome(db, cmd, err) }
-	cfg.fdReroute = core.processPipeline
+	cfg.fdOutcome = func(ctx context.Context, cmd Cmder, err error) { core.settleFDOutcome(ctx, db, cmd, err) }
+	// The engine passes the commands' remaining budget (derived from
+	// fdRetryBudget below) as the retry bound, so a rerouted command never
+	// runs more than CommandRetries+1 times in total.
+	cfg.fdReroute = core.processPipelineRetries
 	// Recovery follows MultiDB's retry policy, not the member's MaxRetries
 	// (members commonly run with retries off): a dropped session's tail gets
 	// re-issued through MultiDB as often as core.process would retry.
@@ -322,6 +363,11 @@ func (r *multidbFDRouter) newChild(db *multidbDatabase) (*AutoPipeliner, error) 
 		child, err = newAutoPipeliner(db.cc, clusterAutoPipelineOptions(&cfg), r.blocking)
 		if err == nil {
 			db.cc.installAutoPipelineSharding(child)
+			if child.clusterFD != nil {
+				// Routing misses (keyless command, topology miss, a node
+				// without FD) take MultiDB's path, not db.cc.Process.
+				child.clusterFD.ownerDivert = r.divert
+			}
 		}
 	} else {
 		child, err = newAutoPipeliner(db.c, &cfg, r.blocking)
@@ -336,13 +382,17 @@ func (r *multidbFDRouter) newChild(db *multidbDatabase) (*AutoPipeliner, error) 
 	return child, nil
 }
 
-// len sums the children's backlog, for AutoPipeliner.Len.
+// len sums the backlog of the children and of the half-duplex lane, for
+// AutoPipeliner.Len. hd is never one of the children.
 func (r *multidbFDRouter) len() int {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	total := 0
 	for _, ch := range r.children {
 		total += ch.Len()
+	}
+	r.mu.RUnlock()
+	if hd := r.hd.Load(); hd != nil {
+		total += hd.Len()
 	}
 	return total
 }
@@ -358,11 +408,18 @@ func (r *multidbFDRouter) close() error {
 		children = append(children, ch)
 	}
 	r.children = make(map[*multidbDatabase]*AutoPipeliner)
+	hooked := make([]*multidbDatabase, 0, len(r.removeHooks))
+	for db := range r.removeHooks {
+		hooked = append(hooked, db)
+	}
+	r.removeHooks = nil
 	r.mu.Unlock()
+	for _, db := range hooked {
+		db.onRemove.unregister(r.removeHookID())
+	}
 	r.laneMu.Lock()
-	if r.hd != nil {
-		children = append(children, r.hd)
-		r.hd = nil
+	if hd := r.hd.Swap(nil); hd != nil {
+		children = append(children, hd)
 	}
 	r.lane.Store(nil)
 	r.laneMu.Unlock()
@@ -385,10 +442,12 @@ func (r *multidbFDRouter) close() error {
 // failure detector only while db is still the active member. The breaker
 // episode and the detector window are the current ones (see multidbFDRouter).
 // Runs on the child's reader or engine goroutine: it must not block.
-func (c *multidbCore) settleFDOutcome(db *multidbDatabase, cmd Cmder, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		// The caller's context, not a health signal (core.process skips these
-		// the same way).
+func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, cmd Cmder, err error) {
+	if err != nil && ctx != nil && ctx.Err() != nil {
+		// The caller's own context ended: a client-side signal, not a health
+		// verdict (core.process skips it the same way). A context error with
+		// the caller's context still live (a member-side dial or limiter
+		// deadline) is classified like any other error.
 		return
 	}
 	kind := classifyOutcome(err, cmd.readTimeout() == nil)
