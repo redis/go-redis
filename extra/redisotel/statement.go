@@ -142,7 +142,11 @@ func buildPipelineStatement(cmds []redis.Cmder, maxLen int) string {
 		_, cmdsString := rediscmd.CmdsString(cmds)
 		return cmdsString
 	}
-	b := make([]byte, 0, 64*len(cmds))
+	bufCap := 64 * len(cmds)
+	if maxLen > 0 && bufCap > maxLen+64 {
+		bufCap = maxLen + 64
+	}
+	b := make([]byte, 0, bufCap)
 	for i, cmd := range cmds {
 		if maxLen > 0 && len(b) >= maxLen {
 			b = append(b, "\n…"...)
@@ -184,7 +188,15 @@ func appendCmdTruncated(b []byte, cmd redis.Cmder, maxLen int) []byte {
 			b = append(b, redactedArg...)
 			continue
 		}
-		b = appendArgTruncated(b, arg, maxLen)
+		remaining := maxLen
+		if maxLen > 0 {
+			remaining = maxLen - len(b)
+			if remaining <= 0 {
+				b = append(b, "…"...)
+				break
+			}
+		}
+		b = appendArgTruncated(b, arg, remaining)
 	}
 
 	if err := cmd.Err(); err != nil {
@@ -200,18 +212,29 @@ func appendArgTruncated(b []byte, v interface{}, limit int) []byte {
 	case nil:
 		return append(b, "<nil>"...)
 	case string:
-		if limit > 0 && len(v) > limit {
-			b = appendUTF8String(b, []byte(v[:limit]))
+		bytesVal := []byte(v)
+		isHex := !isSimple(bytesVal)
+		charLimit := limit
+		if isHex && limit > 0 {
+			charLimit = limit / 2
+		}
+		if charLimit > 0 && len(v) > charLimit {
+			b = appendUTF8String(b, bytesVal[:charLimit])
 			b = append(b, "…(+"...)
-			b = strconv.AppendInt(b, int64(len(v)-limit), 10)
+			b = strconv.AppendInt(b, int64(len(v)-charLimit), 10)
 			return append(b, " bytes)"...)
 		}
-		return appendUTF8String(b, []byte(v))
+		return appendUTF8String(b, bytesVal)
 	case []byte:
-		if limit > 0 && len(v) > limit {
-			b = appendUTF8String(b, v[:limit])
+		isHex := !isSimple(v)
+		byteLimit := limit
+		if isHex && limit > 0 {
+			byteLimit = limit / 2
+		}
+		if byteLimit > 0 && len(v) > byteLimit {
+			b = appendUTF8String(b, v[:byteLimit])
 			b = append(b, "…(+"...)
-			b = strconv.AppendInt(b, int64(len(v)-limit), 10)
+			b = strconv.AppendInt(b, int64(len(v)-byteLimit), 10)
 			return append(b, " bytes)"...)
 		}
 		return appendUTF8String(b, v)

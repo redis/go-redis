@@ -48,8 +48,9 @@ func TestTracingHook_StatementTruncation_Default(t *testing.T) {
 		assertEqual(t, 1, len(imsb.GetSpans()))
 		stmt := getDBStatement(imsb.GetSpans()[0])
 
-		expectedPrefix := "SET mykey " + strings.Repeat("x", DefaultDBStatementMaxLen)
-		expectedSuffix := fmt.Sprintf("…(+%d bytes)", 1024*1024-DefaultDBStatementMaxLen)
+		remaining := DefaultDBStatementMaxLen - len("SET mykey ")
+		expectedPrefix := "SET mykey " + strings.Repeat("x", remaining)
+		expectedSuffix := fmt.Sprintf("…(+%d bytes)", 1024*1024-remaining)
 		expected := expectedPrefix + expectedSuffix
 
 		if stmt != expected {
@@ -77,7 +78,7 @@ func TestTracingHook_StatementTruncation_Default(t *testing.T) {
 	t.Run("payload at exact limit is not truncated", func(t *testing.T) {
 		defer imsb.Reset()
 
-		exactVal := strings.Repeat("b", DefaultDBStatementMaxLen)
+		exactVal := strings.Repeat("b", DefaultDBStatementMaxLen-len("SET mykey "))
 		cmd := redis.NewCmd(context.Background(), "SET", "mykey", exactVal)
 		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
 			return nil
@@ -95,7 +96,8 @@ func TestTracingHook_StatementTruncation_Default(t *testing.T) {
 	t.Run("payload one byte above limit is truncated", func(t *testing.T) {
 		defer imsb.Reset()
 
-		val := strings.Repeat("c", DefaultDBStatementMaxLen+1)
+		remaining := DefaultDBStatementMaxLen - len("SET mykey ")
+		val := strings.Repeat("c", remaining+1)
 		cmd := redis.NewCmd(context.Background(), "SET", "mykey", val)
 		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
 			return nil
@@ -107,7 +109,7 @@ func TestTracingHook_StatementTruncation_Default(t *testing.T) {
 
 		assertEqual(t, 1, len(imsb.GetSpans()))
 		stmt := getDBStatement(imsb.GetSpans()[0])
-		expected := "SET mykey " + strings.Repeat("c", DefaultDBStatementMaxLen) + "…(+1 bytes)"
+		expected := "SET mykey " + strings.Repeat("c", remaining) + "…(+1 bytes)"
 		assertEqual(t, expected, stmt)
 	})
 }
@@ -135,7 +137,8 @@ func TestTracingHook_StatementTruncation_CustomLimit(t *testing.T) {
 
 		assertEqual(t, 1, len(imsb.GetSpans()))
 		stmt := getDBStatement(imsb.GetSpans()[0])
-		expected := "SET mykey " + strings.Repeat("y", 64) + "…(+1048512 bytes)"
+		remaining := 64 - len("SET mykey ")
+		expected := "SET mykey " + strings.Repeat("y", remaining) + fmt.Sprintf("…(+%d bytes)", 1024*1024-remaining)
 		assertEqual(t, expected, stmt)
 	})
 
@@ -160,7 +163,8 @@ func TestTracingHook_StatementTruncation_CustomLimit(t *testing.T) {
 
 		assertEqual(t, 1, len(imsb.GetSpans()))
 		stmt := getDBStatement(imsb.GetSpans()[0])
-		expected := "SET k " + strings.Repeat("z", 128) + "…(+72 bytes)"
+		remaining := 128 - len("SET k ")
+		expected := "SET k " + strings.Repeat("z", remaining) + fmt.Sprintf("…(+%d bytes)", 200-remaining)
 		assertEqual(t, expected, stmt)
 	})
 
@@ -354,7 +358,8 @@ func TestTracingHook_StatementTruncation_Pipeline(t *testing.T) {
 		assertEqual(t, 1, len(imsb.GetSpans()))
 		stmt := getDBStatement(imsb.GetSpans()[0])
 
-		expectedCmd0 := "SET mykey " + strings.Repeat("p", 100) + fmt.Sprintf("…(+%d bytes)", 1024*1024-100)
+		remaining := 100 - len("SET mykey ")
+		expectedCmd0 := "SET mykey " + strings.Repeat("p", remaining) + fmt.Sprintf("…(+%d bytes)", 1024*1024-remaining)
 		expected := expectedCmd0 + "\n…"
 		assertEqual(t, expected, stmt)
 	})
@@ -388,7 +393,8 @@ func TestTracingHook_StatementTruncation_Binary(t *testing.T) {
 		if !strings.HasPrefix(stmt, "SET bin ") {
 			t.Fatalf("expected prefix 'SET bin ', got %q", stmt[:20])
 		}
-		expectedSuffix := fmt.Sprintf("…(+%d bytes)", len(binaryData)-64)
+		remainingBytes := (64 - len("SET bin ")) / 2
+		expectedSuffix := fmt.Sprintf("…(+%d bytes)", len(binaryData)-remainingBytes)
 		if !strings.HasSuffix(stmt, expectedSuffix) {
 			t.Fatalf("expected suffix %q, got %q", expectedSuffix, stmt[len(stmt)-30:])
 		}
