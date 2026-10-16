@@ -34,10 +34,10 @@ type apStepFunc func(ctx context.Context, worker, seq int) (ok bool, bad error)
 // when the members are not read-your-writes consistent across a failover.
 func keyValue(key string, seq int) string { return fmt.Sprintf("%s|%d", key, seq) }
 
+// checkKeyValue reports ok only for a GET that returned this key's value. A
+// nil reply is tolerated (not an error) but is not progress.
 func checkKeyValue(key, val string, err error) (bool, error) {
 	switch {
-	case errors.Is(err, redis.Nil):
-		return true, nil
 	case err != nil:
 		return false, nil
 	case !strings.HasPrefix(val, key+"|"):
@@ -137,7 +137,8 @@ func pipelinedFace(run, name string, tx bool) apWorkload {
 			}
 			for i := range batch {
 				val, gerr := gets[i].Result()
-				if _, bad := checkKeyValue(keys[i], val, gerr); bad != nil {
+				good, bad := checkKeyValue(keys[i], val, gerr)
+				if bad != nil || !good {
 					return false, bad
 				}
 				// Inside one batch on one member the SET precedes the GET, so
@@ -290,7 +291,8 @@ func watchIncr(run, name string) apWorkload {
 					c.succeeded.Add(1)
 					return true, nil
 				case errors.Is(err, redis.TxFailedErr):
-					return true, nil
+					// Applied nothing; not progress either.
+					return false, nil
 				default:
 					c.errored.Add(1)
 					return false, nil
@@ -344,8 +346,12 @@ func TestAutoPipelineAndTransactionsAcrossFailover(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
+	// bad keeps the first maxBad wrong replies; badCount counts all of them,
+	// so a systematic misdelivery cannot grow the buffer without bound.
+	const maxBad = 20
 	var badMu sync.Mutex
 	var bad []error
+	var badCount atomic.Int64
 	// Stop the workers on every exit path: a t.Fatal inside eventually must
 	// not leave them running while t.Cleanup closes the clients.
 	defer func() {
@@ -361,7 +367,7 @@ func TestAutoPipelineAndTransactionsAcrossFailover(t *testing.T) {
 					sctx, scancel := context.WithTimeout(ctx, 2*time.Second)
 					ok, b := r.step(sctx, w, seq)
 					scancel()
-					if b != nil {
+					if b != nil && badCount.Add(1) <= maxBad {
 						badMu.Lock()
 						bad = append(bad, fmt.Errorf("%s: %w", r.w.name, b))
 						badMu.Unlock()
@@ -406,6 +412,9 @@ func TestAutoPipelineAndTransactionsAcrossFailover(t *testing.T) {
 
 	for _, b := range bad {
 		t.Error(b)
+	}
+	if n := badCount.Load(); n > maxBad {
+		t.Errorf("%d wrong replies in total, first %d shown", n, maxBad)
 	}
 	for _, r := range runs {
 		if r.w.verify != nil {
