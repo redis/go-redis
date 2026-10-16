@@ -674,12 +674,17 @@ func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
 		p.connsMu.Unlock()
 		return
 	}
-	copy(p.idleConns, p.idleConns[1:])
-	p.idleConns = p.idleConns[:len(p.idleConns)-1]
-	p.idleConnsLen.Add(-1)
+	removed := p.removeConn(oldest)
+	countCb := getMetricConnectionCountCallback()
 	p.connsMu.Unlock()
 
-	_ = p.CloseConn(ctx, oldest, CloseReasonStale, MetricStateIdle)
+	if hookManager := p.hookManager.Load(); hookManager != nil {
+		hookManager.ProcessOnRemove(ctx, oldest, errors.New(CloseReasonStale))
+	}
+	if removed {
+		p.recordConnectionMetrics(ctx, oldest, CloseReasonStale, MetricStateIdle, countCb)
+	}
+	_ = p.closeConn(oldest)
 	p.checkMinIdleConns()
 }
 
