@@ -565,16 +565,16 @@ func (p *ConnPool) RaiseMinIdleConns(n int32) {
 // ConnMaxIdleTime or to the end of its ConnMaxLifetime, in a pool whose min-idle
 // floor was raised (RaiseMinIdleConns, the full-duplex warm spare). Under LIFO
 // such a spare is never leased, so it would age out and be discarded by the
-// very lease it exists for, which then dials. It runs only when another idle
-// connection is there for this lease, so it never closes the spare a lease
-// needs. O(1): under LIFO the oldest idle connection is idleConns[0].
+// very lease it exists for, which then dials. Get runs it only after the lease
+// has its healthy connection, so it never closes this lease's connection or its
+// fallback. O(1): under LIFO the oldest idle connection is idleConns[0].
 func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
 	if p.minIdleFloor.Load() == 0 || p.cfg.PoolFIFO ||
 		(p.cfg.ConnMaxIdleTime <= 0 && p.cfg.ConnMaxLifetime <= 0) {
 		return
 	}
 	p.connsMu.Lock()
-	if len(p.idleConns) < 2 {
+	if len(p.idleConns) == 0 {
 		p.connsMu.Unlock()
 		return
 	}
@@ -1014,8 +1014,6 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
-	p.refreshStaleSpare(ctx, nowNs)
-
 retryIdle:
 	drainGeneration := p.drainGeneration.Load()
 	for attempts := 0; attempts < getAttempts; attempts++ {
@@ -1085,6 +1083,8 @@ retryIdle:
 			cb(ctx, -1, cn, poolName)
 		}
 
+		// Only now, with this lease's connection taken and checked.
+		p.refreshStaleSpare(ctx, nowNs)
 		return cn, nil
 	}
 
