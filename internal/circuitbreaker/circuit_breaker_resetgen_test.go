@@ -55,3 +55,31 @@ func TestRecordExternalSuccessForReset(t *testing.T) {
 		t.Fatalf("state = Closed: a probe success sampled before the Reset must not close the new episode")
 	}
 }
+
+// TestCurrentClosedReservation pins the late-outcome reservation: none while
+// the circuit is not closed, and one taken before a recovery cycle records
+// nothing into the next closed episode.
+func TestCurrentClosedReservation(t *testing.T) {
+	cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1})
+	stale, ok := cb.CurrentClosedReservation()
+	if !ok {
+		t.Fatal("no reservation on a closed circuit")
+	}
+	cb.ForceOpen()
+	if _, ok := cb.CurrentClosedReservation(); ok {
+		t.Fatal("reservation handed out on an open circuit")
+	}
+	cb.Reset() // back to closed: a new episode
+	cb.RecordFailureFor(stale)
+	if cb.State() != StateClosed {
+		t.Fatalf("state = %v, want Closed: a reservation from before the cycle must not open the new episode", cb.State())
+	}
+	cur, ok := cb.CurrentClosedReservation()
+	if !ok {
+		t.Fatal("no reservation after Reset")
+	}
+	cb.RecordFailureFor(cur)
+	if cb.State() != StateOpen {
+		t.Fatalf("state = %v, want Open: a current reservation must record", cb.State())
+	}
+}

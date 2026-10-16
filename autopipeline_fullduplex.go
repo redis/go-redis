@@ -703,6 +703,25 @@ type fdEngine struct {
 	// cluster mode (redirectAware): the ClusterClient's MaxRedirects, injected by the
 	// router. See retryBudget().
 	clusterRetryBudget int
+	// reroute, when set by the engine's owner (AutoPipelineOptions.fdReroute),
+	// runs commands this engine cannot complete on its own connection through the
+	// owner's path, in order: the replayable tail after a connection error (in
+	// place of the same-connection replay) and the carry plus the queue once
+	// lease retries are spent (in place of failing them), and the Close-time
+	// flush (in place of this engine's own client pipeline). maxRetries is the
+	// commands' remaining retry budget. nil keeps the standalone behavior. Set
+	// once in newFDEngine.
+	reroute func(ctx context.Context, cmds []Cmder, maxRetries int) error
+	// outcome, when set by the engine's owner (AutoPipelineOptions.fdOutcome),
+	// receives every command's final outcome the engine itself settles (see
+	// finish). Set once in newFDEngine.
+	outcome func(ctx context.Context, cmd Cmder, err error)
+	// ownerRetries / ownerRetryBudget: the owner's retry policy
+	// (AutoPipelineOptions.fdOwnerRetries / fdRetryBudget). When set,
+	// retryBudget returns ownerRetryBudget and a failed lease reroutes at once.
+	// Set once in newFDEngine.
+	ownerRetries     bool
+	ownerRetryBudget int
 }
 
 // retryBudget bounds the engine's OWN connection-failure recovery: the lease retry
@@ -717,6 +736,9 @@ type fdEngine struct {
 // retryable divert still uses client.opt.MaxRetries directly (only reached when
 // !redirectAware).
 func (fd *fdEngine) retryBudget() int {
+	if fd.ownerRetries {
+		return fd.ownerRetryBudget
+	}
 	if fd.redirectAware {
 		return fd.clusterRetryBudget
 	}
@@ -819,7 +841,46 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	} else {
 		fd.reprocess = client.processStartingAt
 	}
+	fd.reroute = ap.config.fdReroute
+	fd.outcome = ap.config.fdOutcome
+	fd.ownerRetries = ap.config.fdOwnerRetries
+	fd.ownerRetryBudget = ap.config.fdRetryBudget
 	return fd
+}
+
+// finish reports r's final outcome to the owner (fdOutcome), then completes
+// it. Every completion the engine performs itself goes through here; commands
+// rerouted to the owner complete without it (see rerouteReqs). A hooked
+// command's report is left to its host (hostHook), which makes it after the
+// hook chain returns: a hook may still rewrite or suppress the result.
+func (fd *fdEngine) finish(r fdReq) {
+	if fd.outcome != nil {
+		if r.hookDone != nil && r.batch != nil {
+			r.batch.fdOutcomeOwed = true // published by complete's close(hookDone)
+		} else {
+			fd.reportOutcome(r.ctx, r.cmd, nil)
+		}
+	}
+	r.complete()
+}
+
+// reportOutcome hands cmd's outcome to the owner: err, or cmd.Err() when err is
+// nil. The owner's callback and a custom Cmder's Err are user code running on
+// the reader or engine goroutine, so a panic is contained here (logged) and the
+// command still completes.
+func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(), "autopipeline: recovered full-duplex outcome panic: %v", r)
+		}
+	}()
+	if err == nil {
+		// rawErr, not Err: on the async face Err waits for the command's batch,
+		// which this engine completes only after reporting — it would wait on
+		// itself.
+		err = cmd.rawErr()
+	}
+	fd.outcome(ctx, cmd, err)
 }
 
 // submit enqueues a command onto the ordered stream and returns its batch.
@@ -988,6 +1049,9 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 				fdSetErrSafe(cmd, fmt.Errorf("redis: autopipeline: panic in full-duplex process hook: %v", r))
 			}
 			internal.Logger.Printf(ctx, "autopipeline: recovered full-duplex hook panic: %v\n%s", r, debug.Stack())
+			if b.fdOutcomeOwed {
+				fd.reportOutcome(ctx, cmd, nil)
+			}
 			b.close()
 		}
 	}()
@@ -1009,7 +1073,11 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	// the recover above only guards its OWN callers, not this line, and an
 	// escaping panic would skip b.close() and leave the waiter blocked forever.
 	fdSetErrSafe(cmd, err) // honor a hook that rewrote / short-circuited the result
-	b.close()              // now wake the waiter
+	if b.fdOutcomeOwed {
+		// The owner's report, on the chain's final result (see finish).
+		fd.reportOutcome(ctx, cmd, err)
+	}
+	b.close() // now wake the waiter
 }
 
 // retryStartAttempt returns the normal-path retry loop's starting attempt for an FD
@@ -1125,7 +1193,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 			// tearing down the whole session and replaying the unacked tail,
 			// including requests already written (double execution).
 			fdSetErrSafe(req.cmd, ErrClosed)
-			req.complete()
+			fd.finish(req)
 			return
 		}
 	default:
@@ -1142,7 +1210,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 				slot = true
 			case <-fd.ap.ctx.Done():
 				fdSetErrSafe(req.cmd, ErrClosed) // same reason as the ctx.Done arm above
-				req.complete()
+				fd.finish(req)
 				return
 			}
 		}
@@ -1168,7 +1236,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 				fdSetErrSafe(req.cmd, fmt.Errorf("redis: autopipeline: panic in full-duplex off-pipe retry: %v", r))
 				internal.Logger.Printf(context.Background(),
 					"autopipeline: recovered full-duplex retry panic: %v\n%s", r, debug.Stack())
-				req.complete()
+				fd.finish(req)
 			}
 		}()
 		// Retry on the caller's context with cancellation removed (like the FD
@@ -1207,7 +1275,7 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		// recover above, which itself calls SetErr and would then have no outer
 		// boundary of its own.
 		fdSetErrSafe(req.cmd, err)
-		req.complete()
+		fd.finish(req)
 	}()
 }
 
@@ -1332,13 +1400,26 @@ func (fd *fdEngine) run() {
 				fd.shutdownFlush(bg, carry)
 				return
 			}
-			if shouldRetry(aerr, true) && leaseAttempts < fd.retryBudget() {
+			// An owner with its own retry policy reroutes at once instead: it
+			// retries against whatever it selects (e.g. MultiDB's new active member),
+			// so re-leasing this endpoint would only delay that.
+			ownerRetries := fd.reroute != nil && fd.ownerRetries
+			if !ownerRetries && shouldRetry(aerr, true) && leaseAttempts < fd.retryBudget() {
 				leaseAttempts++
 				fd.sleepBackoff(leaseAttempts)
 				continue // carry unchanged; re-lease
 			}
-			fd.failReqs(carry, aerr)
-			fd.failQueue(aerr)
+			if fd.reroute != nil {
+				// This connection's endpoint cannot be leased, but the owner may
+				// still serve the commands (e.g. through the slot's new master): run
+				// the carry, then the queue, through it in order instead of failing
+				// them. The carry holds no sent NoRetry command (the split already
+				// failed those).
+				fd.rerouteReqs(bg, append(carry, fd.q.drainAll(nil)...), aerr)
+			} else {
+				fd.failReqs(carry, aerr)
+				fd.failQueue(aerr)
+			}
 			carry = nil
 			leaseAttempts++
 			fd.sleepBackoff(leaseAttempts)
@@ -1423,6 +1504,13 @@ func (fd *fdEngine) run() {
 						if carry[i].pipelined {
 							carry[i].batch.fdAttempts = carry[i].attempts
 						}
+					}
+					if fd.reroute != nil {
+						// Re-issue through the owner rather than on a fresh connection to
+						// this same endpoint, which may be gone (a cluster node replaced
+						// by topology change). Same set, same order as the replay.
+						fd.rerouteReqs(bg, carry, aerr)
+						carry = nil
 					}
 					continue
 				}
@@ -1830,7 +1918,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					} else {
 						fd.reportReplyMetrics(octx, req, e, cn)
 					}
-					req.complete() // wake the caller, or hand off to the hook host
+					fd.finish(req) // wake the caller, or hand off to the hook host
 					done++
 				}
 				// A fatal reply ends the whole snapshot, not only its group: the
@@ -2921,6 +3009,16 @@ func (fd *fdEngine) failPipelines(failed, keep []fdReq, err error) []fdReq {
 }
 
 func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
+	fd.failReqsAcct(reqs, err, true)
+}
+
+// failReqsAcct is failReqs with account: false completes the commands without
+// reporting their outcome to the owner (fdOutcome). For commands the owner's
+// path was given but never ran (a reroute or owner flush aborted before their
+// chunk): the owner settles what it ran, and the failed attempt on this
+// engine's connection was reported already (rerouteReqs), so a report here
+// would count one attempt twice.
+func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 	// Error-metric parity: commands terminated here (lease failure, retry
 	// exhaustion, a NoRetry tail, Close) never reach the reader's inline
 	// completion, so emit the native error callback per command. One classification
@@ -2959,7 +3057,11 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 				errorCallback(octx, errorType, nil, statusCode, isInternal, retries)
 			})
 		}
-		reqs[i].complete()
+		if account {
+			fd.finish(reqs[i])
+		} else {
+			reqs[i].complete()
+		}
 	}
 }
 
@@ -3017,7 +3119,10 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 		// Carry hit an unreachable endpoint; do not run the fresh queue through a full
 		// retry cycle against the same dead endpoint (Close would otherwise stall for
 		// chunks × retries × backoff) — fail it with the same transport error.
-		fd.failReqs(fresh, err)
+		// Running it later would also break order: it is queued behind the
+		// carry that failed. Not accounted when the flush went to the owner:
+		// these commands never ran (see failReqsAcct).
+		fd.failReqsAcct(fresh, err, !fd.flushesViaOwner())
 		return
 	}
 	// Last flush: a transport failure is already handled inside flushReqs (it fails
@@ -3089,7 +3194,9 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 		}
 		if err := fd.flushReqs(bg, group, rem); err != nil {
 			if i < len(carry) {
-				fd.failReqs(carry[i:], err) // transport failure: fail the rest of the carry too
+				// Transport failure: fail the rest of the carry too. Not
+				// accounted when the flush went to the owner (see failReqsAcct).
+				fd.failReqsAcct(carry[i:], err, !fd.flushesViaOwner())
 			}
 			return err
 		}
@@ -3113,7 +3220,75 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 // fails the remainder so an ordered flush stops rather than running later chunks
 // out of order. Every accepted command still settles (it is failed, not left
 // hanging), honoring accepted⇒completes. See TestFDShutdownFlushAbortsAfterRecoveredPanic.
-func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) (retErr error) {
+func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) error {
+	// Test seam: nil in production.
+	if fd.runPipeline != nil {
+		return fd.flushReqsVia(bg, reqs, maxRetries, fd.runPipeline, true)
+	}
+	// Keep in sync with flushesViaOwner.
+	// An owner takes the Close-time flush too: this engine closes when its
+	// endpoint goes away (a cluster node dropped by topology GC, a MultiDB
+	// member that failed), and this engine's own client cannot follow the
+	// commands to the new owner. The owner's path settles the outcomes
+	// (account=false).
+	if fd.reroute != nil {
+		return fd.flushReqsVia(bg, reqs, maxRetries, fd.runReroute, false)
+	}
+	return fd.flushReqsVia(bg, reqs, maxRetries, fd.client.processPipelineRetries, true)
+}
+
+// flushesViaOwner reports whether flushReqs runs commands through the owner's
+// path (fd.reroute), which settles their outcomes itself.
+func (fd *fdEngine) flushesViaOwner() bool {
+	return fd.runPipeline == nil && fd.reroute != nil
+}
+
+// rerouteReqs runs reqs, in order, through the owner's path (fd.reroute) and
+// completes them, with flushReqs' chunking and abort-on-transport-failure. The
+// commands may have been sent once on this engine's connection: the same
+// at-most-once rule as the same-connection replay applies (callers pass only
+// the replayable set, never a sent NoRetry command). reqs are POST-BUMP, like
+// the Close-time carry, so flushCarryBudgeted gives each group its remaining
+// budget (fdCarryRemainingRetries) and flushReqs sends it to the owner.
+func (fd *fdEngine) rerouteReqs(bg context.Context, reqs []fdReq, cause error) {
+	// Each command that may have reached this engine's connection failed its
+	// attempt there: report that to the owner first. A never-sent command (the
+	// refunded unwritten suffix, a queue drained on lease failure) made no
+	// attempt on this member and reports nothing; the owner's path settles
+	// the rerouted attempt of every command.
+	if fd.outcome != nil {
+		for i := range reqs {
+			if reqs[i].sent {
+				fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause)
+			}
+		}
+	}
+	_ = fd.flushCarryBudgeted(bg, reqs)
+}
+
+// runReroute runs cmds through the owner and returns the error flushReqsVia
+// uses to decide whether to abort. An owner pipeline may return the first
+// command error (e.g. redis.Nil from ClusterClient.processPipeline) while a
+// later command failed in transport; return that transport error instead, so
+// later chunks do not run after an uncertain predecessor.
+func (fd *fdEngine) runReroute(ctx context.Context, cmds []Cmder, maxRetries int) error {
+	err := fd.reroute(ctx, cmds, maxRetries)
+	if err != nil && pipelineErrShouldStamp(err) {
+		return err
+	}
+	for _, cmd := range cmds {
+		// rawErr: engine goroutine, before complete(); never await here.
+		if e := cmd.rawErr(); e != nil && pipelineErrShouldStamp(e) {
+			return e
+		}
+	}
+	return err
+}
+
+// flushReqsVia is flushReqs with an explicit pipeline executor. account
+// reports each command's outcome to the owner (fdOutcome); false when the
+// executor is the owner's own path, which settles the outcome itself.
+func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries int, run func(context.Context, []Cmder, int) error, account bool) (retErr error) {
 	if len(reqs) == 0 {
 		return nil
 	}
@@ -3129,14 +3304,9 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("%w: shutdown flush: %v", errFDPanicRecovered, r)
 			internal.Logger.Printf(bg, "autopipeline: recovered shutdown-flush panic: %v\n%s", r, debug.Stack())
-			fd.failReqs(reqs[i:], retErr)
+			fd.failReqsAcct(reqs[i:], retErr, account)
 		}
 	}()
-	// Test seam: nil in production, so this is exactly client.processPipelineRetries.
-	run := fd.runPipeline
-	if run == nil {
-		run = fd.client.processPipelineRetries
-	}
 	// Same MaxBatchSize/MaxBatchBytes chunking as normal FD writes: reqs can hold a
 	// large window, and one unchunked pipeline would ignore MaxBatchBytes and burst
 	// the connection.
@@ -3177,8 +3347,14 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 			}
 		}
 		cmds := make([]Cmder, end-i)
+		now := time.Now()
 		for j := i; j < end; j++ {
 			cmds[j-i] = reqs[j].cmd
+			// Anchor the duration metric of a command never written on the FD
+			// connection (e.g. queued during a lease failure) at this run.
+			if reqs[j].writtenOff == 0 {
+				reqs[j].writtenOff = max(int64(now.Sub(fd.epoch)), 1)
+			}
 			// The pooled pipeline below runs this chunk again and records its
 			// pipeline metric. Stamped here, where the chunk runs: one more
 			// issue (so fdPipelineExec does not re-run it), and flushed. A batch
@@ -3203,7 +3379,22 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 		}
 		err := run(fctx, cmds, maxRetries) // per-command results/errors set inside
 		for j := i; j < end; j++ {
-			reqs[j].complete()
+			// Per-command metrics, as the reader reports them inline: this path
+			// bypasses the reader. A pipelined command is measured with its
+			// batch (fdPipelineMetrics). Telemetry, so on both branches below;
+			// account only decides the owner's outcome report.
+			if !reqs[j].pipelined {
+				octx := reqs[j].ctx
+				if octx == nil {
+					octx = bg
+				}
+				fd.reportReplyMetrics(octx, reqs[j], reqs[j].cmd.rawErr(), nil)
+			}
+			if account {
+				fd.finish(reqs[j])
+			} else {
+				reqs[j].complete() // the owner's path settled the outcome
+			}
 		}
 		i = end
 		// Stop and fail the remaining chunks when the error means the earlier chunk
@@ -3215,7 +3406,7 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 		// errConnUnusable precedence used in generalProcessPipeline; a plain
 		// per-command Redis error is a normal result and does not abort.
 		if err != nil && pipelineErrShouldStamp(err) {
-			fd.failReqs(reqs[i:], err)
+			fd.failReqsAcct(reqs[i:], err, account)
 			return err
 		}
 	}
@@ -3258,7 +3449,7 @@ func (fd *fdEngine) failQueue(err error) {
 				errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
 			})
 		}
-		r.complete()
+		fd.finish(r)
 	}
 }
 

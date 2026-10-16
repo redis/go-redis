@@ -225,6 +225,15 @@ func cmdsContainHImport(cmds []Cmder) bool {
 // a failover. Delivery is at-least-once when retries are enabled: a
 // connection that broke mid-pipeline may have executed a prefix server-side.
 func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.processPipelineRetries(ctx, cmds, c.opts.CommandRetries)
+}
+
+// processPipelineRetries is processPipeline with an explicit retry bound in
+// place of CommandRetries: the batch runs at most maxRetries+1 times. The
+// full-duplex router reroutes through it with the commands' remaining budget,
+// so a command already issued on the member's FD connection does not get a
+// fresh CommandRetries+1 executions.
+func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, maxRetries int) error {
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -255,8 +264,11 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		cmds = kept
 		himportRejected = true
 	}
-	attempts := c.opts.CommandRetries + 1
-	if c.opts.CommandRetries == math.MaxInt {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	attempts := maxRetries + 1
+	if maxRetries == math.MaxInt {
 		// Guard the +1 against wrapping to a negative attempt count — which
 		// would skip the loop and silently drop the batch (returning nil).
 		// Mirrors the single-command path in process().
@@ -860,6 +872,44 @@ func (c *MultiDBClient) canPipeline(ctx context.Context, cmd Cmder) bool {
 // moment. A cluster member added with AddDatabase afterwards is not applied
 // to commands already queued: see AddDatabase for the window and how to
 // avoid it.
+//
+// AutoPipelineOptions.FullDuplex is supported (ordered, single engine:
+// NumShards is forced to 1): each command streams on a held connection of the
+// ACTIVE member — a full-duplex engine on a standalone member, the cluster
+// full-duplex router on a cluster member. A command rides it only while the
+// member's breaker is closed and the failure detector has not tripped;
+// otherwise it runs through MultiDB's normal command path, which owns failover
+// and half-open probes. Outcomes still feed the breaker and the detector, and
+// work in flight on a member that drops is re-issued through MultiDB to the
+// newly active member (bounded by CommandRetries; a command that may have
+// reached the server and is NoRetry is failed instead). Differences from the
+// half-duplex path:
+//   - On the async face, submit order still holds across a failover or a
+//     breaker transition: the switch to the new member waits until the
+//     commands already accepted for the old one have completed, so submitters
+//     stall briefly at that point. As on any autopipeliner, submit order means
+//     a command submitted after another's submit returned runs after it;
+//     submits that overlap (concurrent callers) have no order between them. On a cluster member, order holds per key
+//     (slot), as with full duplex on a plain ClusterClient: keyless commands
+//     and routing misses (topology not loaded, a node without full duplex)
+//     run on MultiDB's normal path and are not ordered against the lane.
+//   - Process hooks added with MultiDBClient.AddHook do not run on the
+//     full-duplex path. A standalone member's process hooks
+//     (AddDatabaseHook) do. On a cluster member, AddDatabaseHook installs
+//     the hook on the *ClusterClient, which the full-duplex path bypasses:
+//     only the node clients' hooks run, as with full duplex on a plain
+//     ClusterClient. Register such hooks per node with
+//     ClusterOptions.OnNewNode in the member's config.
+//   - Pipeline() and TxPipeline() keep using MultiDB's pipeline path.
+//   - The breaker episode and detector window an outcome counts toward are
+//     the ones current when the reply lands.
+//   - Config().FullDuplex reports that the full-duplex router is installed,
+//     not that every member runs full duplex. A member whose own config
+//     cannot host it (PipelinePoolSize < 0; a cluster member with ReadOnly,
+//     RouteByLatency or RouteRandomly; a child build error) always takes
+//     MultiDB's half-duplex path. Any member does so for a while when there
+//     is no active member, a failover is pending, or its breaker is open or
+//     half-open.
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AutoPipeline() (*AutoPipeliner, error) {
