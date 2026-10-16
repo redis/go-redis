@@ -333,6 +333,10 @@ type Stats struct {
 	StaleConns      uint32 // number of stale connections removed from the pool
 	PendingRequests uint32 // number of pending requests waiting for a connection
 
+	// PubSubStats is always zero.
+	//
+	// Deprecated: pub/sub connections are no longer pooled; see the
+	// PubSubStats type. Kept for API compatibility.
 	PubSubStats PubSubStats
 
 	// PipelineStats holds the stats of the separate pipeline connection pool

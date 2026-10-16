@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -13,10 +12,6 @@ import (
 
 func (c *baseClient) Pool() pool.Pooler {
 	return c.connPool
-}
-
-func (c *PubSub) SetNetConn(netConn net.Conn) {
-	c.cn = pool.NewConn(netConn)
 }
 
 func (c *ClusterClient) LoadState(ctx context.Context) (*clusterState, error) {

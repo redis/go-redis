@@ -98,10 +98,6 @@ type Recorder interface {
 	RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn, poolName string)
 }
 
-type PubSubPooler interface {
-	Stats() *pool.PubSubStats
-}
-
 type PoolRegistrar interface {
 	// RegisterPool is called when a new client is created with its connection pools.
 	// poolName: identifier for the pool (e.g., "main_abc123")
@@ -110,13 +106,6 @@ type PoolRegistrar interface {
 	// UnregisterPool is called when a client is closed to remove its pool from the registry.
 	// pool: the connection pool to unregister
 	UnregisterPool(pool pool.Pooler)
-	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
-	// poolName: identifier for the pool (e.g., "main_abc123_pubsub")
-	// pool: the PubSub connection pool
-	RegisterPubSubPool(poolName string, pool PubSubPooler)
-	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
-	// pool: the PubSub connection pool to unregister
-	UnregisterPubSubPool(pool PubSubPooler)
 }
 
 var (
@@ -278,7 +267,7 @@ func (noopRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, stri
 // RegisterPools registers connection pools with the global recorder. pipelinePool
 // is the optional dedicated pipeline connection pool (nil when not configured);
 // it is registered as a regular pool under a "_pipeline" name suffix.
-func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool pool.Pooler, addr string) {
+func RegisterPools(connPool pool.Pooler, pipelinePool pool.Pooler, addr string) {
 	// Check if the global recorder implements PoolRegistrar. Read it through
 	// getRecorder: SetGlobalRecorder writes globalRecorder under recorderMu, and
 	// clients are created (and closed) concurrently with telemetry being
@@ -291,10 +280,6 @@ func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool p
 			poolName := addr + "_" + uniqueID
 			registrar.RegisterPool(poolName, connPool)
 		}
-		if pubSubPool != nil {
-			poolName := addr + "_" + uniqueID + "_pubsub"
-			registrar.RegisterPubSubPool(poolName, pubSubPool)
-		}
 		if pipelinePool != nil {
 			poolName := addr + "_" + uniqueID + "_pipeline"
 			registrar.RegisterPool(poolName, pipelinePool)
@@ -304,15 +289,12 @@ func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool p
 
 // UnregisterPools removes connection pools from the global recorder. pipelinePool
 // is the optional dedicated pipeline connection pool (nil when not configured).
-func UnregisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool pool.Pooler) {
+func UnregisterPools(connPool pool.Pooler, pipelinePool pool.Pooler) {
 	// Check if the global recorder implements PoolRegistrar (see RegisterPools
 	// for why this goes through getRecorder rather than reading directly).
 	if registrar, ok := getRecorder().(PoolRegistrar); ok {
 		if connPool != nil {
 			registrar.UnregisterPool(connPool)
-		}
-		if pubSubPool != nil {
-			registrar.UnregisterPubSubPool(pubSubPool)
 		}
 		if pipelinePool != nil {
 			registrar.UnregisterPool(pipelinePool)

@@ -22,8 +22,15 @@ type Pooler interface {
 	PoolStats() *pool.Stats
 }
 
+// PubSubPooler describes the stats surface of the retired pub/sub
+// connection pool.
+//
+// Deprecated: pub/sub connections are no longer pooled — they are owned
+// by the client's shared pub/sub manager — so nothing implements or
+// registers a PubSubPooler anymore. The type is kept for API
+// compatibility.
 type PubSubPooler interface {
-	Stats() *pool.PubSubStats
+	Stats() *pool.PubSubStats //nolint:staticcheck // deprecated type kept for API compatibility
 }
 
 // OTelRecorder is the interface for recording OpenTelemetry metrics.
@@ -108,10 +115,14 @@ type OTelPoolRegistrar interface {
 	RegisterPool(poolName string, pool Pooler)
 	// UnregisterPool is called when a client is closed to remove its pool from the registry.
 	UnregisterPool(pool Pooler)
-	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
-	// poolName: unique identifier for the pool (e.g., "main_abc123_pubsub")
+	// RegisterPubSubPool is never called anymore: pub/sub connections
+	// are no longer pooled.
+	//
+	// Deprecated: kept for API compatibility only.
 	RegisterPubSubPool(poolName string, pool PubSubPooler)
-	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
+	// UnregisterPubSubPool is never called anymore (see RegisterPubSubPool).
+	//
+	// Deprecated: kept for API compatibility only.
 	UnregisterPubSubPool(pool PubSubPooler)
 }
 
@@ -209,30 +220,10 @@ func (a *otelRecorderAdapter) UnregisterPool(p pool.Pooler) {
 	}
 }
 
-func (a *otelRecorderAdapter) RegisterPubSubPool(poolName string, p otel.PubSubPooler) {
-	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
-		registrar.RegisterPubSubPool(poolName, &pubSubPoolerAdapter{p})
-	}
-}
-
-func (a *otelRecorderAdapter) UnregisterPubSubPool(p otel.PubSubPooler) {
-	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
-		registrar.UnregisterPubSubPool(&pubSubPoolerAdapter{p})
-	}
-}
-
 type poolerAdapter struct {
 	p pool.Pooler
 }
 
 func (a *poolerAdapter) PoolStats() *pool.Stats {
-	return a.p.Stats()
-}
-
-type pubSubPoolerAdapter struct {
-	p otel.PubSubPooler
-}
-
-func (a *pubSubPoolerAdapter) Stats() *pool.PubSubStats {
 	return a.p.Stats()
 }
