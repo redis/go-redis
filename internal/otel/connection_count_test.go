@@ -51,6 +51,10 @@ func TestShutdownUncountsExistingConns(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
+	if got := connPool.Len(); got != 2 {
+		t.Fatalf("MinIdleConns: got %d, want 2", got)
+	}
+
 	r := &countRecorder{}
 	SetGlobalRecorder(r)
 	if got := r.get(); got != 2 {

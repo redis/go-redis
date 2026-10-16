@@ -432,7 +432,7 @@ func TestConnectionCountIncludesExistingConns(t *testing.T) {
 }
 
 func TestConnectionCountBalancedWhileCallbacksChange(t *testing.T) {
-	connPool := pool.NewConnPool(&pool.Options{
+	opt := &pool.Options{
 		Name:               "callback-churn",
 		Dialer:             dummyDialer,
 		PoolSize:           8,
@@ -440,18 +440,23 @@ func TestConnectionCountBalancedWhileCallbacksChange(t *testing.T) {
 		MaxConcurrentDials: 8,
 		PoolTimeout:        time.Second,
 		ConnMaxIdleTime:    -1,
-	})
+	}
+	connPool := pool.NewConnPool(opt)
 	t.Cleanup(func() { _ = connPool.Close() })
+	pubSubPool := pool.NewPubSubPool(opt, func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return dummyDialer(ctx)
+	})
+	t.Cleanup(func() { _ = pubSubPool.Close() })
 
 	var mu sync.Mutex
-	count := 0
+	counts := map[string]int{}
 	callbacks := &pool.MetricCallbacks{
-		ConnectionCount: func(_ context.Context, delta int, cn *pool.Conn, _ string, _ bool) {
+		ConnectionCount: func(_ context.Context, delta int, cn *pool.Conn, state string, _ bool) {
 			if cn.PoolName() != "callback-churn" {
 				return
 			}
 			mu.Lock()
-			count += delta
+			counts[state] += delta
 			mu.Unlock()
 		},
 	}
@@ -481,6 +486,47 @@ func TestConnectionCountBalancedWhileCallbacksChange(t *testing.T) {
 			}
 		}(i)
 	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			cn, err := pubSubPool.NewConn(ctx, "tcp", "", nil)
+			if err != nil {
+				continue
+			}
+			pubSubPool.TrackConn(cn)
+			pubSubPool.UntrackConn(cn)
+			_ = cn.Close()
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			p := pool.NewConnPool(&pool.Options{
+				Name:               "callback-churn",
+				Dialer:             dummyDialer,
+				PoolSize:           1,
+				MaxConcurrentDials: 1,
+				PoolTimeout:        time.Second,
+				ConnMaxIdleTime:    -1,
+			})
+			if cn, err := p.Get(ctx); err == nil {
+				p.Put(ctx, cn)
+			}
+			_ = p.Close()
+		}
+	}()
 
 	for i := 0; i < 200; i++ {
 		pool.SetAllMetricCallbacks(callbacks)
@@ -491,8 +537,10 @@ func TestConnectionCountBalancedWhileCallbacksChange(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if count != 0 {
-		t.Fatalf("connection count after detach: got %d, want 0", count)
+	for state, count := range counts {
+		if count != 0 {
+			t.Fatalf("connection count for state %q after detach: got %d, want 0", state, count)
+		}
 	}
 }
 
