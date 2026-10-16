@@ -144,9 +144,11 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
   breaker transitions. Only the fast path (picked lane == current lane) runs
   without `laneMu`; a switch picks, drains and submits under it
   (`submitLocked`), so a stale pick cannot switch back. If no lane takes the
-  command, the current lane is drained before it diverts to MultiDB's path
-  (pinned by `TestMultiDBFullDuplexOrderAcrossMemberDeath`). Submitters stall for the drain. The blocking face needs no lanes (each caller
-  waits for its command).
+  command, the current lane is drained before it diverts to MultiDB's path,
+  and the divert completes before `laneMu` is released (pinned by
+  `TestMultiDBFullDuplexOrderAcrossMemberDeath` and
+  `TestMultiDBFullDuplexDivertKeepsOrder`). Submitters stall for the drain. The
+  blocking face needs no lanes (each caller waits for its command).
 - **No-FD members** (no pipeline pool, replica routing): remembered in `noFD`,
   their commands divert without rebuilding a child.
 - **Cluster member misses**: a command the member's `clusterFDRouter` cannot

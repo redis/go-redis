@@ -895,3 +895,40 @@ func TestMultiDBFullDuplexRemoveClearsNoFD(t *testing.T) {
 		t.Fatal("removed member still in the noFD cache")
 	}
 }
+
+// When no lane can take a command, submitLocked's divert completes before it
+// returns, so a later command on a new lane cannot run ahead of it.
+func TestMultiDBFullDuplexDivertKeepsOrder(t *testing.T) {
+	requireLocalRedis(t)
+	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb.AddHook(fdProcessFuncHook{process: func(next ProcessHook) ProcessHook {
+		return func(ctx context.Context, cmd Cmder) error {
+			if cmd.Name() == "set" {
+				time.Sleep(100 * time.Millisecond)
+			}
+			return next(ctx, cmd)
+		}
+	}})
+	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	ctx := context.Background()
+	r := ap.mdbFD
+	// No FD fast path (active breaker open) and no half-duplex lane (its
+	// config fails validation): the command must divert.
+	active, _ := mdb.core.activeSnapshot()
+	active.cb.ForceOpen()
+	r.hdCfg.MaxBatchSize = -1
+
+	cmd := NewStatusCmd(ctx, "set", "mdbfd:divertorder", "v")
+	fut := r.submitOrdered(ctx, cmd)
+	select {
+	case <-fut.batch.done:
+	default:
+		t.Fatal("submitOrdered returned before the diverted command completed")
+	}
+	if err := cmd.Err(); err != nil {
+		t.Fatalf("diverted SET: %v", err)
+	}
+}

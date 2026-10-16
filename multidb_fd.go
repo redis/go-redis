@@ -181,9 +181,10 @@ const fdLaneAttempts = 4
 
 // submitLocked picks the lane, switches to it and submits cmd, all under
 // laneMu. If no lane can take the command (no hd lane could be built, or the
-// picked lane kept closing), it drains the current lane first and then runs
-// cmd on MultiDB's normal path: every command accepted before it has
-// completed by then, so the fallback keeps submit order.
+// picked lane kept closing), it drains the current lane, runs cmd on
+// MultiDB's normal path and waits for it, still under laneMu: every command
+// accepted before it has completed by then, and none after it can start
+// first, so the fallback keeps submit order.
 func (r *multidbFDRouter) submitLocked(ctx context.Context, cmd Cmder) AutoFuture {
 	r.laneMu.Lock()
 	defer r.laneMu.Unlock()
@@ -196,8 +197,13 @@ func (r *multidbFDRouter) submitLocked(ctx context.Context, cmd Cmder) AutoFutur
 			return r.rejectClosed(cmd)
 		}
 		if want == nil || attempt >= fdLaneAttempts {
+			// Drain first, then wait for the diverted command itself while
+			// laneMu is held: the async divert runs on its own goroutine, and a
+			// later command must not reach a new lane before it completes.
 			r.drainLaneLocked()
-			return r.divert(ctx, cmd)
+			fut := r.divert(ctx, cmd)
+			<-fut.batch.done
+			return fut
 		}
 		if r.lane.Load() != want {
 			r.drainLaneLocked()
