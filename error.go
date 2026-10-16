@@ -94,8 +94,7 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	// Dial errors mean TCP connection was never established — safe to retry even
 	// when wrapped inside context.DeadlineExceeded (from DialTimeout context).
 	// Must be checked before the context error check below.
-	var opErr *net.OpError
-	if errors.As(err, &opErr) && opErr.Op == "dial" {
+	if isDialError(err) {
 		return true
 	}
 
@@ -172,6 +171,23 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	// -SEARCH_TIMEOUT (search-on-timeout fail): retrying would just repeat the
 	// same expensive query.
 	return false
+}
+
+func isDialError(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+// isNodeGoneError reports errors that mean the routed cluster node is
+// unreachable: a dial failure, including a dial timeout that is not the
+// caller's context. Caller cancel, caller deadline, and client Read/Write
+// timeouts are excluded. Those fire against a connection that already
+// succeeded, so they are not evidence the node is gone.
+func isNodeGoneError(err error) bool {
+	if err == nil || isContextError(err) {
+		return false
+	}
+	return isDialError(err)
 }
 
 func isRedisError(err error) bool {
