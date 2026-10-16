@@ -1010,3 +1010,31 @@ func TestFDShutdownFlushOwnerAbortSkipsQueuedReports(t *testing.T) {
 		t.Fatalf("queued err = %v, want io.EOF (failed behind the aborted carry)", err)
 	}
 }
+
+// Closing the router drops its noFD marks along with its children: its
+// removal hooks are unregistered, so nothing would clear them later.
+func TestMultiDBFullDuplexCloseClearsNoFD(t *testing.T) {
+	requireLocalRedis(t)
+	noPool := MultiDBClientConfig{
+		Options: &Options{Addr: ":6379", PipelinePoolSize: -1, MaxRetries: -1},
+		Weight:  1,
+	}
+	mdb := newFDTestMultiDB(t, member(":6379", 2), noPool)
+	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+	r := ap.mdbFD
+	if child, _ := r.childFor(mdb.core.dbByID(1)); child != nil {
+		t.Fatal("member without a pipeline pool got an FD child")
+	}
+	if err := ap.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	r.mu.RLock()
+	n := len(r.noFD)
+	r.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("noFD holds %d members after Close, want 0", n)
+	}
+}

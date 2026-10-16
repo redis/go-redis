@@ -441,6 +441,9 @@ func (r *multidbFDRouter) close() error {
 		children = append(children, ch)
 	}
 	r.children = make(map[*multidbDatabase]*AutoPipeliner)
+	// The removal hooks are unregistered below, so nothing would clear these
+	// marks later; drop them with the other router-owned maps.
+	r.noFD = make(map[*multidbDatabase]struct{})
 	hooked := make([]*multidbDatabase, 0, len(r.removeHooks))
 	for db := range r.removeHooks {
 		hooked = append(hooked, db)
