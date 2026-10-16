@@ -306,8 +306,9 @@ type Options struct {
 	// The spare is replaced when the session connection is returned and leased
 	// again (at least every FullDuplexMaxHold) once it is half-way to
 	// ConnMaxIdleTime or to the end of ConnMaxLifetime, so it does not age out
-	// unused. Keep FullDuplexMaxHold below half of those limits for that to
-	// hold; the defaults (5s against 30m) do.
+	// unused. Keep FullDuplexMaxHold below half of those limits, and below
+	// ConnMaxLifetime minus ConnMaxLifetimeJitter, for that to hold; the
+	// defaults (5s against 30m) do.
 	//
 	// Set a negative value to keep the pool at zero idle connections even with
 	// full-duplex.
