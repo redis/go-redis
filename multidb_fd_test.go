@@ -1038,3 +1038,60 @@ func TestMultiDBFullDuplexCloseClearsNoFD(t *testing.T) {
 		t.Fatalf("noFD holds %d members after Close, want 0", n)
 	}
 }
+
+// A RemoveDatabase racing the router's Close waits for the member child's
+// drain, so the member's client is not closed under accepted commands.
+func TestMultiDBFullDuplexRemoveWaitsForCloseDrain(t *testing.T) {
+	requireLocalRedis(t)
+	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	release := make(chan struct{})
+	var held atomic.Bool
+	if err := mdb.AddDatabaseHook(1, fdProcessFuncHook{process: func(next ProcessHook) ProcessHook {
+		return func(ctx context.Context, cmd Cmder) error {
+			if cmd.Name() == "set" && held.CompareAndSwap(false, true) {
+				<-release
+			}
+			return next(ctx, cmd)
+		}
+	}}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	ctx := context.Background()
+	r := ap.mdbFD
+	child, _ := r.childFor(mdb.core.dbByID(1))
+	if child == nil {
+		t.Fatal("no child for member 1")
+	}
+	cmd := child.Set(ctx, "mdbfd:removedrain", "v", 0)
+	for !held.Load() {
+		time.Sleep(time.Millisecond)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- ap.Close() }()
+	for !r.isClosed() {
+		time.Sleep(time.Millisecond)
+	}
+	removed := make(chan error, 1)
+	go func() { removed <- mdb.RemoveDatabase(ctx, 1) }()
+	select {
+	case err := <-removed:
+		close(release)
+		t.Fatalf("RemoveDatabase returned (%v) while the member's child was still draining", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-removed; err != nil {
+		t.Fatalf("RemoveDatabase: %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := cmd.Err(); err != nil {
+		t.Fatalf("accepted SET: %v", err)
+	}
+}

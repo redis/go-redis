@@ -433,6 +433,11 @@ func (r *multidbFDRouter) len() int {
 // close closes every child and waits for each drain. Called from the parent's
 // drain, which MultiDBClient.Close runs before it closes the members, so each
 // child flushes its accepted commands while its member is still open.
+//
+// The children and their removal hooks stay registered until the drains are
+// done: a RemoveDatabase racing this then still finds its member's child in
+// dropChild and waits on the same drain before it closes the member's client.
+// closed (set first) stops childFor from building new children meanwhile.
 func (r *multidbFDRouter) close() error {
 	r.mu.Lock()
 	r.closed = true
@@ -440,19 +445,7 @@ func (r *multidbFDRouter) close() error {
 	for _, ch := range r.children {
 		children = append(children, ch)
 	}
-	r.children = make(map[*multidbDatabase]*AutoPipeliner)
-	// The removal hooks are unregistered below, so nothing would clear these
-	// marks later; drop them with the other router-owned maps.
-	r.noFD = make(map[*multidbDatabase]struct{})
-	hooked := make([]*multidbDatabase, 0, len(r.removeHooks))
-	for db := range r.removeHooks {
-		hooked = append(hooked, db)
-	}
-	r.removeHooks = nil
 	r.mu.Unlock()
-	for _, db := range hooked {
-		db.onRemove.unregister(r.removeHookID())
-	}
 	r.laneMu.Lock()
 	if hd := r.hd.Swap(nil); hd != nil {
 		children = append(children, hd)
@@ -469,6 +462,21 @@ func (r *multidbFDRouter) close() error {
 		if cerr != nil && firstErr == nil {
 			firstErr = cerr
 		}
+	}
+
+	// Drained: drop the router-owned maps and the removal hooks. The noFD
+	// marks go too, since no hook would clear them later.
+	r.mu.Lock()
+	r.children = make(map[*multidbDatabase]*AutoPipeliner)
+	r.noFD = make(map[*multidbDatabase]struct{})
+	hooked := make([]*multidbDatabase, 0, len(r.removeHooks))
+	for db := range r.removeHooks {
+		hooked = append(hooked, db)
+	}
+	r.removeHooks = nil
+	r.mu.Unlock()
+	for _, db := range hooked {
+		db.onRemove.unregister(r.removeHookID())
 	}
 	return firstErr
 }
