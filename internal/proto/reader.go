@@ -113,6 +113,16 @@ const MinRESP3ReadBufferSize = 128
 // in the bounded peek window. Callers should consume the frame with ReadReply.
 var ErrPushNotificationNameTooLong = errors.New("redis: push notification name exceeds peek window")
 
+// ErrPushNotificationNameNotString is returned when the next push frame has a
+// well-formed header but its first element is a RESP type other than a string,
+// so there is no name to peek. Like ErrPushNotificationNameTooLong the header
+// gives ReadReply a frame to consume, so callers should consume it with
+// ReadReply. Only the type byte of the first element is checked: a body that
+// does not parse still stops ReadReply partway, as it does for a push with a
+// valid name. Any other error means there is nothing to consume: either the
+// frame has not fully arrived (I/O error) or its header does not parse.
+var ErrPushNotificationNameNotString = errors.New("redis: push notification name is not a string")
+
 // PeekPushNotificationName returns the notification name of the next RESP3
 // push frame without consuming it. The caller is expected to have already
 // verified that the next reply is a push notification (e.g. via PeekReplyType
@@ -213,7 +223,14 @@ func parsePushNotificationName(buf []byte) (string, bool, error) {
 		return "", false, nil
 	}
 	typeOfName := buf[pos]
-	if typeOfName != RespString && typeOfName != RespStatus {
+	switch typeOfName {
+	case RespString, RespStatus:
+	case RespError, RespInt, RespNil, RespFloat, RespBool, RespBlobError, RespVerbatim,
+		RespBigInt, RespArray, RespMap, RespSet, RespAttr, RespPush:
+		// A RESP type other than a string: the header parsed, the frame just
+		// has no name. Only the type byte is checked, not the value behind it.
+		return "", false, fmt.Errorf("%w: %q", ErrPushNotificationNameNotString, buf[pos:])
+	default:
 		return "", false, fmt.Errorf("redis: can't parse push notification name: %q", buf[pos:])
 	}
 	pos++
