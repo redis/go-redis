@@ -23,6 +23,7 @@ type config struct {
 	tracer trace.Tracer
 
 	dbStmtEnabled         bool
+	dbStmtMaxLen          int
 	callerEnabled         bool
 	filterDial            bool
 	filterProcessPipeline func(cmds []redis.Cmder) bool
@@ -75,6 +76,7 @@ func newConfig(opts ...baseOption) *config {
 		tp:            otel.GetTracerProvider(),
 		mp:            otel.GetMeterProvider(),
 		dbStmtEnabled: true,
+		dbStmtMaxLen:  DefaultDBStatementMaxLen,
 		callerEnabled: true,
 		filterProcess: DefaultCommandFilter,
 		filterProcessPipeline: func(cmds []redis.Cmder) bool {
@@ -140,10 +142,22 @@ func WithTracerProvider(provider trace.TracerProvider) TracingOption {
 	})
 }
 
+// DefaultDBStatementMaxLen is the default maximum length for statements and arguments in the tracing hook.
+const DefaultDBStatementMaxLen = 512
+
 // WithDBStatement tells the tracing hook to log raw redis commands.
 func WithDBStatement(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.dbStmtEnabled = on
+	})
+}
+
+// WithDBStatementMaxLen specifies the maximum length for statements and arguments in the tracing hook.
+// Arguments exceeding this limit are truncated with a summary marker `…(+N bytes)`.
+// If maxLen <= 0, statements and arguments are not truncated (full data opt-in).
+func WithDBStatementMaxLen(maxLen int) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.dbStmtMaxLen = maxLen
 	})
 }
 
