@@ -47,6 +47,9 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
+	// cscPresenceOnly enables node-local presence filtering and redirect eviction.
+	// It owns no Cluster state and leaves standalone defaults unchanged.
+	cscPresenceOnly bool
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.
