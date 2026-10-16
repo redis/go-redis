@@ -1821,9 +1821,27 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 	// Block until a frame arrives (timeout 0): a pub/sub connection is
 	// idle by design, so a read deadline would fail healthy connections.
 	err := cn.WithReader(ctx, 0, func(rd *proto.Reader) error {
-		// Drain buffered push notifications before reading the reply.
-		if err := m.processPush(ctx, cn, rd); err != nil {
-			internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
+		// Drain push notifications before reading the reply. A push can
+		// mark the connection for retirement (a maintenance handoff) and
+		// be the last frame for a while on an idle connection, so the
+		// retirement is started right after the drain rather than on the
+		// next frame. processPush may return having consumed every
+		// buffered byte (it drained pushes only): then wait for the next
+		// frame and drain again. The Peek also keeps a processPush that
+		// consumes nothing from spinning; a Peek error is left to
+		// ReadReply to surface.
+		for {
+			if _, err := rd.Peek(1); err != nil {
+				break
+			}
+			if err := m.processPush(ctx, cn, rd); err != nil {
+				internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
+				break
+			}
+			m.retireIfWanted(cn)
+			if rd.Buffered() > 0 {
+				break
+			}
 		}
 		var err error
 		reply, err = rd.ReadReply()
@@ -1951,6 +1969,21 @@ func (m *Manager) retireIfWanted(cn *pool.Conn) {
 		return
 	}
 	_, _ = m.replaceLocked(cn, errConnUnusable)
+}
+
+// RecheckConn asks shouldReplaceConn about the live connection now, for
+// an owner whose answer changed without a frame arriving (in the
+// failover client: a master switch). shouldReplaceConn is otherwise only
+// consulted after a frame read, which on an idle connection — or with
+// the health check disabled — may never come. It does not block: the
+// check runs on its own goroutine, so the owner may call it while
+// holding its own locks.
+func (m *Manager) RecheckConn() {
+	cn := m.conn.Load()
+	if cn == nil {
+		return // nothing live: the next dial resolves the target afresh
+	}
+	go m.retireIfWanted(cn)
 }
 
 // receiveNext blocks until a frame worth routing arrives (nil for an

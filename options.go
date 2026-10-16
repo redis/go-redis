@@ -317,6 +317,67 @@ type Options struct {
 	//
 	// default: 0
 	PipelineMinIdleConns int
+	// PubSubChanSize is the buffer size of a subscriber's delivery
+	// stream and of the Go channels returned by PubSub.Channel /
+	// ChannelWithSubscriptions. Adjustable per client at channel
+	// creation with WithChannelSize. Non-positive values take the
+	// default.
+	//
+	// default: 1000
+	PubSubChanSize int
+
+	// PubSubHealthCheckInterval is how long the shared PubSub connection
+	// may stay silent before the manager sends a health-check PING.
+	// Any received message resets the clock. Use -1 to disable the
+	// health check.
+	//
+	// default: 3 seconds
+	PubSubHealthCheckInterval time.Duration
+
+	// PubSubSubscribeRetryInterval is how often subscribes the server
+	// rejected with an error reply (e.g. NOPERM, LOADING) are re-sent on
+	// the shared PubSub connection, so a rejection that was transient
+	// heals without a reconnect. It runs independently of the health
+	// check. Use -1 to disable the retries.
+	//
+	// default: 10 seconds
+	PubSubSubscribeRetryInterval time.Duration
+
+	// PubSubPingTimeout bounds the health-check PING: the write, and the
+	// wait for the server's reply that follows it. No inbound frame
+	// within it marks the shared PubSub connection unhealthy; it is
+	// dropped and re-established with the subscriptions replayed. A
+	// maintenance window (relaxed timeouts) extends the wait. Use -1 to
+	// remove both the probe's deadline (the write still honours
+	// WriteTimeout) and the reply requirement.
+	//
+	// default: 5 seconds
+	PubSubPingTimeout time.Duration
+
+	// PubSubReconnectTimeout bounds each dial attempt of the shared
+	// PubSub connection when it is re-established.
+	//
+	// default: 10 seconds
+	PubSubReconnectTimeout time.Duration
+
+	// PubSubReconnectMaxBackoff caps the exponential backoff between
+	// reconnect attempts when the shared PubSub connection is lost. It
+	// is deliberately separate from MaxRetryBackoff, which is tuned for
+	// short-lived command retries: the PubSub read loop retries
+	// indefinitely against an endpoint that may stay down for minutes.
+	//
+	// default: 5 seconds
+	PubSubReconnectMaxBackoff time.Duration
+
+	// PubSubLogInterval rate-limits recurring PubSub warning logs: the
+	// per-subscriber line reporting messages dropped because the
+	// subscriber's delivery channel is full (see PubSubChanSize),
+	// and the per-manager line reporting failed reconnect attempts. The
+	// first occurrence logs immediately; subsequent lines carry what
+	// accumulated since the previous one (drop count, attempt count).
+	//
+	// default: 30 seconds
+	PubSubLogInterval time.Duration
 
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
 	// AutoPipeline and AsyncAutoPipeline use it when called without an
@@ -760,6 +821,27 @@ func (opt *Options) init() {
 	}
 	if opt.WriteBufferSize == 0 {
 		opt.WriteBufferSize = proto.DefaultBufferSize
+	}
+	if opt.PubSubChanSize <= 0 {
+		opt.PubSubChanSize = 1000
+	}
+	if opt.PubSubHealthCheckInterval == 0 {
+		opt.PubSubHealthCheckInterval = 3 * time.Second
+	}
+	if opt.PubSubSubscribeRetryInterval == 0 {
+		opt.PubSubSubscribeRetryInterval = 10 * time.Second
+	}
+	if opt.PubSubPingTimeout == 0 {
+		opt.PubSubPingTimeout = 5 * time.Second
+	}
+	if opt.PubSubReconnectTimeout == 0 {
+		opt.PubSubReconnectTimeout = 10 * time.Second
+	}
+	if opt.PubSubReconnectMaxBackoff == 0 {
+		opt.PubSubReconnectMaxBackoff = 5 * time.Second
+	}
+	if opt.PubSubLogInterval == 0 {
+		opt.PubSubLogInterval = 30 * time.Second
 	}
 	switch opt.ReadTimeout {
 	case -2:
@@ -1223,51 +1305,4 @@ func newConnPool(
 		PushNotificationsEnabled: opt.Protocol == 3,
 		Name:                     poolName,
 	}), nil
-}
-
-func newPubSubPool(
-	opt *Options,
-	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
-	poolName string,
-) (*pool.PubSubPool, error) {
-	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
-	if err != nil {
-		return nil, err
-	}
-
-	minIdleConns, err := util.SafeIntToInt32(opt.MinIdleConns, "MinIdleConns")
-	if err != nil {
-		return nil, err
-	}
-
-	maxIdleConns, err := util.SafeIntToInt32(opt.MaxIdleConns, "MaxIdleConns")
-	if err != nil {
-		return nil, err
-	}
-
-	maxActiveConns, err := util.SafeIntToInt32(opt.MaxActiveConns, "MaxActiveConns")
-	if err != nil {
-		return nil, err
-	}
-
-	return pool.NewPubSubPool(&pool.Options{
-		PoolFIFO:                 opt.PoolFIFO,
-		PoolSize:                 poolSize,
-		MaxConcurrentDials:       opt.MaxConcurrentDials,
-		PoolTimeout:              opt.PoolTimeout,
-		DialTimeout:              opt.DialTimeout,
-		DialerRetries:            opt.DialerRetries,
-		DialerRetryTimeout:       opt.DialerRetryTimeout,
-		DialerRetryBackoff:       opt.DialerRetryBackoff,
-		MinIdleConns:             minIdleConns,
-		MaxIdleConns:             maxIdleConns,
-		MaxActiveConns:           maxActiveConns,
-		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
-		ConnMaxLifetime:          opt.ConnMaxLifetime,
-		ConnMaxLifetimeJitter:    opt.ConnMaxLifetimeJitter,
-		ReadBufferSize:           32 * 1024,
-		WriteBufferSize:          32 * 1024,
-		PushNotificationsEnabled: opt.Protocol == 3,
-		Name:                     poolName,
-	}, dialer), nil
 }

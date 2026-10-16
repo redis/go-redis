@@ -157,6 +157,17 @@ type RingOptions struct {
 	PipelinePoolSize        int
 	PipelineMinIdleConns    int
 
+	// The PubSub* fields configure each shard client's pub/sub engine
+	// (one shared pub/sub connection per shard). See the same-named
+	// fields on Options for details and defaults.
+	PubSubChanSize               int
+	PubSubHealthCheckInterval    time.Duration
+	PubSubSubscribeRetryInterval time.Duration
+	PubSubPingTimeout            time.Duration
+	PubSubReconnectTimeout       time.Duration
+	PubSubReconnectMaxBackoff    time.Duration
+	PubSubLogInterval            time.Duration
+
 	TLSConfig *tls.Config
 	Limiter   Limiter
 
@@ -265,6 +276,14 @@ func (opt *RingOptions) clientOptions() *Options {
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
 		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
+
+		PubSubChanSize:               opt.PubSubChanSize,
+		PubSubHealthCheckInterval:    opt.PubSubHealthCheckInterval,
+		PubSubSubscribeRetryInterval: opt.PubSubSubscribeRetryInterval,
+		PubSubPingTimeout:            opt.PubSubPingTimeout,
+		PubSubReconnectTimeout:       opt.PubSubReconnectTimeout,
+		PubSubReconnectMaxBackoff:    opt.PubSubReconnectMaxBackoff,
+		PubSubLogInterval:            opt.PubSubLogInterval,
 
 		TLSConfig: opt.TLSConfig,
 		Limiter:   opt.Limiter,

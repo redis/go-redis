@@ -24,6 +24,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/pubsub"
 	"github.com/redis/go-redis/v9/internal/routing"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
@@ -1383,6 +1384,9 @@ type ClusterClient struct {
 	state           *clusterStateHolder
 	cmdsInfoCache   *cmdsInfoCache
 	cmdInfoResolver *commandInfoResolver
+	// pubSubManager is the cluster pub/sub stub (pubsub.ClusterManager)
+	// until the cluster manager is ported onto the new engine.
+	pubSubManager pubsub.PubSubManagerer
 	cmdable
 	hooksMixin
 
@@ -1424,6 +1428,12 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
 	c.state = newClusterStateHolder(c.loadState, opt.ClusterStateReloadInterval)
+
+	// The cluster pub/sub stub: every PubSub of a ClusterClient reports
+	// pubsub.ErrClusterNotImplemented until the cluster manager — a
+	// broadcast connection plus slot-routed per-node shard-channel
+	// connections — is ported onto the new engine.
+	c.pubSubManager = pubsub.NewClusterManager()
 
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 
@@ -1489,6 +1499,13 @@ func (c *ClusterClient) Close() error {
 			if err := p.Close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
+		}
+	}
+	// Close the pub/sub manager before the nodes: closing it ends every
+	// handle's delivery channel so consumer loops terminate.
+	if c.pubSubManager != nil {
+		if err := c.pubSubManager.Close(); err != nil && err != pool.ErrClosed && firstErr == nil {
+			firstErr = err
 		}
 	}
 	if err := c.nodes.Close(); err != nil && firstErr == nil {
@@ -2920,77 +2937,13 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	return err
 }
 
-// maintenance notifications won't work here for now
-func (c *ClusterClient) pubSub() *PubSub {
-	var node *clusterNode
-	pubsub := &PubSub{
-		opt: c.opt.clientOptions(),
-		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			if node != nil {
-				panic("node != nil")
-			}
-
-			var err error
-
-			if len(channels) > 0 {
-				slot := hashtag.Slot(channels[0])
-
-				// newConn in PubSub is only used for subscription connections, so it is safe to
-				// assume that a slave node can always be used when client options specify ReadOnly.
-				if c.opt.ReadOnly {
-					state, err := c.state.Get(ctx)
-					if err != nil {
-						return nil, err
-					}
-
-					node, err = c.slotReadOnlyNode(state, slot)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					node, err = c.slotMasterNode(ctx, slot)
-					if err != nil {
-						return nil, err
-					}
-				}
-			} else {
-				node, err = c.nodes.Random()
-				if err != nil {
-					return nil, err
-				}
-			}
-			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
-			if err != nil {
-				node = nil
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = node.Client.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				node = nil
-				return nil, err
-			}
-			node.Client.pubSubPool.TrackConn(cn)
-			return cn, nil
-		},
-		closeConn: func(cn *pool.Conn) error {
-			// Untrack connection from PubSubPool
-			node.Client.pubSubPool.UntrackConn(cn)
-			err := cn.Close()
-			node = nil
-			return err
-		},
-	}
-	pubsub.init()
-
-	return pubsub
-}
-
 // Subscribe subscribes the client to the specified channels.
 // Channels can be omitted to create empty subscription.
+//
+// Not implemented on the new pub/sub engine yet: the returned PubSub
+// reports pubsub.ErrClusterNotImplemented.
 func (c *ClusterClient) Subscribe(ctx context.Context, channels ...string) *PubSub {
-	pubsub := c.pubSub()
+	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
 		_ = pubsub.Subscribe(ctx, channels...)
 	}
@@ -2999,8 +2952,10 @@ func (c *ClusterClient) Subscribe(ctx context.Context, channels ...string) *PubS
 
 // PSubscribe subscribes the client to the given patterns.
 // Patterns can be omitted to create empty subscription.
+//
+// Not implemented on the new pub/sub engine yet (see Subscribe).
 func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *PubSub {
-	pubsub := c.pubSub()
+	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
 		_ = pubsub.PSubscribe(ctx, channels...)
 	}
@@ -3008,12 +2963,34 @@ func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *Pub
 }
 
 // SSubscribe Subscribes the client to the specified shard channels.
+// Channels can be omitted to create empty subscription.
+//
+// Not implemented on the new pub/sub engine yet (see Subscribe).
 func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
-	pubsub := c.pubSub()
+	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
 		_ = pubsub.SSubscribe(ctx, channels...)
 	}
 	return pubsub
+}
+
+// Unsubscribe removes channel subscriptions across all PubSubs of the
+// client. Not implemented on the new pub/sub engine yet (see Subscribe).
+func (c *ClusterClient) Unsubscribe(ctx context.Context, channels ...string) error {
+	return c.pubSubManager.Unsubscribe(ctx, channels...)
+}
+
+// PUnsubscribe removes pattern subscriptions across all PubSubs of the
+// client. Not implemented on the new pub/sub engine yet (see Subscribe).
+func (c *ClusterClient) PUnsubscribe(ctx context.Context, patterns ...string) error {
+	return c.pubSubManager.PUnsubscribe(ctx, patterns...)
+}
+
+// SUnsubscribe removes shard-channel subscriptions across all PubSubs of
+// the client. Not implemented on the new pub/sub engine yet (see
+// Subscribe).
+func (c *ClusterClient) SUnsubscribe(ctx context.Context, channels ...string) error {
+	return c.pubSubManager.SUnsubscribe(ctx, channels...)
 }
 
 func (c *ClusterClient) retryBackoff(attempt int) time.Duration {

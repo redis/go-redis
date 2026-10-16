@@ -765,6 +765,54 @@ func TestResolverPluggable(t *testing.T) {
 	}
 }
 
+// TestRecheckConnRetiresIdleConn pins RecheckConn: an owner whose
+// shouldReplaceConn answer changed without a frame arriving (the
+// failover client's master switch) gets the idle connection retired at
+// once — the health check is off in testConfig, so no frame would ever
+// come to trigger it.
+func TestRecheckConnRetiresIdleConn(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	r := &redirectingResolver{target: "node-b:6379"}
+	m := newResolverTestManager(t, srv, testConfig("node-a:6379"), r.ShouldReplace, r.Resolve)
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	r.replace.Store(true)
+	m.RecheckConn()
+	fsc2 := srv.waitDial(t)
+	if fsc2.addr != "node-b:6379" {
+		t.Fatalf("reconnect dialed %q, want the resolver's node-b:6379", fsc2.addr)
+	}
+	fsc2.expectCmd(t, "subscribe", "ch")
+	fsc1.expectClosed(t)
+}
+
+// TestRecheckConnWithoutConnIsNoop pins that RecheckConn is safe with no
+// live connection: before the first subscribe and after Close.
+func TestRecheckConnWithoutConnIsNoop(t *testing.T) {
+	srv := newFakeServer()
+	r := &redirectingResolver{target: "node-b:6379"}
+	m := newResolverTestManager(t, srv, testConfig("node-a:6379"), r.ShouldReplace, r.Resolve)
+
+	r.replace.Store(true)
+	m.RecheckConn()
+	_ = m.Close()
+	m.RecheckConn()
+	select {
+	case fsc := <-srv.dialCh:
+		t.Fatalf("RecheckConn without a live connection dialed %q", fsc.addr)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // TestReplacementDialKeepsDelivering pins that retiring a connection
 // does not stall delivery: the replacement is dialed in the background,
 // so while its dial is parked the read loop keeps delivering from the
