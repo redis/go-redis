@@ -55,7 +55,8 @@ aggregating correctly; only single-node commands route through a child.
 
 - **Child config**: derived once from the parent's `AutoPipelineOptions`,
   forcing the ordered single-shard FD combo (`FullDuplex/!Unordered/
-  MaxConcurrentBatches<=1/NumShards<=1`) the engine requires, and stripping the
+  MaxConcurrentBatches<=1/NumShards<=1/FullDuplexPipes<=1`) the engine requires
+  (one pipe per master: a parent's `FullDuplexPipes` must not multiply per node), and stripping the
   cluster-only `contentSharded` bit so it cannot leak onto a node child.
 - **Redirects**: each child's `fdEngine.reprocess` is wired to
   `clusterReprocess`, which re-runs a MOVED/ASK (or otherwise retryable) reply

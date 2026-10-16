@@ -7247,3 +7247,125 @@ func TestClusterFDConnKillReroutesTail(t *testing.T) {
 		}
 	}
 }
+
+// FullDuplexPipes chooses the number of full-duplex pipes (engines). NumShards>1
+// is still honored as the 9.23.0 spelling when FullDuplexPipes is 0, and
+// Config() reports the effective pipe count either way. Construction only:
+// engines lease their connection lazily, so no server is needed.
+func TestFullDuplexPipesEngineCount(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  AutoPipelineOptions
+		want int
+	}{
+		{"default", AutoPipelineOptions{FullDuplex: true}, 1},
+		{"pipes", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 3}, 3},
+		{"numshards fallback", AutoPipelineOptions{FullDuplex: true, NumShards: 3}, 3},
+		{"both equal", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 3, NumShards: 3}, 3},
+		{"pipes with numshards 1", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 2, NumShards: 1}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewClient(&Options{Addr: internalTestRedisAddr()})
+			defer c.Close()
+			cfg := tc.cfg
+			ap, err := c.AsyncAutoPipelineWithOptions(&cfg)
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			defer ap.Close()
+			if got := len(ap.fds); got != tc.want {
+				t.Fatalf("engines = %d, want %d", got, tc.want)
+			}
+			got := ap.Config()
+			if !got.FullDuplex {
+				t.Fatal("Config().FullDuplex = false, want true")
+			}
+			if got.FullDuplexPipes != tc.want {
+				t.Fatalf("Config().FullDuplexPipes = %d, want %d", got.FullDuplexPipes, tc.want)
+			}
+		})
+	}
+}
+
+func TestFullDuplexPipesValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     AutoPipelineOptions
+		wantErr string
+	}{
+		{"negative", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: -1}, "FullDuplexPipes=-1"},
+		{"disagrees with numshards", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 4, NumShards: 2}, "disagree"},
+		// Like the other full-duplex fields, it is ignored without FullDuplex.
+		{"ignored without full duplex", AutoPipelineOptions{FullDuplexPipes: -1}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate: %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate: got %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// The pool-size error names the field the caller set.
+func TestFullDuplexPipesNeedsPipelinePool(t *testing.T) {
+	c := NewClient(&Options{Addr: internalTestRedisAddr(), PipelinePoolSize: 2})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 4})
+	if err == nil {
+		ap.Close()
+		t.Fatal("FullDuplexPipes=4 on a pipeline pool of 2 was accepted")
+	}
+	if !strings.Contains(err.Error(), "FullDuplexPipes=4") || !strings.Contains(err.Error(), "PipelinePoolSize gives 2") {
+		t.Fatalf("error should name FullDuplexPipes and the pool size, got: %v", err)
+	}
+}
+
+// When full duplex cannot engage (no pipeline pool), FullDuplexPipes has no
+// effect. Unlike NumShards>1, it must not turn into round-robin half-duplex
+// shards that then demand Unordered on the ordered async face.
+func TestFullDuplexPipesNoEffectWithoutPipelinePool(t *testing.T) {
+	c := NewClient(&Options{Addr: internalTestRedisAddr(), PipelinePoolSize: -1})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 4})
+	if err != nil {
+		t.Fatalf("construct: %v (FullDuplexPipes must not require Unordered when full duplex is off)", err)
+	}
+	defer ap.Close()
+	if ap.Config().FullDuplex {
+		t.Fatal("Config().FullDuplex = true without a pipeline pool")
+	}
+	if got := len(ap.shards); got != 1 {
+		t.Fatalf("half-duplex shards = %d, want 1 (FullDuplexPipes must not shard the half-duplex queue)", got)
+	}
+}
+
+// Cluster full duplex runs one pipe per master. The per-node child config is a
+// copy of the parent's, so a parent FullDuplexPipes must be forced to 1 there;
+// otherwise every master would get that many engines.
+func TestFullDuplexPipesClusterChildForcedToOne(t *testing.T) {
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{internalTestRedisAddr()}})
+	defer cc.Close()
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 4})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	defer ap.Close()
+	if ap.clusterFD == nil {
+		t.Fatal("cluster full duplex did not engage")
+	}
+	if got := ap.clusterFD.childCfg.FullDuplexPipes; got != 1 {
+		t.Fatalf("child FullDuplexPipes = %d, want 1", got)
+	}
+	if got := ap.Config().FullDuplexPipes; got != 1 {
+		t.Fatalf("Config().FullDuplexPipes = %d, want 1 (one pipe per master)", got)
+	}
+}

@@ -72,6 +72,7 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	child.Unordered = false
 	child.MaxConcurrentBatches = 1
 	child.NumShards = 1
+	child.FullDuplexPipes = 1 // one pipe per master; a parent's count must not multiply per node
 	child.contentSharded = false
 	// Redirect handling: each child's FD engine re-runs a MOVED/ASK (or retryable)
 	// reply through the redirect-aware ClusterClient instead of its own node-local
