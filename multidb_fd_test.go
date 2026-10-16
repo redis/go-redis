@@ -985,3 +985,28 @@ func TestMultiDBFullDuplexSweepLeavesRemovedChildToRemoval(t *testing.T) {
 		t.Fatal("removal hook did not close the child")
 	}
 }
+
+// A Close-time carry flush through the owner that aborts fails the queued
+// commands behind it without reporting them to the owner: they never ran.
+func TestFDShutdownFlushOwnerAbortSkipsQueuedReports(t *testing.T) {
+	ctx := context.Background()
+	fd, _ := fdRerouteTestEngine(3, func(cmds []Cmder) error {
+		for _, c := range cmds {
+			c.SetErr(io.EOF)
+		}
+		return io.EOF
+	})
+	reports := 0
+	fd.outcome = func(context.Context, Cmder, error) { reports++ }
+	queued := NewStatusCmd(ctx, "set", "queued", "v")
+	if fd.q.push(fdReq{cmd: queued, batch: newAPBatch(), attempts: 1}) != fdPushOK {
+		t.Fatal("queue push failed")
+	}
+	fd.shutdownFlush(ctx, []fdReq{{cmd: NewStatusCmd(ctx, "set", "carry", "v"), batch: newAPBatch(), attempts: 2, sent: true}})
+	if reports != 0 {
+		t.Fatalf("outcome reports = %d, want 0 (the owner settles what it ran)", reports)
+	}
+	if err := queued.rawErr(); !errors.Is(err, io.EOF) {
+		t.Fatalf("queued err = %v, want io.EOF (failed behind the aborted carry)", err)
+	}
+}

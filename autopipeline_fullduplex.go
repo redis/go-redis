@@ -3119,7 +3119,10 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 		// Carry hit an unreachable endpoint; do not run the fresh queue through a full
 		// retry cycle against the same dead endpoint (Close would otherwise stall for
 		// chunks × retries × backoff) — fail it with the same transport error.
-		fd.failReqs(fresh, err)
+		// Running it later would also break order: it is queued behind the
+		// carry that failed. Not accounted when the flush went to the owner:
+		// these commands never ran (see failReqsAcct).
+		fd.failReqsAcct(fresh, err, !fd.flushesViaOwner())
 		return
 	}
 	// Last flush: a transport failure is already handled inside flushReqs (it fails
