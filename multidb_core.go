@@ -536,35 +536,49 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 		}
 		healthy := 0
 		for seen := 0; seen < len(c.dbs); {
-			select {
-			case v := <-results:
-				seen++
-				probeHealthy[v.id] = v.healthy
-				if v.healthy {
-					healthy++
-				}
-			case <-ctx.Done():
-				// A caller's cancellation fails: a canceled construction must
-				// not return a live client. A DEADLINE that arrives with the
-				// policy already met by the verdicts gathered before it
-				// succeeds on them. A member still probing then did not
-				// answer within the whole constructor deadline, so it is
-				// recorded as unhealthy — the same verdict a probe that hit
-				// HealthCheckTimeout gets — and forced open below, never
-				// selected, and repaired by the background loop once it
-				// answers. A verdict landing after expiry is not counted: a
-				// probe that notices cancellation late may report healthy for
-				// a member the caller stopped waiting on.
-				if !errors.Is(ctx.Err(), context.DeadlineExceeded) || healthy < required {
-					return healthy, initHealthErr(ctx.Err(), healthy, required)
-				}
-				for id := range c.dbs {
-					if _, known := probeHealthy[id]; !known {
-						probeHealthy[id] = false
+			// ctx before verdicts: select picks among ready cases at random,
+			// so a verdict sent as ctx ended (from the probe whose check
+			// canceled it, or one that noticed the cancellation late) could
+			// otherwise be counted, and a canceled construction could meet
+			// quorum and succeed. Such a verdict is dropped.
+			if ctx.Err() == nil {
+				select {
+				case v := <-results:
+					if ctx.Err() == nil {
+						seen++
+						probeHealthy[v.id] = v.healthy
+						if v.healthy {
+							healthy++
+						}
+						continue
 					}
+				case <-ctx.Done():
 				}
-				seen = len(c.dbs)
 			}
+			// A caller's cancellation fails: a canceled construction must
+			// not return a live client. A DEADLINE that arrives with the
+			// policy already met by the verdicts gathered before it
+			// succeeds on them. A member still probing then did not
+			// answer within the whole constructor deadline, so it is
+			// recorded as unhealthy — the same verdict a probe that hit
+			// HealthCheckTimeout gets — and forced open below, never
+			// selected, and repaired by the background loop once it
+			// answers. A verdict landing after expiry is not counted: a
+			// probe that notices cancellation late may report healthy for
+			// a member the caller stopped waiting on.
+			if !errors.Is(ctx.Err(), context.DeadlineExceeded) || healthy < required {
+				return healthy, initHealthErr(ctx.Err(), healthy, required)
+			}
+			for id := range c.dbs {
+				if _, known := probeHealthy[id]; !known {
+					probeHealthy[id] = false
+				}
+			}
+			seen = len(c.dbs)
+		}
+		// A cancellation right after the last verdict still fails the pass.
+		if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			return healthy, initHealthErr(err, healthy, required)
 		}
 		return healthy, nil
 	}
