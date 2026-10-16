@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,10 +46,14 @@ func checkKeyValue(key, val string, err error) (bool, error) {
 	return true, nil
 }
 
-// apKey is the per-workload, per-worker key; a few keys per worker so batches
-// carry distinct keys.
-func apKey(workload string, worker, seq int) string {
-	return fmt.Sprintf("e2e:ap:%s:%d:%d", workload, worker, seq%8)
+// apKeyTTL bounds how long keys outlive a run against a shared database.
+const apKeyTTL = 10 * time.Minute
+
+// apKey is the per-run, per-workload, per-worker key; a few keys per worker so
+// batches carry distinct keys. The hash tag keeps one worker's keys in one
+// slot, so a MULTI/EXEC batch over them is not CROSSSLOT.
+func apKey(run, workload string, worker, seq int) string {
+	return fmt.Sprintf("e2e:ap:{%s:%s:%d}:%d", run, workload, worker, seq%8)
 }
 
 // fullDuplex builds a full-duplex autopipeliner and fails the build when full
@@ -67,15 +72,15 @@ func fullDuplex(get func(*redis.MultiDBClient, *redis.AutoPipelineOptions) (*red
 }
 
 // blockingFace drives SET+GET on the blocking face, one command at a time.
-func blockingFace(name string, get func(*redis.MultiDBClient) (*redis.AutoPipeliner, error)) apWorkload {
+func blockingFace(run, name string, get func(*redis.MultiDBClient) (*redis.AutoPipeliner, error)) apWorkload {
 	return apWorkload{name: name, workers: 4, setup: func(t *testing.T, mdb *redis.MultiDBClient) apStepFunc {
 		ap, err := get(mdb)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		return func(ctx context.Context, w, seq int) (bool, error) {
-			key := apKey(name, w, seq)
-			if err := ap.Set(ctx, key, keyValue(key, seq), 0).Err(); err != nil {
+			key := apKey(run, name, w, seq)
+			if err := ap.Set(ctx, key, keyValue(key, seq), apKeyTTL).Err(); err != nil {
 				return false, nil
 			}
 			val, err := ap.Get(ctx, key).Result()
@@ -86,7 +91,7 @@ func blockingFace(name string, get func(*redis.MultiDBClient) (*redis.AutoPipeli
 
 // asyncFace drives a window of SET+GET pairs on the async face and reads the
 // results after submitting all of them.
-func asyncFace(name string, get func(*redis.MultiDBClient) (*redis.AutoPipeliner, error)) apWorkload {
+func asyncFace(run, name string, get func(*redis.MultiDBClient) (*redis.AutoPipeliner, error)) apWorkload {
 	const window = 16
 	return apWorkload{name: name, workers: 2, setup: func(t *testing.T, mdb *redis.MultiDBClient) apStepFunc {
 		ap, err := get(mdb)
@@ -98,8 +103,8 @@ func asyncFace(name string, get func(*redis.MultiDBClient) (*redis.AutoPipeliner
 			sets := make([]*redis.StatusCmd, window)
 			gets := make([]*redis.StringCmd, window)
 			for i := range window {
-				keys[i] = apKey(name, w, seq*window+i)
-				sets[i] = ap.Set(ctx, keys[i], keyValue(keys[i], seq), 0)
+				keys[i] = apKey(run, name, w, seq*window+i)
+				sets[i] = ap.Set(ctx, keys[i], keyValue(keys[i], seq), apKeyTTL)
 				gets[i] = ap.Get(ctx, keys[i])
 			}
 			ok := true
@@ -120,24 +125,24 @@ func asyncFace(name string, get func(*redis.MultiDBClient) (*redis.AutoPipeliner
 }
 
 // pipelinedFace drives SET+GET batches through ap.Pipelined / ap.TxPipelined.
-func pipelinedFace(name string, tx bool) apWorkload {
+func pipelinedFace(run, name string, tx bool) apWorkload {
 	const batch = 8
 	return apWorkload{name: name, workers: 2, setup: func(t *testing.T, mdb *redis.MultiDBClient) apStepFunc {
 		ap, err := mdb.AutoPipeline()
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		run := ap.Pipelined
+		exec := ap.Pipelined
 		if tx {
-			run = ap.TxPipelined
+			exec = ap.TxPipelined
 		}
 		return func(ctx context.Context, w, seq int) (bool, error) {
 			keys := make([]string, batch)
 			gets := make([]*redis.StringCmd, batch)
-			_, err := run(ctx, func(p redis.Pipeliner) error {
+			_, err := exec(ctx, func(p redis.Pipeliner) error {
 				for i := range batch {
-					keys[i] = apKey(name, w, seq*batch+i)
-					p.Set(ctx, keys[i], keyValue(keys[i], seq), 0)
+					keys[i] = apKey(run, name, w, seq*batch+i)
+					p.Set(ctx, keys[i], keyValue(keys[i], seq), apKeyTTL)
 					gets[i] = p.Get(ctx, keys[i])
 				}
 				return nil
@@ -163,58 +168,100 @@ func pipelinedFace(name string, tx bool) apWorkload {
 
 // atMostOnceCounter counts INCRs that a transaction reported as applied
 // (succeeded) and those whose outcome is unknown (errored). The final counter
-// must lie in [succeeded, succeeded+errored]: anything above means a
-// transaction was applied twice.
+// must lie in [succeeded, succeeded+errored]: above means a transaction was
+// applied twice, below means an acknowledged one was lost. INCR merges across
+// Active-Active members (CRDB counter), so both bounds hold after convergence.
 type atMostOnceCounter struct {
-	key string
-	// lowerBound also checks that no acknowledged update was lost. Only valid
-	// for updates that merge across members (CRDB counters): a last-write-wins
-	// SET acknowledged on one member can be overwritten during the failover
-	// window, which is Active-Active semantics, not a client bug.
-	lowerBound bool
-	succeeded  atomic.Int64
-	errored    atomic.Int64
+	key       string
+	succeeded atomic.Int64
+	errored   atomic.Int64
 }
 
-func (c *atMostOnceCounter) verify(t *testing.T, mdb *redis.MultiDBClient) {
+// verify waits until every member reports the same counter value for
+// stablePolls consecutive polls, then checks it against the bounds. It reads
+// each member directly, not through MultiDB, so a member that has not merged
+// yet cannot pass the check.
+func (c *atMostOnceCounter) verify(t *testing.T, _ *redis.MultiDBClient) {
 	t.Helper()
+	const (
+		stablePolls = 3
+		interval    = 500 * time.Millisecond
+	)
 	lo, hi := c.succeeded.Load(), c.succeeded.Load()+c.errored.Load()
-	if !c.lowerBound {
-		lo = 0
+
+	members := make([]*redis.Client, len(e2eTopology.Endpoints))
+	for i, addr := range e2eTopology.Endpoints {
+		members[i] = redis.NewClient(endpointOptions(addr))
+		defer members[i].Close()
 	}
-	var got int64
-	// The members converge asynchronously (CRDB counter merge), so wait for
-	// the active member to report a value inside the bound.
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		v, err := mdb.Get(context.Background(), c.key).Int64()
-		if err == nil || errors.Is(err, redis.Nil) {
-			got = v
-			if got >= lo && got <= hi {
-				return
+	read := func() ([]string, int64, bool) {
+		vals := make([]string, len(members))
+		var first int64
+		agree := true
+		for i, m := range members {
+			v, err := m.Get(context.Background(), c.key).Int64()
+			switch {
+			case errors.Is(err, redis.Nil):
+				v, err = 0, nil
+			case err != nil:
+				vals[i] = err.Error()
+				agree = false
+				continue
+			}
+			vals[i] = fmt.Sprint(v)
+			if i == 0 {
+				first = v
+			} else if v != first {
+				agree = false
 			}
 		}
-		if time.Now().After(deadline) {
+		return vals, first, agree
+	}
+
+	var (
+		vals   []string
+		got    int64
+		stable int
+	)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var (
+			n     int64
+			agree bool
+		)
+		vals, n, agree = read()
+		switch {
+		case !agree:
+			stable = 0
+		case stable > 0 && n == got:
+			stable++
+		default:
+			got, stable = n, 1
+		}
+		if stable >= stablePolls {
 			break
 		}
-		time.Sleep(250 * time.Millisecond)
+		if time.Now().After(deadline) {
+			t.Errorf("%s did not converge across members: %v", c.key, vals)
+			return
+		}
+		time.Sleep(interval)
 	}
-	if got > hi {
+	switch {
+	case got > hi:
 		t.Errorf("%s = %d, above succeeded+errored = %d: a transaction was applied more than once", c.key, got, hi)
-	} else {
+	case got < lo:
 		t.Errorf("%s = %d, below succeeded = %d: an acknowledged transaction was lost", c.key, got, lo)
 	}
 }
 
 // txIncr runs MULTI/INCR/EXEC through the MultiDB client.
-func txIncr(name string) apWorkload {
-	c := &atMostOnceCounter{key: "e2e:ap:" + name + ":counter", lowerBound: true}
+func txIncr(run, name string) apWorkload {
+	c := &atMostOnceCounter{key: "e2e:ap:{" + run + ":" + name + "}:counter"}
 	return apWorkload{
 		name: name, workers: 2,
 		setup: func(t *testing.T, mdb *redis.MultiDBClient) apStepFunc {
-			if err := mdb.Del(context.Background(), c.key).Err(); err != nil {
-				t.Fatalf("%s: reset counter: %v", name, err)
-			}
+			t.Cleanup(func() { _ = mdb.Del(context.Background(), c.key).Err() })
 			return func(ctx context.Context, _, _ int) (bool, error) {
 				_, err := mdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
 					p.Incr(ctx, c.key)
@@ -232,24 +279,23 @@ func txIncr(name string) apWorkload {
 	}
 }
 
-// watchIncr runs a WATCH/GET/MULTI/SET/EXEC check-and-set through the
-// MultiDB client. A TxFailedErr (lost the optimistic race) applied nothing.
-func watchIncr(name string) apWorkload {
-	c := &atMostOnceCounter{key: "e2e:ap:" + name + ":counter"}
+// watchIncr runs WATCH/GET/MULTI/INCR/EXEC through the MultiDB client. The
+// GET makes it a read-then-write under WATCH; INCR makes a replayed EXEC
+// visible in the counter. A TxFailedErr (lost the optimistic race) applied
+// nothing.
+func watchIncr(run, name string) apWorkload {
+	c := &atMostOnceCounter{key: "e2e:ap:{" + run + ":" + name + "}:counter"}
 	return apWorkload{
 		name: name, workers: 2,
 		setup: func(t *testing.T, mdb *redis.MultiDBClient) apStepFunc {
-			if err := mdb.Del(context.Background(), c.key).Err(); err != nil {
-				t.Fatalf("%s: reset counter: %v", name, err)
-			}
+			t.Cleanup(func() { _ = mdb.Del(context.Background(), c.key).Err() })
 			return func(ctx context.Context, _, _ int) (bool, error) {
 				err := mdb.Watch(ctx, func(tx *redis.Tx) error {
-					n, err := tx.Get(ctx, c.key).Int64()
-					if err != nil && !errors.Is(err, redis.Nil) {
+					if err := tx.Get(ctx, c.key).Err(); err != nil && !errors.Is(err, redis.Nil) {
 						return err
 					}
-					_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
-						p.Set(ctx, c.key, n+1, 0)
+					_, err := tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
+						p.Incr(ctx, c.key)
 						return nil
 					})
 					return err
@@ -278,27 +324,30 @@ func watchIncr(name string) apWorkload {
 //   - every workload makes progress on member 1 during the outage, and on
 //     member 0 again after the fallback;
 //   - no reply is delivered to the wrong command;
-//   - transactions are applied at most once.
+//   - transactions are applied at most once, and none acknowledged is lost.
 func TestAutoPipelineAndTransactionsAcrossFailover(t *testing.T) {
+	// run isolates this run's keys from earlier runs against the same
+	// database.
+	run := strconv.FormatInt(time.Now().UnixNano(), 36)
 	workloads := []apWorkload{
-		blockingFace("blocking", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) { return m.AutoPipeline() }),
-		asyncFace("async", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) { return m.AsyncAutoPipeline() }),
-		asyncFace("async-unordered", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) {
+		blockingFace(run, "blocking", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) { return m.AutoPipeline() }),
+		asyncFace(run, "async", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) { return m.AsyncAutoPipeline() }),
+		asyncFace(run, "async-unordered", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) {
 			return m.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{Unordered: true, MaxConcurrentBatches: 4})
 		}),
-		asyncFace("async-shards", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) {
+		asyncFace(run, "async-shards", func(m *redis.MultiDBClient) (*redis.AutoPipeliner, error) {
 			return m.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{Unordered: true, NumShards: 4})
 		}),
-		blockingFace("fd-blocking", fullDuplex(func(m *redis.MultiDBClient, o *redis.AutoPipelineOptions) (*redis.AutoPipeliner, error) {
+		blockingFace(run, "fd-blocking", fullDuplex(func(m *redis.MultiDBClient, o *redis.AutoPipelineOptions) (*redis.AutoPipeliner, error) {
 			return m.AutoPipelineWithOptions(o)
 		})),
-		asyncFace("fd-async", fullDuplex(func(m *redis.MultiDBClient, o *redis.AutoPipelineOptions) (*redis.AutoPipeliner, error) {
+		asyncFace(run, "fd-async", fullDuplex(func(m *redis.MultiDBClient, o *redis.AutoPipelineOptions) (*redis.AutoPipeliner, error) {
 			return m.AsyncAutoPipelineWithOptions(o)
 		})),
-		pipelinedFace("pipelined", false),
-		pipelinedFace("tx-pipelined", true),
-		txIncr("tx-incr"),
-		watchIncr("watch-cas"),
+		pipelinedFace(run, "pipelined", false),
+		pipelinedFace(run, "tx-pipelined", true),
+		txIncr(run, "tx-incr"),
+		watchIncr(run, "watch-cas"),
 	}
 
 	type running struct {
