@@ -168,17 +168,25 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 				// primary pool cannot do that, which would close the
 				// connection while leaving a dead slot behind.
 				owner := snh.manager.hookForConn(poolConn)
-				if owner != nil && owner.workerManager != nil {
+				// Claim the connection (IDLE -> UNUSABLE) BEFORE queueing: a Get may
+				// have acquired it since the state check above. Queueing first would
+				// let the worker re-initialize it under the holder's commands, or close
+				// it under the holder when its wait for the connection times out. A
+				// failed claim needs nothing more: the handoff mark stays, so OnPut
+				// queues the handoff when the holder returns the connection.
+				if owner != nil && owner.workerManager != nil && poolConn.ClaimIdleForHandoff() {
 					if err := owner.workerManager.queueHandoff(poolConn); err != nil {
 						internal.Logger.Printf(context.Background(), "%s", logs.FailedToQueueHandoff(poolConn.GetID(), err))
-					} else {
-						// Mark the connection as queued for handoff to prevent it from being retrieved
-						// This transitions the connection to StateUnusable
-						if err := poolConn.MarkQueuedForHandoff(); err != nil {
-							internal.Logger.Printf(context.Background(), "%s", logs.FailedToMarkForHandoff(poolConn.GetID(), err))
-						} else {
-							internal.Logger.Printf(context.Background(), "%s", logs.MarkedForHandoff(poolConn.GetID()))
+						// Claimed but no worker will take it: remove it, as OnPut does
+						// when queueing fails, instead of leaving it UNUSABLE for good.
+						if owner.pool != nil {
+							owner.pool.RemoveWithoutTurn(context.Background(), poolConn, err)
 						}
+					} else {
+						// Clear the mark so the connection is not queued again. Metadata
+						// only: the worker may already own the connection's state.
+						poolConn.MarkHandoffQueued()
+						internal.Logger.Printf(context.Background(), "%s", logs.MarkedForHandoff(poolConn.GetID()))
 					}
 				}
 			}
