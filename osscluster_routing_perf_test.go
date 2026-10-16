@@ -142,15 +142,16 @@ func TestClusterRoutingAllocs(t *testing.T) {
 	defer ap.Close()
 	// Warm the decision pool.
 	for i := 0; i < 10; i++ {
-		_ = ap.preflight(ctx, cmd)
+		_, _ = ap.routeCommand(ctx, cmd)
 		cmd.setClusterRoutingDecision(nil)
 	}
 	if n := testing.AllocsPerRun(1000, func() {
-		if ap.mustDivert(ctx, cmd) {
-			t.Fatal("diverted")
-		}
-		if err := ap.preflight(ctx, cmd); err != nil {
+		divert, err := ap.routeCommand(ctx, cmd)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if divert {
+			t.Fatal("diverted")
 		}
 		_ = ap.shardFn(cmd)
 		cmd.setClusterRoutingDecision(nil)

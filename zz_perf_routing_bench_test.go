@@ -88,7 +88,7 @@ func BenchmarkPerfMapCmds100(b *testing.B) {
 }
 
 // BenchmarkPerfAPAdmission runs what AutoPipeliner.submit calls per command
-// before queueing on the cluster face: mustDivert, preflight, shardFn.
+// before queueing on the cluster face (routing hooks + shardFn, see perfAPAdmit).
 func BenchmarkPerfAPAdmission(b *testing.B) {
 	c := newPerfClusterClient(b)
 	defer c.Close()
@@ -102,15 +102,9 @@ func BenchmarkPerfAPAdmission(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cmd := NewStringCmd(ctx, "get", perfKeys[i&1023])
-		if ap.mustDivert != nil && ap.mustDivert(ctx, cmd) {
-			b.Fatal("diverted")
+		if err := perfAPAdmit(ap, ctx, cmd); err != nil {
+			b.Fatal(err)
 		}
-		if ap.preflight != nil {
-			if err := ap.preflight(ctx, cmd); err != nil {
-				b.Fatal(err)
-			}
-		}
-		_ = ap.shardFn(cmd)
 		perfAPRelease(cmd)
 	}
 }
@@ -132,15 +126,9 @@ func BenchmarkPerfAPAdmitAndMap100(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		for j := range cmds {
 			cmd := NewStringCmd(ctx, "get", perfKeys[(i*100+j)&1023])
-			if ap.mustDivert != nil && ap.mustDivert(ctx, cmd) {
-				b.Fatal("diverted")
+			if err := perfAPAdmit(ap, ctx, cmd); err != nil {
+				b.Fatal(err)
 			}
-			if ap.preflight != nil {
-				if err := ap.preflight(ctx, cmd); err != nil {
-					b.Fatal(err)
-				}
-			}
-			_ = ap.shardFn(cmd)
 			cmds[j] = cmd
 		}
 		if err := c.mapCmdsByNode(ctx, newCmdsMap(), cmds); err != nil {

@@ -19,7 +19,7 @@ func TestAutoPipelineAdmissionPinsTemplate(t *testing.T) {
 
 	for _, key := range []string{"a", "{user}1", "", "zzz"} {
 		cmd := NewStringCmd(ctx, "get", key)
-		if err := ap.preflight(ctx, cmd); err != nil {
+		if _, err := ap.routeCommand(ctx, cmd); err != nil {
 			t.Fatal(err)
 		}
 		pin := cmd.clusterRoutingDecision()
@@ -40,7 +40,7 @@ func TestAutoPipelineAdmissionPinsTemplate(t *testing.T) {
 		}
 		// Re-admitting a command after a different key's admission keeps its own slot.
 		other := NewStringCmd(ctx, "get", key+"x")
-		if err := ap.preflight(ctx, other); err != nil {
+		if _, err := ap.routeCommand(ctx, other); err != nil {
 			t.Fatal(err)
 		}
 		if got := c.cmdSlotWithDecision(other, other.clusterRoutingDecision(), -1); got != clusterKeySlot(key+"x") {
@@ -51,7 +51,7 @@ func TestAutoPipelineAdmissionPinsTemplate(t *testing.T) {
 
 	// A command with a resolver policy keeps its own decision.
 	ftCmd := NewCmd(ctx, "ft.search", "idx", "*")
-	if err := ap.preflight(ctx, ftCmd); err == nil {
+	if _, err := ap.routeCommand(ctx, ftCmd); err == nil {
 		if pin := ftCmd.clusterRoutingDecision(); pin == nil || pin.template {
 			t.Fatalf("ft.search pin %+v, want an own decision", pin)
 		}
@@ -61,7 +61,7 @@ func TestAutoPipelineAdmissionPinsTemplate(t *testing.T) {
 	// Metadata-derived policies keep a pooled decision.
 	c.SetCommandInfoResolver(NewCommandMetadataResolver())
 	cmd := NewStringCmd(ctx, "get", "k")
-	if err := ap.preflight(ctx, cmd); err != nil {
+	if _, err := ap.routeCommand(ctx, cmd); err != nil {
 		t.Fatal(err)
 	}
 	if pin := cmd.clusterRoutingDecision(); pin == nil || pin.template || !pin.pooled {
@@ -89,8 +89,18 @@ func TestFastRoutingTemplateMatchesFullPath(t *testing.T) {
 	ctx := context.Background()
 	view := c.metadataView()
 	shapes := [][]interface{}{
-		{}, {"k"}, {"{a}k", "v"}, {"k", "v", "w"}, {"k", 1, 2, 3}, {7}, {[]byte("bk"), "v"},
-		{"", "v"}, {nil}, {struct{}{}}, {"sub", "k"}, {"info", "k"},
+		{},
+		{"k"},
+		{"{a}k", "v"},
+		{"k", "v", "w"},
+		{"k", 1, 2, 3},
+		{7},
+		{[]byte("bk"), "v"},
+		{"", "v"},
+		{nil},
+		{struct{}{}},
+		{"sub", "k"},
+		{"info", "k"},
 	}
 	names := []string{"GET", "Get", "ft.search", "json.get", "unknown.cmd", "nosuchcmd"}
 	for name := range view.records {
@@ -128,7 +138,6 @@ func TestPipelineMappingWithTemplates(t *testing.T) {
 	cmds := []Cmder{
 		NewStringCmd(ctx, "get", "a"), NewStatusCmd(ctx, "set", "{b}1", "v"),
 		NewIntCmd(ctx, "del", "c1", "c2"), NewStringCmd(ctx, "get", 12345),
-		NewCmd(ctx, "object", "encoding", "d"),
 	}
 	for i := 0; i < 300; i++ { // runs of same and different slot ranges
 		cmds = append(cmds, NewStringCmd(ctx, "get", "k"+string(rune('a'+i%7))+string(rune('a'+i/7%26))))
@@ -138,7 +147,18 @@ func TestPipelineMappingWithTemplates(t *testing.T) {
 		t.Fatal("plain pipeline should be all templates")
 	}
 	route.clear(cmds)
-	for round := 0; round < 2; round++ { // the second round reuses the commands
+	// A subcommand keeps its parent's readonly flag, so it differs from its
+	// leaf template and takes the full path.
+	mixed := append(append([]Cmder(nil), cmds...), NewCmd(ctx, "object", "encoding", "d"))
+	route = c.resolvePipelineRouting(ctx, mixed)
+	if route.allTemplates {
+		t.Fatal("OBJECT ENCODING should not pin a template")
+	}
+	route.clear(mixed)
+	for round := 0; round < 3; round++ { // later rounds reuse the commands
+		if round == 2 {
+			cmds = mixed
+		}
 		m := newCmdsMap()
 		if err := c.mapCmdsByNode(ctx, m, cmds); err != nil {
 			t.Fatal(err)

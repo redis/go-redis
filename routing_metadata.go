@@ -1,10 +1,9 @@
 package redis
 
 import (
-	"encoding"
 	"errors"
 	"net"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,17 +12,18 @@ import (
 	"github.com/redis/go-redis/v9/internal/routing"
 )
 
-// commandArgsRepeatable rejects marshalers whose wire bytes may change between uses.
+// commandArgsRepeatable accepts the types proto.Writer encodes directly.
+// Unsupported values and marshalers must not reach a partial fan-out write.
 func commandArgsRepeatable(cmd Cmder) bool {
 	for _, arg := range cmd.Args() {
 		switch arg.(type) {
 		case nil, string, *string, []byte,
-			int, int8, int16, int32, int64,
-			uint, uint8, uint16, uint32, uint64,
-			float32, float64, bool,
-			time.Time, *time.Time, net.IP:
+			int, *int, int8, *int8, int16, *int16, int32, *int32, int64, *int64,
+			uint, *uint, uint8, *uint8, uint16, *uint16, uint32, *uint32, uint64, *uint64,
+			uintptr, *uintptr, float32, *float32, float64, *float64, bool, *bool,
+			time.Time, *time.Time, time.Duration, *time.Duration, net.IP:
 			// proto.Writer encodes these directly.
-		case encoding.BinaryMarshaler:
+		default:
 			return false
 		}
 	}
@@ -166,14 +166,14 @@ func deriveRoutingTable(records map[string]*CommandInfo, shadowedParents map[str
 		}
 		meta := deriveRoutingCommandMeta(name, info)
 		if meta.valid {
-			table[name] = &meta
+			table[name] = meta
 		}
 	}
 	return table
 }
 
-func deriveRoutingCommandMeta(name string, info *CommandInfo) routingCommandMeta {
-	meta := routingCommandMeta{
+func deriveRoutingCommandMeta(name string, info *CommandInfo) *routingCommandMeta {
+	meta := &routingCommandMeta{
 		name: name, valid: info != nil,
 		special: routingSpecialPolicies[name],
 	}
@@ -494,7 +494,10 @@ func routingFirstKeyPos(meta *routingCommandMeta, cmd Cmder) (pos int, ok bool) 
 		if candidate < first {
 			first = candidate
 		}
-		key, _ := routingArgText(cmd, candidate)
+		key, wireOK := routingArgText(cmd, candidate)
+		if !wireOK {
+			return 0, false
+		}
 		if key != "" && candidate < firstNonEmpty {
 			firstNonEmpty = candidate
 		}
@@ -528,9 +531,6 @@ func routingFirstKeyForSpec(spec routingKeySpec, cmd Cmder) (int, bool, bool) {
 		if begin <= 0 || begin >= len(cmd.Args()) {
 			return 0, true, false
 		}
-		if _, wireOK := routingArgText(cmd, begin); !wireOK {
-			return 0, true, false
-		}
 		return begin, true, true
 	}
 	layout, matched, ok := routingResolveKeySpecLayout(spec, cmd)
@@ -540,21 +540,27 @@ func routingFirstKeyForSpec(spec routingKeySpec, cmd Cmder) (int, bool, bool) {
 	if layout.count == 0 {
 		return 0, true, true
 	}
-	if _, wireOK := routingArgText(cmd, layout.first); !wireOK {
-		return 0, true, false
-	}
 	return layout.first, true, true
 }
 
-// routingResolveTransactionKeyPlan also accepts the known stream layout: all
-// keys can be checked for one slot, but keys and IDs cannot be split by fan-out.
+// routingResolveTransactionKeyPlan checks every key when the layout is known.
+// Incomplete metadata may still prove a routing key; Redis validates the other
+// keys when it queues the command, preserving transactions such as SORT.
 func routingResolveTransactionKeyPlan(meta *routingCommandMeta, cmd Cmder) (routingKeyPlan, bool) {
-	if meta != nil && len(meta.keySpecs) == 1 && meta.keySpecs[0].begin == routingBeginStreams &&
-		!meta.keyPlanComplete {
-		// The view's records are shared and immutable: adjust a copy.
+	if meta == nil {
+		return routingKeyPlan{numKeysPos: -1}, false
+	}
+	if len(meta.keySpecs) == 1 && meta.keySpecs[0].begin == routingBeginStreams {
+		// Stream keys can be checked for one slot, but keys and IDs cannot
+		// be split by fan-out. The view's metadata remains immutable.
 		streams := *meta
 		streams.keyPlanComplete = true
-		return routingResolveKeyPlan(&streams, cmd)
+		meta = &streams
+	}
+	if !meta.keyPlanComplete {
+		if first, ok := routingFirstKeyPos(meta, cmd); ok && first > 0 {
+			return routingKeyPlan{positions: []int{first}, numKeysPos: -1}, true
+		}
 	}
 	return routingResolveKeyPlan(meta, cmd)
 }
@@ -575,7 +581,6 @@ func routingResolveKeyPlan(meta *routingCommandMeta, cmd Cmder) (routingKeyPlan,
 		return plan, false
 	}
 
-	seen := make(map[int]struct{})
 	for _, spec := range meta.keySpecs {
 		positions, keyArgsEnd, numKeysPos, matched, ok := routingResolveKeySpec(spec, cmd)
 		if !ok {
@@ -584,22 +589,23 @@ func routingResolveKeyPlan(meta *routingCommandMeta, cmd Cmder) (routingKeyPlan,
 		if !matched {
 			continue
 		}
-		for _, pos := range positions {
-			if _, duplicate := seen[pos]; duplicate {
-				continue
-			}
-			if _, ok := routingArgText(cmd, pos); !ok {
-				return routingKeyPlan{numKeysPos: -1}, false
-			}
-			seen[pos] = struct{}{}
-			plan.positions = append(plan.positions, pos)
+		if plan.positions == nil {
+			plan.positions = positions
+		} else {
+			plan.positions = append(plan.positions, positions...)
 		}
 		if len(meta.keySpecs) == 1 {
 			plan.keyArgsEnd, plan.step, plan.numKeysPos = keyArgsEnd, spec.step, numKeysPos
 			plan.splittable = spec.limit == 0
 		}
 	}
-	sort.Ints(plan.positions)
+	slices.Sort(plan.positions)
+	plan.positions = slices.Compact(plan.positions)
+	for _, pos := range plan.positions {
+		if _, ok := routingArgText(cmd, pos); !ok {
+			return routingKeyPlan{numKeysPos: -1}, false
+		}
+	}
 	return plan, true
 }
 
@@ -670,7 +676,9 @@ func routingResolveKeySpecLayout(spec routingKeySpec, cmd Cmder) (routingKeySpec
 			return routingKeySpecLayout{numKeysPos: -1}, true, false
 		}
 		raw, wireOK := routingArgText(cmd, layout.numKeysPos)
-		if !wireOK {
+		// Redis rejects signs and leading zeros in nonnegative counts. Splitting
+		// must not rewrite an invalid count into valid per-shard commands.
+		if !wireOK || len(raw) == 0 || raw[0] < '0' || raw[0] > '9' || len(raw) > 1 && raw[0] == '0' {
 			return routingKeySpecLayout{numKeysPos: -1}, true, false
 		}
 		numKeys, err := strconv.Atoi(raw)

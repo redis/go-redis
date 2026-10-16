@@ -402,10 +402,10 @@ func (r *commandInfoResolver) resolveCommandRoutingsWithView(
 		resolver *commandInfoResolver
 		index    int
 	}
-	// Only a metadataEnsure hook can restart resolution, so only then are the
-	// caches needed. Walk the chain per call: SetFallbackResolver can change it.
 	var customAnswers map[customLookup]*routing.CommandPolicy
 	var ensured map[*commandInfoResolver]struct{}
+	// Without an ensure hook resolution cannot restart, so answers do not
+	// need to be retained. The fallback chain can change between calls.
 	for current := r; current != nil && current.resolveFunc != nil; current = current.fallBackResolver {
 		if current.metadataView != nil && current.metadataEnsure != nil {
 			customAnswers = make(map[customLookup]*routing.CommandPolicy)

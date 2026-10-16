@@ -99,7 +99,7 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 }
 
 // submit routes cmd to the FD child that owns its slot. It is called from
-// AutoPipeliner.submit AFTER diversion and preflight have been decided, so cmd
+// AutoPipeliner.submit AFTER routing and diversion have been decided, so cmd
 // is a batchable single-node command. On any routing miss (keyless command,
 // unresolved slot, topology not loaded, or a node whose client turns out not to
 // be FD-capable) it falls back to the normal cluster Process path — correct,
@@ -125,8 +125,8 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// Submit straight to the child's FD engine, skipping child.submit
 	// (AutoPipeliner.submit). The parent already decided this command is
 	// pipelineable — diversion (readTimeout/runsOutsidePipeline/isBlockingCmd/
-	// HIMPORT/mustDivert) and preflight ran above — so the child's submit would only
-	// re-run that same classification, hit its nil preflight, and build a finish
+	// HIMPORT/routeCommand) and validation ran above — so the child's submit would only
+	// re-run that same classification, hit its nil routing callback, and build a finish
 	// closure: pure per-command CPU on the hot path (measured ~1/3 of submit cost is
 	// this second pass). child.fd is non-nil (getOrCreateChild screened it).
 	b := child.fd.submit(ctx, cmd)

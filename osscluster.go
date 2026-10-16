@@ -884,10 +884,12 @@ type clusterState struct {
 	Masters []*clusterNode
 	Slaves  []*clusterNode
 
-	// allMasters/allSlaves include zero-slot and unhealthy SHARDS nodes.
+	// allMasters/allSlaves include zero-slot and unhealthy current SHARDS nodes.
+	// Superseded masters are retained only in allNodes for pool accounting.
 	// Masters/Slaves contain only online routing candidates.
 	allMasters []*clusterNode
 	allSlaves  []*clusterNode
+	allNodes   []*clusterNode // Includes superseded masters for pool accounting.
 	health     map[*clusterNode]string
 
 	slots []*clusterSlot
@@ -950,6 +952,27 @@ func sameClusterTopology(a, b *clusterState) bool {
 		}
 	}
 	return true
+}
+
+// Newly available nodes were not part of the previous live identity check.
+// Retire metadata before they become routing candidates, including zero-slot
+// nodes that do not change the slot map.
+func clusterMetadataSourceChanged(current, previous *clusterState) bool {
+	if !sameClusterTopology(current, previous) {
+		return true
+	}
+	for i, nodes := range [][]*clusterNode{current.Masters, current.Slaves} {
+		previousNodes := previous.Masters
+		if i == 1 {
+			previousNodes = previous.Slaves
+		}
+		for _, node := range nodes {
+			if _, found := slices.BinarySearchFunc(previousNodes, node, compareClusterNodes); !found {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func newClusterState(
@@ -1040,10 +1063,15 @@ func newClusterStateFromShards(
 	state.Slaves = nil
 	state.allMasters = make([]*clusterNode, 0, len(shards))
 	state.allSlaves = make([]*clusterNode, 0)
+	state.allNodes = make([]*clusterNode, 0)
 	state.health = make(map[*clusterNode]string)
 	originHost, originPort, _ := net.SplitHostPort(origin)
 	for shardIndex, shard := range shards {
-		for _, shardNode := range shard.Nodes {
+		masterIndex, err := clusterShardMasterIndex(shard)
+		if err != nil {
+			return nil, err
+		}
+		for nodeIndex, shardNode := range shard.Nodes {
 			nodeAddress, addrErr := clusterShardNodeAddr(shardNode, origin, tlsEnabled)
 			if addrErr != nil {
 				return nil, fmt.Errorf("redis: invalid CLUSTER SHARDS node in shard %d: %w", shardIndex, addrErr)
@@ -1058,12 +1086,16 @@ func newClusterStateFromShards(
 				return nil, nodeErr
 			}
 			node.SetGeneration(state.generation)
+			state.allNodes = appendIfNotExist(state.allNodes, node)
 			health := clusterShardNodeHealth(shardNode.Health)
 			if health != "online" {
 				state.health[node] = health
 			}
 			switch strings.ToLower(shardNode.Role) {
 			case "master":
+				if nodeIndex != masterIndex {
+					continue // A failed predecessor is no longer this shard's owner.
+				}
 				state.allMasters = appendIfNotExist(state.allMasters, node)
 				if health == "online" {
 					state.Masters = appendIfNotExist(state.Masters, node)
@@ -1084,12 +1116,14 @@ func newClusterStateFromShards(
 }
 
 func sortClusterNodes(nodes []*clusterNode) {
-	slices.SortFunc(nodes, func(a, b *clusterNode) int {
-		if byAddr := cmp.Compare(a.Client.opt.Addr, b.Client.opt.Addr); byAddr != 0 {
-			return byAddr
-		}
-		return cmp.Compare(a.Client.opt.NodeAddress, b.Client.opt.NodeAddress)
-	})
+	slices.SortFunc(nodes, compareClusterNodes)
+}
+
+func compareClusterNodes(a, b *clusterNode) int {
+	if byAddr := cmp.Compare(a.Client.opt.Addr, b.Client.opt.Addr); byAddr != 0 {
+		return byAddr
+	}
+	return cmp.Compare(a.Client.opt.NodeAddress, b.Client.opt.NodeAddress)
 }
 
 func clusterShardNodeHealth(raw string) string {
@@ -1101,12 +1135,49 @@ func clusterShardNodeHealth(raw string) string {
 	return health
 }
 
+// Failover can leave an unavailable predecessor marked master in SHARDS.
+// Select the unique online owner, retaining a sole unavailable owner so callers
+// cannot silently omit its shard. Unknown health requires the SLOTS fallback.
+func clusterShardMasterIndex(shard ClusterShard) (int, error) {
+	master, onlineMaster, masters := -1, -1, 0
+	for i, node := range shard.Nodes {
+		health := clusterShardNodeHealth(node.Health)
+		switch health {
+		case "online", "fail", "loading":
+		default:
+			return -1, fmt.Errorf("redis: CLUSTER SHARDS node %q has unknown health %q", node.ID, node.Health)
+		}
+		if !strings.EqualFold(node.Role, "master") {
+			continue
+		}
+		master = i
+		masters++
+		if health == "online" {
+			if onlineMaster >= 0 {
+				return -1, errors.New("redis: CLUSTER SHARDS shard has multiple online masters")
+			}
+			onlineMaster = i
+		}
+	}
+	if onlineMaster >= 0 {
+		return onlineMaster, nil
+	}
+	if masters != 1 {
+		return -1, fmt.Errorf("redis: CLUSTER SHARDS shard has %d masters and no online owner", masters)
+	}
+	return master, nil
+}
+
 func clusterSlotsFromShards(shards []ClusterShard, origin string, tlsEnabled bool) ([]ClusterSlot, error) {
 	slots := make([]ClusterSlot, 0, len(shards))
 	for shardIndex, shard := range shards {
+		masterIndex, err := clusterShardMasterIndex(shard)
+		if err != nil {
+			return nil, fmt.Errorf("redis: invalid CLUSTER SHARDS shard %d: %w", shardIndex, err)
+		}
 		var master *ClusterNode
 		replicas := make([]ClusterNode, 0, len(shard.Nodes))
-		for _, shardNode := range shard.Nodes {
+		for nodeIndex, shardNode := range shard.Nodes {
 			addr, err := clusterShardNodeAddr(shardNode, origin, tlsEnabled)
 			if err != nil {
 				return nil, fmt.Errorf("redis: invalid CLUSTER SHARDS node in shard %d: %w", shardIndex, err)
@@ -1114,8 +1185,8 @@ func clusterSlotsFromShards(shards []ClusterShard, origin string, tlsEnabled boo
 			node := ClusterNode{ID: shardNode.ID, Addr: addr}
 			switch strings.ToLower(shardNode.Role) {
 			case "master":
-				if master != nil {
-					return nil, fmt.Errorf("redis: CLUSTER SHARDS shard %d has multiple masters", shardIndex)
+				if nodeIndex != masterIndex {
+					continue
 				}
 				master = &node
 			case "replica", "slave":
@@ -1264,10 +1335,22 @@ func (c *clusterState) pickNode(picker routing.ShardPicker, includeReplicas bool
 		return nil, errClusterNoNodes
 	}
 	idx := picker.Next(total)
-	if idx < len(c.Masters) {
-		return c.Masters[idx], nil
+	for range total {
+		var node *clusterNode
+		if idx < len(c.Masters) {
+			node = c.Masters[idx]
+		} else {
+			node = c.Slaves[idx-len(c.Masters)]
+		}
+		if !node.Failing() && !node.Loading() {
+			return node, nil
+		}
+		idx++
+		if idx == total {
+			idx = 0
+		}
 	}
-	return c.Slaves[idx-len(c.Masters)], nil
+	return nil, errClusterTopologyUnhealthy
 }
 
 func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
@@ -1689,7 +1772,7 @@ func (c *clusterStateHolder) reload(ctx context.Context) (*clusterState, error) 
 	if previous != nil {
 		previousState = previous.(*clusterState)
 	}
-	if c.beforeReload != nil && previousState != nil && !sameClusterTopology(state, previousState) {
+	if c.beforeReload != nil && previousState != nil && clusterMetadataSourceChanged(state, previousState) {
 		c.beforeReload(state, previousState)
 	}
 	c.state.Store(state)
@@ -1829,12 +1912,12 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		c.cmdMeta.beginParentSourceChange()
 	}
 	c.state.onReload = func(current, previous *clusterState) {
-		if previous != nil && !sameClusterTopology(current, previous) {
+		if previous != nil && clusterMetadataSourceChanged(current, previous) {
 			c.cmdMeta.finishParentSourceChange()
 			return
 		}
-		// Initial publication and later health-only reloads retry an unverified
-		// initial identity, without invalidating an established live view.
+		// Initial publication and unchanged online membership retry an
+		// unverified initial identity without retiring established metadata.
 		c.cmdMeta.onConnInit()
 	}
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
@@ -1919,7 +2002,7 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	decision := c.commandRoutingDecision(ctx, cmd)
-	if decision.policyErr != nil && !c.opt.DisableRoutingPolicies {
+	if decision.policyErr != nil {
 		return decision.policyErr
 	}
 	slot := c.cmdSlotWithDecision(cmd, &decision, -1)
@@ -1962,7 +2045,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			_, lastErr = pipe.Exec(ctx)
 		} else {
 			if !c.opt.DisableRoutingPolicies {
-				lastErr = c.routeAndRun(ctx, cmd, node, decision)
+				lastErr = c.routeAndRun(ctx, cmd, node, &decision)
 			} else {
 				lastErr = node.Client.Process(ctx, cmd)
 			}
@@ -2075,7 +2158,7 @@ func (c *ClusterClient) ForEachMaster(
 	}
 }
 
-// ForEachSlave concurrently calls the fn on each slave node in the cluster.
+// ForEachSlave concurrently calls the fn on each online slave node in the cluster.
 // It returns the first error if any.
 func (c *ClusterClient) ForEachSlave(
 	ctx context.Context,
@@ -2089,7 +2172,7 @@ func (c *ClusterClient) ForEachSlave(
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)
 
-	for _, slave := range state.declaredSlaves() {
+	for _, slave := range state.Slaves {
 		wg.Add(1)
 		go func(node *clusterNode) {
 			defer wg.Done()
@@ -2113,7 +2196,7 @@ func (c *ClusterClient) ForEachSlave(
 	}
 }
 
-// ForEachShard concurrently calls the fn on each known node in the cluster.
+// ForEachShard concurrently calls the fn on each online node in the cluster.
 // It returns the first error if any.
 func (c *ClusterClient) ForEachShard(
 	ctx context.Context,
@@ -2138,11 +2221,11 @@ func (c *ClusterClient) ForEachShard(
 		}
 	}
 
-	for _, node := range state.declaredMasters() {
+	for _, node := range state.Masters {
 		wg.Add(1)
 		go worker(node)
 	}
-	for _, node := range state.declaredSlaves() {
+	for _, node := range state.Slaves {
 		wg.Add(1)
 		go worker(node)
 	}
@@ -2196,11 +2279,17 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		}
 	}
 
-	for _, node := range state.declaredMasters() {
-		foldNode(node.Client)
-	}
-	for _, node := range state.declaredSlaves() {
-		foldNode(node.Client)
+	if state.allNodes != nil {
+		for _, node := range state.allNodes {
+			foldNode(node.Client)
+		}
+	} else {
+		for _, node := range state.Masters {
+			foldNode(node.Client)
+		}
+		for _, node := range state.Slaves {
+			foldNode(node.Client)
+		}
 	}
 
 	if havePipe {
@@ -2222,11 +2311,32 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 	if err != nil {
 		return nil, err
 	}
+	rand.Shuffle(len(addrs), func(i, j int) { addrs[i], addrs[j] = addrs[j], addrs[i] })
+	if current := c.state.state.Load(); current != nil {
+		state := current.(*clusterState)
+		online := make(map[string]bool, len(state.Masters)+len(state.Slaves))
+		for _, nodes := range [][]*clusterNode{state.Masters, state.Slaves} {
+			for _, node := range nodes {
+				online[node.Client.opt.Addr] = true
+			}
+		}
+		// Keep every seed as a fallback, but avoid waiting for a node already
+		// reported unavailable before trying known online endpoints.
+		preferred := 0
+		for i, addr := range addrs {
+			if online[addr] {
+				addrs[preferred], addrs[i] = addrs[i], addrs[preferred]
+				preferred++
+			}
+		}
+	}
 
 	var firstErr error
 
-	for _, idx := range rand.Perm(len(addrs)) {
-		addr := addrs[idx]
+	for _, addr := range addrs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 
 		node, err := c.nodes.GetOrCreate(addr)
 		if err != nil {
@@ -2237,6 +2347,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 		}
 
 		shards, shardsErr := node.Client.ClusterShards(ctx).Result()
+		fallback := shardsErr == nil || isRedisError(shardsErr)
 		if shardsErr == nil {
 			state, stateErr := newClusterStateFromShards(
 				c.nodes,
@@ -2249,8 +2360,19 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 			}
 			shardsErr = stateErr
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !fallback {
+			// A connection failure will also affect SLOTS; try another node.
+			if firstErr == nil {
+				firstErr = shardsErr
+			}
+			continue
+		}
 
-		// CLUSTER SLOTS remains a fallback for the available topology.
+		// Fall back for older servers, ACL restrictions, or an unusable SHARDS
+		// reply, including unknown health values in compatible implementations.
 		slots, slotsErr := node.Client.ClusterSlots(ctx).Result()
 		if slotsErr == nil {
 			return newClusterState(c.nodes, slots, addr)
@@ -2343,24 +2465,23 @@ func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*A
 
 // installAutoPipelineSharding buckets single-node commands by admitted slot.
 func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
-	// Reject invalid commands before they can poison a shared batch.
-	ap.setPreflight(func(ctx context.Context, cmd Cmder) error {
+	ap.routeCommand = func(ctx context.Context, cmd Cmder) (bool, error) {
 		if c.opt.DisableRoutingPolicies {
-			return nil
-		}
-		return c.autoPipelineRoutingDecision(ctx, cmd).policyErr
-	})
-	// Preserve direct-command semantics for real fan-out and special routing.
-	ap.setMustDivert(func(ctx context.Context, cmd Cmder) bool {
-		if c.opt.DisableRoutingPolicies {
-			return false
+			return false, c.legacyRoutingDecision(cmd).policyErr
 		}
 		decision := c.autoPipelineRoutingDecision(ctx, cmd)
-		return decision.policyErr == nil && decision.policy != nil &&
-			(decision.policy.Request == routing.ReqSpecial ||
-				decision.policy.Request == routing.ReqMultiShard && !decision.policyFromMetadata ||
-				clusterCommandFansOut(cmd, decision))
-	})
+		if decision.policyErr != nil || decision.policy == nil {
+			return false, decision.policyErr
+		}
+		fansOut := clusterCommandFansOut(cmd, decision)
+		divert := fansOut || decision.policy.Request == routing.ReqMultiShard && !decision.policyFromMetadata
+		// Diverted commands bypass the ordered batch stream. The blocking face
+		// already waits per call; async callers must explicitly opt out of order.
+		if divert && !ap.blocking && !ap.config.Unordered {
+			return false, fmt.Errorf("redis: cannot route command %q outside ordered AsyncAutoPipeline; use Unordered or await pending commands and use ClusterClient", cmd.Name())
+		}
+		return divert || decision.policy.Request == routing.ReqSpecial, nil
+	}
 
 	const slots = 16384
 	n := ap.numShards()
@@ -2532,7 +2653,7 @@ func (c *ClusterClient) resolvePipelineRouting(
 	}
 
 	// Reuse AutoPipeline admission decisions through flush.
-	unresolved := make([]Cmder, 0, len(cmds))
+	var unresolved []Cmder
 	var decisions []clusterRoutingDecision
 	for _, cmd := range cmds {
 		if cmd.clusterRoutingDecision() != nil {
@@ -2540,6 +2661,7 @@ func (c *ClusterClient) resolvePipelineRouting(
 		}
 		if decisions == nil {
 			decisions = make([]clusterRoutingDecision, 0, len(cmds))
+			unresolved = make([]Cmder, 0, len(cmds))
 		}
 		decisions = append(decisions, clusterRoutingDecision{})
 		cmd.setClusterRoutingDecision(&decisions[len(decisions)-1])
@@ -2731,43 +2853,21 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 			}
 		}
 		decision = c.pipelineRoutingDecision(cmd, decision, &scratch)
-		if decision.policyErr != nil && !c.opt.DisableRoutingPolicies {
-			setCmdsErr(cmds, decision.policyErr)
-			return decision.policyErr
+		if decision.policyErr != nil {
+			cmd.SetErr(decision.policyErr)
+			continue
 		}
 		if !decision.readOnly {
 			allReadOnly = false
 		}
 	}
 
-	if allReadOnly {
-		for i, cmd := range cmds {
-			var computed, scratch clusterRoutingDecision
-			decision := c.pipelineRoutingDecision(cmd, decisionAt(i, cmd, &computed), &scratch)
-			if err := c.pipelineRoutingError(cmd, decision); err != nil {
-				// Explicit custom policies retain their pre-dispatch validation.
-				setCmdsErr(cmds, err)
-				return err
-			}
-			slot := c.cmdSlotWithDecision(cmd, decision, -1)
-			var node *clusterNode
-			// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
-			if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
-				node, err = state.pickNode(c.opt.ShardPicker, true)
-			} else {
-				node, err = c.slotReadOnlyNode(state, slot)
-			}
-			if err != nil {
-				return c.noteTopologySelectionError(err)
-			}
-			cmdsMap.Add(node, cmd)
-		}
-		return nil
-	}
-
 	for i, cmd := range cmds {
 		var computed, scratch clusterRoutingDecision
 		decision := c.pipelineRoutingDecision(cmd, decisionAt(i, cmd, &computed), &scratch)
+		if decision.policyErr != nil {
+			continue
+		}
 		if err := c.pipelineRoutingError(cmd, decision); err != nil {
 			// Explicit custom policies retain their pre-dispatch validation.
 			setCmdsErr(cmds, err)
@@ -2777,7 +2877,9 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 		var node *clusterNode
 		// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
 		if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
-			node, err = state.pickNode(c.opt.ShardPicker, false)
+			node, err = state.pickNode(c.opt.ShardPicker, allReadOnly)
+		} else if allReadOnly {
+			node, err = c.slotReadOnlyNode(state, slot)
 		} else {
 			node, err = state.slotMasterNode(slot)
 		}
@@ -2845,6 +2947,7 @@ func (c *ClusterClient) pipelineRoutingDecision(
 	if !decision.policyFromMetadata {
 		return decision
 	}
+	// Preserve the immutable admission decision when suppressing fan-out.
 	*scratch = c.routingDecisionWithMeta(cmd, decision.view, nil, false, decision.meta, decision.metaOK)
 	return scratch
 }
@@ -3330,6 +3433,11 @@ func (c *ClusterClient) slottedKeyedCommandsInRouting(
 	route *clusterPipelineRouting,
 ) (map[int][]Cmder, error) {
 	if c.opt.DisableRoutingPolicies {
+		for _, cmd := range cmds {
+			if err := c.legacyRoutingDecision(cmd).policyErr; err != nil {
+				return nil, err
+			}
+		}
 		return c.legacySlottedKeyedCommands(cmds), nil
 	}
 	cmdsSlots := map[int][]Cmder{}
@@ -3908,9 +4016,9 @@ func (c *ClusterClient) fetchCommandMetadata(ctx context.Context) (commandMetada
 
 // verifyInitialMetadataIdentity prevents the first live view from choosing an
 // arbitrary version during a rolling upgrade. Only identity is fetched from
-// siblings; later refreshes keep the established view while nodes upgrade.
+// online siblings; newly online nodes retire the view before routing resumes.
 func (c *ClusterClient) verifyInitialMetadataIdentity(ctx context.Context, state *clusterState, source *clusterNode, fingerprint string) error {
-	for _, nodes := range [][]*clusterNode{state.declaredMasters(), state.declaredSlaves()} {
+	for _, nodes := range [][]*clusterNode{state.Masters, state.Slaves} {
 		for _, node := range nodes {
 			if node == source {
 				continue
@@ -3943,14 +4051,11 @@ func (c *ClusterClient) isTopologyGeneration(generation uint32) bool {
 	return current != nil && current.(*clusterState).generation == generation
 }
 
-// clusterRoutingDecision is one invocation's immutable routing result.
-// It points at the view's immutable metadata record instead of copying it, so
-// it stays small enough to copy and pin cheaply.
+// clusterRoutingDecision is one invocation's immutable routing result. Metadata
+// belongs to its immutable view; a key plan is allocated only for multi-shard work.
 type clusterRoutingDecision struct {
-	view *commandMetadataView
-	// meta is nil unless metaOK. The record is shared and must not be modified.
-	meta *routingCommandMeta
-	// plan is nil unless planOK (only resolved for ReqMultiShard).
+	view               *commandMetadataView
+	meta               *routingCommandMeta
 	plan               *routingKeyPlan
 	policy             *routing.CommandPolicy
 	policyErr          error
@@ -4092,10 +4197,16 @@ func (c *ClusterClient) routingDecisionWithMeta(
 	// for GET, SET, HGET, ...). Same result as the full path below.
 	if policy == nil && !policyFromMetadata && meta != nil && meta.simpleFirstKey {
 		if pos, key, ok := routingSimpleFirstKey(meta, cmd); ok {
+			readOnly := meta.policy != nil && meta.readOnly
+			if meta.policy != nil && meta.name != cmd.Name() {
+				// Same as the full path: a subcommand keeps the parent's flag.
+				parent := view.records[cmd.Name()]
+				readOnly = parent != nil && parent.ReadOnly
+			}
 			return clusterRoutingDecision{
 				view: view, meta: meta, firstKey: pos, naturalSlot: clusterKeySlot(key),
 				metadataState: routingMetadataUsable, metaOK: true,
-				readOnly: meta.policy != nil && meta.readOnly,
+				readOnly: readOnly,
 			}
 		}
 	}
@@ -4119,6 +4230,12 @@ func (c *ClusterClient) routingDecisionWithMeta(
 	if d.metaOK {
 		if (policy == nil || policyFromMetadata) && d.meta.policy != nil {
 			d.readOnly = d.meta.readOnly
+			if !policyFromMetadata && d.meta.name != cmd.Name() {
+				// Preserve the default resolver's top-level readonly lookup.
+				// Leaf flags (e.g. MEMORY USAGE) opt in with metadata policies.
+				parent := view.records[cmd.Name()]
+				d.readOnly = parent != nil && parent.ReadOnly
+			}
 		}
 		if pos, ok := routingFirstKeyPos(d.meta, cmd); ok {
 			d.firstKey = pos
@@ -4198,17 +4315,15 @@ func unsafeClusterFanoutCommand(cmd Cmder) bool {
 }
 
 func clusterRoutingPolicyError(cmd Cmder, d *clusterRoutingDecision) error {
+	if d.policy != nil && d.policy.Request > routing.ReqSpecial {
+		return fmt.Errorf("%w: request policy %d for command %s", errUnsupportedRoutingPolicy, d.policy.Request, cmd.Name())
+	}
 	if d.firstKey > 0 && d.naturalSlot < 0 {
 		return fmt.Errorf("redis: cannot reproduce the routing key for command %s", cmd.Name())
 	}
 	// Custom policies may route without metadata; default metadata routing may not.
-	if !d.metaOK && d.policy == nil {
-		switch d.metadataState {
-		case routingMetadataUnusable:
-			return fmt.Errorf("%w for command %s", errClusterCommandMetadataUnusable, cmd.Name())
-		default:
-			return nil
-		}
+	if !d.metaOK && d.policy == nil && d.metadataState == routingMetadataUnusable {
+		return fmt.Errorf("%w for command %s", errClusterCommandMetadataUnusable, cmd.Name())
 	}
 	if d.firstKey < 0 && (d.policy == nil || d.policy.Request == routing.ReqDefault) {
 		return fmt.Errorf("redis: cannot determine the routing key for command %s", cmd.Name())
@@ -4255,20 +4370,21 @@ func (c *ClusterClient) legacyRoutingDecision(cmd Cmder) clusterRoutingDecision 
 		firstKey: firstKey,
 		keyless:  firstKey == 0,
 	}
-	// Disabled policy routing uses only the static snapshot for replica selection.
-	if meta, ok := routingLookupMeta(defaultCommandMetadataView(), cmd); ok && meta.policy != nil {
-		d.readOnly = meta.readOnly
+	// Preserve the legacy top-level readonly lookup without live metadata or
+	// configured overrides, even when a subcommand has its own readonly flag.
+	if info := defaultCommandMetadataView().records[cmd.Name()]; info != nil {
+		d.readOnly = info.ReadOnly
 	}
 	d.naturalSlot = c.legacyCmdSlotWithPos(cmd, firstKey, -1)
+	if firstKey < 0 {
+		d.policyErr = fmt.Errorf("redis: cannot determine the routing key for command %s", cmd.Name())
+	}
 	return d
 }
 
 func (c *ClusterClient) resolveCommandRoutingDecision(ctx context.Context, cmd Cmder) clusterRoutingDecision {
-	view := c.metadataView()
-	var resolution commandRoutingResolution
 	if c.cmdInfoResolver != nil {
-		var err error
-		resolution, view, err = c.cmdInfoResolver.resolveCommandRoutingWithView(ctx, cmd, c.metadataView)
+		resolution, view, err := c.cmdInfoResolver.resolveCommandRoutingWithView(ctx, cmd, c.metadataView)
 		if err != nil {
 			// Keep the current view and retry the optional live upgrade later.
 			internal.Logger.Printf(ctx, "getting live command metadata: %s", err)
@@ -4281,7 +4397,7 @@ func (c *ClusterClient) resolveCommandRoutingDecision(ctx context.Context, cmd C
 			resolution.meta, resolution.metaOK,
 		)
 	}
-	return c.routingDecisionInView(ctx, cmd, view, nil)
+	return c.routingDecisionInView(ctx, cmd, c.metadataView(), nil)
 }
 
 func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
@@ -4392,7 +4508,9 @@ func (c *ClusterClient) cmdNodeWithShardPickerAndDecision(
 	// For keyless commands (slot == -1), use ShardPicker to select a shard
 	// This respects the user's configured ShardPicker policy
 	if slot == -1 {
-		includeReplicas := c.opt.ReadOnly && d.readOnly
+		// Direct keyless commands retain the default master's selection.
+		// Metadata policies explicitly opt in to replica eligibility.
+		includeReplicas := c.opt.ReadOnly && d.readOnly && d.policyFromMetadata
 		node, err := state.pickNode(shardPicker, includeReplicas)
 		return node, c.noteTopologySelectionError(err)
 	}

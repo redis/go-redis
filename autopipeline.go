@@ -951,15 +951,9 @@ type AutoPipeliner struct {
 	// batch across nodes). When nil, commands are assigned round-robin.
 	shardFn func(Cmder) int
 
-	// preflight rejects invalid commands before they enter a shared batch.
-	// The returned error is set on the command.
-	preflight func(ctx context.Context, cmd Cmder) error
-
-	// mustDivert, when set, forces a command off the batching path even though
-	// it is otherwise batchable. Cluster mode uses it for fan-out and special
-	// routing, such as FT.CURSOR's sticky node. These commands go through
-	// Client/ClusterClient.Process to preserve direct-call semantics.
-	mustDivert func(ctx context.Context, cmd Cmder) bool
+	// routeCommand validates cluster routing before dispatch and reports whether
+	// the command must run outside the batch. Nil for standalone clients.
+	routeCommand func(ctx context.Context, cmd Cmder) (divert bool, err error)
 
 	// sharedClosed, when non-nil, is the owning client's pool-set closed flag
 	// (shared across WithTimeout clones). The getters refuse to build a fresh
@@ -2024,10 +2018,19 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		}
 		return f
 	}
-	// Determine diversion before validating a command for batching. Fan-out
-	// and connection-specific commands use the normal Process path.
-	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
-		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
+	// Validate routing even for commands that independently require diversion.
+	// A blocking command must not bypass the cluster's fan-out ordering check.
+	diverted := false
+	if ap.routeCommand != nil {
+		var err error
+		diverted, err = ap.routeCommand(ctx, cmd)
+		if err != nil {
+			cmd.SetErr(err)
+			cmd.setClusterRoutingDecision(nil)
+			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
+		}
+	}
+	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,
 		// so an HIMPORT SET on the FD pipe can fail "no such fieldset". Divert it to
@@ -2038,13 +2041,6 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// (clusterFD) routes to per-node FD children whose engines have the same
 		// limitation, so divert there too.
 		((ap.fd != nil || ap.clusterFD != nil) && isHImportCmd(cmd))
-	if !diverted && ap.preflight != nil {
-		if err := ap.preflight(ctx, cmd); err != nil {
-			cmd.SetErr(err)
-			cmd.setClusterRoutingDecision(nil)
-			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
-		}
-	}
 	if diverted {
 		// Blocking commands (and the conn-hostile ones above) are executed
 		// directly, outside the pipeline — via runOutsidePipeline, which
@@ -2161,7 +2157,7 @@ func (ap *AutoPipeliner) processAsync(ctx context.Context, cmd Cmder) error {
 	// non-blocking not-yet-executed view — while the caller always sees its
 	// own store before any await.
 	f := ap.submit(ctx, cmd)
-	// Report SUBMIT-time rejections (a closed pipeliner, a cluster preflight
+	// Report SUBMIT-time rejections (a closed pipeliner, a cluster routing
 	// refusal): those paths set the error on the command and hand back the
 	// shared completed batch without queueing anything, so returning nil made
 	// Process claim success for a command that will never run — and callers
@@ -2443,20 +2439,6 @@ func (ap *AutoPipeliner) numShards() int { return len(ap.shards) }
 // how the shard's batch is split. Must be called before the autopipeliner is
 // used. Not safe to change concurrently with enqueues.
 func (ap *AutoPipeliner) setShardFn(fn func(Cmder) int) { ap.shardFn = fn }
-
-// setPreflight installs a submit-time command filter (cluster wiring rejects
-// commands whose request policy cannot ride a pipeline). Called once during
-// construction, before the AutoPipeliner is published.
-func (ap *AutoPipeliner) setPreflight(fn func(ctx context.Context, cmd Cmder) error) {
-	ap.preflight = fn
-}
-
-// setMustDivert installs a predicate that forces a command off the batching
-// path (see the mustDivert field). Called once during construction, before the
-// AutoPipeliner is published.
-func (ap *AutoPipeliner) setMustDivert(fn func(ctx context.Context, cmd Cmder) bool) {
-	ap.mustDivert = fn
-}
 
 // Close stops the autopipeliner and flushes any pending commands. Worst
 // case it blocks up to the internal permit backstop (~30s) PER SHARD if
