@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"sync"
@@ -149,22 +150,24 @@ func pipelinedFace(run, name string, tx bool) apWorkload {
 				}
 				return nil
 			})
-			if err != nil {
-				return false, nil
-			}
+			// Check the GETs that completed even when the batch failed: a
+			// partial failure must not hide a reply for another command.
+			ok := err == nil
 			for i := range batch {
 				val, gerr := gets[i].Result()
 				good, bad := checkKeyValue(keys[i], val, gerr)
-				if bad != nil || !good {
+				if bad != nil {
 					return false, bad
 				}
+				ok = ok && good
 				// Inside one batch on one member the SET precedes the GET, so
-				// the GET must see this batch's own value.
-				if gerr == nil && val != keyValue(keys[i], seq) {
+				// the GET must see this batch's own value. Only checked when
+				// the whole batch succeeded.
+				if err == nil && gerr == nil && val != keyValue(keys[i], seq) {
 					return false, fmt.Errorf("GET %s after SET in the same batch returned %q", keys[i], val)
 				}
 			}
-			return true, nil
+			return ok, nil
 		}
 	}}
 }
@@ -196,6 +199,8 @@ func attemptField(worker, seq int) string { return fmt.Sprintf("%d:%d", worker, 
 func (c *atMostOnceCounter) queue(ctx context.Context, p redis.Pipeliner, worker, seq int) {
 	p.Incr(ctx, c.key)
 	p.HIncrBy(ctx, c.attempts, attemptField(worker, seq), 1)
+	p.Expire(ctx, c.key, apKeyTTL)
+	p.Expire(ctx, c.attempts, apKeyTTL)
 }
 
 func (c *atMostOnceCounter) record(worker, seq int, err error) {
@@ -219,7 +224,11 @@ type counterState struct {
 	err    error
 }
 
-// summary identifies a state for the convergence check.
+func (s counterState) equal(o counterState) bool {
+	return s.err == nil && o.err == nil && s.n == o.n && maps.Equal(s.fields, o.fields)
+}
+
+// summary describes a state for error messages.
 func (s counterState) summary() string {
 	if s.err != nil {
 		return s.err.Error()
@@ -265,10 +274,11 @@ func (c *atMostOnceCounter) verify(t *testing.T, _ *redis.MultiDBClient) {
 		defer members[i].Close()
 	}
 
+	// Members agree only when the counter and the full field maps match;
+	// summaries can match while the fields differ.
 	var (
-		st     counterState
-		last   string
-		stable int
+		st, last counterState
+		stable   int
 	)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -277,20 +287,20 @@ func (c *atMostOnceCounter) verify(t *testing.T, _ *redis.MultiDBClient) {
 		for i, m := range members {
 			s := readCounter(m, c)
 			views[i] = s.summary()
-			if s.err != nil || views[i] != views[0] {
-				agree = false
-			}
 			if i == 0 {
 				st = s
+			}
+			if !s.equal(st) {
+				agree = false
 			}
 		}
 		switch {
 		case !agree:
 			stable = 0
-		case stable > 0 && views[0] == last:
+		case stable > 0 && st.equal(last):
 			stable++
 		default:
-			last, stable = views[0], 1
+			last, stable = st, 1
 		}
 		if stable >= stablePolls {
 			break
@@ -443,10 +453,17 @@ func TestAutoPipelineAndTransactionsAcrossFailover(t *testing.T) {
 	var bad []error
 	var badCount atomic.Int64
 	// Stop the workers on every exit path: a t.Fatal inside eventually must
-	// not leave them running while t.Cleanup closes the clients.
+	// not leave them running while t.Cleanup closes the clients. Report wrong
+	// replies here too, so a progress timeout does not hide them.
 	defer func() {
 		cancel()
 		wg.Wait()
+		for _, b := range bad {
+			t.Error(b)
+		}
+		if n := badCount.Load(); n > maxBad {
+			t.Errorf("%d wrong replies in total, first %d shown", n, maxBad)
+		}
 	}()
 	for _, r := range runs {
 		for w := range r.w.workers {
@@ -500,12 +517,6 @@ func TestAutoPipelineAndTransactionsAcrossFailover(t *testing.T) {
 	cancel()
 	wg.Wait()
 
-	for _, b := range bad {
-		t.Error(b)
-	}
-	if n := badCount.Load(); n > maxBad {
-		t.Errorf("%d wrong replies in total, first %d shown", n, maxBad)
-	}
 	for _, r := range runs {
 		if r.w.verify != nil {
 			r.w.verify(t, r.mdb)
