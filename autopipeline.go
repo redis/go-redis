@@ -259,9 +259,12 @@ type AutoPipelineOptions struct {
 	// that connection or failed: the replayable tail after a connection error,
 	// and the carry plus the queue once lease retries are spent. A cluster child
 	// reroutes through the ClusterClient, so a node that went away does not
-	// strand its accepted commands. Never set by users (unexported). See
+	// strand its accepted commands. maxRetries bounds the owner's retry loop
+	// (0 = one execution): the commands' remaining retry budget, so a command
+	// already issued on the child's connection does not get a fresh one. Shutdown
+	// flushes run through it too. Never set by users (unexported). See
 	// fdEngine.reroute.
-	fdReroute func(ctx context.Context, cmds []Cmder) error
+	fdReroute func(ctx context.Context, cmds []Cmder, maxRetries int) error
 
 	// NumShards is the number of independent queue+flusher shards the
 	// autopipeliner runs. 0 (the default) means auto: a single shard, which

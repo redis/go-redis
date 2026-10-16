@@ -94,7 +94,8 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	// command by its slot against live topology, instead of only on a fresh
 	// connection to this node. A node removed or replaced by topology change
 	// would otherwise exhaust the budget and fail every accepted command on it.
-	child.fdReroute = cc.processPipeline
+	// The engine passes each group's remaining budget as the redirect bound.
+	child.fdReroute = cc.processPipelineRetries
 	return &clusterFDRouter{
 		parent:   parent,
 		cc:       cc,

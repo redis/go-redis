@@ -70,15 +70,22 @@ aggregating correctly; only single-node commands route through a child.
   `clusterRetryBudget`, which `fdEngine.retryBudget()` substitutes in when
   `redirectAware`.
 - **Connection-error and lease-failure recovery (`fdReroute`)**: the router sets
-  each child's `AutoPipelineOptions.fdReroute` to `cc.processPipeline`. When a
+  each child's `AutoPipelineOptions.fdReroute` to `cc.processPipelineRetries`. When a
   child's session drops, the replayable tail (after the budget partition and the
   sent-`NoRetry` split, same set and order as the same-connection replay) runs
   through the ClusterClient pipeline instead, which routes each command by its slot
   against live topology. When lease retries are spent, the carry and then the queue
   go the same way instead of failing. So a node that topology GC closed or replaced
-  does not strand its accepted commands. `fdEngine.rerouteReqs` reuses `flushReqs`'
-  chunking and abort-on-transport-failure; standalone FD (no owner) keeps the
-  same-connection replay and fail-fast paths.
+  does not strand its accepted commands. The Close-time flush (`flushReqs`) also
+  goes through the owner, so a child closed by topology GC does not flush through
+  its dropped node. `fdEngine.rerouteReqs` reuses `flushCarryBudgeted`: each group
+  passes its remaining budget (`fdCarryRemainingRetries`) as the owner's retry
+  bound, so a command never runs more than budget+1 times in total. `runReroute`
+  returns a per-command transport error even when the owner returns an earlier
+  Redis error (`redis.Nil`), so the abort-on-transport-failure rule still holds.
+  `flushReqsVia` reports per-command metrics before it completes a command, as the
+  reader does. Standalone FD (no owner) keeps the same-connection replay and
+  fail-fast paths.
 - **Fallback to `Process`**: routing (`childFor`/`getOrCreateChild`) resolves the
   owning node from live cluster state on every submit. A keyless command, an
   unresolved slot, a not-yet-loaded topology, or a node whose client turns out
