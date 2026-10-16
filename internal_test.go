@@ -100,7 +100,7 @@ var _ = Describe("newClusterState", func() {
 			Expect(slotAddr(state.slots[0])).To(Equal("10.10.10.10:7001"))
 			Expect(slotAddr(state.slots[1])).To(Equal("10.10.10.10:7002"))
 			Expect(slotAddr(state.slots[2])).To(Equal("1.2.3.4:1234"))
-			Expect(slotAddr(state.slots[3])).To(Equal(":1234"))
+			Expect(slotAddr(state.slots[3])).To(Equal("10.10.10.10:1234"))
 		})
 	})
 
