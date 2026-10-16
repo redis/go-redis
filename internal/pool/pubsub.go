@@ -104,9 +104,9 @@ func (p *PubSubPool) Close() error {
 	livePoolsMu.Lock()
 	delete(livePubSubPools, weak.Make(p))
 	p.trackMu.Lock()
-	defer p.trackMu.Unlock()
 	cb := getMetricConnectionCountCallback()
 	livePoolsMu.Unlock()
+	var conns []*Conn
 	p.activeConns.Range(func(key, value interface{}) bool {
 		cn := value.(*Conn)
 		// Use LoadAndDelete to atomically claim ownership of this entry.
@@ -120,9 +120,15 @@ func (p *PubSubPool) Close() error {
 		if cb != nil {
 			cb(context.Background(), -1, cn, "used", true)
 		}
-		_ = cn.Close()
+		conns = append(conns, cn)
 		return true
 	})
+	p.trackMu.Unlock()
+
+	// Close outside trackMu: cn.Close runs the connection's onClose callback.
+	for _, cn := range conns {
+		_ = cn.Close()
+	}
 	return nil
 }
 
