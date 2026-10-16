@@ -275,7 +275,7 @@ func TestCSCMissCoalescerFetchShedsWhenSerializeSaturated(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := mc.fetch(context.Background(), makeCmd("get", "rk"), "ck", token)
+		_, err := mc.fetch(context.Background(), makeCmd("get", "rk"), "ck", token, mc.c.metadataView())
 		errCh <- err
 	}()
 

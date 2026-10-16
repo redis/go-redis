@@ -145,6 +145,7 @@ const (
 type cscMissReq struct {
 	cmd      Cmder
 	cacheKey string
+	view     *commandMetadataView // captured with eligibility and the cache key
 	token    uint64
 	done     chan error
 	// servedBy is the session connection that served (or failed) this request,
@@ -505,8 +506,8 @@ func (mc *cscMissCoalescer) emitReplyErr(ctx context.Context, req *cscMissReq, e
 	errorCallback(ctx, errorType, req.servedBy, statusCode, isInternal, 0)
 }
 
-func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) (served *pool.Conn, err error) {
-	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
+func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64, view *commandMetadataView) (served *pool.Conn, err error) {
+	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, view: view, done: make(chan error, 1)}
 	// Bound total in-flight serialized bytes before allocating this command's wire
 	// snapshot: reserve its approximate encoded size and, if that would exceed
 	// cscMissWireBudgetBytes, shed to the ordinary pooled path (errCSCRetryUncached)
@@ -770,7 +771,7 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 			key:     req.cacheKey,
 			token:   req.token,
 		}
-		c.fulfillCached(req.cacheKey, req.token, fc)
+		c.fulfillCached(req.cacheKey, req.token, fc, req.view)
 	} else {
 		// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
 		c.csc.Cancel(req.cacheKey, req.token)
