@@ -49,11 +49,13 @@ func checkKeyValue(key, val string, err error) (bool, error) {
 // apKeyTTL bounds how long keys outlive a run against a shared database.
 const apKeyTTL = 10 * time.Minute
 
-// apKey is the per-run, per-workload, per-worker key; a few keys per worker so
-// batches carry distinct keys. The hash tag keeps one worker's keys in one
-// slot, so a MULTI/EXEC batch over them is not CROSSSLOT.
-func apKey(run, workload string, worker, seq int) string {
-	return fmt.Sprintf("e2e:ap:{%s:%s:%d}:%d", run, workload, worker, seq%8)
+// apKey is the per-run, per-workload, per-worker key for slot. Commands in
+// one window or batch use distinct slots, so each GET has its own key and a
+// reply delivered to another GET in the same window is detectable. The hash
+// tag keeps one worker's keys in one hash slot, so a MULTI/EXEC batch over
+// them is not CROSSSLOT.
+func apKey(run, workload string, worker, slot int) string {
+	return fmt.Sprintf("e2e:ap:{%s:%s:%d}:%d", run, workload, worker, slot)
 }
 
 // blockingFace drives SET+GET on the blocking face, one command at a time.
@@ -64,7 +66,7 @@ func blockingFace(run, name string, get func(*redis.MultiDBClient) (*redis.AutoP
 			t.Fatalf("%s: %v", name, err)
 		}
 		return func(ctx context.Context, w, seq int) (bool, error) {
-			key := apKey(run, name, w, seq)
+			key := apKey(run, name, w, seq%8)
 			if err := ap.Set(ctx, key, keyValue(key, seq), apKeyTTL).Err(); err != nil {
 				return false, nil
 			}
@@ -88,7 +90,7 @@ func asyncFace(run, name string, get func(*redis.MultiDBClient) (*redis.AutoPipe
 			sets := make([]*redis.StatusCmd, window)
 			gets := make([]*redis.StringCmd, window)
 			for i := range window {
-				keys[i] = apKey(run, name, w, seq*window+i)
+				keys[i] = apKey(run, name, w, i)
 				sets[i] = ap.Set(ctx, keys[i], keyValue(keys[i], seq), apKeyTTL)
 				gets[i] = ap.Get(ctx, keys[i])
 			}
@@ -126,7 +128,7 @@ func pipelinedFace(run, name string, tx bool) apWorkload {
 			gets := make([]*redis.StringCmd, batch)
 			_, err := exec(ctx, func(p redis.Pipeliner) error {
 				for i := range batch {
-					keys[i] = apKey(run, name, w, seq*batch+i)
+					keys[i] = apKey(run, name, w, i)
 					p.Set(ctx, keys[i], keyValue(keys[i], seq), apKeyTTL)
 					gets[i] = p.Get(ctx, keys[i])
 				}
