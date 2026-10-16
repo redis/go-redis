@@ -461,10 +461,15 @@ func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, 
 			db.cb.RecordFailureFor(res)
 		}
 	}
+	// Sample the detector window BEFORE the active check. A failover switches
+	// the active member first and then resets the detector (bumping the
+	// generation), so a generation read before a member check that still sees
+	// db belongs to db's window: a reset after it voids the write
+	// (recordDetector*), and a switch before it fails the check.
+	gen := c.detectorGen.Load()
 	if cur, _ := c.activeSnapshot(); cur != db {
 		return
 	}
-	gen := c.detectorGen.Load()
 	if kind == outcomeSuccess {
 		c.successSinceFailover.Store(true)
 		c.recordDetectorSuccess(gen)
