@@ -82,9 +82,10 @@ func TestPipelinePoolSharedByClones(t *testing.T) {
 //   - buffers default to DefaultPipelineBufferSize (not the regular 32 KiB) —
 //     pipeline connections move whole batches per round trip — but never
 //     SHRINK a larger explicitly-configured regular buffer;
-//   - MinIdleConns is forced to 0: the pool is burst capacity, and inheriting
-//     the main pool's MinIdleConns would pre-dial that many pipeline
-//     connections at creation, silently doubling the client's idle footprint;
+//   - MinIdleConns comes from PipelineMinIdleConns (default 0), never from the
+//     main pool's MinIdleConns: the pool is burst capacity, and inheriting it
+//     would pre-dial that many pipeline connections at creation, silently
+//     doubling the client's idle footprint;
 //   - the regular buffers and pool size of the MAIN pool are never touched.
 func TestPipelinePoolOptionsResolution(t *testing.T) {
 	t.Run("buffers default to DefaultPipelineBufferSize", func(t *testing.T) {
@@ -128,6 +129,16 @@ func TestPipelinePoolOptionsResolution(t *testing.T) {
 		if po := pipelinePoolOptions(opt); po.MinIdleConns != 0 {
 			t.Fatalf("pipeline MinIdleConns = %d, want 0: the pipeline pool is burst "+
 				"capacity and must not pre-dial", po.MinIdleConns)
+		}
+	})
+
+	t.Run("PipelineMinIdleConns sets it; negative means 0", func(t *testing.T) {
+		for _, tc := range []struct{ in, want int }{{0, 0}, {2, 2}, {-1, 0}} {
+			opt := &Options{Addr: "127.0.0.1:0", PipelinePoolSize: 4, MinIdleConns: 8, PipelineMinIdleConns: tc.in}
+			opt.init()
+			if po := pipelinePoolOptions(opt); po.MinIdleConns != tc.want {
+				t.Fatalf("PipelineMinIdleConns=%d: pipeline MinIdleConns = %d, want %d", tc.in, po.MinIdleConns, tc.want)
+			}
 		}
 	})
 
