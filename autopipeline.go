@@ -253,6 +253,16 @@ type AutoPipelineOptions struct {
 	// retries live in MaxRedirects). Never set by users (unexported).
 	clusterRetryBudget int
 
+	// fdReroute is set internally by an owner of full-duplex children (the
+	// cluster full-duplex router). Commands the child's engine cannot complete on
+	// its own connection run through it, in order, instead of being replayed on
+	// that connection or failed: the replayable tail after a connection error,
+	// and the carry plus the queue once lease retries are spent. A cluster child
+	// reroutes through the ClusterClient, so a node that went away does not
+	// strand its accepted commands. Never set by users (unexported). See
+	// fdEngine.reroute.
+	fdReroute func(ctx context.Context, cmds []Cmder) error
+
 	// NumShards is the number of independent queue+flusher shards the
 	// autopipeliner runs. 0 (the default) means auto: a single shard, which
 	// funnels every caller into one queue so batches stay deep — measured
@@ -2415,6 +2425,8 @@ func (ap *AutoPipeliner) Config() AutoPipelineOptions {
 	// MaxRedirects, used as the child engine's recovery budget); it has no meaning
 	// on a config a caller copies into a standalone client, so strip it too.
 	cfg.clusterRetryBudget = 0
+	// fdReroute holds the owner's closure, like clusterReprocess: strip it.
+	cfg.fdReroute = nil
 	return cfg
 }
 

@@ -89,6 +89,12 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	// command on the first socket error. Give the child the cluster's MaxRedirects
 	// so a transient node blip replays the unacked tail on a fresh connection.
 	child.clusterRetryBudget = cc.opt.MaxRedirects
+	// Connection-error and lease-failure recovery: re-issue the child's
+	// replayable work through the ClusterClient pipeline, which routes each
+	// command by its slot against live topology, instead of only on a fresh
+	// connection to this node. A node removed or replaced by topology change
+	// would otherwise exhaust the budget and fail every accepted command on it.
+	child.fdReroute = cc.processPipeline
 	return &clusterFDRouter{
 		parent:   parent,
 		cc:       cc,
