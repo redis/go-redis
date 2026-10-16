@@ -91,6 +91,8 @@ var (
 	metricCallbackMu sync.RWMutex
 
 	// livePoolsMu protects the pools whose connections are counted when metric callbacks change.
+	// Lock order: livePoolsMu, then ConnPool.connsMu, then PubSubPool.trackMu, then metricCallbackMu.
+	// SetAllMetricCallbacks holds every pool's connsMu at once; never hold two pools' connsMu elsewhere.
 	livePoolsMu     sync.Mutex
 	liveConnPools   = make(map[weak.Pointer[ConnPool]]struct{})
 	livePubSubPools = make(map[weak.Pointer[PubSubPool]]struct{})
