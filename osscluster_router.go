@@ -195,7 +195,7 @@ func (c *ClusterClient) executeMultiShard(
 	decision *clusterRoutingDecision,
 ) error {
 	plan := decision.plan
-	if !decision.planOK || !plan.splittable || len(plan.positions) == 0 {
+	if !decision.planOK || plan == nil || !plan.splittable || len(plan.positions) == 0 {
 		return fmt.Errorf("redis: cannot determine all key arguments for multi-shard command %s", cmd.Name())
 	}
 	args := cmd.Args()
@@ -220,7 +220,7 @@ func (c *ClusterClient) executeMultiShard(
 		group.keys = append(group.keys, key)
 		keyOrder = append(keyOrder, key)
 	}
-	if len(slotMap) > 1 && decision.meta.name == "msetex" && msetexHasCondition(cmd, plan) {
+	if len(slotMap) > 1 && decision.meta != nil && decision.meta.name == "msetex" && msetexHasCondition(cmd, plan) {
 		// NX/XX covers all keys; splitting could update only some of them.
 		return ErrCrossSlot
 	}
@@ -425,6 +425,9 @@ func (c *ClusterClient) executeSpecialCommand(
 	node *clusterNode,
 	decision *clusterRoutingDecision,
 ) error {
+	if decision.meta == nil {
+		return errUnsupportedRoutingPolicy
+	}
 	if handler := clusterSpecialRequestHandlers[decision.meta.name]; handler != nil {
 		return handler(c, ctx, cmd, node, *decision)
 	}

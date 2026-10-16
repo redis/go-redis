@@ -100,6 +100,27 @@ type routingCommandMeta struct {
 	keyPlanComplete bool
 	special         routingSpecialSupport
 	valid           bool
+	// simpleFirstKey marks one fixed-index range key spec (GET, SET, HGET,
+	// MGET, ...), whose first key needs no search. See routingSimpleFirstKey.
+	simpleFirstKey bool
+	// fast is the shared, immutable decision for a simpleFirstKey record with
+	// no policy, built with its view. Pinning it costs no allocation; the
+	// command carries its slot (see clusterRoutingDecision.template).
+	fast *clusterRoutingDecision
+}
+
+// linkRoutingTemplates builds the shared fast-path decisions of a new view.
+func linkRoutingTemplates(view *commandMetadataView) {
+	for _, meta := range view.routingTable {
+		if !meta.simpleFirstKey {
+			continue
+		}
+		meta.fast = &clusterRoutingDecision{
+			view: view, meta: meta, firstKey: meta.keySpecs[0].index, naturalSlot: -1,
+			metadataState: routingMetadataUsable, metaOK: true,
+			readOnly: meta.policy != nil && meta.readOnly, template: true,
+		}
+	}
 }
 
 // routingKeyPlan contains all keys and split fields for one invocation.
@@ -238,7 +259,37 @@ func deriveRoutingCommandMeta(name string, info *CommandInfo) *routingCommandMet
 		req, resp = routing.ReqDefault, routing.RespDefaultKeyless
 	}
 	meta.policy = &routing.CommandPolicy{Request: req, Response: resp, Tips: tips}
+	if meta.keyState == routingKeysKnown && len(meta.keySpecs) == 1 &&
+		// CLUSTER subcommands carry slot arguments; JSON.DEBUG has a keyless form.
+		name != "json.debug" && name != "cluster" && !strings.HasPrefix(name, "cluster|") {
+		spec := meta.keySpecs[0]
+		meta.simpleFirstKey = spec.begin == routingBeginIndex && spec.index > 0 &&
+			spec.find == routingFindRange && spec.limit == 0 && spec.step > 0
+	}
 	return meta
+}
+
+// routingSimpleFirstKey is routingFirstKeyPos for a simpleFirstKey record. It
+// applies the same bounds and wire checks; ok is false when they fail, and the
+// caller must then take the full path to get its error.
+func routingSimpleFirstKey(meta *routingCommandMeta, cmd Cmder) (pos int, key string, ok bool) {
+	spec := &meta.keySpecs[0]
+	argsLen := len(cmd.Args())
+	begin := spec.index
+	if begin >= argsLen {
+		return 0, "", false
+	}
+	last := spec.lastKey
+	if last >= 0 {
+		last += begin
+	} else {
+		last += argsLen
+	}
+	if last < begin || last >= argsLen {
+		return 0, "", false
+	}
+	key, ok = routingArgText(cmd, begin)
+	return begin, key, ok
 }
 
 func deriveRoutingKeySpecs(info *CommandInfo) (routingKeyState, []routingKeySpec, bool) {
