@@ -1679,7 +1679,9 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 		hookManager.ProcessOnRemove(ctx, cn, reason)
 	}
 
-	removed := p.removeConnWithLock(cn)
+	p.connsMu.Lock()
+	removed, wasIdle := p.removeConn(cn)
+	p.connsMu.Unlock()
 
 	if freeTurn {
 		p.freeTurn()
@@ -1688,13 +1690,16 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	// Only emit metric decrements if we actually removed the connection from the map.
 	// If removed is false, Close() already removed it and emitted the -1 delta.
 	if removed {
-		// Notify metrics: connection removed (assume from used state)
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, MetricStateUsed, "")
+		// A connection parked in idleConns (e.g. waiting for a handoff) was counted as idle.
+		state := MetricStateUsed
+		if wasIdle {
+			state = MetricStateIdle
 		}
-		// Record connection count decrement (connection removed, assume from used state)
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, state, "")
+		}
 		if cb := getMetricConnectionCountCallback(); cb != nil {
-			cb(ctx, -1, cn, "used", false)
+			cb(ctx, -1, cn, state, false)
 		}
 	}
 
@@ -1764,15 +1769,17 @@ func (p *ConnPool) recordConnectionMetrics(ctx context.Context, cn *Conn, reason
 func (p *ConnPool) removeConnWithLock(cn *Conn) bool {
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
-	return p.removeConn(cn)
+	removed, _ := p.removeConn(cn)
+	return removed
 }
 
 // removeConn removes a connection from the pool's internal data structures.
-// Returns true if the connection was present and removed, false otherwise.
-func (p *ConnPool) removeConn(cn *Conn) bool {
+// Returns whether the connection was present and removed, and whether it was
+// taken out of idleConns.
+func (p *ConnPool) removeConn(cn *Conn) (removed, wasIdle bool) {
 	cid := cn.GetID()
 	if _, exists := p.conns[cid]; !exists {
-		return false
+		return false, false
 	}
 	delete(p.conns, cid)
 	atomic.AddUint32(&p.stats.StaleConns, 1)
@@ -1785,11 +1792,12 @@ func (p *ConnPool) removeConn(cn *Conn) bool {
 			if ic == cn {
 				p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
 				p.idleConnsLen.Add(-1)
+				wasIdle = true
 				break
 			}
 		}
 	}
-	return true
+	return true, wasIdle
 }
 
 func (p *ConnPool) closeConn(cn *Conn) error {
@@ -1924,7 +1932,7 @@ func (p *ConnPool) RetireConns(ctx context.Context, conns []*Conn, reason string
 			continue
 		}
 		if _, isIdle := idleConnSet[cn]; isIdle {
-			if p.removeConn(cn) {
+			if removed, _ := p.removeConn(cn); removed {
 				toClose = append(toClose, cn)
 			}
 			continue
