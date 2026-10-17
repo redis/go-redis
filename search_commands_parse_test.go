@@ -993,8 +993,8 @@ func TestFTSearchExplainScoreRESP2AndRESP3(t *testing.T) {
 	}
 }
 
-// TestFTSearchCmdReadReplyRESP2 validates RESP2 parsing for options that
-// change the reply shape without setting NoContent
+// TestFTSearchCmdReadReplyRESP2 validates RESP2 readReply with nil options
+// and an empty RETURN
 func TestFTSearchCmdReadReplyRESP2(t *testing.T) {
 	tests := []struct {
 		name    string
