@@ -32,6 +32,13 @@ func TestCmdHelpersRESP3NumberReply(t *testing.T) {
 		{",2\r\n", "$1\r\n2\r\n", []string{"Text", "Int", "Int64", "Uint64"}},
 		{",1.5\r\n", "$3\r\n1.5\r\n", []string{"Text", "Int", "Int64", "Uint64"}},
 		{",-inf\r\n", "$4\r\n-inf\r\n", []string{"Text", "Int64"}},
+		{",-0\r\n", "$2\r\n-0\r\n", []string{"Text", "Int64"}},
+		{",1e+100\r\n", "$6\r\n1e+100\r\n", []string{"Text", "Int64", "Uint64"}},
+		{",1e+19\r\n", "$5\r\n1e+19\r\n", []string{"Text", "Int64", "Uint64"}},
+		{",4611686018427387904\r\n", "$19\r\n4611686018427387904\r\n", []string{"Text", "Int64"}},
+		{",150000000000000000\r\n", "$18\r\n150000000000000000\r\n", []string{"Text", "Int64"}},
+		{",0.00001\r\n", "$7\r\n0.00001\r\n", []string{"Text"}},
+		{",2.5e-7\r\n", "$6\r\n2.5e-7\r\n", []string{"Text", "Int64"}},
 		{"*2\r\n,2\r\n,1.5\r\n", "*2\r\n$1\r\n2\r\n$3\r\n1.5\r\n", []string{"StringSlice", "Int64Slice", "Uint64Slice"}},
 		{"(42\r\n", "$2\r\n42\r\n", []string{"Text", "Int", "Int64", "Uint64", "Float32", "Float64"}},
 		{
