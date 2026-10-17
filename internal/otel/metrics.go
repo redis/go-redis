@@ -216,8 +216,9 @@ func SetGlobalRecorder(r Recorder) {
 		ConnectionCount: func(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
 			getRecorder().RecordConnectionCount(ctx, delta, cn, state, isPubSub)
 		},
+		// Uses r, not getRecorder(), so a request's -1 reaches the recorder that got its +1.
 		PendingRequests: func(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
-			getRecorder().RecordPendingRequests(ctx, delta, cn, poolName)
+			r.RecordPendingRequests(ctx, delta, cn, poolName)
 		},
 	})
 }

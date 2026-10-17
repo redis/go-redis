@@ -968,16 +968,18 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	// Record pending request increment (UpDownCounter)
 	// Pass pool name explicitly since we don't have a connection yet
 	poolName := p.cfg.Name
-	if cb := getMetricPendingRequestsCallback(); cb != nil {
-		cb(ctx, 1, nil, poolName)
+	// Read once so the -1 goes to the same callback as the +1, even if the recorder changes while waiting.
+	pendingCb := getMetricPendingRequestsCallback()
+	if pendingCb != nil {
+		pendingCb(ctx, 1, nil, poolName)
 	}
 	defer func() {
 		if err != nil {
 			// Failed to get connection, decrement pending requests
 			atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 			// Record pending request decrement on failure
-			if cb := getMetricPendingRequestsCallback(); cb != nil {
-				cb(ctx, -1, nil, poolName)
+			if pendingCb != nil {
+				pendingCb(ctx, -1, nil, poolName)
 			}
 		}
 		if err == ErrPoolTimeout {
@@ -1079,8 +1081,8 @@ retryIdle:
 		// Decrement pending requests (connection acquired successfully)
 		atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 		// Record pending request decrement (UpDownCounter)
-		if cb := getMetricPendingRequestsCallback(); cb != nil {
-			cb(ctx, -1, cn, poolName)
+		if pendingCb != nil {
+			pendingCb(ctx, -1, cn, poolName)
 		}
 
 		// Only now, with this lease's connection taken and checked.
@@ -1155,8 +1157,8 @@ retryIdle:
 	// Decrement pending requests (connection acquired successfully)
 	atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 	// Record pending request decrement (UpDownCounter)
-	if cb := getMetricPendingRequestsCallback(); cb != nil {
-		cb(ctx, -1, newcn, poolName)
+	if pendingCb != nil {
+		pendingCb(ctx, -1, newcn, poolName)
 	}
 
 	return newcn, nil
