@@ -66,19 +66,21 @@ func TestFailedHandoffUncountsParkedConnAsIdle(t *testing.T) {
 	// The handoff is queued and the connection is parked in idleConns until it fails.
 	connPool.Put(ctx, cn)
 
+	want := map[string]int{pool.MetricStateIdle: 0, pool.MetricStateUsed: 0}
+	snapshot := func() map[string]int {
+		mu.Lock()
+		defer mu.Unlock()
+		return map[string]int{pool.MetricStateIdle: counts[pool.MetricStateIdle], pool.MetricStateUsed: counts[pool.MetricStateUsed]}
+	}
+	// The -1 is emitted after the conn leaves the pool, so wait for the counts too.
 	deadline := time.Now().Add(3 * time.Second)
-	for connPool.Len() != 0 && time.Now().Before(deadline) {
+	for (connPool.Len() != 0 || !reflect.DeepEqual(snapshot(), want)) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if got := connPool.Len(); got != 0 {
 		t.Fatalf("pool length after failed handoff: got %d, want 0", got)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	want := map[string]int{pool.MetricStateIdle: 0, pool.MetricStateUsed: 0}
-	got := map[string]int{pool.MetricStateIdle: counts[pool.MetricStateIdle], pool.MetricStateUsed: counts[pool.MetricStateUsed]}
-	if !reflect.DeepEqual(got, want) {
+	if got := snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("connection count per state after failed handoff: got %v, want %v", got, want)
 	}
 }
