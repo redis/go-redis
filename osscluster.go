@@ -317,6 +317,10 @@ func (opt *ClusterOptions) init() {
 //	or
 //	rediss://<user>:<password>@<host>:<port>
 //
+// For rediss URLs, TLS 1.2 is the minimum version and each node is verified
+// against its own hostname. Set TLSConfig.ServerName explicitly to override
+// the hostname used for verification.
+//
 // To add additional addresses, specify the query parameter, "addr" one or more times. e.g:
 //
 //	redis://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
@@ -359,7 +363,7 @@ func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
 	o.Addrs = append(o.Addrs, net.JoinHostPort(h, p))
 
 	// setup username, password, and other configurations
-	o, err = setupClusterConn(u, h, o)
+	o, err = setupClusterConn(u, o)
 	if err != nil {
 		return nil, err
 	}
@@ -368,10 +372,12 @@ func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
 }
 
 // setupClusterConn gets the username and password from the URL and the query parameters.
-func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptions, error) {
+func setupClusterConn(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
 	switch u.Scheme {
 	case "rediss":
-		o.TLSConfig = &tls.Config{ServerName: host}
+		// Leave ServerName empty so the TLS dialer verifies each node's host,
+		// rather than using the seed host for every node.
+		o.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		fallthrough
 	case "redis":
 		o.Username, o.Password = getUserPassword(u)
