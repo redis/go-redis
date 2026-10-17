@@ -57,7 +57,7 @@ jobs:
         run: |
           go vet .
           go test ./internal/...
-          go test -run 'TestNew(Failover)?ClientPanic' .
+          go test -run 'TestNew(Failover)?ClientPanic|TestSlotNodeWithinLatencyRotationPastIntMax' .
 
   benchmark:
     name: benchmark
