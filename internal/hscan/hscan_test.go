@@ -197,6 +197,26 @@ var _ = Describe("Scan", func() {
 		}))
 	})
 
+	It("scans the remaining fields after a bad value", func() {
+		var d data
+
+		Expect(Scan(&d, i{"bool", "string", "int"}, i{"-1", "str!", "123"})).To(HaveOccurred())
+		Expect(d).To(Equal(data{
+			String: "str!",
+			Int:    123,
+		}))
+	})
+
+	It("leaves nil pointers nil on bad values", func() {
+		var d data
+		Expect(Scan(&d, i{"boolRef"}, i{"abc"})).To(HaveOccurred())
+		Expect(d.BoolRef).To(BeNil())
+
+		var td TimeData
+		Expect(Scan(&td, i{"login"}, i{"abc"})).To(HaveOccurred())
+		Expect(td.Time).To(BeNil())
+	})
+
 	It("catches bad values", func() {
 		var d data
 
