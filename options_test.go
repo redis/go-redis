@@ -357,27 +357,24 @@ func TestDefaultKeepAliveConfig(t *testing.T) {
 	}
 }
 
-func TestNewDialerTLSHonorsContext(t *testing.T) {
+func TestNewDialerTLSContext(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
 
+	done := make(chan struct{})
+	defer close(done)
+
+	// Accept the TCP conn but never answer the TLS handshake.
 	go func() {
-		var conns []net.Conn
-		defer func() {
-			for _, cn := range conns {
-				_ = cn.Close()
-			}
-		}()
-		for {
-			cn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			conns = append(conns, cn) // never answer the TLS handshake
+		cn, err := ln.Accept()
+		if err != nil {
+			return
 		}
+		<-done
+		cn.Close()
 	}()
 
 	dial := NewDialer(&Options{
