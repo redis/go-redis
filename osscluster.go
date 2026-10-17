@@ -113,6 +113,8 @@ type ClusterOptions struct {
 	DialerRetries int
 
 	// DialerRetryTimeout is the backoff duration between retry attempts.
+	// Values <= 0 use the default; use DialerRetryBackoff to retry without delay.
+	// URL parsers set DialerRetryBackoff for an explicit dialer_retry_timeout=0.
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
@@ -401,12 +403,12 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
 	o.DialTimeout = q.duration("dial_timeout")
 	o.DialerRetries = q.int("dialer_retries")
-	o.DialerRetryTimeout = q.duration("dialer_retry_timeout")
+	o.DialerRetryTimeout, o.DialerRetryBackoff = q.dialerRetryTimeout()
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
 	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
-	o.ReadBufferSize = q.int("read_buffer_size")
-	o.WriteBufferSize = q.int("write_buffer_size")
+	o.ReadBufferSize = q.nonNegativeInt("read_buffer_size")
+	o.WriteBufferSize = q.nonNegativeInt("write_buffer_size")
 	o.DisableIdentity = q.bool("disable_identity")
 	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")

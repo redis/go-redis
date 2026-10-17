@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,105 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
+
+func TestParseURLConnectionValidation(t *testing.T) {
+	parsers := []struct {
+		name  string
+		parse func(string) (*Options, error)
+	}{
+		{"standalone", func(query string) (*Options, error) {
+			return ParseURL("redis://localhost:6379?" + query)
+		}},
+		{"cluster", func(query string) (*Options, error) {
+			o, err := ParseClusterURL("redis://localhost:6379?" + query)
+			if err != nil {
+				return nil, err
+			}
+			o.init()
+			return o.clientOptions(), nil
+		}},
+		{"failover", func(query string) (*Options, error) {
+			o, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + query)
+			if err != nil {
+				return nil, err
+			}
+			return o.clientOptions(), nil
+		}},
+	}
+	for _, parser := range parsers {
+		t.Run(parser.name, func(t *testing.T) {
+			t.Run("omitted retry delay", func(t *testing.T) {
+				o, err := parser.parse("")
+				if err != nil {
+					t.Fatal(err)
+				}
+				o.init()
+				if o.DialerRetryTimeout != 100*time.Millisecond || o.DialerRetryBackoff != nil {
+					t.Fatal("omitted retry delay must retain the default backoff")
+				}
+			})
+			for _, value := range []string{"", "0", "0s", "1", "250ms", "-1", "-1s", "-1ns", "-0.1ns", "bad", "9223372036854775807"} {
+				t.Run("retry/"+value, func(t *testing.T) {
+					o, err := parser.parse("dialer_retry_timeout=" + value)
+					if strings.HasPrefix(value, "-") || value == "bad" || value == "9223372036854775807" {
+						if err == nil || !strings.Contains(err.Error(), "dialer_retry_timeout") {
+							t.Fatalf("expected dialer_retry_timeout error, got %v", err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					o.init()
+					want := 100 * time.Millisecond
+					switch value {
+					case "0", "0s":
+						want = 0
+					case "1":
+						want = time.Second
+					case "250ms":
+						want = 250 * time.Millisecond
+					}
+					got := o.DialerRetryTimeout
+					if o.DialerRetryBackoff != nil {
+						got = o.DialerRetryBackoff(0)
+					}
+					if got != want {
+						t.Fatalf("retry delay = %v, want %v", got, want)
+					}
+				})
+			}
+			for _, field := range []string{"read_buffer_size", "write_buffer_size"} {
+				for _, value := range []string{"-1", "bad", "0", "65536"} {
+					t.Run(field+"/"+value, func(t *testing.T) {
+						o, err := parser.parse(field + "=" + value)
+						if value == "-1" || value == "bad" {
+							if err == nil || !strings.Contains(err.Error(), field) {
+								t.Fatalf("expected %s error, got %v", field, err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						o.init()
+						want := 32768
+						if value == "65536" {
+							want = 65536
+						}
+						got := o.ReadBufferSize
+						if field == "write_buffer_size" {
+							got = o.WriteBufferSize
+						}
+						if got != want {
+							t.Fatalf("%s = %d, want %d", field, got, want)
+						}
+					})
+				}
+			}
+		})
+	}
+}
 
 func TestParseURL(t *testing.T) {
 	cases := []struct {
