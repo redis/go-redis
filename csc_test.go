@@ -1677,6 +1677,75 @@ func TestConnectionStateCommandsRejectedWithCSC(t *testing.T) {
 	}
 }
 
+// TestEphemeralConnAllowsSessionCommandsWithCSC verifies that the CSC
+// session-state guard is lifted for EphemeralConn only. Its sticky pool revokes
+// the claimed connection's cache coverage and discards the connection on Close,
+// so nothing it does reaches the parent cache or a pooled caller. Conn returns
+// its connection to the pool and keeps the guard.
+func TestEphemeralConnAllowsSessionCommandsWithCSC(t *testing.T) {
+	c := NewClient(&Options{
+		Addr:                  "localhost:1", // allowed commands fail to dial; only the guard matters
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16},
+		MaxRetries:            -1, // fail fast on that dial error
+	})
+	t.Cleanup(func() { _ = c.Close() })
+
+	conn := c.Conn()
+	t.Cleanup(func() { _ = conn.Close() })
+	eph := c.EphemeralConn()
+	t.Cleanup(func() { _ = eph.Close() })
+
+	tests := []struct {
+		name    string
+		args    []interface{}
+		connErr error
+	}{
+		{"SELECT", []interface{}{"select", 1}, errSelectWithCSC},
+		{"AUTH", []interface{}{"auth", "password"}, errAuthWithCSC},
+		{"HELLO 2", []interface{}{"hello", 2}, errHelloWithCSC},
+		{"RESET", []interface{}{"reset"}, errResetWithCSC},
+		{"CLIENT TRACKING", []interface{}{"client", "tracking", "off"}, errClientTrackingWithCSC},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := conn.cscCommandError(makeCmd(tc.args...)); !errors.Is(err, tc.connErr) {
+				t.Fatalf("Conn: %v must be rejected with CSC enabled, got %v", tc.args, err)
+			}
+			if err := eph.cscCommandError(makeCmd(tc.args...)); err != nil {
+				t.Fatalf("EphemeralConn: %v must be allowed with CSC enabled, got %v", tc.args, err)
+			}
+		})
+	}
+
+	// The same holds through the public API, on both the process and the
+	// pipeline path. Against localhost:1 an allowed command fails to dial,
+	// which is fine: it only has to get past the guard.
+	ctx := context.Background()
+	if err := conn.Select(ctx, 1).Err(); !errors.Is(err, errSelectWithCSC) {
+		t.Fatalf("Conn: SELECT must be rejected with CSC enabled, got %v", err)
+	}
+	if err := eph.Select(ctx, 1).Err(); errors.Is(err, errSelectWithCSC) {
+		t.Fatalf("EphemeralConn: SELECT must be allowed with CSC enabled, got %v", err)
+	}
+	selectPipeline := func(p Pipeliner) error {
+		p.Select(ctx, 1)
+		return nil
+	}
+	if _, err := conn.Pipelined(ctx, selectPipeline); !errors.Is(err, errSelectWithCSC) {
+		t.Fatalf("Conn: pipelined SELECT must be rejected with CSC enabled, got %v", err)
+	}
+	if _, err := eph.Pipelined(ctx, selectPipeline); errors.Is(err, errSelectWithCSC) {
+		t.Fatalf("EphemeralConn: pipelined SELECT must be allowed with CSC enabled, got %v", err)
+	}
+
+	// Raw SUBSCRIBE stays rejected: the typed Subscribe methods use dedicated
+	// connections.
+	if err := eph.cscCommandError(makeCmd("subscribe", "channel")); !errors.Is(err, errSubscribeWithCSC) {
+		t.Fatalf("EphemeralConn: raw SUBSCRIBE must stay rejected with CSC enabled, got %v", err)
+	}
+}
+
 // TestOnConnectUsesCSCStateGuard verifies that initConn's exemption ends after
 // the library's own CLIENT TRACKING command. OnConnect is user code and must
 // not be able to mutate a tracked pool connection.

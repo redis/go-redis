@@ -488,6 +488,14 @@ type baseClient struct {
 	// never set on user-visible clients.
 	allowClientTracking bool
 
+	// allowSessionCommands exempts a client from the CSC session-state guards
+	// (SELECT, AUTH, HELLO, RESET, CLIENT TRACKING). Set only on an
+	// EphemeralConn: its sticky pool revokes the claimed connection's cache
+	// coverage on claim and discards the connection on Close, so session state
+	// set on it can neither leave the parent cache stale nor reach a pooled
+	// caller.
+	allowSessionCommands bool
+
 	// The following are OWNER-ONLY and NOT copied by clone(): derived clients
 	// (Conn/WithTimeout) share the cache but must not stop the owner's
 	// goroutines or flush its cache on their own Close.
@@ -2685,6 +2693,9 @@ func (c *Client) Close() error {
 // session state left on it (AUTH, SELECT, CLIENT SETNAME, CLIENT TRACKING, ...)
 // is still there for the next pooled caller. Use EphemeralConn when the Conn
 // changes session state.
+//
+// With client-side caching enabled, a Conn rejects commands that change session
+// state (SELECT, AUTH, HELLO, RESET, CLIENT TRACKING); use EphemeralConn for those.
 func (c *Client) Conn() *Conn {
 	return c.conn(false)
 }
@@ -2695,6 +2706,10 @@ func (c *Client) Conn() *Conn {
 // generically on release, so a connection that carried it must not go on to
 // serve unrelated callers. The cost is one dial per EphemeralConn lifetime;
 // Get still reuses an idle pooled connection.
+//
+// Unlike Conn, an EphemeralConn accepts session commands when client-side
+// caching is enabled: claiming the connection drops the cache entries it
+// covered, and Close discards it.
 func (c *Client) EphemeralConn() *Conn {
 	return c.conn(true)
 }
@@ -2713,6 +2728,9 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// successful-attachment signal so that connection is tracked exactly when
 	// the parent's CSC is active.
 	conn.baseClient.cscActive = c.baseClient.cscActive
+	// Safe only because the connection never returns to the pool; see
+	// allowSessionCommands.
+	conn.baseClient.allowSessionCommands = discardOnClose
 	// No-op today: the strategy needs an idle-conn drainer and a StickyConnPool
 	// has none, so CSC isn't active on a Conn() (its reads hit the server). Kept
 	// so a future sticky-pool-capable strategy attaches here.
