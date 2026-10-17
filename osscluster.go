@@ -332,6 +332,8 @@ func (opt *ClusterOptions) init() {
 //     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
+//   - dialer_retry_timeout is an exception: 0 means no retry delay, while negative
+//     values are rejected. Explicit zero sets DialerRetryBackoff to return 0.
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
