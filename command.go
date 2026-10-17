@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"math"
 	"math/big"
 	"net"
 	"regexp"
@@ -738,26 +737,13 @@ func toString(val interface{}) (string, error) {
 	case string:
 		return val, nil
 	case float64:
-		return formatDouble(val), nil
+		return internal.FormatFloat(val), nil
 	case *big.Int:
 		return val.String(), nil
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for String", val)
 		return "", err
 	}
-}
-
-// formatDouble formats a RESP3 double the way Redis writes it in a RESP2 reply.
-func formatDouble(f float64) string {
-	switch {
-	case math.IsInf(f, 1):
-		return "inf"
-	case math.IsInf(f, -1):
-		return "-inf"
-	case math.IsNaN(f):
-		return "nan"
-	}
-	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 func (cmd *Cmd) Int() (int, error) {
@@ -771,7 +757,7 @@ func (cmd *Cmd) Int() (int, error) {
 	case string:
 		return strconv.Atoi(val)
 	case float64:
-		return strconv.Atoi(formatDouble(val))
+		return strconv.Atoi(internal.FormatFloat(val))
 	case *big.Int:
 		return strconv.Atoi(val.String())
 	default:
@@ -795,7 +781,7 @@ func toInt64(val interface{}) (int64, error) {
 	case string:
 		return strconv.ParseInt(val, 10, 64)
 	case float64:
-		return toInt64(formatDouble(val))
+		return toInt64(internal.FormatFloat(val))
 	case *big.Int:
 		return toInt64(val.String())
 	default:
@@ -819,7 +805,7 @@ func toUint64(val interface{}) (uint64, error) {
 	case string:
 		return strconv.ParseUint(val, 10, 64)
 	case float64:
-		return toUint64(formatDouble(val))
+		return toUint64(internal.FormatFloat(val))
 	case *big.Int:
 		return toUint64(val.String())
 	default:
