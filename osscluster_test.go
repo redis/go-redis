@@ -3510,7 +3510,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "ParseRedissURL",
 				url:  "rediss://localhost:123",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "MissingRedisPort",
 				url:  "redis://localhost",
@@ -3518,7 +3518,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "MissingRedissPort",
 				url:  "rediss://localhost",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "MultipleRedisURLs",
 				url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
@@ -3526,7 +3526,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "MultipleRedissURLs",
 				url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "OnlyPassword",
 				url:  "redis://:bar@localhost:123",
@@ -3542,7 +3542,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "RedissUsernamePassword",
 				url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "QueryParameters",
 				url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
