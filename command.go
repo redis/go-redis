@@ -2499,13 +2499,14 @@ func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 		return err
 	}
 
+	var firstErr error
 	for k, v := range cmd.val {
-		if err := strct.Scan(k, v); err != nil {
-			return err
+		if err := strct.Scan(k, v); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 
-	return nil
+	return firstErr
 }
 
 func (cmd *MapStringStringCmd) readReply(rd *proto.Reader) error {

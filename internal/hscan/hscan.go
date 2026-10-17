@@ -83,6 +83,8 @@ func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 		return err
 	}
 
+	var firstErr error
+
 	// Iterate through the (key, value) sequence.
 	for i := 0; i < len(vals); i++ {
 		key, ok := keys[i].(string)
@@ -95,12 +97,12 @@ func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 			continue
 		}
 
-		if err := strct.Scan(key, val); err != nil {
-			return err
+		if err := strct.Scan(key, val); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 
-	return nil
+	return firstErr
 }
 
 func decodeBool(f reflect.Value, s string) error {
