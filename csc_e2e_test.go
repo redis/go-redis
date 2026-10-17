@@ -547,14 +547,26 @@ func TestCSCEphemeralConnResetNoStaleRead(t *testing.T) {
 		t.Fatalf("entry was never cached")
 	}
 
-	eph := c.EphemeralConn()
+	// Claim the idle conn that owns the entry. The background drainer may hold
+	// it at that moment, and then the sticky pool dials a fresh conn that owns
+	// nothing, so retry until a claim lands on the owner and evicts the entry.
+	var eph *redis.Conn
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		eph = c.EphemeralConn()
+		if err := eph.Ping(ctx).Err(); err != nil {
+			t.Fatalf("EphemeralConn PING: %v", err)
+		}
+		if cache.Len() == 0 {
+			break
+		}
+		_ = eph.Close()
+		if time.Now().After(deadline) {
+			t.Fatalf("entry owned by the claimed conn was never evicted on claim, cache.Len=%d", cache.Len())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	t.Cleanup(func() { _ = eph.Close() })
-	if err := eph.Ping(ctx).Err(); err != nil { // claims the idle conn that owns the entry
-		t.Fatalf("EphemeralConn PING: %v", err)
-	}
-	if n := cache.Len(); n != 0 {
-		t.Fatalf("entry owned by the claimed conn must be evicted on claim, cache.Len=%d", n)
-	}
 	if err := eph.Do(ctx, "reset").Err(); err != nil {
 		t.Fatalf("EphemeralConn RESET: %v", err)
 	}

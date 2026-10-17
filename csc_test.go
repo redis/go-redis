@@ -1684,9 +1684,10 @@ func TestConnectionStateCommandsRejectedWithCSC(t *testing.T) {
 // its connection to the pool and keeps the guard.
 func TestEphemeralConnAllowsSessionCommandsWithCSC(t *testing.T) {
 	c := NewClient(&Options{
-		Addr:                  "localhost:1", // never dialed: only the guard is exercised
+		Addr:                  "localhost:1", // allowed commands fail to dial; only the guard matters
 		Protocol:              3,
 		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16},
+		MaxRetries:            -1, // fail fast on that dial error
 	})
 	t.Cleanup(func() { _ = c.Close() })
 
@@ -1715,6 +1716,27 @@ func TestEphemeralConnAllowsSessionCommandsWithCSC(t *testing.T) {
 				t.Fatalf("EphemeralConn: %v must be allowed with CSC enabled, got %v", tc.args, err)
 			}
 		})
+	}
+
+	// The same holds through the public API, on both the process and the
+	// pipeline path. Against localhost:1 an allowed command fails to dial,
+	// which is fine: it only has to get past the guard.
+	ctx := context.Background()
+	if err := conn.Select(ctx, 1).Err(); !errors.Is(err, errSelectWithCSC) {
+		t.Fatalf("Conn: SELECT must be rejected with CSC enabled, got %v", err)
+	}
+	if err := eph.Select(ctx, 1).Err(); errors.Is(err, errSelectWithCSC) {
+		t.Fatalf("EphemeralConn: SELECT must be allowed with CSC enabled, got %v", err)
+	}
+	selectPipeline := func(p Pipeliner) error {
+		p.Select(ctx, 1)
+		return nil
+	}
+	if _, err := conn.Pipelined(ctx, selectPipeline); !errors.Is(err, errSelectWithCSC) {
+		t.Fatalf("Conn: pipelined SELECT must be rejected with CSC enabled, got %v", err)
+	}
+	if _, err := eph.Pipelined(ctx, selectPipeline); errors.Is(err, errSelectWithCSC) {
+		t.Fatalf("EphemeralConn: pipelined SELECT must be allowed with CSC enabled, got %v", err)
 	}
 
 	// Raw SUBSCRIBE stays rejected: the typed Subscribe methods use dedicated
