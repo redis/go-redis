@@ -192,6 +192,7 @@ type MetricCallbacks struct {
 	// delta: +1 when connection added, -1 when connection removed
 	// state: connection state (e.g., "idle", "used")
 	// isPubSub: true if this is a PubSub connection
+	// It may run with connsMu or trackMu held and must not re-enter the pool.
 	ConnectionCount func(ctx context.Context, delta int, cn *Conn, state string, isPubSub bool)
 
 	// PendingRequests is called when pending requests count changes (UpDownCounter)
