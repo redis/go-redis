@@ -367,6 +367,7 @@ func (c *ClusterClient) executeParallel(ctx context.Context, cmd Cmder, nodes []
 // aggregateMultiSlotResults aggregates results from multi-slot execution
 func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder, results <-chan slotResult, keyOrder []string, policy *routing.CommandPolicy) error {
 	keyedResults := make(map[string]routing.AggregatorResErr)
+	var slotValues []routing.AggregatorResErr
 	var firstErr error
 
 	for result := range results {
@@ -387,10 +388,8 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 					}
 				}
 			} else {
-				// For non-slice results, map the entire result to each key
-				for _, key := range result.keys {
-					keyedResults[key] = routing.AggregatorResErr{Result: value, Err: err}
-				}
+				// For non-slice results, add the entire result once per slot
+				slotValues = append(slotValues, routing.AggregatorResErr{Result: value, Err: err})
 			}
 		}
 
@@ -398,6 +397,14 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 		if result.err != nil {
 			firstErr = result.err
 		}
+	}
+
+	if len(slotValues) > 0 {
+		aggregator := c.createAggregator(policy, cmd, true)
+		if err := aggregator.BatchSlice(slotValues); err != nil {
+			return err
+		}
+		return c.finishAggregation(cmd, aggregator)
 	}
 
 	return c.aggregateKeyedValues(cmd, keyedResults, keyOrder, policy)
