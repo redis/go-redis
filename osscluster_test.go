@@ -3592,6 +3592,10 @@ var _ = Describe("Command Tips tests", func() {
 				url:  "rediss://localhost?skip_verify=yes",
 				err:  errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
 			}, {
+				test: "SkipVerifyWithoutTLS",
+				url:  "redis://localhost?skip_verify=true",
+				err:  errors.New("redis: unexpected option: skip_verify"),
+			}, {
 				test: "UnknownParam",
 				url:  "redis://localhost?abc=123",
 				err:  errors.New("redis: unexpected option: abc"),

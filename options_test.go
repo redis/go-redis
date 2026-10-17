@@ -769,4 +769,13 @@ func TestParseClusterURLSkipVerify(t *testing.T) {
 	if err.Error() != wantErr {
 		t.Fatalf("got error %q, want %q", err.Error(), wantErr)
 	}
+
+	_, err = ParseClusterURL("redis://localhost?skip_verify=true")
+	if err == nil {
+		t.Fatal("expected error for skip_verify without TLS, got nil")
+	}
+	wantErr = "redis: unexpected option: skip_verify"
+	if err.Error() != wantErr {
+		t.Fatalf("got error %q, want %q", err.Error(), wantErr)
+	}
 }
