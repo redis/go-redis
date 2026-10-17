@@ -2708,11 +2708,6 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 		}
 		i++
 
-		if noContent {
-			results = append(results, doc)
-			continue
-		}
-
 		if withScores && i < len(data) {
 			scoreVal := data[i]
 			if arr, ok := scoreVal.([]interface{}); ok && len(arr) > 0 {
@@ -2731,15 +2726,20 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 		if withPayloads && i < len(data) {
 			if payload, ok := data[i].(string); ok {
 				doc.Payload = &payload
-				i++
 			}
+			i++
 		}
 
 		if withSortKeys && i < len(data) {
 			if sortKey, ok := data[i].(string); ok {
 				doc.SortKey = &sortKey
-				i++
 			}
+			i++
+		}
+
+		if noContent {
+			results = append(results, doc)
+			continue
 		}
 
 		if i < len(data) {

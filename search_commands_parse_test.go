@@ -1045,6 +1045,88 @@ func TestFTSearchCmdReadReplyRESP2(t *testing.T) {
 	}
 }
 
+// TestFTSearchCmdReadReplyReturnZero validates that an empty RETURN keeps the
+// scores, payloads and sort keys on RESP2 and RESP3
+func TestFTSearchCmdReadReplyReturnZero(t *testing.T) {
+	str := func(s string) *string { return &s }
+	tests := []struct {
+		name    string
+		options *FTSearchOptions
+		resp2   string
+		resp3   string
+		want    []Document
+	}{
+		{
+			name:    "scores",
+			options: &FTSearchOptions{Return: []FTSearchReturn{}, WithScores: true},
+			resp2:   "*5\r\n:2\r\n$5\r\ndoc:2\r\n$3\r\n0.5\r\n$5\r\ndoc:1\r\n$4\r\n0.25\r\n",
+			resp3: "%2\r\n+total_results\r\n:2\r\n+results\r\n*2\r\n" +
+				"%3\r\n+id\r\n$5\r\ndoc:2\r\n+score\r\n,0.5\r\n+values\r\n*0\r\n" +
+				"%3\r\n+id\r\n$5\r\ndoc:1\r\n+score\r\n,0.25\r\n+values\r\n*0\r\n",
+			want: []Document{
+				{ID: "doc:2", Score: ptrFloat64(0.5)},
+				{ID: "doc:1", Score: ptrFloat64(0.25)},
+			},
+		},
+		{
+			name:    "scores with explanation",
+			options: &FTSearchOptions{Return: []FTSearchReturn{}, WithScores: true, ExplainScore: true},
+			resp2:   "*3\r\n:1\r\n$5\r\ndoc:2\r\n*2\r\n$3\r\n0.5\r\n*1\r\n$4\r\nbm25\r\n",
+			resp3: "%2\r\n+total_results\r\n:1\r\n+results\r\n*1\r\n" +
+				"%3\r\n+id\r\n$5\r\ndoc:2\r\n+score\r\n*2\r\n,0.5\r\n*1\r\n+bm25\r\n+values\r\n*0\r\n",
+			want: []Document{{ID: "doc:2", Score: ptrFloat64(0.5)}},
+		},
+		{
+			name:    "scores, payloads and sort keys",
+			options: &FTSearchOptions{Return: []FTSearchReturn{}, WithScores: true, WithPayloads: true, WithSortKeys: true},
+			resp2: "*9\r\n:2\r\n$5\r\ndoc:1\r\n$4\r\n0.25\r\n$2\r\np1\r\n$2\r\n#1\r\n" +
+				"$5\r\ndoc:2\r\n$3\r\n0.5\r\n$-1\r\n$-1\r\n",
+			resp3: "%2\r\n+total_results\r\n:2\r\n+results\r\n*2\r\n" +
+				"%5\r\n+id\r\n$5\r\ndoc:1\r\n+score\r\n,0.25\r\n+payload\r\n$2\r\np1\r\n+sortkey\r\n$2\r\n#1\r\n+values\r\n*0\r\n" +
+				"%5\r\n+id\r\n$5\r\ndoc:2\r\n+score\r\n,0.5\r\n+payload\r\n_\r\n+sortkey\r\n_\r\n+values\r\n*0\r\n",
+			want: []Document{
+				{ID: "doc:1", Score: ptrFloat64(0.25), Payload: str("p1"), SortKey: str("#1")},
+				{ID: "doc:2", Score: ptrFloat64(0.5)},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		for protocol, reply := range map[string]string{"RESP2": tt.resp2, "RESP3": tt.resp3} {
+			t.Run(tt.name+"/"+protocol, func(t *testing.T) {
+				cmd := newFTSearchCmd(context.Background(), tt.options)
+				if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err != nil {
+					t.Fatalf("readReply() error = %v", err)
+				}
+				if cmd.val.Total != len(tt.want) {
+					t.Errorf("Total = %d, want %d", cmd.val.Total, len(tt.want))
+				}
+				if len(cmd.val.Docs) != len(tt.want) {
+					t.Fatalf("Docs count = %d, want %d", len(cmd.val.Docs), len(tt.want))
+				}
+				for i, doc := range cmd.val.Docs {
+					want := tt.want[i]
+					if doc.ID != want.ID {
+						t.Errorf("Docs[%d].ID = %s, want %s", i, doc.ID, want.ID)
+					}
+					if doc.Score == nil || *doc.Score != *want.Score {
+						t.Errorf("Docs[%d].Score = %v, want %v", i, doc.Score, *want.Score)
+					}
+					if (doc.Payload == nil) != (want.Payload == nil) || (doc.Payload != nil && *doc.Payload != *want.Payload) {
+						t.Errorf("Docs[%d].Payload = %v, want %v", i, doc.Payload, want.Payload)
+					}
+					if (doc.SortKey == nil) != (want.SortKey == nil) || (doc.SortKey != nil && *doc.SortKey != *want.SortKey) {
+						t.Errorf("Docs[%d].SortKey = %v, want %v", i, doc.SortKey, want.SortKey)
+					}
+					if len(doc.Fields) != 0 {
+						t.Errorf("Docs[%d].Fields = %v, want empty", i, doc.Fields)
+					}
+				}
+			})
+		}
+	}
+}
+
 // TestFTAggregateRESP2AndRESP3Equivalence validates that RESP2 and RESP3 parsing
 // produce semantically equivalent results for FT.AGGREGATE
 func TestFTAggregateRESP2AndRESP3Equivalence(t *testing.T) {
