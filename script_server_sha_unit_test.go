@@ -255,6 +255,20 @@ func TestScriptLoad_MatchingDigestIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestScriptLoad_UppercaseDigestIsNotAnError(t *testing.T) {
+	ctx := context.Background()
+	s := NewScript("return 5")
+	want := s.Hash()
+	c := &fakeScripter{hashToReturn: strings.ToUpper(want)}
+
+	if err := s.Load(ctx, c).Err(); err != nil {
+		t.Fatalf("Load() err: %v", err)
+	}
+	if got := s.Hash(); got != want {
+		t.Fatalf("Hash() = %q after Load, want %q", got, want)
+	}
+}
+
 func TestScriptLoad_EmptyDigestIsNotAnError(t *testing.T) {
 	// A pipelined SCRIPT LOAD has no value until Exec; Load must not flag it.
 	ctx := context.Background()

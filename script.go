@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 )
 
@@ -79,7 +80,8 @@ func (s *Script) Load(ctx context.Context, c Scripter) *StringCmd {
 		// the local one means EVALSHA stays pinned to this script instead of
 		// running whatever the server holds under the returned digest.
 		// Val is empty while the command is still queued in a pipeline.
-		if v := cmd.Val(); v != "" && v != s.hash {
+		// Redis treats digests case-insensitively, so compare that way too.
+		if v := cmd.Val(); v != "" && !strings.EqualFold(v, s.hash) {
 			cmd.SetErr(fmt.Errorf("%w: got %q, want %q", ErrScriptDigestMismatch, v, s.hash))
 		}
 		return cmd
