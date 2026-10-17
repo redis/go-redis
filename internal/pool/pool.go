@@ -677,13 +677,6 @@ func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
 		return
 	}
 	removed := p.removeConn(oldest)
-	if !oldest.pooled {
-		// removeConn leaves unpooled conns in idleConns; an undelivered
-		// overflow dial is parked there by putIdleConn.
-		copy(p.idleConns, p.idleConns[1:])
-		p.idleConns = p.idleConns[:len(p.idleConns)-1]
-		p.idleConnsLen.Add(-1)
-	}
 	countCb := getMetricConnectionCountCallback()
 	p.connsMu.Unlock()
 
@@ -1885,13 +1878,14 @@ func (p *ConnPool) removeConn(cn *Conn) bool {
 	// Decrement pool size counter when removing a connection
 	if cn.pooled {
 		p.poolSize.Add(-1)
-		// this can be idle conn
-		for idx, ic := range p.idleConns {
-			if ic == cn {
-				p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
-				p.idleConnsLen.Add(-1)
-				break
-			}
+	}
+	// An unpooled conn can be idle too: putIdleConn parks an undelivered
+	// overflow dial in idleConns.
+	for idx, ic := range p.idleConns {
+		if ic == cn {
+			p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
+			p.idleConnsLen.Add(-1)
+			break
 		}
 	}
 	return true
