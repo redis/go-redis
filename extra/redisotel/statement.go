@@ -1,9 +1,11 @@
 package redisotel
 
 import (
+	"encoding"
 	"encoding/hex"
 	"fmt"
 	"math"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -117,6 +119,9 @@ func hasSecretRulePrefix(v interface{}) bool {
 		return len(s) >= 2 && isRulePrefix(s[0])
 	case []byte:
 		return len(s) >= 2 && isRulePrefix(s[0])
+	case encoding.BinaryMarshaler:
+		b, err := s.MarshalBinary()
+		return err == nil && len(b) >= 2 && isRulePrefix(b[0])
 	}
 	return false
 }
@@ -138,6 +143,11 @@ func argString(args []interface{}, i int) string {
 		return v
 	case []byte:
 		return string(v)
+	case encoding.BinaryMarshaler:
+		b, err := v.MarshalBinary()
+		if err == nil {
+			return string(b)
+		}
 	}
 	return ""
 }
@@ -232,95 +242,184 @@ func appendArgTruncated(b []byte, v interface{}, limit int) []byte {
 	case nil:
 		return append(b, "<nil>"...)
 	case string:
-		checkLen := len(v)
-		if limit > 0 && checkLen > limit {
-			checkLen = limit
+		return appendStringTruncated(b, v, limit)
+	case *string:
+		if v == nil {
+			return append(b, "<nil>"...)
 		}
-		isHex := !isSimpleString(v[:checkLen])
-		charLimit := limit
-		if isHex && limit > 0 {
-			charLimit = limit / 2
-		}
-		if limit > 0 && len(v) > charLimit {
-			if charLimit > 0 {
-				b = appendUTF8String(b, []byte(v[:charLimit]))
-			}
-			b = append(b, "…(+"...)
-			b = strconv.AppendInt(b, int64(len(v)-charLimit), 10)
-			return append(b, " bytes)"...)
-		}
-		return appendUTF8String(b, []byte(v))
+		return appendStringTruncated(b, *v, limit)
 	case []byte:
-		checkLen := len(v)
-		if limit > 0 && checkLen > limit {
-			checkLen = limit
+		return appendBytesTruncated(b, v, limit)
+	case *[]byte:
+		if v == nil {
+			return append(b, "<nil>"...)
 		}
-		isHex := !isSimple(v[:checkLen])
-		byteLimit := limit
-		if isHex && limit > 0 {
-			byteLimit = limit / 2
+		return appendBytesTruncated(b, *v, limit)
+	case encoding.BinaryMarshaler:
+		data, err := v.MarshalBinary()
+		if err != nil {
+			return appendStringTruncated(b, fmt.Sprint(v), limit)
 		}
-		if limit > 0 && len(v) > byteLimit {
-			if byteLimit > 0 {
-				b = appendUTF8String(b, v[:byteLimit])
-			}
-			b = append(b, "…(+"...)
-			b = strconv.AppendInt(b, int64(len(v)-byteLimit), 10)
-			return append(b, " bytes)"...)
-		}
-		return appendUTF8String(b, v)
+		return appendBytesTruncated(b, data, limit)
+	case net.IP:
+		return appendBytesTruncated(b, v, limit)
 	case int:
 		return strconv.AppendInt(b, int64(v), 10)
+	case *int:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendInt(b, int64(*v), 10)
 	case int8:
 		return strconv.AppendInt(b, int64(v), 10)
+	case *int8:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendInt(b, int64(*v), 10)
 	case int16:
 		return strconv.AppendInt(b, int64(v), 10)
+	case *int16:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendInt(b, int64(*v), 10)
 	case int32:
 		return strconv.AppendInt(b, int64(v), 10)
+	case *int32:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendInt(b, int64(*v), 10)
 	case int64:
 		return strconv.AppendInt(b, v, 10)
+	case *int64:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendInt(b, *v, 10)
 	case uint:
 		return strconv.AppendUint(b, uint64(v), 10)
+	case *uint:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendUint(b, uint64(*v), 10)
 	case uint8:
 		return strconv.AppendUint(b, uint64(v), 10)
+	case *uint8:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendUint(b, uint64(*v), 10)
 	case uint16:
 		return strconv.AppendUint(b, uint64(v), 10)
+	case *uint16:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendUint(b, uint64(*v), 10)
 	case uint32:
 		return strconv.AppendUint(b, uint64(v), 10)
+	case *uint32:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendUint(b, uint64(*v), 10)
 	case uint64:
 		return strconv.AppendUint(b, v, 10)
+	case *uint64:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendUint(b, *v, 10)
 	case float32:
 		return strconv.AppendFloat(b, float64(v), 'f', -1, 64)
+	case *float32:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendFloat(b, float64(*v), 'f', -1, 64)
 	case float64:
 		return strconv.AppendFloat(b, v, 'f', -1, 64)
+	case *float64:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return strconv.AppendFloat(b, *v, 'f', -1, 64)
 	case bool:
 		if v {
 			return append(b, "true"...)
 		}
 		return append(b, "false"...)
+	case *bool:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		if *v {
+			return append(b, "true"...)
+		}
+		return append(b, "false"...)
 	case time.Time:
 		return v.AppendFormat(b, time.RFC3339Nano)
+	case *time.Time:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return v.AppendFormat(b, time.RFC3339Nano)
+	case time.Duration:
+		return append(b, v.String()...)
+	case *time.Duration:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return append(b, v.String()...)
 	default:
 		s := fmt.Sprint(v)
-		checkLen := len(s)
-		if limit > 0 && checkLen > limit {
-			checkLen = limit
-		}
-		isHex := !isSimpleString(s[:checkLen])
-		charLimit := limit
-		if isHex && limit > 0 {
-			charLimit = limit / 2
-		}
-		if limit > 0 && len(s) > charLimit {
-			if charLimit > 0 {
-				b = appendUTF8String(b, []byte(s[:charLimit]))
-			}
-			b = append(b, "…(+"...)
-			b = strconv.AppendInt(b, int64(len(s)-charLimit), 10)
-			return append(b, " bytes)"...)
-		}
-		return appendUTF8String(b, []byte(s))
+		return appendStringTruncated(b, s, limit)
 	}
+}
+
+func appendStringTruncated(b []byte, v string, limit int) []byte {
+	checkLen := len(v)
+	if limit > 0 && checkLen > limit {
+		checkLen = limit
+	}
+	isHex := !isSimpleString(v[:checkLen])
+	charLimit := limit
+	if isHex && limit > 0 {
+		charLimit = limit / 2
+	}
+	if limit > 0 && len(v) > charLimit {
+		if charLimit > 0 {
+			b = appendUTF8String(b, []byte(v[:charLimit]))
+		}
+		b = append(b, "…(+"...)
+		b = strconv.AppendInt(b, int64(len(v)-charLimit), 10)
+		return append(b, " bytes)"...)
+	}
+	return appendUTF8String(b, []byte(v))
+}
+
+func appendBytesTruncated(b []byte, v []byte, limit int) []byte {
+	checkLen := len(v)
+	if limit > 0 && checkLen > limit {
+		checkLen = limit
+	}
+	isHex := !isSimple(v[:checkLen])
+	byteLimit := limit
+	if isHex && limit > 0 {
+		byteLimit = limit / 2
+	}
+	if limit > 0 && len(v) > byteLimit {
+		if byteLimit > 0 {
+			b = appendUTF8String(b, v[:byteLimit])
+		}
+		b = append(b, "…(+"...)
+		b = strconv.AppendInt(b, int64(len(v)-byteLimit), 10)
+		return append(b, " bytes)"...)
+	}
+	return appendUTF8String(b, v)
 }
 
 func appendUTF8String(dst []byte, src []byte) []byte {

@@ -447,3 +447,95 @@ func TestTracingHook_StatementTruncation_Binary(t *testing.T) {
 		assertEqual(t, expected, stmt)
 	})
 }
+
+type testBinaryMarshaler []byte
+
+func (m testBinaryMarshaler) MarshalBinary() ([]byte, error) {
+	return m, nil
+}
+
+type testTextMarshaler string
+
+func (m testTextMarshaler) MarshalBinary() ([]byte, error) {
+	return []byte(m), nil
+}
+
+func TestTracingHook_StatementTruncation_CustomTypes(t *testing.T) {
+	imsb := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+	hook := newTracingHook(
+		"redis://localhost:6379",
+		WithTracerProvider(provider),
+		WithDBStatementMaxLen(64),
+	)
+
+	t.Run("custom BinaryMarshaler with large binary payload truncates without materializing decimal string", func(t *testing.T) {
+		defer imsb.Reset()
+
+		payload := testBinaryMarshaler(bytes.Repeat([]byte{0x00, 0x01, 0x02, 0xff}, 250*1024)) // 1MB binary
+		cmd := redis.NewCmd(context.Background(), "SET", "bin", payload)
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+
+		assertEqual(t, 1, len(imsb.GetSpans()))
+		stmt := getDBStatement(imsb.GetSpans()[0])
+
+		if !strings.HasPrefix(stmt, "SET bin ") {
+			t.Fatalf("expected prefix 'SET bin ', got %q", stmt[:20])
+		}
+		// Must NOT contain '[' from fmt.Sprint decimal formatting of slice
+		if strings.Contains(stmt, "[") {
+			t.Fatalf("expected raw binary hex truncation, got materialized fmt.Sprint slice: %q", stmt)
+		}
+		remainingBytes := (64 - len("SET bin ")) / 2
+		expectedSuffix := fmt.Sprintf("…(+%d bytes)", len(payload)-remainingBytes)
+		if !strings.HasSuffix(stmt, expectedSuffix) {
+			t.Fatalf("expected suffix %q, got %q", expectedSuffix, stmt[len(stmt)-30:])
+		}
+	})
+
+	t.Run("custom BinaryMarshaler with printable text truncates cleanly", func(t *testing.T) {
+		defer imsb.Reset()
+
+		textPayload := testTextMarshaler(strings.Repeat("a", 1024*1024)) // 1MB text
+		cmd := redis.NewCmd(context.Background(), "SET", "text", textPayload)
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+
+		assertEqual(t, 1, len(imsb.GetSpans()))
+		stmt := getDBStatement(imsb.GetSpans()[0])
+
+		remaining := 64 - len("SET text ")
+		expected := "SET text " + strings.Repeat("a", remaining) + fmt.Sprintf("…(+%d bytes)", 1024*1024-remaining)
+		assertEqual(t, expected, stmt)
+	})
+
+	t.Run("pointer arguments are dereferenced properly", func(t *testing.T) {
+		defer imsb.Reset()
+
+		strVal := "hello_pointer"
+		intVal := 42
+		cmd := redis.NewCmd(context.Background(), "SET", &strVal, &intVal)
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+
+		assertEqual(t, 1, len(imsb.GetSpans()))
+		stmt := getDBStatement(imsb.GetSpans()[0])
+		assertEqual(t, "SET hello_pointer 42", stmt)
+	})
+}
