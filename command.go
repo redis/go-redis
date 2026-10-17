@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
+	"math/big"
 	"net"
 	"regexp"
 	"strconv"
@@ -735,10 +737,38 @@ func toString(val interface{}) (string, error) {
 	switch val := val.(type) {
 	case string:
 		return val, nil
+	case float64:
+		return formatDouble(val), nil
+	case *big.Int:
+		return val.String(), nil
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for String", val)
 		return "", err
 	}
+}
+
+// formatDouble writes f the way Redis writes a double on RESP2 (d2string and
+// fpconv_dtoa), so that 1e100 is "1e+100" and not 101 digits.
+func formatDouble(f float64) string {
+	if f == 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+		return internal.FormatFloat(f)
+	}
+	if f == math.Trunc(f) && math.Abs(f) <= 1<<62 {
+		return strconv.FormatInt(int64(f), 10)
+	}
+	mant, exp, _ := strings.Cut(strconv.FormatFloat(f, 'e', -1, 64), "e")
+	e, _ := strconv.Atoi(exp)
+	n := len(strings.Trim(strings.Replace(mant, ".", "", 1), "-"))
+	k := e - n + 1
+	absE := max(e, -e)
+	// Same switch to exponent form as emit_digits in fpconv_dtoa.c.
+	if (k >= 0 && absE < n+7) || (k < 0 && (k > -7 || absE < 4)) {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	if e >= 0 {
+		return mant + "e+" + strconv.Itoa(e)
+	}
+	return mant + "e" + strconv.Itoa(e)
 }
 
 func (cmd *Cmd) Int() (int, error) {
@@ -751,6 +781,10 @@ func (cmd *Cmd) Int() (int, error) {
 		return int(val), nil
 	case string:
 		return strconv.Atoi(val)
+	case float64:
+		return strconv.Atoi(formatDouble(val))
+	case *big.Int:
+		return strconv.Atoi(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Int", val)
 		return 0, err
@@ -771,6 +805,10 @@ func toInt64(val interface{}) (int64, error) {
 		return val, nil
 	case string:
 		return strconv.ParseInt(val, 10, 64)
+	case float64:
+		return toInt64(formatDouble(val))
+	case *big.Int:
+		return toInt64(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Int64", val)
 		return 0, err
@@ -791,6 +829,10 @@ func toUint64(val interface{}) (uint64, error) {
 		return uint64(val), nil
 	case string:
 		return strconv.ParseUint(val, 10, 64)
+	case float64:
+		return toUint64(formatDouble(val))
+	case *big.Int:
+		return toUint64(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Uint64", val)
 		return 0, err
@@ -815,6 +857,8 @@ func toFloat32(val interface{}) (float32, error) {
 			return 0, err
 		}
 		return float32(f), nil
+	case *big.Int:
+		return toFloat32(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Float32", val)
 		return 0, err
@@ -835,6 +879,8 @@ func toFloat64(val interface{}) (float64, error) {
 		return float64(val), nil
 	case string:
 		return strconv.ParseFloat(val, 64)
+	case *big.Int:
+		return toFloat64(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Float64", val)
 		return 0, err
