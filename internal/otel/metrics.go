@@ -120,6 +120,9 @@ type PoolRegistrar interface {
 }
 
 var (
+	// setRecorderMu serializes SetGlobalRecorder, so the recorder swap and the pool callbacks change together.
+	setRecorderMu sync.Mutex
+
 	// recorderMu protects globalRecorder and operation duration callbacks
 	recorderMu sync.RWMutex
 
@@ -166,6 +169,8 @@ func Enabled() bool {
 
 // SetGlobalRecorder sets the global recorder (called by Init() in extra/redisotel-native)
 func SetGlobalRecorder(r Recorder) {
+	setRecorderMu.Lock()
+	defer setRecorderMu.Unlock()
 	recorderMu.Lock()
 	if r == nil {
 		globalRecorder = noopRecorder{}
@@ -216,8 +221,9 @@ func SetGlobalRecorder(r Recorder) {
 		ConnectionCount: func(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
 			getRecorder().RecordConnectionCount(ctx, delta, cn, state, isPubSub)
 		},
+		// Uses r, not getRecorder(), so a request's -1 reaches the recorder that got its +1.
 		PendingRequests: func(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
-			getRecorder().RecordPendingRequests(ctx, delta, cn, poolName)
+			r.RecordPendingRequests(ctx, delta, cn, poolName)
 		},
 	})
 }
