@@ -1649,17 +1649,23 @@ func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]uint64, n)
+	var elemErr error
 	for i := range cmd.val {
 		switch num, err := rd.ReadUint(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *UintSliceCmd) Clone() Cmder {
@@ -2080,17 +2086,23 @@ func (cmd *FloatSliceCmd) readReply(rd *proto.Reader) error {
 	}
 
 	cmd.val = make([]float64, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch num, err := rd.ReadFloat(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *FloatSliceCmd) Clone() Cmder {
@@ -2155,17 +2167,23 @@ func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]string, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch s, err := rd.ReadString(); {
 		case err == Nil:
 			cmd.val[i] = ""
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = s
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *StringSliceCmd) Clone() Cmder {
@@ -2422,17 +2440,23 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]bool, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch b, err := rd.ReadBool(); {
 		case err == Nil:
 			cmd.val[i] = false
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = b
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *BoolSliceCmd) Clone() Cmder {
