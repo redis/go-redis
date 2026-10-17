@@ -238,13 +238,13 @@ var _ = Describe("TLS Cluster", Label("NonRedisEnterprise"), func() {
 				return client.Ping(ctx).Err()
 			}, 30*time.Second, 1*time.Second).Should(Succeed())
 
-			var shardCount int64
+			var shardCount atomic.Int64
 			err := client.ForEachShard(ctx, func(ctx context.Context, shard *redis.Client) error {
-				atomic.AddInt64(&shardCount, 1)
+				shardCount.Add(1)
 				return shard.Ping(ctx).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(atomic.LoadInt64(&shardCount)).To(BeNumerically(">", 0))
+			Expect(shardCount.Load()).To(BeNumerically(">", 0))
 		})
 
 		It("should support ForEachMaster over TLS cluster", func() {
@@ -260,13 +260,13 @@ var _ = Describe("TLS Cluster", Label("NonRedisEnterprise"), func() {
 				return client.Ping(ctx).Err()
 			}, 30*time.Second, 1*time.Second).Should(Succeed())
 
-			var masterCount int64
+			var masterCount atomic.Int64
 			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-				atomic.AddInt64(&masterCount, 1)
+				masterCount.Add(1)
 				return master.Ping(ctx).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(atomic.LoadInt64(&masterCount)).To(BeNumerically(">", 0))
+			Expect(masterCount.Load()).To(BeNumerically(">", 0))
 		})
 	})
 

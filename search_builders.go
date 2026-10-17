@@ -313,10 +313,38 @@ func (b *AggregateBuilder) ReduceAs(fn SearchAggregator, alias string, args ...i
 	return b
 }
 
+// Collect adds a REDUCE COLLECT clause to the last step, which must be a
+// GROUPBY. The COLLECT options (FIELDS/DISTINCT/SORTBY/LIMIT/AS) are rendered
+// and the argument count is computed automatically; field and sort names are
+// normalized to a single "@" prefix. Set FTAggregateCollect.As to alias the
+// output column.
+//
+// If the last step is not a GROUPBY, or the options are invalid (no FIELDS
+// selector), Run returns the recorded error without issuing the command.
+// COLLECT requires Redis 8.8+ with unstable features enabled.
+func (b *AggregateBuilder) Collect(o FTAggregateCollect) *AggregateBuilder {
+	n := len(b.options.Steps)
+	if n == 0 || b.options.Steps[n-1].GroupBy == nil {
+		b.setErr(fmt.Errorf("FT.AGGREGATE: Collect must follow a GroupBy step"))
+		return b
+	}
+	reducer, err := NewCollectReducer(o)
+	if err != nil {
+		b.setErr(err)
+		return b
+	}
+	g := b.options.Steps[n-1].GroupBy
+	g.Reduce = append(g.Reduce, reducer)
+	return b
+}
+
 // SortBy adds SORTBY <field> ASC|DESC. Consecutive SortBy calls (with no
 // other step in between) are merged into a single SORTBY clause so fields
 // act as tiebreakers. A SortBy call after a non-SortBy step starts a new
-// SORTBY step.
+// SORTBY step. The server currently allows only one SORTBY between two
+// GroupBy steps and returns an error for a second one, e.g. for
+// SortBy().Filter().SortBy(). SortBy().GroupBy().SortBy() works. The builder
+// does not check this and leaves it to the server.
 //
 // Note: this is a semantics change from earlier experimental versions of
 // the builder, where SortBy always accumulated into a single SORTBY clause
@@ -345,9 +373,28 @@ func (b *AggregateBuilder) SortByMax(max int) *AggregateBuilder {
 	return b
 }
 
-// Filter sets FILTER <expr>.
+// Filter adds a FILTER <expr> step at the current position in the pipeline.
+// You can call it multiple times, e.g. before and after a GroupBy. To filter
+// before paging, call Filter before SortBy and Limit.
+//
+// Note: this is a semantics change from earlier experimental versions of
+// the builder, where Filter set a single FILTER that was always sent at the
+// end of the pipeline, after LIMIT.
 func (b *AggregateBuilder) Filter(expr string) *AggregateBuilder {
-	b.options.Filter = expr
+	b.options.Steps = append(b.options.Steps, FTAggregateStep{
+		Filter: &FTAggregateFilter{Expression: expr},
+	})
+	return b
+}
+
+// Limit adds a LIMIT <offset> <num> step at the current position in the
+// pipeline. The server merges the SortBy and all Limit steps between two
+// GroupBy steps into one sort/limit stage at the position of the first of
+// them, and a later Limit replaces an earlier Limit or SortByMax.
+func (b *AggregateBuilder) Limit(offset, num int) *AggregateBuilder {
+	b.options.Steps = append(b.options.Steps, FTAggregateStep{
+		Limit: &FTAggregateLimit{Offset: offset, Num: num},
+	})
 	return b
 }
 

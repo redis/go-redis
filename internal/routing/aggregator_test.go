@@ -268,3 +268,24 @@ func TestAggLogicalOrBatchAdd(t *testing.T) {
 		}
 	})
 }
+
+func TestAggMinMaxAggregatorNonNumericReply(t *testing.T) {
+	policies := map[string]ResponsePolicy{
+		"min": RespAggMin,
+		"max": RespAggMax,
+	}
+
+	for name, policy := range policies {
+		t.Run(name, func(t *testing.T) {
+			agg := NewResponseAggregator(policy, "")
+
+			if err := agg.Add("not a number", nil); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if _, err := agg.Result(); err == nil {
+				t.Fatal("expected an error for a non-numeric reply, got nil")
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,28 @@ import (
 )
 
 var ctx = context.TODO()
+
+type capturingLogger struct {
+	mu   sync.Mutex
+	logs []string
+}
+
+func (l *capturingLogger) Printf(_ context.Context, format string, v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.logs = append(l.logs, fmt.Sprintf(format, v...))
+}
+
+func (l *capturingLogger) contains(substr string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, msg := range l.logs {
+		if strings.Contains(msg, substr) {
+			return true
+		}
+	}
+	return false
+}
 
 var _ = Describe("newClusterState", func() {
 	var state *clusterState
@@ -635,7 +658,7 @@ func TestRingShardsCleanup(t *testing.T) {
 
 		var (
 			ring        *Ring
-			shouldClose int32
+			shouldClose atomic.Int32
 		)
 
 		ring = NewRing(&RingOptions{
@@ -643,7 +666,7 @@ func TestRingShardsCleanup(t *testing.T) {
 				ringShard1Name: ringShard1Addr,
 			},
 			NewClient: func(opt *Options) *Client {
-				if atomic.LoadInt32(&shouldClose) != 0 {
+				if shouldClose.Load() != 0 {
 					ring.Close()
 				}
 				createCounter.increment(opt.Addr)
@@ -658,7 +681,7 @@ func TestRingShardsCleanup(t *testing.T) {
 		createCounter.expect(map[string]int{ringShard1Addr: 1})
 		closeCounter.expect(map[string]int{})
 
-		atomic.StoreInt32(&shouldClose, 1)
+		shouldClose.Store(1)
 
 		ring.SetAddrs(map[string]string{
 			ringShard2Name: ringShard2Addr,
@@ -686,7 +709,10 @@ func (e timeoutErr) Error() string {
 	return "i/o timeout"
 }
 
-var _ = Describe("withConn", func() {
+// NonRedisEnterprise: exercises connection-pool replacement internals against a
+// local Redis and requires a localhost server; not meaningful against a remote
+// Enterprise cluster.
+var _ = Describe("withConn", Label("NonRedisEnterprise"), func() {
 	var client *Client
 
 	BeforeEach(func() {
@@ -807,9 +833,12 @@ var _ = Describe("isLoopback", func() {
 	)
 })
 
-// TestOnCloseHooks_RunInRegistrationOrder verifies that hooks registered under
-// distinct ids are all invoked on run() in the order they were registered.
-func TestOnCloseHooks_RunInRegistrationOrder(t *testing.T) {
+// TestOnCloseHooks_RunInReverseRegistrationOrder verifies that hooks are invoked in
+// REVERSE registration order (LIFO): a hook registered later is a consumer of state an
+// earlier registration provides, so it must run first. Concretely, an autopipeliner
+// drain (registered lazily) must run before the Sentinel failover teardown (registered
+// at construction) so the drain can still resolve the master address. See onCloseHooks.run.
+func TestOnCloseHooks_RunInReverseRegistrationOrder(t *testing.T) {
 	h := &onCloseHooks{}
 	var calls []string
 
@@ -820,9 +849,9 @@ func TestOnCloseHooks_RunInRegistrationOrder(t *testing.T) {
 	if err := h.run(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []string{"a", "b", "c"}
+	want := []string{"c", "b", "a"}
 	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("run order = %v, want %v", calls, want)
+		t.Fatalf("run order = %v, want %v (LIFO)", calls, want)
 	}
 }
 
@@ -836,10 +865,10 @@ func TestOnCloseHooks_RegisterSameIDReplaces(t *testing.T) {
 	const id = "same-id"
 	const iterations = 10_000
 
-	var lastSeen int32
+	var lastSeen atomic.Int32
 	for i := 0; i < iterations; i++ {
 		i := int32(i)
-		h.register(id, func() error { atomic.StoreInt32(&lastSeen, i); return nil })
+		h.register(id, func() error { lastSeen.Store(i); return nil })
 	}
 
 	if got := len(h.order); got != 1 {
@@ -852,8 +881,44 @@ func TestOnCloseHooks_RegisterSameIDReplaces(t *testing.T) {
 	if err := h.run(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := atomic.LoadInt32(&lastSeen); got != iterations-1 {
+	if got := lastSeen.Load(); got != iterations-1 {
 		t.Fatalf("last-registered callback not invoked: lastSeen = %d, want %d", got, iterations-1)
+	}
+}
+
+// TestOnCloseHooks_RegisterAfterRunIsRejected pins the contract the cluster FD
+// router's per-node evict hook relies on: once run has taken its snapshot the
+// owner is closing, and a callback registered from then on would never fire —
+// so register must report false and store nothing, instead of silently
+// accepting a hook that leaks whatever it was meant to clean up (cursor bugbot
+// on #4002: a node client closing between a child's publication and its evict
+// hook's registration left the child in the router map for good).
+func TestOnCloseHooks_RegisterAfterRunIsRejected(t *testing.T) {
+	h := &onCloseHooks{}
+	var early, late atomic.Int32
+
+	if !h.register("early", func() error { early.Add(1); return nil }) {
+		t.Fatal("register before run must report true")
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := early.Load(); got != 1 {
+		t.Fatalf("early hook invoked %d times, want 1", got)
+	}
+
+	if h.register("late", func() error { late.Add(1); return nil }) {
+		t.Fatal("register after run must report false: the owner is closing and the hook would never fire")
+	}
+	if _, stored := h.hooks["late"]; stored {
+		t.Fatal("a rejected registration must not be stored")
+	}
+	// A second run (Close is idempotent at the owner level) must not surface it.
+	if err := h.run(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := late.Load(); got != 0 {
+		t.Fatalf("late hook invoked %d times, want 0", got)
 	}
 }
 
@@ -862,17 +927,17 @@ func TestOnCloseHooks_RegisterSameIDReplaces(t *testing.T) {
 // previously registered ids.
 func TestOnCloseHooks_DistinctIDsCoexist(t *testing.T) {
 	h := &onCloseHooks{}
-	var aCount, bCount int32
+	var aCount, bCount atomic.Int32
 
-	h.register("a", func() error { atomic.AddInt32(&aCount, 1); return nil })
-	h.register("b", func() error { atomic.AddInt32(&bCount, 1); return nil })
+	h.register("a", func() error { aCount.Add(1); return nil })
+	h.register("b", func() error { bCount.Add(1); return nil })
 	// Re-registering "a" must not drop "b".
-	h.register("a", func() error { atomic.AddInt32(&aCount, 1); return nil })
+	h.register("a", func() error { aCount.Add(1); return nil })
 
 	if err := h.run(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if a, b := atomic.LoadInt32(&aCount), atomic.LoadInt32(&bCount); a != 1 || b != 1 {
+	if a, b := aCount.Load(), bCount.Load(); a != 1 || b != 1 {
 		t.Fatalf("call counts a=%d b=%d, want a=1 b=1", a, b)
 	}
 }
@@ -903,7 +968,8 @@ func TestOnCloseHooks_Unregister(t *testing.T) {
 }
 
 // TestOnCloseHooks_AllRunOnError confirms every hook is invoked even if an
-// earlier one returns an error, and that the first error is returned.
+// earlier one returns an error, and that the first error in INVOCATION order (LIFO) is
+// returned. "b" runs before "a" under LIFO, so its error is the first non-nil one.
 func TestOnCloseHooks_AllRunOnError(t *testing.T) {
 	h := &onCloseHooks{}
 	var called [3]bool
@@ -914,9 +980,10 @@ func TestOnCloseHooks_AllRunOnError(t *testing.T) {
 	h.register("b", func() error { called[1] = true; return errSecond })
 	h.register("c", func() error { called[2] = true; return nil })
 
+	// Invocation order is c, b, a (LIFO); the first non-nil error encountered is errSecond.
 	err := h.run()
-	if err != errFirst {
-		t.Fatalf("run() err = %v, want %v", err, errFirst)
+	if err != errSecond {
+		t.Fatalf("run() err = %v, want %v", err, errSecond)
 	}
 	for i, c := range called {
 		if !c {
@@ -973,12 +1040,12 @@ func TestOnCloseHooks_ConcurrentRegisterSameID(t *testing.T) {
 type entraidLikeProvider struct {
 	mu         sync.Mutex
 	listeners  []auth.CredentialsListener
-	subscribeN int32
-	unsubCalls int32
+	subscribeN atomic.Int32
+	unsubCalls atomic.Int32
 }
 
 func (p *entraidLikeProvider) Subscribe(listener auth.CredentialsListener) (auth.Credentials, auth.UnsubscribeFunc, error) {
-	atomic.AddInt32(&p.subscribeN, 1)
+	p.subscribeN.Add(1)
 
 	p.mu.Lock()
 	already := false
@@ -994,7 +1061,7 @@ func (p *entraidLikeProvider) Subscribe(listener auth.CredentialsListener) (auth
 	p.mu.Unlock()
 
 	unsub := func() error {
-		atomic.AddInt32(&p.unsubCalls, 1)
+		p.unsubCalls.Add(1)
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		for i, l := range p.listeners {
@@ -1058,7 +1125,7 @@ func TestInitConn_EntraidLike_NoLeakAcrossReinits(t *testing.T) {
 	if got := provider.listenerCount(); got != 1 {
 		t.Fatalf("after %d Subscribes with same listener, listener count = %d, want 1", reinits, got)
 	}
-	if got := atomic.LoadInt32(&provider.subscribeN); got != int32(reinits) {
+	if got := provider.subscribeN.Load(); got != int32(reinits) {
 		t.Fatalf("Subscribe call count = %d, want %d", got, reinits)
 	}
 
@@ -1182,4 +1249,3 @@ func TestPubSubConn_PassesPersistedChannelsToNewConn(t *testing.T) {
 		})
 	}
 }
-

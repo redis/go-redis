@@ -1,10 +1,13 @@
 package rediscmd
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func TestGinkgo(t *testing.T) {
@@ -28,5 +31,49 @@ var _ = Describe("AppendArg", func() {
 		Entry("", "foo-123_BAR", "foo-123_BAR"),
 		Entry("", "foo\nbar", "666f6f0a626172"),
 		Entry("", "\000", "00"),
+	)
+})
+
+var _ = Describe("CmdString", func() {
+	DescribeTable("keeps credentials out of the rendered command",
+		func(args []interface{}, wanted string) {
+			Expect(CmdString(redis.NewCmd(context.Background(), args...))).To(Equal(wanted))
+		},
+
+		Entry("", []interface{}{"auth", "s3cret"}, "auth <redacted>"),
+		Entry("", []interface{}{"auth", "alice", "s3cret"}, "auth alice <redacted>"),
+		Entry("", []interface{}{"AUTH", "s3cret"}, "AUTH <redacted>"),
+		Entry("", []interface{}{"hello", 3, "auth", "alice", "s3cret", "setname", "app"},
+			"hello 3 auth alice <redacted> setname app"),
+		Entry("", []interface{}{"hello", 3, "setname", "app"}, "hello 3 setname app"),
+		Entry("", []interface{}{"config", "set", "requirepass", "s3cret"},
+			"config set requirepass <redacted>"),
+		Entry("", []interface{}{"config", "set", "maxmemory", "100mb", "masterauth", "s3cret"},
+			"config set maxmemory 100mb masterauth <redacted>"),
+		Entry("", []interface{}{"config", "get", "requirepass"}, "config get requirepass"),
+		Entry("", []interface{}{"acl", "setuser", "bob", "on", ">s3cret", "~app:*", "+get"},
+			"acl setuser bob on <redacted> ~app:* +get"),
+		Entry("", []interface{}{"migrate", "h", "6379", "k", 0, 100, "auth", "s3cret"},
+			"migrate h 6379 k 0 100 auth <redacted>"),
+		Entry("", []interface{}{"migrate", "h", "6379", "k", 0, 100, "auth2", "alice", "s3cret"},
+			"migrate h 6379 k 0 100 auth2 alice <redacted>"),
+		Entry("", []interface{}{"migrate", "h", "6379", "", 0, 100, "keys", "auth", "k2"},
+			"migrate h 6379  0 100 keys auth k2"),
+		// A password equal to a keyword must not shift the redacted position.
+		Entry("", []interface{}{"migrate", "h", "6379", "", 0, 100, "auth", "auth", "keys", "k1", "k2"},
+			"migrate h 6379  0 100 auth <redacted> keys k1 k2"),
+		Entry("", []interface{}{"migrate", "h", "6379", "", 0, 100, "auth2", "alice", "auth", "keys", "k1"},
+			"migrate h 6379  0 100 auth2 alice <redacted> keys k1"),
+		Entry("", []interface{}{"sentinel", "set", "mymaster", "auth-pass", "s3cret"},
+			"sentinel set mymaster auth-pass <redacted>"),
+		Entry("", []interface{}{"sentinel", "set", "mymaster", "down-after-milliseconds", "5000", "auth-pass", "s3cret"},
+			"sentinel set mymaster down-after-milliseconds 5000 auth-pass <redacted>"),
+		Entry("", []interface{}{"sentinel", "set", "mymaster", "auth-user", "alice"},
+			"sentinel set mymaster auth-user alice"),
+		// rename-command takes two values, which shifts the option parity.
+		Entry("", []interface{}{"sentinel", "set", "mymaster", "rename-command", "CONFIG", "cfg", "auth-pass", "s3cret"},
+			"sentinel set mymaster rename-command CONFIG cfg auth-pass <redacted>"),
+		Entry("", []interface{}{"get", "key"}, "get key"),
+		Entry("", []interface{}{"set", "auth", "value"}, "set auth value"),
 	)
 })

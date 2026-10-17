@@ -233,6 +233,78 @@ func TestReader_ReadStringInto_Int(t *testing.T) {
 	}
 }
 
+// When the destination buffer VISIBLY has room for the trailing CRLF
+// (len(buf) >= n+2), ReadStringInto takes the fast path that reads
+// payload+CRLF in a single io.ReadFull. Verify it returns the right payload
+// AND leaves the stream aligned so the following reply parses correctly.
+func TestReader_ReadStringInto_FastPathStreamAligned(t *testing.T) {
+	// Two bulk strings back to back.
+	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n$5\r\nworld\r\n")))
+
+	buf := make([]byte, 7) // len 7 >= 5+2 -> fast path
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto #1: %v", err)
+	}
+	if n != 5 || string(buf[:n]) != "hello" {
+		t.Fatalf("#1 got %q (n=%d), want hello", buf[:n], n)
+	}
+	// Second reply must be intact (stream not corrupted by the CRLF handling).
+	s, err := r.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString #2: %v", err)
+	}
+	if s != "world" {
+		t.Fatalf("#2 got %q, want world", s)
+	}
+}
+
+// Regression: a sub-slice of a larger buffer exposes trailing CAPACITY that
+// belongs to the caller's next packed segment. The fast path must gate on
+// len, not cap — the old cap gate wrote the trailing CRLF past len(buf) into
+// the neighboring segment, silently corrupting caller-owned memory.
+func TestReader_ReadStringInto_NeverWritesPastLen(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n")))
+
+	big := make([]byte, 10)
+	for i := range big {
+		big[i] = 'Z'
+	}
+	segment := big[:5] // len 5, cap 10: spare capacity belongs to big[5:]
+	n, err := r.ReadStringInto(segment)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if string(segment[:n]) != "hello" {
+		t.Fatalf("got %q, want hello", segment[:n])
+	}
+	if string(big[5:]) != "ZZZZZ" {
+		t.Fatalf("bytes past len(buf) were modified: big[5:] = %q, want ZZZZZ", big[5:])
+	}
+}
+
+// When the buffer is exactly the payload size (cap == n), ReadStringInto uses
+// the slow path (read payload, discard CRLF). It must still align the stream.
+func TestReader_ReadStringInto_ExactBufStreamAligned(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n$5\r\nworld\r\n")))
+
+	buf := make([]byte, 5) // cap == len == 5 -> slow path
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto #1: %v", err)
+	}
+	if string(buf[:n]) != "hello" {
+		t.Fatalf("#1 got %q, want hello", buf[:n])
+	}
+	s, err := r.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString #2: %v", err)
+	}
+	if s != "world" {
+		t.Fatalf("#2 got %q, want world", s)
+	}
+}
+
 func TestReader_ReadStringInto_Float(t *testing.T) {
 	r := proto.NewReader(bytes.NewReader([]byte(",3.14\r\n")))
 	buf := make([]byte, 16)
@@ -344,6 +416,69 @@ func TestReader_ReadStringInto_BufferTooSmall(t *testing.T) {
 	}
 	if n != 5 || string(bigBuf[:n]) != "world" {
 		t.Fatalf("follow-up: got n=%d %q, want 5 \"world\"", n, bigBuf[:n])
+	}
+}
+
+func TestReader_Discard_NilReplies(t *testing.T) {
+	// Discard must consume only the header line of a nil reply, leaving the
+	// following reply byte-aligned. A nil bulk string ($-1), verbatim (=-1)
+	// and blob error (!-1) each have no payload; discarding an extra 2 bytes
+	// (the phantom payload CRLF) eats into the next reply and desyncs a
+	// pooled connection so one command's data bleeds into another's.
+	nilHeaders := []string{"$-1", "=-1", "!-1", "*-1", "%-1"}
+	for _, h := range nilHeaders {
+		src := h + "\r\n$5\r\nhello\r\n"
+		r := proto.NewReader(bytes.NewReader([]byte(src)))
+		if err := r.DiscardNext(); err != nil {
+			t.Fatalf("%s: DiscardNext: %v", h, err)
+		}
+		s, err := r.ReadString()
+		if err != nil {
+			t.Fatalf("%s: follow-up ReadString: %v (stream left misaligned by Discard)", h, err)
+		}
+		if s != "hello" {
+			t.Fatalf("%s: follow-up got %q, want \"hello\"", h, s)
+		}
+	}
+}
+
+func TestReader_Discard_AttributeWithNilValue(t *testing.T) {
+	// A RESP3 attribute carrying a nil bulk value is skipped via Discard on
+	// the read path (ReadLine -> RespAttr -> Discard). The real reply that
+	// follows the attribute must parse unchanged.
+	src := "|1\r\n$3\r\nttl\r\n$-1\r\n$6\r\nsecond\r\n"
+	r := proto.NewReader(bytes.NewReader([]byte(src)))
+	s, err := r.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString after nil-valued attribute: %v", err)
+	}
+	if s != "second" {
+		t.Fatalf("got %q, want \"second\"", s)
+	}
+}
+
+func TestReader_Discard_MapCountOverflow(t *testing.T) {
+	// A valid map is discarded pair-by-pair and leaves the next reply aligned.
+	src := "%2\r\n+a\r\n+1\r\n+b\r\n+2\r\n$5\r\nhello\r\n"
+	r := proto.NewReader(bytes.NewReader([]byte(src)))
+	if err := r.DiscardNext(); err != nil {
+		t.Fatalf("DiscardNext on valid map: %v", err)
+	}
+	if s, err := r.ReadString(); err != nil || s != "hello" {
+		t.Fatalf("follow-up ReadString = %q, %v; want \"hello\", nil", s, err)
+	}
+
+	// A map (and an attribute) advertising a count above MaxInt/2 used to make
+	// the n*2 element loop overflow int to a negative bound, skip the body and
+	// return nil, leaving the map bytes to be read as the next reply. Iterating
+	// over pairs instead means the oversized frame is rejected with an error
+	// rather than silently desyncing a pooled connection.
+	for _, h := range []string{"%4611686018427387904", "|4611686018427387904"} {
+		src := h + "\r\n+k\r\n+v\r\n:42\r\n"
+		r := proto.NewReader(bytes.NewReader([]byte(src)))
+		if err := r.DiscardNext(); err == nil {
+			t.Fatalf("%s: DiscardNext returned nil; oversized count was silently skipped", h)
+		}
 	}
 }
 

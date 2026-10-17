@@ -1,14 +1,14 @@
-//go:build go1.7
-
 package redis
 
 import (
 	"crypto/tls"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -30,6 +30,18 @@ func TestParseURL(t *testing.T) {
 		}, {
 			url: "redis://12345",
 			o:   &Options{Addr: "12345:6379"},
+		}, {
+			// IPv6 literal without a port keeps a single pair of brackets
+			url: "redis://[::1]",
+			o:   &Options{Addr: "[::1]:6379"},
+		}, {
+			// IPv6 literal with a port
+			url: "redis://[::1]:6380",
+			o:   &Options{Addr: "[::1]:6380"},
+		}, {
+			// IPv6 literal without a port, with a db number
+			url: "redis://[2001:db8::1]/2",
+			o:   &Options{Addr: "[2001:db8::1]:6379", DB: 2},
 		}, {
 			url: "rediss://localhost:123",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ /* no deep comparison */ }},
@@ -56,6 +68,14 @@ func TestParseURL(t *testing.T) {
 		}, {
 			// negative values disable timeouts as well
 			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
+		}, {
+			// a zero or negative duration written with a unit disables the timeout,
+			// the same as the plain "0" / "-1" forms above
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=0s",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
+		}, {
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1s",
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
 		}, {
 			// absent timeout values will use defaults
@@ -109,6 +129,10 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost/?pool_fifo=yes",
 			err: errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
 		}, {
+			// invalid skip_verify value
+			url: "rediss://localhost/?skip_verify=yes",
+			err: errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
+		}, {
 			// it returns first error
 			url: "redis://localhost/?db=foo&pool_size=five",
 			err: errors.New(`redis: invalid database number: strconv.Atoi: parsing "foo": invalid syntax`),
@@ -157,6 +181,25 @@ func TestParseURL(t *testing.T) {
 	}
 }
 
+func TestParseURLIPv6TLSServerName(t *testing.T) {
+	// For rediss:// the TLS SNI ServerName must be the bare IPv6 host, not the
+	// bracketed form, otherwise the handshake is attempted with an invalid
+	// server name.
+	o, err := ParseURL("rediss://[2001:db8::1]")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if o.Addr != "[2001:db8::1]:6379" {
+		t.Errorf("Addr: got %q, want %q", o.Addr, "[2001:db8::1]:6379")
+	}
+	if o.TLSConfig == nil {
+		t.Fatal("expected a TLSConfig for the rediss scheme")
+	}
+	if got, want := o.TLSConfig.ServerName, "2001:db8::1"; got != want {
+		t.Errorf("TLSConfig.ServerName: got %q, want %q", got, want)
+	}
+}
+
 func comprareOptions(t *testing.T, actual, expected *Options) {
 	t.Helper()
 
@@ -164,7 +207,7 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 		t.Errorf("got %q, want %q", actual.Addr, expected.Addr)
 	}
 	if actual.DB != expected.DB {
-		t.Errorf("DB: got %q, expected %q", actual.DB, expected.DB)
+		t.Errorf("DB: got %d, expected %d", actual.DB, expected.DB)
 	}
 	if actual.TLSConfig == nil && expected.TLSConfig != nil {
 		t.Errorf("got nil TLSConfig, expected a TLSConfig")
@@ -231,7 +274,7 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 func TestReadTimeoutOptions(t *testing.T) {
 	testDataInputOutputMap := map[time.Duration]time.Duration{
 		-1: 0 * time.Second,
-		0:  3 * time.Second,
+		0:  5 * time.Second,
 		1:  1 * time.Nanosecond,
 		3:  3 * time.Nanosecond,
 	}
@@ -246,6 +289,70 @@ func TestReadTimeoutOptions(t *testing.T) {
 		if o.WriteTimeout != o.ReadTimeout {
 			t.Errorf("got %d instead of %d as WriteTimeout option", o.WriteTimeout, o.ReadTimeout)
 		}
+	}
+}
+
+// Pin the retry backoff defaults shared by Options, ClusterOptions and
+// RingOptions, including the -1 escape hatch.
+func TestRetryBackoffOptions(t *testing.T) {
+	check := func(t *testing.T, kind string, min, max time.Duration) {
+		t.Helper()
+		if min != 10*time.Millisecond {
+			t.Errorf("%s: got %s as default MinRetryBackoff, want 10ms", kind, min)
+		}
+		if max != time.Second {
+			t.Errorf("%s: got %s as default MaxRetryBackoff, want 1s", kind, max)
+		}
+	}
+
+	o := &Options{}
+	o.init()
+	check(t, "Options", o.MinRetryBackoff, o.MaxRetryBackoff)
+
+	co := &ClusterOptions{}
+	co.init()
+	check(t, "ClusterOptions", co.MinRetryBackoff, co.MaxRetryBackoff)
+
+	ro := &RingOptions{}
+	ro.init()
+	check(t, "RingOptions", ro.MinRetryBackoff, ro.MaxRetryBackoff)
+
+	disabled := &Options{MinRetryBackoff: -1, MaxRetryBackoff: -1}
+	disabled.init()
+	if disabled.MinRetryBackoff != 0 || disabled.MaxRetryBackoff != 0 {
+		t.Errorf("-1 must disable backoff, got min=%s max=%s",
+			disabled.MinRetryBackoff, disabled.MaxRetryBackoff)
+	}
+}
+
+func TestClusterStateReloadIntervalOption(t *testing.T) {
+	o := &ClusterOptions{}
+	o.init()
+	if o.ClusterStateReloadInterval != 60*time.Second {
+		t.Errorf("got %s as default ClusterStateReloadInterval, want 60s",
+			o.ClusterStateReloadInterval)
+	}
+
+	o = &ClusterOptions{ClusterStateReloadInterval: 5 * time.Minute}
+	o.init()
+	if o.ClusterStateReloadInterval != 5*time.Minute {
+		t.Errorf("explicit ClusterStateReloadInterval overridden: got %s",
+			o.ClusterStateReloadInterval)
+	}
+}
+
+// The keep-alive policy is shared by the default dialer (options.go) and the
+// sentinel master/replica dialer (sentinel.go); pin it so a change shows up
+// in review instead of drifting silently.
+func TestDefaultKeepAliveConfig(t *testing.T) {
+	want := net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     30 * time.Second,
+		Interval: 5 * time.Second,
+		Count:    3,
+	}
+	if defaultKeepAliveConfig != want {
+		t.Errorf("defaultKeepAliveConfig = %+v, want %+v", defaultKeepAliveConfig, want)
 	}
 }
 
@@ -353,6 +460,41 @@ func TestClusterOptionsDialerRetries(t *testing.T) {
 	}
 }
 
+func TestClusterOptionsNodeTimeouts(t *testing.T) {
+	cases := []struct {
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{timeout: -1, want: 0},
+		{timeout: -2, want: -1},
+		{timeout: 0, want: 5 * time.Second},
+		{timeout: 3 * time.Second, want: 3 * time.Second},
+	}
+
+	for _, tc := range cases {
+		opt := &ClusterOptions{
+			ReadTimeout:  tc.timeout,
+			WriteTimeout: tc.timeout,
+		}
+		opt.init()
+		nodes := newClusterNodes(opt)
+
+		node, err := nodes.GetOrCreate("127.0.0.1:7000")
+		if err != nil {
+			t.Fatalf("GetOrCreate failed: %v", err)
+		}
+
+		nodeOpt := node.Client.Options()
+		if nodeOpt.ReadTimeout != tc.want {
+			t.Errorf("timeout %v: expected node ReadTimeout=%v, got %v", tc.timeout, tc.want, nodeOpt.ReadTimeout)
+		}
+		if nodeOpt.WriteTimeout != tc.want {
+			t.Errorf("timeout %v: expected node WriteTimeout=%v, got %v", tc.timeout, tc.want, nodeOpt.WriteTimeout)
+		}
+		_ = nodes.Close()
+	}
+}
+
 func TestRingOptionsDialerRetries(t *testing.T) {
 	ringOpt := &RingOptions{
 		DialerRetries:      10,
@@ -436,4 +578,179 @@ func TestOptionsCloneMaintNotificationsRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// TestOptionsInitSkipsEndpointDetectWhenMaintDisabled ensures Options.init does
+// not call DetectEndpointType when maintenance notifications are disabled.
+// DetectEndpointType never returns EndpointTypeAuto, so leaving Auto unchanged
+// is a deterministic signal that detection was skipped (no wall-clock bound).
+func TestOptionsInitSkipsEndpointDetectWhenMaintDisabled(t *testing.T) {
+	const addr = "go-redis-maint-disabled-must-not-resolve.invalid:6379"
+
+	t.Run("disabled leaves EndpointTypeAuto", func(t *testing.T) {
+		opt := &Options{
+			Addr: addr,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeDisabled,
+				EndpointType: maintnotifications.EndpointTypeAuto,
+			},
+		}
+		opt.init()
+		if got := opt.MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeAuto {
+			t.Fatalf("EndpointType = %q, want %q (unchanged when ModeDisabled)", got, maintnotifications.EndpointTypeAuto)
+		}
+	})
+
+	t.Run("auto replaces EndpointTypeAuto", func(t *testing.T) {
+		opt := &Options{
+			Addr: addr,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeAuto,
+				EndpointType: maintnotifications.EndpointTypeAuto,
+			},
+		}
+		opt.init()
+		if got := opt.MaintNotificationsConfig.EndpointType; got == "" || got == maintnotifications.EndpointTypeAuto {
+			t.Fatalf("EndpointType = %q, want a concrete type after DetectEndpointType", got)
+		}
+	})
+
+	t.Run("explicit EndpointType is preserved", func(t *testing.T) {
+		opt := &Options{
+			Addr: addr,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeAuto,
+				EndpointType: maintnotifications.EndpointTypeInternalFQDN,
+			},
+		}
+		opt.init()
+		if got := opt.MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeInternalFQDN {
+			t.Fatalf("EndpointType = %q, want %q", got, maintnotifications.EndpointTypeInternalFQDN)
+		}
+	})
+}
+
+func TestNewClientSkipsEndpointDetectWhenMaintDisabled(t *testing.T) {
+	c := NewClient(&Options{
+		Addr: "go-redis-maint-disabled-must-not-resolve.invalid:6379",
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode:         maintnotifications.ModeDisabled,
+			EndpointType: maintnotifications.EndpointTypeAuto,
+		},
+	})
+	defer c.Close()
+
+	if got := c.Options().MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeAuto {
+		t.Fatalf("EndpointType = %q, want %q", got, maintnotifications.EndpointTypeAuto)
+	}
+}
+
+func TestClientSideCacheRESP2Warning(t *testing.T) {
+	origLogger := internal.Logger.Load()
+	defer func() { internal.Logger.Store(origLogger) }()
+
+	cases := []struct {
+		name     string
+		opt      *Options
+		wantWarn bool
+	}{
+		{
+			name:     "RESP2 with cache config warns",
+			opt:      &Options{Protocol: 2, ClientSideCacheConfig: &ClientSideCacheConfig{}},
+			wantWarn: true,
+		},
+		{
+			name:     "RESP2 with explicit cache warns",
+			opt:      &Options{Protocol: 2, ClientSideCache: NewLocalCache(CacheConfig{})},
+			wantWarn: true,
+		},
+		{
+			name:     "RESP2 without cache does not warn",
+			opt:      &Options{Protocol: 2},
+			wantWarn: false,
+		},
+		{
+			name:     "RESP3 with cache config does not warn",
+			opt:      &Options{Protocol: 3, ClientSideCacheConfig: &ClientSideCacheConfig{}},
+			wantWarn: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := &capturingLogger{}
+			internal.Logger.Store(logger)
+
+			tc.opt.init()
+
+			if got := logger.contains("client-side caching requires Protocol: 3"); got != tc.wantWarn {
+				t.Errorf("warning logged = %v, want %v (logs: %v)", got, tc.wantWarn, logger.logs)
+			}
+		})
+	}
+}
+
+func TestUniversalOptionsSimpleCopiesClientSideCache(t *testing.T) {
+	cfg := &ClientSideCacheConfig{MaxEntries: 10}
+	cache := NewLocalCache(CacheConfig{MaxEntries: 20})
+	const strategy = CSCStrategy(42)
+
+	opt := (&UniversalOptions{
+		ClientSideCacheConfig:   cfg,
+		ClientSideCache:         cache,
+		ClientSideCacheStrategy: strategy,
+	}).Simple()
+
+	if opt.ClientSideCacheConfig != cfg {
+		t.Fatal("Simple did not copy ClientSideCacheConfig")
+	}
+	if opt.ClientSideCache != cache {
+		t.Fatal("Simple did not copy ClientSideCache")
+	}
+	if opt.ClientSideCacheStrategy != strategy {
+		t.Fatal("Simple did not copy ClientSideCacheStrategy")
+	}
+}
+
+// TestParseURLPipelinePoolOptions verifies the URL parsers accept the pipeline
+// pool settings — notably pipeline_pool_size=-1 to opt out of the now-default
+// dedicated pipeline pool — instead of rejecting them as unexpected options
+// (#3959). Covers ParseURL, ParseClusterURL and ParseFailoverURL.
+func TestParseURLPipelinePoolOptions(t *testing.T) {
+	const q = "pipeline_pool_size=-1&pipeline_read_buffer_size=131072&pipeline_write_buffer_size=65536"
+
+	o, err := ParseURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	if o.PipelinePoolSize != -1 || o.PipelineReadBufferSize != 131072 || o.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseURL pipeline opts: size=%d rbuf=%d wbuf=%d", o.PipelinePoolSize, o.PipelineReadBufferSize, o.PipelineWriteBufferSize)
+	}
+
+	co, err := ParseClusterURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseClusterURL: %v", err)
+	}
+	if co.PipelinePoolSize != -1 || co.PipelineReadBufferSize != 131072 || co.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseClusterURL pipeline opts: size=%d rbuf=%d wbuf=%d", co.PipelinePoolSize, co.PipelineReadBufferSize, co.PipelineWriteBufferSize)
+	}
+
+	fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + q)
+	if err != nil {
+		t.Fatalf("ParseFailoverURL: %v", err)
+	}
+	if fo.PipelinePoolSize != -1 || fo.PipelineReadBufferSize != 131072 || fo.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseFailoverURL pipeline opts: size=%d rbuf=%d wbuf=%d", fo.PipelinePoolSize, fo.PipelineReadBufferSize, fo.PipelineWriteBufferSize)
+	}
+
+	const mi = "pipeline_min_idle_conns=2"
+	if o, err := ParseURL("redis://localhost:6379?" + mi); err != nil || o.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseURL pipeline_min_idle_conns: %v, %+v", err, o)
+	}
+	if co, err := ParseClusterURL("redis://localhost:6379?" + mi); err != nil || co.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseClusterURL pipeline_min_idle_conns: %v, %+v", err, co)
+	}
+	if fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + mi); err != nil || fo.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseFailoverURL pipeline_min_idle_conns: %v, %+v", err, fo)
+	}
 }

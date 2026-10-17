@@ -18,6 +18,7 @@ type SearchCmdable interface {
 	FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd
 	FTAliasAdd(ctx context.Context, index string, alias string) *StatusCmd
 	FTAliasDel(ctx context.Context, alias string) *StatusCmd
+	FTAliasList(ctx context.Context, index string) *StringSliceCmd
 	FTAliasUpdate(ctx context.Context, index string, alias string) *StatusCmd
 	FTAlter(ctx context.Context, index string, skipInitialScan bool, definition []interface{}) *StatusCmd
 	FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd
@@ -107,6 +108,23 @@ type FTHNSWOptions struct {
 	MaxAllowedEdgesPerNode int
 	EFRunTime              int
 	Epsilon                float64
+	// Rerank toggles the exact re-scoring pass over approximate candidates on
+	// disk-backed HNSW indexes (Redis 8.10+), where the server requires it to
+	// be set explicitly. Rerank=true emits RERANK TRUE on its own; to emit
+	// RERANK FALSE, set HasRerank=true with Rerank=false, so that an explicit
+	// false can be distinguished from unset (omitted).
+	Rerank    bool
+	HasRerank bool
+	// Compression selects the vector quantization scheme for HNSW indexes
+	// (Redis 8.12+), e.g. "SQ8". Emitted as COMPRESSION when non-empty.
+	Compression string
+	// TrainingThreshold is the number of vectors the index collects before
+	// training the compression model. A positive value emits
+	// TRAINING_THRESHOLD on its own; to emit an explicit TRAINING_THRESHOLD 0,
+	// set HasTrainingThreshold=true with TrainingThreshold=0, so that an
+	// explicit zero can be distinguished from unset (omitted).
+	TrainingThreshold    int
+	HasTrainingThreshold bool
 }
 
 type FTVamanaOptions struct {
@@ -157,6 +175,12 @@ const (
 	SearchToList
 	SearchFirstValue
 	SearchRandomSample
+	// SearchCollect is the COLLECT reducer for FT.AGGREGATE. Within each
+	// GROUPBY group it projects a chosen set of fields from every row and
+	// emits them as an array of per-entry maps under the reducer alias.
+	// Requires Redis 8.8+ with unstable features enabled
+	// (CONFIG SET search-enable-unstable-features yes).
+	SearchCollect
 )
 
 func (a SearchAggregator) String() string {
@@ -187,6 +211,8 @@ func (a SearchAggregator) String() string {
 		return "FIRST_VALUE"
 	case SearchRandomSample:
 		return "RANDOM_SAMPLE"
+	case SearchCollect:
+		return "COLLECT"
 	default:
 		return ""
 	}
@@ -261,20 +287,46 @@ type FTAggregateWithCursor struct {
 
 // FTAggregateSortByStep represents a SORTBY operation with optional MAX.
 // Used inside FTAggregateStep to place SORTBY at an arbitrary position in
-// the aggregation pipeline.
+// the aggregation pipeline. The server currently allows only one SORTBY
+// between two GROUPBY steps; see FTAggregateStep.
 type FTAggregateSortByStep struct {
 	Fields []FTAggregateSortBy
 	Max    int // 0 means no MAX
 }
 
+// FTAggregateFilter represents a FILTER <expression> pipeline step.
+type FTAggregateFilter struct {
+	Expression string
+}
+
+// FTAggregateLimit represents a LIMIT <offset> <num> pipeline step.
+// See FTAggregateStep for how the server merges LIMIT with SORTBY.
+type FTAggregateLimit struct {
+	Offset int
+	Num    int
+}
+
 // FTAggregateStep represents a single operation in the aggregation pipeline.
-// LOAD, APPLY, SORTBY and GROUPBY can all appear multiple times in any order.
+// LOAD, APPLY, GROUPBY, SORTBY, FILTER and LIMIT can all appear multiple
+// times in any order. The server runs them in the order they are sent, with
+// these exceptions for SORTBY and LIMIT:
+//   - The server currently allows only one SORTBY between two GROUPBY steps
+//     and returns an error for a second one. Put all sort fields in one
+//     SORTBY step. go-redis does not check this and leaves it to the server.
+//   - The SORTBY and all LIMIT steps between two GROUPBY steps are merged
+//     into one sort/limit stage at the position of the first of them. A later
+//     LIMIT replaces an earlier LIMIT or MAX.
+//
+// To filter before paging, put the FILTER step before the SORTBY and LIMIT
+// steps.
 // Exactly one of the fields should be set per step.
 type FTAggregateStep struct {
 	Load    *FTAggregateLoad
 	Apply   *FTAggregateApply
 	GroupBy *FTAggregateGroupBy
 	SortBy  *FTAggregateSortByStep
+	Filter  *FTAggregateFilter
+	Limit   *FTAggregateLimit
 }
 
 type FTAggregateOptions struct {
@@ -290,14 +342,27 @@ type FTAggregateOptions struct {
 	AddScores bool
 
 	// Steps is the ordered sequence of aggregation pipeline operations.
-	// It can contain LOAD, APPLY, GROUPBY and SORTBY in any order, multiple times.
+	// It can contain LOAD, APPLY, GROUPBY, SORTBY, FILTER and LIMIT in any
+	// order, multiple times.
 	// Steps cannot be combined with the deprecated Load, Apply, GroupBy, SortBy
 	// and SortByMax fields: doing so returns an error.
+	// Steps can be combined with the deprecated LimitOffset/Limit and Filter
+	// fields: the steps are sent first, then LIMIT, then FILTER.
 	Steps []FTAggregateStep
 
-	LimitOffset       int
-	Limit             int
-	Filter            string
+	// LimitOffset and Limit add a LIMIT after all Steps, before Filter.
+	//
+	// Deprecated: Use Steps with FTAggregateStep.Limit instead.
+	LimitOffset int
+	// Deprecated: Use Steps with FTAggregateStep.Limit instead.
+	Limit int
+	// Filter adds a FILTER after all Steps and after LIMIT, so it filters
+	// the limited rows.
+	//
+	// Deprecated: Use Steps with FTAggregateStep.Filter instead, placed
+	// before the SORTBY and LIMIT steps.
+	Filter string
+
 	WithCursor        bool
 	WithCursorOptions *FTAggregateWithCursor
 	Params            map[string]interface{}
@@ -494,8 +559,10 @@ type FTSynDumpCmd struct {
 // FTAggregateResult represents the result of an aggregate operation
 // NOTE: For RESP3 Total is not reliable (before Redis 8.8)
 type FTAggregateResult struct {
-	Total    int
-	Rows     []AggregateRow
+	Total int
+	Rows  []AggregateRow
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
 }
 
@@ -565,12 +632,14 @@ type FTAttribute struct {
 	WithSuffixtrie  bool
 
 	// Vector specific attributes
-	Algorithm      string
-	DataType       string
-	Dim            int
-	DistanceMetric string
-	M              int
-	EFConstruction int
+	Algorithm         string
+	DataType          string
+	Dim               int
+	DistanceMetric    string
+	M                 int
+	EFConstruction    int
+	Compression       string
+	TrainingThreshold int
 }
 
 type CursorStats struct {
@@ -626,8 +695,10 @@ type SpellCheckSuggestion struct {
 }
 
 type FTSearchResult struct {
-	Total    int
-	Docs     []Document
+	Total int
+	Docs  []Document
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
 }
 
@@ -686,7 +757,7 @@ func validateFTAggregateOptions(options *FTAggregateOptions) error {
 
 // appendFTAggregateStep appends the Redis command arguments for a single
 // aggregation pipeline step. Each step must set exactly one of Load, Apply,
-// GroupBy or SortBy.
+// GroupBy, SortBy, Filter or Limit.
 func appendFTAggregateStep(args []interface{}, step FTAggregateStep) ([]interface{}, error) {
 	set := 0
 	if step.Load != nil {
@@ -701,8 +772,14 @@ func appendFTAggregateStep(args []interface{}, step FTAggregateStep) ([]interfac
 	if step.SortBy != nil {
 		set++
 	}
+	if step.Filter != nil {
+		set++
+	}
+	if step.Limit != nil {
+		set++
+	}
 	if set != 1 {
-		return args, fmt.Errorf("FT.AGGREGATE: each step must set exactly one of Load, Apply, GroupBy, SortBy (got %d)", set)
+		return args, fmt.Errorf("FT.AGGREGATE: each step must set exactly one of Load, Apply, GroupBy, SortBy, Filter, Limit (got %d)", set)
 	}
 
 	switch {
@@ -758,6 +835,10 @@ func appendFTAggregateStep(args []interface{}, step FTAggregateStep) ([]interfac
 		if step.SortBy.Max > 0 {
 			args = append(args, "MAX", step.SortBy.Max)
 		}
+	case step.Filter != nil:
+		args = append(args, "FILTER", step.Filter.Expression)
+	case step.Limit != nil:
+		args = append(args, "LIMIT", step.Limit.Offset, step.Limit.Num)
 	}
 	return args, nil
 }
@@ -943,22 +1024,27 @@ func (cmd *AggregateCmd) SetVal(val *FTAggregateResult) {
 }
 
 func (cmd *AggregateCmd) Val() *FTAggregateResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *AggregateCmd) Result() (*FTAggregateResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *AggregateCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *AggregateCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
 func (cmd *AggregateCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1119,7 +1205,7 @@ func (cmd *AggregateCmd) Clone() Cmder {
 
 // FTAggregateWithArgs - Performs a search query on an index and applies a series of aggregate transformations to the result.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
-// This function also allows for specifying additional options such as: Verbatim, LoadAll, Load, Timeout, GroupBy, SortBy, SortByMax, Apply, LimitOffset, Limit, Filter, WithCursor, Params, and DialectVersion.
+// This function also allows for specifying additional options such as: Verbatim, LoadAll, Timeout, Steps, WithCursor, Params, and DialectVersion.
 // For more information, please refer to the Redis documentation:
 // [FT.AGGREGATE]: (https://redis.io/commands/ft.aggregate/)
 func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd {
@@ -1271,6 +1357,20 @@ func (c cmdable) FTAliasAdd(ctx context.Context, index string, alias string) *St
 // [FT.ALIASDEL]: (https://redis.io/commands/ft.aliasdel/)
 func (c cmdable) FTAliasDel(ctx context.Context, alias string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "FT.ALIASDEL", alias)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FTAliasList - Lists all aliases associated with an index.
+// The 'index' parameter specifies the index whose aliases are listed; it must
+// be the name of an index created with FT.CREATE, not an alias.
+// The reply is an unordered collection of alias names, already deduplicated
+// by the server; an index with no aliases yields an empty result, not an
+// error. Available since Redis 8.10.
+// For more information, please refer to the Redis documentation:
+// [FT.ALIASLIST]: (https://redis.io/commands/ft.aliaslist/)
+func (c cmdable) FTAliasList(ctx context.Context, index string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "FT.ALIASLIST", index)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1491,6 +1591,20 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 				if schema.VectorArgs.HNSWOptions.Epsilon > 0 {
 					hnswArgs = append(hnswArgs, "EPSILON", schema.VectorArgs.HNSWOptions.Epsilon)
 				}
+				if schema.VectorArgs.HNSWOptions.Rerank || schema.VectorArgs.HNSWOptions.HasRerank {
+					rerank := "FALSE"
+					if schema.VectorArgs.HNSWOptions.Rerank {
+						rerank = "TRUE"
+					}
+					hnswArgs = append(hnswArgs, "RERANK", rerank)
+				}
+				if schema.VectorArgs.HNSWOptions.Compression != "" {
+					hnswArgs = append(hnswArgs, "COMPRESSION", schema.VectorArgs.HNSWOptions.Compression)
+				}
+				if schema.VectorArgs.HNSWOptions.TrainingThreshold > 0 || schema.VectorArgs.HNSWOptions.HasTrainingThreshold {
+					hnswArgs = append(hnswArgs, "TRAINING_THRESHOLD", schema.VectorArgs.HNSWOptions.TrainingThreshold)
+				}
+
 				args = append(args, len(hnswArgs))
 				args = append(args, hnswArgs...)
 			}
@@ -1571,7 +1685,6 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 		if schema.IndexMissing {
 			args = append(args, "INDEXMISSING")
-
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -1724,6 +1837,10 @@ func parseFTAttributeFromMap(attrMap map[interface{}]interface{}) FTAttribute {
 			att.M = internal.ToInteger(v)
 		case "ef_construction":
 			att.EFConstruction = internal.ToInteger(v)
+		case "compression":
+			att.Compression = internal.ToString(v)
+		case "training_threshold":
+			att.TrainingThreshold = internal.ToInteger(v)
 		case "flags":
 			// flags is an array of strings like ["SORTABLE", "NOSTEM"]
 			if flags, ok := v.([]interface{}); ok {
@@ -1966,6 +2083,16 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 						i++
 						continue
 					}
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "compression" && i+1 < attrLen {
+						att.Compression = internal.ToString(attrSlice[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "training_threshold" && i+1 < attrLen {
+						att.TrainingThreshold = internal.ToInteger(attrSlice[i+1])
+						i++
+						continue
+					}
 				}
 				ftInfo.Attributes = append(ftInfo.Attributes, att)
 			} else if attrMap, ok := attr.(map[interface{}]interface{}); ok {
@@ -2134,6 +2261,7 @@ func newFTInfoCmd(ctx context.Context, args ...interface{}) *FTInfoCmd {
 }
 
 func (cmd *FTInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2142,20 +2270,25 @@ func (cmd *FTInfoCmd) SetVal(val FTInfoResult) {
 }
 
 func (cmd *FTInfoCmd) Result() (FTInfoResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTInfoCmd) Val() FTInfoResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTInfoCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
+
 func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	readType, err := rd.PeekReplyType()
 	if err != nil {
@@ -2336,6 +2469,7 @@ func newFTSpellCheckCmd(ctx context.Context, args ...interface{}) *FTSpellCheckC
 }
 
 func (cmd *FTSpellCheckCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2344,18 +2478,22 @@ func (cmd *FTSpellCheckCmd) SetVal(val []SpellCheckResult) {
 }
 
 func (cmd *FTSpellCheckCmd) Result() ([]SpellCheckResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSpellCheckCmd) Val() []SpellCheckResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSpellCheckCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2652,6 +2790,7 @@ func newFTSearchCmd(ctx context.Context, options *FTSearchOptions, args ...inter
 }
 
 func (cmd *FTSearchCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2660,18 +2799,22 @@ func (cmd *FTSearchCmd) SetVal(val FTSearchResult) {
 }
 
 func (cmd *FTSearchCmd) Result() (FTSearchResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSearchCmd) Val() FTSearchResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSearchCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2897,8 +3040,10 @@ func (cmd *FTSearchCmd) Clone() Cmder {
 
 // FTHybridResult represents the result of a hybrid search operation
 type FTHybridResult struct {
-	TotalResults  int
-	Results       []map[string]interface{}
+	TotalResults int
+	Results      []map[string]interface{}
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict), on RESP2 and RESP3; the fail policy returns an error.
 	Warnings      []string
 	ExecutionTime float64
 }
@@ -2933,6 +3078,7 @@ func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...inter
 }
 
 func (cmd *FTHybridCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2941,26 +3087,32 @@ func (cmd *FTHybridCmd) SetVal(val FTHybridResult) {
 }
 
 func (cmd *FTHybridCmd) Result() (FTHybridResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTHybridCmd) CursorResult() (*FTHybridCursorResult, error) {
+	cmd.await()
 	return cmd.cursorVal, cmd.err
 }
 
 func (cmd *FTHybridCmd) Val() FTHybridResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTHybridCmd) CursorVal() *FTHybridCursorResult {
+	cmd.await()
 	return cmd.cursorVal
 }
 
 func (cmd *FTHybridCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTHybridCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -3041,9 +3193,13 @@ func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybr
 		results = append(results, itemMap)
 	}
 
-	// Parse warnings (optional field)
+	// Optional warnings; accept both "warning" (as FT.SEARCH/FT.AGGREGATE) and "warnings".
 	var warnings []string
-	if warningsData, ok := resultMap["warnings"].([]interface{}); ok {
+	warningsData, ok := resultMap["warning"].([]interface{})
+	if !ok {
+		warningsData, ok = resultMap["warnings"].([]interface{})
+	}
+	if ok {
 		warnings = make([]string, 0, len(warningsData))
 		for _, w := range warningsData {
 			if ws, ok := w.(string); ok {
@@ -3078,9 +3234,38 @@ func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybr
 }
 
 func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
-	data, err := rd.ReadSlice()
+	readType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
+	}
+
+	// RESP3 returns a map, RESP2 returns an array. ReadSlice reads a map
+	// header's declared length as an element count, so it consumes only half
+	// the key/value frames and leaves the rest on the connection; ReadReply
+	// consumes the whole map. Flatten it into the key/value list parseFTHybrid
+	// expects, matching AggregateCmd/FTSearchCmd/FTSpellCheckCmd/FTSynDumpCmd.
+	var data []interface{}
+	if readType == proto.RespMap {
+		cmd.rawVal, err = rd.ReadReply()
+		if err != nil {
+			return err
+		}
+		rawMap, ok := cmd.rawVal.(map[interface{}]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
+		}
+		data = make([]interface{}, 0, len(rawMap)*2)
+		for k, v := range rawMap {
+			data = append(data, k, v)
+		}
+	} else {
+		data, err = rd.ReadSlice()
+		if err != nil {
+			return err
+		}
+		// Populate rawVal on the RESP2 path too, so RawVal()/RawResult() behave
+		// the same regardless of protocol (the RESP3 branch sets it above).
+		cmd.rawVal = data
 	}
 
 	result, cursorResult, err := parseFTHybrid(data, cmd.withCursor)
@@ -3467,6 +3652,7 @@ func NewFTSynDumpCmd(ctx context.Context, args ...interface{}) *FTSynDumpCmd {
 }
 
 func (cmd *FTSynDumpCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3475,18 +3661,22 @@ func (cmd *FTSynDumpCmd) SetVal(val []FTSynDumpResult) {
 }
 
 func (cmd *FTSynDumpCmd) Val() []FTSynDumpResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSynDumpCmd) Result() ([]FTSynDumpResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSynDumpCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSynDumpCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 

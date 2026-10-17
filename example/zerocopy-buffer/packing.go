@@ -15,13 +15,16 @@ func runPackingExamples(ctx context.Context, rdb *redis.Client) {
 	// --- Example 4: Packing multiple values into a single buffer ---
 	fmt.Println("\n=== Example 4: Packing multiple values into one buffer ===")
 
-	// We have 4 values, each gets a 7-byte slot. Total buffer = 4 * 7 = 28 bytes.
-	// The last value ("s!") is only 2 bytes — this demonstrates that GetToBuffer
-	// works correctly when the value is smaller than the allocated segment.
-	const slotSize = 7
+	// We have 4 values of up to 7 bytes; each gets a 9-byte slot (value + 2
+	// spare bytes). The 2 spare bytes opt each read into GetToBuffer's fast
+	// path (payload + protocol CRLF in one socket read, the spare bytes used
+	// as scratch INSIDE the slot) — nothing is ever written past the segment
+	// you pass. The last value ("s!") is only 2 bytes — this demonstrates that
+	// GetToBuffer works correctly when the value is smaller than the slot.
+	const slotSize = 7 + 2
 	values := []string{"hello!!", "world!!", "go-redi", "s!"}
 	keys := make([]string, len(values))
-	bigBuf := make([]byte, len(values)*slotSize) // 28 bytes
+	bigBuf := make([]byte, len(values)*slotSize) // 36 bytes
 
 	// Write all keys.
 	for i, v := range values {

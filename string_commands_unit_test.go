@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // captureCmdable returns a cmdable that records the Cmder passed to it without
@@ -172,6 +173,46 @@ func TestIncrEXFloat_Args(t *testing.T) {
 			}
 			if !reflect.DeepEqual(cmd.Args(), tt.want) {
 				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
+func TestSetArgs_ExpireAt(t *testing.T) {
+	tests := []struct {
+		name     string
+		expireAt time.Time
+		want     []interface{}
+	}{
+		{
+			name:     "whole_seconds",
+			expireAt: time.Unix(1700000000, 0),
+			want:     []interface{}{"set", "key", "value", "exat", int64(1700000000)},
+		},
+		{
+			name:     "sub_millisecond_is_truncated",
+			expireAt: time.Unix(1700000000, 500_000),
+			want:     []interface{}{"set", "key", "value", "exat", int64(1700000000)},
+		},
+		{
+			name:     "milliseconds",
+			expireAt: time.UnixMilli(1700000000123),
+			want:     []interface{}{"set", "key", "value", "pxat", int64(1700000000123)},
+		},
+		{
+			name:     "beyond_nanosecond_range",
+			expireAt: time.Date(2270, time.January, 2, 3, 4, 5, 123000000, time.UTC),
+			want:     []interface{}{"set", "key", "value", "pxat", int64(9467204645123)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cmd Cmder
+			c := captureCmdable(&cmd)
+			c.SetArgs(context.Background(), "key", "value", SetArgs{ExpireAt: tt.expireAt})
+			if got := cmd.Args(); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("args = %v, want %v", got, tt.want)
 			}
 		})
 	}

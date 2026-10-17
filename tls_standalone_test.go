@@ -2,13 +2,28 @@ package redis_test
 
 import (
 	"crypto/tls"
+	"os"
+	"strconv"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
 )
 
+// skipIfRECluster skips tests that depend on the TLS-enabled local Redis from
+// docker-compose (localhost:6666), which does not exist when the suite runs
+// against an external Redis Enterprise cluster (RE_CLUSTER=true). These are
+// plain Go tests, so the NonRedisEnterprise Ginkgo label filter cannot exclude
+// them.
+func skipIfRECluster(t *testing.T) {
+	if ok, _ := strconv.ParseBool(os.Getenv("RE_CLUSTER")); ok {
+		t.Skip("Skipping test: requires the local TLS-enabled Redis, not available on a Redis Enterprise run")
+	}
+}
+
 // TestTLSStandalone tests TLS connection to standalone Redis
 func TestTLSStandalone(t *testing.T) {
+	skipIfRECluster(t)
+
 	// Use InsecureSkipVerify for testing with self-signed certificates
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
@@ -51,6 +66,8 @@ func TestTLSStandalone(t *testing.T) {
 
 // TestTLSRedissURL tests rediss:// URL scheme
 func TestTLSRedissURL(t *testing.T) {
+	skipIfRECluster(t)
+
 	opt, err := redis.ParseURL("rediss://localhost:6666")
 	if err != nil {
 		t.Fatalf("ParseURL failed: %v", err)
