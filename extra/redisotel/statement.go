@@ -1,11 +1,11 @@
 package redisotel
 
 import (
-	"encoding"
 	"encoding/hex"
 	"fmt"
 	"math"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -117,11 +117,26 @@ func hasSecretRulePrefix(v interface{}) bool {
 	switch s := v.(type) {
 	case string:
 		return len(s) >= 2 && isRulePrefix(s[0])
+	case *string:
+		return s != nil && len(*s) >= 2 && isRulePrefix((*s)[0])
 	case []byte:
 		return len(s) >= 2 && isRulePrefix(s[0])
-	case encoding.BinaryMarshaler:
-		b, err := s.MarshalBinary()
-		return err == nil && len(b) >= 2 && isRulePrefix(b[0])
+	case *[]byte:
+		return s != nil && len(*s) >= 2 && isRulePrefix((*s)[0])
+	}
+	if v == nil {
+		return false
+	}
+	val := reflect.ValueOf(v)
+	if val.IsValid() {
+		if val.Kind() == reflect.String {
+			s := val.String()
+			return len(s) >= 2 && isRulePrefix(s[0])
+		}
+		if val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.Uint8 {
+			b := val.Bytes()
+			return len(b) >= 2 && isRulePrefix(b[0])
+		}
 	}
 	return false
 }
@@ -141,12 +156,27 @@ func argString(args []interface{}, i int) string {
 	switch v := args[i].(type) {
 	case string:
 		return v
+	case *string:
+		if v != nil {
+			return *v
+		}
 	case []byte:
 		return string(v)
-	case encoding.BinaryMarshaler:
-		b, err := v.MarshalBinary()
-		if err == nil {
-			return string(b)
+	case *[]byte:
+		if v != nil {
+			return string(*v)
+		}
+	}
+	if args[i] == nil {
+		return ""
+	}
+	val := reflect.ValueOf(args[i])
+	if val.IsValid() {
+		if val.Kind() == reflect.String {
+			return val.String()
+		}
+		if val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.Uint8 {
+			return string(val.Bytes())
 		}
 	}
 	return ""
@@ -255,14 +285,22 @@ func appendArgTruncated(b []byte, v interface{}, limit int) []byte {
 			return append(b, "<nil>"...)
 		}
 		return appendBytesTruncated(b, *v, limit)
-	case encoding.BinaryMarshaler:
-		data, err := v.MarshalBinary()
-		if err != nil {
-			return appendStringTruncated(b, fmt.Sprint(v), limit)
-		}
-		return appendBytesTruncated(b, data, limit)
 	case net.IP:
 		return appendBytesTruncated(b, v, limit)
+	case time.Time:
+		return v.AppendFormat(b, time.RFC3339Nano)
+	case *time.Time:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return v.AppendFormat(b, time.RFC3339Nano)
+	case time.Duration:
+		return append(b, v.String()...)
+	case *time.Duration:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return append(b, v.String()...)
 	case int:
 		return strconv.AppendInt(b, int64(v), 10)
 	case *int:
@@ -360,24 +398,20 @@ func appendArgTruncated(b []byte, v interface{}, limit int) []byte {
 			return append(b, "true"...)
 		}
 		return append(b, "false"...)
-	case time.Time:
-		return v.AppendFormat(b, time.RFC3339Nano)
-	case *time.Time:
-		if v == nil {
-			return append(b, "<nil>"...)
-		}
-		return v.AppendFormat(b, time.RFC3339Nano)
-	case time.Duration:
-		return append(b, v.String()...)
-	case *time.Duration:
-		if v == nil {
-			return append(b, "<nil>"...)
-		}
-		return append(b, v.String()...)
-	default:
-		s := fmt.Sprint(v)
-		return appendStringTruncated(b, s, limit)
 	}
+
+	val := reflect.ValueOf(v)
+	if val.IsValid() {
+		if val.Kind() == reflect.String {
+			return appendStringTruncated(b, val.String(), limit)
+		}
+		if val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.Uint8 {
+			return appendBytesTruncated(b, val.Bytes(), limit)
+		}
+	}
+
+	s := fmt.Sprint(v)
+	return appendStringTruncated(b, s, limit)
 }
 
 func appendStringTruncated(b []byte, v string, limit int) []byte {

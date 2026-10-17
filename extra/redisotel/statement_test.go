@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -468,6 +469,42 @@ func TestTracingHook_StatementTruncation_CustomTypes(t *testing.T) {
 		WithTracerProvider(provider),
 		WithDBStatementMaxLen(64),
 	)
+
+	t.Run("nil *time.Time does not panic and formats as <nil>", func(t *testing.T) {
+		defer imsb.Reset()
+
+		var nilTime *time.Time
+		cmd := redis.NewCmd(context.Background(), "HSET", "key", "field", nilTime)
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+
+		assertEqual(t, 1, len(imsb.GetSpans()))
+		stmt := getDBStatement(imsb.GetSpans()[0])
+		assertEqual(t, "HSET key field <nil>", stmt)
+	})
+
+	t.Run("non-nil time.Time formats as RFC3339Nano instead of binary hex", func(t *testing.T) {
+		defer imsb.Reset()
+
+		fixedTime := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+		cmd := redis.NewCmd(context.Background(), "SET", "ts", fixedTime)
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+
+		assertEqual(t, 1, len(imsb.GetSpans()))
+		stmt := getDBStatement(imsb.GetSpans()[0])
+		assertEqual(t, "SET ts 2026-10-17T12:00:00Z", stmt)
+	})
 
 	t.Run("custom BinaryMarshaler with large binary payload truncates without materializing decimal string", func(t *testing.T) {
 		defer imsb.Reset()
