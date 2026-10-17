@@ -1108,6 +1108,13 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 					}
 				}
 
+				if tt.withPayloads {
+					if (resp2Doc.Payload == nil) != (resp3Doc.Payload == nil) ||
+						(resp2Doc.Payload != nil && *resp2Doc.Payload != *resp3Doc.Payload) {
+						t.Errorf("Docs[%d].Payload mismatch: RESP2=%v, RESP3=%v", i, resp2Doc.Payload, resp3Doc.Payload)
+					}
+				}
+
 				// Compare fields
 				if len(resp2Doc.Fields) != len(resp3Doc.Fields) {
 					t.Errorf("Docs[%d].Fields count mismatch: RESP2=%d, RESP3=%d", i, len(resp2Doc.Fields), len(resp3Doc.Fields))
