@@ -2854,6 +2854,7 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 		if opts == nil {
 			opts = &FTSearchOptions{}
 		}
+		// An empty non-nil Return sends RETURN 0: no field list, like NOCONTENT.
 		noContent := opts.NoContent || (opts.Return != nil && len(opts.Return) == 0)
 		cmd.val, err = parseFTSearch(dataSlice, noContent, opts.WithScores, opts.WithPayloads, opts.WithSortKeys)
 		return err
