@@ -712,6 +712,11 @@ func masterReplicaDialer(
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
+		if failover.opt.DialTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, failover.opt.DialTimeout)
+			defer cancel()
+		}
 		cn, err := netDialer.DialContext(ctx, network, addr)
 		if err != nil {
 			return nil, err
