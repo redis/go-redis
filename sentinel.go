@@ -712,7 +712,22 @@ func masterReplicaDialer(
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return (&tls.Dialer{NetDialer: netDialer, Config: failover.opt.TLSConfig}).DialContext(ctx, network, addr)
+		cn, err := netDialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		cfg := failover.opt.TLSConfig
+		if cfg.ServerName == "" {
+			host, _, _ := net.SplitHostPort(addr)
+			cfg = cfg.Clone()
+			cfg.ServerName = host
+		}
+		tlsConn := tls.Client(cn, cfg)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = cn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
 	}
 }
 
