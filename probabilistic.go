@@ -804,6 +804,8 @@ func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interfac
 
 // CMSIncrBy increments the count of one or more items in a Count-Min Sketch filter.
 // Returns an array of integers representing the updated count of each item.
+// On a per-item error, Err() returns the first error and the failed items are 0
+// in Val(); use Do() to get per-item errors.
 // For more information - https://redis.io/commands/cms.incrby/
 func (c cmdable) CMSIncrBy(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
 	args := make([]interface{}, 2, 2+len(elements))
