@@ -552,6 +552,7 @@ func (cfg *AutoPipelineOptions) Validate() error {
 // back to the underlying client and itself satisfy UniversalClient.
 type cmdableClient interface {
 	UniversalClient
+	Monitor(ctx context.Context, ch chan string) *MonitorCmd
 	// processPipelineHook is the hook-wrapped []Cmder pipeline entry — the same
 	// method Pipeline.Exec is wired to (see Client.Pipeline). The flusher
 	// dispatches drained batches through it directly, skipping the per-batch
@@ -1321,6 +1322,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		closeDone: make(chan struct{}),
 		maxQueued: int64(config.MaxQueuedCommands),
 	}
+	ap.setMustDivert(isMonitorCmd)
 	// Capture the pipeline pool (in-package, promoted to *Client). nil for a
 	// client that has none (e.g. *ClusterClient) — the straggler-hold then
 	// keeps its conservative long hold rather than guess at pool pressure.
@@ -1772,6 +1774,12 @@ func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...
 	return ap.pipeliner.Watch(ctx, fn, keys...)
 }
 
+// Monitor delegates to the underlying client (not batched — MONITOR needs a
+// dedicated connection).
+func (ap *AutoPipeliner) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return ap.pipeliner.Monitor(ctx, ch)
+}
+
 // Subscribe opens a pub/sub on the underlying client (not batched — pub/sub
 // needs a dedicated connection).
 func (ap *AutoPipeliner) Subscribe(ctx context.Context, channels ...string) *PubSub {
@@ -1910,6 +1918,11 @@ var outsidePipelineCommands = map[string]struct{}{
 
 func runsOutsidePipeline(name string) bool {
 	_, ok := outsidePipelineCommands[name]
+	return ok
+}
+
+func isMonitorCmd(_ context.Context, cmd Cmder) bool {
+	_, ok := cmd.(*MonitorCmd)
 	return ok
 }
 
