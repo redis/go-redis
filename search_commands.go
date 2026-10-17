@@ -2714,14 +2714,18 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 		}
 
 		if withScores && i < len(data) {
-			if scoreStr, ok := data[i].(string); ok {
+			scoreVal := data[i]
+			if arr, ok := scoreVal.([]interface{}); ok && len(arr) > 0 {
+				scoreVal = arr[0]
+			}
+			if scoreStr, ok := scoreVal.(string); ok {
 				score, err := strconv.ParseFloat(scoreStr, 64)
 				if err != nil {
 					return FTSearchResult{}, fmt.Errorf("invalid score format")
 				}
 				doc.Score = &score
-				i++
 			}
+			i++
 		}
 
 		if withPayloads && i < len(data) {
@@ -2846,7 +2850,12 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 	if dataSlice, ok := data.([]interface{}); ok {
-		cmd.val, err = parseFTSearch(dataSlice, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
+		opts := cmd.options
+		if opts == nil {
+			opts = &FTSearchOptions{}
+		}
+		noContent := opts.NoContent || (opts.Return != nil && len(opts.Return) == 0)
+		cmd.val, err = parseFTSearch(dataSlice, noContent, opts.WithScores, opts.WithPayloads, opts.WithSortKeys)
 		return err
 	}
 	return fmt.Errorf("unexpected response type: %T", data)
@@ -2932,6 +2941,9 @@ func parseFTSearchDocumentMapRESP3(itemMap map[interface{}]interface{}) (Documen
 				doc.ID = id
 			}
 		case "score":
+			if arr, ok := v.([]interface{}); ok && len(arr) > 0 {
+				v = arr[0]
+			}
 			if score, ok := v.(float64); ok {
 				doc.Score = &score
 			}

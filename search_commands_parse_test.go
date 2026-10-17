@@ -1,8 +1,12 @@
 package redis
 
 import (
+	"context"
 	"math"
+	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // TestParseFTInfo tests the parseFTInfo function with a comprehensive FT.INFO response
@@ -916,6 +920,124 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 				for k, v := range resp2Doc.Fields {
 					if resp3Doc.Fields[k] != v {
 						t.Errorf("Docs[%d].Fields[%s] mismatch: RESP2=%s, RESP3=%s", i, k, v, resp3Doc.Fields[k])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestFTSearchExplainScoreRESP2AndRESP3 validates that the score is read from
+// the [score, explanation] pair returned with WITHSCORES EXPLAINSCORE
+func TestFTSearchExplainScoreRESP2AndRESP3(t *testing.T) {
+	explanation := []interface{}{"Final BM25 : words BM25 0.21 * document score 1.00", []interface{}{"hello: (0.21 = ...)"}}
+
+	resp2Data := []interface{}{
+		int64(2),
+		"doc:2",
+		[]interface{}{"0.21", explanation},
+		[]interface{}{"t", "hello there"},
+		"doc:1",
+		[]interface{}{"0.16", explanation},
+		[]interface{}{"t", "hello world"},
+	}
+	resp3Data := map[string]interface{}{
+		"attributes":    []interface{}{},
+		"total_results": int64(2),
+		"format":        "STRING",
+		"results": []interface{}{
+			map[string]interface{}{
+				"id":               "doc:2",
+				"score":            []interface{}{float64(0.21), explanation},
+				"extra_attributes": map[string]interface{}{"t": "hello there"},
+				"values":           []interface{}{},
+			},
+			map[string]interface{}{
+				"id":               "doc:1",
+				"score":            []interface{}{float64(0.16), explanation},
+				"extra_attributes": map[string]interface{}{"t": "hello world"},
+				"values":           []interface{}{},
+			},
+		},
+		"warning": []interface{}{},
+	}
+
+	resp2Result, err := parseFTSearch(resp2Data, false, true, false, false)
+	if err != nil {
+		t.Fatalf("parseFTSearch() error = %v", err)
+	}
+	resp3Result, err := parseFTSearchMapRESP3(toInterfaceMap(resp3Data))
+	if err != nil {
+		t.Fatalf("parseFTSearchMapRESP3() error = %v", err)
+	}
+
+	want := []Document{
+		{ID: "doc:2", Score: ptrFloat64(0.21), Fields: map[string]string{"t": "hello there"}},
+		{ID: "doc:1", Score: ptrFloat64(0.16), Fields: map[string]string{"t": "hello world"}},
+	}
+	for name, result := range map[string]FTSearchResult{"RESP2": resp2Result, "RESP3": resp3Result} {
+		if len(result.Docs) != len(want) {
+			t.Fatalf("%s: Docs count = %d, want %d", name, len(result.Docs), len(want))
+		}
+		for i, doc := range result.Docs {
+			if doc.ID != want[i].ID {
+				t.Errorf("%s: Docs[%d].ID = %s, want %s", name, i, doc.ID, want[i].ID)
+			}
+			if doc.Score == nil || *doc.Score != *want[i].Score {
+				t.Errorf("%s: Docs[%d].Score = %v, want %v", name, i, doc.Score, *want[i].Score)
+			}
+			if doc.Fields["t"] != want[i].Fields["t"] {
+				t.Errorf("%s: Docs[%d].Fields[t] = %s, want %s", name, i, doc.Fields["t"], want[i].Fields["t"])
+			}
+		}
+	}
+}
+
+// TestFTSearchCmdReadReplyRESP2 validates RESP2 parsing for options that
+// change the reply shape without setting NoContent
+func TestFTSearchCmdReadReplyRESP2(t *testing.T) {
+	tests := []struct {
+		name    string
+		options *FTSearchOptions
+		reply   string
+		want    []Document
+	}{
+		{
+			name:    "nil options",
+			options: nil,
+			reply:   "*3\r\n:1\r\n$5\r\ndoc:1\r\n*2\r\n$1\r\nt\r\n$11\r\nhello world\r\n",
+			want:    []Document{{ID: "doc:1", Fields: map[string]string{"t": "hello world"}}},
+		},
+		{
+			name:    "empty RETURN",
+			options: &FTSearchOptions{Return: []FTSearchReturn{}},
+			reply:   "*3\r\n:2\r\n$5\r\ndoc:2\r\n$5\r\ndoc:1\r\n",
+			want:    []Document{{ID: "doc:2", Fields: map[string]string{}}, {ID: "doc:1", Fields: map[string]string{}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newFTSearchCmd(context.Background(), tt.options)
+			if err := cmd.readReply(proto.NewReader(strings.NewReader(tt.reply))); err != nil {
+				t.Fatalf("readReply() error = %v", err)
+			}
+			if cmd.val.Total != len(tt.want) {
+				t.Errorf("Total = %d, want %d", cmd.val.Total, len(tt.want))
+			}
+			if len(cmd.val.Docs) != len(tt.want) {
+				t.Fatalf("Docs count = %d, want %d", len(cmd.val.Docs), len(tt.want))
+			}
+			for i, doc := range cmd.val.Docs {
+				if doc.ID != tt.want[i].ID {
+					t.Errorf("Docs[%d].ID = %s, want %s", i, doc.ID, tt.want[i].ID)
+				}
+				if len(doc.Fields) != len(tt.want[i].Fields) {
+					t.Errorf("Docs[%d].Fields = %v, want %v", i, doc.Fields, tt.want[i].Fields)
+				}
+				for k, v := range tt.want[i].Fields {
+					if doc.Fields[k] != v {
+						t.Errorf("Docs[%d].Fields[%s] = %s, want %s", i, k, doc.Fields[k], v)
 					}
 				}
 			}
