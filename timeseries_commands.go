@@ -458,7 +458,7 @@ func (c cmdable) TSCreateRuleWithArgs(ctx context.Context, sourceKey string, des
 	return cmd
 }
 
-// TSIncrBy - Increments the value of a time-series key by the specified timestamp.
+// TSIncrBy - Increments the value of a time-series key by the specified value.
 // For more information - https://redis.io/commands/ts.incrby/
 func (c cmdable) TSIncrBy(ctx context.Context, Key string, timestamp float64) *IntCmd {
 	args := []interface{}{"TS.INCRBY", Key, timestamp}
@@ -467,7 +467,7 @@ func (c cmdable) TSIncrBy(ctx context.Context, Key string, timestamp float64) *I
 	return cmd
 }
 
-// TSIncrByWithArgs - Increments the value of a time-series key by the specified timestamp with additional options.
+// TSIncrByWithArgs - Increments the value of a time-series key by the specified value with additional options.
 // This function allows for specifying additional options such as:
 // Timestamp, Retention, ChunkSize, Uncompressed and Labels.
 // For more information - https://redis.io/commands/ts.incrby/
@@ -504,7 +504,7 @@ func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, timestamp flo
 	return cmd
 }
 
-// TSDecrBy - Decrements the value of a time-series key by the specified timestamp.
+// TSDecrBy - Decrements the value of a time-series key by the specified value.
 // For more information - https://redis.io/commands/ts.decrby/
 func (c cmdable) TSDecrBy(ctx context.Context, Key string, timestamp float64) *IntCmd {
 	args := []interface{}{"TS.DECRBY", Key, timestamp}
@@ -513,7 +513,7 @@ func (c cmdable) TSDecrBy(ctx context.Context, Key string, timestamp float64) *I
 	return cmd
 }
 
-// TSDecrByWithArgs - Decrements the value of a time-series key by the specified timestamp with additional options.
+// TSDecrByWithArgs - Decrements the value of a time-series key by the specified value with additional options.
 // This function allows for specifying additional options such as:
 // Timestamp, Retention, ChunkSize, Uncompressed and Labels.
 // For more information - https://redis.io/commands/ts.decrby/
