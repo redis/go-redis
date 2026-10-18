@@ -1,7 +1,10 @@
 package streaming
 
 import (
+	"context"
+
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -64,31 +67,36 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials auth.Credentials) {
 	c.manager.MarkForReAuth(c.conn, func(err error) {
 		// err is from connection acquisition (timeout, etc.)
 		if err != nil {
-			// Log the error
-			c.OnError(err)
+			c.onReAuthErr(err)
 			return
 		}
 		// err is from reauth command execution
 		err = c.reAuth(c.conn, credentials)
 		if err != nil {
-			// Log the error
-			c.OnError(err)
+			c.onReAuthErr(err)
 			return
 		}
 	})
 }
 
-// OnError is called when an error occurs during credential streaming or re-authentication.
+// OnError is called by the StreamingCredentialsProvider when there's an error in
+// the credentials stream (for example, the token endpoint is unavailable).
 //
-// This method can be called from:
-//   - The StreamingCredentialsProvider when there's an error in the credentials stream
-//   - The re-auth process when connection acquisition times out
-//   - The re-auth process when the AUTH command fails
+// A provider error says nothing about the connection itself: Redis has not rejected
+// its current credentials, so the error is only logged and the connection is kept.
+//
+// Thread-safe: Called by the credentials provider's notification goroutine.
+func (c *ConnReAuthCredentialsListener) OnError(err error) {
+	internal.Logger.Printf(context.Background(), "redis: credentials provider error: %v", err)
+}
+
+// onReAuthErr is called when the re-auth process fails, either because connection
+// acquisition timed out or because the AUTH command failed.
 //
 // The error is delegated to the onErr callback provided during listener creation.
 //
-// Thread-safe: Can be called from multiple goroutines (provider, re-auth worker).
-func (c *ConnReAuthCredentialsListener) OnError(err error) {
+// Thread-safe: Called by the re-auth worker.
+func (c *ConnReAuthCredentialsListener) onReAuthErr(err error) {
 	if c.onErr == nil {
 		return
 	}

@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -80,6 +81,33 @@ func TestManager_Listener_NilConn(t *testing.T) {
 	expectedErr := "poolCn cannot be nil"
 	if err.Error() != expectedErr {
 		t.Errorf("Expected error message %q, got %q", expectedErr, err.Error())
+	}
+}
+
+// Test that a provider error does not trigger the re-auth error callback
+func TestManager_Listener_ProviderErrorKeepsConn(t *testing.T) {
+	mockPool := &mockPooler{}
+	manager := NewManager(mockPool, time.Second)
+	conn := &pool.Conn{}
+
+	reAuth := func(cn *pool.Conn, creds auth.Credentials) error {
+		return nil
+	}
+
+	var onErrCalled bool
+	onErr := func(cn *pool.Conn, err error) {
+		onErrCalled = true
+	}
+
+	listener, err := manager.Listener(conn, reAuth, onErr)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	listener.OnError(errors.New("token endpoint unavailable"))
+
+	if onErrCalled {
+		t.Error("Expected provider error not to call onErr")
 	}
 }
 
