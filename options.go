@@ -84,6 +84,8 @@ type Options struct {
 	// Username is used to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
+	// A Username with an empty Password authenticates as that user with an
+	// empty password, which the server accepts for users created with nopass.
 	Username string
 
 	// Password is an optional password. Must match the password specified in the
