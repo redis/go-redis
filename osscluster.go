@@ -2971,7 +2971,10 @@ func (c *ClusterClient) pubSub() *PubSub {
 				node = nil
 				return nil, err
 			}
-			node.Client.pubSubPool.TrackConn(cn)
+			if err := node.Client.pubSubPool.TrackConn(cn); err != nil {
+				node = nil
+				return nil, err
+			}
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {

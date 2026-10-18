@@ -24,8 +24,10 @@ type PubSubPool struct {
 
 	// Map to track active PubSub connections
 	activeConns sync.Map // map[uint64]*Conn (connID -> conn)
-	closed      atomic.Bool
-	stats       PubSubStats
+	// mu coordinates registration after initialization with pool closure.
+	mu     sync.Mutex
+	closed atomic.Bool
+	stats  PubSubStats
 }
 
 // NewPubSubPool implements a pool for PubSub connections.
@@ -54,13 +56,23 @@ func (p *PubSubPool) NewConn(ctx context.Context, network string, addr string, c
 	return cn, nil
 }
 
-func (p *PubSubPool) TrackConn(cn *Conn) {
+// TrackConn registers an initialized connection. If Close has already started,
+// it closes the connection (including its initialization cleanup) and rejects it.
+func (p *PubSubPool) TrackConn(cn *Conn) error {
+	p.mu.Lock()
+	if p.closed.Load() {
+		p.mu.Unlock()
+		_ = cn.Close()
+		return ErrClosed
+	}
 	atomic.AddUint32(&p.stats.Active, 1)
 	p.activeConns.Store(cn.GetID(), cn)
+	p.mu.Unlock()
 	// Emit +1 used for PubSub connection
 	if cb := getMetricConnectionCountCallback(); cb != nil {
 		cb(context.Background(), 1, cn, "used", true)
 	}
+	return nil
 }
 
 func (p *PubSubPool) UntrackConn(cn *Conn) {
@@ -78,7 +90,11 @@ func (p *PubSubPool) UntrackConn(cn *Conn) {
 }
 
 func (p *PubSubPool) Close() error {
+	// Once closed is set under mu, no new connection can enter activeConns.
+	// Close connections outside mu so cleanup callbacks can reenter the pool.
+	p.mu.Lock()
 	p.closed.Store(true)
+	p.mu.Unlock()
 	cb := getMetricConnectionCountCallback()
 	p.activeConns.Range(func(key, value interface{}) bool {
 		cn := value.(*Conn)
