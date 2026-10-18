@@ -314,7 +314,7 @@ type TSNRevRangeOptions struct {
 	Empty           bool
 }
 
-// TSAdd - Adds one or more observations to a t-digest sketch.
+// TSAdd - Adds a sample to a time-series key.
 // For more information - https://redis.io/commands/ts.add/
 func (c cmdable) TSAdd(ctx context.Context, key string, timestamp interface{}, value float64) *IntCmd {
 	args := []interface{}{"TS.ADD", key, timestamp, value}
@@ -323,7 +323,7 @@ func (c cmdable) TSAdd(ctx context.Context, key string, timestamp interface{}, v
 	return cmd
 }
 
-// TSAddWithArgs - Adds one or more observations to a t-digest sketch.
+// TSAddWithArgs - Adds a sample to a time-series key.
 // This function also allows for specifying additional options such as:
 // Retention, ChunkSize, Encoding, DuplicatePolicy and Labels.
 // For more information - https://redis.io/commands/ts.add/
