@@ -372,7 +372,7 @@ type Options struct {
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	//
-	// default: ReadTimeout + 1 second
+	// default: ReadTimeout + 1 second, or 30 seconds when ReadTimeout is not positive
 	PoolTimeout time.Duration
 
 	// MinIdleConns is the minimum number of idle connections which is useful when establishing
