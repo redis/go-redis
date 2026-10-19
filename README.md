@@ -350,11 +350,11 @@ by `NewUniversalClient`. Sentinel discovery connections remain uncached, and
 restriction applies; nonzero databases execute normally without caching.
 
 Cache lifecycle belongs to each standalone node client. There is no Cluster CSC
-manager or transfer of cached values between nodes. Before publishing a routing
-map that removes a node, the client clears that node's cache instead of waiting
-for registry GC. Nodes present in both maps, including replicas, keep their caches.
-If a concurrent reload publishes first, its map is kept; cleanup for the discarded
-map may already have cleared a retained node's cache, causing extra cache misses.
+manager or transfer of cached values between nodes. Nodes entering routing have
+their caches cleared before publication; nodes leaving routing are cleared afterward,
+instead of waiting for registry GC. Clearing on entry also removes values refilled
+after an earlier removal. Nodes present in both maps, including replicas, keep
+their caches. Concurrent reloads retain last-publication-wins behavior.
 When a cache miss, coalesced fetch or background refresh receives MOVED or ASK,
 the node client evicts results depending on that fetch's known Redis keys across
 its local cache, including pending reservations. Unknown keys and uncached

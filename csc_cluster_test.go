@@ -267,11 +267,31 @@ func TestClusterCSCRoutingLossClearsOnlyRemovedNode(t *testing.T) {
 	if !fetch {
 		t.Fatal("expected a new reservation")
 	}
+	var lateToken uint64
+	cache.afterFlush = func() {
+		if cache.flushes.Load() != 1 {
+			return
+		}
+		state := c.state.state.Load().(*clusterState)
+		if state.slotNodes(hashtag.Slot("{bar}:key"))[0].Client == old {
+			t.Error("removed node is still routed during departure cleanup")
+		}
+		// A request that selected A before removal can still refill its cache
+		// after cleanup. Re-entry must clear that value and any new reservation.
+		if got, err := old.Get(ctx, "{bar}:key").Result(); err != nil || got != "v1" {
+			t.Errorf("read during cleanup: %q, %v", got, err)
+		}
+		var fetch bool
+		lateToken, fetch = cache.Reserve("late", []string{"late"})
+		if !fetch {
+			t.Error("expected a reservation after departure cleanup")
+		}
+	}
 	removed = true
 	if _, err := c.state.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if cache.flushes.Load() != 1 || cache.Len() != 0 {
+	if cache.flushes.Load() != 1 {
 		t.Fatal("routing loss did not clear the removed node before registry GC")
 	}
 	if cache.FulfillOwned("pending", token, 1, []byte("stale")) {
@@ -287,11 +307,14 @@ func TestClusterCSCRoutingLossClearsOnlyRemovedNode(t *testing.T) {
 	if _, err := c.state.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if cache.FulfillOwned("late", lateToken, 1, []byte("stale")) {
+		t.Error("re-entering node accepted a fill reserved after routing loss")
+	}
 	if got, err := c.Get(ctx, "{bar}:key").Result(); err != nil || got != "v2" {
 		t.Fatalf("read after re-entry: %q, %v", got, err)
 	}
-	if callsA.Load() != 2 || cache.flushes.Load() != 1 {
-		t.Fatalf("calls=%d, flushes=%d; want 2, 1", callsA.Load(), cache.flushes.Load())
+	if callsA.Load() != 3 || cache.flushes.Load() != 2 {
+		t.Fatalf("calls=%d, flushes=%d; want 3, 2", callsA.Load(), cache.flushes.Load())
 	}
 }
 
@@ -332,38 +355,45 @@ func TestClusterCSCRoutingLossFlushesOnceAndPreservesReplicas(t *testing.T) {
 	}
 }
 
-func TestClusterCSCRoutingLossCleanupPrecedesPublication(t *testing.T) {
+func TestClusterCSCRoutingCleanupLastPublicationWins(t *testing.T) {
 	ctx := context.Background()
-	cache := &clusterCSCRecordingCache{LocalCache: NewLocalCache(CacheConfig{})}
-	a := &clusterNode{Client: &Client{baseClient: &baseClient{csc: cache}}}
-	b := &clusterNode{Client: &Client{baseClient: &baseClient{}}}
+	a := &clusterNode{Client: &Client{baseClient: &baseClient{}}}
+	cacheB := &clusterCSCRecordingCache{LocalCache: NewLocalCache(CacheConfig{})}
+	cacheC := &clusterCSCRecordingCache{LocalCache: NewLocalCache(CacheConfig{})}
+	b := &clusterNode{Client: &Client{baseClient: &baseClient{csc: cacheB}}}
+	c := &clusterNode{Client: &Client{baseClient: &baseClient{csc: cacheC}}}
 	withNodes := func(nodes ...*clusterNode) *clusterState {
 		return &clusterState{
 			slots:     []*clusterSlot{{start: 0, end: 16383, nodes: nodes}},
 			createdAt: time.Now(),
 		}
 	}
-	initial, removing, competing := withNodes(a, b), withNodes(b), withNodes(a, b)
+	initial, adding, competing := withNodes(a), withNodes(a, b), withNodes(a, c)
 	var loads atomic.Int32
 	holder := newClusterStateHolder(func(context.Context) (*clusterState, error) {
 		if loads.Add(1) == 1 {
-			return removing, nil
+			return adding, nil
 		}
 		return competing, nil
 	}, time.Minute)
 	holder.state.Store(initial)
-	token, _ := cache.Reserve("key", []string{"key"})
-	if !cache.FulfillOwned("key", token, 1, []byte("v1")) {
-		t.Fatal("initial fill failed")
-	}
-	cache.beforeFlush = func() {
+	cacheB.beforeFlush = func() {
 		if holder.state.Load() != initial {
-			t.Error("routing loss was published before cache cleanup")
+			t.Error("entering node was published before cache cleanup")
 		}
 		// Publish a competing snapshot while cleanup is in progress. Calling
 		// back synchronously also detects a mutex held around custom Flush.
 		if got, err := holder.ReloadOrGet(ctx); err != nil || got != competing {
 			t.Errorf("competing reload: %p, %v", got, err)
+		}
+	}
+	cacheC.beforeFlush = func() {
+		want := initial // Entering during the nested reload.
+		if cacheC.flushes.Load() == 2 {
+			want = adding // Departing after the outer reload publishes.
+		}
+		if holder.state.Load() != want {
+			t.Error("cache cleanup used the wrong publication order")
 		}
 	}
 	completed := make(chan *clusterState, 1)
@@ -376,14 +406,14 @@ func TestClusterCSCRoutingLossCleanupPrecedesPublication(t *testing.T) {
 	}()
 	select {
 	case state := <-completed:
-		if state != competing || holder.state.Load() != competing {
-			t.Fatal("reload did not preserve the competing publication")
+		if state != adding || holder.state.Load() != adding {
+			t.Fatal("the last publication must win and return its own snapshot")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("custom cache callback blocked reload")
 	}
-	if cache.flushes.Load() != 1 || cache.Len() != 0 {
-		t.Fatal("cleanup must finish once, without retrying the custom callback")
+	if cacheB.flushes.Load() != 1 || cacheC.flushes.Load() != 2 {
+		t.Fatalf("flushes B=%d C=%d; want 1, 2 from the actual replaced snapshot", cacheB.flushes.Load(), cacheC.flushes.Load())
 	}
 }
 
@@ -619,6 +649,7 @@ type clusterCSCRecordingCache struct {
 	flushes     atomic.Int32
 	deletes     atomic.Int32
 	beforeFlush func()
+	afterFlush  func()
 }
 
 func TestClusterCSCRefreshRedirectPreservesUnrelatedEntries(t *testing.T) {
@@ -694,7 +725,11 @@ func (c *clusterCSCRecordingCache) Flush() int {
 	if c.beforeFlush != nil {
 		c.beforeFlush()
 	}
-	return c.LocalCache.Flush()
+	n := c.LocalCache.Flush()
+	if c.afterFlush != nil {
+		c.afterFlush()
+	}
+	return n
 }
 
 func (c *clusterCSCRecordingCache) DeleteByRedisKey(key string) int {

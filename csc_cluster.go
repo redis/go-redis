@@ -1,20 +1,18 @@
 package redis
 
-// Clear caches of nodes omitted by the proposed routing map before publishing
-// it. Waiting for registry GC would let a later slot map reuse old results.
-// Nodes still routed as replicas retain their cache, as do nodes whose slots
-// change without removing them from routing.
-func dropCSCOnRoutingLoss(prev, next *clusterState) {
-	if prev == nil || next == nil {
+// flushCSCDifference clears each node cache in from that is absent from retained.
+// Comparing node identities preserves caches across slot and role changes.
+func flushCSCDifference(from, retained *clusterState) {
+	if from == nil || retained == nil {
 		return
 	}
-	routed := make(map[*clusterNode]struct{}, len(next.Masters)+len(next.Slaves))
-	for _, slot := range next.slots {
+	routed := make(map[*clusterNode]struct{}, len(retained.Masters)+len(retained.Slaves))
+	for _, slot := range retained.slots {
 		for _, node := range slot.nodes {
 			routed[node] = struct{}{}
 		}
 	}
-	for _, slot := range prev.slots {
+	for _, slot := range from.slots {
 		for _, node := range slot.nodes {
 			if _, ok := routed[node]; ok {
 				continue
