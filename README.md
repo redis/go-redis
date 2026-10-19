@@ -20,6 +20,7 @@ In `go-redis` we are aiming to support the last three releases of Redis. Current
 - [Redis 8.0](https://raw.githubusercontent.com/redis/redis/8.0/00-RELEASENOTES) - using Redis CE 8.0
 - [Redis 8.2](https://raw.githubusercontent.com/redis/redis/8.2/00-RELEASENOTES) - using Redis CE 8.2
 - [Redis 8.4](https://raw.githubusercontent.com/redis/redis/8.4/00-RELEASENOTES) - using Redis CE 8.4
+- [Redis 8.6](https://raw.githubusercontent.com/redis/redis/8.6/00-RELEASENOTES) - using Redis CE 8.6
 - [Redis 8.8](https://raw.githubusercontent.com/redis/redis/8.8/00-RELEASENOTES) - using Redis CE 8.8
 - [Redis 8.10](https://raw.githubusercontent.com/redis/redis/8.10/00-RELEASENOTES) - using Redis CE 8.10
 
