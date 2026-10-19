@@ -109,6 +109,25 @@ var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 		Expect(password).NotTo(BeEmpty())
 	})
 
+	It("should authenticate a nopass user with only a username", func() {
+		add, err := client.ACLSetUser(ctx, TestUserName, "on", "nopass", "+acl").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(add).To(Equal("OK"))
+
+		for _, protocol := range []int{3, 2} {
+			opt := redisOptions()
+			opt.Username = TestUserName
+			opt.Password = ""
+			opt.Protocol = protocol
+			userClient := redis.NewClient(opt)
+
+			whoami, err := userClient.ACLWhoAmI(ctx).Result()
+			Expect(userClient.Close()).NotTo(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(whoami).To(Equal(TestUserName), "protocol %d", protocol)
+		}
+	})
+
 	It("gen password with length", func() {
 		bit := 128
 		password, err := client.ACLGenPass(ctx, bit).Result()

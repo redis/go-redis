@@ -1048,7 +1048,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return initErr
 	} else {
 		helloFallbackToRESP2 = c.opt.Protocol == 3
-		if password != "" {
+		if username != "" || password != "" {
 			// Try legacy AUTH command if HELLO failed.
 			if username != "" {
 				initErr = conn.AuthACL(ctx, username, password).Err()
