@@ -554,7 +554,8 @@ func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacit
 }
 
 // CFReserveWithArgs creates an empty Cuckoo filter with the specified options.
-// This function allows for specifying additional options such as bucket size and maximum number of iterations.
+// This function allows for specifying additional options such as bucket size,
+// maximum number of iterations and expansion rate.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
 	args := []interface{}{"CF.RESERVE", key, options.Capacity}
