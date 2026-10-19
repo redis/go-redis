@@ -404,7 +404,8 @@ func (c cmdable) TSCreateWithArgs(ctx context.Context, key string, options *TSOp
 
 // TSAlter - Alters an existing time-series key with additional options.
 // This function allows for specifying additional options such as:
-// Retention, ChunkSize and DuplicatePolicy.
+// Retention, ChunkSize, DuplicatePolicy, IgnoreMaxTimeDiff, IgnoreMaxValDiff
+// and Labels.
 // For more information - https://redis.io/commands/ts.alter/
 func (c cmdable) TSAlter(ctx context.Context, key string, options *TSAlterOptions) *StatusCmd {
 	args := []interface{}{"TS.ALTER", key}
