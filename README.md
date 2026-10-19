@@ -364,7 +364,7 @@ Close abandoned cursors with `FTCursorDel`, or close the client. When no positiv
 `MAXIDLE` is supplied through `FTAggregateWithArgs`, local tokens expire after
 `ClusterOptions.FTCursorIdleTimeout` of inactivity (default: five minutes).
 This local limit can expire a token before the server's configured idle limit;
-increase it if pagination needs longer pauses. Successful READs renew it.
+increase it if pagination needs longer pauses. Successful `READ` operations renew it.
 An explicit typed `MAXIDLE` takes precedence. Unknown,
 expired, or wrong-index tokens fail before dispatch. `Do` supports cursor tokens;
 byte-preserving `DoRaw`/`DoRawWriteTo` should use the originating node client for
