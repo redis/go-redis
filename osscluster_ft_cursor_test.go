@@ -41,6 +41,31 @@ func TestFTCursorIndexPos(t *testing.T) {
 		{"raw lowercase aggregate", NewCmd(ctx, "ft.aggregate", "idx", "*", "withcursor"), 1},
 		{"raw mixed case aggregate", NewCmd(ctx, "Ft.Aggregate", "idx", "*", "WithCursor", "COUNT", 1), 1},
 		{"raw aggregate WITHCURSOR as query", NewCmd(ctx, "FT.AGGREGATE", "idx", "WITHCURSOR"), 0},
+		{"PARAMS value WITHCURSOR", typed(func() {
+			c.FTAggregateWithArgs(ctx, "idx", "@t:{$term}", &FTAggregateOptions{
+				Params: map[string]interface{}{"term": "WITHCURSOR"}, DialectVersion: 2,
+			})
+		}), 0},
+		{"PARAMS value WITHCURSOR with cursor", typed(func() {
+			c.FTAggregateWithArgs(ctx, "idx", "@t:{$term}", &FTAggregateOptions{
+				WithCursor: true, Params: map[string]interface{}{"term": "WITHCURSOR"}, DialectVersion: 2,
+			})
+		}), 1},
+		{"LOAD field WITHCURSOR", typed(func() {
+			c.FTAggregateWithArgs(ctx, "idx", "*", &FTAggregateOptions{Load: []FTAggregateLoad{{Field: "WITHCURSOR"}}})
+		}), 0},
+		{"APPLY alias WITHCURSOR", typed(func() {
+			c.FTAggregateWithArgs(ctx, "idx", "*", &FTAggregateOptions{Apply: []FTAggregateApply{{Field: "@n*2", As: "WITHCURSOR"}}})
+		}), 0},
+		{"FILTER WITHCURSOR", typed(func() {
+			c.FTAggregateWithArgs(ctx, "idx", "*", &FTAggregateOptions{Filter: "WITHCURSOR"})
+		}), 0},
+		{"raw GROUPBY REDUCE then WITHCURSOR", NewCmd(ctx, "FT.AGGREGATE", "idx", "*",
+			"GROUPBY", "1", "@WITHCURSOR", "REDUCE", "COUNT", 0, "AS", "WITHCURSOR", "SORTBY", 2, "@n", "ASC",
+			"LIMIT", 0, 10, "WITHCURSOR", "COUNT", 5), 1},
+		{"raw LOAD * then WITHCURSOR", NewCmd(ctx, "FT.AGGREGATE", "idx", "*", "LOAD", "*", "withcursor"), 1},
+		{"raw truncated REDUCE", NewCmd(ctx, "FT.AGGREGATE", "idx", "*", "REDUCE"), 0},
+		{"raw PARAMS count as string", NewCmd(ctx, "FT.AGGREGATE", "idx", "*", "PARAMS", "2", "p", "WITHCURSOR"), 0},
 		{"raw cursor read int64 id", NewCmd(ctx, "FT.CURSOR", "READ", "idx", int64(1<<40)), 2},
 		{"raw cursor read string id", NewCmd(ctx, "ft.cursor", "read", "idx", "42"), 2},
 		{"raw cursor del bytes id", NewCmd(ctx, "FT.CURSOR", "DEL", "idx", []byte("42")), 2},

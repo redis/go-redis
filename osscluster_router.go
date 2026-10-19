@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -318,12 +319,62 @@ func ftCursorIndexPos(cmd Cmder) int {
 			return 2
 		}
 	case strings.EqualFold(name, "ft.aggregate"):
-		// args[1] is the index, args[2] the query.
-		for _, arg := range args[3:] {
-			if s, ok := arg.(string); ok && strings.EqualFold(s, "withcursor") {
-				return 1
-			}
+		if ftAggregateHasCursor(args) {
+			return 1
 		}
+	}
+	return 0
+}
+
+// ftAggregateHasCursor reports whether an FT.AGGREGATE command has the
+// WITHCURSOR option. It walks the clauses after the query and skips their
+// operands, so a PARAMS value, alias or expression that reads "WITHCURSOR" is
+// not taken for the option.
+func ftAggregateHasCursor(args []interface{}) bool {
+	// args[1] is the index, args[2] the query.
+	for i := 3; i < len(args); {
+		kw, ok := args[i].(string)
+		i++
+		if !ok {
+			continue
+		}
+		switch strings.ToUpper(kw) {
+		case "WITHCURSOR":
+			return true
+		case "LOAD", "GROUPBY", "SORTBY", "PARAMS":
+			// <kw> nargs arg...; LOAD * has no count.
+			if i < len(args) {
+				n := ftArgCount(args[i])
+				i += 1 + n
+			}
+		case "REDUCE":
+			// REDUCE func nargs arg...
+			if i+1 < len(args) {
+				n := ftArgCount(args[i+1])
+				i += 2 + n
+			} else {
+				i = len(args)
+			}
+		case "LIMIT":
+			i += 2
+		case "SCORER", "TIMEOUT", "APPLY", "AS", "FILTER", "MAX", "COUNT", "MAXIDLE", "DIALECT":
+			i++
+		}
+	}
+	return false
+}
+
+// ftArgCount reads a clause count sent as an integer or a string. It returns
+// 0 for anything else, e.g. the "*" of LOAD *.
+func ftArgCount(arg interface{}) int {
+	switch v := arg.(type) {
+	case int:
+		return max(v, 0)
+	case int64:
+		return int(max(v, 0))
+	case string:
+		n, _ := strconv.Atoi(v)
+		return max(n, 0)
 	}
 	return 0
 }
