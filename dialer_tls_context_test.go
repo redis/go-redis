@@ -76,7 +76,7 @@ func TestTLSDialerContext(t *testing.T) {
 						opt:        &FailoverOptions{DialTimeout: dialTimeout, TLSConfig: config},
 						sentinel:   sentinel,
 						masterAddr: ln.Addr().String(),
-					})
+					}, &Options{DialTimeout: dialTimeout})
 				}
 
 				result := make(chan error, 1)
