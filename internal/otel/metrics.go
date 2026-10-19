@@ -120,6 +120,9 @@ type PoolRegistrar interface {
 }
 
 var (
+	// setRecorderMu serializes SetGlobalRecorder, so the recorder swap and the pool callbacks change together.
+	setRecorderMu sync.Mutex
+
 	// recorderMu protects globalRecorder and operation duration callbacks
 	recorderMu sync.RWMutex
 
@@ -166,16 +169,19 @@ func Enabled() bool {
 
 // SetGlobalRecorder sets the global recorder (called by Init() in extra/redisotel-native)
 func SetGlobalRecorder(r Recorder) {
-	recorderMu.Lock()
+	setRecorderMu.Lock()
+	defer setRecorderMu.Unlock()
 	if r == nil {
+		// Unregister pool callbacks first so their final deltas reach the current recorder.
+		pool.SetAllMetricCallbacks(nil)
+		recorderMu.Lock()
 		globalRecorder = noopRecorder{}
 		operationDurationCallback = nil
 		pipelineOperationDurationCallback = nil
 		recorderMu.Unlock()
-		// Unregister all pool metric callbacks atomically
-		pool.SetAllMetricCallbacks(nil)
 		return
 	}
+	recorderMu.Lock()
 	globalRecorder = r
 
 	// Register operation duration callbacks
@@ -213,8 +219,9 @@ func SetGlobalRecorder(r Recorder) {
 		ConnectionClosed: func(ctx context.Context, cn *pool.Conn, reason string, err error) {
 			getRecorder().RecordConnectionClosed(ctx, cn, reason, err)
 		},
+		// Uses r, not getRecorder(), so a delta captured before Shutdown reaches the recorder that counted it.
 		ConnectionCount: func(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
-			getRecorder().RecordConnectionCount(ctx, delta, cn, state, isPubSub)
+			r.RecordConnectionCount(ctx, delta, cn, state, isPubSub)
 		},
 		PendingRequests: func(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
 			getRecorder().RecordPendingRequests(ctx, delta, cn, poolName)
