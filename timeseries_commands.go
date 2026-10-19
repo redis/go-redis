@@ -343,14 +343,14 @@ func (c cmdable) TSAddWithArgs(ctx context.Context, key string, timestamp interf
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewIntCmd(ctx, args...)
@@ -387,14 +387,14 @@ func (c cmdable) TSCreateWithArgs(ctx context.Context, key string, options *TSOp
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -418,14 +418,14 @@ func (c cmdable) TSAlter(ctx context.Context, key string, options *TSAlterOption
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -489,14 +489,14 @@ func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, timestamp flo
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewIntCmd(ctx, args...)
@@ -535,14 +535,14 @@ func (c cmdable) TSDecrByWithArgs(ctx context.Context, key string, timestamp flo
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewIntCmd(ctx, args...)
