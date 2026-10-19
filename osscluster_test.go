@@ -3544,6 +3544,10 @@ var _ = Describe("Command Tips tests", func() {
 				url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
 				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
 			}, {
+				test: "RedissSkipVerify",
+				url:  "rediss://localhost:123?skip_verify=true",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", InsecureSkipVerify: true}},
+			}, {
 				test: "QueryParameters",
 				url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
 				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, ReadTimeout: 2 * time.Second, PoolFIFO: true},
@@ -3583,6 +3587,14 @@ var _ = Describe("Command Tips tests", func() {
 				test: "InvalidBool",
 				url:  "redis://localhost?pool_fifo=yes",
 				err:  errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
+			}, {
+				test: "InvalidSkipVerify",
+				url:  "rediss://localhost?skip_verify=yes",
+				err:  errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
+			}, {
+				test: "SkipVerifyWithoutTLS",
+				url:  "redis://localhost?skip_verify=true",
+				err:  errors.New("redis: unexpected option: skip_verify"),
 			}, {
 				test: "UnknownParam",
 				url:  "redis://localhost?abc=123",

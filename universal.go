@@ -108,11 +108,12 @@ type UniversalOptions struct {
 
 	// PipelineReadBufferSize / PipelineWriteBufferSize size the dedicated pipeline
 	// pool's per-connection buffers. PipelinePoolSize sizes that pool; a negative
-	// value opts out of the dedicated pipeline pool. See the same fields on
-	// Options for details.
+	// value opts out of the dedicated pipeline pool. PipelineMinIdleConns keeps
+	// idle connections in it. See the same fields on Options for details.
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
+	PipelineMinIdleConns    int
 
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
@@ -267,6 +268,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PipelineReadBufferSize:  o.PipelineReadBufferSize,
 		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
 		PipelinePoolSize:        o.PipelinePoolSize,
+		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
@@ -339,6 +341,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PipelineReadBufferSize:  o.PipelineReadBufferSize,
 		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
 		PipelinePoolSize:        o.PipelinePoolSize,
+		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
@@ -404,6 +407,7 @@ func (o *UniversalOptions) Simple() *Options {
 		PipelineReadBufferSize:  o.PipelineReadBufferSize,
 		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
 		PipelinePoolSize:        o.PipelinePoolSize,
+		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
