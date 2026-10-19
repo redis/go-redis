@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"math/rand"
@@ -33,7 +34,7 @@ type CommandMetadataMode int
 
 const (
 	// CommandMetadataStatic uses the snapshot and overrides without network
-	// calls or goroutines.
+	// calls or goroutines, unless a ClusterClient's Dynamic Resolver is used.
 	CommandMetadataStatic CommandMetadataMode = iota
 
 	// CommandMetadataPreferLive starts static and fetches live metadata after
@@ -286,7 +287,7 @@ func buildCommandMetadataViewForServerWithLegacy(
 			shadowedParents[parent] = struct{}{}
 		}
 	}
-	return &commandMetadataView{
+	view := &commandMetadataView{
 		generation:        commandMetadataGeneration.Add(1),
 		records:           records,
 		tombstones:        tombstones,
@@ -297,6 +298,8 @@ func buildCommandMetadataViewForServerWithLegacy(
 		cscFingerprint:    cscTableFingerprint(table),
 		serverVersion:     serverVersion,
 	}
+	linkRoutingTemplates(view)
+	return view
 }
 
 func commandMetadataAllowsBareInvocation(info *CommandInfo) bool {
@@ -606,6 +609,9 @@ type commandMetadataFetchFunc func(context.Context) (commandMetadataFetchResult,
 // is shared with clones; the attaching client owns the worker.
 type commandMetadataStore struct {
 	current atomic.Pointer[commandMetadataView]
+	// A dynamic resolver activates live tracking on its first lookup, including
+	// for a statically configured store. Constructing an unused resolver does not.
+	liveRequested atomic.Bool
 
 	mode            CommandMetadataMode
 	overrides       map[string]*CommandInfo
@@ -616,7 +622,7 @@ type commandMetadataStore struct {
 	static *commandMetadataView
 
 	// lastFetch is the source of the last successfully published live view.
-	// It is immutable and guarded by refreshMu, like the refresh itself.
+	// Only the active refresh attempt reads or replaces it.
 	lastFetch commandMetadataFetchResult
 
 	// fetchCtx is cancelled by signalStop so Close never waits out an
@@ -625,7 +631,10 @@ type commandMetadataStore struct {
 	fetchCancel context.CancelFunc
 
 	mu          sync.Mutex
-	refreshMu   sync.Mutex
+	refreshDone chan struct{} // guarded by mu; non-nil while one attempt owns lastFetch
+	initialDone bool          // one completed attempt ends foreground verification
+	retryAt     time.Time     // background cooldown survives new refresh requests
+	backoff     time.Duration
 	started     bool
 	refresh     chan struct{}
 	refreshLive atomic.Bool // A node identity observation also needs a live-view refresh.
@@ -722,14 +731,14 @@ func (s *commandMetadataStore) view() *commandMetadataView {
 }
 
 func (s *commandMetadataStore) wantsServerHello() bool {
-	return s != nil && s.mode == CommandMetadataPreferLive
+	return s != nil && (s.mode == CommandMetadataPreferLive || s.liveRequested.Load())
 }
 
 // onConnInit runs after each successful connection initialization: in
-// PreferLive mode it schedules the live upgrade until one succeeds. Later
-// drift (module loads, upgrades) is covered by RefreshInterval.
+// live mode it schedules the upgrade until one succeeds. Later drift without
+// a new connection (module loads, upgrades) is covered by RefreshInterval.
 func (s *commandMetadataStore) onConnInit() {
-	if s == nil || s.mode != CommandMetadataPreferLive {
+	if !s.wantsServerHello() {
 		return
 	}
 	if v := s.current.Load(); v != nil && v.live {
@@ -738,25 +747,32 @@ func (s *commandMetadataStore) onConnInit() {
 	s.requestRefresh()
 }
 
-// ensureLive synchronously fetches metadata until a live view is published.
+// ensureLive waits for one initial verification. Later calls use the conservative
+// view immediately while background retries finish compatibility checks.
 func (s *commandMetadataStore) ensureLive(ctx context.Context) error {
 	if s == nil || s.fetch == nil {
 		return fmt.Errorf("redis: live command metadata fetch is unavailable")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !s.liveRequested.Load() && s.liveRequested.CompareAndSwap(false, true) && s.refreshInterval > 0 {
+		// Periodic refresh is opt-in, including after an explicit dynamic lookup.
+		s.startWorker()
+	}
 	if v := s.current.Load(); v != nil && v.live {
 		return nil
 	}
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
-	if v := s.current.Load(); v != nil && v.live {
-		return nil
+	err := s.refreshMetadata(ctx, commandMetadataInitialRefresh)
+	if err != nil {
+		s.requestRefresh()
 	}
-	return s.refreshOnceLocked(ctx)
+	return err
 }
 
 // onServerHello retires live metadata when the server identity changes.
 func (s *commandMetadataStore) onServerHello(fp string) {
-	if s == nil || s.mode != CommandMetadataPreferLive {
+	if !s.wantsServerHello() {
 		return
 	}
 	s.mu.Lock()
@@ -777,11 +793,24 @@ func (s *commandMetadataStore) onServerHello(fp string) {
 	s.requestRefresh()
 }
 
+// onClusterServerHelloReply keeps node callbacks dormant until live metadata
+// is requested. A nil reply represents a connection initialized without HELLO.
+func (s *commandMetadataStore) onClusterServerHelloReply(hello map[string]interface{}) {
+	if !s.wantsServerHello() {
+		return
+	}
+	fingerprint := ""
+	if hello != nil {
+		fingerprint = helloServerFingerprint(hello)
+	}
+	s.onClusterServerHello(fingerprint)
+}
+
 // onClusterServerHello schedules verification without adopting one node's
 // identity. The cluster fetch checks siblings before retiring the live view.
 // An empty fingerprint always requests verification, including during a fetch.
 func (s *commandMetadataStore) onClusterServerHello(fp string) {
-	if s == nil || s.mode != CommandMetadataPreferLive {
+	if !s.wantsServerHello() {
 		return
 	}
 	if fp != "" && fp == s.serverFingerprint() {
@@ -794,7 +823,7 @@ func (s *commandMetadataStore) onClusterServerHello(fp string) {
 // requestVerification checks identity even when metadata is already live.
 // HELLO-fallback reconnects cannot prove that the previous identity still holds.
 func (s *commandMetadataStore) requestVerification() {
-	if s == nil || s.mode != CommandMetadataPreferLive {
+	if !s.wantsServerHello() {
 		return
 	}
 	s.refreshLive.Store(true)
@@ -838,7 +867,7 @@ func (s *commandMetadataStore) publishLiveView(
 
 // requestRefresh schedules one background refresh; pending requests coalesce.
 func (s *commandMetadataStore) requestRefresh() {
-	if s == nil || s.mode != CommandMetadataPreferLive || s.fetch == nil {
+	if !s.wantsServerHello() || s.fetch == nil {
 		return
 	}
 	s.startWorker()
@@ -851,9 +880,7 @@ func (s *commandMetadataStore) requestRefresh() {
 // invalidateLiveAndRequestRefresh retires old metadata and schedules a refresh.
 func (s *commandMetadataStore) invalidateLiveAndRequestRefresh() {
 	s.invalidateLive()
-	if s != nil && s.mode == CommandMetadataPreferLive {
-		s.requestRefresh()
-	}
+	s.requestRefresh()
 }
 
 // beginParentSourceChange blocks refresh publication across a topology change.
@@ -870,9 +897,7 @@ func (s *commandMetadataStore) finishParentSourceChange() {
 		return
 	}
 	s.mu.Unlock()
-	if s.mode == CommandMetadataPreferLive {
-		s.requestRefresh()
-	}
+	s.requestRefresh()
 }
 
 // invalidateLive retires the live view without starting a fetch.
@@ -920,6 +945,16 @@ var (
 
 const cmdMetaFetchTimeout = 30 * time.Second
 
+var errCommandMetadataNotReady = errors.New("redis: live command metadata verification is pending")
+
+type commandMetadataRefreshMode uint8
+
+const (
+	commandMetadataInitialRefresh commandMetadataRefreshMode = iota
+	commandMetadataUpgrade
+	commandMetadataVerify
+)
+
 func (s *commandMetadataStore) run() {
 	defer close(s.done)
 	var periodicC <-chan time.Time
@@ -929,13 +964,15 @@ func (s *commandMetadataStore) run() {
 		defer periodic.Stop()
 		periodicC = periodic.C
 	}
-	backoff := cmdMetaBackoffMin
 	consecFail := 0
-	attempt := func() {
+	attempt := func(verifyLive bool) {
 		for {
-			err := s.refreshOnce(s.fetchCtx)
+			mode := commandMetadataUpgrade
+			if verifyLive {
+				mode = commandMetadataVerify
+			}
+			err := s.refreshMetadata(s.fetchCtx, mode)
 			if err == nil {
-				backoff = cmdMetaBackoffMin
 				consecFail = 0
 				return
 			}
@@ -949,14 +986,6 @@ func (s *commandMetadataStore) run() {
 				// Stop self-retrying; the next external trigger tries again.
 				return
 			}
-			select {
-			case <-s.stop:
-				return
-			case <-time.After(backoff):
-			}
-			if backoff *= 2; backoff > cmdMetaBackoffMax {
-				backoff = cmdMetaBackoffMax
-			}
 		}
 	}
 	for {
@@ -965,7 +994,7 @@ func (s *commandMetadataStore) run() {
 			return
 		case <-periodicC:
 			periodic.Reset(cmdMetaJitter(s.refreshInterval))
-			attempt()
+			attempt(true)
 		case <-s.refresh:
 			// Stop wins over a pending token, so Close never runs one more fetch.
 			select {
@@ -976,30 +1005,92 @@ func (s *commandMetadataStore) run() {
 			// Skip redundant connection-init requests, but verify identity
 			// changes and HELLO-fallback reconnects even while the view is live.
 			verifyLive := s.refreshLive.Swap(false)
-			if v := s.current.Load(); !verifyLive && v != nil && v.live {
-				continue
-			}
-			attempt()
+			attempt(verifyLive)
 		}
 	}
 }
 
-func (s *commandMetadataStore) refreshOnce(parent context.Context) (err error) {
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
-	return s.refreshOnceLocked(parent)
+// refreshMetadata serializes publication while allowing callers to cancel their
+// own wait. After the first completed attempt only the worker retries failures.
+func (s *commandMetadataStore) refreshMetadata(ctx context.Context, mode commandMetadataRefreshMode) (err error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.fetchCtx.Err(); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		if v := s.current.Load(); mode != commandMetadataVerify && v != nil && v.live {
+			s.mu.Unlock()
+			return nil
+		}
+		if mode == commandMetadataInitialRefresh && s.initialDone {
+			s.mu.Unlock()
+			return errCommandMetadataNotReady
+		}
+		if done := s.refreshDone; done != nil {
+			s.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-s.stop:
+				return context.Canceled
+			case <-done:
+				// Initial callers share the outcome without another foreground
+				// probe; forced verification still performs a fresh attempt.
+				continue
+			}
+		}
+		if delay := time.Until(s.retryAt); mode != commandMetadataInitialRefresh && delay > 0 {
+			s.mu.Unlock()
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-s.stop:
+				timer.Stop()
+				return context.Canceled
+			case <-timer.C:
+				continue
+			}
+		}
+		done := make(chan struct{})
+		s.refreshDone = done
+		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			s.initialDone = true
+			if err == nil {
+				s.backoff, s.retryAt = 0, time.Time{}
+			} else if ctx.Err() == nil {
+				if s.backoff == 0 {
+					s.backoff = cmdMetaBackoffMin
+				} else {
+					s.backoff = min(s.backoff*2, cmdMetaBackoffMax)
+				}
+				s.retryAt = time.Now().Add(s.backoff)
+			}
+			s.refreshDone = nil
+			close(done)
+			s.mu.Unlock()
+		}()
+		return s.fetchAndPublish(ctx)
+	}
 }
 
-func (s *commandMetadataStore) refreshOnceLocked(parent context.Context) (err error) {
+// fetchAndPublish runs only for the caller owning refreshDone.
+func (s *commandMetadataStore) fetchAndPublish(parent context.Context) (err error) {
 	fpStart, epochStart := s.serverIdentity()
 	ctx, cancel := context.WithTimeout(parent, cmdMetaFetchTimeout)
 	stopFetchCancel := context.AfterFunc(s.fetchCtx, cancel)
 	defer stopFetchCancel()
 	defer cancel()
 
-	// The fetch runs in its own goroutine: the command path only honors ctx
-	// deadlines with ContextTimeoutEnabled, and a stalled reply must not
-	// block stop/join. An abandoned attempt ends when its connection does.
+	// Isolate the fetch so stop/join also stays bounded if application hooks
+	// or a custom fetch callback ignore cancellation. Built-in network probes
+	// honor the bounded context; an abandoned callback must eventually return.
 	type fetchResult struct {
 		metadata commandMetadataFetchResult
 		err      error
@@ -1178,6 +1269,16 @@ func (c *baseClient) fetchCommandMetadata(ctx context.Context) (commandMetadataF
 // fetchMetadataIdentity optionally includes COMMAND in the same pipeline, so
 // records and identity describe one connection. A nil infoCmd only reads identity.
 func (c *baseClient) fetchMetadataIdentity(ctx context.Context, infoCmd *CommandsInfoCmd) (commandMetadataFetchResult, error) {
+	// One silent node must not consume the full cluster refresh budget. Keep
+	// each attempt within the configured read timeout; disabled socket timeouts
+	// still get the normal five-second default for this internal probe.
+	timeout := c.opt.ReadTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// Metadata refresh owns a bounded internal context independently of the
 	// application's ContextTimeoutEnabled and socket-timeout choices. Run the
 	// command through a lightweight clone whose zero socket timeouts defer to

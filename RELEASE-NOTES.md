@@ -10,6 +10,9 @@
   `SetCommandInfoResolver` to enable metadata-based fan-out and aggregation.
   `CommandMetadata` configuration alone does not enable them. Cross-slot
   fan-out is not atomic.
+- With metadata routing enabled, cross-slot `MGET` follows redirects for each
+  affected slot during resharding instead of returning a missing value for a
+  key that moved. Successful slot groups are not replayed.
 - Explicit pipelines and transactions retain node-local command execution;
   ordered `AsyncAutoPipeline` rejects fan-out before dispatch. Same-slot
   metadata commands remain batchable. Automatic fan-out is available through
@@ -24,16 +27,43 @@
 - Resolved command key specifications take precedence over `SetFirstKeyPos`.
   Missing snapshot commands retain the legacy key-position fallback; configure
   `CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` for full
-  metadata. The default `CommandMetadataStatic` mode performs no network lookup.
+  metadata. The default `CommandMetadataStatic` mode performs no network lookup
+  unless resolution reaches an explicitly installed `NewDynamicResolver`.
+  After activation, reconnects, topology changes and a configured refresh
+  interval also verify server identity in Static mode.
+- Embedded command wrappers retain raw-reply safety checks and receive typed
+  aggregate results through their promoted `SetVal` methods.
+- Metadata identity probes have bounded internal deadlines, including when
+  application socket timeouts are disabled. Waiting callers can cancel
+  independently of an ongoing refresh. Dynamic resolution waits for one initial
+  attempt; after failure or invalidation, commands use conservative metadata
+  immediately while background verification retries with backoff.
 - Cluster routing decisions are stored on commands without using commands as
   map keys, and concurrent topology reloads share one in-flight load.
 - Topology loading prefers `CLUSTER SHARDS` and falls back to `CLUSTER SLOTS`
   for unsupported commands or unusable replies, including missing or unknown
   node health. Connection failures try another node without repeating `SLOTS`
   on the failed connection.
-- Existing `FT.CURSOR` routing still hashes the cursor ID and does not track
-  the node that created the cursor. Correct origin tracking is a follow-up;
-  use the same node client for creation and continuation in the meantime.
+- Keyless routing prefers healthy nodes, but temporary local failure/loading
+  markers no longer exclude every candidate. Nodes explicitly marked offline
+  by topology remain excluded. `ErrClusterTopologyUnhealthy` supports
+  `errors.Is` checks. Unknown response policies return an error.
+- Fan-out responses containing `MOVED` or `ASK` refresh topology for later
+  commands without replaying already successful operations.
+- Cluster `FT.AGGREGATE ... WITHCURSOR` now returns client-local cursor tokens
+  bound to the node that actually served the request, including redirects.
+  `FT.CURSOR READ`/`DEL` preserve this affinity in explicit pipelines and
+  compatible single-node transactions. Tokens must stay on the same client;
+  close abandoned cursors with `FTCursorDel` or close the client.
+  `FTCursorIdleTimeout` defaults to five minutes for tokens without an explicit
+  typed `MAXIDLE`; successful READs renew the local idle timeout.
+  Transactions still return server errors when that Search version does not
+  support the command inside `MULTI/EXEC`.
+  Custom fan-out policies reject cursor replies instead of exposing native IDs
+  that could be mistaken for another cursor's token.
+- Typed aggregate replies expose `CursorID` and parse RESP2/RESP3 cursor
+  envelopes. RESP2 `FTCursorRead` returns `results` and `cursor` map entries.
+  Cursor READ is not automatically replayed after a lost reply.
 
 # 9.23.0 (2026-10-05)
 

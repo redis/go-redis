@@ -241,6 +241,12 @@ type Cmder interface {
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
 	readRawReply(rd *proto.Reader) error
+	// isRawReply stays visible when a command is embedded in a custom wrapper.
+	isRawReply() bool
+	// Internal cursor accessors avoid awaiting async results and preserve embedded Cmder wrappers.
+	cursorReply() (interface{}, bool)
+	setCursorReply(uint64)
+	cursorIdleLimit() time.Duration
 	SetErr(error)
 	Err() error
 
@@ -484,10 +490,9 @@ type baseCmd struct {
 	// autopipeline shard router and the pipeline flush router don't each
 	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
 	// distinguishable from unset. A plain field is safe by construction: it
-	// is written at most once, on the submitting goroutine BEFORE the command
-	// is published to a stripe queue (the stripe mutex is the happens-before
-	// edge to the flusher that later reads it). Do not write it from any
-	// other point in the command's life.
+	// is written during admission or explicit pipeline resolution, before the
+	// command is dispatched to any worker. Workers only read it until the
+	// command completes. A shared routing template carries no slot of its own.
 	slotCache uint16
 
 	// ready, when non-nil, is the batch whose done channel closes once the
@@ -687,12 +692,32 @@ func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	return err
 }
 
+func (cmd *baseCmd) isRawReply() bool { return false }
+
 // NoRetry returns true if the command should not be retried on failure.
 // By default, commands can be retried. Commands that write directly to an
 // io.Writer (like RawWriteToCmd) should override this to return true since
 // partial writes cannot be undone on retry.
 func (cmd *baseCmd) NoRetry() bool {
-	return false
+	// A READ advances server-side cursor state. Retrying after a lost reply
+	// would silently skip the results that were already consumed.
+	return len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(0), "ft.cursor") &&
+		strings.EqualFold(cmd.stringArg(1), "read")
+}
+
+func (cmd *baseCmd) cursorReply() (interface{}, bool) { return nil, false }
+func (cmd *baseCmd) setCursorReply(uint64)            {}
+func (cmd *baseCmd) cursorIdleLimit() time.Duration   { return 0 }
+
+func (cmd *Cmd) cursorReply() (interface{}, bool)      { return cmd.val, true }
+func (cmd *Cmd) setCursorReply(id uint64)              { cmd.val = replaceFTCursorID(cmd.val, id) }
+func (cmd *SliceCmd) cursorReply() (interface{}, bool) { return cmd.val, true }
+func (cmd *SliceCmd) setCursorReply(id uint64) {
+	cmd.val = replaceFTCursorID(cmd.val, id).([]interface{})
+}
+func (cmd *MapStringInterfaceCmd) cursorReply() (interface{}, bool) { return cmd.val, true }
+func (cmd *MapStringInterfaceCmd) setCursorReply(id uint64) {
+	cmd.val = replaceFTCursorID(cmd.val, id).(map[string]interface{})
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -1108,6 +1133,8 @@ type RawCmd struct {
 
 var _ Cmder = (*RawCmd)(nil)
 
+func (cmd *RawCmd) isRawReply() bool { return true }
+
 func NewRawCmd(ctx context.Context, args ...interface{}) *RawCmd {
 	return &RawCmd{
 		baseCmd: baseCmd{
@@ -1169,6 +1196,8 @@ type RawWriteToCmd struct {
 }
 
 var _ Cmder = (*RawWriteToCmd)(nil)
+
+func (cmd *RawWriteToCmd) isRawReply() bool { return true }
 
 func NewRawWriteToCmd(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
 	return &RawWriteToCmd{
@@ -7039,6 +7068,11 @@ func (cmd *MapStringInterfaceCmd) String() string {
 }
 
 func (cmd *MapStringInterfaceCmd) readReply(rd *proto.Reader) error {
+	if cmd.Name() == "ft.cursor" && len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(1), "read") {
+		var err error
+		cmd.val, err = readFTCursorReply(rd)
+		return err
+	}
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err

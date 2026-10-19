@@ -92,14 +92,37 @@ const (
 
 // routingCommandMeta ignores CommandInfo's compatibility CommandPolicy field.
 type routingCommandMeta struct {
-	name            string
-	policy          *routing.CommandPolicy
+	name     string
+	policy   *routing.CommandPolicy
+	keySpecs []routingKeySpec
+	// template holds the ordinary keyed decision shared by this immutable view.
+	// Its invocation-specific slot is stored on the admitted command.
+	template        *clusterRoutingDecision
 	readOnly        bool
 	keyState        routingKeyState
-	keySpecs        []routingKeySpec
 	keyPlanComplete bool
 	special         routingSpecialSupport
 	valid           bool
+}
+
+// linkRoutingTemplates prepares allocation-free pins for fixed-index keyed
+// commands. Admission still resolves normally and checks the entire decision
+// before sharing a template; custom policies and malformed arguments fall back.
+func linkRoutingTemplates(view *commandMetadataView) {
+	for _, meta := range view.routingTable {
+		if meta.keyState != routingKeysKnown || len(meta.keySpecs) != 1 {
+			continue
+		}
+		spec := meta.keySpecs[0]
+		if spec.begin != routingBeginIndex || spec.find != routingFindRange || spec.index <= 0 {
+			continue
+		}
+		meta.template = &clusterRoutingDecision{
+			view: view, meta: meta, firstKey: spec.index, naturalSlot: -1,
+			metadataState: routingMetadataUsable, metaOK: true,
+			readOnly: meta.policy != nil && meta.readOnly, template: true,
+		}
+	}
 }
 
 // routingKeyPlan contains all keys and split fields for one invocation.

@@ -314,7 +314,16 @@ Supported policies can send `PING` to all masters or split commands such as
 `MGET`, `DEL`, and `MSET` across slots. Without opt-in, their existing routing
 and server-side `CROSSSLOT` behavior remain unchanged.
 
-The default `CommandMetadataStatic` mode performs no metadata network requests.
+The default `CommandMetadataStatic` mode performs no metadata network requests
+unless resolution reaches an explicitly installed `NewDynamicResolver`.
+After that first live attempt, reconnects and topology changes trigger identity
+verification, and a configured `RefreshInterval` also checks for module or
+version changes on existing connections. With no interval, an in-place module
+change needs a reconnect or topology change to be detected.
+Only the initial verification can delay resolution. After failure or later
+invalidation, commands immediately use the conservative metadata view while
+background attempts retry with backoff. Live metadata is published only after
+all required server compatibility checks succeed.
 For commands missing from the bundled snapshot, configure
 `CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` to supply their
 key positions and read-only flags. Resolved key specifications take precedence
@@ -334,10 +343,32 @@ path: await prior async results before a dependent direct call.
 `SCAN`, `INFO`, and known diagnostic commands remain node-local; use
 `ForEachMaster` for whole-cluster inspection or scanning.
 
-The existing `FT.CURSOR` routing hashes the cursor ID; it does not track which
-node served `FT.AGGREGATE`. This does not guarantee cursor ownership across
-cluster nodes. Origin tracking remains a separate follow-up; use the same
-node client for cursor creation and continuation when that guarantee is needed.
+`ClusterClient` associates each `FT.AGGREGATE ... WITHCURSOR` reply with the
+node that served it. The returned cursor ID is an opaque, client-local token:
+use the same client and index for `FTCursorRead` and `FTCursorDel`. Typed
+aggregate results expose it as `CursorID`; pass `int(result.CursorID)` to the
+existing cursor methods. `FTCursorRead` returns a map with a
+`cursor` entry (and `results` for RESP2). Exhausted cursors return zero.
+Explicit pipelines route known cursors to their owner. Transactions require
+all cursor owners and keyed commands to belong to one node as well as sharing
+a key slot. Await each READ before continuing when the order of result pages
+matters. Transactions also depend on server support: Search versions that
+reject aggregate or cursor commands inside `MULTI/EXEC` return that server error.
+A lost READ reply is not retried,
+because the server may already have advanced the cursor.
+Custom resolvers must keep cursor creation on one node. A fan-out cursor reply
+returns an error; cursors already created on those servers remain until their
+server idle timeout.
+
+Close abandoned cursors with `FTCursorDel`, or close the client. When no positive
+`MAXIDLE` is supplied through `FTAggregateWithArgs`, local tokens expire after
+`ClusterOptions.FTCursorIdleTimeout` of inactivity (default: five minutes).
+This local limit can expire a token before the server's configured idle limit;
+increase it if pagination needs longer pauses. Successful READs renew it.
+An explicit typed `MAXIDLE` takes precedence. Unknown,
+expired, or wrong-index tokens fail before dispatch. `Do` supports cursor tokens;
+byte-preserving `DoRaw`/`DoRawWriteTo` should use the originating node client for
+cursor commands. `DisableRoutingPolicies` retains legacy routing and native IDs.
 
 Cluster-wide operations and distributed DDL can affect multiple shards and are
 not atomic across them, whether fan-out is performed by go-redis or by a Redis

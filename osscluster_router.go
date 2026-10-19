@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"math/rand"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -23,7 +25,7 @@ var (
 	errInvalidCmdPointer         = errors.New("redis: invalid command pointer")
 	errNoCmdsToAggregate         = errors.New("redis: no commands to aggregate")
 	errNoResToAggregate          = errors.New("redis: no results to aggregate")
-	errInvalidCursorCmdArgsCount = errors.New("redis: FT.CURSOR command requires at least 3 arguments")
+	errInvalidCursorCmdArgsCount = errors.New("redis: FT.CURSOR command requires at least 4 arguments")
 	errInvalidCursorIdType       = errors.New("redis: invalid cursor ID type")
 )
 
@@ -431,43 +433,267 @@ func (c *ClusterClient) executeSpecialCommand(
 	return errUnsupportedRoutingPolicy
 }
 
-// executeCursorCommand handles FT.CURSOR commands with sticky routing
-func (c *ClusterClient) executeCursorCommand(
-	ctx context.Context,
-	cmd Cmder,
-	node *clusterNode,
-	decision clusterRoutingDecision,
-) error {
-	if len(cmd.Args()) < 4 {
-		return errInvalidCursorCmdArgsCount
-	}
-
-	cursorID, err := cursorRoutingKey(cmd)
-	if err != nil {
-		return err
-	}
-
+// executeCursorCommand is reached after ownership has been resolved. Cursor IDs
+// are node-local server state, never hash-slot routing keys.
+func (c *ClusterClient) executeCursorCommand(ctx context.Context, cmd Cmder, node *clusterNode, _ clusterRoutingDecision) error {
 	if node == nil {
-		// Reuse redirected nodes; otherwise route by cursor ID.
-		slot := clusterKeySlot(cursorID)
-		node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, &decision)
-		if err != nil {
-			return err
-		}
+		return fmt.Errorf("redis: FT.CURSOR has no owning node")
 	}
-
 	return node.Client.Process(ctx, cmd)
 }
 
-func cursorRoutingKey(cmd Cmder) (string, error) {
-	if len(cmd.Args()) < 4 {
-		return "", errInvalidCursorCmdArgsCount
+// clusterCursorBinding keeps the real server ID private to this ClusterClient.
+// A typed MAXIDLE bounds retention; otherwise the configured local idle timeout
+// expires abandoned tokens without assuming a server configuration.
+type clusterCursorBinding struct {
+	address, index, id string
+	maxIdle            time.Duration
+	expires            time.Time
+	active             int
+}
+
+type clusterCursorRegistry struct {
+	mu       sync.Mutex
+	closed   bool
+	bindings map[uint64]*clusterCursorBinding
+}
+
+// Cursor tokens are unique across clients in this process as well as within a client.
+var clusterCursorSequence atomic.Uint64
+
+type clusterCursorOperation struct {
+	cmd     Cmder
+	address string
+	token   uint64
+	binding *clusterCursorBinding
+	args    []interface{}
+	node    *clusterNode
+}
+
+func ftCursorCommand(cmd Cmder) bool {
+	if cmd.Name() != "ft.cursor" || len(cmd.Args()) < 2 {
+		return false
 	}
-	key, ok := routingArgText(cmd, 3)
-	if !ok {
-		return "", errInvalidCursorIdType
+	sub, ok := routingArgText(cmd, 1)
+	return ok && (strings.EqualFold(sub, "read") || strings.EqualFold(sub, "del"))
+}
+
+// prepareClusterCursors leases only cursor state; ordinary commands allocate
+// nothing here. A batch may contain several operations on the same cursor.
+func (c *ClusterClient) prepareClusterCursors(cmds []Cmder) ([]*clusterCursorOperation, error) {
+	if c.opt.DisableRoutingPolicies {
+		return nil, nil
 	}
-	return key, nil
+	var operations []*clusterCursorOperation
+	for _, cmd := range cmds {
+		name := cmd.Name()
+		if name != "ft.aggregate" && name != "ft.cursor" {
+			continue
+		}
+		continuation := ftCursorCommand(cmd)
+		if !continuation && name != "ft.aggregate" {
+			continue
+		}
+		if _, supported := cmd.cursorReply(); !supported {
+			if continuation && cmd.GetCmdType() != CmdTypeStatus {
+				c.releaseClusterCursors(operations)
+				return nil, fmt.Errorf("redis: FT.CURSOR requires a decoded cursor result or the originating node client")
+			}
+			if !continuation {
+				continue
+			} // Preserve unsupported/raw aggregate replies byte-for-byte.
+		}
+		op := &clusterCursorOperation{cmd: cmd}
+		if continuation {
+			if len(cmd.Args()) < 4 {
+				c.releaseClusterCursors(operations)
+				return nil, errInvalidCursorCmdArgsCount
+			}
+			index, indexOK := routingArgText(cmd, 2)
+			value, valueOK := routingArgText(cmd, 3)
+			token, err := strconv.ParseUint(value, 10, 64)
+			if !indexOK || !valueOK || err != nil || token == 0 {
+				c.releaseClusterCursors(operations)
+				return nil, errInvalidCursorIdType
+			}
+			c.cursors.mu.Lock()
+			binding := c.cursors.bindings[token]
+			if binding != nil && !binding.expires.IsZero() && time.Now().After(binding.expires) && binding.active == 0 {
+				delete(c.cursors.bindings, token)
+				binding = nil
+			}
+			if binding == nil || binding.index != index || c.cursors.closed {
+				c.cursors.mu.Unlock()
+				c.releaseClusterCursors(operations)
+				return nil, fmt.Errorf("redis: unknown FT.CURSOR token %d; use the client that created it", token)
+			}
+			binding.active++
+			op.address = binding.address
+			op.token, op.binding, op.args = token, binding, cmd.Args()
+			args := slices.Clone(op.args)
+			args[3] = binding.id
+			cmd.setArgs(args)
+			c.cursors.mu.Unlock()
+		}
+		operations = append(operations, op)
+	}
+	return operations, nil
+}
+
+func (c *ClusterClient) releaseClusterCursors(operations []*clusterCursorOperation) {
+	if len(operations) == 0 {
+		return
+	}
+	c.cursors.mu.Lock()
+	defer c.cursors.mu.Unlock()
+	for _, op := range operations {
+		if op.binding != nil {
+			op.cmd.setArgs(op.args)
+			op.binding.active--
+		}
+	}
+}
+
+func (c *ClusterClient) clusterCursorNode(ctx context.Context, address string) (*clusterNode, error) {
+	state, err := c.state.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, nodes := range [][]*clusterNode{state.declaredMasters(), state.declaredSlaves()} {
+		for _, node := range nodes {
+			if node.Client.opt.Addr == address {
+				if err := state.requireOnline([]*clusterNode{node}); err != nil {
+					return nil, err
+				}
+				return node, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("redis: FT.CURSOR owner %s is no longer in the cluster", address)
+}
+
+func (c *ClusterClient) finishClusterCursor(cmd Cmder, op *clusterCursorOperation, node *clusterNode) error {
+	if op == nil {
+		return nil
+	}
+	c.cursors.mu.Lock()
+	defer c.cursors.mu.Unlock()
+	if err := cmd.rawErr(); err != nil {
+		// The server's explicit missing-cursor response is definitive; transport
+		// failures and unrelated errors do not prove that the cursor is gone.
+		var serverErr Error
+		if op.binding != nil && errors.As(err, &serverErr) &&
+			(strings.EqualFold(serverErr.Error(), "Cursor does not exist") || strings.EqualFold(serverErr.Error(), "ERR Cursor does not exist")) {
+			delete(c.cursors.bindings, op.token)
+		}
+		return err
+	}
+	if c.cursors.closed {
+		return ErrClosed
+	}
+	if op.binding != nil && strings.EqualFold(cmd.stringArg(1), "del") {
+		delete(c.cursors.bindings, op.token)
+		return nil
+	}
+	reply, _ := cmd.cursorReply()
+	_, id, found := ftCursorReply(reply)
+	if !found {
+		if op.binding != nil {
+			return fmt.Errorf("redis: FT.CURSOR reply has no cursor ID")
+		}
+		return nil
+	}
+	if id == 0 {
+		if op.binding != nil {
+			delete(c.cursors.bindings, op.token)
+		}
+		return nil
+	}
+	if node == nil {
+		return fmt.Errorf("redis: FT.CURSOR reply has no serving node")
+	}
+	binding := op.binding
+	if binding == nil {
+		index, ok := routingArgText(cmd, 1)
+		if !ok {
+			return fmt.Errorf("redis: invalid FT.AGGREGATE index")
+		}
+		op.token = clusterCursorSequence.Add(1)
+		if op.token > uint64(^uint(0)>>1) || op.token == 0 {
+			return fmt.Errorf("redis: FT.CURSOR token space exhausted")
+		}
+		binding = &clusterCursorBinding{index: index, maxIdle: cmd.cursorIdleLimit()}
+		if binding.maxIdle <= 0 {
+			binding.maxIdle = c.opt.FTCursorIdleTimeout
+		}
+		if c.cursors.bindings == nil {
+			c.cursors.bindings = make(map[uint64]*clusterCursorBinding)
+		}
+		// Bound opportunistic cleanup while holding the shared lock. Map
+		// iteration is not fair, so reclamation has no deadline; each access
+		// still checks its own idle deadline above.
+		now := time.Now()
+		visited := 0
+		for token, old := range c.cursors.bindings {
+			if visited == 16 {
+				break
+			}
+			visited++
+			if old.active == 0 && !old.expires.IsZero() && now.After(old.expires) {
+				delete(c.cursors.bindings, token)
+			}
+		}
+		c.cursors.bindings[op.token] = binding
+	}
+	// A concurrent DEL or exhausted READ may already have removed the entry.
+	// Returning a late reply must never resurrect it.
+	if c.cursors.bindings[op.token] == binding {
+		binding.id, binding.address = strconv.FormatUint(id, 10), node.Client.opt.Addr
+		if binding.maxIdle > 0 {
+			binding.expires = time.Now().Add(binding.maxIdle)
+		}
+	}
+	cmd.setCursorReply(op.token)
+	return nil
+}
+
+func replaceFTCursorID(reply interface{}, token uint64) interface{} {
+	// Preserve decoded cursor types on generic replies, including exact strings.
+	replace := func(old interface{}) interface{} {
+		switch old.(type) {
+		case string:
+			return strconv.FormatUint(token, 10)
+		case uint64:
+			return token
+		case *big.Int:
+			return new(big.Int).SetUint64(token)
+		case int:
+			return int(token)
+		default:
+			return int64(token)
+		}
+	}
+	switch reply := reply.(type) {
+	case []interface{}:
+		reply[1] = replace(reply[1])
+	case map[interface{}]interface{}:
+		reply["cursor"] = replace(reply["cursor"])
+	case map[string]interface{}:
+		reply["cursor"] = replace(reply["cursor"])
+	}
+	return reply
+}
+
+// A fan-out result cannot represent the independent cursor owned by each node.
+// Check replies instead of parsing the evolving FT.AGGREGATE option grammar.
+func clusterFanoutCursorError(cmd Cmder) error {
+	if cmd.Name() == "ft.aggregate" {
+		reply, _ := cmd.cursorReply()
+		if _, id, found := ftCursorReply(reply); found && id != 0 {
+			return errors.New("redis: FT.AGGREGATE cursors require single-node routing")
+		}
+	}
+	return nil
 }
 
 // executeParallel executes a command on multiple nodes concurrently
@@ -491,6 +717,10 @@ func (c *ClusterClient) executeParallel(
 			}
 		}
 		if err := c.executeParallelTarget(ctx, nodes[0], targetSlot, cmd); err != nil {
+			return &clusterFanoutExecutionError{err: err}
+		}
+		if err := clusterFanoutCursorError(cmd); err != nil {
+			cmd.SetErr(err)
 			return &clusterFanoutExecutionError{err: err}
 		}
 		return nil
@@ -528,12 +758,20 @@ func (c *ClusterClient) executeParallel(
 	// Collect results and check for errors
 	cmds := make([]Cmder, 0, len(nodes))
 	var firstErr error
+	var cursorErr error
 
 	for result := range results {
 		if result.err != nil && firstErr == nil {
 			firstErr = result.err
 		}
+		if result.err == nil && cursorErr == nil {
+			cursorErr = clusterFanoutCursorError(result.cmd)
+		}
 		cmds = append(cmds, result.cmd)
+	}
+	if cursorErr != nil {
+		cmd.SetErr(cursorErr)
+		return &clusterFanoutExecutionError{err: cursorErr}
 	}
 
 	// If there was an error and no policy specified, fail fast
@@ -578,6 +816,7 @@ func (c *ClusterClient) executeParallelTarget(
 		}
 		if moved, ask, _ := isMovedError(lastErr); moved || ask {
 			// Do not redirect one keyless broadcast target into another.
+			c.state.LazyReload()
 			recordClusterRedirectMetric(ctx, ask)
 			return lastErr
 		}
@@ -1021,7 +1260,8 @@ func (c *ClusterClient) finishAggregation(cmd Cmder, aggregator routing.Response
 	return c.setCommandValue(cmd, finalValue)
 }
 
-// setCommandValue sets the aggregated value on a command using the enum-based approach
+// setCommandValue uses promoted SetVal methods, like ExtractCommandValue uses Val.
+// Wrapping a built-in command must preserve its result as well as its command type.
 func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 	// If value is nil, it might mean ExtractCommandValue couldn't extract the value
 	// but the command might have executed successfully. In this case, don't set an error.
@@ -1045,430 +1285,504 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 
 	switch cmd.GetCmdType() {
 	case CmdTypeGeneric:
-		if c, ok := cmd.(*Cmd); ok {
+		if c, ok := cmd.(interface{ SetVal(interface{}) }); ok {
 			c.SetVal(value)
+			return nil
 		}
 	case CmdTypeString:
-		if c, ok := cmd.(*StringCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(string) }); ok {
 			if v, ok := value.(string); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeInt:
-		if c, ok := cmd.(*IntCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(int64) }); ok {
 			if v, ok := value.(int64); ok {
 				c.SetVal(v)
+				return nil
 			} else if v, ok := value.(float64); ok {
 				c.SetVal(int64(v))
+				return nil
 			}
 		}
 	case CmdTypeBool:
-		if c, ok := cmd.(*BoolCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(bool) }); ok {
 			if v, ok := value.(bool); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeFloat:
-		if c, ok := cmd.(*FloatCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(float64) }); ok {
 			if v, ok := value.(float64); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeStringSlice:
-		if c, ok := cmd.(*StringSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]string) }); ok {
 			if v, ok := value.([]string); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeIntSlice:
-		if c, ok := cmd.(*IntSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]int64) }); ok {
 			if v, ok := value.([]int64); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeFloatSlice:
-		if c, ok := cmd.(*FloatSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]float64) }); ok {
 			if v, ok := value.([]float64); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeBoolSlice:
-		if c, ok := cmd.(*BoolSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]bool) }); ok {
 			if v, ok := value.([]bool); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeMapStringString:
-		if c, ok := cmd.(*MapStringStringCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(map[string]string) }); ok {
 			if v, ok := value.(map[string]string); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeMapStringInt:
-		if c, ok := cmd.(*MapStringIntCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(map[string]int64) }); ok {
 			if v, ok := value.(map[string]int64); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeMapStringInterface:
-		if c, ok := cmd.(*MapStringInterfaceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(map[string]interface{}) }); ok {
 			if v, ok := value.(map[string]interface{}); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeSlice:
-		if c, ok := cmd.(*SliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]interface{}) }); ok {
 			if v, ok := value.([]interface{}); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeStatus:
-		if c, ok := cmd.(*StatusCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(string) }); ok {
 			if v, ok := value.(string); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeDuration:
-		if c, ok := cmd.(*DurationCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(time.Duration) }); ok {
 			if v, ok := value.(time.Duration); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeTime:
-		if c, ok := cmd.(*TimeCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(time.Time) }); ok {
 			if v, ok := value.(time.Time); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeKeyValueSlice:
-		if c, ok := cmd.(*KeyValueSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]KeyValue) }); ok {
 			if v, ok := value.([]KeyValue); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeStringStructMap:
-		if c, ok := cmd.(*StringStructMapCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(map[string]struct{}) }); ok {
 			if v, ok := value.(map[string]struct{}); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeXMessageSlice:
-		if c, ok := cmd.(*XMessageSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]XMessage) }); ok {
 			if v, ok := value.([]XMessage); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeXStreamSlice:
-		if c, ok := cmd.(*XStreamSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]XStream) }); ok {
 			if v, ok := value.([]XStream); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeXPending:
-		if c, ok := cmd.(*XPendingCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(*XPending) }); ok {
 			if v, ok := value.(*XPending); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeXPendingExt:
-		if c, ok := cmd.(*XPendingExtCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]XPendingExt) }); ok {
 			if v, ok := value.([]XPendingExt); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeXAutoClaim:
-		if c, ok := cmd.(*XAutoClaimCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]XMessage, string) }); ok {
 			if v, ok := value.(CmdTypeXAutoClaimValue); ok {
 				c.SetVal(v.messages, v.start)
+				return nil
 			}
 		}
 	case CmdTypeXAutoClaimWithDeleted:
-		if c, ok := cmd.(*XAutoClaimWithDeletedCmd); ok {
+		if c, ok := cmd.(interface {
+			SetVal([]XMessage, string, []string)
+		}); ok {
 			if v, ok := value.(CmdTypeXAutoClaimWithDeletedValue); ok {
 				c.SetVal(v.messages, v.start, v.deletedIDs)
+				return nil
 			}
 		}
 	case CmdTypeXAutoClaimJustID:
-		if c, ok := cmd.(*XAutoClaimJustIDCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]string, string) }); ok {
 			if v, ok := value.(CmdTypeXAutoClaimJustIDValue); ok {
 				c.SetVal(v.ids, v.start)
+				return nil
 			}
 		}
 	case CmdTypeXInfoConsumers:
-		if c, ok := cmd.(*XInfoConsumersCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]XInfoConsumer) }); ok {
 			if v, ok := value.([]XInfoConsumer); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeXInfoGroups:
-		if c, ok := cmd.(*XInfoGroupsCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]XInfoGroup) }); ok {
 			if v, ok := value.([]XInfoGroup); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeXInfoStream:
-		if c, ok := cmd.(*XInfoStreamCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(*XInfoStream) }); ok {
 			if v, ok := value.(*XInfoStream); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeXInfoStreamFull:
-		if c, ok := cmd.(*XInfoStreamFullCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(*XInfoStreamFull) }); ok {
 			if v, ok := value.(*XInfoStreamFull); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeZSlice:
-		if c, ok := cmd.(*ZSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]Z) }); ok {
 			if v, ok := value.([]Z); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeZWithKey:
-		if c, ok := cmd.(*ZWithKeyCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(*ZWithKey) }); ok {
 			if v, ok := value.(*ZWithKey); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeScan:
-		if c, ok := cmd.(*ScanCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]string, uint64) }); ok {
 			if v, ok := value.(CmdTypeScanValue); ok {
 				c.SetVal(v.keys, v.cursor)
+				return nil
 			}
 		}
 	case CmdTypeClusterSlots:
-		if c, ok := cmd.(*ClusterSlotsCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]ClusterSlot) }); ok {
 			if v, ok := value.([]ClusterSlot); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeGeoLocation:
-		if c, ok := cmd.(*GeoLocationCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]GeoLocation) }); ok {
 			if v, ok := value.([]GeoLocation); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeGeoSearchLocation:
-		if c, ok := cmd.(*GeoSearchLocationCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]GeoLocation) }); ok {
 			if v, ok := value.([]GeoLocation); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeGeoPos:
-		if c, ok := cmd.(*GeoPosCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]*GeoPos) }); ok {
 			if v, ok := value.([]*GeoPos); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeCommandsInfo:
-		if c, ok := cmd.(*CommandsInfoCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(map[string]*CommandInfo) }); ok {
 			if v, ok := value.(map[string]*CommandInfo); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeSlowLog:
-		if c, ok := cmd.(*SlowLogCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]SlowLog) }); ok {
 			if v, ok := value.([]SlowLog); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeMapStringStringSlice:
-		if c, ok := cmd.(*MapStringStringSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]map[string]string) }); ok {
 			if v, ok := value.([]map[string]string); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeMapMapStringInterface:
-		if c, ok := cmd.(*MapMapStringInterfaceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(map[string]interface{}) }); ok {
 			if v, ok := value.(map[string]interface{}); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeMapStringInterfaceSlice:
-		if c, ok := cmd.(*MapStringInterfaceSliceCmd); ok {
+		if c, ok := cmd.(interface {
+			SetVal([]map[string]interface{})
+		}); ok {
 			if v, ok := value.([]map[string]interface{}); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeKeyValues:
-		if c, ok := cmd.(*KeyValuesCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(string, []string) }); ok {
 			// KeyValuesCmd needs a key string and values slice
 			if v, ok := value.(CmdTypeKeyValuesValue); ok {
 				c.SetVal(v.key, v.values)
+				return nil
 			}
 		}
 	case CmdTypeZSliceWithKey:
-		if c, ok := cmd.(*ZSliceWithKeyCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(string, []Z) }); ok {
 			// ZSliceWithKeyCmd needs a key string and Z slice
 			if v, ok := value.(CmdTypeZSliceWithKeyValue); ok {
 				c.SetVal(v.key, v.zSlice)
+				return nil
 			}
 		}
 	case CmdTypeFunctionList:
-		if c, ok := cmd.(*FunctionListCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]Library) }); ok {
 			if v, ok := value.([]Library); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeFunctionStats:
-		if c, ok := cmd.(*FunctionStatsCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(FunctionStats) }); ok {
 			if v, ok := value.(FunctionStats); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeLCS:
-		if c, ok := cmd.(*LCSCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(*LCSMatch) }); ok {
 			if v, ok := value.(*LCSMatch); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeKeyFlags:
-		if c, ok := cmd.(*KeyFlagsCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]KeyFlags) }); ok {
 			if v, ok := value.([]KeyFlags); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeClusterLinks:
-		if c, ok := cmd.(*ClusterLinksCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]ClusterLink) }); ok {
 			if v, ok := value.([]ClusterLink); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeClusterShards:
-		if c, ok := cmd.(*ClusterShardsCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]ClusterShard) }); ok {
 			if v, ok := value.([]ClusterShard); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeRankWithScore:
-		if c, ok := cmd.(*RankWithScoreCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(RankScore) }); ok {
 			if v, ok := value.(RankScore); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeClientInfo:
-		if c, ok := cmd.(*ClientInfoCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(*ClientInfo) }); ok {
 			if v, ok := value.(*ClientInfo); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeACLLog:
-		if c, ok := cmd.(*ACLLogCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]*ACLLogEntry) }); ok {
 			if v, ok := value.([]*ACLLogEntry); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeInfo:
-		if c, ok := cmd.(*InfoCmd); ok {
+		if c, ok := cmd.(interface {
+			SetVal(map[string]map[string]string)
+		}); ok {
 			if v, ok := value.(map[string]map[string]string); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeMonitor:
 		// MonitorCmd doesn't have SetVal method
 		// Skip setting value for MonitorCmd
 	case CmdTypeJSON:
-		if c, ok := cmd.(*JSONCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(string) }); ok {
 			if v, ok := value.(string); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeJSONSlice:
-		if c, ok := cmd.(*JSONSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]interface{}) }); ok {
 			if v, ok := value.([]interface{}); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeIntPointerSlice:
-		if c, ok := cmd.(*IntPointerSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]*int64) }); ok {
 			if v, ok := value.([]*int64); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeScanDump:
-		if c, ok := cmd.(*ScanDumpCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(ScanDump) }); ok {
 			if v, ok := value.(ScanDump); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeBFInfo:
-		if c, ok := cmd.(*BFInfoCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(BFInfo) }); ok {
 			if v, ok := value.(BFInfo); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeCFInfo:
-		if c, ok := cmd.(*CFInfoCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(CFInfo) }); ok {
 			if v, ok := value.(CFInfo); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeCMSInfo:
-		if c, ok := cmd.(*CMSInfoCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(CMSInfo) }); ok {
 			if v, ok := value.(CMSInfo); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeTopKInfo:
-		if c, ok := cmd.(*TopKInfoCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(TopKInfo) }); ok {
 			if v, ok := value.(TopKInfo); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeTDigestInfo:
-		if c, ok := cmd.(*TDigestInfoCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(TDigestInfo) }); ok {
 			if v, ok := value.(TDigestInfo); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeFTSynDump:
-		if c, ok := cmd.(*FTSynDumpCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]FTSynDumpResult) }); ok {
 			if v, ok := value.([]FTSynDumpResult); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeAggregate:
-		if c, ok := cmd.(*AggregateCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(*FTAggregateResult) }); ok {
 			if v, ok := value.(*FTAggregateResult); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeFTInfo:
-		if c, ok := cmd.(*FTInfoCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(FTInfoResult) }); ok {
 			if v, ok := value.(FTInfoResult); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeFTSpellCheck:
-		if c, ok := cmd.(*FTSpellCheckCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]SpellCheckResult) }); ok {
 			if v, ok := value.([]SpellCheckResult); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeFTSearch:
-		if c, ok := cmd.(*FTSearchCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(FTSearchResult) }); ok {
 			if v, ok := value.(FTSearchResult); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeTSTimestampValue:
-		if c, ok := cmd.(*TSTimestampValueCmd); ok {
+		if c, ok := cmd.(interface{ SetVal(TSTimestampValue) }); ok {
 			if v, ok := value.(TSTimestampValue); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
 	case CmdTypeTSTimestampValueSlice:
-		if c, ok := cmd.(*TSTimestampValueSliceCmd); ok {
+		if c, ok := cmd.(interface{ SetVal([]TSTimestampValue) }); ok {
 			if v, ok := value.([]TSTimestampValue); ok {
 				c.SetVal(v)
+				return nil
 			}
 		}
-	default:
-		// Fallback to reflection for unknown types
-		return c.setCommandValueReflection(cmd, value)
 	}
 
-	return nil
+	// Custom commands can expose a compatible setter without a built-in type.
+	return c.setCommandValueReflection(cmd, value)
 }
 
 // normalizeAggregatedCommandValue rejects mismatched results before SetVal.
@@ -1534,7 +1848,7 @@ func normalizeAggregatedCommandValue(cmd Cmder, value interface{}) (interface{},
 	}
 
 	cmdValue := reflect.ValueOf(cmd)
-	if cmdValue.Kind() != reflect.Pointer || cmdValue.IsNil() {
+	if !cmdValue.IsValid() || (cmdValue.Kind() == reflect.Pointer && cmdValue.IsNil()) {
 		return nil, errInvalidCmdPointer
 	}
 	setVal := cmdValue.MethodByName("SetVal")
@@ -1551,7 +1865,7 @@ func normalizeAggregatedCommandValue(cmd Cmder, value interface{}) (interface{},
 // setCommandValueReflection is a fallback function that uses reflection
 func (c *ClusterClient) setCommandValueReflection(cmd Cmder, value interface{}) (retErr error) {
 	cmdValue := reflect.ValueOf(cmd)
-	if cmdValue.Kind() != reflect.Pointer || cmdValue.IsNil() {
+	if !cmdValue.IsValid() || (cmdValue.Kind() == reflect.Pointer && cmdValue.IsNil()) {
 		return errInvalidCmdPointer
 	}
 
