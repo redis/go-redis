@@ -45,4 +45,7 @@ func TestParseClientInfoEqualsInValue(t *testing.T) {
 	if info.Name != "app=web" || info.User != "a=b" || info.LibName != "go-redis(env=prod,go1.26.0)" {
 		t.Fatalf("Name=%q User=%q LibName=%q", info.Name, info.User, info.LibName)
 	}
+	if _, err := parseClientInfo("id=1 garbage db=0"); err == nil {
+		t.Fatal("a field without \"=\" must still return an error")
+	}
 }
