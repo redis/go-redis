@@ -2945,7 +2945,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 func (c *ClusterClient) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.Subscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.Subscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -2957,7 +2957,7 @@ func (c *ClusterClient) Subscribe(ctx context.Context, channels ...string) *PubS
 func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.PSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.PSubscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -2969,7 +2969,7 @@ func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *Pub
 func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.SSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.SSubscribe(ctx, channels...))
 	}
 	return pubsub
 }

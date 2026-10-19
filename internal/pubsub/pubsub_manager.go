@@ -400,9 +400,13 @@ func (m *Manager) handleSubscribe(ctx context.Context, h *handle, redisCommand s
 		}
 	}
 
-	// An already-cancelled caller gets nothing done on its behalf: bow
-	// out before touching any state.
-	if err := ctx.Err(); err != nil {
+	// An already-cancelled caller without a handle gets nothing done on
+	// its behalf: bow out before touching any state. A caller-held handle
+	// keeps the intent, as across a failed dial (see below), since a
+	// client's Subscribe hands out the PubSub whatever this returns: the
+	// write ignores ctx (see socketCtx), and with no connection the dial
+	// connectLocked starts outlives the abandoned wait and replays it.
+	if err := ctx.Err(); err != nil && h == nil {
 		return nil, err
 	}
 
@@ -2134,6 +2138,17 @@ func (m *Manager) retireIfWanted(cn *pool.Conn) {
 	defer m.mu.Unlock()
 
 	if m.dialer.inFlightLocked() {
+		return
+	}
+
+	// Left with only UNSUBSCRIBEs in flight, the connection is needed
+	// just until their confirmations, and the messages ahead of them,
+	// arrive (see Manager.leavingChannels): replaceLocked would drop it
+	// as idle, synthesizing them and losing those messages. The last
+	// confirmation releases it (see releaseIfIdleLocked); a subscribe
+	// meanwhile makes the next frame retire it again, and a dead one is
+	// still dropped by the health check.
+	if m.noSubscribersLocked() && m.anyLeavingLocked() {
 		return
 	}
 

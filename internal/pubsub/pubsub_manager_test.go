@@ -1569,6 +1569,61 @@ func TestHandoffDropsStaleProtocolFrames(t *testing.T) {
 	}
 }
 
+// TestHandoffKeepsLeavingConnection pins that a planned retirement (a
+// handoff mark) of a connection left with only an UNSUBSCRIBE in flight
+// does not drop it as idle: the releasing handle still gets every
+// message published ahead of the confirmation, then the server's
+// confirmation, after which the connection is released — nothing is
+// subscribed, so nothing redials.
+func TestHandoffKeepsLeavingConnection(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node-a:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	fsc.sendConfirm(t, "subscribe", "ch", 1)
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	if err := h.Unsubscribe(ctx, "ch"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "ch")
+	if err := fsc.poolConn.MarkForHandoff("node-b:6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	// Each frame read consults the retirement; the first must not drop
+	// the connection out from under the second.
+	fsc.sendMessage(t, "message", "ch", "in-flight-1")
+	fsc.sendMessage(t, "message", "ch", "in-flight-2")
+	fsc.sendConfirm(t, "unsubscribe", "ch", 0)
+
+	for _, want := range []string{"in-flight-1", "in-flight-2"} {
+		msg, ok := recvEvent(t, h.Events()).(*Message)
+		if !ok || msg.Payload != want {
+			t.Fatalf("got %#v, want message %q ahead of the unsubscribe confirmation", msg, want)
+		}
+	}
+	if sub, ok := recvEvent(t, h.Events()).(*Subscription); !ok || sub.Kind != "unsubscribe" || sub.Channel != "ch" {
+		t.Fatalf("got %#v, want the unsubscribe ch confirmation", sub)
+	}
+
+	for deadline := time.Now().Add(5 * time.Second); m.conn.Load() != nil; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("connection not released after the last confirmation")
+		}
+	}
+	select {
+	case fsc2 := <-srv.dialCh:
+		t.Fatalf("nothing subscribed, yet the handoff redialed to %q", fsc2.addr)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // TestCloseIfIdleSparesLiveEmptyHandles pins that idleness means no
 // live handles, not just empty registries: a handle without
 // subscriptions (NewHandle, or fully unsubscribed) is an open

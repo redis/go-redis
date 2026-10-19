@@ -1146,10 +1146,11 @@ func TestFailedFirstDialResolvesLaterDials(t *testing.T) {
 }
 
 // TestExpiredContextDoesNotDropConnection pins that a caller whose
-// context is already done gets its error back without touching the
-// shared connection: a write on its behalf would fail before any byte
-// is sent, and dropping the connection for it would cost every other
-// subscriber a reconnect.
+// context is already done never costs the shared connection: dropping it
+// would cost every other subscriber a reconnect. A Ping gets its error
+// back with nothing written. A Subscribe on a held handle keeps its
+// intent — a client's Subscribe hands out the PubSub whatever it
+// returns — and, the write ignoring the caller's ctx, subscribes.
 func TestExpiredContextDoesNotDropConnection(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
@@ -1166,22 +1167,23 @@ func TestExpiredContextDoesNotDropConnection(t *testing.T) {
 
 	expired, cancel := context.WithCancel(ctx)
 	cancel()
-	// Repeated: no attempt may write or redial on the caller's behalf.
+	// Repeated: no Ping may write or redial on the caller's behalf.
 	for range 20 {
 		if err := h.Ping(expired); !errors.Is(err, context.Canceled) {
 			t.Fatalf("Ping with a cancelled context = %v, want context.Canceled", err)
 		}
-		if _, err := h.Subscribe(expired, "b"); !errors.Is(err, context.Canceled) {
-			t.Fatalf("Subscribe with a cancelled context = %v, want context.Canceled", err)
-		}
 	}
-	if channels, _, _ := h.Subscriptions(); len(channels) != 1 || channels[0] != "a" {
-		t.Fatalf("subscriptions after cancelled Subscribe = %v, want [a]", channels)
+	fsc.expectNoCmd(t, 100*time.Millisecond)
+
+	if _, err := h.Subscribe(expired, "b"); err != nil {
+		t.Fatalf("Subscribe with a cancelled context on a live connection = %v, want nil", err)
+	}
+	fsc.expectCmd(t, "subscribe", "b")
+	if channels, _, _ := h.Subscriptions(); len(channels) != 2 {
+		t.Fatalf("subscriptions after cancelled Subscribe = %v, want [a b]", channels)
 	}
 
-	// The connection is intact: nothing was written, nothing redialed,
-	// and delivery continues.
-	fsc.expectNoCmd(t, 100*time.Millisecond)
+	// The connection is intact: nothing redialed, and delivery continues.
 	select {
 	case fsc2 := <-srv.dialCh:
 		t.Fatalf("a cancelled caller cost a reconnect to %s", fsc2.addr)
@@ -1191,6 +1193,32 @@ func TestExpiredContextDoesNotDropConnection(t *testing.T) {
 	if msg := recvMsg(t, ch); msg.Payload != "alive" {
 		t.Fatalf("got %q, want \"alive\"", msg.Payload)
 	}
+}
+
+// TestExpiredContextSubscribeKeepsIntent pins that a held handle's
+// Subscribe with a context already done, and no connection yet, keeps
+// its registration: a client's Subscribe hands out the PubSub without
+// the error, so dropping the names would leave a live PubSub that never
+// subscribes. The dial it starts outlives the abandoned wait and its
+// replay subscribes them.
+func TestExpiredContextSubscribeKeepsIntent(t *testing.T) {
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	h := m.NewHandle()
+	if _, err := h.Subscribe(expired, "ch"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Subscribe with a cancelled context = %v, want context.Canceled", err)
+	}
+	if channels, _, _ := h.Subscriptions(); len(channels) != 1 || channels[0] != "ch" {
+		t.Fatalf("subscriptions after cancelled Subscribe = %v, want [ch]", channels)
+	}
+
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
 }
 
 // TestCallerDeadlineDoesNotBoundSharedWrite pins the other half of the

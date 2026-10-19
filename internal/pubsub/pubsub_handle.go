@@ -338,6 +338,13 @@ func (h *handle) ClientSetName(ctx context.Context, name string) error {
 	return h.m.clientSetName(ctx, h, name)
 }
 
+// DeliverError puts err on the handle's Events (see PubSuber).
+func (h *handle) DeliverError(err error) {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	h.deliverLocked(err)
+}
+
 // Close unsubscribes the handle from everything and ends its delivery
 // stream. Subsequent calls return pool.ErrClosed, except after the
 // manager itself closed (closing a subscriber of a closed client is a

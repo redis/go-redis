@@ -927,7 +927,7 @@ func (c *SentinelClient) Ping(ctx context.Context) *StringCmd {
 func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.Subscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.Subscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -937,7 +937,7 @@ func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) *Pub
 func (c *SentinelClient) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.PSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.PSubscribe(ctx, channels...))
 	}
 	return pubsub
 }

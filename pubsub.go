@@ -131,6 +131,16 @@ func newPubSub(manager pubsub.PubSubManagerer) *PubSub {
 	return &PubSub{handle: manager.NewHandle()}
 }
 
+// reportInitialErr delivers the error of the subscribe a client's
+// Subscribe/PSubscribe/SSubscribe ran on the PubSub it hands out without
+// that error, so the first Receive reports it instead of blocking. A
+// failed dial keeps the registration, so the reconnect still retries it.
+func (c *PubSub) reportInitialErr(err error) {
+	if err != nil {
+		c.handle.DeliverError(err)
+	}
+}
+
 func (c *PubSub) String() string {
 	channels, patterns, schannels := c.handle.Subscriptions()
 	names := append(channels, patterns...)
@@ -253,7 +263,11 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 // This method blocks until a message is received or an error occurs.
 // It may return early with an error if the context is canceled or the
 // PubSub is closed. Connection failures are handled internally: the
-// shared connection reconnects and resubscribes on its own.
+// shared connection reconnects and resubscribes on its own. The one
+// exception is the subscribe a client's Subscribe/PSubscribe/SSubscribe
+// runs: its failure (e.g. an unreachable address or rejected
+// credentials) is returned by the first Receive, while the reconnect
+// keeps retrying it.
 func (c *PubSub) Receive(ctx context.Context) (interface{}, error) {
 	return c.ReceiveTimeout(ctx, 0)
 }

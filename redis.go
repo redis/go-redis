@@ -2973,7 +2973,7 @@ func (c *baseClient) pubsubDisconnect(cn *pool.Conn) error {
 func (c *Client) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.Subscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.Subscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -2983,7 +2983,7 @@ func (c *Client) Subscribe(ctx context.Context, channels ...string) *PubSub {
 func (c *Client) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.PSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.PSubscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -2993,7 +2993,7 @@ func (c *Client) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 func (c *Client) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.SSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.SSubscribe(ctx, channels...))
 	}
 	return pubsub
 }

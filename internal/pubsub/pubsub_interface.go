@@ -45,6 +45,10 @@ type PubSuber interface {
 	// PingSilent is Ping without the Events pong.
 	PingSilent(ctx context.Context, payload ...string) error
 	ClientSetName(ctx context.Context, name string) error
+	// DeliverError puts err on Events, for a failure the caller could
+	// not return (a client's Subscribe hands out the PubSub without its
+	// error). Dropped, like any event, on a closed handle or full buffer.
+	DeliverError(err error)
 	Close() error
 }
 

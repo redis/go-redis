@@ -138,6 +138,10 @@ func (h *clusterStubHandle) ClientSetName(context.Context, string) error {
 	return ErrClusterNotImplemented
 }
 
+// DeliverError is a no-op: the streams are closed from birth, so
+// Receive already reports pool.ErrClosed.
+func (h *clusterStubHandle) DeliverError(error) {}
+
 // Close marks the handle closed. Subsequent calls return
 // pool.ErrClosed, except after the manager itself closed (closing a
 // subscriber of a closed client is a nil no-op), like handle.Close.
