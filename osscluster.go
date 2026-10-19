@@ -156,13 +156,16 @@ type ClusterOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
-	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
-	// configure an optional separate connection pool used for pipelining on
-	// each node, with its own (typically larger) buffers. See the same-named
-	// fields on Options for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
+	// PipelineReadBufferSize, PipelineWriteBufferSize, PipelinePoolSize and
+	// PipelineMinIdleConns configure the separate connection pool used for
+	// pipelining on each node, with its own (typically larger) buffers. See the
+	// same-named fields on Options for details. Each node client creates this
+	// pool by default; set PipelinePoolSize < 0 to opt out (pipelines run on the
+	// main pool).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
+	PipelineMinIdleConns    int
 
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces
 	// (AutoPipeline and AsyncAutoPipeline), applied when they are called
@@ -332,6 +335,7 @@ func (opt *ClusterOptions) init() {
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
+//   - use "skip_verify=true" to ignore TLS certificate validation
 //
 // Example:
 //
@@ -404,6 +408,11 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.DialerRetryTimeout = q.duration("dialer_retry_timeout")
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
+	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
+	o.ReadBufferSize = q.int("read_buffer_size")
+	o.WriteBufferSize = q.int("write_buffer_size")
+	o.DisableIdentity = q.bool("disable_identity")
+	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
@@ -413,6 +422,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	// Pipeline pool (per node, created by default): allow URL opt-out
 	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
 	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineMinIdleConns = q.int("pipeline_min_idle_conns")
 	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
 	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.PoolTimeout = q.duration("pool_timeout")
@@ -422,6 +432,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	}
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.FailingTimeoutSeconds = q.int("failing_timeout_seconds")
+	if o.TLSConfig != nil && q.has("skip_verify") {
+		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
+	}
 
 	if q.err != nil {
 		return nil, q.err
@@ -495,6 +508,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
+		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
 		DisableIdentity:         opt.DisableIdentity,
 		DisableIndentity:        opt.DisableIndentity,
 		IdentitySuffix:          opt.IdentitySuffix,
