@@ -748,9 +748,13 @@ func toString(val interface{}) (string, error) {
 }
 
 // formatDouble writes f the way Redis writes a double on RESP2 (d2string and
-// fpconv_dtoa), so that 1e100 is "1e+100" and not 101 digits. Redis' Grisu2
-// sometimes prints different last digits than the shortest form used here;
-// both strings parse to the same float64.
+// fpconv_dtoa), so that 1e100 is "1e+100" and not 101 digits. The digits come
+// from Go's shortest round-trip form, while Redis uses Grisu2, which sometimes
+// prints different last digits. Both strings parse to the same float64, so
+// Float64 always matches RESP2. Text can differ in the last digits, and so can
+// Int, Int64 and Uint64 for integral values above 2^62: RESP2 returns
+// 8430098825600961000 where this returns 8430098825600960000. A double does
+// not hold integers that large exactly, so both are approximations.
 func formatDouble(f float64) string {
 	if f == 0 || math.IsNaN(f) || math.IsInf(f, 0) {
 		return internal.FormatFloat(f)
