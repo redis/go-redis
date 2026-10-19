@@ -2693,14 +2693,27 @@ func (c *Client) Conn() *Conn {
 // instead of returning it to the pool. Session state a Conn sets (AUTH,
 // SELECT, CLIENT SETNAME, CLIENT TRACKING, RESET, ...) cannot be undone
 // generically on release, so a connection that carried it must not go on to
-// serve unrelated callers. The cost is one dial per EphemeralConn lifetime;
-// Get still reuses an idle pooled connection.
+// serve unrelated callers. Without client-side caching, the first command
+// reuses an idle pooled connection if available.
+//
+// With client-side caching active, the first command dials a fresh, untracked
+// connection so session commands cannot disrupt the parent's cache. Reads on
+// this connection always hit the server. It does not acquire a PoolSize turn
+// and uses the pool's NewConn limits; it does not support maintenance handoff.
+// Close must be called to release the connection.
 func (c *Client) EphemeralConn() *Conn {
 	return c.conn(true)
 }
 
 func (c *Client) conn(discardOnClose bool) *Conn {
-	sticky := c.baseClient.newStickyConnPool()
+	isolated := discardOnClose && c.baseClient.cscTrackingRequested()
+	var sticky *pool.StickyConnPool
+	if isolated {
+		sticky = pool.NewStickyConnPool(c.connPool)
+		sticky.NewConnOnGet()
+	} else {
+		sticky = c.baseClient.newStickyConnPool()
+	}
 	if discardOnClose {
 		sticky.DiscardOnClose()
 	}
@@ -2708,6 +2721,11 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
 	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
+	if isolated {
+		// Never enable tracking or attach the parent's cache to a socket whose
+		// session state the caller may change freely.
+		return conn
+	}
 	// A sticky client does not serve cache hits, but a new pool connection first
 	// initialized through it may later be reused by the parent. Share the
 	// successful-attachment signal so that connection is tracked exactly when

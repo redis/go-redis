@@ -52,6 +52,57 @@ var _ = Describe("Client-side cache (standalone)", func() {
 		}
 	})
 
+	It("isolates EphemeralConn session commands from the cached pool", Label("NonRedisEnterprise"), func() {
+		opt := redisOptions()
+		opt.Protocol = 3
+		opt.PoolSize = 1
+		opt.ClientSideCacheConfig = &redis.ClientSideCacheConfig{MaxEntries: 16}
+		db := redis.NewClient(opt)
+		defer func() { Expect(db.Close()).NotTo(HaveOccurred()) }()
+		Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+		conn := db.EphemeralConn()
+		defer conn.Close()
+
+		Expect(conn.Select(ctx, 1).Err()).NotTo(HaveOccurred())
+		_, err := conn.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Do(ctx, "reset")
+			pipe.Do(ctx, "select", 1)
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		info, err := conn.ClientInfo(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.DB).To(Equal(1))
+		Expect(conn.Close()).NotTo(HaveOccurred())
+
+		info, err = db.ClientInfo(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.DB).To(Equal(0))
+	})
+
+	It("keeps parent cache invalidations after EphemeralConn RESET", func() {
+		key := "csc-e2e-ephemeral-reset"
+		Expect(mutator.Set(ctx, key, "before", 0).Err()).NotTo(HaveOccurred())
+		Expect(client.Get(ctx, key).Val()).To(Equal("before"))
+		Expect(cache.Len()).To(Equal(1))
+
+		conn := client.EphemeralConn()
+		defer func() { Expect(conn.Close()).NotTo(HaveOccurred()) }()
+		// Keep the ephemeral connection open throughout invalidation: relying
+		// on its Close to evict entries would conceal the stale-cache window.
+		Expect(conn.Do(ctx, "reset").Err()).NotTo(HaveOccurred())
+		Expect(cache.Len()).To(Equal(1))
+		Expect(mutator.Set(ctx, key, "after", 0).Err()).NotTo(HaveOccurred())
+		Eventually(func() int {
+			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+			return cache.Len()
+		}, 2*time.Second, 10*time.Millisecond).Should(Equal(0))
+		value, err := client.Get(ctx, key).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(value).To(Equal("after"))
+	})
+
 	It("populates the local cache after a cacheable command is issued", func() {
 		key := "csc-e2e-populate"
 		Expect(mutator.Set(ctx, key, "hello", 0).Err()).NotTo(HaveOccurred())
