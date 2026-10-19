@@ -272,3 +272,68 @@ func TestFreshSessionSharesPrewarmLimits(t *testing.T) {
 		t.Fatalf("prewarm exceeded active limit or leaked turns: stats=%+v turns=%d dials=%d", p.Stats(), p.QueueLen(), calls.Load())
 	}
 }
+
+func TestPrewarmDoesNotHoldTurnsBehindFreshDial(t *testing.T) {
+	ctx := context.Background()
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	var calls atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		PoolSize: 1, MaxConcurrentDials: 1, DialerRetries: 1,
+		PoolTimeout: 30 * time.Millisecond,
+		Dialer: func(context.Context) (net.Conn, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+				<-release
+			}
+			return newDummyConn(), nil
+		},
+	})
+	t.Cleanup(func() { unblock(); _ = p.Close() })
+	done := make(chan error, 1)
+	go func() {
+		cn, err := p.NewConn(ctx)
+		if cn != nil {
+			p.RemoveWithoutTurn(ctx, cn, pool.ErrClosed)
+		}
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("fresh dial did not start")
+	}
+
+	// The dedicated dial owns the only dial permit, but no pool turn.
+	p.RaiseMinIdleConns(1)
+	if turns := p.QueueLen(); turns != 0 {
+		t.Errorf("prewarm reserved %d turns behind a fresh dial, want 0", turns)
+	}
+	getCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	cn, err := p.Get(getCtx)
+	if cn != nil {
+		p.Remove(ctx, cn, pool.ErrClosed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Get waiting for dial capacity: %v, want context deadline, not PoolTimeout", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("dial calls=%d, want only the dedicated dial", n)
+	}
+	unblock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	// A later check must still be able to replenish the idle floor.
+	p.CheckMinIdleConns()
+	deadline := time.Now().Add(time.Second)
+	for (p.QueueLen() != 0 || p.Len() != 1) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if p.QueueLen() != 0 || p.Len() != 1 || p.IdleLen() != 1 {
+		t.Fatalf("prewarm did not recover: stats=%+v turns=%d", p.Stats(), p.QueueLen())
+	}
+}

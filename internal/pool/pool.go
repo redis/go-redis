@@ -641,8 +641,14 @@ func (p *ConnPool) checkMinIdleConns() {
 		// Only create idle connections if we haven't reached the total pool size limit
 		// MinIdleConns should be a subset of PoolSize, not additional connections
 		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < minIdle {
+			// Prewarm is opportunistic: never hold a pool turn while waiting
+			// behind dedicated dials, which do not acquire turns themselves.
+			if !p.tryAcquireDialSlot() {
+				break
+			}
 			// Try to acquire a semaphore token
 			if !p.semaphore.TryAcquire() {
+				p.releaseDialSlot()
 				// Semaphore is full, can't create more connections right now
 				// Break out of inner loop to check if we need to retry
 				break
@@ -651,6 +657,7 @@ func (p *ConnPool) checkMinIdleConns() {
 			p.poolSize.Add(1)
 			p.idleConnsLen.Add(1)
 			go func() {
+				defer p.releaseDialSlot()
 				defer func() {
 					if err := recover(); err != nil {
 						p.poolSize.Add(-1)
@@ -680,11 +687,8 @@ func (p *ConnPool) checkMinIdleConns() {
 	}
 }
 
+// addIdleConn is called with a dial slot already held by checkMinIdleConns.
 func (p *ConnPool) addIdleConn() error {
-	if err := p.acquireDialSlot(context.Background()); err != nil {
-		return err
-	}
-	defer p.releaseDialSlot()
 	if err := p.reserveConn(); err != nil {
 		return err
 	}
@@ -761,6 +765,21 @@ func (p *ConnPool) acquireDialSlot(ctx context.Context) error {
 		return ctx.Err()
 	case <-p.closedCh:
 		return ErrClosed
+	}
+}
+
+func (p *ConnPool) tryAcquireDialSlot() bool {
+	if p.closed() {
+		return false
+	}
+	if cap(p.dialsInProgress) == 0 {
+		return true
+	}
+	select {
+	case p.dialsInProgress <- struct{}{}:
+		return true
+	default:
+		return false
 	}
 }
 
