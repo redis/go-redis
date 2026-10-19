@@ -783,6 +783,10 @@ func TestParseURLConnectionOptions(t *testing.T) {
 	if !fo.DisableIdentity || fo.IdentitySuffix != "legacy" {
 		t.Fatalf("ParseFailoverURL camelCase opts: disable=%v suffix=%q", fo.DisableIdentity, fo.IdentitySuffix)
 	}
+	// Both spellings of one option are rejected, like idle_timeout + conn_max_idle_time.
+	if _, err = ParseFailoverURL("redis://localhost:6379?master_name=mymaster&disable_identity=true&disableIdentity=true"); err == nil {
+		t.Fatal("ParseFailoverURL accepted both disable_identity and disableIdentity")
+	}
 
 	// Without the parameters every field keeps its zero value.
 	o, err = ParseURL("redis://localhost:6379")
