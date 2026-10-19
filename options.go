@@ -84,6 +84,8 @@ type Options struct {
 	// Username is used to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
+	// A Username with an empty Password authenticates as that user with an
+	// empty password, which the server accepts for users created with nopass.
 	Username string
 
 	// Password is an optional password. Must match the password specified in the
@@ -1118,8 +1120,15 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
 	o.DialTimeout = q.duration("dial_timeout")
+	o.DialerRetries = q.int("dialer_retries")
+	o.DialerRetryTimeout = q.duration("dialer_retry_timeout")
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
+	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
+	o.ReadBufferSize = q.int("read_buffer_size")
+	o.WriteBufferSize = q.int("write_buffer_size")
+	o.DisableIdentity = q.bool("disable_identity")
+	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.PoolTimeout = q.duration("pool_timeout")
