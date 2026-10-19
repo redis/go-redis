@@ -788,7 +788,7 @@ func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, 
 //
 // Redis 8.4+. See https://redis.io/commands/set/
 //
-// NOTE SetIFNEQ is still experimental
+// NOTE SetIFDEQ is still experimental
 // its signature and behaviour may change
 func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
@@ -825,7 +825,7 @@ func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, ma
 //
 // Redis 8.4+. See https://redis.io/commands/set/
 //
-// NOTE SetIFNEQGet is still experimental
+// NOTE SetIFDEQGet is still experimental
 // its signature and behaviour may change
 func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
