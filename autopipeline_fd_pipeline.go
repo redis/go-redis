@@ -52,8 +52,8 @@ var ErrFDPipelineUnavailable = errors.New(
 var ErrFDPipelineDiverts = errors.New(
 	"redis: FDPipelined got a command that must be diverted off the full-duplex pipe")
 
-// ErrFDPipelineSpansEngines is returned when NumShards > 1 runs several
-// full-duplex engines and the batch's keyed commands hash to different ones.
+// ErrFDPipelineSpansEngines is returned when FullDuplexPipes > 1 runs several
+// full-duplex engines (pipes) and the batch's keyed commands hash to different ones.
 // The batch can only ride one wire, and keeping per-first-key order needs each
 // command on its own key's engine, so it is refused rather than split.
 // Pipeline() falls back to an ordinary pipeline for such a batch.

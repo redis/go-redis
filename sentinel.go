@@ -127,14 +127,15 @@ type FailoverOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
-	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
-	// configure the separate connection pool used for pipelining, with its own
-	// (typically larger) buffers. See the same-named fields on Options for
-	// details. NewFailoverClient creates this pool by default; set
+	// PipelineReadBufferSize, PipelineWriteBufferSize, PipelinePoolSize and
+	// PipelineMinIdleConns configure the separate connection pool used for
+	// pipelining, with its own (typically larger) buffers. See the same-named
+	// fields on Options for details. NewFailoverClient creates this pool by default; set
 	// PipelinePoolSize < 0 to opt out (pipelines then run on the main pool).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
+	PipelineMinIdleConns    int
 
 	// AutoPipelineOptions is the default config for the client's autopipeliner
 	// faces. See Options.AutoPipelineOptions.
@@ -222,6 +223,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
+		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
 		AutoPipelineOptions:     opt.AutoPipelineOptions,
 
 		DialTimeout:        opt.DialTimeout,
@@ -344,6 +346,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
+		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
 		AutoPipelineOptions:     opt.AutoPipelineOptions,
 
 		DialTimeout:        opt.DialTimeout,
@@ -481,6 +484,8 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
 	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
+	o.ReadBufferSize = q.int("read_buffer_size")
+	o.WriteBufferSize = q.int("write_buffer_size")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
@@ -490,6 +495,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	// Pipeline pool (created by default): allow URL opt-out
 	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
 	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineMinIdleConns = q.int("pipeline_min_idle_conns")
 	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
 	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
@@ -498,8 +504,18 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	}
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.PoolTimeout = q.duration("pool_timeout")
-	o.DisableIdentity = q.bool("disableIdentity")
-	o.IdentitySuffix = q.string("identitySuffix")
+	// disableIdentity and identitySuffix are the original camelCase spellings;
+	// the snake_case names match the other URL parsers and the ParseURL docs.
+	if q.has("disable_identity") {
+		o.DisableIdentity = q.bool("disable_identity")
+	} else {
+		o.DisableIdentity = q.bool("disableIdentity")
+	}
+	if q.has("identity_suffix") {
+		o.IdentitySuffix = q.string("identity_suffix")
+	} else {
+		o.IdentitySuffix = q.string("identitySuffix")
+	}
 	o.UnstableResp3 = q.bool("unstable_resp3")
 
 	if q.err != nil {
