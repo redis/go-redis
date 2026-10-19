@@ -19,10 +19,10 @@ type TimeseriesCmdable interface {
 	TSAlter(ctx context.Context, key string, options *TSAlterOptions) *StatusCmd
 	TSCreateRule(ctx context.Context, sourceKey string, destKey string, aggregator Aggregator, bucketDuration int) *StatusCmd
 	TSCreateRuleWithArgs(ctx context.Context, sourceKey string, destKey string, aggregator Aggregator, bucketDuration int, options *TSCreateRuleOptions) *StatusCmd
-	TSIncrBy(ctx context.Context, Key string, timestamp float64) *IntCmd
-	TSIncrByWithArgs(ctx context.Context, key string, timestamp float64, options *TSIncrDecrOptions) *IntCmd
-	TSDecrBy(ctx context.Context, Key string, timestamp float64) *IntCmd
-	TSDecrByWithArgs(ctx context.Context, key string, timestamp float64, options *TSIncrDecrOptions) *IntCmd
+	TSIncrBy(ctx context.Context, Key string, value float64) *IntCmd
+	TSIncrByWithArgs(ctx context.Context, key string, value float64, options *TSIncrDecrOptions) *IntCmd
+	TSDecrBy(ctx context.Context, Key string, value float64) *IntCmd
+	TSDecrByWithArgs(ctx context.Context, key string, value float64, options *TSIncrDecrOptions) *IntCmd
 	TSDel(ctx context.Context, Key string, fromTimestamp int, toTimestamp int) *IntCmd
 	TSDeleteRule(ctx context.Context, sourceKey string, destKey string) *StatusCmd
 	TSGet(ctx context.Context, key string) *TSTimestampValueCmd
@@ -460,8 +460,8 @@ func (c cmdable) TSCreateRuleWithArgs(ctx context.Context, sourceKey string, des
 
 // TSIncrBy - Increments the value of a time-series key by the specified value.
 // For more information - https://redis.io/commands/ts.incrby/
-func (c cmdable) TSIncrBy(ctx context.Context, Key string, timestamp float64) *IntCmd {
-	args := []interface{}{"TS.INCRBY", Key, timestamp}
+func (c cmdable) TSIncrBy(ctx context.Context, Key string, value float64) *IntCmd {
+	args := []interface{}{"TS.INCRBY", Key, value}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -471,8 +471,8 @@ func (c cmdable) TSIncrBy(ctx context.Context, Key string, timestamp float64) *I
 // This function allows for specifying additional options such as:
 // Timestamp, Retention, ChunkSize, Uncompressed and Labels.
 // For more information - https://redis.io/commands/ts.incrby/
-func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, timestamp float64, options *TSIncrDecrOptions) *IntCmd {
-	args := []interface{}{"TS.INCRBY", key, timestamp}
+func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, value float64, options *TSIncrDecrOptions) *IntCmd {
+	args := []interface{}{"TS.INCRBY", key, value}
 	if options != nil {
 		if options.Timestamp != 0 {
 			args = append(args, "TIMESTAMP", options.Timestamp)
@@ -506,8 +506,8 @@ func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, timestamp flo
 
 // TSDecrBy - Decrements the value of a time-series key by the specified value.
 // For more information - https://redis.io/commands/ts.decrby/
-func (c cmdable) TSDecrBy(ctx context.Context, Key string, timestamp float64) *IntCmd {
-	args := []interface{}{"TS.DECRBY", Key, timestamp}
+func (c cmdable) TSDecrBy(ctx context.Context, Key string, value float64) *IntCmd {
+	args := []interface{}{"TS.DECRBY", Key, value}
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -517,8 +517,8 @@ func (c cmdable) TSDecrBy(ctx context.Context, Key string, timestamp float64) *I
 // This function allows for specifying additional options such as:
 // Timestamp, Retention, ChunkSize, Uncompressed and Labels.
 // For more information - https://redis.io/commands/ts.decrby/
-func (c cmdable) TSDecrByWithArgs(ctx context.Context, key string, timestamp float64, options *TSIncrDecrOptions) *IntCmd {
-	args := []interface{}{"TS.DECRBY", key, timestamp}
+func (c cmdable) TSDecrByWithArgs(ctx context.Context, key string, value float64, options *TSIncrDecrOptions) *IntCmd {
+	args := []interface{}{"TS.DECRBY", key, value}
 	if options != nil {
 		if options.Timestamp != 0 {
 			args = append(args, "TIMESTAMP", options.Timestamp)
