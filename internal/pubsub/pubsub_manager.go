@@ -172,6 +172,22 @@ type Manager struct {
 	// subscription.seq). Guarded by mu.
 	regSeq uint64
 
+	// The per-kind leaving sets: per name, the handles that released it
+	// with an UNSUBSCRIBE (the name's last owner leaving) still in
+	// flight, and how many of its confirmations each awaits. The server
+	// delivers every message published before the UNSUBSCRIBE ahead of
+	// its confirmation, and so does the manager: a leaving handle keeps
+	// receiving the name's messages until the confirmation arrives, and
+	// is delivered that confirmation — not a synthesized one at
+	// unsubscribe time, which would overtake them. A lost connection
+	// settles them with synthesized confirmations (see
+	// settleUnsubscribeWaitersLocked). The registries above are not
+	// involved: they hold the desired state, which no longer has the
+	// name. Guarded by mu.
+	leavingChannels map[string]map[*handle]int
+	leavingPatterns map[string]map[*handle]int
+	leavingShards   map[string]map[*handle]int
+
 	// handles tracks every live handle, subscribed or not; pong and
 	// error-reply fan-out iterate all of them.
 	handles map[*handle]struct{}
@@ -253,6 +269,10 @@ func NewManager(
 		patternSubscribers: make(map[string]*subscription),
 		shardSubscribers:   make(map[string]*subscription),
 
+		leavingChannels: make(map[string]map[*handle]int),
+		leavingPatterns: make(map[string]map[*handle]int),
+		leavingShards:   make(map[string]map[*handle]int),
+
 		handles: make(map[*handle]struct{}),
 
 		pingCh:     make(chan struct{}, 1),
@@ -285,6 +305,7 @@ func (m *Manager) newHandleLocked() *handle {
 		channels:  make(map[string]struct{}),
 		patterns:  make(map[string]struct{}),
 		schannels: make(map[string]struct{}),
+		confirmed: make(map[confirmKey]struct{}),
 		events:    make(chan any, m.cfg.ChanSize),
 		done:      make(chan struct{}),
 		dropLog:   internal.NewThrottledLogger(m.cfg.LogInterval, nil),
@@ -701,6 +722,9 @@ func (m *Manager) closeNowLocked(closed *pool.Conn, closedErr error) error {
 	m.subscribers = make(map[string]*subscription)
 	m.patternSubscribers = make(map[string]*subscription)
 	m.shardSubscribers = make(map[string]*subscription)
+	m.leavingChannels = make(map[string]map[*handle]int)
+	m.leavingPatterns = make(map[string]map[*handle]int)
+	m.leavingShards = make(map[string]map[*handle]int)
 	m.replyQueue = nil
 
 	return err
@@ -814,6 +838,95 @@ func (m *Manager) registryForKind(kind string) map[string]*subscription {
 	return nil
 }
 
+// leavingForKind maps a subscribe-family kind onto its leaving set (see
+// Manager.leavingChannels).
+func (m *Manager) leavingForKind(kind string) map[string]map[*handle]int {
+	switch kind {
+	case "subscribe", "unsubscribe":
+		return m.leavingChannels
+	case "psubscribe", "punsubscribe":
+		return m.leavingPatterns
+	case "ssubscribe", "sunsubscribe":
+		return m.leavingShards
+	}
+	return nil
+}
+
+// anyLeavingLocked reports whether an UNSUBSCRIBE is still in flight
+// for a releasing handle: the connection must stay until its
+// confirmation, and the messages ahead of it, arrive. Callers must hold
+// m.mu.
+func (m *Manager) anyLeavingLocked() bool {
+	return len(m.leavingChannels) > 0 || len(m.leavingPatterns) > 0 || len(m.leavingShards) > 0
+}
+
+// settleLeavingLocked settles one confirmation owed for name to each of
+// releasers still awaiting one, delivering it sub (nil: settled without
+// a delivery, as for an error reply). Callers must hold the WRITE lock.
+func (m *Manager) settleLeavingLocked(kind, name string, releasers []*handle, sub *Subscription) {
+	leaving := m.leavingForKind(kind)
+	hs := leaving[name]
+	if hs == nil {
+		return
+	}
+	for _, h := range releasers {
+		n := hs[h]
+		if n == 0 {
+			continue
+		}
+		if n == 1 {
+			delete(hs, h)
+		} else {
+			hs[h] = n - 1
+		}
+		if sub != nil {
+			h.deliverSubscriptionLocked(sub)
+		}
+	}
+	if len(hs) == 0 {
+		delete(leaving, name)
+	}
+}
+
+// settleUnsubscribeWaitersLocked settles the leaving handles of the
+// unsubscribes among ledger entries whose replies can no longer arrive:
+// the connection carrying them is gone, which unsubscribed the names
+// server-side, so each releaser gets the confirmation synthesized.
+// Callers must hold the WRITE lock.
+func (m *Manager) settleUnsubscribeWaitersLocked(entries []replyWaiter) {
+	for _, w := range entries {
+		if w.affected == nil {
+			continue
+		}
+		for _, name := range w.names {
+			m.settleLeavingLocked(w.kind, name, w.affected[name], &Subscription{Kind: w.kind, Channel: name})
+		}
+	}
+}
+
+// forgetLeavingLocked drops h from every leaving set: a closed handle
+// awaits nothing. Callers must hold the WRITE lock.
+func (m *Manager) forgetLeavingLocked(h *handle) {
+	for _, leaving := range []map[string]map[*handle]int{m.leavingChannels, m.leavingPatterns, m.leavingShards} {
+		for name, hs := range leaving {
+			delete(hs, h)
+			if len(hs) == 0 {
+				delete(leaving, name)
+			}
+		}
+	}
+}
+
+// releaseIfIdleLocked releases the connection once nothing is left to
+// listen for: no subscription and no UNSUBSCRIBE still in flight for a
+// releasing handle (closing the connection unsubscribes everything
+// server-side anyway). Callers must hold the WRITE lock.
+func (m *Manager) releaseIfIdleLocked() {
+	if m.conn.Load() != nil && m.noSubscribersLocked() && !m.anyLeavingLocked() {
+		m.dropConnLocked(errPubSubNoConn)
+	}
+}
+
 // fanoutSubscriptionLocked routes a subscription confirmation and
 // settles the entry's state (a mutation — unlike the message fan-outs,
 // callers must hold the WRITE lock). A confirmation settling a targeted
@@ -854,7 +967,16 @@ func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 		return
 	}
 
-	if !matched && entry != nil && len(entry.handles) > 0 && m.requestTopologyRefresh != nil {
+	if matched {
+		// The reply to our own unsubscribe: every message published
+		// before it has been delivered, so the handles that released the
+		// name get their confirmation now — and once the last of them
+		// has, a connection with nothing left to listen for goes.
+		m.settleLeavingLocked(sub.Kind, sub.Channel, w.affected[sub.Channel], sub)
+		m.releaseIfIdleLocked()
+		return
+	}
+	if entry != nil && len(entry.handles) > 0 && m.requestTopologyRefresh != nil {
 		m.requestTopologyRefresh()
 	}
 }
@@ -941,25 +1063,32 @@ func (m *Manager) consumeErrorReplyLocked() (replyWaiter, bool) {
 }
 
 func (m *Manager) fanoutShardedMessageLocked(shardedMsg *Message) {
-	if sub := m.shardSubscribers[shardedMsg.Channel]; sub != nil {
-		deliverMessageLocked(sub.handles, shardedMsg)
-	}
+	deliverMessageLocked(m.shardSubscribers[shardedMsg.Channel], m.leavingShards[shardedMsg.Channel], shardedMsg)
 }
 
 func (m *Manager) fanoutMessageLocked(msg *Message) {
-	if sub := m.subscribers[msg.Channel]; sub != nil {
-		deliverMessageLocked(sub.handles, msg)
-	}
+	deliverMessageLocked(m.subscribers[msg.Channel], m.leavingChannels[msg.Channel], msg)
 }
 
 func (m *Manager) fanoutPatternMessageLocked(msg *Message) {
-	if sub := m.patternSubscribers[msg.Pattern]; sub != nil {
-		deliverMessageLocked(sub.handles, msg)
-	}
+	deliverMessageLocked(m.patternSubscribers[msg.Pattern], m.leavingPatterns[msg.Pattern], msg)
 }
 
-func deliverMessageLocked(hs map[*handle]struct{}, msg *Message) {
-	for h := range hs {
+// deliverMessageLocked delivers msg to the name's owners (sub, nil when
+// none) and to the handles still leaving it (see
+// Manager.leavingChannels), each once.
+func deliverMessageLocked(sub *subscription, leaving map[*handle]int, msg *Message) {
+	if sub != nil {
+		for h := range sub.handles {
+			h.deliverLocked(cloneMessage(msg))
+		}
+	}
+	for h := range leaving {
+		if sub != nil {
+			if _, owner := sub.handles[h]; owner {
+				continue
+			}
+		}
 		h.deliverLocked(cloneMessage(msg))
 	}
 }
@@ -981,6 +1110,9 @@ func cloneMessage(msg *Message) *Message {
 func (m *Manager) deliverToReleasersLocked(w replyWaiter, err error) {
 	delivered := make(map[*handle]struct{})
 	for _, name := range w.names {
+		// The refusal settles the confirmations the releasers awaited:
+		// they get the error instead.
+		m.settleLeavingLocked(w.kind, name, w.affected[name], nil)
 		for _, h := range w.affected[name] {
 			if _, done := delivered[h]; done {
 				continue
@@ -1439,6 +1571,9 @@ func (m *Manager) reconnectBackoffLocked() time.Duration {
 // one broadcast command per kind re-subscribes them. Callers must hold
 // m.mu; the returned commands go to writeLocked.
 func (m *Manager) replayLocked() [][]any {
+	// A fresh connection starts a fresh ledger; unsubscribes the old one
+	// still owed are settled, never left awaiting a reply that can't come.
+	m.settleUnsubscribeWaitersLocked(m.replyQueue)
 	m.replyQueue = nil
 
 	var cmds [][]any
@@ -1657,10 +1792,12 @@ func (m *Manager) writeLocked(ctx context.Context, cn *pool.Conn, cmds [][]any) 
 }
 
 // handleUnsubscribe removes h — or every handle, when h is nil — from
-// the given names (all of the handle's names when empty). Removal is
-// immediate at write time, with a synthesized confirmation; only names
+// the given names (all of the handle's names when empty). Only names
 // left with no subscriber are unsubscribed server-side (a bare
-// UNSUBSCRIBE would tear down other handles' subscriptions).
+// UNSUBSCRIBE would tear down other handles' subscriptions): their
+// releasers get the server's confirmation, after the messages ahead of
+// it. A name other handles keep is released at once, with a
+// synthesized confirmation.
 func (m *Manager) handleUnsubscribe(ctx context.Context, h *handle, redisCommand string, names ...string) error {
 	if err := ctx.Err(); err != nil {
 		return err // see handleSubscribe
@@ -1697,6 +1834,14 @@ func (m *Manager) handleUnsubscribeLocked(h *handle, redisCommand string, names 
 	// replyWaiter.affected).
 	var orphanOrder []string
 	affected := make(map[string][]*handle)
+	// released lists each name a handle gave up, in unsubscribe order:
+	// whether its confirmation is synthesized now or awaited from the
+	// server is known only once every handle is detached (see below).
+	type release struct {
+		h    *handle
+		name string
+	}
+	var released []release
 	for cur := range hs {
 		owned := cur.channels
 		switch redisCommand {
@@ -1743,14 +1888,40 @@ func (m *Manager) handleUnsubscribeLocked(h *handle, redisCommand string, names 
 					orphanOrder = append(orphanOrder, name)
 				}
 			}
-			cur.deliverSubscriptionLocked(&Subscription{
-				Kind:    redisCommand,
-				Channel: name,
-			})
+			released = append(released, release{cur, name})
 		}
 	}
 
-	if m.conn.Load() != nil && len(orphanOrder) > 0 {
+	// A name whose UNSUBSCRIBE goes to the server (its last owner left,
+	// and there is a connection to write it on) is confirmed by the
+	// server, after every message published before it: its releasers
+	// keep receiving it until then (see Manager.leavingChannels). They
+	// are registered before the write, so a failed write — which drops
+	// the connection and fails the ledger — settles them too. A name
+	// other handles still own is unsubscribed only here, so its
+	// confirmation is synthesized at once. A closing handle awaits
+	// nothing.
+	writes := m.conn.Load() != nil && len(orphanOrder) > 0
+	orphaned := make(map[string]bool, len(orphanOrder))
+	for _, name := range orphanOrder {
+		orphaned[name] = true
+	}
+	for _, r := range released {
+		if r.h.closing {
+			continue
+		}
+		if writes && orphaned[r.name] {
+			leaving := m.leavingForKind(redisCommand)
+			if leaving[r.name] == nil {
+				leaving[r.name] = make(map[*handle]int)
+			}
+			leaving[r.name][r.h]++
+			continue
+		}
+		r.h.deliverSubscriptionLocked(&Subscription{Kind: redisCommand, Channel: r.name})
+	}
+
+	if writes {
 		cmds := m.prepareSubscribeLocked(redisCommand, replyWaiter{affected: affected}, orphanOrder)
 		if err := m.writeLocked(socketCtx, m.conn.Load(), cmds); err != nil {
 			// The failed write dropped the connection; the reconnect
@@ -1759,14 +1930,13 @@ func (m *Manager) handleUnsubscribeLocked(h *handle, redisCommand string, names 
 		}
 	}
 
-	// Nothing left to listen for: release the connection (closing it
-	// unsubscribes everything server-side anyway). Checked even with no
-	// unsubscribe written: an empty handle can have dialed the shared
-	// conn through Ping or ClientSetName, and its Close must not leave
-	// the conn (and the health-check traffic on it) running.
-	if m.conn.Load() != nil && m.noSubscribersLocked() {
-		m.dropConnLocked(errPubSubNoConn)
-	}
+	// Nothing left to listen for: release the connection. Checked even
+	// with no unsubscribe written: an empty handle can have dialed the
+	// shared conn through Ping or ClientSetName, and its Close must not
+	// leave the conn (and the health-check traffic on it) running. With
+	// an unsubscribe in flight for a releasing handle, its confirmation
+	// releases the connection instead (see fanoutSubscriptionLocked).
+	m.releaseIfIdleLocked()
 	return nil
 }
 
@@ -1780,6 +1950,7 @@ func (m *Manager) failReplyWaitersLocked(err error) {
 			m.replyQueue[i].h.deliverLocked(err)
 		}
 	}
+	m.settleUnsubscribeWaitersLocked(m.replyQueue)
 	m.replyQueue = nil
 }
 
@@ -1896,6 +2067,7 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 			// it was written, so the handles that released them were
 			// captured instead.
 			m.deliverToReleasersLocked(w, err)
+			m.releaseIfIdleLocked()
 		case ok && len(w.names) > 0:
 			m.deliverToOwnersLocked(w, err)
 		default:

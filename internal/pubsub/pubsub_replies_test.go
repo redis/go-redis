@@ -1105,3 +1105,188 @@ func TestUnsubscribeUnownedNameConfirms(t *testing.T) {
 	}
 	fsc.expectNoCmd(t, 100*time.Millisecond)
 }
+
+// expectSubscription receives the next event and requires it to be the
+// given confirmation.
+func expectSubscription(t *testing.T, events <-chan any, kind, channel string, count int) {
+	t.Helper()
+	sub, ok := recvEvent(t, events).(*Subscription)
+	if !ok || sub.Kind != kind || sub.Channel != channel || sub.Count != count {
+		t.Fatalf("event = %#v, want %s %q with count %d", sub, kind, channel, count)
+	}
+}
+
+// TestConfirmationCountIsRunning pins that Subscription.Count moves
+// with each confirmation, as the server's does on a dedicated
+// connection — a SUBSCRIBE of two channels confirms with 1, then 2 —
+// on a fresh connection (the replay writes the names) and an
+// established one alike, with shard channels counted apart.
+func TestConfirmationCountIsRunning(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "a", "b")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "a", "b")
+	expectSubscription(t, h.Events(), "subscribe", "a", 1)
+	expectSubscription(t, h.Events(), "subscribe", "b", 2)
+
+	if _, err := h.PSubscribe(ctx, "p*"); err != nil {
+		t.Fatalf("PSubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "psubscribe", "p*")
+	expectSubscription(t, h.Events(), "psubscribe", "p*", 3)
+
+	if _, err := h.SSubscribe(ctx, "s"); err != nil {
+		t.Fatalf("SSubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "ssubscribe", "s")
+	expectSubscription(t, h.Events(), "ssubscribe", "s", 1)
+
+	if err := h.Unsubscribe(ctx, "a"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "a")
+	expectSubscription(t, h.Events(), "unsubscribe", "a", 2)
+}
+
+// TestUnsubscribeDeliversMessagesAheadOfConfirmation pins the order a
+// dedicated connection gives: a message the server sent before
+// processing the UNSUBSCRIBE reaches the releasing handle, ahead of the
+// confirmation — not after a synthesized one, or not at all.
+func TestUnsubscribeDeliversMessagesAheadOfConfirmation(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // answers by hand
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.PSubscribe(ctx, "ch*")
+	if err != nil {
+		t.Fatalf("PSubscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "psubscribe", "ch*")
+	fsc.sendConfirm(t, "psubscribe", "ch*", 1)
+	expectSubscription(t, h.Events(), "psubscribe", "ch*", 1)
+
+	if err := h.PUnsubscribe(ctx, "ch*"); err != nil {
+		t.Fatalf("PUnsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "punsubscribe", "ch*")
+	// The connection stays for the confirmation, though nothing is
+	// subscribed anymore.
+	select {
+	case <-fsc.done:
+		t.Fatal("connection released before the unsubscribe was confirmed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	fsc.sendMessage(t, "pmessage", "ch*", "ch1", "hello")
+	fsc.sendConfirm(t, "punsubscribe", "ch*", 0)
+
+	if msg, ok := recvEvent(t, h.Events()).(*Message); !ok || msg.Payload != "hello" || msg.Pattern != "ch*" {
+		t.Fatalf("event = %#v, want the message sent ahead of the confirmation", msg)
+	}
+	expectSubscription(t, h.Events(), "punsubscribe", "ch*", 0)
+	fsc.expectClosed(t)
+}
+
+// TestUnsubscribeInFlightSettledOnConnLoss pins that an unsubscribe
+// awaiting its confirmation is settled when the connection dies: the
+// releaser gets the confirmation synthesized instead of waiting
+// forever.
+func TestUnsubscribeInFlightSettledOnConnLoss(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // answers by hand
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "a", "keep")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "a", "keep")
+	fsc.sendConfirm(t, "subscribe", "a", 1)
+	fsc.sendConfirm(t, "subscribe", "keep", 2)
+	expectSubscription(t, h.Events(), "subscribe", "a", 1)
+	expectSubscription(t, h.Events(), "subscribe", "keep", 2)
+
+	if err := h.Unsubscribe(ctx, "a"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "a")
+	_ = fsc.conn.Close()
+
+	expectSubscription(t, h.Events(), "unsubscribe", "a", 1)
+	// The reconnect replays only what is still subscribed.
+	fsc2 := srv.waitDial(t)
+	fsc2.expectCmd(t, "subscribe", "keep")
+}
+
+// TestUnsubscribeRejectedSettlesReleaser pins that an error reply to an
+// unsubscribe in flight reaches the releasing handle in place of the
+// confirmation, and releases a connection left with nothing to listen
+// for.
+func TestUnsubscribeRejectedSettlesReleaser(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer() // answers by hand
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	h, err := m.Subscribe(ctx, "a")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "a")
+	fsc.sendConfirm(t, "subscribe", "a", 1)
+	expectSubscription(t, h.Events(), "subscribe", "a", 1)
+
+	if err := h.Unsubscribe(ctx, "a"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "a")
+	fsc.sendError(t, "ERR refused")
+
+	if err, ok := recvEvent(t, h.Events()).(error); !ok || err.Error() != "ERR refused" {
+		t.Fatalf("event = %#v, want the error reply", err)
+	}
+	fsc.expectClosed(t)
+}
+
+// TestCloseLeavesNoEvents pins that Close delivers nothing of its own —
+// the confirmations its unsubscribes would produce, synthesized or
+// awaited — so a reader of a closed handle sees the stream end rather
+// than a stale event.
+func TestCloseLeavesNoEvents(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	empty := m.NewHandle()
+	if err := empty.Close(); err != nil {
+		t.Fatalf("Close empty: %v", err)
+	}
+	if ev, ok := <-empty.Events(); ok {
+		t.Fatalf("closed empty handle delivered %#v", ev)
+	}
+
+	h, err := m.Subscribe(ctx, "a")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "a")
+	waitForConfirmation(t, h.Events(), "subscribe", "a")
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "a")
+	if ev, ok := <-h.Events(); ok {
+		t.Fatalf("closed handle delivered %#v", ev)
+	}
+	fsc.expectClosed(t)
+}

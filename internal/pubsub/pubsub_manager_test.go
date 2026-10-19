@@ -188,10 +188,10 @@ func TestManagerUnsubscribe(t *testing.T) {
 	}
 	fsc.expectCmd(t, "subscribe", "revived")
 
-	// The last owner leaving sends the server-side unsubscribe and the
-	// removal is immediate: messages the server sent before processing
-	// the UNSUBSCRIBE find no registered handle and are discarded, and
-	// the confirmation fans out to nobody.
+	// The last owner leaving sends the server-side unsubscribe, and keeps
+	// the name's messages until its confirmation, as on a dedicated
+	// connection: the server delivers every message published before the
+	// UNSUBSCRIBE ahead of the confirmation. Nothing after it arrives.
 	if err := h2.Unsubscribe(ctx, "shared"); err != nil {
 		t.Fatalf("h2 Unsubscribe shared: %v", err)
 	}
@@ -201,12 +201,21 @@ func TestManagerUnsubscribe(t *testing.T) {
 	fsc.sendMessage(t, "message", "shared", "late")
 	select {
 	case msg := <-ch2:
-		t.Fatalf("message %q delivered after Unsubscribe returned", msg.Payload)
+		if msg.Payload != "in-flight" {
+			t.Fatalf("got %q, want the message sent ahead of the unsubscribe confirmation", msg.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("message sent ahead of the unsubscribe confirmation was not delivered")
+	}
+	select {
+	case msg := <-ch2:
+		t.Fatalf("message %q delivered after the unsubscribe confirmation", msg.Payload)
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	// Draining the last subscriptions quiesces the connection as soon as
-	// the final UNSUBSCRIBE is written — no confirmations needed.
+	// Draining the last subscriptions quiesces the connection once the
+	// final UNSUBSCRIBE is confirmed: until then messages ahead of the
+	// confirmation are still owed to the releasing handle.
 	if err := h1.Unsubscribe(ctx); err != nil {
 		t.Fatalf("h1 Unsubscribe all: %v", err)
 	}
@@ -215,6 +224,9 @@ func TestManagerUnsubscribe(t *testing.T) {
 		t.Fatalf("h2 Unsubscribe keep: %v", err)
 	}
 	fsc.expectCmd(t, "unsubscribe", "keep")
+	fsc.sendConfirm(t, "unsubscribe", "revived", 1)
+	fsc.expectNoCmd(t, 50*time.Millisecond)
+	fsc.sendConfirm(t, "unsubscribe", "keep", 0)
 	fsc.expectClosed(t)
 
 	// Only an explicit Close ends a handle.

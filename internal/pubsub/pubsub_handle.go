@@ -27,6 +27,21 @@ type handle struct {
 	patterns  map[string]struct{}
 	schannels map[string]struct{}
 
+	// confirmed holds the names whose subscribe confirmation the handle
+	// was delivered, with no unsubscribe confirmation since: the running
+	// Count its confirmations carry, as a dedicated connection's server
+	// would report it (see deliverSubscriptionLocked).
+	confirmed map[confirmKey]struct{}
+	// nConfirmed counts the confirmed channels and patterns,
+	// nConfirmedShard the confirmed shard channels: Redis counts the two
+	// apart.
+	nConfirmed, nConfirmedShard int
+
+	// closing is set while Close detaches the handle: the confirmations
+	// its own unsubscribes would produce are not delivered, so nothing
+	// stale is left on events for a Receive after Close to return.
+	closing bool
+
 	// events is closed by closeLocked; done unblocks a pump parked on
 	// an abandoned consumer channel.
 	events chan any
@@ -171,17 +186,66 @@ func (h *handle) deliverLocked(ev any) {
 	}
 }
 
+// confirmKey is a confirmed name in its namespace.
+type confirmKey struct {
+	shard, pattern bool
+	name           string
+}
+
+func confirmKeyFor(kind, name string) confirmKey {
+	switch kind {
+	case "psubscribe", "punsubscribe":
+		return confirmKey{pattern: true, name: name}
+	case "ssubscribe", "sunsubscribe":
+		return confirmKey{shard: true, name: name}
+	}
+	return confirmKey{name: name}
+}
+
 // deliverSubscriptionLocked delivers the handle its own copy of a
 // subscription confirmation: handles are independent consumers, and a
 // broadcast fan-out must not share one mutable value across them (see
-// deliverLocked). Count is the handle's own (see ownedTotal), never the
+// deliverLocked). Count is the handle's own running count, never the
 // server's: that one is connection-wide and counts other handles' names
-// too. Every confirmation passes through here, server-sent or
-// synthesized, so all of them agree.
+// too. Like the server's, it moves with each confirmation — a SUBSCRIBE
+// of two channels confirms with 1, then 2 — and counts shard channels
+// apart from channels and patterns. Every confirmation passes through
+// here, server-sent or synthesized, so all of them agree. A closing
+// handle gets none (see handle.closing).
 func (h *handle) deliverSubscriptionLocked(sub *Subscription) {
+	if h.closing {
+		return
+	}
+	key := confirmKeyFor(sub.Kind, sub.Channel)
+	if sub.Channel != "" {
+		_, had := h.confirmed[key]
+		switch sub.Kind {
+		case "subscribe", "psubscribe", "ssubscribe":
+			if !had {
+				h.confirmed[key] = struct{}{}
+				h.countConfirmed(key, 1)
+			}
+		default:
+			if had {
+				delete(h.confirmed, key)
+				h.countConfirmed(key, -1)
+			}
+		}
+	}
 	c := *sub
-	c.Count = h.ownedTotal()
+	c.Count = h.nConfirmed
+	if key.shard {
+		c.Count = h.nConfirmedShard
+	}
 	h.deliverLocked(&c)
+}
+
+func (h *handle) countConfirmed(key confirmKey, delta int) {
+	if key.shard {
+		h.nConfirmedShard += delta
+	} else {
+		h.nConfirmed += delta
+	}
 }
 
 // deliverPongLocked delivers a pong; pongs are advisory (Ping promises
@@ -196,12 +260,6 @@ func (h *handle) deliverPongLocked(pong *Pong) {
 	case h.events <- pong:
 	default:
 	}
-}
-
-// ownedTotal is the number of names the handle owns across all
-// namespaces — the Count of every confirmation it is delivered.
-func (h *handle) ownedTotal() int {
-	return len(h.channels) + len(h.patterns) + len(h.schannels)
 }
 
 // Subscribe adds the given channels to the handle's subscriptions and
@@ -301,6 +359,10 @@ func (h *handle) Close() error {
 		}
 	}
 
+	// Nothing the detach produces is delivered: the confirmations would
+	// sit on events for a Receive after Close to return instead of
+	// reporting the handle closed.
+	h.closing = true
 	err := h.m.handleUnsubscribeLocked(h, "unsubscribe")
 	if perr := h.m.handleUnsubscribeLocked(h, "punsubscribe"); err == nil {
 		err = perr
@@ -328,6 +390,8 @@ func (h *handle) closeLocked() {
 	clear(h.channels)
 	clear(h.patterns)
 	clear(h.schannels)
+	clear(h.confirmed)
+	h.m.forgetLeavingLocked(h)
 	// Nil (don't remove) the handle's pong waits: each entry must still
 	// consume its reply or attribution desyncs for every later waiter.
 	for i := range h.m.replyQueue {
