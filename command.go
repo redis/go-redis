@@ -4957,9 +4957,6 @@ type GeoRadiusQuery struct {
 	Sort      string
 	Store     string
 	StoreDist string
-
-	// WithCoord+WithDist+WithGeoHash
-	withLen int
 }
 
 type GeoLocationCmd struct {
@@ -4991,15 +4988,12 @@ func geoLocationArgs(q *GeoRadiusQuery, args ...interface{}) []interface{} {
 	}
 	if q.WithCoord {
 		args = append(args, "withcoord")
-		q.withLen++
 	}
 	if q.WithDist {
 		args = append(args, "withdist")
-		q.withLen++
 	}
 	if q.WithGeoHash {
 		args = append(args, "withhash")
-		q.withLen++
 	}
 	if q.Count > 0 {
 		args = append(args, "count", q.Count)
@@ -5044,9 +5038,21 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.locations = make([]GeoLocation, n)
 
+	// Count the WITH flags here instead of in the query, so a query can be reused.
+	withLen := 0
+	if cmd.q.WithCoord {
+		withLen++
+	}
+	if cmd.q.WithDist {
+		withLen++
+	}
+	if cmd.q.WithGeoHash {
+		withLen++
+	}
+
 	for i := 0; i < len(cmd.locations); i++ {
 		// only name
-		if cmd.q.withLen == 0 {
+		if withLen == 0 {
 			if cmd.locations[i].Name, err = rd.ReadString(); err != nil {
 				return err
 			}
@@ -5054,7 +5060,7 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 		}
 
 		// +name
-		if err = rd.ReadFixedArrayLen(cmd.q.withLen + 1); err != nil {
+		if err = rd.ReadFixedArrayLen(withLen + 1); err != nil {
 			return err
 		}
 
@@ -5100,7 +5106,6 @@ func (cmd *GeoLocationCmd) Clone() Cmder {
 			Sort:        cmd.q.Sort,
 			Store:       cmd.q.Store,
 			StoreDist:   cmd.q.StoreDist,
-			withLen:     cmd.q.withLen,
 		}
 	}
 	var locations []GeoLocation
@@ -5183,15 +5188,17 @@ func geoSearchArgs(q *GeoSearchQuery, args []interface{}) []interface{} {
 	}
 
 	if q.Radius > 0 {
-		if q.RadiusUnit == "" {
-			q.RadiusUnit = "km"
+		unit := q.RadiusUnit
+		if unit == "" {
+			unit = "km"
 		}
-		args = append(args, "byradius", q.Radius, q.RadiusUnit)
+		args = append(args, "byradius", q.Radius, unit)
 	} else {
-		if q.BoxUnit == "" {
-			q.BoxUnit = "km"
+		unit := q.BoxUnit
+		if unit == "" {
+			unit = "km"
 		}
-		args = append(args, "bybox", q.BoxWidth, q.BoxHeight, q.BoxUnit)
+		args = append(args, "bybox", q.BoxWidth, q.BoxHeight, unit)
 	}
 
 	if q.Sort != "" {
