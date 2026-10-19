@@ -918,6 +918,10 @@ func toBool(val interface{}) (bool, error) {
 		return val != 0, nil
 	case string:
 		return strconv.ParseBool(val)
+	case float64:
+		return strconv.ParseBool(formatDouble(val))
+	case *big.Int:
+		return strconv.ParseBool(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Bool", val)
 		return false, err

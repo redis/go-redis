@@ -22,6 +22,8 @@ func TestCmdHelpersRESP3NumberReply(t *testing.T) {
 		"StringSlice": func(cmd *Cmd) string { return fmt.Sprint(cmd.StringSlice()) },
 		"Int64Slice":  func(cmd *Cmd) string { return fmt.Sprint(cmd.Int64Slice()) },
 		"Uint64Slice": func(cmd *Cmd) string { return fmt.Sprint(cmd.Uint64Slice()) },
+		"Bool":        func(cmd *Cmd) string { return fmt.Sprint(cmd.Bool()) },
+		"BoolSlice":   func(cmd *Cmd) string { return fmt.Sprint(cmd.BoolSlice()) },
 	}
 
 	tests := []struct {
@@ -30,7 +32,9 @@ func TestCmdHelpersRESP3NumberReply(t *testing.T) {
 		helpers []string
 	}{
 		{",2\r\n", "$1\r\n2\r\n", []string{"Text", "Int", "Int64", "Uint64"}},
-		{",1.5\r\n", "$3\r\n1.5\r\n", []string{"Text", "Int", "Int64", "Uint64"}},
+		{",1\r\n", "$1\r\n1\r\n", []string{"Bool"}},
+		{",0\r\n", "$1\r\n0\r\n", []string{"Bool"}},
+		{",1.5\r\n", "$3\r\n1.5\r\n", []string{"Text", "Int", "Int64", "Uint64", "Bool"}},
 		{",-inf\r\n", "$4\r\n-inf\r\n", []string{"Text", "Int64"}},
 		{",-0\r\n", "$2\r\n-0\r\n", []string{"Text", "Int64"}},
 		{",1e+100\r\n", "$6\r\n1e+100\r\n", []string{"Text", "Int64", "Uint64"}},
@@ -40,13 +44,16 @@ func TestCmdHelpersRESP3NumberReply(t *testing.T) {
 		{",0.00001\r\n", "$7\r\n0.00001\r\n", []string{"Text"}},
 		{",2.5e-7\r\n", "$6\r\n2.5e-7\r\n", []string{"Text", "Int64"}},
 		{"*2\r\n,2\r\n,1.5\r\n", "*2\r\n$1\r\n2\r\n$3\r\n1.5\r\n", []string{"StringSlice", "Int64Slice", "Uint64Slice"}},
-		{"(42\r\n", "$2\r\n42\r\n", []string{"Text", "Int", "Int64", "Uint64", "Float32", "Float64"}},
+		{"*2\r\n,1\r\n,0\r\n", "*2\r\n$1\r\n1\r\n$1\r\n0\r\n", []string{"BoolSlice"}},
+		{"(1\r\n", "$1\r\n1\r\n", []string{"Bool"}},
+		{"(42\r\n", "$2\r\n42\r\n", []string{"Text", "Int", "Int64", "Uint64", "Float32", "Float64", "Bool"}},
 		{
 			"(1234567999999999999999999999999999999\r\n",
 			"$37\r\n1234567999999999999999999999999999999\r\n",
 			[]string{"Text", "Int", "Int64", "Uint64", "Float32", "Float64"},
 		},
 		{"*2\r\n(42\r\n(-1\r\n", "*2\r\n$2\r\n42\r\n$2\r\n-1\r\n", []string{"StringSlice", "Int64Slice", "Uint64Slice"}},
+		{"*2\r\n(1\r\n(0\r\n", "*2\r\n$1\r\n1\r\n$1\r\n0\r\n", []string{"BoolSlice"}},
 	}
 
 	for _, tt := range tests {
