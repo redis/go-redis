@@ -742,6 +742,17 @@ func TestParseURLPipelinePoolOptions(t *testing.T) {
 	if fo.PipelinePoolSize != -1 || fo.PipelineReadBufferSize != 131072 || fo.PipelineWriteBufferSize != 65536 {
 		t.Fatalf("ParseFailoverURL pipeline opts: size=%d rbuf=%d wbuf=%d", fo.PipelinePoolSize, fo.PipelineReadBufferSize, fo.PipelineWriteBufferSize)
 	}
+
+	const mi = "pipeline_min_idle_conns=2"
+	if o, err := ParseURL("redis://localhost:6379?" + mi); err != nil || o.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseURL pipeline_min_idle_conns: %v, %+v", err, o)
+	}
+	if co, err := ParseClusterURL("redis://localhost:6379?" + mi); err != nil || co.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseClusterURL pipeline_min_idle_conns: %v, %+v", err, co)
+	}
+	if fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + mi); err != nil || fo.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseFailoverURL pipeline_min_idle_conns: %v, %+v", err, fo)
+	}
 }
 
 func TestParseClusterURLSkipVerify(t *testing.T) {

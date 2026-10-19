@@ -1,11 +1,11 @@
 // Command autopipeline-fullduplex-async shows the deferred (async)
 // autopipeliner in full-duplex mode, first on one connection, then on
-// several (NumShards > 1).
+// several (FullDuplexPipes > 1).
 //
 // Calls return at once; the result accessors (Val/Result/Err) block until the
 // reply lands. Submitting a window of commands before reading any result keeps
 // the connection full, which is where full duplex is fastest. One connection
-// has a throughput ceiling; NumShards runs several engines on one client, each
+// has a throughput ceiling; FullDuplexPipes runs several engines on one client, each
 // holding its own connection, at the cost of ordering only per key.
 //
 // Part A, one engine:
@@ -155,23 +155,23 @@ func severalEngines(ctx context.Context, admin *redis.Client) {
 	// covers one autopipeliner: the blocking and async faces share the pool,
 	// so size it for every full-duplex autopipeliner the client runs.
 	small := redis.NewClient(&redis.Options{Addr: addr(), PipelinePoolSize: 2})
-	_, err := small.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{FullDuplex: true, NumShards: engines})
+	_, err := small.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: engines})
 	small.Close()
 	if err == nil {
-		fatalf("NumShards %d on a pipeline pool of 2 was accepted", engines)
+		fatalf("FullDuplexPipes %d on a pipeline pool of 2 was accepted", engines)
 	}
-	fmt.Printf("4. NumShards=%d, PipelinePoolSize=2 -> %v\n", engines, err)
+	fmt.Printf("4. FullDuplexPipes=%d, PipelinePoolSize=2 -> %v\n", engines, err)
 
 	const name = "fd-engines-example"
 	rdb := redis.NewClient(&redis.Options{Addr: addr(), ClientName: name, PipelinePoolSize: engines})
 	defer rdb.Close()
-	ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{FullDuplex: true, NumShards: engines})
+	ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: engines})
 	if err != nil {
 		fatalf("AsyncAutoPipelineWithOptions: %v", err)
 	}
 	defer ap.Close()
-	fmt.Printf("   NumShards=%d, PipelinePoolSize=%d -> %d engines, full duplex %v\n",
-		engines, engines, ap.Config().NumShards, ap.Config().FullDuplex)
+	fmt.Printf("   FullDuplexPipes=%d, PipelinePoolSize=%d -> %d engines, full duplex %v\n",
+		engines, engines, ap.Config().FullDuplexPipes, ap.Config().FullDuplex)
 
 	// 5. Routing by first key. These SET/GET pairs are submitted without
 	// waiting in between; each pair shares a key, so both commands take the
@@ -195,7 +195,7 @@ func severalEngines(ctx context.Context, admin *redis.Client) {
 	//   - a multi-key command against its other keys: COPY src dst is routed by
 	//     src, so a later GET dst may run first;
 	//   - keyless commands (FLUSHDB, SCRIPT FLUSH, ...), which round-robin.
-	// When one depends on another, await the first. NumShards 1 keeps the
+	// When one depends on another, await the first. FullDuplexPipes 1 keeps the
 	// whole submit order.
 	ap.Set(ctx, "fde:src", "copied", 0)
 	if err := ap.Copy(ctx, "fde:src", "fde:dst", 0, true).Err(); err != nil { // await before the dependent GET
@@ -270,7 +270,7 @@ func bench(ctx context.Context, admin *redis.Client, n, goroutines, window int) 
 	name := fmt.Sprintf("fd-bench-%d-%d", n, goroutines)
 	rdb := redis.NewClient(&redis.Options{Addr: addr(), ClientName: name, PipelinePoolSize: engines})
 	defer rdb.Close()
-	ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{FullDuplex: true, NumShards: n})
+	ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: n})
 	if err != nil {
 		fatalf("bench: %v", err)
 	}

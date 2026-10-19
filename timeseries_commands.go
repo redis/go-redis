@@ -314,7 +314,7 @@ type TSNRevRangeOptions struct {
 	Empty           bool
 }
 
-// TSAdd - Adds one or more observations to a t-digest sketch.
+// TSAdd - Adds a sample to a time-series key.
 // For more information - https://redis.io/commands/ts.add/
 func (c cmdable) TSAdd(ctx context.Context, key string, timestamp interface{}, value float64) *IntCmd {
 	args := []interface{}{"TS.ADD", key, timestamp, value}
@@ -323,7 +323,7 @@ func (c cmdable) TSAdd(ctx context.Context, key string, timestamp interface{}, v
 	return cmd
 }
 
-// TSAddWithArgs - Adds one or more observations to a t-digest sketch.
+// TSAddWithArgs - Adds a sample to a time-series key.
 // This function also allows for specifying additional options such as:
 // Retention, ChunkSize, Encoding, DuplicatePolicy and Labels.
 // For more information - https://redis.io/commands/ts.add/
@@ -343,14 +343,14 @@ func (c cmdable) TSAddWithArgs(ctx context.Context, key string, timestamp interf
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewIntCmd(ctx, args...)
@@ -387,14 +387,14 @@ func (c cmdable) TSCreateWithArgs(ctx context.Context, key string, options *TSOp
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -404,7 +404,8 @@ func (c cmdable) TSCreateWithArgs(ctx context.Context, key string, options *TSOp
 
 // TSAlter - Alters an existing time-series key with additional options.
 // This function allows for specifying additional options such as:
-// Retention, ChunkSize and DuplicatePolicy.
+// Retention, ChunkSize, DuplicatePolicy, IgnoreMaxTimeDiff, IgnoreMaxValDiff
+// and Labels.
 // For more information - https://redis.io/commands/ts.alter/
 func (c cmdable) TSAlter(ctx context.Context, key string, options *TSAlterOptions) *StatusCmd {
 	args := []interface{}{"TS.ALTER", key}
@@ -418,14 +419,14 @@ func (c cmdable) TSAlter(ctx context.Context, key string, options *TSAlterOption
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -489,14 +490,14 @@ func (c cmdable) TSIncrByWithArgs(ctx context.Context, key string, timestamp flo
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewIntCmd(ctx, args...)
@@ -535,14 +536,14 @@ func (c cmdable) TSDecrByWithArgs(ctx context.Context, key string, timestamp flo
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
 		}
+		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
+			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
+		}
 		if options.Labels != nil {
 			args = append(args, "LABELS")
 			for label, value := range options.Labels {
 				args = append(args, label, value)
 			}
-		}
-		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
-			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)
 		}
 	}
 	cmd := NewIntCmd(ctx, args...)
