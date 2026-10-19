@@ -12,7 +12,7 @@ import (
 )
 
 func TestPubSubPoolTrackConnClose(t *testing.T) {
-	for _, order := range []string{"track-before-close", "close-before-track", "concurrent"} {
+	for _, order := range []string{"track-before-close", "close-before-track", "close-during-track", "concurrent"} {
 		t.Run(order, func(t *testing.T) {
 			client, server := net.Pipe()
 			defer client.Close()
@@ -27,7 +27,7 @@ func TestPubSubPoolTrackConnClose(t *testing.T) {
 			var cleanupCalls atomic.Int32
 			cn.SetOnClose(func() error {
 				cleanupCalls.Add(1)
-				// Cleanup must be safe outside the registration lock.
+				// Cleanup callbacks must be able to reenter the pool.
 				return p.Close()
 			})
 			var trackErr error
@@ -63,13 +63,35 @@ func TestPubSubPoolTrackConnClose(t *testing.T) {
 				}()
 				close(start)
 				wg.Wait()
+			case "close-during-track":
+				// The metric callback runs after publication but before the
+				// second closed check, making this ordering deterministic.
+				SetAllMetricCallbacks(&MetricCallbacks{
+					ConnectionCount: func(_ context.Context, delta int, conn *Conn, _ string, _ bool) {
+						if conn == cn && delta == 1 {
+							_ = p.Close()
+						}
+					},
+				})
+				defer SetAllMetricCallbacks(nil)
+				trackErr = p.TrackConn(cn)
+				if !errors.Is(trackErr, ErrClosed) {
+					t.Fatalf("TrackConn error = %v, want ErrClosed", trackErr)
+				}
 			}
 			if trackErr != nil && !errors.Is(trackErr, ErrClosed) {
 				t.Fatal(trackErr)
 			}
 			wantUntracked := uint32(1)
-			if trackErr != nil {
+			if order == "close-before-track" {
 				wantUntracked = 0
+			} else if order == "concurrent" && trackErr != nil {
+				// Rejection at the first check never registers the connection;
+				// rejection at the second check removes a registered connection.
+				wantUntracked = p.Stats().Untracked
+				if wantUntracked > 1 {
+					t.Fatalf("Untracked = %d, want 0 or 1", wantUntracked)
+				}
 			}
 			if got := p.Stats(); *got != (PubSubStats{Created: 1, Untracked: wantUntracked}) {
 				t.Errorf("stats = %+v, want Created=1 Active=0 Untracked=%d", got, wantUntracked)
