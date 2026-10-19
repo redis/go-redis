@@ -2698,8 +2698,9 @@ func (c *Client) Conn() *Conn {
 //
 // With client-side caching active, the first command dials a fresh, untracked
 // connection so session commands cannot disrupt the parent's cache. Reads on
-// this connection always hit the server. It does not acquire a PoolSize turn
-// and uses the pool's NewConn limits; it does not support maintenance handoff.
+// this connection always hit the server. It obeys MaxActiveConns and
+// MaxConcurrentDials without acquiring a PoolSize turn, and does not support
+// maintenance handoff.
 // Close must be called to release the connection.
 func (c *Client) EphemeralConn() *Conn {
 	return c.conn(true)

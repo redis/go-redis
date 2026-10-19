@@ -331,7 +331,8 @@ supported because they use dedicated connections.
 For session-scoped work, use `client.EphemeralConn()` and close it afterwards.
 With caching active it dials a fresh connection with tracking disabled, so session
 commands are allowed without disrupting the parent cache. It does not consume a
-`PoolSize` slot or support maintenance handoff. Its reads always hit Redis.
+`PoolSize` slot or support maintenance handoff. It obeys `MaxActiveConns` and
+`MaxConcurrentDials`. Its reads always hit Redis.
 
 Invalidations are processed asynchronously. `DrainInterval` controls how often
 idle connections are checked for them, while `MaxStaleness` can provide an

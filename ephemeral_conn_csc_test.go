@@ -2,12 +2,58 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync/atomic"
 	"testing"
 
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
+
+func TestEphemeralConnCSCMaxActiveConns(t *testing.T) {
+	client := NewClient(&Options{
+		Protocol: 3, PoolSize: 4, MaxActiveConns: 1, MaxConcurrentDials: 1,
+		MaxRetries: -1, DisableIdentity: true,
+		ClientSideCacheConfig:    &ClientSideCacheConfig{MaxEntries: 16},
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go serveTestRESPConn(server, func(command string) string {
+				if command == "hello" {
+					return "%0\r\n"
+				}
+				return "+OK\r\n"
+			})
+			return client, nil
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	first, second := client.EphemeralConn(), client.EphemeralConn()
+	t.Cleanup(func() { _ = first.Close(); _ = second.Close() })
+	ctx := context.Background()
+	if err := first.Select(ctx, 1).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Select(ctx, 1).Err(); !errors.Is(err, pool.ErrPoolExhausted) {
+		t.Fatalf("second session: %v, want ErrPoolExhausted", err)
+	}
+	if err := client.Ping(ctx).Err(); !errors.Is(err, pool.ErrPoolExhausted) {
+		t.Fatalf("pooled command alongside session: %v, want ErrPoolExhausted", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Select(ctx, 1).Err(); err != nil {
+		t.Fatalf("session after capacity released: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := client.PoolStats().TotalConns; got != 0 {
+		t.Fatalf("connections after closing both sessions=%d, want 0", got)
+	}
+}
 
 func TestEphemeralConnCSCIsolation(t *testing.T) {
 	client := NewClient(&Options{
