@@ -615,7 +615,7 @@ vals, err := rdb.ZRangeByScoreWithScores(ctx, "zset", &redis.ZRangeBy{
 // ZINTERSTORE out 2 zset1 zset2 WEIGHTS 2 3 AGGREGATE SUM
 vals, err := rdb.ZInterStore(ctx, "out", &redis.ZStore{
     Keys: []string{"zset1", "zset2"},
-    Weights: []int64{2, 3}
+    Weights: []float64{2, 3},
 }).Result()
 
 // EVAL "return {KEYS[1],ARGV[1]}" 1 "key" "hello"
