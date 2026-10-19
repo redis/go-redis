@@ -114,7 +114,8 @@ type ClusterOptions struct {
 
 	// DialerRetryTimeout is the backoff duration between retry attempts.
 	// Values <= 0 use the default; use DialerRetryBackoff to retry without delay.
-	// URL parsers set DialerRetryBackoff for an explicit dialer_retry_timeout=0.
+	// A URL dialer_retry_timeout=0 sets DialerRetryBackoff, which takes precedence
+	// over this field, including when this field is changed after parsing.
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
