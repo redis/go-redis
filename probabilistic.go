@@ -746,7 +746,8 @@ func (c cmdable) CFInfo(ctx context.Context, key string) *CFInfoCmd {
 }
 
 // CFInsert inserts elements into a Cuckoo filter.
-// This function also allows for specifying additional options such as capacity, error rate, expansion rate, and non-scaling behavior.
+// This function also allows for specifying additional options such as capacity
+// and whether the filter must not be created when it does not exist.
 // Returns an array of booleans indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/cf.insert/
 func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd {
@@ -760,7 +761,7 @@ func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOpti
 
 // CFInsertNX inserts elements into a Cuckoo filter only if they do not already exist in the filter.
 // This function also allows for specifying additional options such as:
-// capacity, error rate, expansion rate, and non-scaling behavior.
+// capacity and whether the filter must not be created when it does not exist.
 // Returns an array of integers indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/cf.insertnx/
 func (c cmdable) CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd {
