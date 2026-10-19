@@ -8058,11 +8058,10 @@ func (cmd *ClientInfoCmd) readReply(rd *proto.Reader) (err error) {
 func parseClientInfo(txt string) (info *ClientInfo, err error) {
 	info = &ClientInfo{}
 	for _, s := range strings.Split(txt, " ") {
-		kv := strings.Split(s, "=")
-		if len(kv) != 2 {
+		key, val, ok := strings.Cut(s, "=")
+		if !ok {
 			return nil, fmt.Errorf("redis: unexpected client info data (%s)", s)
 		}
-		key, val := kv[0], kv[1]
 
 		switch key {
 		case "id":
