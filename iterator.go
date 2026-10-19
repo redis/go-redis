@@ -112,6 +112,14 @@ func (it *ScanIterator) Vals(ctx context.Context) iter.Seq[string] {
 			if err != nil {
 				return
 			}
+			// Await the fetch before reading page/cursor: on the deferred
+			// autopipeline face process() only enqueues, and reading the raw
+			// fields of a not-yet-executed command would spin re-issuing SCANs
+			// with a stale cursor forever. Err() blocks until executed there and
+			// is a no-op read everywhere else.
+			if it.cmd.Err() != nil {
+				return
+			}
 		}
 	}
 }
