@@ -19,6 +19,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/routing"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
@@ -178,7 +179,7 @@ func TestClusterCSCEntryAgeConfiguration(t *testing.T) {
 	}
 }
 
-func TestClusterCSCTopologyReloadDoesNotManageNodeCaches(t *testing.T) {
+func TestClusterCSCTopologyReloadPreservesRoutedNodeCaches(t *testing.T) {
 	var calls atomic.Int32
 	a := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
 	b := newClusterCSCTestServer(t, clusterCSCTestReply(&calls))
@@ -217,6 +218,172 @@ func TestClusterCSCTopologyReloadDoesNotManageNodeCaches(t *testing.T) {
 				t.Fatal("routing reload cleared a standalone node cache")
 			}
 		}
+	}
+}
+
+func TestClusterCSCRoutingLossClearsOnlyRemovedNode(t *testing.T) {
+	ctx := context.Background()
+	var callsA, callsB atomic.Int32
+	var changed atomic.Bool
+	a := newClusterCSCTestServer(t, func(command string) string {
+		if command == "get" {
+			callsA.Add(1)
+			if changed.Load() {
+				return "$2\r\nv2\r\n"
+			}
+			return "$2\r\nv1\r\n"
+		}
+		return clusterCSCTestReply(&callsA)(command)
+	})
+	b := newClusterCSCTestServer(t, clusterCSCTestReply(&callsB))
+	var removed bool
+	opt := clusterCSCTestOptions(func() []ClusterSlot {
+		if removed {
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: b}}}}
+		}
+		return []ClusterSlot{
+			{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: a}}},
+			{Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: b}}},
+		}
+	})
+	opt.NewClient = func(o *Options) *Client {
+		o.ClientSideCache = &clusterCSCRecordingCache{LocalCache: NewLocalCache(*o.ClientSideCacheConfig)}
+		return NewClient(o)
+	}
+	c := NewClusterClient(opt)
+	t.Cleanup(func() { _ = c.Close() })
+	if got, err := c.Get(ctx, "{bar}:key").Result(); err != nil || got != "v1" {
+		t.Fatalf("initial read: %q, %v", got, err)
+	}
+	if err := c.Get(ctx, "{foo}:other").Err(); err != nil {
+		t.Fatal(err)
+	}
+	old, err := c.MasterForKey(ctx, "{bar}:key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := old.csc.(*clusterCSCRecordingCache)
+	token, fetch := cache.Reserve("pending", []string{"pending"})
+	if !fetch {
+		t.Fatal("expected a new reservation")
+	}
+	removed = true
+	if _, err := c.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cache.flushes.Load() != 1 || cache.Len() != 0 {
+		t.Fatal("routing loss did not clear the removed node before registry GC")
+	}
+	if cache.FulfillOwned("pending", token, 1, []byte("stale")) {
+		t.Fatal("removed node accepted a fill reserved before routing loss")
+	}
+	if err := c.Get(ctx, "{foo}:other").Err(); err != nil || callsB.Load() != 1 {
+		t.Fatalf("retained node lost its cached result: %v, calls=%d", err, callsB.Load())
+	}
+	// No invalidation or disconnect: a later stale slot map reuses the same
+	// node client, but must not revive its value from before routing loss.
+	changed.Store(true)
+	removed = false
+	if _, err := c.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.Get(ctx, "{bar}:key").Result(); err != nil || got != "v2" {
+		t.Fatalf("read after re-entry: %q, %v", got, err)
+	}
+	if callsA.Load() != 2 || cache.flushes.Load() != 1 {
+		t.Fatalf("calls=%d, flushes=%d; want 2, 1", callsA.Load(), cache.flushes.Load())
+	}
+}
+
+func TestClusterCSCRoutingLossFlushesOnceAndPreservesReplicas(t *testing.T) {
+	newNode := func() (*clusterNode, *clusterCSCRecordingCache) {
+		cache := &clusterCSCRecordingCache{LocalCache: NewLocalCache(CacheConfig{})}
+		return &clusterNode{Client: &Client{baseClient: &baseClient{csc: cache}}}, cache
+	}
+	a, cacheA := newNode()
+	b, cacheB := newNode()
+	disabled := &clusterNode{Client: &Client{baseClient: &baseClient{}}}
+	states := []*clusterState{
+		{slots: []*clusterSlot{
+			{start: 0, end: 8191, nodes: []*clusterNode{a, b, disabled}},
+			{start: 8192, end: 16383, nodes: []*clusterNode{a, b}},
+		}},
+		// A changes role but is still routed as a replica: no flush.
+		{slots: []*clusterSlot{
+			{start: 0, end: 8191, nodes: []*clusterNode{b, a}},
+			{start: 8192, end: 16383, nodes: []*clusterNode{b, a}},
+		}},
+		{slots: []*clusterSlot{{start: 0, end: 16383, nodes: []*clusterNode{b}}}},
+		{slots: []*clusterSlot{{start: 0, end: 16383, nodes: []*clusterNode{b}}}},
+	}
+	var next int
+	holder := newClusterStateHolder(func(context.Context) (*clusterState, error) {
+		state := states[next]
+		next++
+		return state, nil
+	}, time.Minute)
+	for i, want := range []int32{0, 0, 1, 1} {
+		if _, err := holder.Reload(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if cacheA.flushes.Load() != want || cacheB.flushes.Load() != 0 {
+			t.Fatalf("reload %d: flushes A=%d B=%d, want %d, 0", i, cacheA.flushes.Load(), cacheB.flushes.Load(), want)
+		}
+	}
+}
+
+func TestClusterCSCRoutingLossCleanupPrecedesPublication(t *testing.T) {
+	ctx := context.Background()
+	cache := &clusterCSCRecordingCache{LocalCache: NewLocalCache(CacheConfig{})}
+	a := &clusterNode{Client: &Client{baseClient: &baseClient{csc: cache}}}
+	b := &clusterNode{Client: &Client{baseClient: &baseClient{}}}
+	withNodes := func(nodes ...*clusterNode) *clusterState {
+		return &clusterState{
+			slots:     []*clusterSlot{{start: 0, end: 16383, nodes: nodes}},
+			createdAt: time.Now(),
+		}
+	}
+	initial, removing, competing := withNodes(a, b), withNodes(b), withNodes(a, b)
+	var loads atomic.Int32
+	holder := newClusterStateHolder(func(context.Context) (*clusterState, error) {
+		if loads.Add(1) == 1 {
+			return removing, nil
+		}
+		return competing, nil
+	}, time.Minute)
+	holder.state.Store(initial)
+	token, _ := cache.Reserve("key", []string{"key"})
+	if !cache.FulfillOwned("key", token, 1, []byte("v1")) {
+		t.Fatal("initial fill failed")
+	}
+	cache.beforeFlush = func() {
+		if holder.state.Load() != initial {
+			t.Error("routing loss was published before cache cleanup")
+		}
+		// Publish a competing snapshot while cleanup is in progress. Calling
+		// back synchronously also detects a mutex held around custom Flush.
+		if got, err := holder.ReloadOrGet(ctx); err != nil || got != competing {
+			t.Errorf("competing reload: %p, %v", got, err)
+		}
+	}
+	completed := make(chan *clusterState, 1)
+	go func() {
+		state, err := holder.Reload(ctx)
+		if err != nil {
+			t.Error(err)
+		}
+		completed <- state
+	}()
+	select {
+	case state := <-completed:
+		if state != competing || holder.state.Load() != competing {
+			t.Fatal("reload did not preserve the competing publication")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("custom cache callback blocked reload")
+	}
+	if cache.flushes.Load() != 1 || cache.Len() != 0 {
+		t.Fatal("cleanup must finish once, without retrying the custom callback")
 	}
 }
 
@@ -302,10 +469,156 @@ func TestClusterCSCUnobservedMigrationDoesNotCacheAbsence(t *testing.T) {
 	}
 }
 
+func TestClusterCSCRedirectEvictsKeysAcrossConnections(t *testing.T) {
+	for _, redirect := range []string{"MOVED", "ASK"} {
+		t.Run(redirect, func(t *testing.T) {
+			ctx := context.Background()
+			cache := NewLocalCache(CacheConfig{MaxEntries: 32})
+			c := &baseClient{opt: &Options{cscPresenceOnly: true}, csc: cache, cscKeyPrefix: "node:"}
+			for _, entry := range []struct {
+				key, dependency string
+				owner           uint64
+			}{
+				{"get:k", "node:k", 1},
+				{"strlen:k", "node:k", 2},
+				{"get:other", "node:other", 1},
+				{"other-node:k", "other-node:k", 1},
+			} {
+				token, _ := cache.Reserve(entry.key, []string{entry.dependency})
+				if !cache.FulfillOwned(entry.key, token, entry.owner, []byte("value")) {
+					t.Fatal("fill failed")
+				}
+			}
+			token, _ := cache.Reserve("pending:k", []string{cscNamespacedKey("node:", "k")})
+			err := fmt.Errorf("wrapped: %w", proto.ParseErrorReply([]byte("-"+redirect+" 7629 localhost:7001")))
+			c.cscEvictOnRedirect([]string{"node:k"}, err)
+			for _, key := range []string{"get:k", "strlen:k"} {
+				if _, hit := cache.Get(ctx, key); hit {
+					t.Fatalf("dependent entry survived: %s", key)
+				}
+			}
+			if cache.FulfillOwned("pending:k", token, 2, []byte("late")) {
+				t.Fatal("canceled reservation accepted late publication")
+			}
+			for _, key := range []string{"get:other", "other-node:k"} {
+				if _, hit := cache.Get(ctx, key); !hit {
+					t.Fatalf("unrelated entry evicted: %s", key)
+				}
+			}
+		})
+	}
+}
+
+func TestClusterCSCRedirectOnlyForClusterAndRedirects(t *testing.T) {
+	for _, cluster := range []bool{false, true} {
+		for _, err := range []error{nil, Nil, fmt.Errorf("transport"), proto.ParseErrorReply([]byte("-TRYAGAIN retry")), proto.ParseErrorReply([]byte("-MOVED 1 localhost:7001"))} {
+			cache := NewLocalCache(CacheConfig{MaxEntries: 4})
+			c := &baseClient{opt: &Options{cscPresenceOnly: cluster}, csc: cache, cscKeyPrefix: "n:"}
+			token, _ := cache.Reserve("get:k", []string{cscNamespacedKey("n:", "k")})
+			cache.FulfillOwned("get:k", token, 1, []byte("v"))
+			c.cscEvictOnRedirect([]string{"n:k"}, err)
+			_, hit := cache.Get(context.Background(), "get:k")
+			moved := false
+			if err != nil {
+				moved, _, _ = isMovedError(err)
+			}
+			if hit == (cluster && moved) {
+				t.Fatalf("cluster=%v err=%v hit=%v", cluster, err, hit)
+			}
+		}
+	}
+}
+
+func TestClusterCSCFetchRedirectEvictsOtherDependentResults(t *testing.T) {
+	for _, path := range []string{"foreground", "refresh", "coalesced", "abandoned"} {
+		for _, redirect := range []string{"ASK", "MOVED"} {
+			t.Run(path+"/"+redirect, func(t *testing.T) {
+				raw := "-" + redirect + " 7629 localhost:7001\r\n"
+				addr := newClusterCSCTestServer(t, func(command string) string {
+					if command == "hello" {
+						return "%0\r\n"
+					}
+					if command == "get" {
+						return raw
+					}
+					return "+OK\r\n"
+				})
+				c := NewClusterClient(clusterCSCTestOptions(func() []ClusterSlot {
+					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}
+				}))
+				defer c.Close()
+				ctx := context.Background()
+				node, err := c.MasterForKey(ctx, "k")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := node.Ping(ctx).Err(); err != nil {
+					t.Fatal(err)
+				}
+				dependency := cscNamespacedKey(node.cscKeyPrefix, "k")
+				for _, entry := range []struct{ key, dependency string }{
+					{"dependent", dependency}, {"unrelated", cscNamespacedKey(node.cscKeyPrefix, "other")},
+				} {
+					token, _ := node.csc.Reserve(entry.key, []string{entry.dependency})
+					if !node.csc.FulfillOwned(entry.key, token, 1, []byte("v")) {
+						t.Fatal("fill failed")
+					}
+				}
+				cmd := NewStringCmd(ctx, "get", "k")
+				key, _ := buildCacheKeyNS(cmd, node.cscKeyPrefix)
+				if path == "foreground" {
+					if err := node.Process(ctx, cmd); err == nil {
+						t.Fatal("redirect was lost")
+					}
+				} else if path == "refresh" {
+					if _, err := node.refreshInvalidatedBatch(ctx, []cscRefreshTarget{{cacheKey: key, redisKeys: []string{dependency}}}); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					token, _ := node.csc.Reserve(key, []string{dependency})
+					req := &cscMissReq{cmd: cmd, cacheKey: key, token: token, redisKeys: []string{dependency}, done: make(chan error, 1)}
+					if path == "abandoned" {
+						req.cmd = nil
+						req.apply.Store(cscReqAbandoned)
+					}
+					mc := &cscMissCoalescer{c: node.baseClient}
+					mc.applyAndSettle(req, []byte(raw), 1, 0)
+					if err := <-req.done; err == nil {
+						t.Fatal("redirect was lost")
+					}
+				}
+				if _, hit := node.csc.Get(ctx, "dependent"); hit {
+					t.Fatal("another result for the redirected key survived")
+				}
+				if _, hit := node.csc.Get(ctx, "unrelated"); !hit {
+					t.Fatal("unrelated result evicted")
+				}
+			})
+		}
+	}
+}
+
+func TestClusterCSCRedirectWithoutKnownKeysDoesNotFlush(t *testing.T) {
+	cache := &clusterCSCRecordingCache{LocalCache: NewLocalCache(CacheConfig{MaxEntries: 4})}
+	c := &baseClient{opt: &Options{cscPresenceOnly: true}, csc: cache}
+	token, _ := cache.Reserve("cached", []string{"node:k"})
+	cache.FulfillOwned("cached", token, 1, []byte("v"))
+	for _, redirect := range []string{"MOVED", "ASK"} {
+		c.cscEvictOnRedirect(nil, proto.ParseErrorReply([]byte("-"+redirect+" 1 localhost:7001")))
+	}
+	if cache.flushes.Load() != 0 || cache.deletes.Load() != 0 {
+		t.Fatal("unknown dependencies triggered cache cleanup")
+	}
+	if _, hit := cache.Get(context.Background(), "cached"); !hit {
+		t.Fatal("unknown dependencies discarded cached data")
+	}
+}
+
 type clusterCSCRecordingCache struct {
 	*LocalCache
-	flushes atomic.Int32
-	deletes atomic.Int32
+	flushes     atomic.Int32
+	deletes     atomic.Int32
+	beforeFlush func()
 }
 
 func TestClusterCSCRefreshRedirectPreservesUnrelatedEntries(t *testing.T) {
@@ -378,6 +691,9 @@ func TestClusterCSCRefreshRedirectPreservesUnrelatedEntries(t *testing.T) {
 
 func (c *clusterCSCRecordingCache) Flush() int {
 	c.flushes.Add(1)
+	if c.beforeFlush != nil {
+		c.beforeFlush()
+	}
 	return c.LocalCache.Flush()
 }
 
@@ -1130,14 +1446,48 @@ func BenchmarkClusterCSCTopologyReload(b *testing.B) {
 	}
 }
 
+func TestClusterCSCFixtureRequirement(t *testing.T) {
+	if os.Getenv("GOREDIS_CSC_GATE_CHILD") == "1" {
+		newClusterCSCLive(t)
+		t.Fatal("fixture unexpectedly started without redis-server")
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		ci       string
+		required string
+	}{
+		{name: "local"},
+		{name: "generic CI", ci: "true"},
+		{name: "dedicated live job", ci: "true", required: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(binary, "-test.run=^TestClusterCSCFixtureRequirement$", "-test.v")
+			cmd.Env = append(os.Environ(), "PATH=", "GOREDIS_CSC_GATE_CHILD=1",
+				"CI="+tc.ci, "RE_CLUSTER=true", "GOREDIS_CSC_LIVE="+tc.required)
+			out, err := cmd.CombinedOutput()
+			if tc.required == "" {
+				if err != nil || !bytes.Contains(out, []byte("--- SKIP: TestClusterCSCFixtureRequirement")) {
+					t.Fatalf("expected skip without redis-server: %v\n%s", err, out)
+				}
+			} else if err == nil || !bytes.Contains(out, []byte("live CSC tests require redis-server")) {
+				t.Fatalf("expected failure without required redis-server: %v\n%s", err, out)
+			}
+		})
+	}
+}
+
 // Run against a private six-process OSS cluster, never the developer's database.
 // CI runs these fixtures inside the integration test stack's Redis image.
 func newClusterCSCLive(t *testing.T) (*ClusterClient, []*Client) {
 	t.Helper()
 	binary, err := exec.LookPath("redis-server")
 	if err != nil {
-		if os.Getenv("CI") != "" {
-			t.Fatal("live CSC tests require redis-server on PATH in CI")
+		if os.Getenv("GOREDIS_CSC_LIVE") != "" {
+			t.Fatal("live CSC tests require redis-server on PATH")
 		}
 		t.Skip("live CSC requires redis-server on PATH")
 	}

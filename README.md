@@ -350,7 +350,11 @@ by `NewUniversalClient`. Sentinel discovery connections remain uncached, and
 restriction applies; nonzero databases execute normally without caching.
 
 Cache lifecycle belongs to each standalone node client. There is no Cluster CSC
-manager, topology-driven cache flush, or transfer of cached values between nodes.
+manager or transfer of cached values between nodes. Before publishing a routing
+map that removes a node, the client clears that node's cache instead of waiting
+for registry GC. Nodes present in both maps, including replicas, keep their caches.
+If a concurrent reload publishes first, its map is kept; cleanup for the discarded
+map may already have cleared a retained node's cache, causing extra cache misses.
 When a cache miss, coalesced fetch or background refresh receives MOVED or ASK,
 the node client evicts results depending on that fetch's known Redis keys across
 its local cache, including pending reservations. Unknown keys and uncached
@@ -358,13 +362,13 @@ commands rely on server invalidations; they never trigger a whole-cache flush.
 Unrelated entries and other nodes' caches are untouched. Redirected attempts bypass caching.
 Background refresh stays node-local: it applies the same key eviction but does
 not follow redirects or cache errors. Ordinary Cluster routing and topology reload
-remain unchanged. Losing a tracking connection evicts only entries
+triggers remain unchanged. Losing a tracking connection evicts only entries
 dependent on that connection, not the entire node or Cluster cache. Reconnected
 connections establish tracking again for future reads.
 
-Cache correctness relies on server tracking invalidations and connection-loss
-eviction, not on topology polling. A fresh slot map cannot rule out migration or
-failback between observations. Cluster caches only replies establishing that all
+For nodes that remain routed, cache correctness relies on server tracking
+invalidations and connection-loss eviction, not on topology polling. A fresh slot
+map cannot rule out migration or failback between observations. Cluster caches only replies establishing that all
 Redis keys they depend on exist. During migration, a different client can create a missing key
 on an importing node without invalidating the source node's tracked absence.
 Therefore `GET` null replies and `MGET`/`JSON.MGET` replies containing any null element

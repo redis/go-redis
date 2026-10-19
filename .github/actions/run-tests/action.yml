@@ -82,7 +82,7 @@ runs:
       shell: bash
       run: |
         CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -o "$RUNNER_TEMP/csc-cluster.test" .
-        docker run --rm --platform linux/amd64 --network none -e CI=true \
+        docker run --rm --platform linux/amd64 --network none -e GOREDIS_CSC_LIVE=1 \
           --mount "type=bind,src=$RUNNER_TEMP/csc-cluster.test,dst=/csc-cluster.test,readonly" \
           --entrypoint /csc-cluster.test "$CLIENT_LIBS_TEST_IMAGE" \
           -test.run '^TestClusterCSCLive' -test.v -test.timeout=3m

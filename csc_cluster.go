@@ -1,5 +1,32 @@
 package redis
 
+// Clear caches of nodes omitted by the proposed routing map before publishing
+// it. Waiting for registry GC would let a later slot map reuse old results.
+// Nodes still routed as replicas retain their cache, as do nodes whose slots
+// change without removing them from routing.
+func dropCSCOnRoutingLoss(prev, next *clusterState) {
+	if prev == nil || next == nil {
+		return
+	}
+	routed := make(map[*clusterNode]struct{}, len(next.Masters)+len(next.Slaves))
+	for _, slot := range next.slots {
+		for _, node := range slot.nodes {
+			routed[node] = struct{}{}
+		}
+	}
+	for _, slot := range prev.slots {
+		for _, node := range slot.nodes {
+			if _, ok := routed[node]; ok {
+				continue
+			}
+			routed[node] = struct{}{} // A node may appear in multiple slot ranges.
+			if node.Client.csc != nil {
+				node.Client.csc.Flush()
+			}
+		}
+	}
+}
+
 // CSCStats sums statistics of node clients currently in the registry. Removed
 // nodes are not retained for accounting; their counters disappear with them.
 //

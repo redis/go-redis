@@ -1353,7 +1353,14 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 	if err != nil {
 		return nil, err
 	}
-	c.state.Store(state)
+	prev := c.state.Load()
+	previous, _ := prev.(*clusterState)
+	// Finish cleanup before publishing routing loss. Do not hold a lock around
+	// custom caches or overwrite a reload that published while cleanup ran.
+	dropCSCOnRoutingLoss(previous, state)
+	if !c.state.CompareAndSwap(prev, state) {
+		state = c.state.Load().(*clusterState)
+	}
 	return state, nil
 }
 
