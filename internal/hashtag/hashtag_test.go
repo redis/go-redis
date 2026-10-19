@@ -12,6 +12,7 @@ func TestGinkgoSuite(t *testing.T) {
 	RunSpecs(t, "hashtag")
 }
 
+// https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec#key-distribution-model.
 func TestCRC16(t *testing.T) {
 	tests := []struct {
 		s string
