@@ -795,8 +795,8 @@ func (c *SentinelClient) pubSub() *PubSub {
 			// will return nil if already initialized
 			err = c.initConn(ctx, cn)
 			if err != nil {
-				c.removeStreamingCredentialsState(cn)
 				_ = cn.Close()
+				c.removeStreamingCredentialsState(cn)
 				return nil, err
 			}
 			// Track connection in PubSubPool
@@ -806,7 +806,6 @@ func (c *SentinelClient) pubSub() *PubSub {
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
 			c.pubSubPool.UntrackConn(cn)
-			c.removeStreamingCredentialsState(cn)
 			_ = cn.Close()
 			return nil
 		},

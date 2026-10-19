@@ -87,6 +87,50 @@ func TestPubSubCloseRemovesStreamingCredentialsState(t *testing.T) {
 	}
 }
 
+// Closing the client closes its open pub/sub connections through the pub/sub
+// pool, not through PubSub.Close. That must drop their re-auth state too.
+func TestClientCloseRemovesStreamingCredentialsStateOfOpenPubSubs(t *testing.T) {
+	ctx := context.Background()
+	provider := &rotatingCredentialsProvider{
+		credentials: auth.NewBasicCredentials("default", "password"),
+		listeners:   map[auth.CredentialsListener]struct{}{},
+	}
+	client := NewClient(&Options{
+		Addr:                         streamingCredentialsTestAddr(),
+		StreamingCredentialsProvider: provider,
+	})
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		t.Skipf("redis is not reachable with the test credentials: %v", err)
+	}
+
+	const subscriptions = 5
+	connIDs := make([]uint64, 0, subscriptions)
+	for i := 0; i < subscriptions; i++ {
+		pubsub := client.Subscribe(ctx, "streaming-credentials-leak")
+		if _, err := pubsub.Receive(ctx); err != nil {
+			t.Fatalf("subscribe #%d: %v", i, err)
+		}
+		connIDs = append(connIDs, pubsub.cn.GetID())
+	}
+	provider.rotate(auth.NewBasicCredentials("default", "password"))
+
+	manager := client.streamingCredentialsManager
+	for _, connID := range connIDs {
+		if !manager.IsTracking(connID) {
+			t.Fatalf("open pub/sub connection %d has no re-auth state before Close", connID)
+		}
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+	for _, connID := range connIDs {
+		if manager.IsTracking(connID) {
+			t.Fatalf("pub/sub connection %d closed by Client.Close still has re-auth state", connID)
+		}
+	}
+}
+
 func streamingCredentialsTestAddr() string {
 	if port := os.Getenv("REDIS_PORT"); port != "" {
 		return ":" + port

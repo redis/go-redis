@@ -85,6 +85,18 @@ func (r *ReAuthPoolHook) MarkForReAuth(connID uint64, reAuthFn func(error)) {
 	r.shouldReAuth[connID] = reAuthFn
 }
 
+// markForReAuthIfOpen is MarkForReAuth for a connection that is not closed.
+// The check holds the same lock as removeConn, so a re-auth marked while the
+// connection closes is either removed by removeConn or never added.
+func (r *ReAuthPoolHook) markForReAuthIfOpen(conn *pool.Conn, reAuthFn func(error)) {
+	r.shouldReAuthLock.Lock()
+	defer r.shouldReAuthLock.Unlock()
+	if conn.IsClosed() {
+		return
+	}
+	r.shouldReAuth[conn.GetID()] = reAuthFn
+}
+
 // OnGet is called when a connection is retrieved from the pool.
 //
 // This hook checks if the connection needs re-authentication or has a scheduled

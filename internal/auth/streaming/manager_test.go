@@ -129,3 +129,24 @@ func TestManager_RemoveConn_DropsListenerAndPendingReAuth(t *testing.T) {
 		t.Fatal("RemoveConn left the pending re-auth behind")
 	}
 }
+
+// A credential rotation can pass the listener's closed check just before the
+// connection closes. Once RemoveConn ran for the closed connection, the
+// rotation must not add a pending re-auth back.
+func TestManager_MarkForReAuth_IgnoresClosedConn(t *testing.T) {
+	manager := NewManager(&mockPooler{}, time.Second)
+	conn := pool.NewConn(nil)
+	if _, err := manager.Listener(conn,
+		func(*pool.Conn, auth.Credentials) error { return nil },
+		func(*pool.Conn, error) {},
+	); err != nil {
+		t.Fatalf("Listener: %v", err)
+	}
+
+	_ = conn.Close()
+	manager.RemoveConn(conn.GetID())
+	manager.MarkForReAuth(conn, func(error) {})
+	if manager.IsTracking(conn.GetID()) {
+		t.Fatal("MarkForReAuth added re-auth state for a closed connection")
+	}
+}
