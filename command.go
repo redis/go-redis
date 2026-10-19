@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -807,6 +808,17 @@ func (cmd *Cmd) Float32() (float32, error) {
 
 func toFloat32(val interface{}) (float32, error) {
 	switch val := val.(type) {
+	case float64:
+		// Return the range error that ParseFloat returns for a RESP2 bulk
+		// string when a RESP3 double does not fit in a float32.
+		if f := float32(val); math.IsInf(float64(f), 0) && !math.IsInf(val, 0) {
+			return 0, &strconv.NumError{
+				Func: "ParseFloat",
+				Num:  strconv.FormatFloat(val, 'g', -1, 64),
+				Err:  strconv.ErrRange,
+			}
+		}
+		return float32(val), nil
 	case int64:
 		return float32(val), nil
 	case string:
@@ -831,6 +843,8 @@ func (cmd *Cmd) Float64() (float64, error) {
 
 func toFloat64(val interface{}) (float64, error) {
 	switch val := val.(type) {
+	case float64:
+		return val, nil
 	case int64:
 		return float64(val), nil
 	case string:
@@ -1581,17 +1595,27 @@ func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]int64, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch num, err := rd.ReadInt(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			// TS.MADD and CMS.INCRBY report a rejected item as an error
+			// element and still answer for the items after it. The element
+			// is a complete frame, so read on and return the first one once
+			// the whole array is consumed.
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *IntSliceCmd) Clone() Cmder {
@@ -1649,17 +1673,23 @@ func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]uint64, n)
+	var elemErr error
 	for i := range cmd.val {
 		switch num, err := rd.ReadUint(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *UintSliceCmd) Clone() Cmder {
@@ -2080,17 +2110,23 @@ func (cmd *FloatSliceCmd) readReply(rd *proto.Reader) error {
 	}
 
 	cmd.val = make([]float64, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch num, err := rd.ReadFloat(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *FloatSliceCmd) Clone() Cmder {
@@ -2155,17 +2191,23 @@ func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]string, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch s, err := rd.ReadString(); {
 		case err == Nil:
 			cmd.val[i] = ""
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = s
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *StringSliceCmd) Clone() Cmder {
@@ -2422,17 +2464,23 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]bool, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch b, err := rd.ReadBool(); {
 		case err == Nil:
 			cmd.val[i] = false
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = b
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *BoolSliceCmd) Clone() Cmder {
@@ -8034,11 +8082,10 @@ func (cmd *ClientInfoCmd) readReply(rd *proto.Reader) (err error) {
 func parseClientInfo(txt string) (info *ClientInfo, err error) {
 	info = &ClientInfo{}
 	for _, s := range strings.Split(txt, " ") {
-		kv := strings.Split(s, "=")
-		if len(kv) != 2 {
+		key, val, ok := strings.Cut(s, "=")
+		if !ok {
 			return nil, fmt.Errorf("redis: unexpected client info data (%s)", s)
 		}
-		key, val := kv[0], kv[1]
 
 		switch key {
 		case "id":
