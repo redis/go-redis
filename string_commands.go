@@ -92,7 +92,7 @@ type DelExArgs struct {
 // Returns the number of keys that were removed (0 or 1).
 //
 // NOTE DelExArgs is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd {
 	args := []interface{}{"delex", key}
 
@@ -128,7 +128,7 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 // Redis 8.4+. See https://redis.io/commands/digest/
 //
 // NOTE Digest is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) Digest(ctx context.Context, key string) *DigestCmd {
 	cmd := NewDigestCmd(ctx, "digest", key)
 	_ = c(ctx, cmd)
@@ -664,7 +664,7 @@ func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expir
 // Zero expiration means the key has no expiration time.
 //
 // NOTE SetIFEQ is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
@@ -694,7 +694,7 @@ func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, mat
 // Zero expiration means the key has no expiration time.
 //
 // NOTE SetIFEQGet is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
 
@@ -723,7 +723,7 @@ func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, 
 // Zero expiration means the key has no expiration time.
 //
 // NOTE SetIFNE is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
@@ -753,7 +753,7 @@ func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, mat
 // Zero expiration means the key has no expiration time.
 //
 // NOTE SetIFNEGet is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
 
@@ -789,7 +789,7 @@ func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, 
 // Redis 8.4+. See https://redis.io/commands/set/
 //
 // NOTE SetIFNEQ is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
@@ -826,7 +826,7 @@ func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, ma
 // Redis 8.4+. See https://redis.io/commands/set/
 //
 // NOTE SetIFNEQGet is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
 
@@ -862,7 +862,7 @@ func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{},
 // Redis 8.4+. See https://redis.io/commands/set/
 //
 // NOTE SetIFDNE is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
@@ -899,7 +899,7 @@ func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, ma
 // Redis 8.4+. See https://redis.io/commands/set/
 //
 // NOTE SetIFDNEGet is still experimental
-// it's signature and behaviour may change
+// its signature and behaviour may change
 func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
 
