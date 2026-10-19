@@ -748,7 +748,9 @@ func toString(val interface{}) (string, error) {
 }
 
 // formatDouble writes f the way Redis writes a double on RESP2 (d2string and
-// fpconv_dtoa), so that 1e100 is "1e+100" and not 101 digits.
+// fpconv_dtoa), so that 1e100 is "1e+100" and not 101 digits. Redis' Grisu2
+// sometimes prints different last digits than the shortest form used here;
+// both strings parse to the same float64.
 func formatDouble(f float64) string {
 	if f == 0 || math.IsNaN(f) || math.IsInf(f, 0) {
 		return internal.FormatFloat(f)
