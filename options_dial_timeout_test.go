@@ -1,0 +1,38 @@
+package redis
+
+import (
+	"context"
+	"net"
+	"testing"
+)
+
+// ParseURL documents that a duration option is disabled with a value of 0 or
+// less, and ReadTimeout/WriteTimeout turn that into "no deadline". DialTimeout
+// did not: the disabled value stayed negative, and net.Dialer treats a negative
+// Timeout as an already expired deadline, so every dial failed at once.
+func TestDialTimeoutDisabled(t *testing.T) {
+	t.Parallel()
+
+	// Dialing a socket that is listening must keep working when the dial
+	// timeout is disabled; a negative timeout makes it fail immediately.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	for _, value := range []string{"0", "0s", "-1"} {
+		opt, err := ParseURL("redis://" + ln.Addr().String() + "?dial_timeout=" + value)
+		if err != nil {
+			t.Fatalf("ParseURL(dial_timeout=%s): %v", value, err)
+		}
+		opt.init()
+
+		conn, err := opt.NewDialer()(context.Background(), "tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial_timeout=%s: dialing a listening socket failed: %v (DialTimeout=%v)",
+				value, err, opt.DialTimeout)
+		}
+		conn.Close()
+	}
+}

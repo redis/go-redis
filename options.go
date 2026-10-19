@@ -714,7 +714,13 @@ func (opt *Options) init() {
 	if opt.Protocol < 2 {
 		opt.Protocol = 3
 	}
-	if opt.DialTimeout == 0 {
+	// A duration option is disabled with a value of 0 or less in ParseURL, and
+	// ReadTimeout/WriteTimeout turn that into "no deadline". A negative value
+	// cannot do that for DialTimeout: net.Dialer reads it as a deadline that has
+	// already passed and fails every dial at once, so it has to become 0.
+	if opt.DialTimeout < 0 {
+		opt.DialTimeout = 0
+	} else if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
 	// <= 0, not == 0: the pool already treats a nonpositive value as the default
