@@ -554,7 +554,8 @@ func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacit
 }
 
 // CFReserveWithArgs creates an empty Cuckoo filter with the specified options.
-// This function allows for specifying additional options such as bucket size and maximum number of iterations.
+// This function allows for specifying additional options such as bucket size,
+// maximum number of iterations and expansion rate.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
 	args := []interface{}{"CF.RESERVE", key, options.Capacity}
@@ -746,7 +747,8 @@ func (c cmdable) CFInfo(ctx context.Context, key string) *CFInfoCmd {
 }
 
 // CFInsert inserts elements into a Cuckoo filter.
-// This function also allows for specifying additional options such as capacity, error rate, expansion rate, and non-scaling behavior.
+// This function also allows for specifying additional options such as capacity
+// and whether the filter must not be created when it does not exist.
 // Returns an array of booleans indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/cf.insert/
 func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd {
@@ -760,7 +762,7 @@ func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOpti
 
 // CFInsertNX inserts elements into a Cuckoo filter only if they do not already exist in the filter.
 // This function also allows for specifying additional options such as:
-// capacity, error rate, expansion rate, and non-scaling behavior.
+// capacity and whether the filter must not be created when it does not exist.
 // Returns an array of integers indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/cf.insertnx/
 func (c cmdable) CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd {
