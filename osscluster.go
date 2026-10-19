@@ -113,6 +113,9 @@ type ClusterOptions struct {
 	DialerRetries int
 
 	// DialerRetryTimeout is the backoff duration between retry attempts.
+	// Values <= 0 use the default; use DialerRetryBackoff to retry without delay.
+	// A URL dialer_retry_timeout=0 sets DialerRetryBackoff, which takes precedence
+	// over this field, including when this field is changed after parsing.
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
@@ -330,6 +333,8 @@ func (opt *ClusterOptions) init() {
 //     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
+//   - dialer_retry_timeout is an exception: 0 means no retry delay, while negative
+//     values are rejected. Explicit zero sets DialerRetryBackoff to return 0.
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
@@ -405,12 +410,12 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
 	o.DialTimeout = q.duration("dial_timeout")
 	o.DialerRetries = q.int("dialer_retries")
-	o.DialerRetryTimeout = q.duration("dialer_retry_timeout")
+	o.DialerRetryTimeout, o.DialerRetryBackoff = q.dialerRetryTimeout()
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
 	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
-	o.ReadBufferSize = q.int("read_buffer_size")
-	o.WriteBufferSize = q.int("write_buffer_size")
+	o.ReadBufferSize = q.nonNegativeInt("read_buffer_size")
+	o.WriteBufferSize = q.nonNegativeInt("write_buffer_size")
 	o.DisableIdentity = q.bool("disable_identity")
 	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
