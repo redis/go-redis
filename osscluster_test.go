@@ -3810,3 +3810,101 @@ var _ = Describe("ClusterClient FailingTimeoutSeconds", func() {
 		Expect(opt.FailingTimeoutSeconds).To(Equal(15))
 	})
 })
+
+// A RediSearch cursor lives on the master that ran FT.AGGREGATE. ClusterClient
+// routes FT.AGGREGATE WITHCURSOR and FT.CURSOR READ/DEL by the index slot so
+// they reach that master (#4098). The index names hash to three different
+// masters, and the round-robin picker would spread keyless commands.
+var _ = Describe("ClusterClient FT cursor routing", func() {
+	indexes := []string{"idx_cursor_a", "idx_cursor_b", "idx_cursor_c"}
+	var client *redis.ClusterClient
+
+	newClient := func(opt *redis.ClusterOptions) *redis.ClusterClient {
+		opt.ShardPicker = &routing.RoundRobinPicker{}
+		return cluster.newClusterClient(ctx, opt)
+	}
+	wait := func(c *redis.ClusterClient) func(index string) {
+		return func(index string) {
+			Eventually(func() error {
+				return c.ForEachMaster(ctx, func(ctx context.Context, m *redis.Client) error {
+					res, err := m.FTInfo(ctx, index).Result()
+					if err != nil {
+						return err
+					}
+					if res.Indexing != 0 || res.Cleaning != 0 {
+						return fmt.Errorf("%s still indexing on %s", index, m.Options().Addr)
+					}
+					return nil
+				})
+			}, 30*time.Second, 100*time.Millisecond).Should(Succeed())
+		}
+	}
+
+	BeforeEach(func() {
+		client = newClient(redisClusterOptions())
+		info := client.Info(ctx, "modules")
+		if info.Err() != nil || !strings.Contains(info.Val(), "search") {
+			Skip("Search module not available")
+		}
+		for _, index := range indexes {
+			client.FTDropIndexWithArgs(ctx, index, &redis.FTDropIndexOptions{DeleteDocs: true})
+		}
+	})
+
+	AfterEach(func() {
+		for _, index := range indexes {
+			client.FTDropIndexWithArgs(ctx, index, &redis.FTDropIndexOptions{DeleteDocs: true})
+		}
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("pages a cursor on every master", Label("search", "ftcursor"), func() {
+		slots := map[int]bool{}
+		for _, index := range indexes {
+			slots[hashtag.Slot(index)/5461] = true
+			testFTAggregateCursor(ctx, client, index, wait(client))
+		}
+		Expect(slots).To(HaveLen(3), "index names must hash to three masters")
+	})
+
+	It("pages a cursor with ReadOnly and RouteRandomly", Label("search", "ftcursor"), func() {
+		opt := redisClusterOptions()
+		opt.ReadOnly = true
+		opt.RouteRandomly = true
+		ro := newClient(opt)
+		defer ro.Close()
+		for _, index := range indexes {
+			testFTAggregateCursor(ctx, ro, index, wait(client))
+		}
+	})
+
+	It("reads a cursor inside a pipeline", Label("search", "ftcursor"), func() {
+		index := indexes[1]
+		opts := &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{index + ":"}}
+		schema := &redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric}
+		Expect(client.FTCreate(ctx, index, opts, schema).Err()).NotTo(HaveOccurred())
+		for i := 1; i <= 3; i++ {
+			Expect(client.HSet(ctx, fmt.Sprintf("%s:%d", index, i), "n", i).Err()).NotTo(HaveOccurred())
+		}
+		wait(client)(index)
+
+		res, err := client.FTAggregateWithArgs(ctx, index, "*", &redis.FTAggregateOptions{
+			LoadAll:           true,
+			WithCursor:        true,
+			WithCursorOptions: &redis.FTAggregateWithCursor{Count: 1},
+		}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Cursor).NotTo(BeZero())
+
+		var read *redis.MapStringInterfaceCmd
+		_, err = client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			// GET on another slot puts a second node in the pipeline.
+			pipe.Get(ctx, "cursor-pipeline-other-key")
+			read = pipe.FTCursorRead(ctx, index, int(res.Cursor), 2)
+			return nil
+		})
+		Expect(err).To(Equal(redis.Nil))
+		Expect(read.Err()).NotTo(HaveOccurred())
+		Expect(read.Val()["results"]).To(HaveLen(2))
+	})
+})

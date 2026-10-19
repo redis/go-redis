@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,8 +17,7 @@ var (
 	errInvalidCmdPointer         = errors.New("redis: invalid command pointer")
 	errNoCmdsToAggregate         = errors.New("redis: no commands to aggregate")
 	errNoResToAggregate          = errors.New("redis: no results to aggregate")
-	errInvalidCursorCmdArgsCount = errors.New("redis: FT.CURSOR command requires at least 3 arguments")
-	errInvalidCursorIdType       = errors.New("redis: invalid cursor ID type")
+	errInvalidCursorCmdArgsCount = errors.New("redis: FT.CURSOR command requires a subcommand, an index and a cursor id")
 )
 
 // slotResult represents the result of executing a command on a specific slot
@@ -60,10 +60,8 @@ func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *cluste
 
 // executeDefault handles standard command routing based on keys
 func (c *ClusterClient) executeDefault(ctx context.Context, cmd Cmder, policy *routing.CommandPolicy, node *clusterNode) error {
-	if policy != nil && !c.hasKeys(cmd) {
-		if c.readOnlyEnabled() && policy.IsReadOnly() {
-			return c.executeOnArbitraryNode(ctx, cmd)
-		}
+	if policy != nil && c.readOnlyEnabled() && policy.IsReadOnly() && !c.hasKeys(cmd) && ftCursorIndexPos(cmd) == 0 {
+		return c.executeOnArbitraryNode(ctx, cmd)
 	}
 
 	return node.Client.Process(ctx, cmd)
@@ -157,7 +155,7 @@ func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap
 		go func(slot int, keys []string) {
 			defer wg.Done()
 
-			node, err := c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
+			node, err := c.cmdNodeWithShardPicker(ctx, cmd, slot, c.opt.ShardPicker)
 			if err != nil {
 				results <- slotResult{nil, keys, err}
 				return
@@ -283,32 +281,51 @@ func createCommandByType(ctx context.Context, cmdType CmdType, args ...interface
 func (c *ClusterClient) executeSpecialCommand(ctx context.Context, cmd Cmder, policy *routing.CommandPolicy, node *clusterNode) error {
 	switch cmd.Name() {
 	case "ft.cursor":
-		return c.executeCursorCommand(ctx, cmd)
+		return c.executeCursorCommand(ctx, cmd, node)
 	default:
 		return c.executeDefault(ctx, cmd, policy, node)
 	}
 }
 
-// executeCursorCommand handles FT.CURSOR commands with sticky routing
-func (c *ClusterClient) executeCursorCommand(ctx context.Context, cmd Cmder) error {
-	args := cmd.Args()
-	if len(args) < 4 {
+// executeCursorCommand runs FT.CURSOR on node. process has already picked the
+// master of the index slot (see ftCursorIndexPos), or the MOVED/ASK target.
+func (c *ClusterClient) executeCursorCommand(ctx context.Context, cmd Cmder, node *clusterNode) error {
+	if len(cmd.Args()) < 4 {
 		return errInvalidCursorCmdArgsCount
 	}
-
-	cursorID, ok := args[3].(string)
-	if !ok {
-		return errInvalidCursorIdType
-	}
-
-	// Route based on cursor ID to maintain stickiness
-	slot := hashtag.Slot(cursorID)
-	node, err := c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
-	if err != nil {
-		return err
-	}
-
 	return node.Client.Process(ctx, cmd)
+}
+
+// ftCursorIndexPos returns the position of the index name for commands that
+// create or use a RediSearch cursor: FT.AGGREGATE ... WITHCURSOR (1) and
+// FT.CURSOR READ/DEL (2). It returns 0 for other commands.
+//
+// A cursor lives on the node that ran FT.AGGREGATE. In cluster mode these
+// commands route by the slot of the index name and always go to the slot
+// master, so every call for one index reaches the same node.
+func ftCursorIndexPos(cmd Cmder) int {
+	args := cmd.Args()
+	if len(args) < 3 {
+		return 0
+	}
+	name, ok := args[0].(string)
+	if !ok || len(name) < len("ft.cursor") || name[0]|0x20 != 'f' || name[1]|0x20 != 't' || name[2] != '.' {
+		return 0
+	}
+	switch {
+	case strings.EqualFold(name, "ft.cursor"):
+		if sub, ok := args[1].(string); ok && (strings.EqualFold(sub, "read") || strings.EqualFold(sub, "del")) {
+			return 2
+		}
+	case strings.EqualFold(name, "ft.aggregate"):
+		// args[1] is the index, args[2] the query.
+		for _, arg := range args[3:] {
+			if s, ok := arg.(string); ok && strings.EqualFold(s, "withcursor") {
+				return 1
+			}
+		}
+	}
+	return 0
 }
 
 // executeParallel executes a command on multiple nodes concurrently

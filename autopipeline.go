@@ -986,10 +986,8 @@ type AutoPipeliner struct {
 
 	// mustDivert, when set, forces a command off the batching path even though
 	// it is otherwise batchable — cluster mode uses it for commands whose
-	// routing is NOT slot-derived (ReqSpecial, e.g. FT.CURSOR READ, which is
-	// sticky to the node that owns the cursor). Batched, mapCmdsByNode would
-	// route them by slot and reach the wrong shard; diverted, they go through
-	// Client/ClusterClient.Process and keep their special routing.
+	// routing is special (ReqSpecial, e.g. FT.CURSOR READ). Diverted, they go
+	// through Client/ClusterClient.Process and keep their special routing.
 	mustDivert func(ctx context.Context, cmd Cmder) bool
 
 	// sharedClosed, when non-nil, is the owning client's pool-set closed flag

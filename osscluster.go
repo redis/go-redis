@@ -1525,9 +1525,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		if node == nil {
 			var err error
 			if !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
-				node, err = c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
+				node, err = c.cmdNodeWithShardPicker(ctx, cmd, slot, c.opt.ShardPicker)
 			} else {
-				node, err = c.cmdNode(ctx, cmd.Name(), slot)
+				node, err = c.cmdNode(ctx, cmd, slot)
 			}
 			if err != nil {
 				return err
@@ -1926,12 +1926,10 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 		}
 		return nil
 	})
-	// Commands whose routing is not slot-derived must not be coalesced: a solo
-	// flush reaches ClusterClient.process and its special handling (FT.CURSOR
-	// READ/DEL are sticky to the node holding the cursor), but inside a batch
-	// mapCmdsByNode routes by slot and can hit the wrong shard — visible only
-	// under concurrent traffic, which is the worst way to find it. Divert them
-	// instead of rejecting: they work fine on their own connection (review
+	// ReqSpecial commands (FT.CURSOR) are not coalesced: a solo flush reaches
+	// ClusterClient.process and its special handling. FT.CURSOR READ/DEL now
+	// route by the index slot (see ftCursorIndexPos), so a batch would also
+	// reach the right node; diverting stays as the simpler path (review
 	// finding by codex on #3942).
 	ap.setMustDivert(func(ctx context.Context, cmd Cmder) bool {
 		if c.cmdInfoResolver == nil {
@@ -2157,6 +2155,9 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 
 func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool {
 	for _, cmd := range cmds {
+		if ftCursorIndexPos(cmd) > 0 {
+			return false
+		}
 		cmdInfo := c.cmdInfo(ctx, cmd.Name())
 		if cmdInfo == nil || !cmdInfo.ReadOnly {
 			return false
@@ -3128,6 +3129,9 @@ func (c *ClusterClient) cmdSlotWithPos(cmd Cmder, pos int, prefferedSlot int) in
 	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
 	}
+	if pos := ftCursorIndexPos(cmd); pos > 0 {
+		return hashtag.Slot(cmd.stringArg(pos))
+	}
 	return cmdSlot(cmd, pos, prefferedSlot)
 }
 
@@ -3145,7 +3149,7 @@ func cmdSlot(cmd Cmder, pos int, prefferedRandomSlot int) int {
 
 func (c *ClusterClient) cmdNode(
 	ctx context.Context,
-	cmdName string,
+	cmd Cmder,
 	slot int,
 ) (*clusterNode, error) {
 	state, err := c.state.Get(ctx)
@@ -3153,8 +3157,10 @@ func (c *ClusterClient) cmdNode(
 		return nil, err
 	}
 
-	if c.opt.ReadOnly {
-		cmdInfo := c.cmdInfo(ctx, cmdName)
+	// Cursor commands stay on the slot master: a replica does not hold the
+	// cursor.
+	if c.opt.ReadOnly && ftCursorIndexPos(cmd) == 0 {
+		cmdInfo := c.cmdInfo(ctx, cmd.Name())
 		if cmdInfo != nil && cmdInfo.ReadOnly {
 			return c.slotReadOnlyNode(state, slot)
 		}
@@ -3164,7 +3170,7 @@ func (c *ClusterClient) cmdNode(
 
 func (c *ClusterClient) cmdNodeWithShardPicker(
 	ctx context.Context,
-	cmdName string,
+	cmd Cmder,
 	slot int,
 	shardPicker routing.ShardPicker,
 ) (*clusterNode, error) {
@@ -3183,8 +3189,10 @@ func (c *ClusterClient) cmdNodeWithShardPicker(
 		return state.Masters[idx], nil
 	}
 
-	if c.opt.ReadOnly {
-		cmdInfo := c.cmdInfo(ctx, cmdName)
+	// Cursor commands stay on the slot master: a replica does not hold the
+	// cursor.
+	if c.opt.ReadOnly && ftCursorIndexPos(cmd) == 0 {
+		cmdInfo := c.cmdInfo(ctx, cmd.Name())
 		if cmdInfo != nil && cmdInfo.ReadOnly {
 			return c.slotReadOnlyNode(state, slot)
 		}

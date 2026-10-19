@@ -36,25 +36,27 @@ func WaitForIndexing(c *redis.Client, index string) {
 }
 
 // testFTAggregateCursor pages an FT.AGGREGATE WITHCURSOR result with
-// FT.CURSOR READ and deletes a live cursor with FT.CURSOR DEL.
-func testFTAggregateCursor(ctx context.Context, client redis.UniversalClient, rawClient *redis.Client) {
-	opts := &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{"doc:"}}
+// FT.CURSOR READ and deletes a live cursor with FT.CURSOR DEL. wait blocks
+// until the index has finished indexing.
+func testFTAggregateCursor(ctx context.Context, client redis.UniversalClient, index string, wait func(index string)) {
+	prefix := index + ":"
+	opts := &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{prefix}}
 	schema := &redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric}
-	val, err := client.FTCreate(ctx, "idx_cursor", opts, schema).Result()
+	val, err := client.FTCreate(ctx, index, opts, schema).Result()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(val).To(BeEquivalentTo("OK"))
-	WaitForIndexing(rawClient, "idx_cursor")
+	wait(index)
 	for i := 1; i <= 3; i++ {
-		Expect(client.HSet(ctx, fmt.Sprintf("doc:%d", i), "n", i).Err()).NotTo(HaveOccurred())
+		Expect(client.HSet(ctx, fmt.Sprintf("%s%d", prefix, i), "n", i).Err()).NotTo(HaveOccurred())
 	}
-	WaitForIndexing(rawClient, "idx_cursor")
+	wait(index)
 
 	options := &redis.FTAggregateOptions{
 		LoadAll:           true,
 		WithCursor:        true,
 		WithCursorOptions: &redis.FTAggregateWithCursor{Count: 1},
 	}
-	res, err := client.FTAggregateWithArgs(ctx, "idx_cursor", "*", options).Result()
+	res, err := client.FTAggregateWithArgs(ctx, index, "*", options).Result()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(res.Rows).To(HaveLen(1))
 	Expect(res.Cursor).NotTo(BeZero())
@@ -63,7 +65,7 @@ func testFTAggregateCursor(ctx context.Context, client redis.UniversalClient, ra
 	cursor := res.Cursor
 	for i := 0; cursor != 0; i++ {
 		Expect(i).To(BeNumerically("<", 10), "cursor did not finish")
-		page, err := client.FTCursorRead(ctx, "idx_cursor", int(cursor), 1).Result()
+		page, err := client.FTCursorRead(ctx, index, int(cursor), 1).Result()
 		Expect(err).NotTo(HaveOccurred())
 		for _, row := range page["results"].([]map[string]interface{}) {
 			seen[row["n"]] = true
@@ -72,10 +74,10 @@ func testFTAggregateCursor(ctx context.Context, client redis.UniversalClient, ra
 	}
 	Expect(seen).To(Equal(map[interface{}]bool{"1": true, "2": true, "3": true}))
 
-	res, err = client.FTAggregateWithArgs(ctx, "idx_cursor", "*", options).Result()
+	res, err = client.FTAggregateWithArgs(ctx, index, "*", options).Result()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(res.Cursor).NotTo(BeZero())
-	status, err := client.FTCursorDel(ctx, "idx_cursor", int(res.Cursor)).Result()
+	status, err := client.FTCursorDel(ctx, index, int(res.Cursor)).Result()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(status).To(BeEquivalentTo("OK"))
 }
@@ -116,7 +118,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should page FTAggregate WITHCURSOR with FTCursorRead", Label("search", "ftaggregate", "ftcursor"), func() {
-		testFTAggregateCursor(ctx, client, rawClient)
+		testFTAggregateCursor(ctx, client, "idx_cursor", func(index string) { WaitForIndexing(rawClient, index) })
 	})
 
 	It("should FTCreate and FTSearch WithScores", Label("search", "ftcreate", "ftsearch"), func() {
@@ -4715,7 +4717,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 	})
 
 	It("should page FTAggregate WITHCURSOR with FTCursorRead", Label("search", "ftaggregate", "ftcursor"), func() {
-		testFTAggregateCursor(ctx, client, rawClient)
+		testFTAggregateCursor(ctx, client, "idx_cursor", func(index string) { WaitForIndexing(rawClient, index) })
 	})
 
 	It("should handle FTAggregate with RESP3", Label("search", "ftcreate", "ftaggregate"), func() {
