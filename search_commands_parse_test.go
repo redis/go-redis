@@ -735,11 +735,13 @@ func ptrFloat64(f float64) *float64 {
 // produce semantically equivalent results as per the spec requirement R.1.1
 func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 	tests := []struct {
-		name       string
-		resp2Data  []interface{}
-		resp3Data  map[string]interface{}
-		noContent  bool
-		withScores bool
+		name         string
+		resp2Data    []interface{}
+		resp3Data    map[string]interface{}
+		noContent    bool
+		withScores   bool
+		withPayloads bool
+		withSortKeys bool
 	}{
 		{
 			name: "simple hash query",
@@ -852,6 +854,197 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 			withScores: false,
 		},
 		{
+			name: "NOCONTENT query with scores",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:2",
+				"0.25",
+				"doc:1",
+				"0.125",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":     "doc:2",
+						"score":  float64(0.25),
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"id":     "doc:1",
+						"score":  float64(0.125),
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:  true,
+			withScores: true,
+		},
+		{
+			name: "NOCONTENT query with sort keys",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				"#1",
+				"doc:2",
+				"#2",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":      "doc:1",
+						"sortkey": "#1",
+						"values":  []interface{}{},
+					},
+					map[string]interface{}{
+						"id":      "doc:2",
+						"sortkey": "#2",
+						"values":  []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:    true,
+			withSortKeys: true,
+		},
+		{
+			name: "query with empty payloads",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:2",
+				nil,
+				[]interface{}{"n", "2"},
+				"doc:1",
+				nil,
+				[]interface{}{"n", "1"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:2",
+						"extra_attributes": map[string]interface{}{"n": "2"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:1",
+						"extra_attributes": map[string]interface{}{"n": "1"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withPayloads: true,
+		},
+		{
+			name: "query with sort keys and a missing sort field",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				"#5",
+				[]interface{}{"n", "5"},
+				"doc:2",
+				nil,
+				[]interface{}{"txt", "hello"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:1",
+						"sortkey":          "#5",
+						"extra_attributes": map[string]interface{}{"n": "5"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:2",
+						"sortkey":          nil,
+						"extra_attributes": map[string]interface{}{"txt": "hello"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withSortKeys: true,
+		},
+		{
+			name: "NOCONTENT query with a missing sort field before another document",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				nil,
+				"doc:2",
+				"#5",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":      "doc:1",
+						"sortkey": nil,
+						"values":  []interface{}{},
+					},
+					map[string]interface{}{
+						"id":      "doc:2",
+						"sortkey": "#5",
+						"values":  []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:    true,
+			withSortKeys: true,
+		},
+		{
+			name: "query with empty payload and missing sort field",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				nil,
+				nil,
+				[]interface{}{"txt", "hello"},
+				"doc:2",
+				"p",
+				"#5",
+				[]interface{}{"n", "5"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:1",
+						"sortkey":          nil,
+						"extra_attributes": map[string]interface{}{"txt": "hello"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:2",
+						"payload":          "p",
+						"sortkey":          "#5",
+						"extra_attributes": map[string]interface{}{"n": "5"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withPayloads: true,
+			withSortKeys: true,
+		},
+		{
 			name: "empty result",
 			resp2Data: []interface{}{
 				int64(0),
@@ -871,7 +1064,7 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Parse RESP2
-			resp2Result, err := parseFTSearch(tt.resp2Data, tt.noContent, tt.withScores, false, false)
+			resp2Result, err := parseFTSearch(tt.resp2Data, tt.noContent, tt.withScores, tt.withPayloads, tt.withSortKeys)
 			if err != nil {
 				t.Fatalf("parseFTSearch() error = %v", err)
 			}
@@ -909,6 +1102,20 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 						t.Errorf("Docs[%d].Score mismatch: RESP2=%v, RESP3=nil", i, *resp2Doc.Score)
 					} else if resp2Doc.Score != nil && resp3Doc.Score != nil && *resp2Doc.Score != *resp3Doc.Score {
 						t.Errorf("Docs[%d].Score mismatch: RESP2=%v, RESP3=%v", i, *resp2Doc.Score, *resp3Doc.Score)
+					}
+				}
+
+				if tt.withSortKeys {
+					if (resp2Doc.SortKey == nil) != (resp3Doc.SortKey == nil) ||
+						(resp2Doc.SortKey != nil && *resp2Doc.SortKey != *resp3Doc.SortKey) {
+						t.Errorf("Docs[%d].SortKey mismatch: RESP2=%v, RESP3=%v", i, resp2Doc.SortKey, resp3Doc.SortKey)
+					}
+				}
+
+				if tt.withPayloads {
+					if (resp2Doc.Payload == nil) != (resp3Doc.Payload == nil) ||
+						(resp2Doc.Payload != nil && *resp2Doc.Payload != *resp3Doc.Payload) {
+						t.Errorf("Docs[%d].Payload mismatch: RESP2=%v, RESP3=%v", i, resp2Doc.Payload, resp3Doc.Payload)
 					}
 				}
 
