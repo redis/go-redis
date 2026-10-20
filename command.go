@@ -2590,7 +2590,9 @@ func (cmd *MapStringStringCmd) String() string {
 }
 
 // Scan scans the results from the map into a destination struct. The map keys
-// are matched in the Redis struct fields by the `redis:"field"` tag.
+// are matched in the Redis struct fields by the `redis:"field"` tag. If a field
+// fails to decode, Scan still sets every other field it can and returns the
+// error of the failing field with the smallest key.
 func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 	cmd.await()
 	if cmd.err != nil {
@@ -2602,10 +2604,13 @@ func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 		return err
 	}
 
+	// cmd.val is a map, so keep the error of the smallest key to return the
+	// same error on every call.
 	var firstErr error
+	var errKey string
 	for k, v := range cmd.val {
-		if err := strct.Scan(k, v); err != nil && firstErr == nil {
-			firstErr = err
+		if err := strct.Scan(k, v); err != nil && (firstErr == nil || k < errKey) {
+			firstErr, errKey = err, k
 		}
 	}
 

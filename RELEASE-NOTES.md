@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
+- **Struct scan on a bad field:** `Scan` on `HGETALL`/`HMGET` results used to stop at the first field that failed to decode, and with `HGETALL` the set of filled fields was random. It now sets every field it can decode and still returns an error: the one of the failing field with the smallest key for `HGETALL`, and the first failing argument for `HMGET`. A nil pointer field stays nil when its decode fails. Code that reuses the struct after an error will see more fields set ([#4136](https://github.com/redis/go-redis/pull/4136)).
 
 # 9.23.0 (2026-10-05)
 
