@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
+- **Failover client with `StreamingCredentialsProvider`:** `NewFailoverClient` now creates the streaming credentials manager, so new connections no longer panic in `initConn` ([#4182](https://github.com/redis/go-redis/pull/4182)).
 
 # 9.23.0 (2026-10-05)
 
