@@ -3546,7 +3546,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "RedissSkipVerify",
 				url:  "rediss://localhost:123?skip_verify=true",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", InsecureSkipVerify: true}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
 			}, {
 				test: "QueryParameters",
 				url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
