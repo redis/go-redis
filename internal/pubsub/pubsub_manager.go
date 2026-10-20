@@ -137,6 +137,15 @@ type Manager struct {
 	// and a failed first dial leaves no dropped connection to key that
 	// off. Guarded by mu.
 	dialed bool
+	// dialValues supplies the context values of every dial (see
+	// dialPlan.values): those of the foreground caller (a Subscribe, Ping
+	// or ClientSetName) that started the latest foreground dial, cancellation
+	// detached. Background redials — reconnects, restorations, retries —
+	// have no caller of their own and reuse them, so the shared
+	// connection is re-established with the values (e.g. the credentials
+	// a CredentialsProviderContext selects) it was first established
+	// with. nil until a foreground dial. Guarded by mu.
+	dialValues context.Context
 
 	// Reconnect bookkeeping (guarded by mu). reconnectLog paces the
 	// failure lines of an outage to one per LogInterval, the rest
@@ -281,7 +290,7 @@ func NewManager(
 		wakeResync: make(chan struct{}, 1),
 		done:       make(chan struct{}),
 	}
-	m.dialer = newDialer(&m.mu, newConn, cfg.DialRetries, cfg.MinRetryBackoff, cfg.ReconnectMaxBackoff)
+	m.dialer = newDialer(&m.mu, newConn, cfg.DialRetries, cfg.DialRetryBackoff, cfg.MinRetryBackoff, cfg.ReconnectMaxBackoff)
 	return m
 }
 
@@ -1067,29 +1076,45 @@ func (m *Manager) consumeErrorReplyLocked() (replyWaiter, bool) {
 }
 
 func (m *Manager) fanoutShardedMessageLocked(shardedMsg *Message) {
-	deliverMessageLocked(m.shardSubscribers[shardedMsg.Channel], m.leavingShards[shardedMsg.Channel], shardedMsg)
+	deliverMessageLocked(m.shardSubscribers[shardedMsg.Channel], m.leavingShards[shardedMsg.Channel],
+		confirmKey{shard: true, name: shardedMsg.Channel}, shardedMsg)
 }
 
 func (m *Manager) fanoutMessageLocked(msg *Message) {
-	deliverMessageLocked(m.subscribers[msg.Channel], m.leavingChannels[msg.Channel], msg)
+	deliverMessageLocked(m.subscribers[msg.Channel], m.leavingChannels[msg.Channel],
+		confirmKey{name: msg.Channel}, msg)
 }
 
 func (m *Manager) fanoutPatternMessageLocked(msg *Message) {
-	deliverMessageLocked(m.patternSubscribers[msg.Pattern], m.leavingPatterns[msg.Pattern], msg)
+	deliverMessageLocked(m.patternSubscribers[msg.Pattern], m.leavingPatterns[msg.Pattern],
+		confirmKey{pattern: true, name: msg.Pattern}, msg)
 }
 
 // deliverMessageLocked delivers msg to the name's owners (sub, nil when
 // none) and to the handles still leaving it (see
-// Manager.leavingChannels), each once.
-func deliverMessageLocked(sub *subscription, leaving map[*handle]int, msg *Message) {
+// Manager.leavingChannels), each once. An owner that has not yet been
+// delivered its own subscribe confirmation for the name (key) is still
+// joining and is skipped: it joined a name another handle already holds
+// on the shared connection, and the messages read ahead of its SUBSCRIBE's
+// reply were published before the server processed it — a dedicated
+// connection would never have delivered them, and never ahead of the
+// confirmation.
+func deliverMessageLocked(sub *subscription, leaving map[*handle]int, key confirmKey, msg *Message) {
 	if sub != nil {
 		for h := range sub.handles {
+			if _, ok := h.confirmed[key]; !ok {
+				continue
+			}
 			h.deliverLocked(cloneMessage(msg))
 		}
 	}
 	for h := range leaving {
 		if sub != nil {
-			if _, owner := sub.handles[h]; owner {
+			// Skip owners the loop above delivered to. A handle that
+			// re-subscribed with its UNSUBSCRIBE still in flight owns the
+			// name unconfirmed, yet still receives as a leaver.
+			_, owner := sub.handles[h]
+			if _, ok := h.confirmed[key]; owner && ok {
 				continue
 			}
 		}
@@ -1351,6 +1376,11 @@ func (m *Manager) connectLocked(ctx context.Context) (replayed bool, err error) 
 		go m.retryRejected()
 	})
 
+	// The caller's context values authenticate the dial it starts (see
+	// dialValues); joining one in flight keeps the values it started with.
+	if !m.dialer.inFlightLocked() {
+		m.dialValues = context.WithoutCancel(ctx)
+	}
 	call := m.dialLocked(m.dropped, nil)
 	m.dialWaiters++
 	m.mu.Unlock()
@@ -1438,6 +1468,7 @@ func (m *Manager) dialLocked(prev *pool.Conn, reason error) *dialCall {
 		}
 		return dialPlan{
 			addr:    m.cfg.Addr,
+			values:  m.dialValues,
 			timeout: m.cfg.ReconnectTimeout,
 			nextAddrLocked: func() string {
 				m.resolveAddrLocked(prev)

@@ -36,6 +36,7 @@ func TestManagerFanout(t *testing.T) {
 			t.Fatalf("dialed %q, want %q", fsc.addr, "node:6379")
 		}
 		fsc.expectCmd(t, "subscribe", "ch1")
+		fsc.sendConfirm(t, "subscribe", "ch1", 1)
 
 		fsc.sendMessage(t, "message", "ch1", "hello")
 		msg := recvMsg(t, ch)
@@ -61,6 +62,8 @@ func TestManagerFanout(t *testing.T) {
 		fsc := srv.waitDial(t)
 		fsc.expectCmd(t, "subscribe", "shared")
 		fsc.expectCmd(t, "subscribe", "shared") // re-sent, harmless
+		fsc.sendConfirm(t, "subscribe", "shared", 1)
+		fsc.sendConfirm(t, "subscribe", "shared", 1)
 
 		fsc.sendMessage(t, "message", "shared", "both")
 		if msg := recvMsg(t, ch1); msg.Payload != "both" {
@@ -88,6 +91,8 @@ func TestManagerFanout(t *testing.T) {
 		fsc := srv.waitDial(t)
 		fsc.expectCmd(t, "psubscribe", "news.*")
 		fsc.expectCmd(t, "ssubscribe", "news.tech")
+		fsc.sendConfirm(t, "psubscribe", "news.*", 1)
+		fsc.sendConfirm(t, "ssubscribe", "news.tech", 1)
 
 		fsc.sendMessage(t, "pmessage", "news.*", "news.tech", "p-payload")
 		if msg := recvMsg(t, chp); msg.Pattern != "news.*" || msg.Payload != "p-payload" {
@@ -104,6 +109,50 @@ func TestManagerFanout(t *testing.T) {
 		case msg := <-chp:
 			t.Fatalf("pattern handle received cross-namespace message %+v", msg)
 		case <-time.After(50 * time.Millisecond):
+		}
+	})
+
+	t.Run("JoiningHandleGetsNoMessagesBeforeItsConfirmation", func(t *testing.T) {
+		// A handle joining a name another handle already holds must not
+		// receive messages read ahead of its own confirmation: they were
+		// published before the server processed its SUBSCRIBE, and a
+		// dedicated connection would have delivered the confirmation first.
+		srv := newFakeServer()
+		m := newTestManager(t, srv, testConfig("node:6379"))
+
+		owner, err := m.Subscribe(ctx, "live")
+		if err != nil {
+			t.Fatalf("Subscribe owner: %v", err)
+		}
+		fsc := srv.waitDial(t)
+		fsc.expectCmd(t, "subscribe", "live")
+		fsc.sendConfirm(t, "subscribe", "live", 1)
+		if sub, ok := recvEvent(t, owner.Events()).(*Subscription); !ok || sub.Channel != "live" {
+			t.Fatalf("owner event = %#v, want the live confirmation", sub)
+		}
+
+		joiner, err := m.Subscribe(ctx, "live")
+		if err != nil {
+			t.Fatalf("Subscribe joiner: %v", err)
+		}
+		fsc.expectCmd(t, "subscribe", "live")
+
+		// Published before the server processed the joiner's SUBSCRIBE.
+		fsc.sendMessage(t, "message", "live", "early")
+		if msg, ok := recvEvent(t, owner.Events()).(*Message); !ok || msg.Payload != "early" {
+			t.Fatalf("owner event = %#v, want the early message", msg)
+		}
+
+		fsc.sendConfirm(t, "subscribe", "live", 1)
+		fsc.sendMessage(t, "message", "live", "late")
+		if sub, ok := recvEvent(t, joiner.Events()).(*Subscription); !ok || sub.Channel != "live" || sub.Count != 1 {
+			t.Fatalf("joiner's first event = %#v, want its live confirmation (count 1)", sub)
+		}
+		if msg, ok := recvEvent(t, joiner.Events()).(*Message); !ok || msg.Payload != "late" {
+			t.Fatalf("joiner's second event = %#v, want the late message", msg)
+		}
+		if msg, ok := recvEvent(t, owner.Events()).(*Message); !ok || msg.Payload != "late" {
+			t.Fatalf("owner event = %#v, want the late message", msg)
 		}
 	})
 
@@ -246,6 +295,7 @@ func TestManagerUnsubscribe(t *testing.T) {
 	ch3 := h3.Channel()
 	fsc2 := srv.waitDial(t)
 	fsc2.expectCmd(t, "subscribe", "fresh")
+	fsc2.sendConfirm(t, "subscribe", "fresh", 1)
 	fsc2.sendMessage(t, "message", "fresh", "hello")
 	if msg := recvMsg(t, ch3); msg.Payload != "hello" {
 		t.Fatalf("got %q, want \"hello\"", msg.Payload)
@@ -278,6 +328,8 @@ func TestManagerReconnect(t *testing.T) {
 		fsc2 := srv.waitDial(t)
 		fsc2.expectCmd(t, "subscribe", "ch1")
 		fsc2.expectCmd(t, "psubscribe", "pat.*")
+		fsc2.sendConfirm(t, "subscribe", "ch1", 1)
+		fsc2.sendConfirm(t, "psubscribe", "pat.*", 2)
 
 		fsc2.sendMessage(t, "message", "ch1", "back")
 		if msg := recvMsg(t, ch); msg.Payload != "back" {
@@ -304,6 +356,7 @@ func TestManagerReconnect(t *testing.T) {
 		_ = fsc1.conn.Close()
 		fsc2 := srv.waitDial(t)
 		fsc2.expectCmd(t, "ssubscribe", "{a}ch")
+		fsc2.sendConfirm(t, "ssubscribe", "{a}ch", 1)
 
 		fsc2.sendMessage(t, "smessage", "{a}ch", "back")
 		if msg := recvMsg(t, ch); msg.Payload != "back" {
@@ -364,6 +417,14 @@ func TestManagerReconnect(t *testing.T) {
 		bystander := m.NewHandle()
 		fsc := srv.waitDial(t)
 		fsc.expectCmd(t, "subscribe", "ch1")
+		fsc.sendConfirm(t, "subscribe", "ch1", 1)
+		if sub, ok := recvEvent(t, h.Events()).(*Subscription); !ok || sub.Channel != "ch1" {
+			t.Fatalf("event = %#v, want the ch1 confirmation", sub)
+		}
+		if _, err := h.Subscribe(ctx, "denied"); err != nil {
+			t.Fatalf("Subscribe denied: %v", err)
+		}
+		fsc.expectCmd(t, "subscribe", "denied")
 
 		// A RESP error reply (e.g. NOPERM) is not treated as a broken
 		// connection: no redial, the stream keeps working, and — since
@@ -917,7 +978,7 @@ func TestManagerSlowConsumerDrop(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	cfg := testConfig("node:6379")
-	cfg.ChanSize = 1 // events buffer size
+	cfg.ChanSize = 2 // events buffer size: the confirmation and one message
 	m := newTestManager(t, srv, cfg)
 
 	slow, err := m.Subscribe(ctx, "slow")
@@ -933,9 +994,11 @@ func TestManagerSlowConsumerDrop(t *testing.T) {
 	fsc := srv.waitDial(t)
 	fsc.expectCmd(t, "subscribe", "slow")
 	fsc.expectCmd(t, "subscribe", "fence")
+	fsc.sendConfirm(t, "subscribe", "slow", 1)
+	fsc.sendConfirm(t, "subscribe", "fence", 2)
 
-	// slow has no consumer yet: m1 fills its 1-slot events buffer, m2
-	// and m3 are dropped.
+	// slow has no consumer yet: its confirmation and m1 fill its 2-slot
+	// events buffer, m2 and m3 are dropped.
 	fsc.sendMessage(t, "message", "slow", "m1")
 	fsc.sendMessage(t, "message", "slow", "m2")
 	fsc.sendMessage(t, "message", "slow", "m3")

@@ -82,6 +82,7 @@ func pubSubConfigFromOptions(opt *Options) pubsub.Config {
 		MinRetryBackoff:        opt.MinRetryBackoff,
 		ReconnectMaxBackoff:    opt.PubSubReconnectMaxBackoff,
 		DialRetries:            pubSubDialRetries(opt.DialerRetries),
+		DialRetryBackoff:       pubSubDialRetryBackoff(opt),
 		HealthCheckInterval:    opt.PubSubHealthCheckInterval,
 		SubscribeRetryInterval: opt.PubSubSubscribeRetryInterval,
 		PingTimeout:            opt.PubSubPingTimeout,
@@ -99,6 +100,21 @@ func pubSubDialRetries(dialerRetries int) int {
 		return 0
 	}
 	return dialerRetries - 1
+}
+
+// pubSubDialRetryBackoff is the pause between the shared connection's
+// dial attempts: the client's dial retry policy, as the connection pool
+// applies it — DialerRetryBackoff when set, else a constant
+// DialerRetryTimeout (100ms when unset).
+func pubSubDialRetryBackoff(opt *Options) func(attempt int) time.Duration {
+	if opt.DialerRetryBackoff != nil {
+		return opt.DialerRetryBackoff
+	}
+	base := opt.DialerRetryTimeout
+	if base <= 0 {
+		base = 100 * time.Millisecond
+	}
+	return DialRetryBackoffConstant(base)
 }
 
 //------------------------------------------------------------------------------

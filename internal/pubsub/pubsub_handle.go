@@ -30,7 +30,9 @@ type handle struct {
 	// confirmed holds the names whose subscribe confirmation the handle
 	// was delivered, with no unsubscribe confirmation since: the running
 	// Count its confirmations carry, as a dedicated connection's server
-	// would report it (see deliverSubscriptionLocked).
+	// would report it (see deliverSubscriptionLocked). It also gates
+	// message delivery: an owned name not in it is still joining, and
+	// gets no messages until its confirmation (see deliverMessageLocked).
 	confirmed map[confirmKey]struct{}
 	// nConfirmed counts the confirmed channels and patterns,
 	// nConfirmedShard the confirmed shard channels: Redis counts the two
@@ -216,20 +218,21 @@ func (h *handle) deliverSubscriptionLocked(sub *Subscription) {
 	if h.closing {
 		return
 	}
+	// The empty name is a valid channel or pattern, so it is tracked like
+	// any other; a bare unsubscribe reply (no name, sent only when the
+	// handle owns nothing) finds nothing to remove.
 	key := confirmKeyFor(sub.Kind, sub.Channel)
-	if sub.Channel != "" {
-		_, had := h.confirmed[key]
-		switch sub.Kind {
-		case "subscribe", "psubscribe", "ssubscribe":
-			if !had {
-				h.confirmed[key] = struct{}{}
-				h.countConfirmed(key, 1)
-			}
-		default:
-			if had {
-				delete(h.confirmed, key)
-				h.countConfirmed(key, -1)
-			}
+	_, had := h.confirmed[key]
+	switch sub.Kind {
+	case "subscribe", "psubscribe", "ssubscribe":
+		if !had {
+			h.confirmed[key] = struct{}{}
+			h.countConfirmed(key, 1)
+		}
+	default:
+		if had {
+			delete(h.confirmed, key)
+			h.countConfirmed(key, -1)
 		}
 	}
 	c := *sub

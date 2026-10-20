@@ -194,11 +194,14 @@ func (c *fakeServerConn) readLoop() {
 		for _, a := range args {
 			cmd = append(cmd, fmt.Sprint(a))
 		}
-		c.cmds <- cmd
-
+		// Confirm before handing the command to the test: a frame the test
+		// injects after expectCmd then follows the confirmation, as it
+		// would on a real server.
 		if c.autoConfirm.Load() {
 			c.confirm(cmd)
 		}
+		c.cmds <- cmd
+
 		if c.autoPong.Load() && len(cmd) > 0 && cmd[0] == "ping" {
 			c.pong(cmd)
 		}

@@ -364,6 +364,98 @@ func TestDialRetriesWithBackoff(t *testing.T) {
 	}
 }
 
+// TestDialRetryBackoffPolicy pins that a configured DialRetryBackoff
+// paces a dial's retries — with the 0-based attempt index — instead of
+// the reconnect backoff, which keeps bounding only the pause between
+// dials.
+func TestDialRetryBackoffPolicy(t *testing.T) {
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	cfg := testConfig("node:6379")
+	cfg.DialRetries = 2
+	cfg.MinRetryBackoff = time.Millisecond
+	cfg.ReconnectMaxBackoff = time.Millisecond
+
+	var asked []int
+	cfg.DialRetryBackoff = func(attempt int) time.Duration {
+		asked = append(asked, attempt)
+		return 40 * time.Millisecond
+	}
+
+	var attempts []time.Time
+	newConn := func(ctx context.Context, addr string) (*pool.Conn, error) {
+		attempts = append(attempts, time.Now())
+		if len(attempts) <= 2 {
+			return nil, errors.New("connection refused")
+		}
+		return srv.dial(ctx, addr)
+	}
+	m := NewManager(cfg, newConn, func(cn *pool.Conn) error { return cn.Close() },
+		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
+		testIsBadConn, nil, nil, nil)
+	t.Cleanup(func() { _ = m.Close() })
+
+	if _, err := m.Subscribe(context.Background(), "a"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	srv.waitDial(t).expectCmd(t, "subscribe", "a")
+
+	if len(attempts) != 3 {
+		t.Fatalf("dial attempts = %d, want 1 + DialRetries = 3", len(attempts))
+	}
+	if !slices.Equal(asked, []int{0, 1}) {
+		t.Fatalf("DialRetryBackoff asked for attempts %v, want [0 1]", asked)
+	}
+	for i := 1; i < len(attempts); i++ {
+		if gap := attempts[i].Sub(attempts[i-1]); gap < 35*time.Millisecond {
+			t.Fatalf("retry %d came %v after the previous attempt, want DialRetryBackoff's 40ms", i, gap)
+		}
+	}
+}
+
+// TestDialCarriesCallerContextValues pins that every dial of the shared
+// connection sees the context values of the Subscribe that established
+// it — a CredentialsProviderContext reads them during the handshake —
+// with the caller's cancellation detached: the background redial after
+// a lost connection runs with the same values, though the subscribing
+// context is long cancelled.
+func TestDialCarriesCallerContextValues(t *testing.T) {
+	type tenantKey struct{}
+	srv := newFakeServer()
+	srv.autoConfirm = true
+
+	type seen struct {
+		tenant any
+		ctxErr error
+	}
+	dials := make(chan seen, 4)
+	newConn := func(ctx context.Context, addr string) (*pool.Conn, error) {
+		dials <- seen{tenant: ctx.Value(tenantKey{}), ctxErr: ctx.Err()}
+		return srv.dial(ctx, addr)
+	}
+	m := NewManager(testConfig("node:6379"), newConn, func(cn *pool.Conn) error { return cn.Close() },
+		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
+		testIsBadConn, nil, nil, nil)
+	t.Cleanup(func() { _ = m.Close() })
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), tenantKey{}, "acme"))
+	if _, err := m.Subscribe(ctx, "a"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	cancel()
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "a")
+	if d := <-dials; d.tenant != "acme" || d.ctxErr != nil {
+		t.Fatalf("first dial saw tenant %v (ctx err %v), want \"acme\" and a live context", d.tenant, d.ctxErr)
+	}
+
+	_ = fsc1.conn.Close()
+	srv.waitDial(t).expectCmd(t, "subscribe", "a")
+	if d := <-dials; d.tenant != "acme" || d.ctxErr != nil {
+		t.Fatalf("redial saw tenant %v (ctx err %v), want \"acme\" with the caller's cancellation detached", d.tenant, d.ctxErr)
+	}
+}
+
 // stallWrite subscribes "a" on a fresh manager, then stops the fake
 // server reading so the next write parks on the pipe, and starts that
 // write (a Subscribe of "b") in the background. It returns the handle,

@@ -2001,8 +2001,8 @@ func (c *baseClient) closeResources() error {
 		}
 	}
 
-	// Close maintnotifications manager first
-	if err := c.disableMaintNotificationsUpgrades(); err != nil {
+	// Close maintnotifications manager
+	if err := c.disableMaintNotificationsUpgrades(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 

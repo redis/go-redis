@@ -17,13 +17,20 @@ type Config struct {
 	WriteTimeout time.Duration
 
 	// MinRetryBackoff and ReconnectMaxBackoff bound the read loop's
-	// exponential reconnect backoff, and the dialer's between retries.
+	// exponential reconnect backoff between dials.
 	MinRetryBackoff     time.Duration
 	ReconnectMaxBackoff time.Duration
 
 	// DialRetries is the number of extra attempts a dial makes after a
 	// failed one before the failure is reported; <= 0 means none.
 	DialRetries int
+	// DialRetryBackoff is the pause between a dial's attempts; attempt is
+	// 0-based (0: the pause after the first failed attempt), and a
+	// negative result means none. The root package passes the client's
+	// dial retry policy (Options.DialerRetryBackoff / DialerRetryTimeout),
+	// so the shared connection is dialed like the pool's. nil falls back
+	// to the reconnect backoff above.
+	DialRetryBackoff func(attempt int) time.Duration
 
 	// HealthCheckInterval is how long the shared connection may stay
 	// silent before a health-check PING; <= 0 disables the health

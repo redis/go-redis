@@ -27,11 +27,14 @@ type dialer struct {
 	newConn func(ctx context.Context, addr string) (*pool.Conn, error)
 
 	// retries is the number of extra attempts after a failed one before
-	// the failure is reported; the pause between attempts follows the
-	// exponential backoff between minBackoff and maxBackoff.
-	retries    int
-	minBackoff time.Duration
-	maxBackoff time.Duration
+	// the failure is reported; retryBackoff paces them (see
+	// Config.DialRetryBackoff). minBackoff and maxBackoff bound the
+	// owner's reconnect backoff between dials, and retryBackoff's
+	// fallback.
+	retries      int
+	retryBackoff func(attempt int) time.Duration
+	minBackoff   time.Duration
+	maxBackoff   time.Duration
 
 	// ctx bounds every attempt; cancel aborts the dial in flight when
 	// the owner closes.
@@ -47,6 +50,12 @@ type dialer struct {
 type dialPlan struct {
 	// addr is the first attempt's target.
 	addr string
+	// values supplies every attempt's context values (e.g. what a
+	// CredentialsProviderContext reads during the handshake); it carries
+	// no cancellation — attempts are bounded by timeout and the dialer's
+	// own cancellation only, as the dial may outlive the caller that
+	// started it. nil means none.
+	values context.Context
 	// timeout bounds each attempt; <= 0 leaves only the dialer's own
 	// cancellation.
 	timeout time.Duration
@@ -70,22 +79,30 @@ func newDialer(
 	lock sync.Locker,
 	newConn func(ctx context.Context, addr string) (*pool.Conn, error),
 	retries int,
+	retryBackoff func(attempt int) time.Duration,
 	minBackoff, maxBackoff time.Duration,
 ) *dialer {
 	// Floor the backoff: a dial can fail instantly, and MinRetryBackoff
-	// -1 ("never back off") would spin the retries hot.
+	// -1 ("never back off") would spin the reconnects hot.
 	if minBackoff <= 0 {
 		minBackoff = 10 * time.Millisecond
 	}
+	maxBackoff = max(maxBackoff, minBackoff)
+	if retryBackoff == nil {
+		retryBackoff = func(attempt int) time.Duration {
+			return internal.RetryBackoff(attempt, minBackoff, maxBackoff)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &dialer{
-		lock:       lock,
-		newConn:    newConn,
-		retries:    max(retries, 0),
-		minBackoff: minBackoff,
-		maxBackoff: max(maxBackoff, minBackoff),
-		ctx:        ctx,
-		cancel:     cancel,
+		lock:         lock,
+		newConn:      newConn,
+		retries:      max(retries, 0),
+		retryBackoff: retryBackoff,
+		minBackoff:   minBackoff,
+		maxBackoff:   maxBackoff,
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 }
 
@@ -125,7 +142,7 @@ func (d *dialer) run(call *dialCall, plan dialPlan) {
 	)
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
-			if !d.sleep(internal.RetryBackoff(attempt-1, d.minBackoff, d.maxBackoff)) {
+			if !d.sleep(max(d.retryBackoff(attempt-1), 0)) {
 				break // closed: err is the last attempt's
 			}
 			if plan.nextAddrLocked != nil {
@@ -134,7 +151,7 @@ func (d *dialer) run(call *dialCall, plan dialPlan) {
 				d.lock.Unlock()
 			}
 		}
-		cn, err = d.attempt(addr, plan.timeout)
+		cn, err = d.attempt(plan.values, addr, plan.timeout)
 		if err == nil || attempt >= d.retries || d.ctx.Err() != nil {
 			break
 		}
@@ -150,10 +167,18 @@ func (d *dialer) run(call *dialCall, plan dialPlan) {
 	d.lock.Unlock()
 }
 
-// attempt makes one dial to addr, bounded by timeout (when positive)
-// and by the dialer's cancellation.
-func (d *dialer) attempt(addr string, timeout time.Duration) (*pool.Conn, error) {
+// attempt makes one dial to addr with values' context values (nil:
+// none), bounded by timeout (when positive) and by the dialer's
+// cancellation.
+func (d *dialer) attempt(values context.Context, addr string, timeout time.Duration) (*pool.Conn, error) {
 	ctx := d.ctx
+	if values != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(context.WithoutCancel(values))
+		defer cancel()
+		stop := context.AfterFunc(d.ctx, cancel)
+		defer stop()
+	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
