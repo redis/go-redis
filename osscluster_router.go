@@ -513,8 +513,8 @@ func (c *ClusterClient) prepareClusterCursors(cmds []Cmder) ([]*clusterCursorOpe
 			value, valueOK := routingArgText(cmd, 3)
 			// Local tokens must fit the int accepted by FTCursorRead/Del.
 			// Native server IDs are independent and retain their full range.
-			token, err := strconv.ParseUint(value, 10, strconv.IntSize-1)
-			if !indexOK || !valueOK || err != nil || token == 0 {
+			token, err := strconv.ParseUint(value, 10, 64)
+			if !indexOK || !valueOK || err != nil || token == 0 || token > math.MaxInt {
 				c.releaseClusterCursors(operations)
 				return nil, errInvalidCursorIdType
 			}
