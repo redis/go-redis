@@ -72,11 +72,12 @@ func (p *PubSubPool) NewConn(ctx context.Context, network string, addr string, c
 // TrackConn registers an initialized connection. If Close has already started,
 // it closes the connection (including its initialization cleanup) and rejects it.
 func (p *PubSubPool) TrackConn(cn *Conn) error {
+	p.trackMu.Lock()
 	if p.closed.Load() {
 		_ = cn.Close()
 		return ErrClosed
 	}
-	p.trackMu.Lock()
+
 	atomic.AddUint32(&p.stats.Active, 1)
 	p.activeConns.Store(cn.GetID(), cn)
 	cb := getMetricConnectionCountCallback()
