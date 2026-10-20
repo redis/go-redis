@@ -2,10 +2,13 @@ package redis
 
 import (
 	"context"
+	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 type stubStreamingProvider struct {
@@ -48,6 +51,9 @@ func TestDerivedClientsCarryStreamingCredentialsManager(t *testing.T) {
 	if eph.streamingCredentialsManager == nil {
 		t.Fatal("EphemeralConn() did not inherit streamingCredentialsManager (#4154)")
 	}
+	if eph.streamingCredentialsManager != c.streamingCredentialsManager {
+		t.Fatal("EphemeralConn() did not inherit the parent's streamingCredentialsManager (#4154)")
+	}
 
 	tx := c.newTx()
 	t.Cleanup(func() { _ = tx.Close(context.Background()) })
@@ -56,5 +62,50 @@ func TestDerivedClientsCarryStreamingCredentialsManager(t *testing.T) {
 	}
 	if tx.streamingCredentialsManager != c.streamingCredentialsManager {
 		t.Fatal("newTx() should share the parent's streamingCredentialsManager")
+	}
+}
+
+// TestDerivedClientsColdInitConnDoesNotPanic drives the cold initConn path
+// of each derived client against an unresponsive net.Pipe. Before #4154 was
+// fixed this panicked with a nil streamingCredentialsManager inside
+// Listener; now it gets past Listener and fails the handshake on timeout.
+func TestDerivedClientsColdInitConnDoesNotPanic(t *testing.T) {
+	provider := &stubStreamingProvider{
+		credentials: auth.NewBasicCredentials("default", "token"),
+	}
+	c := NewClient(&Options{
+		Addr:                         "127.0.0.1:1",
+		PoolSize:                     1,
+		StreamingCredentialsProvider: provider,
+		ReadTimeout:                  50 * time.Millisecond,
+		WriteTimeout:                 50 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = c.Close() })
+
+	conn := c.Conn()
+	t.Cleanup(func() { _ = conn.Close() })
+	eph := c.EphemeralConn()
+	t.Cleanup(func() { _ = eph.Close() })
+	tx := c.newTx()
+	t.Cleanup(func() { _ = tx.Close(context.Background()) })
+
+	for _, tc := range []struct {
+		name string
+		base *baseClient
+	}{
+		{name: "Conn", base: &conn.baseClient},
+		{name: "EphemeralConn", base: &eph.baseClient},
+		{name: "Tx", base: &tx.baseClient},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clientSide, serverSide := net.Pipe()
+			t.Cleanup(func() {
+				_ = clientSide.Close()
+				_ = serverSide.Close()
+			})
+			if err := tc.base.initConn(context.Background(), pool.NewConn(clientSide)); err == nil {
+				t.Fatal("expected a handshake error from the unresponsive pipe")
+			}
+		})
 	}
 }
