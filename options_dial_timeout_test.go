@@ -2,8 +2,10 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"testing"
+	"time"
 )
 
 // ParseURL documents that a duration option is disabled with a value of 0 or
@@ -116,4 +118,65 @@ func TestNewSentinelClientKeepsDisabledDialTimeout(t *testing.T) {
 	if opt.DialTimeout != -1 {
 		t.Fatalf("NewSentinelClient rewrote the caller's options: DialTimeout = %v", opt.DialTimeout)
 	}
+}
+
+// A disabled DialTimeout means "no deadline", but the context still has to be
+// able to stop the dial: tls.DialWithDialer ignores the context it is given and
+// uses context.Background internally, so a rediss peer that accepts TCP and then
+// stalls the handshake would pin the caller until the OS gives up.
+func TestNewDialerTLSHonoursContext(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Accept and never speak TLS, so the handshake stalls.
+	var held []net.Conn
+	accepted := make(chan struct{})
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, conn)
+			select {
+			case <-accepted:
+			default:
+				close(accepted)
+			}
+		}
+	}()
+
+	opt := &Options{
+		Addr:        ln.Addr().String(),
+		DialTimeout: 0, // disabled
+		TLSConfig:   &tls.Config{InsecureSkipVerify: true},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		conn, err := NewDialer(opt)(ctx, "tcp", ln.Addr().String())
+		if conn != nil {
+			_ = conn.Close()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the stalled TLS handshake to fail when the context expired")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("dial did not return after the context expired: the TLS handshake ignores the context")
+	}
+
+	<-accepted
 }

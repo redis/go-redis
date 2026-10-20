@@ -730,7 +730,10 @@ func masterReplicaDialer(
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return tls.DialWithDialer(netDialer, network, addr, failover.opt.TLSConfig)
+		// See NewDialer: tls.DialWithDialer ignores ctx, and a disabled DialTimeout
+		// would leave the handshake unbounded.
+		tlsDialer := &tls.Dialer{NetDialer: netDialer, Config: failover.opt.TLSConfig}
+		return tlsDialer.DialContext(ctx, network, addr)
 	}
 }
 

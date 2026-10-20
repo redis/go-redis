@@ -908,7 +908,12 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 		if opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return tls.DialWithDialer(netDialer, network, addr, opt.TLSConfig)
+		// tls.DialWithDialer ignores ctx and dials with context.Background, so a
+		// peer that accepts TCP and then stalls the handshake could not be stopped
+		// by cancelling the caller, and a disabled DialTimeout leaves it unbounded.
+		// tls.Dialer.DialContext keeps the cancellation.
+		tlsDialer := &tls.Dialer{NetDialer: netDialer, Config: opt.TLSConfig}
+		return tlsDialer.DialContext(ctx, network, addr)
 	}
 }
 
