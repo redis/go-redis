@@ -88,15 +88,6 @@ func (p *PubSubPool) TrackConn(cn *Conn) error {
 	if cb != nil {
 		cb(context.Background(), 1, cn, "used", true)
 	}
-	// Close may have started after registration, including during the callback.
-	// Recheck so we reject the connection and complete its cleanup in that case.
-	// UntrackConn only decrements counters once if Close
-	// already removed it, and Conn.Close safely handles repeated cleanup.
-	if p.closed.Load() {
-		p.UntrackConn(cn)
-		_ = cn.Close()
-		return ErrClosed
-	}
 	return nil
 }
 

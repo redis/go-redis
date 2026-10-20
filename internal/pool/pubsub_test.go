@@ -64,8 +64,8 @@ func TestPubSubPoolTrackConnClose(t *testing.T) {
 				close(start)
 				wg.Wait()
 			case "close-during-track":
-				// The metric callback runs after publication but before the
-				// second closed check, making this ordering deterministic.
+				// Close after registration, before TrackConn returns.
+				// The assertions below verify that Close drained the connection.
 				SetAllMetricCallbacks(&MetricCallbacks{
 					ConnectionCount: func(_ context.Context, delta int, conn *Conn, _ string, _ bool) {
 						if conn == cn && delta == 1 {
@@ -75,8 +75,8 @@ func TestPubSubPoolTrackConnClose(t *testing.T) {
 				})
 				defer SetAllMetricCallbacks(nil)
 				trackErr = p.TrackConn(cn)
-				if !errors.Is(trackErr, ErrClosed) {
-					t.Fatalf("TrackConn error = %v, want ErrClosed", trackErr)
+				if trackErr != nil {
+					t.Fatalf("TrackConn error = %v, want nil after registration", trackErr)
 				}
 			}
 			if trackErr != nil && !errors.Is(trackErr, ErrClosed) {
@@ -86,12 +86,8 @@ func TestPubSubPoolTrackConnClose(t *testing.T) {
 			if order == "close-before-track" {
 				wantUntracked = 0
 			} else if order == "concurrent" && trackErr != nil {
-				// Rejection at the first check never registers the connection;
-				// rejection at the second check removes a registered connection.
-				wantUntracked = p.Stats().Untracked
-				if wantUntracked > 1 {
-					t.Fatalf("Untracked = %d, want 0 or 1", wantUntracked)
-				}
+				// Rejection under trackMu never registers the connection.
+				wantUntracked = 0
 			}
 			if got := p.Stats(); *got != (PubSubStats{Created: 1, Untracked: wantUntracked}) {
 				t.Errorf("stats = %+v, want Created=1 Active=0 Untracked=%d", got, wantUntracked)
