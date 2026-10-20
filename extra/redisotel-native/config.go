@@ -3,6 +3,7 @@ package redisotel
 import (
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -52,6 +53,8 @@ type config struct {
 	bucketsStreamProcessingDuration []float64
 	bucketsConnectionCreateTime     []float64
 	bucketsConnectionWaitTime       []float64
+
+	customAttributes []attribute.KeyValue
 }
 
 func (c *config) isMetricGroupEnabled(group MetricGroup) bool {
@@ -164,6 +167,8 @@ type Config struct {
 	BucketsStreamLag            []float64
 	BucketsConnectionCreateTime []float64
 	BucketsConnectionWaitTime   []float64
+
+	CustomAttributes []attribute.KeyValue
 }
 
 // NewConfig creates a new Config with default values.
@@ -283,5 +288,12 @@ func (c *Config) WithHistogramBuckets(buckets []float64) *Config {
 	c.BucketsStreamLag = buckets
 	c.BucketsConnectionCreateTime = buckets
 	c.BucketsConnectionWaitTime = buckets
+	return c
+}
+
+// WithCustomAttributes appends attributes that are added to every metric.
+// Built-in attributes with the same key take precedence.
+func (c *Config) WithCustomAttributes(attrs ...attribute.KeyValue) *Config {
+	c.CustomAttributes = append(c.CustomAttributes, attrs...)
 	return c
 }

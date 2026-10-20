@@ -13,6 +13,7 @@ import (
 	redisotel "github.com/redis/go-redis/extra/redisotel-native/v9"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/sdk/metric"
 )
@@ -61,7 +62,11 @@ func main() {
 	// STEP_START redis_client_setup
 	// Initialize OTel instrumentation BEFORE creating Redis clients
 	otelInstance := redisotel.GetObservabilityInstance()
-	config := redisotel.NewConfig().WithEnabled(true)
+	// Custom attributes are added to every emitted metric; built-in
+	// semconv attributes with the same key take precedence.
+	config := redisotel.NewConfig().
+		WithEnabled(true).
+		WithCustomAttributes(attribute.String("deployment.environment", "example"))
 	if err := otelInstance.Init(config); err != nil {
 		log.Fatalf("Failed to initialize OTel: %v", err)
 	}

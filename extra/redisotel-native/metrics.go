@@ -67,6 +67,20 @@ type metricsRecorder struct {
 	cfg *config
 }
 
+// withAttrs returns the measurement option for attrs, prefixed with the
+// configured custom attributes. Custom attributes come first so a built-in
+// attribute with the same key wins (attribute.NewSet keeps the last value for
+// a duplicate key).
+func (r *metricsRecorder) withAttrs(attrs []attribute.KeyValue) metric.MeasurementOption {
+	if r.cfg == nil || len(r.cfg.customAttributes) == 0 {
+		return metric.WithAttributes(attrs...)
+	}
+	all := make([]attribute.KeyValue, 0, len(r.cfg.customAttributes)+len(attrs))
+	all = append(all, r.cfg.customAttributes...)
+	all = append(all, attrs...)
+	return metric.WithAttributes(all...)
+}
+
 // RecordOperationDuration records db.client.operation.duration metric
 func (r *metricsRecorder) RecordOperationDuration(
 	ctx context.Context,
@@ -130,7 +144,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 	}
 
 	// Record the histogram
-	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+	r.operationDuration.Record(ctx, durationSeconds, r.withAttrs(attrs))
 }
 
 // RecordPipelineOperationDuration records db.client.operation.duration metric for pipelines/transactions.
@@ -193,7 +207,7 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	}
 
 	// Record the histogram
-	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+	r.operationDuration.Record(ctx, durationSeconds, r.withAttrs(attrs))
 }
 
 // skipNilReply reports whether err is redis.Nil and Nil replies are not
@@ -551,7 +565,7 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 	}
 
 	// Record the histogram
-	r.connectionCreateTime.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+	r.connectionCreateTime.Record(ctx, durationSeconds, r.withAttrs(attrs))
 }
 
 // RecordConnectionRelaxedTimeout records when connection timeout is relaxed/unrelaxed
@@ -583,7 +597,7 @@ func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
 	attrs = append(attrs, attribute.String(AttrRedisClientConnectionNotification, notificationType))
 
 	// Record the counter (delta can be +1 or -1)
-	r.connectionRelaxedTimeout.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
+	r.connectionRelaxedTimeout.Add(ctx, int64(delta), r.withAttrs(attrs))
 }
 
 // RecordConnectionHandoff records when a connection is handed off to another node
@@ -610,7 +624,7 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 	}
 
 	// Record the counter
-	r.connectionHandoff.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.connectionHandoff.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordError records client errors (ASK, MOVED, handshake failures, etc.)
@@ -663,7 +677,7 @@ func (r *metricsRecorder) RecordError(
 	}
 
 	// Record the counter
-	r.clientErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.clientErrors.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordMaintenanceNotification records when a maintenance notification is received
@@ -701,7 +715,7 @@ func (r *metricsRecorder) RecordMaintenanceNotification(
 	}
 
 	// Record the counter
-	r.maintenanceNotifications.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.maintenanceNotifications.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordConnectionWaitTime records db.client.connection.wait_time metric
@@ -729,7 +743,7 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 	}
 
 	// Record the histogram (duration in seconds)
-	r.connectionWaitTime.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+	r.connectionWaitTime.Record(ctx, duration.Seconds(), r.withAttrs(attrs))
 }
 
 // RecordConnectionClosed records redis.client.connection.closed metric
@@ -774,7 +788,7 @@ func (r *metricsRecorder) RecordConnectionClosed(
 	}
 
 	// Record the counter
-	r.connectionClosed.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.connectionClosed.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordPubSubMessage records redis.client.pubsub.messages metric
@@ -819,7 +833,7 @@ func (r *metricsRecorder) RecordPubSubMessage(
 	}
 
 	// Record the counter
-	r.pubsubMessages.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.pubsubMessages.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordStreamLag records redis.client.stream.lag metric
@@ -865,7 +879,7 @@ func (r *metricsRecorder) RecordStreamLag(
 	}
 
 	// Record the histogram (lag in seconds)
-	r.streamLag.Record(ctx, lag.Seconds(), metric.WithAttributes(attrs...))
+	r.streamLag.Record(ctx, lag.Seconds(), r.withAttrs(attrs))
 }
 
 // RecordConnectionCount records a change in connection count (UpDownCounter).
@@ -908,7 +922,7 @@ func (r *metricsRecorder) RecordConnectionCount(
 	}
 
 	// Record the counter (delta can be +1 or -1)
-	r.connectionCount.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
+	r.connectionCount.Add(ctx, int64(delta), r.withAttrs(attrs))
 }
 
 // RecordPendingRequests records a change in pending requests (UpDownCounter).
@@ -949,5 +963,5 @@ func (r *metricsRecorder) RecordPendingRequests(
 	}
 
 	// Record the counter (delta can be +1 or -1)
-	r.connectionPendingReqs.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
+	r.connectionPendingReqs.Add(ctx, int64(delta), r.withAttrs(attrs))
 }
