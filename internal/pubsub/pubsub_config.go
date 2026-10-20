@@ -69,6 +69,10 @@ type Config struct {
 	// means DefaultBacklogLimit.
 	BacklogLimit int
 
+	// RESP2 marks a RESP2 connection: commands other than the
+	// subscribe family and PING are refused while it is subscribed.
+	RESP2 bool
+
 	// LogInterval rate-limits recurring warning logs.
 	LogInterval time.Duration
 

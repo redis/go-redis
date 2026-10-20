@@ -27,6 +27,11 @@ type (
 	ChannelOption = pubsub.ChannelOption
 )
 
+// ErrClientSetNameSubscribed is returned by PubSub.ClientSetName on RESP2
+// while the client's shared pub/sub connection is subscribed: the
+// server refuses CLIENT SETNAME there. Use Options.ClientName instead.
+var ErrClientSetNameSubscribed error = pubsub.ErrClientSetNameSubscribed
+
 // pubSubClienter is the hook family a standalone pub/sub manager is
 // built from (see newPubSubManager). baseClient implements every hook;
 // a client that needs different behavior embeds it and overrides only
@@ -91,6 +96,7 @@ func pubSubConfigFromOptions(opt *Options) pubsub.Config {
 		ChanSize:               opt.PubSubChanSize,
 		// The per-connection PubSub's channel send timeout.
 		SendTimeout: time.Minute,
+		RESP2:       opt.Protocol == 2,
 	}
 }
 
@@ -224,7 +230,9 @@ func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
 // SETNAME. The name is visible in CLIENT LIST output and is useful for
 // debugging. The connection is shared by every subscriber of the
 // client, so the name applies to all of them; the +OK reply is drained
-// through Receive as a Pong.
+// through Receive as a Pong. On RESP2 the server refuses it while the
+// connection is subscribed, so it returns an error then, whichever
+// PubSub subscribed; use Options.ClientName instead.
 func (c *PubSub) ClientSetName(ctx context.Context, name string) error {
 	return c.handle.ClientSetName(ctx, name)
 }

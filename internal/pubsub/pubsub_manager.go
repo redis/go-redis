@@ -376,6 +376,11 @@ func (m *Manager) clientSetName(ctx context.Context, h *handle, name string) err
 	if h != nil && h.closed {
 		return pool.ErrClosed
 	}
+	// The server would refuse it, and the error would reach the
+	// subscribers' Events only later.
+	if m.cfg.RESP2 && !m.noSubscribersLocked() {
+		return ErrClientSetNameSubscribed
+	}
 
 	if _, err := m.connectLocked(ctx); err != nil {
 		return err
@@ -1926,6 +1931,9 @@ func (m *Manager) handleUnsubscribe(ctx context.Context, h *handle, redisCommand
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if h != nil && h.closed {
+		return pool.ErrClosed
+	}
 	// A closed manager unsubscribed everything already.
 	select {
 	case <-m.done:
