@@ -273,47 +273,64 @@ func TestFreshSessionSharesPrewarmLimits(t *testing.T) {
 	}
 }
 
-func TestPrewarmRefillsAfterFreshDial(t *testing.T) {
-	started, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	unblock := func() { once.Do(func() { close(release) }) }
-	var calls atomic.Int32
-	p := pool.NewConnPool(&pool.Options{
-		PoolSize: 4, MaxConcurrentDials: 1,
-		Dialer: func(context.Context) (net.Conn, error) {
-			if calls.Add(1) == 1 {
-				close(started)
-				<-release
+func TestPrewarmRefillsAfterDial(t *testing.T) {
+	for _, pooled := range []bool{false, true} {
+		name := "dedicated"
+		if pooled {
+			name = "pooled"
+		}
+		t.Run(name, func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			var calls atomic.Int32
+			p := pool.NewConnPool(&pool.Options{
+				PoolSize: 4, MaxConcurrentDials: 1,
+				Dialer: func(context.Context) (net.Conn, error) {
+					if calls.Add(1) == 1 {
+						close(started)
+						<-release
+					}
+					return newDummyConn(), nil
+				},
+			})
+			t.Cleanup(func() { unblock(); _ = p.Close() })
+			done := make(chan error, 1)
+			go func() {
+				// Keep the first connection checked out throughout the refill.
+				var err error
+				if pooled {
+					_, err = p.Get(context.Background())
+				} else {
+					_, err = p.NewConn(context.Background())
+				}
+				done <- err
+			}()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("first dial did not start")
 			}
-			return newDummyConn(), nil
-		},
-	})
-	t.Cleanup(func() { unblock(); _ = p.Close() })
-	done := make(chan error, 1)
-	go func() {
-		// Keep the dedicated session open throughout the refill.
-		_, err := p.NewConn(context.Background())
-		done <- err
-	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("dedicated dial did not start")
-	}
-	p.RaiseMinIdleConns(3)
-	if p.QueueLen() != 0 {
-		t.Fatal("prewarm held a turn while waiting for dial capacity")
-	}
-	unblock()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(time.Second)
-	for (p.IdleLen() != 3 || p.QueueLen() != 0) && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if p.IdleLen() != 3 || p.QueueLen() != 0 || p.Len() != 4 {
-		t.Fatalf("refill needs unrelated activity: stats=%+v turns=%d", p.Stats(), p.QueueLen())
+			wantTurns := 0
+			if pooled {
+				wantTurns = 1
+			}
+			p.RaiseMinIdleConns(3)
+			if p.QueueLen() != wantTurns {
+				t.Fatal("prewarm held a turn while waiting for dial capacity")
+			}
+			unblock()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(time.Second)
+			for (p.IdleLen() != 3 || p.QueueLen() != wantTurns) && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if p.IdleLen() != 3 || p.QueueLen() != wantTurns || p.Len() != 4 {
+				t.Fatalf("refill needs unrelated activity: stats=%+v turns=%d", p.Stats(), p.QueueLen())
+			}
+		})
 	}
 }
 

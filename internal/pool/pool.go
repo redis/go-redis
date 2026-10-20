@@ -659,11 +659,12 @@ func (p *ConnPool) checkMinIdleConns() {
 			go func() {
 				added := false
 				defer func() {
-					p.releaseDialSlot()
 					// Continue filling a floor larger than the dial limit. Do not
 					// retry failed dials here, which could spin on persistent errors.
 					if added {
-						p.checkMinIdleConns()
+						p.releaseDialSlotAndCheckMinIdleConns()
+					} else {
+						p.releaseDialSlot()
 					}
 				}()
 				defer func() {
@@ -757,13 +758,7 @@ func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
 	if err := p.acquireDialSlot(ctx); err != nil {
 		return nil, err
 	}
-	defer func() {
-		p.releaseDialSlot()
-		// A prewarm check may have skipped while this dedicated dial held
-		// the final permit. Retry after releasing it so the idle floor does
-		// not depend on unrelated pool activity to recover.
-		p.checkMinIdleConns()
-	}()
+	defer p.releaseDialSlotAndCheckMinIdleConns()
 	return p.newConn(ctx, false)
 }
 
@@ -807,6 +802,14 @@ func (p *ConnPool) releaseDialSlot() {
 	if cap(p.dialsInProgress) > 0 {
 		<-p.dialsInProgress
 	}
+}
+
+// releaseDialSlotAndCheckMinIdleConns replays any refill skipped while a
+// foreground dial held the last permit. Rechecking unconditionally avoids a
+// race between recording a skipped check and the concurrent permit release.
+func (p *ConnPool) releaseDialSlotAndCheckMinIdleConns() {
+	p.releaseDialSlot()
+	p.checkMinIdleConns()
 }
 
 func (p *ConnPool) reserveConn() error {
@@ -1321,6 +1324,9 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 
 	go func(w *wantConn) {
 		var freeTurnCalled bool
+		// Run after panic recovery so any abandoned turn is freed before
+		// the refill retries. The caller may keep a delivered conn in use.
+		defer p.releaseDialSlotAndCheckMinIdleConns()
 		defer func() {
 			if err := recover(); err != nil {
 				w.tryDeliver(nil, errPanicInQueuedNewConn)
@@ -1333,7 +1339,6 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 		}()
 
 		defer w.cancelCtx()
-		defer func() { <-p.dialsInProgress }() // Release connection creation permission
 
 		dialCtx := w.getCtxForDial()
 		cn, cnErr := p.newConn(dialCtx, true)
