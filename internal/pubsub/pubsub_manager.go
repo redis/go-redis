@@ -212,6 +212,13 @@ type Manager struct {
 	wakeResync chan struct{}
 	done       chan struct{}
 
+	// batch collects the deliveries of consecutive message frames
+	// already in the read buffer, per handle, so a handle's consumer is
+	// woken once per batch instead of once per message (see flushBatch).
+	// Used by the listen goroutine only.
+	batch     []*handle
+	batchMsgs int
+
 	// replyQueue is the reply ledger: every written command in write
 	// order, with the reply frames the server still owes it. Pongs are
 	// delivered to their entry's handle; an error reply settles the
@@ -760,6 +767,7 @@ func (m *Manager) listen() {
 	for {
 		ev, cn, err := m.receiveNext(ctx)
 		if err != nil {
+			m.flushBatch()
 			select {
 			case <-m.done:
 				return
@@ -804,6 +812,7 @@ func (m *Manager) listen() {
 		// read-only, from any source (they are real deliveries).
 		switch ev := ev.(type) {
 		case *Subscription:
+			m.flushBatch()
 			m.mu.Lock()
 			if m.conn.Load() == cn {
 				m.fanoutSubscriptionLocked(ev)
@@ -811,6 +820,7 @@ func (m *Manager) listen() {
 			m.mu.Unlock()
 			continue
 		case *Pong:
+			m.flushBatch()
 			m.mu.Lock()
 			if m.conn.Load() == cn {
 				m.fanoutPongLocked(ev)
@@ -829,7 +839,46 @@ func (m *Manager) listen() {
 			m.fanoutMessageLocked(ev)
 		}
 		m.mu.RUnlock()
+		// receive delivers the batch before it would block (see there).
+		if m.batchMsgs >= maxBatchMsgs {
+			m.flushBatch()
+		}
 	}
+}
+
+// maxBatchMsgs bounds the messages a batch collects before it is
+// delivered, so a busy connection does not delay delivery.
+const maxBatchMsgs = 64
+
+// batchLocked queues msg for h in the current batch (see
+// Manager.batch). Callers must hold m.mu (read or write) and run on the
+// listen goroutine.
+func (m *Manager) batchLocked(h *handle, msg *Message) {
+	if len(h.batched) == 0 {
+		m.batch = append(m.batch, h)
+	}
+	h.batched = append(h.batched, msg)
+}
+
+// flushBatch delivers the current batch, per handle in arrival order.
+// It runs before anything else is delivered, so per-handle order is
+// that of the frames. Listen goroutine only.
+func (m *Manager) flushBatch() {
+	if len(m.batch) == 0 {
+		return
+	}
+	m.mu.RLock()
+	for i, h := range m.batch {
+		for j, msg := range h.batched {
+			h.deliverLocked(msg)
+			h.batched[j] = nil
+		}
+		h.batched = h.batched[:0]
+		m.batch[i] = nil
+	}
+	m.mu.RUnlock()
+	m.batch = m.batch[:0]
+	m.batchMsgs = 0
 }
 
 // noSubscribersLocked reports whether no handle is subscribed to
@@ -1078,17 +1127,17 @@ func (m *Manager) consumeErrorReplyLocked() (replyWaiter, bool) {
 }
 
 func (m *Manager) fanoutShardedMessageLocked(shardedMsg *Message) {
-	deliverMessageLocked(m.shardSubscribers[shardedMsg.Channel], m.leavingShards[shardedMsg.Channel],
+	m.deliverMessageLocked(m.shardSubscribers[shardedMsg.Channel], m.leavingShards[shardedMsg.Channel],
 		confirmKey{shard: true, name: shardedMsg.Channel}, shardedMsg)
 }
 
 func (m *Manager) fanoutMessageLocked(msg *Message) {
-	deliverMessageLocked(m.subscribers[msg.Channel], m.leavingChannels[msg.Channel],
+	m.deliverMessageLocked(m.subscribers[msg.Channel], m.leavingChannels[msg.Channel],
 		confirmKey{name: msg.Channel}, msg)
 }
 
 func (m *Manager) fanoutPatternMessageLocked(msg *Message) {
-	deliverMessageLocked(m.patternSubscribers[msg.Pattern], m.leavingPatterns[msg.Pattern],
+	m.deliverMessageLocked(m.patternSubscribers[msg.Pattern], m.leavingPatterns[msg.Pattern],
 		confirmKey{pattern: true, name: msg.Pattern}, msg)
 }
 
@@ -1100,14 +1149,25 @@ func (m *Manager) fanoutPatternMessageLocked(msg *Message) {
 // on the shared connection, and the messages read ahead of its SUBSCRIBE's
 // reply were published before the server processed it — a dedicated
 // connection would never have delivered them, and never ahead of the
-// confirmation.
-func deliverMessageLocked(sub *subscription, leaving map[*handle]int, key confirmKey, msg *Message) {
+// confirmation. Deliveries go to the current batch (see flushBatch).
+func (m *Manager) deliverMessageLocked(sub *subscription, leaving map[*handle]int, key confirmKey, msg *Message) {
+	m.batchMsgs++
+	// The parsed frame goes to the first recipient, copies to the rest:
+	// each handle gets its own value.
+	given := false
+	give := func() *Message {
+		if !given {
+			given = true
+			return msg
+		}
+		return cloneMessage(msg)
+	}
 	if sub != nil {
 		for h := range sub.handles {
 			if _, ok := h.confirmed[key]; !ok {
 				continue
 			}
-			h.deliverLocked(cloneMessage(msg))
+			m.batchLocked(h, give())
 		}
 	}
 	for h := range leaving {
@@ -1120,7 +1180,7 @@ func deliverMessageLocked(sub *subscription, leaving map[*handle]int, key confir
 				continue
 			}
 		}
-		h.deliverLocked(cloneMessage(msg))
+		m.batchLocked(h, give())
 	}
 }
 
@@ -2038,13 +2098,26 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 		// frame and drain again. The Peek also keeps a processPush that
 		// consumes nothing from spinning; a Peek error is left to
 		// ReadReply to surface.
+		//
+		// The message batch (see flushBatch) is delivered before a read
+		// that may block on the network, and after a push processPush
+		// consumed, so a batched message never waits for a later frame.
+		// A frame that is only partly buffered still holds the batch
+		// until its rest arrives; that wait is bounded by the network.
 		for {
+			if rd.Buffered() == 0 {
+				m.flushBatch()
+			}
 			if _, err := rd.Peek(1); err != nil {
 				break
 			}
+			buffered := rd.Buffered()
 			if err := m.processPush(ctx, cn, rd); err != nil {
 				internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
 				break
+			}
+			if rd.Buffered() != buffered {
+				m.flushBatch()
 			}
 			m.retireIfWanted(cn)
 			if rd.Buffered() > 0 {
@@ -2056,6 +2129,8 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 		return err
 	})
 	if err != nil {
+		// Error handling below delivers too: the batch goes first.
+		m.flushBatch()
 		// allowTimeout is false: the read has no deadline, so a timeout
 		// means the conn is broken.
 		if m.isBadConn(err, false) {

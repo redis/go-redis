@@ -64,6 +64,10 @@ type handle struct {
 	forwarding   bool
 	qclosed      bool
 
+	// batched holds the handle's share of the listen goroutine's
+	// current batch (see Manager.batch); listen goroutine only.
+	batched []*Message
+
 	// The lazily started consumer view over events (guarded by mu).
 	pump  pumpMode
 	msgCh chan *Message
