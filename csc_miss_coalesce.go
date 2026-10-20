@@ -663,7 +663,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// req may be stranded past the shutdown drain (cancelIfStopping). Return ctx.Err()
 		// either way, matching processWithRetry.
 		if !req.claimAbandon() {
-			<-req.done
+			<-req.done //nolint:errcheck // the reader's result is in req.servedBy; ctx.Err() wins
 			return req.servedBy, ctx.Err()
 		}
 		mc.cancelIfStopping(cacheKey, token)
