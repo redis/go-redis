@@ -216,13 +216,6 @@ type ClusterOptions struct {
 	// Experimental. Will be removed when shard picker is fully implemented.
 	DisableRoutingPolicies bool
 
-	// FTCursorIdleTimeout limits how long an idle client-local FT.CURSOR token
-	// remains usable when its server MAXIDLE is unknown. A positive MAXIDLE
-	// supplied through FTAggregateWithArgs takes precedence. This local timeout
-	// does not change the server's cursor lifetime; expired tokens return an error.
-	// Values <= 0 default to 5 minutes. Ignored when routing policies are disabled.
-	FTCursorIdleTimeout time.Duration
-
 	// DisableIndentity - Disable set-lib on connect.
 	//
 	// default: false
@@ -277,9 +270,6 @@ type ClusterOptions struct {
 }
 
 func (opt *ClusterOptions) init() {
-	if opt.FTCursorIdleTimeout <= 0 {
-		opt.FTCursorIdleTimeout = 5 * time.Minute
-	}
 	switch opt.MaxRedirects {
 	case -1:
 		opt.MaxRedirects = 0
@@ -490,7 +480,6 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
 	}
-	o.FTCursorIdleTimeout = q.duration("ft_cursor_idle_timeout")
 
 	if q.err != nil {
 		return nil, q.err
@@ -1913,7 +1902,6 @@ type ClusterClient struct {
 	// topology) so any connection serving an HIMPORT SET can lazily replay
 	// the PREPARE (see himport.go, himport_cluster.go).
 	himport *himportRegistry
-	cursors clusterCursorRegistry
 
 	autopipelinerMu     *sync.Mutex    // guards the autopipeliner fields against concurrent first-call creation
 	autopipeliner       *AutoPipeliner // blocking face (ClusterClient.AutoPipeline)
@@ -2049,10 +2037,6 @@ func (c *ClusterClient) Close() error {
 			}
 		}
 	}
-	c.cursors.mu.Lock()
-	c.cursors.closed = true
-	c.cursors.bindings = nil
-	c.cursors.mu.Unlock()
 	// Stop metadata before closing the pools it uses.
 	c.cmdMeta.stopAndJoin()
 	if err := c.nodes.Close(); err != nil && firstErr == nil {
@@ -2069,34 +2053,13 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	callerCtx := ctx
-	var cursor *clusterCursorOperation
-	if name := cmd.Name(); !c.opt.DisableRoutingPolicies && (name == "ft.aggregate" || name == "ft.cursor") {
-		cursorOps, err := c.prepareClusterCursors([]Cmder{cmd})
-		if err != nil {
-			return err
-		}
-		defer c.releaseClusterCursors(cursorOps)
-		if len(cursorOps) != 0 {
-			cursor = cursorOps[0]
-		}
-	}
 	decision := c.commandRoutingDecision(ctx, cmd)
 	if decision.policyErr != nil {
 		return decision.policyErr
 	}
-	if cursor != nil && cursor.binding != nil && clusterPolicyFansOut(decision.policy) {
-		return fmt.Errorf("redis: FT.CURSOR cannot fan out across nodes")
-	}
 	slot := decision.naturalSlot
 	var node *clusterNode
 	var redirected bool
-	if cursor != nil && cursor.binding != nil {
-		var err error
-		node, err = c.clusterCursorNode(ctx, cursor.address)
-		if err != nil {
-			return err
-		}
-	}
 	var moved bool
 	var ask bool
 	var lastErr error
@@ -2115,11 +2078,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
-		if node == nil && (needsInitialNode || cursor != nil && cursor.binding != nil) {
+		if node == nil && needsInitialNode {
 			var err error
-			if cursor != nil && cursor.binding != nil {
-				node, err = c.clusterCursorNode(ctx, cursor.address)
-			} else if !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
+			if !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
 				node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, &decision)
 			} else {
 				node, err = c.cmdNodeWithDecision(ctx, slot, &decision)
@@ -2148,16 +2109,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		// If there is no error - we are done.
-		if lastErr == nil {
-			if cursor != nil {
-				return c.finishClusterCursor(cmd, cursor, node)
-			}
-			return nil
-		}
-		if cursor != nil {
-			_ = c.finishClusterCursor(cmd, cursor, node)
-		}
-		if lastErr == Nil {
+		if lastErr == nil || lastErr == Nil {
 			return lastErr
 		}
 		var fanoutErr *clusterFanoutExecutionError
@@ -2654,23 +2606,7 @@ func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error)
 }
 
 type clusterPipelineRouting struct {
-	view    *commandMetadataView
-	cursors map[*clusterRoutingDecision]*clusterCursorOperation
-}
-
-// Only cursor commands need a unique operation identity. Copy their pinned
-// decisions so non-comparable Cmder implementations also work, without adding
-// cursor fields or allocations to ordinary routing decisions.
-func (r *clusterPipelineRouting) pinCursors(operations []*clusterCursorOperation) {
-	if len(operations) == 0 {
-		return
-	}
-	r.cursors = make(map[*clusterRoutingDecision]*clusterCursorOperation, len(operations))
-	for _, op := range operations {
-		decision := *op.cmd.clusterRoutingDecision()
-		op.cmd.setClusterRoutingDecision(&decision)
-		r.cursors[&decision] = op
-	}
+	view *commandMetadataView
 }
 
 func (r *clusterPipelineRouting) clear(cmds []Cmder) {
@@ -2822,13 +2758,6 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 	totalAttempts := 0
 	route := c.resolvePipelineRouting(ctx, cmds)
 	defer route.clear(cmds)
-	cursorOps, err := c.prepareClusterCursors(cmds)
-	if err != nil {
-		setCmdsErr(cmds, err)
-		return err
-	}
-	defer c.releaseClusterCursors(cursorOps)
-	route.pinCursors(cursorOps)
 
 	cmdsMap := newCmdsMap()
 	var mapErr error
@@ -2886,13 +2815,6 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 		lastErr = cmdsFirstErr(cmds)
 	}
 
-	for _, cmd := range cmds {
-		if op := route.cursors[cmd.clusterRoutingDecision()]; op != nil {
-			if err := c.finishClusterCursor(cmd, op, op.node); err != nil {
-				cmd.SetErr(err)
-			}
-		}
-	}
 	// Record pipeline operation duration
 	if pipelineOpDurationCallback != nil {
 		operationDuration := time.Since(operationStart)
@@ -2971,9 +2893,7 @@ func (c *ClusterClient) mapCmdsByNodeInView(
 		slot := c.cmdSlotWithDecision(cmd, decision, -1)
 		var node *clusterNode
 		// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
-		if op := route.cursors[cmd.clusterRoutingDecision()]; op != nil && op.binding != nil {
-			node, err = c.clusterCursorNode(ctx, op.address)
-		} else if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
+		if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
 			node, err = state.pickNode(c.opt.ShardPicker, allReadOnly)
 		} else if allReadOnly {
 			node, err = c.slotReadOnlyNode(state, slot)
@@ -3015,8 +2935,7 @@ func (c *ClusterClient) pipelineRoutingError(cmd Cmder, decision *clusterRouting
 	if decision.policyErr != nil {
 		return decision.policyErr
 	}
-	if decision.policy == nil || decision.policy.Request == routing.ReqDefault ||
-		decision.policy.Request == routing.ReqSpecial && ftCursorCommand(cmd) {
+	if decision.policy == nil || decision.policy.Request == routing.ReqDefault {
 		return nil
 	}
 	if decision.policy.Request != routing.ReqDefault {
@@ -3068,11 +2987,6 @@ func (c *ClusterClient) processPipelineNode(
 	unregister := registerBatchExecutors(cmds)
 	defer unregister()
 
-	for _, cmd := range cmds {
-		if op := route.cursors[cmd.clusterRoutingDecision()]; op != nil {
-			op.node = node
-		}
-	}
 	// executed guards against a node-level hook short-circuiting (returning
 	// without calling next): the inner callback then never runs, and without
 	// surfacing the chain's error the cluster pipeline would report success
@@ -3388,13 +3302,6 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 	// Resolve once so the transaction uses one metadata view.
 	route := c.resolvePipelineRouting(ctx, cmds)
 	defer route.clear(cmds)
-	cursorOps, err := c.prepareClusterCursors(cmds)
-	if err != nil {
-		setCmdsErr(cmds, err)
-		return err
-	}
-	defer c.releaseClusterCursors(cursorOps)
-	route.pinCursors(cursorOps)
 	keyedCmdsBySlot, err := c.slottedKeyedCommandsInRouting(ctx, cmds, route)
 	if err != nil {
 		setCmdsErr(cmds, err)
@@ -3416,26 +3323,6 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 	}
 
 	var node *clusterNode
-	var cursorOwner *clusterNode
-	for _, op := range route.cursors {
-		if op.binding == nil {
-			continue
-		}
-		owner, err := c.clusterCursorNode(ctx, op.address)
-		if err != nil {
-			setCmdsErr(cmds, err)
-			return err
-		}
-		if cursorOwner != nil && cursorOwner != owner {
-			err := fmt.Errorf("redis: transaction cursors belong to different nodes")
-			setCmdsErr(cmds, err)
-			return err
-		}
-		cursorOwner = owner
-	}
-	if cursorOwner != nil && len(keyedCmdsBySlot) == 0 {
-		node = cursorOwner
-	}
 	asking := false
 	// MOVED/ASK are routing changes, not transient failures: follow them immediately.
 	redirected := false
@@ -3463,21 +3350,11 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 			}
 		}
 
-		if cursorOwner != nil && node != cursorOwner {
-			err := fmt.Errorf("redis: transaction keys and cursors belong to different nodes")
-			setCmdsErr(cmds, err)
-			return err
-		}
 		outcome := c.processTxPipelineNode(ctx, node, cmds, asking)
 		lastErr = outcome.err
 		redirected = false
 		switch outcome.kind {
 		case txSuccess:
-			for _, cmd := range cmds {
-				if err := c.finishClusterCursor(cmd, route.cursors[cmd.clusterRoutingDecision()], node); err != nil {
-					cmd.SetErr(err)
-				}
-			}
 			return cmdsFirstErr(cmds)
 		case txRetryMoved:
 			// Route directly to the authoritative addr from the MOVED; the
@@ -3616,10 +3493,6 @@ func (c *ClusterClient) txRoutingError(cmd Cmder, decision *clusterRoutingDecisi
 	switch decision.policy.Request {
 	case routing.ReqDefault, routing.ReqMultiShard:
 		return nil
-	case routing.ReqSpecial:
-		if ftCursorCommand(cmd) {
-			return nil
-		}
 	default:
 	}
 	return fmt.Errorf(

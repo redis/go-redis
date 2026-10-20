@@ -243,10 +243,6 @@ type Cmder interface {
 	readRawReply(rd *proto.Reader) error
 	// isRawReply stays visible when a command is embedded in a custom wrapper.
 	isRawReply() bool
-	// Internal cursor accessors avoid awaiting async results and preserve embedded Cmder wrappers.
-	cursorReply() (interface{}, bool)
-	setCursorReply(uint64)
-	cursorIdleLimit() time.Duration
 	SetErr(error)
 	Err() error
 
@@ -703,21 +699,6 @@ func (cmd *baseCmd) NoRetry() bool {
 	// would silently skip the results that were already consumed.
 	return len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(0), "ft.cursor") &&
 		strings.EqualFold(cmd.stringArg(1), "read")
-}
-
-func (cmd *baseCmd) cursorReply() (interface{}, bool) { return nil, false }
-func (cmd *baseCmd) setCursorReply(uint64)            {}
-func (cmd *baseCmd) cursorIdleLimit() time.Duration   { return 0 }
-
-func (cmd *Cmd) cursorReply() (interface{}, bool)      { return cmd.val, true }
-func (cmd *Cmd) setCursorReply(id uint64)              { cmd.val = replaceFTCursorID(cmd.val, id) }
-func (cmd *SliceCmd) cursorReply() (interface{}, bool) { return cmd.val, true }
-func (cmd *SliceCmd) setCursorReply(id uint64) {
-	cmd.val = replaceFTCursorID(cmd.val, id).([]interface{})
-}
-func (cmd *MapStringInterfaceCmd) cursorReply() (interface{}, bool) { return cmd.val, true }
-func (cmd *MapStringInterfaceCmd) setCursorReply(id uint64) {
-	cmd.val = replaceFTCursorID(cmd.val, id).(map[string]interface{})
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -7068,11 +7049,6 @@ func (cmd *MapStringInterfaceCmd) String() string {
 }
 
 func (cmd *MapStringInterfaceCmd) readReply(rd *proto.Reader) error {
-	if cmd.Name() == "ft.cursor" && len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(1), "read") {
-		var err error
-		cmd.val, err = readFTCursorReply(rd)
-		return err
-	}
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err

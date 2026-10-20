@@ -19,8 +19,7 @@ func TestParseFTInfo(t *testing.T) {
 		"index_options": []interface{}{},
 		"index_definition": []interface{}{
 			"key_type", "HASH",
-			"prefixes",
-			[]interface{}{"rand:42d1f2820b3048b6bc783d4dcdb9094a"},
+			"prefixes", []interface{}{"rand:42d1f2820b3048b6bc783d4dcdb9094a"},
 			"default_score", "1",
 			"indexes_all", false,
 		},
@@ -115,8 +114,7 @@ func TestParseFTInfo(t *testing.T) {
 			[]interface{}{
 				"identifier", "prompt",
 				"attribute", "prompt",
-				"Index Errors",
-				[]interface{}{
+				"Index Errors", []interface{}{
 					"indexing failures", int64(0),
 					"last indexing error", "N/A",
 					"last indexing error key", "N/A",
@@ -125,8 +123,7 @@ func TestParseFTInfo(t *testing.T) {
 			[]interface{}{
 				"identifier", "response",
 				"attribute", "response",
-				"Index Errors",
-				[]interface{}{
+				"Index Errors", []interface{}{
 					"indexing failures", int64(0),
 					"last indexing error", "N/A",
 					"last indexing error key", "N/A",
@@ -135,8 +132,7 @@ func TestParseFTInfo(t *testing.T) {
 			[]interface{}{
 				"identifier", "exact_digest",
 				"attribute", "exact_digest",
-				"Index Errors",
-				[]interface{}{
+				"Index Errors", []interface{}{
 					"indexing failures", int64(0),
 					"last indexing error", "N/A",
 					"last indexing error key", "N/A",
@@ -145,8 +141,7 @@ func TestParseFTInfo(t *testing.T) {
 			[]interface{}{
 				"identifier", "prompt_vector",
 				"attribute", "prompt_vector",
-				"Index Errors",
-				[]interface{}{
+				"Index Errors", []interface{}{
 					"indexing failures", int64(0),
 					"last indexing error", "N/A",
 					"last indexing error key", "N/A",
@@ -1943,12 +1938,9 @@ func TestFTSynDumpRESP2AndRESP3Equivalence(t *testing.T) {
 			name: "multiple terms",
 			// RESP2: ["baby", ["id1"], "child", ["id1"], "offspring", ["id1"]]
 			resp2Data: []interface{}{
-				"baby",
-				[]interface{}{"id1"},
-				"child",
-				[]interface{}{"id1"},
-				"offspring",
-				[]interface{}{"id1"},
+				"baby", []interface{}{"id1"},
+				"child", []interface{}{"id1"},
+				"offspring", []interface{}{"id1"},
 			},
 			// RESP3: {"baby": ["id1"], "child": ["id1"], "offspring": ["id1"]}
 			resp3Data: map[interface{}]interface{}{
@@ -2115,56 +2107,6 @@ func TestFTInfoRESP2AndRESP3Equivalence(t *testing.T) {
 		}
 		if attr2.NoStem != attr3.NoStem {
 			t.Errorf("NoStem mismatch: RESP2=%v, RESP3=%v", attr2.NoStem, attr3.NoStem)
-		}
-	}
-}
-
-func TestAggregateCursorReplyFormats(t *testing.T) {
-	for _, wire := range []string{
-		"*2\r\n*2\r\n:1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:42\r\n",
-		"*2\r\n%2\r\n+total_results\r\n:1\r\n+results\r\n*1\r\n%1\r\n+extra_attributes\r\n%1\r\n+f\r\n+v\r\n:42\r\n",
-		"%3\r\n+total_results\r\n:1\r\n+results\r\n*1\r\n%1\r\n+extra_attributes\r\n%1\r\n+f\r\n+v\r\n+cursor\r\n:42\r\n",
-	} {
-		cmd := NewAggregateCmd(context.Background(), "ft.aggregate", "idx", "*", "WITHCURSOR")
-		if err := cmd.readReply(proto.NewReader(strings.NewReader(wire))); err != nil {
-			t.Fatal(err)
-		}
-		if cmd.Val().CursorID != 42 || len(cmd.Val().Rows) != 1 || cmd.Val().Rows[0].Fields["f"] != "v" {
-			t.Fatalf("result=%+v", cmd.Val())
-		}
-		if cmd.Clone().(*AggregateCmd).Val().CursorID != 42 {
-			t.Fatal("clone lost cursor")
-		}
-		read := NewMapStringInterfaceCmd(context.Background(), "ft.cursor", "read", "idx", 42)
-		if err := read.readReply(proto.NewReader(strings.NewReader(wire))); err != nil {
-			t.Fatal(err)
-		}
-		if id, ok := ftCursorID(read.Val()["cursor"]); !ok || id != 42 {
-			t.Fatalf("cursor reply=%v", read.Val())
-		}
-	}
-}
-
-func TestAggregateSetValReplacesCursorReply(t *testing.T) {
-	for _, wire := range []string{
-		"*1\r\n:0\r\n", // A previous non-cursor reply must not hide a new cursor.
-		"*2\r\n*1\r\n:0\r\n:99\r\n",
-	} {
-		cmd := NewAggregateCmd(context.Background(), "ft.aggregate", "idx", "*")
-		if err := cmd.readReply(proto.NewReader(strings.NewReader(wire))); err != nil {
-			t.Fatal(err)
-		}
-		cmd.SetVal(&FTAggregateResult{CursorID: 42})
-		reply, _ := cmd.cursorReply()
-		if _, id, found := ftCursorReply(reply); !found || id != 42 {
-			t.Fatalf("SetVal retained an earlier reply: cursor=%d, found=%v", id, found)
-		}
-		if err := clusterFanoutCursorError(cmd); err == nil {
-			t.Fatal("typed cursor bypassed fan-out guard")
-		}
-		cmd.setCursorReply(7)
-		if cmd.Val().CursorID != 7 || cmd.RawVal() != nil {
-			t.Fatal("cursor replacement retained stale raw data")
 		}
 	}
 }

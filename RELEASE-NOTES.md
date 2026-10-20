@@ -50,20 +50,10 @@
   `errors.Is` checks. Unknown response policies return an error.
 - Fan-out responses containing `MOVED` or `ASK` refresh topology for later
   commands without replaying already successful operations.
-- Cluster `FT.AGGREGATE ... WITHCURSOR` now returns client-local cursor tokens
-  bound to the node that actually served the request, including redirects.
-  `FT.CURSOR READ`/`DEL` preserve this affinity in explicit pipelines and
-  compatible single-node transactions. Tokens must stay on the same client;
-  close abandoned cursors with `FTCursorDel` or close the client.
-  `FTCursorIdleTimeout` defaults to five minutes for tokens without an explicit
-  typed `MAXIDLE`; successful READs renew the local idle timeout.
-  Transactions still return server errors when that Search version does not
-  support the command inside `MULTI/EXEC`.
-  Custom fan-out policies reject cursor replies instead of exposing native IDs
-  that could be mistaken for another cursor's token.
-- Typed aggregate replies expose `CursorID` and parse RESP2/RESP3 cursor
-  envelopes. RESP2 `FTCursorRead` returns `results` and `cursor` map entries.
-  Cursor READ is not automatically replayed after a lost reply.
+- `FT.CURSOR READ` is no longer automatically retried after a lost reply, on
+  standalone and cluster clients, because the server may already have advanced
+  the cursor. Cursor ownership and reply-parsing changes are deferred to a
+  separate PR.
 
 # 9.23.0 (2026-10-05)
 

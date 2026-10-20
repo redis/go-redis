@@ -143,8 +143,6 @@ type UniversalOptions struct {
 	// see ClusterOptions.RouteByLatencyTolerance.
 	RouteByLatencyTolerance time.Duration
 	RouteRandomly           bool
-	// FTCursorIdleTimeout applies only to cluster clients. See ClusterOptions.
-	FTCursorIdleTimeout time.Duration
 
 	// MasterName is the sentinel master name.
 	// Only for failover clients.
@@ -310,7 +308,6 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		MaintNotificationsConfig:  o.MaintNotificationsConfig,
 		CommandMetadata:           o.CommandMetadata,
-		FTCursorIdleTimeout:       o.FTCursorIdleTimeout,
 	}
 }
 
@@ -390,7 +387,6 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		CommandMetadata:           o.CommandMetadata,
-		FTCursorIdleTimeout:       o.FTCursorIdleTimeout,
 		// Note: MaintNotificationsConfig not supported for FailoverOptions
 	}
 }

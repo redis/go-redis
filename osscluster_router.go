@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/big"
 	"math/rand"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -433,269 +431,43 @@ func (c *ClusterClient) executeSpecialCommand(
 	return errUnsupportedRoutingPolicy
 }
 
-// executeCursorCommand is reached after ownership has been resolved. Cursor IDs
-// are node-local server state, never hash-slot routing keys.
-func (c *ClusterClient) executeCursorCommand(ctx context.Context, cmd Cmder, node *clusterNode, _ clusterRoutingDecision) error {
-	if node == nil {
-		return fmt.Errorf("redis: FT.CURSOR has no owning node")
+// executeCursorCommand handles FT.CURSOR commands with sticky routing
+func (c *ClusterClient) executeCursorCommand(
+	ctx context.Context,
+	cmd Cmder,
+	node *clusterNode,
+	decision clusterRoutingDecision,
+) error {
+	if len(cmd.Args()) < 4 {
+		return errInvalidCursorCmdArgsCount
 	}
+
+	cursorID, err := cursorRoutingKey(cmd)
+	if err != nil {
+		return err
+	}
+
+	if node == nil {
+		// Reuse redirected nodes; otherwise route by cursor ID.
+		slot := clusterKeySlot(cursorID)
+		node, err = c.cmdNodeWithShardPickerAndDecision(ctx, slot, c.opt.ShardPicker, &decision)
+		if err != nil {
+			return err
+		}
+	}
+
 	return node.Client.Process(ctx, cmd)
 }
 
-// clusterCursorBinding keeps the real server ID private to this ClusterClient.
-// A typed MAXIDLE bounds retention; otherwise the configured local idle timeout
-// expires abandoned tokens without assuming a server configuration.
-type clusterCursorBinding struct {
-	address, index, id string
-	maxIdle            time.Duration
-	expires            time.Time
-	active             int
-}
-
-type clusterCursorRegistry struct {
-	mu       sync.Mutex
-	closed   bool
-	bindings map[uint64]*clusterCursorBinding
-}
-
-// Cursor tokens are unique across clients in this process as well as within a client.
-var clusterCursorSequence atomic.Uint64
-
-type clusterCursorOperation struct {
-	cmd     Cmder
-	address string
-	token   uint64
-	binding *clusterCursorBinding
-	args    []interface{}
-	node    *clusterNode
-}
-
-func ftCursorCommand(cmd Cmder) bool {
-	if cmd.Name() != "ft.cursor" || len(cmd.Args()) < 2 {
-		return false
+func cursorRoutingKey(cmd Cmder) (string, error) {
+	if len(cmd.Args()) < 4 {
+		return "", errInvalidCursorCmdArgsCount
 	}
-	sub, ok := routingArgText(cmd, 1)
-	return ok && (strings.EqualFold(sub, "read") || strings.EqualFold(sub, "del"))
-}
-
-// prepareClusterCursors leases only cursor state; ordinary commands allocate
-// nothing here. A batch may contain several operations on the same cursor.
-func (c *ClusterClient) prepareClusterCursors(cmds []Cmder) ([]*clusterCursorOperation, error) {
-	if c.opt.DisableRoutingPolicies {
-		return nil, nil
+	key, ok := routingArgText(cmd, 3)
+	if !ok {
+		return "", errInvalidCursorIdType
 	}
-	var operations []*clusterCursorOperation
-	for _, cmd := range cmds {
-		name := cmd.Name()
-		if name != "ft.aggregate" && name != "ft.cursor" {
-			continue
-		}
-		continuation := ftCursorCommand(cmd)
-		if !continuation && name != "ft.aggregate" {
-			continue
-		}
-		if _, supported := cmd.cursorReply(); !supported {
-			if continuation && cmd.GetCmdType() != CmdTypeStatus {
-				c.releaseClusterCursors(operations)
-				return nil, fmt.Errorf("redis: FT.CURSOR requires a decoded cursor result or the originating node client")
-			}
-			if !continuation {
-				continue
-			} // Preserve unsupported/raw aggregate replies byte-for-byte.
-		}
-		op := &clusterCursorOperation{cmd: cmd}
-		if continuation {
-			if len(cmd.Args()) < 4 {
-				c.releaseClusterCursors(operations)
-				return nil, errInvalidCursorCmdArgsCount
-			}
-			index, indexOK := routingArgText(cmd, 2)
-			value, valueOK := routingArgText(cmd, 3)
-			// Local tokens must fit the int accepted by FTCursorRead/Del.
-			// Native server IDs are independent and retain their full range.
-			token, err := strconv.ParseUint(value, 10, 64)
-			if !indexOK || !valueOK || err != nil || token == 0 || token > math.MaxInt {
-				c.releaseClusterCursors(operations)
-				return nil, errInvalidCursorIdType
-			}
-			c.cursors.mu.Lock()
-			binding := c.cursors.bindings[token]
-			if binding != nil && !binding.expires.IsZero() && time.Now().After(binding.expires) && binding.active == 0 {
-				delete(c.cursors.bindings, token)
-				binding = nil
-			}
-			if binding == nil || binding.index != index || c.cursors.closed {
-				c.cursors.mu.Unlock()
-				c.releaseClusterCursors(operations)
-				return nil, fmt.Errorf("redis: unknown FT.CURSOR token %d; use the client that created it", token)
-			}
-			binding.active++
-			op.address = binding.address
-			op.token, op.binding, op.args = token, binding, cmd.Args()
-			args := slices.Clone(op.args)
-			args[3] = binding.id
-			cmd.setArgs(args)
-			c.cursors.mu.Unlock()
-		}
-		operations = append(operations, op)
-	}
-	return operations, nil
-}
-
-func (c *ClusterClient) releaseClusterCursors(operations []*clusterCursorOperation) {
-	if len(operations) == 0 {
-		return
-	}
-	c.cursors.mu.Lock()
-	defer c.cursors.mu.Unlock()
-	for _, op := range operations {
-		if op.binding != nil {
-			op.cmd.setArgs(op.args)
-			op.binding.active--
-		}
-	}
-}
-
-func (c *ClusterClient) clusterCursorNode(ctx context.Context, address string) (*clusterNode, error) {
-	state, err := c.state.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, nodes := range [][]*clusterNode{state.declaredMasters(), state.declaredSlaves()} {
-		for _, node := range nodes {
-			if node.Client.opt.Addr == address {
-				if err := state.requireOnline([]*clusterNode{node}); err != nil {
-					return nil, err
-				}
-				return node, nil
-			}
-		}
-	}
-	return nil, fmt.Errorf("redis: FT.CURSOR owner %s is no longer in the cluster", address)
-}
-
-func (c *ClusterClient) finishClusterCursor(cmd Cmder, op *clusterCursorOperation, node *clusterNode) error {
-	if op == nil {
-		return nil
-	}
-	c.cursors.mu.Lock()
-	defer c.cursors.mu.Unlock()
-	if err := cmd.rawErr(); err != nil {
-		// The server's explicit missing-cursor response is definitive; transport
-		// failures and unrelated errors do not prove that the cursor is gone.
-		var serverErr Error
-		if op.binding != nil && errors.As(err, &serverErr) &&
-			(strings.EqualFold(serverErr.Error(), "Cursor does not exist") || strings.EqualFold(serverErr.Error(), "ERR Cursor does not exist")) {
-			delete(c.cursors.bindings, op.token)
-		}
-		return err
-	}
-	if c.cursors.closed {
-		return ErrClosed
-	}
-	if op.binding != nil && strings.EqualFold(cmd.stringArg(1), "del") {
-		delete(c.cursors.bindings, op.token)
-		return nil
-	}
-	reply, _ := cmd.cursorReply()
-	_, id, found := ftCursorReply(reply)
-	if !found {
-		if op.binding != nil {
-			return fmt.Errorf("redis: FT.CURSOR reply has no cursor ID")
-		}
-		return nil
-	}
-	if id == 0 {
-		if op.binding != nil {
-			delete(c.cursors.bindings, op.token)
-		}
-		return nil
-	}
-	if node == nil {
-		return fmt.Errorf("redis: FT.CURSOR reply has no serving node")
-	}
-	binding := op.binding
-	if binding == nil {
-		index, ok := routingArgText(cmd, 1)
-		if !ok {
-			return fmt.Errorf("redis: invalid FT.AGGREGATE index")
-		}
-		op.token = clusterCursorSequence.Add(1)
-		if op.token > math.MaxInt || op.token == 0 {
-			return fmt.Errorf("redis: FT.CURSOR token space exhausted")
-		}
-		binding = &clusterCursorBinding{index: index, maxIdle: cmd.cursorIdleLimit()}
-		if binding.maxIdle <= 0 {
-			binding.maxIdle = c.opt.FTCursorIdleTimeout
-		}
-		if c.cursors.bindings == nil {
-			c.cursors.bindings = make(map[uint64]*clusterCursorBinding)
-		}
-		// Bound opportunistic cleanup while holding the shared lock. Map
-		// iteration is not fair, so reclamation has no deadline; each access
-		// still checks its own idle deadline above.
-		now := time.Now()
-		visited := 0
-		for token, old := range c.cursors.bindings {
-			if visited == 16 {
-				break
-			}
-			visited++
-			if old.active == 0 && !old.expires.IsZero() && now.After(old.expires) {
-				delete(c.cursors.bindings, token)
-			}
-		}
-		c.cursors.bindings[op.token] = binding
-	}
-	// A concurrent DEL or exhausted READ may already have removed the entry.
-	// Returning a late reply must never resurrect it.
-	if c.cursors.bindings[op.token] == binding {
-		binding.id, binding.address = strconv.FormatUint(id, 10), node.Client.opt.Addr
-		if binding.maxIdle > 0 {
-			binding.expires = time.Now().Add(binding.maxIdle)
-		}
-	}
-	cmd.setCursorReply(op.token)
-	return nil
-}
-
-func replaceFTCursorID(reply interface{}, token uint64) interface{} {
-	// Preserve decoded cursor types on generic replies, including exact strings.
-	replace := func(old interface{}) interface{} {
-		switch old.(type) {
-		case string:
-			return strconv.FormatUint(token, 10)
-		case uint64:
-			return token
-		case *big.Int:
-			return new(big.Int).SetUint64(token)
-		case int:
-			return int(token)
-		default:
-			return int64(token)
-		}
-	}
-	switch reply := reply.(type) {
-	case []interface{}:
-		reply[1] = replace(reply[1])
-	case map[interface{}]interface{}:
-		reply["cursor"] = replace(reply["cursor"])
-	case map[string]interface{}:
-		reply["cursor"] = replace(reply["cursor"])
-	}
-	return reply
-}
-
-// A fan-out result cannot represent the independent cursor owned by each node.
-// Check replies instead of parsing the evolving FT.AGGREGATE option grammar.
-func clusterFanoutCursorError(cmd Cmder) error {
-	if cmd.Name() == "ft.aggregate" {
-		reply, _ := cmd.cursorReply()
-		if _, id, found := ftCursorReply(reply); found && id != 0 {
-			return errors.New("redis: FT.AGGREGATE cursors require single-node routing")
-		}
-	}
-	return nil
+	return key, nil
 }
 
 // executeParallel executes a command on multiple nodes concurrently
@@ -719,10 +491,6 @@ func (c *ClusterClient) executeParallel(
 			}
 		}
 		if err := c.executeParallelTarget(ctx, nodes[0], targetSlot, cmd); err != nil {
-			return &clusterFanoutExecutionError{err: err}
-		}
-		if err := clusterFanoutCursorError(cmd); err != nil {
-			cmd.SetErr(err)
 			return &clusterFanoutExecutionError{err: err}
 		}
 		return nil
@@ -760,20 +528,12 @@ func (c *ClusterClient) executeParallel(
 	// Collect results and check for errors
 	cmds := make([]Cmder, 0, len(nodes))
 	var firstErr error
-	var cursorErr error
 
 	for result := range results {
 		if result.err != nil && firstErr == nil {
 			firstErr = result.err
 		}
-		if result.err == nil && cursorErr == nil {
-			cursorErr = clusterFanoutCursorError(result.cmd)
-		}
 		cmds = append(cmds, result.cmd)
-	}
-	if cursorErr != nil {
-		cmd.SetErr(cursorErr)
-		return &clusterFanoutExecutionError{err: cursorErr}
 	}
 
 	// If there was an error and no policy specified, fail fast

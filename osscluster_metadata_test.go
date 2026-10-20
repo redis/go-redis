@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -527,15 +525,16 @@ func TestClusterBlessScanUsesOneNode(t *testing.T) {
 	}
 }
 
-func TestClusterPipelineRejectsUnknownCursorBeforeDispatch(t *testing.T) {
+func TestClusterPipelineRejectsSpecialRequestBeforeDispatch(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 	c.state.state.Store(&clusterState{generation: 1, nodes: c.nodes})
 	ctx := context.Background()
 	cmd := NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", 42)
-	err := c.processPipeline(ctx, []Cmder{cmd})
+	route := c.resolvePipelineRouting(ctx, []Cmder{cmd})
+	err := c.mapCmdsByNodeInView(ctx, newCmdsMap(), []Cmder{cmd}, route)
 	if err == nil || !errors.Is(cmd.Err(), err) {
-		t.Fatalf("unknown cursor pipeline error=%v cmd error=%v", err, cmd.Err())
+		t.Fatalf("special request pipeline error=%v cmd error=%v", err, cmd.Err())
 	}
 }
 
@@ -601,389 +600,83 @@ func TestClusterTxRoutingKeepsMetadataPoliciesLocal(t *testing.T) {
 	}
 }
 
-func TestClusterCursorOwnershipAndCollisions(t *testing.T) {
-	for _, metadata := range []bool{false, true} {
-		t.Run(fmt.Sprintf("metadata=%v", metadata), func(t *testing.T) {
-			c := newMetadataTestCluster(t, nil)
-			if !metadata {
-				c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
-			}
-			ctx := context.Background()
-			picker := &countingClusterShardPicker{}
-			c.opt.ShardPicker = picker
-			a, _ := c.nodes.GetOrCreate("127.0.0.1:7051")
-			b, _ := c.nodes.GetOrCreate("127.0.0.1:7052")
-			installMetadataClusterState(c, []*clusterNode{a, b}, &clusterSlot{start: 0, end: 16383, nodes: []*clusterNode{a}})
-			var owners []string
-			for _, node := range []*clusterNode{a, b} {
-				node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-					if cmd.Name() == "ft.aggregate" {
-						cmd.(*Cmd).SetVal([]interface{}{[]interface{}{int64(0)}, int64(42)})
-						return nil
-					}
-					if cmd.Args()[3] != "42" {
-						t.Errorf("wire ID = %v, want real ID42", cmd.Args()[3])
-					}
-					owners = append(owners, node.Client.opt.Addr)
-					switch cmd := cmd.(type) {
-					case *MapStringInterfaceCmd:
-						cmd.SetVal(map[string]interface{}{"cursor": int64(42)})
-					case *StatusCmd:
-						cmd.SetVal("OK")
-					}
-					return nil
-				}})
-			}
-			first := c.Do(ctx, "FT.AGGREGATE", "idx", "*", "WITHCURSOR")
-			if first.Err() != nil {
-				t.Fatal(first.Err())
-			}
-			_, firstID, _ := ftCursorReply(first.Val())
-			picker.index = 1
-			second := c.Do(ctx, "FT.AGGREGATE", "idx", "*", "WITHCURSOR")
-			if second.Err() != nil {
-				t.Fatal(second.Err())
-			}
-			_, secondID, _ := ftCursorReply(second.Val())
-			if firstID == secondID || firstID == 0 || secondID == 0 {
-				t.Fatalf("tokens = %d/%d", firstID, secondID)
-			}
-			read := c.FTCursorRead(ctx, "idx", int(secondID), 1)
-			if read.Err() != nil {
-				t.Fatal(read.Err())
-			}
-			if read.Args()[3] != int(secondID) {
-				t.Fatalf("caller arguments changed: %v", read.Args())
-			}
-			if id, _ := ftCursorID(read.Val()["cursor"]); id != secondID {
-				t.Fatalf("continuation token=%d want%d", id, secondID)
-			}
-			if err := c.FTCursorDel(ctx, "idx", int(firstID)).Err(); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(owners, []string{b.Client.opt.Addr, a.Client.opt.Addr}) {
-				t.Fatalf("owners=%v", owners)
-			}
-			before := len(owners)
-			if c.FTCursorRead(ctx, "idx", int(firstID), 1).Err() == nil {
-				t.Fatal("deleted token accepted")
-			}
-			if c.FTCursorRead(ctx, "other-index", int(secondID), 1).Err() == nil {
-				t.Fatal("wrong index accepted")
-			}
-			if len(owners) != before {
-				t.Fatal("unknown token reached server")
-			}
-		})
+func TestClusterCursorRoutingUsesNativeIDSlot(t *testing.T) {
+	c := newMetadataTestCluster(t, nil)
+	ctx := context.Background()
+	picker := &countingClusterShardPicker{}
+	c.opt.ShardPicker = picker
+
+	discarded, _ := c.nodes.GetOrCreate("127.0.0.1:7051")
+	owner, _ := c.nodes.GetOrCreate("127.0.0.1:7052")
+	cursorID := 42
+	slot := clusterKeySlot("42")
+	installMetadataClusterState(
+		c, []*clusterNode{discarded, owner},
+		&clusterSlot{start: slot, end: slot, nodes: []*clusterNode{owner}},
+	)
+
+	discardedCalls, ownerCalls := 0, 0
+	discarded.Client.AddHook(clusterMetadataNodeHook{process: func(context.Context, Cmder) error {
+		discardedCalls++
+		return nil
+	}})
+	owner.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+		ownerCalls++
+		cmd.(*MapStringInterfaceCmd).SetVal(map[string]interface{}{})
+		return nil
+	}})
+
+	cmd := NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", cursorID)
+	if err := c.process(ctx, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if discardedCalls != 0 || ownerCalls != 1 || picker.calls != 0 {
+		t.Fatalf("discarded=%d owner=%d picker=%d, want 0/1/0", discardedCalls, ownerCalls, picker.calls)
 	}
 }
 
-func TestClusterCursorCreationTracksRedirect(t *testing.T) {
+func TestClusterCursorRoutingHonorsMovedTarget(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	ctx := context.Background()
-	c.opt.ShardPicker = &countingClusterShardPicker{}
 	oldOwner, _ := c.nodes.GetOrCreate("127.0.0.1:7061")
 	newOwner, _ := c.nodes.GetOrCreate("127.0.0.1:7062")
-	installMetadataClusterState(c, []*clusterNode{oldOwner, newOwner})
+	cursorID := 42
+	slot := clusterKeySlot("42")
+	installMetadataClusterState(
+		c, []*clusterNode{oldOwner},
+		&clusterSlot{start: slot, end: slot, nodes: []*clusterNode{oldOwner}},
+	)
+
+	oldCalls, newCalls := 0, 0
+	lostReply := false
 	oldOwner.Client.AddHook(clusterMetadataNodeHook{process: func(context.Context, Cmder) error {
-		return proto.RedisError("MOVED 0 127.0.0.1:7062")
+		oldCalls++
+		return fmt.Errorf("MOVED %d 127.0.0.1:7062", slot)
 	}})
-	calls := 0
 	newOwner.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-		calls++
-		if cmd.Name() == "ft.aggregate" {
-			cmd.(*Cmd).SetVal([]interface{}{[]interface{}{int64(0)}, int64(42)})
-		} else {
-			cmd.(*MapStringInterfaceCmd).SetVal(map[string]interface{}{"cursor": int64(0)})
+		newCalls++
+		if lostReply {
+			return io.ErrUnexpectedEOF
 		}
+		cmd.(*MapStringInterfaceCmd).SetVal(map[string]interface{}{})
 		return nil
 	}})
-	created := c.Do(ctx, "ft.aggregate", "idx", "*", "WITHCURSOR")
-	if created.Err() != nil {
-		t.Fatal(created.Err())
-	}
-	_, id, _ := ftCursorReply(created.Val())
-	if err := c.FTCursorRead(ctx, "idx", int(id), 1).Err(); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 2 || len(c.cursors.bindings) != 0 {
-		t.Fatalf("calls=%d bindings=%v", calls, c.cursors.bindings)
-	}
-}
 
-func TestClusterCursorPipelineAndTransactionAffinity(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
-	ctx := context.Background()
-	a, _ := c.nodes.GetOrCreate("127.0.0.1:7071")
-	b, _ := c.nodes.GetOrCreate("127.0.0.1:7072")
-	installMetadataClusterState(c, []*clusterNode{a, b}, &clusterSlot{start: 0, end: 16383, nodes: []*clusterNode{a}})
-	c.cursors.bindings = map[uint64]*clusterCursorBinding{
-		1: {address: b.Client.opt.Addr, index: "idx", id: "42"},
-		2: {address: a.Client.opt.Addr, index: "idx", id: "43"},
-	}
-	calls := 0
-	b.Client.AddHook(clusterMetadataNodeHook{pipeline: func(_ context.Context, cmds []Cmder) error {
-		calls++
-		for _, cmd := range cmds {
-			if cmd.Args()[3] != "42" {
-				t.Errorf("wire ID=%v", cmd.Args()[3])
-			}
-			cmd.(*MapStringInterfaceCmd).SetVal(map[string]interface{}{"cursor": int64(42)})
-		}
-		return nil
-	}})
-	pipe := c.Pipeline()
-	read := pipe.FTCursorRead(ctx, "idx", 1, 1)
-	if _, err := pipe.Exec(ctx); err != nil {
+	cmd := NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", cursorID)
+	if err := c.process(ctx, cmd); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || read.Args()[3] != 1 || read.Val()["cursor"] != int64(1) {
-		t.Fatalf("calls=%d args=%v val=%v", calls, read.Args(), read.Val())
-	}
-	for _, cmds := range [][]Cmder{
-		{NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", 1), NewStringCmd(ctx, "get", "key")},
-		{NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", 1), NewStatusCmd(ctx, "ft.cursor", "del", "idx", 2)},
-	} {
-		if err := c.processTxPipeline(ctx, wrapMultiExec(ctx, cmds)); err == nil || !strings.Contains(err.Error(), "different nodes") {
-			t.Fatalf("conflicting transaction error=%v", err)
-		}
-	}
-	if calls != 1 {
-		t.Fatal("conflicting transaction was dispatched")
-	}
-}
-
-func TestClusterCursorLifetimeAndConcurrentUse(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	binding := &clusterCursorBinding{address: "unused", index: "idx", id: "42"}
-	c.cursors.bindings = map[uint64]*clusterCursorBinding{1: binding}
-	read := NewCmd(ctx, "ft.cursor", "read", "idx", 1)
-	ops, err := c.prepareClusterCursors([]Cmder{read})
-	if err != nil {
-		t.Fatal(err)
-	}
-	del := NewStatusCmd(ctx, "ft.cursor", "del", "idx", 1)
-	delOps, err := c.prepareClusterCursors([]Cmder{del})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.finishClusterCursor(del, delOps[0], nil); err != nil {
-		t.Fatal(err)
-	}
-	c.releaseClusterCursors(delOps)
-	node, _ := c.nodes.GetOrCreate("127.0.0.1:7081")
-	read.SetVal([]interface{}{[]interface{}{int64(0)}, int64(42)})
-	if err := c.finishClusterCursor(read, ops[0], node); err != nil {
-		t.Fatal(err)
-	}
-	c.releaseClusterCursors(ops)
-	if len(c.cursors.bindings) != 0 {
-		t.Fatal("late READ resurrected deleted cursor")
-	}
-	binding.expires = time.Now().Add(-time.Second)
-	c.cursors.bindings[1] = binding
-	if _, err := c.prepareClusterCursors([]Cmder{read}); err == nil {
-		t.Fatal("expired cursor accepted")
-	}
-	if len(c.cursors.bindings) != 0 {
-		t.Fatal("expired cursor retained")
-	}
-	if !read.NoRetry() {
-		t.Fatal("advancing READ can be replayed after a lost response")
-	}
-	for range 100 {
-		c.cursors.bindings[clusterCursorSequence.Add(1)] = binding
-	}
-	created := NewCmd(ctx, "ft.aggregate", "idx", "*", "WITHCURSOR")
-	created.SetVal([]interface{}{[]interface{}{int64(0)}, int64(42)})
-	createOps, err := c.prepareClusterCursors([]Cmder{created})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.releaseClusterCursors(createOps)
-	if err := c.finishClusterCursor(created, createOps[0], node); err != nil {
-		t.Fatal(err)
-	}
-	if len(c.cursors.bindings) != 85 {
-		t.Fatalf("creation must clean only 16 expired bindings, got %d remaining", len(c.cursors.bindings))
-	}
-}
-
-func TestClusterCursorTokenRange(t *testing.T) {
-	c := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:1"}})
-	defer c.Close()
-	ctx := context.Background()
-	for _, token := range []string{
-		"0", "-1", strconv.FormatUint(uint64(math.MaxInt)+1, 10),
-		strconv.FormatUint(math.MaxUint64, 10),
-	} {
-		cmd := NewCmd(ctx, "ft.cursor", "read", "idx", token)
-		if _, err := c.prepareClusterCursors([]Cmder{cmd}); !errors.Is(err, errInvalidCursorIdType) {
-			t.Errorf("token %q: got %v, want invalid cursor ID", token, err)
-		}
+	if oldCalls != 1 || newCalls != 1 {
+		t.Fatalf("old=%d new=%d, want 1/1", oldCalls, newCalls)
 	}
 
-	// The largest local token still round-trips as an int. Its native server ID
-	// remains independent and can use the full uint64 range.
-	binding := &clusterCursorBinding{index: "idx", id: strconv.FormatUint(math.MaxUint64, 10)}
-	c.cursors.bindings = map[uint64]*clusterCursorBinding{uint64(math.MaxInt): binding}
-	cmd := NewCmd(ctx, "ft.cursor", "read", "idx", math.MaxInt)
-	ops, err := c.prepareClusterCursors([]Cmder{cmd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.releaseClusterCursors(ops)
-	if cmd.Args()[3] != binding.id {
-		t.Fatalf("native cursor ID = %v, want %s", cmd.Args()[3], binding.id)
-	}
-	cmd.SetVal([]interface{}{[]interface{}{int64(0)}, int(0)})
-	cmd.setCursorReply(ops[0].token)
-	if got := cmd.Val().([]interface{})[1]; got != math.MaxInt {
-		t.Fatalf("returned token = %v, want %d", got, math.MaxInt)
-	}
-}
-
-func TestClusterCursorIdleTimeout(t *testing.T) {
-	for _, tc := range []struct {
-		name                       string
-		configured, explicit, want time.Duration
-	}{
-		{"default", 0, 0, 5 * time.Minute},
-		{"negative", -1, 0, 5 * time.Minute},
-		{"configured", time.Minute, 0, time.Minute},
-		{"explicit", time.Minute, time.Hour, time.Hour},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:1"}, FTCursorIdleTimeout: tc.configured})
-			defer c.Close()
-			ctx := context.Background()
-			node, _ := c.nodes.GetOrCreate("127.0.0.1:7081")
-			cmd := NewAggregateCmd(ctx, "ft.aggregate", "idx", "*", "WITHCURSOR")
-			cmd.cursorMaxIdle = tc.explicit
-			cmd.SetVal(&FTAggregateResult{CursorID: 42})
-			if err := c.finishClusterCursor(cmd, &clusterCursorOperation{cmd: cmd}, node); err != nil {
-				t.Fatal(err)
-			}
-			token := cmd.Val().CursorID
-			binding := c.cursors.bindings[token]
-			if binding.maxIdle != tc.want || binding.expires.IsZero() {
-				t.Fatalf("idle timeout=%v expiry=%v, want %v", binding.maxIdle, binding.expires, tc.want)
-			}
-			read := NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", token)
-			ops, err := c.prepareClusterCursors([]Cmder{read})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// An in-flight READ remains valid after the old idle deadline.
-			binding.expires = time.Now().Add(-time.Second)
-			read.SetVal(map[string]interface{}{"cursor": int64(42)})
-			if err := c.finishClusterCursor(read, ops[0], node); err != nil {
-				t.Fatal(err)
-			}
-			c.releaseClusterCursors(ops)
-			if time.Until(binding.expires) <= 0 || binding.maxIdle != tc.want {
-				t.Fatal("successful READ did not renew the configured idle lifetime")
-			}
-			binding.expires = time.Now().Add(-time.Second)
-			if _, err := c.prepareClusterCursors([]Cmder{read}); err == nil || len(c.cursors.bindings) != 0 {
-				t.Fatal("idle cursor did not expire before dispatch")
-			}
-		})
-	}
-	opt := &UniversalOptions{FTCursorIdleTimeout: time.Minute}
-	if opt.Cluster().FTCursorIdleTimeout != time.Minute || opt.Failover().clusterOptions().FTCursorIdleTimeout != time.Minute {
-		t.Fatal("universal options lost cursor idle timeout")
-	}
-	parsed, err := ParseClusterURL("redis://localhost:6379?ft_cursor_idle_timeout=1m")
-	if err != nil || parsed.FTCursorIdleTimeout != time.Minute {
-		t.Fatalf("URL cursor idle timeout: options=%v err=%v", parsed, err)
-	}
-}
-
-func TestClusterCursorWrappedLifetimeAndMissingReply(t *testing.T) {
-	for _, generic := range []bool{false, true} {
-		t.Run(fmt.Sprintf("generic=%v", generic), func(t *testing.T) {
-			c := newMetadataTestCluster(t, nil)
-			ctx := context.Background()
-			node, _ := c.nodes.GetOrCreate("127.0.0.1:7082")
-			installMetadataClusterState(c, []*clusterNode{node}, &clusterSlot{start: 0, end: 16383, nodes: []*clusterNode{node}})
-			aggregate := NewAggregateCmd(ctx, "ft.aggregate", "idx", "*", "WITHCURSOR", "MAXIDLE", 60000)
-			aggregate.cursorMaxIdle = time.Minute
-			var wrapped Cmder = struct{ *AggregateCmd }{aggregate}
-			if generic {
-				wrapped = struct{ Cmder }{aggregate}
-			}
-			node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-				if cmd.Name() == "ft.aggregate" {
-					aggregate.SetVal(&FTAggregateResult{CursorID: 42})
-					return nil
-				}
-				return fmt.Errorf("node hook: %w", proto.RedisError("Cursor does not exist"))
-			}})
-			if err := c.Process(ctx, wrapped); err != nil {
-				t.Fatal(err)
-			}
-			token := aggregate.Val().CursorID
-			binding := c.cursors.bindings[token]
-			if binding == nil || binding.maxIdle != time.Minute || binding.expires.IsZero() {
-				t.Fatal("wrapped typed cursor lost its owner or explicit idle limit")
-			}
-			if err := c.FTCursorRead(ctx, "idx", int(token), 1).Err(); err == nil {
-				t.Fatal("missing-cursor reply was lost")
-			}
-			if len(c.cursors.bindings) != 0 {
-				t.Fatal("wrapped missing-cursor reply retained the binding")
-			}
-		})
-	}
-}
-
-func TestClusterCursorFanoutRejectsCursorReplies(t *testing.T) {
-	ctx := context.Background()
-	for _, targets := range []int{1, 2} {
-		for _, typed := range []bool{false, true} {
-			for _, cursorID := range []uint64{0, 42} {
-				t.Run(fmt.Sprintf("targets=%d/typed=%v/cursor=%d", targets, typed, cursorID), func(t *testing.T) {
-					c := newMetadataTestCluster(t, nil)
-					c.SetCommandInfoResolver(NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
-						return &routing.CommandPolicy{Request: routing.ReqAllShards, Response: routing.RespOneSucceeded}
-					}))
-					var nodes []*clusterNode
-					var calls atomic.Int32
-					for i := range targets {
-						node, _ := c.nodes.GetOrCreate(fmt.Sprintf("127.0.0.1:%d", 7083+i))
-						nodes = append(nodes, node)
-						node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
-							calls.Add(1)
-							if typed {
-								cmd.(*AggregateCmd).SetVal(&FTAggregateResult{CursorID: cursorID})
-							} else {
-								cmd.(*Cmd).SetVal([]interface{}{[]interface{}{int64(0)}, int64(cursorID)})
-							}
-							return nil
-						}})
-					}
-					installMetadataClusterState(c, nodes, &clusterSlot{start: 0, end: 16383, nodes: nodes[:1]})
-					var cmd Cmder = NewCmd(ctx, "ft.aggregate", "idx", "*", "WITHCURSOR")
-					if typed {
-						cmd = NewAggregateCmd(ctx, "ft.aggregate", "idx", "*", "WITHCURSOR")
-					}
-					err := c.Process(ctx, cmd)
-					if cursorID != 0 {
-						if err == nil || !strings.Contains(err.Error(), "cursors require single-node routing") || cmd.Err() == nil {
-							t.Fatalf("fan-out exposed a native cursor ID: %v", err)
-						}
-					} else if err != nil {
-						t.Fatalf("non-cursor fan-out was rejected: %v", err)
-					}
-					if calls.Load() != int32(targets) || len(c.cursors.bindings) != 0 {
-						t.Fatalf("calls=%d bindings=%d: fan-out replayed or created a cursor binding", calls.Load(), len(c.cursors.bindings))
-					}
-				})
-			}
-		}
+	// A transport failure differs from MOVED: the server may have advanced
+	// the cursor, so retrying the READ could silently skip results.
+	lostReply = true
+	newCalls = 0
+	cmd = NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", cursorID)
+	if err := c.process(ctx, cmd); !errors.Is(err, io.ErrUnexpectedEOF) || newCalls != 1 {
+		t.Fatalf("lost reply error=%v calls=%d, want unexpected EOF and no retry", err, newCalls)
 	}
 }
 
@@ -3791,240 +3484,5 @@ func TestClusterAutoPipelineFanoutAllowedModes(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestClusterCursorExecutionModes uses a protocol fixture, not an external Redis.
-// It verifies the real parsers and dispatch paths, including MULTI/EXEC and FD.
-func TestClusterCursorExecutionModes(t *testing.T) {
-	for _, mode := range []string{"direct", "pipeline", "transaction", "blocking", "async", "blocking-fd", "async-fd", "blocking-fd-keyed", "async-fd-keyed"} {
-		t.Run(mode, func(t *testing.T) {
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer ln.Close()
-			var loseRead atomic.Bool
-			var reads atomic.Int32
-			go func() {
-				for {
-					conn, err := ln.Accept()
-					if err != nil {
-						return
-					}
-					go func() {
-						defer conn.Close()
-						rd := proto.NewReader(conn)
-						var queued [][]interface{}
-						inTx := false
-						reply := func(args []interface{}) string {
-							switch strings.ToLower(args[0].(string)) {
-							case "hello":
-								return "%2\r\n+server\r\n+redis\r\n+version\r\n+8.8.0\r\n"
-							case "ft.aggregate":
-								return "*2\r\n*1\r\n:0\r\n:42\r\n"
-							case "ft.cursor":
-								if args[3] != "42" {
-									t.Errorf("wire cursor=%v, want42", args[3])
-								}
-								if strings.EqualFold(args[1].(string), "read") {
-									reads.Add(1)
-									if loseRead.Load() {
-										return ""
-									}
-									return "*2\r\n*1\r\n:0\r\n:42\r\n"
-								}
-							}
-							return "+OK\r\n"
-						}
-						for {
-							value, err := rd.ReadReply()
-							if err != nil {
-								return
-							}
-							args := value.([]interface{})
-							name := strings.ToLower(args[0].(string))
-							var response string
-							switch {
-							case name == "multi":
-								inTx = true
-								response = "+OK\r\n"
-							case name == "exec":
-								response = fmt.Sprintf("*%d\r\n", len(queued))
-								for _, command := range queued {
-									part := reply(command)
-									if part == "" {
-										return
-									}
-									response += part
-								}
-								queued = nil
-								inTx = false
-							case inTx:
-								queued = append(queued, args)
-								response = "+QUEUED\r\n"
-							default:
-								response = reply(args)
-							}
-							if response == "" {
-								return
-							}
-							if _, err := io.WriteString(conn, response); err != nil {
-								return
-							}
-						}
-					}()
-				}
-			}()
-			addr := ln.Addr().String()
-			var metadata *CommandMetadataConfig
-			if strings.HasSuffix(mode, "-keyed") {
-				metadata = &CommandMetadataConfig{Overrides: map[string]*CommandInfo{
-					"ft.aggregate": {Name: "ft.aggregate", Arity: -3, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1},
-				}}
-			}
-			c := NewClusterClient(&ClusterOptions{
-				Addrs: []string{addr}, DisableIdentity: true,
-				CommandMetadata:          metadata,
-				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
-				ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
-					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
-				},
-			})
-			defer c.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			var surface interface {
-				FTAggregateWithArgs(context.Context, string, string, *FTAggregateOptions) *AggregateCmd
-				FTCursorRead(context.Context, string, int, int) *MapStringInterfaceCmd
-				FTCursorDel(context.Context, string, int) *StatusCmd
-			} = c
-			exec := func() error { return nil }
-			switch strings.TrimSuffix(mode, "-keyed") {
-			case "pipeline", "transaction":
-				pipe := c.Pipeline()
-				if mode == "transaction" {
-					pipe = c.TxPipeline()
-				}
-				surface = pipe
-				exec = func() error { _, err := pipe.Exec(ctx); return err }
-			case "blocking", "async", "blocking-fd", "async-fd":
-				cfg := &AutoPipelineOptions{FullDuplex: strings.Contains(mode, "-fd")}
-				var ap *AutoPipeliner
-				if strings.HasPrefix(mode, "blocking") {
-					ap, err = c.AutoPipelineWithOptions(cfg)
-				} else {
-					ap, err = c.AsyncAutoPipelineWithOptions(cfg)
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				surface = ap
-			}
-			create := func() int {
-				t.Helper()
-				cmd := surface.FTAggregateWithArgs(ctx, "idx", "*", &FTAggregateOptions{WithCursor: true})
-				if err := exec(); err != nil {
-					t.Fatal(err)
-				}
-				value, err := cmd.Result()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if value.CursorID == 0 {
-					t.Fatalf("cursor was not virtualized: %d", value.CursorID)
-				}
-				return int(value.CursorID)
-			}
-			id := create()
-			read := surface.FTCursorRead(ctx, "idx", id, 1)
-			if err := exec(); err != nil {
-				t.Fatal(err)
-			}
-			if err := read.Err(); err != nil {
-				t.Fatal(err)
-			}
-			if next, _ := ftCursorID(read.Val()["cursor"]); next != uint64(id) {
-				t.Fatalf("token changed: %v", read.Val())
-			}
-			del := surface.FTCursorDel(ctx, "idx", id)
-			if err := exec(); err != nil {
-				t.Fatal(err)
-			}
-			if err := del.Err(); err != nil {
-				t.Fatal(err)
-			}
-			id = create()
-			loseRead.Store(true)
-			read = surface.FTCursorRead(ctx, "idx", id, 1)
-			_ = exec()
-			if read.Err() == nil {
-				t.Fatal("lost reply reported success")
-			}
-			if reads.Load() != 2 {
-				t.Fatalf("cursor READ was replayed: %d requests", reads.Load())
-			}
-		})
-	}
-}
-
-func TestClusterCursorNonComparableCommands(t *testing.T) {
-	type customCommand struct {
-		Cmder
-		data []byte
-	}
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	node, _ := c.nodes.GetOrCreate("127.0.0.1:7091")
-	installMetadataClusterState(c, []*clusterNode{node})
-	node.Client.AddHook(clusterRoutingShortCircuitHook{})
-	created := NewCmd(ctx, "ft.aggregate", "idx", "*", "WITHCURSOR")
-	created.SetVal([]interface{}{[]interface{}{int64(0)}, int64(42)})
-	wrapped := customCommand{Cmder: created, data: []byte("not comparable")}
-	if err := c.processPipeline(ctx, []Cmder{wrapped}); err != nil {
-		t.Fatal(err)
-	}
-	_, token, _ := ftCursorReply(created.Val())
-	if token == 0 {
-		t.Fatal("cursor missing")
-	}
-	read := NewCmd(ctx, "ft.cursor", "read", "idx", int(token))
-	read.SetVal([]interface{}{[]interface{}{int64(0)}, int64(42)})
-	if err := c.processPipeline(ctx, []Cmder{customCommand{Cmder: read, data: []byte("also noncomparable")}}); err != nil {
-		t.Fatal(err)
-	}
-	if next, ok := ftCursorID(read.Val().([]interface{})[1]); !ok || next != token {
-		t.Fatalf("cursor reply=%v", read.Val())
-	}
-	if read.Args()[3] != int(token) {
-		t.Fatal("caller args were not restored")
-	}
-}
-
-func TestClusterCursorOwnerLossAndDisabledPolicies(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	ctx := context.Background()
-	node, _ := c.nodes.GetOrCreate("127.0.0.1:7092")
-	state := installMetadataClusterState(c, []*clusterNode{node})
-	c.cursors.bindings = map[uint64]*clusterCursorBinding{1: {address: node.Client.opt.Addr, index: "idx", id: "42"}}
-	state.health = map[*clusterNode]string{node: "offline"}
-	if err := c.FTCursorRead(ctx, "idx", 1, 1).Err(); !errors.Is(err, ErrClusterTopologyUnhealthy) {
-		t.Fatalf("offline owner error=%v", err)
-	}
-	state.Masters = nil
-	if err := c.FTCursorRead(ctx, "idx", 1, 1).Err(); err == nil || !strings.Contains(err.Error(), "no longer") {
-		t.Fatalf("missing owner error=%v", err)
-	}
-	c.opt.DisableRoutingPolicies = true
-	cmd := NewCmd(ctx, "ft.cursor", "read", "idx", 42)
-	ops, err := c.prepareClusterCursors([]Cmder{cmd})
-	if err != nil || len(ops) != 0 || cmd.Args()[3] != 42 {
-		t.Fatalf("disabled routing: ops=%v err=%v args=%v", ops, err, cmd.Args())
-	}
-	if err := c.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if len(c.cursors.bindings) != 0 {
-		t.Fatal("Close retained cursor bindings")
 	}
 }

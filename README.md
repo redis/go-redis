@@ -343,32 +343,10 @@ path: await prior async results before a dependent direct call.
 `SCAN`, `INFO`, and known diagnostic commands remain node-local; use
 `ForEachMaster` for whole-cluster inspection or scanning.
 
-`ClusterClient` associates each `FT.AGGREGATE ... WITHCURSOR` reply with the
-node that served it. The returned cursor ID is an opaque, client-local token:
-use the same client and index for `FTCursorRead` and `FTCursorDel`. Typed
-aggregate results expose it as `CursorID`; pass `int(result.CursorID)` to the
-existing cursor methods. `FTCursorRead` returns a map with a
-`cursor` entry (and `results` for RESP2). Exhausted cursors return zero.
-Explicit pipelines route known cursors to their owner. Transactions require
-all cursor owners and keyed commands to belong to one node as well as sharing
-a key slot. Await each READ before continuing when the order of result pages
-matters. Transactions also depend on server support: Search versions that
-reject aggregate or cursor commands inside `MULTI/EXEC` return that server error.
-A lost READ reply is not retried,
-because the server may already have advanced the cursor.
-Custom resolvers must keep cursor creation on one node. A fan-out cursor reply
-returns an error; cursors already created on those servers remain until their
-server idle timeout.
-
-Close abandoned cursors with `FTCursorDel`, or close the client. When no positive
-`MAXIDLE` is supplied through `FTAggregateWithArgs`, local tokens expire after
-`ClusterOptions.FTCursorIdleTimeout` of inactivity (default: five minutes).
-This local limit can expire a token before the server's configured idle limit;
-increase it if pagination needs longer pauses. Successful `READ` operations renew it.
-An explicit typed `MAXIDLE` takes precedence. Unknown,
-expired, or wrong-index tokens fail before dispatch. `Do` supports cursor tokens;
-byte-preserving `DoRaw`/`DoRawWriteTo` should use the originating node client for
-cursor commands. `DisableRoutingPolicies` retains legacy routing and native IDs.
+`FT.CURSOR READ` is not retried after a lost reply because the server may
+already have advanced the cursor. Native cursor IDs and the existing cursor
+routing remain unchanged; cluster-wide cursor ownership and reply parsing are
+being addressed separately.
 
 Cluster-wide operations and distributed DDL can affect multiple shards and are
 not atomic across them, whether fan-out is performed by go-redis or by a Redis
