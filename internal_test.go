@@ -574,6 +574,201 @@ func BenchmarkRingShardingRebalanceLocked(b *testing.B) {
 	}
 }
 
+// CSC command-processing and metadata benchmarks.
+// Keep results observable without allocating a new command in each iteration.
+var (
+	cscBenchmarkString string
+	cscBenchmarkBool   bool
+	cscBenchmarkError  error
+	cscBenchmarkMeta   cscCommandMeta
+	cscBenchmarkView   *commandMetadataView
+	cscBenchmarkCount  int
+)
+
+func BenchmarkCSCCommandError(b *testing.B) {
+	var active atomic.Bool
+	active.Store(true)
+	c := &baseClient{opt: &Options{Protocol: 3}, cscActive: &active}
+	for _, tc := range []struct {
+		name string
+		arg  interface{}
+	}{
+		{"lowercase", "get"},
+		{"uppercase", "GET"},
+		{"bytes", []byte("GET")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			cmd := NewCmd(context.Background(), tc.arg, "key")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				cscBenchmarkError = c.cscCommandError(cmd)
+			}
+		})
+	}
+}
+
+func BenchmarkCSCEligibility(b *testing.B) {
+	view := (&baseClient{}).metadataView()
+	for _, args := range [][]interface{}{
+		{"get", "key"},
+		{"hget", "key", "field"},
+		{"xinfo", "consumers", "key", "group"},
+	} {
+		b.Run(args[0].(string), func(b *testing.B) {
+			cmd := NewCmd(context.Background(), args...)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				cscBenchmarkMeta, cscBenchmarkBool = cscEligibleMeta(view, cmd)
+			}
+		})
+	}
+}
+
+func BenchmarkBuildCacheKey(b *testing.B) {
+	cmd := NewStringCmd(context.Background(), "get", "key")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cscBenchmarkString, cscBenchmarkBool = buildCacheKeyReference(cmd)
+	}
+}
+
+func BenchmarkCSCEntryKey(b *testing.B) {
+	cmd := NewStringCmd(context.Background(), "get", "key")
+	prefix := cscNamespacePrefix(0, "")
+	fingerprint := (&baseClient{}).metadataView().cscFingerprint
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cscBenchmarkString, cscBenchmarkBool = cscRenderEntryKey(prefix, fingerprint, cmd)
+	}
+}
+
+func BenchmarkCommandArgsRepeatable(b *testing.B) {
+	for _, size := range []int{2, 10} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			args := make([]interface{}, size)
+			for i := range args {
+				args[i] = "key"
+			}
+			cmd := NewCmd(context.Background(), args...)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				cscBenchmarkBool = commandArgsRepeatable(cmd)
+			}
+		})
+	}
+}
+
+func BenchmarkCSCKeynumLayout(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		arg  interface{}
+	}{
+		{"int", 2},
+		{"string", "2"},
+		{"bytes", []byte("2")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			cmd := NewCmd(context.Background(), "zunion", tc.arg, "key1", "key2")
+			meta, ok := cscEligibleMeta((&baseClient{}).metadataView(), cmd)
+			if !ok {
+				b.Fatal("ZUNION must be eligible")
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _, cscBenchmarkCount = cscRedisKeyLayout(meta, cmd)
+			}
+		})
+	}
+}
+
+func BenchmarkCSCCanExtractRedisKeys(b *testing.B) {
+	cmd := NewCmd(context.Background(), "mget", []byte("key"), 42)
+	meta, ok := cscEligibleMeta((&baseClient{}).metadataView(), cmd)
+	if !ok {
+		b.Fatal("MGET must be eligible")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cscBenchmarkBool = cscCanExtractRedisKeys(meta, cmd)
+	}
+}
+
+type cscBenchmarkMissPool struct{ pool.Pooler }
+
+func (cscBenchmarkMissPool) Get(context.Context) (*pool.Conn, error) {
+	return nil, pool.ErrClosed
+}
+
+func BenchmarkCSCProcessCachedHit(b *testing.B)  { benchmarkCSCProcessCached(b, true) }
+func BenchmarkCSCProcessCachedMiss(b *testing.B) { benchmarkCSCProcessCached(b, false) }
+
+func benchmarkCSCProcessCached(b *testing.B, hit bool) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	c := &baseClient{
+		opt:           &Options{Protocol: 3},
+		csc:           cache,
+		cscKeyPrefix:  cscNamespacePrefix(0, ""),
+		connPool:      cscBenchmarkMissPool{},
+		staticCmdMeta: defaultCommandMetadataView(),
+	}
+	cmd := NewStringCmd(ctx, "get", "key")
+	view := c.metadataView()
+	meta, ok := cscEligibleMeta(view, cmd)
+	if !ok {
+		b.Fatal("GET must be eligible")
+	}
+	if hit {
+		rawKey, _ := buildCacheKeyReference(cmd)
+		key := cscEntryKey(c.cscKeyPrefix, view.cscFingerprint, rawKey)
+		if !cache.set(key, []string{cscNamespacedKey(c.cscKeyPrefix, "key")}, []byte("$5\r\nvalue\r\n")) {
+			b.Fatal("failed to seed cache")
+		}
+	}
+	// Misses stop at pool acquisition and cancel their reservation. This
+	// measures the cache lifecycle without a Redis server, dial, or unbounded
+	// fixture growth; it does not measure a successful network fetch.
+	var wantErr error
+	if !hit {
+		wantErr = pool.ErrClosed
+	}
+	if err := c.processCached(ctx, cmd, nil, view, meta, 0); err != wantErr {
+		b.Fatalf("processCached: got %v, want %v", err, wantErr)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cscBenchmarkError = c.processCached(ctx, cmd, nil, view, meta, 0)
+	}
+	b.StopTimer()
+	if !hit && cache.Len() != 0 {
+		b.Fatal("miss reservation leaked")
+	}
+}
+
+func BenchmarkBuildDefaultView(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		cscBenchmarkView = buildCommandMetadataView(nil, nil)
+	}
+}
+
+func BenchmarkTableFingerprint(b *testing.B) {
+	table := (&baseClient{}).metadataView().cscTable
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cscBenchmarkString = cscTableFingerprint(table)
+	}
+}
+
 type testCounter struct {
 	mu sync.Mutex
 	t  *testing.T

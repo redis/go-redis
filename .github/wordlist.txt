@@ -92,6 +92,7 @@ CLI
 conns
 CSC
 DBs
+DDL
 goroutine
 goroutines
 PerConnection
