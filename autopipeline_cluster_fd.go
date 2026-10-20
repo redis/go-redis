@@ -212,6 +212,11 @@ func (r *clusterFDRouter) childFor(ctx context.Context, cmd Cmder) (*AutoPipelin
 		// applies the configured ShardPicker.
 		return nil, false
 	}
+	if !r.cc.opt.DisableRoutingPolicies && cmd.Name() == "ft.aggregate" {
+		// An override can make aggregates keyed. Keep them on Process so a
+		// cursor reply registers its owner before reaching the caller.
+		return nil, false
+	}
 	node, err := r.cc.cmdNodeWithDecision(ctx, slot, decision)
 	if err != nil || node == nil {
 		return nil, false
