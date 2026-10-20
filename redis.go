@@ -2708,6 +2708,15 @@ func (c *Client) EphemeralConn() *Conn {
 
 func (c *Client) conn(discardOnClose bool) *Conn {
 	isolated := discardOnClose && c.baseClient.cscTrackingRequested()
+	connOpt := c.opt
+	if isolated {
+		// This socket has no maintenance handoff manager. Keep its skipped
+		// maintenance negotiation from downgrading the shared parent config.
+		connOpt = c.baseClient.cloneOpt()
+		if connOpt.MaintNotificationsConfig != nil {
+			connOpt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
+		}
+	}
 	var sticky *pool.StickyConnPool
 	if isolated {
 		sticky = pool.NewStickyConnPool(c.connPool)
@@ -2721,7 +2730,7 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
-	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
+	conn := newConn(connOpt, sticky, &c.hooksMixin, c.himport)
 	if isolated {
 		// Never enable tracking or attach the parent's cache to a socket whose
 		// session state the caller may change freely.

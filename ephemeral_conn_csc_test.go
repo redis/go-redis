@@ -55,6 +55,50 @@ func TestEphemeralConnCSCMaxActiveConns(t *testing.T) {
 	}
 }
 
+func TestEphemeralConnCSCSkipsMaintenanceNegotiation(t *testing.T) {
+	var probes atomic.Int32
+	client := NewClient(&Options{
+		Protocol: 3, MaxRetries: -1, DisableIdentity: true,
+		ClientSideCacheConfig:    &ClientSideCacheConfig{MaxEntries: 16},
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeAuto},
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go serveTestRESPConn(server, func(command string) string {
+				switch command {
+				case "hello":
+					return "%0\r\n"
+				case "client":
+					probes.Add(1)
+					return "-ERR unsupported CLIENT command\r\n"
+				case "ping":
+					return "+PONG\r\n"
+				}
+				return "+OK\r\n"
+			})
+			return client, nil
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	manager := client.GetMaintNotificationsManager()
+	if manager == nil {
+		t.Fatal("parent maintenance manager was not installed")
+	}
+	conn := client.EphemeralConn()
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.Ping(context.Background()).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if probes.Load() != 0 {
+		t.Error("isolated session negotiated CLIENT features")
+	}
+	if client.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeAuto {
+		t.Error("isolated session downgraded the parent's maintenance mode")
+	}
+	if client.GetMaintNotificationsManager() != manager {
+		t.Error("isolated session changed the parent's maintenance manager")
+	}
+}
+
 func TestEphemeralConnCSCIsolation(t *testing.T) {
 	client := NewClient(&Options{
 		Addr:                  "127.0.0.1:0",

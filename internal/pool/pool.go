@@ -657,7 +657,15 @@ func (p *ConnPool) checkMinIdleConns() {
 			p.poolSize.Add(1)
 			p.idleConnsLen.Add(1)
 			go func() {
-				defer p.releaseDialSlot()
+				added := false
+				defer func() {
+					p.releaseDialSlot()
+					// Continue filling a floor larger than the dial limit. Do not
+					// retry failed dials here, which could spin on persistent errors.
+					if added {
+						p.checkMinIdleConns()
+					}
+				}()
 				defer func() {
 					if err := recover(); err != nil {
 						p.poolSize.Add(-1)
@@ -669,6 +677,7 @@ func (p *ConnPool) checkMinIdleConns() {
 				}()
 
 				err := p.addIdleConn()
+				added = err == nil
 				if err != nil && err != ErrClosed {
 					p.poolSize.Add(-1)
 					p.idleConnsLen.Add(-1)
@@ -680,6 +689,11 @@ func (p *ConnPool) checkMinIdleConns() {
 		// If no one requested another check while we were working, we're done
 		if !p.idleCheckNeeded.Load() {
 			p.idleCheckInProgress.Store(false)
+			// A dial completion may request another pass between the check
+			// above and clearing in-progress. Do not lose that wakeup.
+			if p.idleCheckNeeded.Load() {
+				p.checkMinIdleConns()
+			}
 			return
 		}
 
@@ -743,7 +757,13 @@ func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
 	if err := p.acquireDialSlot(ctx); err != nil {
 		return nil, err
 	}
-	defer p.releaseDialSlot()
+	defer func() {
+		p.releaseDialSlot()
+		// A prewarm check may have skipped while this dedicated dial held
+		// the final permit. Retry after releasing it so the idle floor does
+		// not depend on unrelated pool activity to recover.
+		p.checkMinIdleConns()
+	}()
 	return p.newConn(ctx, false)
 }
 
