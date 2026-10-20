@@ -826,6 +826,31 @@ func (c *baseClient) buildPipelinePool(poolName string) (*pipelinePoolRef, error
 	return &pipelinePoolRef{pool: p, name: poolName}, nil
 }
 
+// initStreamingCredentials creates the streaming credentials manager and
+// registers its pool hook on the main and pipeline pools. Shared by the
+// NewClient and NewFailoverClient creation paths so they cannot drift; must
+// run after the pipeline pool is built.
+func (c *baseClient) initStreamingCredentials() {
+	if c.opt.StreamingCredentialsProvider == nil {
+		return
+	}
+	// Size the re-auth worker semaphore for the COMBINED ceiling of every pool
+	// the hook is registered on: the same hook drives the main pool AND the
+	// (possibly larger) dedicated pipeline pool, so a credential rotation must
+	// be able to re-AUTH connections from both concurrently. Sizing to only the
+	// main PoolSize would serialize pipeline re-auths behind PoolSize workers,
+	// leaving pipeline capacity unavailable well past reAuthTimeout.
+	workers := c.connPool.Size()
+	if pp := c.getPipelinePool(); pp != nil {
+		workers += pp.Size()
+	}
+	c.streamingCredentialsManager = streaming.NewManagerWithWorkers(c.connPool, c.opt.PoolTimeout, workers)
+	c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+	if pp := c.getPipelinePool(); pp != nil {
+		pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+	}
+}
+
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
 	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
 		var err error
@@ -2538,23 +2563,7 @@ func NewClient(opt *Options) *Client {
 		c.pipelinePool = ref
 	}
 
-	if opt.StreamingCredentialsProvider != nil {
-		// Size the re-auth worker semaphore for the COMBINED ceiling of every pool
-		// the hook is registered on: the same hook drives the main pool AND the
-		// (possibly larger) dedicated pipeline pool, so a credential rotation must
-		// be able to re-AUTH connections from both concurrently. Sizing to only the
-		// main PoolSize would serialize pipeline re-auths behind PoolSize workers,
-		// leaving pipeline capacity unavailable well past reAuthTimeout.
-		workers := c.connPool.Size()
-		if pp := c.getPipelinePool(); pp != nil {
-			workers += pp.Size()
-		}
-		c.streamingCredentialsManager = streaming.NewManagerWithWorkers(c.connPool, c.opt.PoolTimeout, workers)
-		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
-		if pp := c.getPipelinePool(); pp != nil {
-			pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())
-		}
-	}
+	c.initStreamingCredentials()
 
 	// Create metadata independently of CSC. The zero config reuses the package
 	// default without allocating a store.
