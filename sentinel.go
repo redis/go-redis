@@ -718,7 +718,7 @@ func masterReplicaDialer(
 		}
 
 		netDialer := &net.Dialer{
-			Timeout:         failover.opt.DialTimeout,
+			Timeout:         failoverDialTimeout(failover.opt.DialTimeout),
 			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if failover.opt.TLSConfig == nil {
@@ -726,6 +726,19 @@ func masterReplicaDialer(
 		}
 		return tls.DialWithDialer(netDialer, network, addr, failover.opt.TLSConfig)
 	}
+}
+
+// failoverDialTimeout applies the rule Options.init uses for the derived Options
+// to the value the failover dialer reads directly. ParseFailoverURL disables a
+// duration option with a value of 0 or less, but a negative DialTimeout cannot
+// mean "no deadline" to net.Dialer: it reads it as a deadline that has already
+// passed, so every connection to the master the sentinel just returned would
+// fail at once.
+func failoverDialTimeout(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 //------------------------------------------------------------------------------
