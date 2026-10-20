@@ -2726,6 +2726,10 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// initializes a pool conn, the close hook it installs still evicts from the
 	// parent cache (its own csc is nil).
 	conn.baseClient.cscPoolHook = c.baseClient.cscPoolHook
+	// Carry the parent's streaming-credentials manager so initConn can create a
+	// credentials listener when a cold Conn/EphemeralConn initializes a fresh
+	// pool connection (issue #4154).
+	conn.baseClient.streamingCredentialsManager = c.streamingCredentialsManager
 	return conn
 }
 
