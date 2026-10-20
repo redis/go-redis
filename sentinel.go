@@ -214,6 +214,11 @@ type FailoverOptions struct {
 	// If nil, a default processor will be created for RESP3 connections.
 	PushNotificationProcessor push.NotificationProcessor
 
+	// CommandMetadata configures shared metadata for failover clients.
+	//
+	// Experimental: this API may change in a minor release.
+	CommandMetadata *CommandMetadataConfig
+
 	// MaintNotificationsConfig is not supported for FailoverClients at the moment
 	// MaintNotificationsConfig provides custom configuration for maintnotifications upgrades.
 	// When MaintNotificationsConfig.Mode is not "disabled", the client will handle
@@ -281,6 +286,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		IdentitySuffix:            opt.IdentitySuffix,
 		UnstableResp3:             opt.UnstableResp3,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
+		CommandMetadata:           opt.CommandMetadata,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,

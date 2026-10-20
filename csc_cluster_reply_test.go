@@ -83,11 +83,11 @@ func TestClusterCSCReplyPolicies(t *testing.T) {
 	c := &baseClient{cscKeyPrefix: cscNamespacePrefix(0, "")}
 	for _, tc := range clusterCSCReplyCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			key, ok := buildCacheKeyNS(NewCmd(context.Background(), tc.args...), c.cscKeyPrefix)
+			key, ok := cscRenderEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, NewCmd(context.Background(), tc.args...))
 			if !ok {
 				t.Fatal("cache key encoding failed")
 			}
-			if got := c.clusterCSCReplyCacheable(key, []byte(tc.raw)); got != tc.cache {
+			if got := c.clusterCSCReplyCacheable(key, []byte(tc.raw), c.metadataView()); got != tc.cache {
 				t.Fatalf("cacheable=%v, want %v", got, tc.cache)
 			}
 		})
@@ -97,6 +97,27 @@ func TestClusterCSCReplyPolicies(t *testing.T) {
 		if clusterCSCCommandPolicy(name) != clusterCSCReplyBypass {
 			t.Fatalf("ambiguous command %s was enabled", name)
 		}
+	}
+}
+
+func TestClusterCSCReplyUsesCapturedMetadata(t *testing.T) {
+	view := defaultCommandMetadataView()
+	c := &baseClient{cscKeyPrefix: cscNamespacePrefix(0, "")}
+	cmd := makeCmd("get", "k")
+	key, _ := cscRenderEntryKey(c.cscKeyPrefix, view.cscFingerprint, cmd)
+	// Publication checks that the current view still agrees separately. Parsing
+	// must use the view that encoded the key, even if metadata has since changed.
+	c.staticCmdMeta = &commandMetadataView{cscFingerprint: "changed"}
+	raw := []byte("$1\r\nv\r\n")
+	if !c.clusterCSCReplyCacheable(key, raw, view) {
+		t.Fatal("present reply rejected under its captured metadata")
+	}
+	if c.clusterCSCReplyCacheable(key, raw, c.metadataView()) {
+		t.Fatal("cache key accepted under a different fingerprint")
+	}
+	legacy, _ := buildCacheKeyNS(cmd, c.cscKeyPrefix)
+	if c.clusterCSCReplyCacheable(legacy, raw, view) {
+		t.Fatal("cache key without a metadata fingerprint accepted")
 	}
 }
 
@@ -142,7 +163,9 @@ func TestClusterCSCReplyPolicyProcess(t *testing.T) {
 						}
 					}
 					wantCalls, wantEntries := int32(2), 0
-					if tc.cache {
+					// Presence is an additional cluster requirement; metadata
+					// may still rule out caching (e.g. JSON.MGET and TS.INFO).
+					if tc.cache && command != "json.mget" && command != "ts.info" {
 						wantCalls, wantEntries = 1, 1
 					}
 					if calls.Load() != wantCalls || c.CSCStats().Entries != wantEntries {
@@ -186,9 +209,10 @@ func TestClusterCSCRefreshRejectsAbsence(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := NewCmd(ctx, tc.args...)
-			key, _ := buildCacheKeyNS(cmd, node.cscKeyPrefix)
-			lo, hi, _ := cscKeySpan(cmd)
-			keys := cscMissKeys(cmd, node.cscKeyPrefix, lo, hi)
+			key, _ := cscRenderEntryKey(node.cscKeyPrefix, node.metadataView().cscFingerprint, cmd)
+			meta, _ := cscLookupMeta(node.metadataView(), cmd)
+			first, step, count := cscRedisKeyLayout(meta, cmd)
+			keys := cscMissKeys(cmd, node.cscKeyPrefix, first, step, count)
 			if n, err := node.refreshInvalidatedBatch(ctx, []cscRefreshTarget{{cacheKey: key, redisKeys: keys}}); err != nil || n != 0 {
 				t.Fatalf("refresh published %d entries: %v", n, err)
 			}
@@ -220,9 +244,9 @@ func TestClusterCSCAbandonedMissUsesOriginalCommand(t *testing.T) {
 	node, _ := c.MasterForKey(ctx, "k")
 	// nil cmd deliberately proves the abandoned path never reads it. The
 	// caller could already have changed EXISTS k other to EXISTS k.
-	key, _ := buildCacheKeyNS(makeCmd("exists", "k", "other"), node.cscKeyPrefix)
+	key, _ := cscRenderEntryKey(node.cscKeyPrefix, node.metadataView().cscFingerprint, makeCmd("exists", "k", "other"))
 	token, _ := node.csc.Reserve(key, []string{cscNamespacedKey(node.cscKeyPrefix, "k"), cscNamespacedKey(node.cscKeyPrefix, "other")})
-	req := &cscMissReq{cacheKey: key, token: token, done: make(chan error, 1)}
+	req := &cscMissReq{cacheKey: key, token: token, view: node.metadataView(), done: make(chan error, 1)}
 	req.apply.Store(cscReqAbandoned)
 	cn, err := node.getConn(ctx)
 	if err != nil {
@@ -243,13 +267,13 @@ func BenchmarkClusterCSCReplyFilter(b *testing.B) {
 	c := &baseClient{cscKeyPrefix: cscNamespacePrefix(0, "")}
 	for _, size := range []int{16, 1 << 20} {
 		b.Run(fmt.Sprint(size), func(b *testing.B) {
-			key, _ := buildCacheKeyNS(makeCmd("get", "k"), c.cscKeyPrefix)
+			key, _ := cscRenderEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, makeCmd("get", "k"))
 			raw := append([]byte(fmt.Sprintf("$%d\r\n", size)), bytes.Repeat([]byte("v"), size)...)
 			raw = append(raw, '\r', '\n')
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if !c.clusterCSCReplyCacheable(key, raw) {
+				if !c.clusterCSCReplyCacheable(key, raw, c.metadataView()) {
 					b.Fatal("present reply rejected")
 				}
 			}

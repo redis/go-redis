@@ -18,13 +18,12 @@ func TestCSCKeyGateAllocatesNothing(t *testing.T) {
 		"lcs":    c.LCS(ctx, &LCSQuery{Key1: "a", Key2: "b"}),
 	}
 	for name, cmd := range cmds {
-		lo, hi, ok := cscKeySpan(cmd)
-		if !ok || !cscKeysRenderable(cmd, lo, hi) {
-			t.Fatalf("%s: span (%d, %d, %v) not renderable", name, lo, hi, ok)
+		meta, ok := cscCommandMetaFor(cmd)
+		if !ok || !cscCanExtractRedisKeys(meta, cmd) {
+			t.Fatalf("%s: keys not renderable", name)
 		}
 		if n := testing.AllocsPerRun(100, func() {
-			lo, hi, ok := cscKeySpan(cmd)
-			_ = ok && cscKeysRenderable(cmd, lo, hi)
+			_ = cscCanExtractRedisKeys(meta, cmd)
 		}); n != 0 {
 			t.Errorf("%s: key gate allocates %v objects per call, want 0", name, n)
 		}

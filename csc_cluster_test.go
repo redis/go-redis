@@ -595,7 +595,7 @@ func TestClusterCSCFetchRedirectEvictsOtherDependentResults(t *testing.T) {
 					}
 				}
 				cmd := NewStringCmd(ctx, "get", "k")
-				key, _ := buildCacheKeyNS(cmd, node.cscKeyPrefix)
+				key, _ := cscRenderEntryKey(node.cscKeyPrefix, node.metadataView().cscFingerprint, cmd)
 				if path == "foreground" {
 					if err := node.Process(ctx, cmd); err == nil {
 						t.Fatal("redirect was lost")
@@ -695,7 +695,7 @@ func TestClusterCSCRefreshRedirectPreservesUnrelatedEntries(t *testing.T) {
 			}
 			source, _ := c.MasterForKey(ctx, "{bar}:refresh")
 			destination, _ := c.MasterForKey(ctx, "{foo}:destination")
-			key, _ := buildCacheKeyNS(NewStringCmd(ctx, "get", "{bar}:refresh"), source.cscKeyPrefix)
+			key, _ := cscRenderEntryKey(source.cscKeyPrefix, source.metadataView().cscFingerprint, NewStringCmd(ctx, "get", "{bar}:refresh"))
 			dependency := cscNamespacedKey(source.cscKeyPrefix, "{bar}:refresh")
 			source.csc.DeleteByRedisKey(dependency)
 			migrating.Store(true)
@@ -1152,7 +1152,7 @@ func TestClusterCSCRetainedFactoryCloneOwnsItsWorkers(t *testing.T) {
 			t.Fatal(err)
 		}
 		node, _ := c.MasterForKey(context.Background(), "k")
-		return node, node.cscLifecycleOwner.cscDrainHandle.done
+		return node, node.lifecycleOwner.cscDrainHandle.done
 	}
 	handle, drained := makeDropped()
 	defer handle.Close()
@@ -2159,7 +2159,7 @@ func TestClusterCSCLive(t *testing.T) {
 		node, _ := r.MasterForKey(ctx, k1)
 		cache := node.csc.(*LocalCache)
 		owner := func(key string) uint64 {
-			entryKey, _ := buildCacheKeyNS(NewStringCmd(ctx, "get", key), node.cscKeyPrefix)
+			entryKey, _ := cscRenderEntryKey(node.cscKeyPrefix, node.metadataView().cscFingerprint, NewStringCmd(ctx, "get", key))
 			s := cache.shardFor(entryKey)
 			s.mu.RLock()
 			defer s.mu.RUnlock()
@@ -2451,7 +2451,7 @@ func TestClusterCSCLive(t *testing.T) {
 			t.Fatal(got)
 		}
 		refreshSource, _ := refreshClient.MasterForKey(ctx, existing)
-		refreshCacheKey, _ := buildCacheKeyNS(NewStringCmd(ctx, "get", existing), refreshSource.cscKeyPrefix)
+		refreshCacheKey, _ := cscRenderEntryKey(refreshSource.cscKeyPrefix, refreshSource.metadataView().cscFingerprint, NewStringCmd(ctx, "get", existing))
 		if err := a.Do(ctx, "cluster", "setslot", slot, "importing", bid).Err(); err != nil {
 			t.Fatal(err)
 		}

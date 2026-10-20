@@ -80,3 +80,11 @@ func (c *ClusterClient) autopipelineCSCActive() bool {
 	}
 	return false
 }
+
+// A solo command may use any node's cache, including one configured by a custom
+// factory. Leave metadata eligibility to the selected node's Process path;
+// admission must not discover nodes or assume they share one metadata view.
+func (c *ClusterClient) autopipelineCSCEligible(cmd Cmder) bool {
+	return !cmd.NoRetry() && commandArgsRepeatable(cmd) &&
+		clusterCSCCommandPolicy(cmd.Name()) != clusterCSCReplyBypass
+}
