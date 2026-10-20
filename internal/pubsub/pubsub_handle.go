@@ -44,10 +44,25 @@ type handle struct {
 	// stale is left on events for a Receive after Close to return.
 	closing bool
 
-	// events is closed by closeLocked; done unblocks a pump parked on
+	// events is closed by closeLocked, or by the forwarder when one is
+	// running (see backlog); done unblocks a pump or forwarder parked on
 	// an abandoned consumer channel.
 	events chan any
 	done   chan struct{}
+
+	// backlog holds the events that did not fit in events, in order,
+	// so the shared read loop never blocks on a slow handle and never
+	// drops a confirmation, pong or error. While it is non-empty a
+	// forwarder goroutine moves it into events and every new event goes
+	// behind it. Only messages count against backlogLimit (bytes); a
+	// message over the limit is dropped. qmu guards the backlog fields
+	// and qclosed; it is a leaf lock, taken under the manager's mu.
+	qmu          sync.Mutex
+	backlog      []any
+	backlogBytes int
+	backlogLimit int
+	forwarding   bool
+	qclosed      bool
 
 	// The lazily started consumer view over events (guarded by mu).
 	pump  pumpMode
@@ -170,22 +185,81 @@ func (h *handle) pumpStarted() bool {
 	return h.pump != pumpNone
 }
 
-// deliverLocked sends an event into the handle's stream, dropping it
-// when the buffer is full: a blocking send would stall the shared
-// fan-out for every handle. The drop line is throttled — one per
-// LogInterval, the drops in between counted on it. Callers must hold
-// the manager lock.
+// deliverLocked sends an event into the handle's stream without
+// blocking: a blocking send would stall the shared fan-out for every
+// handle. An event that does not fit goes to the backlog (see
+// handle.backlog). Callers must hold the manager lock.
 func (h *handle) deliverLocked(ev any) {
 	if h.closed {
 		return
 	}
-	select {
-	case h.events <- ev:
-	default:
-		h.dropLog.Printf(context.TODO(),
-			"redis: pubsub: dropped a message to a slow subscriber (buffer of %d is full, see PubSubChanSize)",
-			cap(h.events))
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	if !h.forwarding {
+		select {
+		case h.events <- ev:
+			return
+		default:
+		}
 	}
+	if msg, ok := ev.(*Message); ok {
+		size := messageSize(msg)
+		if h.backlogBytes+size > h.backlogLimit {
+			h.dropLog.Printf(context.TODO(),
+				"redis: pubsub: dropped a message to a slow subscriber (%d bytes queued)",
+				h.backlogBytes)
+			return
+		}
+		h.backlogBytes += size
+	}
+	h.backlog = append(h.backlog, ev)
+	if !h.forwarding {
+		h.forwarding = true
+		go h.forward()
+	}
+}
+
+// forward moves the backlog into events, in order, and exits once the
+// backlog is empty. After the handle closed it drops the backlog and
+// closes events itself, so no send can race with the close.
+func (h *handle) forward() {
+	for {
+		h.qmu.Lock()
+		if h.qclosed || len(h.backlog) == 0 {
+			h.forwarding = false
+			h.backlog, h.backlogBytes = nil, 0
+			if h.qclosed {
+				close(h.events)
+			}
+			h.qmu.Unlock()
+			return
+		}
+		ev := h.backlog[0]
+		h.qmu.Unlock()
+
+		select {
+		case h.events <- ev:
+		case <-h.done:
+			continue // closed: the next pass closes events
+		}
+
+		h.qmu.Lock()
+		h.backlog[0] = nil // don't pin the delivered event
+		h.backlog = h.backlog[1:]
+		if msg, ok := ev.(*Message); ok {
+			h.backlogBytes -= messageSize(msg)
+		}
+		h.qmu.Unlock()
+	}
+}
+
+// messageSize approximates the memory a queued message holds.
+func messageSize(msg *Message) int {
+	n := 64 + len(msg.Channel) + len(msg.Pattern) + len(msg.Payload)
+	for _, p := range msg.PayloadSlice {
+		n += 16 + len(p)
+	}
+	return n
 }
 
 // confirmKey is a confirmed name in its namespace.
@@ -251,18 +325,9 @@ func (h *handle) countConfirmed(key confirmKey, delta int) {
 	}
 }
 
-// deliverPongLocked delivers a pong; pongs are advisory (Ping promises
-// at most one pong on Events, not exactly one), so a full buffer drops
-// them without accounting. The pong's replyQueue entry is already
-// settled by then, so the ledger stays consistent either way.
+// deliverPongLocked delivers a pong like any other event.
 func (h *handle) deliverPongLocked(pong *Pong) {
-	if h.closed {
-		return
-	}
-	select {
-	case h.events <- pong:
-	default:
-	}
+	h.deliverLocked(pong)
 }
 
 // Subscribe adds the given channels to the handle's subscriptions and
@@ -322,8 +387,7 @@ func (h *handle) Subscriptions() (channels, patterns, schannels []string) {
 }
 
 // Ping writes a PING on the shared connection; the pong surfaces on
-// this handle's Events (see Manager.replyQueue), best-effort — it is
-// dropped if the buffer is full.
+// this handle's Events (see Manager.replyQueue).
 func (h *handle) Ping(ctx context.Context, payload ...string) error {
 	return h.m.ping(ctx, h, false, payload...)
 }
@@ -389,8 +453,8 @@ func (h *handle) Close() error {
 // terminates the consumer pump) and its ownership: a closed handle owns
 // nothing, whichever path closed it — Close detached every name before
 // getting here, the manager's teardown has not. Callers must hold the
-// manager lock, so no send can race with the close; no-op if already
-// closed.
+// manager lock, so no delivery can race with the close; no-op if
+// already closed.
 func (h *handle) closeLocked() {
 	if h.closed {
 		return
@@ -409,6 +473,12 @@ func (h *handle) closeLocked() {
 			h.m.replyQueue[i].h = nil
 		}
 	}
+	// A running forwarder closes events itself (see forward).
+	h.qmu.Lock()
+	h.qclosed = true
+	if !h.forwarding {
+		close(h.events)
+	}
+	h.qmu.Unlock()
 	close(h.done)
-	close(h.events)
 }

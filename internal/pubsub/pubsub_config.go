@@ -2,6 +2,12 @@ package pubsub
 
 import "time"
 
+// DefaultBacklogLimit is the per-handle backlog cap (see
+// Config.BacklogLimit): 32 MiB, the server's default hard
+// client-output-buffer-limit for pub/sub clients, which bounded a slow
+// subscriber's dedicated connection before the connection was shared.
+const DefaultBacklogLimit = 32 << 20
+
 // Config carries the settings the Manager reads from the client's
 // Options. The root redis package applies option defaulting
 // (Options.init) before building a Config, so every field arrives
@@ -51,10 +57,17 @@ type Config struct {
 	// connection; <= 0 leaves the dial function's own bound.
 	ReconnectTimeout time.Duration
 
-	// SendTimeout bounds each consumer-view send (see pump); <= 0 (the
-	// default) blocks instead. Mutable manager-wide via
+	// SendTimeout bounds each consumer-view send (see pump); <= 0
+	// blocks instead. The root package defaults it to one minute, as the
+	// per-connection PubSub did. Mutable manager-wide via
 	// WithChannelSendTimeout; pumps snapshot it at start.
 	SendTimeout time.Duration
+
+	// BacklogLimit caps, in bytes, the messages a handle queues behind
+	// its full events buffer (see handle.backlog); a message over it is
+	// dropped. Confirmations, pongs and errors are never dropped. <= 0
+	// means DefaultBacklogLimit.
+	BacklogLimit int
 
 	// LogInterval rate-limits recurring warning logs.
 	LogInterval time.Duration

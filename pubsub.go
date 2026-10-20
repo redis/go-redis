@@ -89,6 +89,8 @@ func pubSubConfigFromOptions(opt *Options) pubsub.Config {
 		ReconnectTimeout:       opt.PubSubReconnectTimeout,
 		LogInterval:            opt.PubSubLogInterval,
 		ChanSize:               opt.PubSubChanSize,
+		// The per-connection PubSub's channel send timeout.
+		SendTimeout: time.Minute,
 	}
 }
 
@@ -312,9 +314,10 @@ func (c *PubSub) ReceiveMessage(ctx context.Context) (*Message, error) {
 }
 
 // Channel returns a Go channel for concurrently receiving messages.
-// The channel is closed together with the PubSub. Messages that cannot
-// be buffered are dropped with throttled logging.
-// Receive* APIs can not be used after channel is created.
+// The channel is closed together with the PubSub. A message the
+// consumer does not take within the send timeout (see
+// WithChannelSendTimeout, default 1 minute) is dropped with throttled
+// logging. Receive* APIs can not be used after channel is created.
 func (c *PubSub) Channel(opts ...ChannelOption) <-chan *Message {
 	return c.handle.Channel(opts...)
 }
@@ -369,11 +372,10 @@ func WithChannelHealthCheckInterval(d time.Duration) ChannelOption {
 
 // WithChannelSendTimeout bounds each send into the channel returned by
 // Channel/ChannelWithSubscriptions: a message the consumer doesn't take
-// within d is dropped with throttled logging. Zero or negative (the
-// default) blocks instead, letting backpressure land in the engine's
-// bounded delivery buffer (see Options.PubSubChanSize), where overflow
-// drops are counted and logged. Client-wide (see above) and captured
-// when a channel's pump starts.
+// within d is dropped with throttled logging. Defaults to 1 minute.
+// Zero or negative blocks instead, letting backpressure land in the
+// subscriber's bounded backlog (see Options.PubSubChanSize).
+// Client-wide (see above) and captured when a channel's pump starts.
 func WithChannelSendTimeout(d time.Duration) ChannelOption {
 	return func(c pubsub.PubSubConfiger) {
 		c.UpdateSendTimeout(d)

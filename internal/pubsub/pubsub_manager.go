@@ -318,6 +318,8 @@ func (m *Manager) newHandleLocked() *handle {
 		events:    make(chan any, m.cfg.ChanSize),
 		done:      make(chan struct{}),
 		dropLog:   internal.NewThrottledLogger(m.cfg.LogInterval, nil),
+
+		backlogLimit: cmp.Or(m.cfg.BacklogLimit, DefaultBacklogLimit),
 	}
 }
 

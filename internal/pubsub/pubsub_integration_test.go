@@ -476,9 +476,9 @@ func TestPubSubChannelSizeOption(t *testing.T) {
 }
 
 // TestPubSubSlowConsumerDrops pins the slow-consumer policy: when the
-// consumer stops reading, backpressure fills the engine's delivery
-// buffer, overflow is dropped there, and the stream keeps flowing once
-// the consumer catches up.
+// consumer stops reading, the burst queues behind the full channel
+// (dropped only past the send timeout or the backlog cap), and the
+// stream keeps flowing once the consumer catches up.
 func TestPubSubSlowConsumerDrops(t *testing.T) {
 	client := newTestClient(t)
 
@@ -489,7 +489,7 @@ func TestPubSubSlowConsumerDrops(t *testing.T) {
 	waitSubscribers(t, client, "psslow:ch", 1)
 
 	// Publish more than fits in the 1-slot buffer while not consuming;
-	// the pump drops what it cannot hand over within the send timeout.
+	// the burst queues in the subscriber's backlog.
 	for i := 0; i < 5; i++ {
 		if err := client.Publish(ctx, "psslow:ch", "burst").Err(); err != nil {
 			t.Fatalf("Publish: %v", err)
@@ -497,7 +497,7 @@ func TestPubSubSlowConsumerDrops(t *testing.T) {
 	}
 
 	// Keep draining and republishing a marker until one gets through —
-	// markers published while the buffer is full are dropped too.
+	// the queued burst arrives first.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if time.Now().After(deadline) {
