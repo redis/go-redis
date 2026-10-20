@@ -749,7 +749,8 @@ func (c *baseClient) stopCSCRefresher() {
 // RespAttr ('|'), so a first-byte error check would treat an attributed error as
 // cacheable and publish it as a false success (bumping Refreshed; the next reader
 // would then have to evict and refetch). A nil reply IS cacheable (a negative
-// lookup, or a since-deleted key caching as missing); an empty reply never is.
+// lookup, or a since-deleted key caching as missing) for standalone; Cluster's
+// publication filter rejects it. An empty wire reply never is cacheable.
 // Extracted pure so the classification is unit-tested (like cscRefreshChunkEnd).
 func cscRefreshReplyCacheable(raw []byte) bool {
 	return len(raw) > 0 && isCacheableReplyResult(classifyCachedReply(raw))
@@ -906,9 +907,10 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					return err
 				}
 				if !cscRefreshReplyCacheable(raw) {
+					c.cscEvictOnRedirect(kept[i].redisKeys, classifyCachedReply(raw))
 					// Not cacheable (WRONGTYPE after a type change, NOPERM, ...). A nil
-					// reply is NOT an error: a negative lookup is cacheable, and a key
-					// that has since been deleted should cache as missing. See
+					// reply is NOT an error: standalone can cache negative lookups;
+					// Cluster filters these later in fulfillCached. See
 					// cscRefreshReplyCacheable: it classifies the FULL frame, so a RESP3
 					// attribute-prefixed error is not mis-read as cacheable.
 					c.csc.Cancel(kept[i].cacheKey, kept[i].token)

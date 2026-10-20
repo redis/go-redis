@@ -4514,7 +4514,7 @@ func TestCSCMissCoalescerEnqueueHonorsCallerCancel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := mc.fetch(ctx, makeCmd("get", "rk"), "ck", token, mc.c.metadataView())
+		_, err := mc.fetch(ctx, makeCmd("get", "rk"), "ck", token, mc.c.metadataView(), nil)
 		errCh <- err
 	}()
 

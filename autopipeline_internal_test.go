@@ -2292,6 +2292,25 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 		t.Fatal("non-CSC client: cache-honoring solo path is active")
 	}
 
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs:                 []string{"localhost:1"},
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 128},
+	})
+	defer cluster.Close()
+	clusterAP, err := cluster.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clusterAP.Close()
+	if clusterAP.cscActiveFn == nil || !clusterAP.cscActiveFn() ||
+		clusterAP.cscEligibleFn == nil || !clusterAP.cscEligibleFn(NewStringCmd(ctx, "get", "k")) {
+		t.Fatal("cluster CSC client: GET must reach the node's cache-honoring path")
+	}
+	if clusterAP.cscEligibleFn(NewDurationCmd(ctx, time.Second, "ttl", "k")) {
+		t.Fatal("cluster CSC client: TTL must stay on the pipeline path")
+	}
+
 	// CSC client: needs a live RESP3 server for CLIENT TRACKING to attach.
 	if err := probeRedis(internalTestRedisAddr()); err != nil {
 		t.Skipf("no redis for the CSC half: %v", err)

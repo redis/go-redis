@@ -99,9 +99,9 @@ type AutoPipelineOptions struct {
 	//
 	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1) face of a
 	// standalone *Client that has a pipeline pool — BOTH the deferred
-	// (AsyncAutoPipeline) and the blocking (AutoPipeline) face. NumShards > 1
-	// runs that many full-duplex engines, each on its own held connection; see
-	// NumShards for the ordering that mode keeps. A SINGLE
+	// (AsyncAutoPipeline) and the blocking (AutoPipeline) face. FullDuplexPipes > 1
+	// runs that many full-duplex pipes, each on its own held connection; see
+	// FullDuplexPipes for the ordering that mode keeps. A SINGLE
 	// blocking caller gains nothing: it has one command in flight, so there is
 	// nothing to overlap, and it still pays the held connection and goroutine
 	// overhead; the win needs MANY concurrent blocking callers, whose commands then
@@ -211,10 +211,10 @@ type AutoPipelineOptions struct {
 	// set; 0 means the default (65536, covering ~50ms links at ~1.3M ops/s) and a
 	// negative value is rejected by Validate.
 	//
-	// The window is PER ENGINE. With NumShards > 1 each full-duplex engine gets
-	// its own window and submit queue of this size, so the client-wide bound is
-	// NumShards × FullDuplexWindow in flight, plus as many queued. Size it for
-	// one wire; to cap the total, divide by NumShards.
+	// The window is PER PIPE. With FullDuplexPipes > 1 each pipe gets its own
+	// window and submit queue of this size, so the client-wide bound is
+	// FullDuplexPipes × FullDuplexWindow in flight, plus as many queued. Size it
+	// for one pipe; to cap the total, divide by FullDuplexPipes.
 	FullDuplexWindow int
 
 	// FullDuplexIdleTimeout is how long the held full-duplex connection may sit
@@ -229,6 +229,36 @@ type AutoPipelineOptions struct {
 	// idle. Only used when FullDuplex is set. 0 means the default (5s); a negative
 	// value is rejected by Validate.
 	FullDuplexMaxHold time.Duration
+
+	// FullDuplexPipes is the number of full-duplex pipes on a standalone *Client.
+	// Each pipe is one held pipeline-pool connection with its own writer, reader,
+	// window (see FullDuplexWindow) and submit queue. 0 means 1. Only used when
+	// FullDuplex is set; a negative value is rejected by Validate.
+	//
+	// One pipe has a throughput ceiling; more pipes are the way past it, and they
+	// pay off only with many concurrent callers: measured with 10-command
+	// pipelines, 8 pipes were 30% slower than 1 at 8 callers, broke even at about
+	// 128, and 2.2x faster at 1024. Raise it only when one pipe is saturated.
+	//
+	// Commands are routed to a pipe by a hash of their first key, so Unordered is
+	// not required, but order holds only between commands that share a first key.
+	// The key is hashed in its string form (fmt for non-string arguments, as Ring
+	// does), so pass a key as the same Go type everywhere: true and "1" are the
+	// same Redis key but can land on different pipes. Commands that touch other
+	// keys after the first one (COPY, RENAME, MSET, multi-key DEL, EVAL/FCALL with
+	// several keys) and keyless commands (including FLUSHDB and SWAPDB) are not
+	// ordered against the rest; await the first future before submitting a
+	// dependent one, or keep FullDuplexPipes at 1, which keeps the whole submit
+	// order. A Pipeline() rides a pipe only when all its keyed commands hash to
+	// one pipe; otherwise it runs as an ordinary pipeline on a pooled connection,
+	// not ordered against unawaited commands on the pipes.
+	//
+	// The pipeline pool must hold at least FullDuplexPipes connections for every
+	// full-duplex autopipeliner in use (construction checks this one); raise
+	// Options.PipelinePoolSize if needed. If full duplex cannot engage (no
+	// pipeline pool), FullDuplexPipes has no effect. On a ClusterClient full
+	// duplex runs one pipe per master and ignores FullDuplexPipes.
+	FullDuplexPipes int
 
 	// contentSharded is set internally by cluster wiring when commands are
 	// routed to shards by content (slot), so same-key commands always share a
@@ -268,28 +298,12 @@ type AutoPipelineOptions struct {
 	// concurrently, NumShards > 1 on the deferred (async) face requires
 	// Unordered: true (construction fails otherwise).
 	//
-	// With FullDuplex active on a standalone *Client, NumShards means something
-	// else: the number of full-duplex engines, each holding one pipeline-pool
-	// connection with its own window (see FullDuplexWindow). More engines pay
-	// off only with many concurrent callers: measured with 10-command
-	// pipelines, 8 engines were 30% slower than 1 at 8 callers, broke even at about
-	// 128, and 2.2x faster at 1024. Commands are routed
-	// to an engine by a hash of their first key, so Unordered is not required,
-	// but order holds only between commands that share a first key. The key is
-	// hashed in its string form (fmt for non-string arguments, as Ring does), so
-	// pass a key as the same Go type everywhere: true and "1" are the same Redis
-	// key but can land on different engines. Commands
-	// that touch other keys after the first one (COPY, RENAME, MSET, multi-key
-	// DEL, EVAL/FCALL with several keys) and keyless commands (including
-	// FLUSHDB and SWAPDB) are not ordered against the rest; await the first
-	// future before submitting a dependent one, or keep NumShards at 1, which
-	// keeps the whole submit order. A Pipeline() rides the FD wire only when all
-	// its keyed commands hash to one engine; otherwise it runs as an ordinary
-	// pipeline on a pooled connection, not ordered against unawaited commands on
-	// the engines. The pipeline pool must hold at least
-	// NumShards connections for every full-duplex autopipeliner in use
-	// (construction checks this one). If full duplex cannot engage (no
-	// pipeline pool), the Unordered rule above applies.
+	// Full duplex: use FullDuplexPipes to choose the number of pipes. For
+	// compatibility with 9.23.0, NumShards > 1 with FullDuplex still selects
+	// that many pipes when FullDuplexPipes is 0; Validate rejects the two set to
+	// different values. If full duplex cannot engage (no pipeline pool),
+	// NumShards keeps its half-duplex meaning and the Unordered rule above
+	// applies.
 	NumShards int
 
 	// MaxFlushDelay is the maximum delay after flushing before checking for more commands.
@@ -515,6 +529,17 @@ func (cfg *AutoPipelineOptions) Validate() error {
 		}
 		if cfg.FullDuplexMaxHold < 0 {
 			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexMaxHold=%s must be >= 0 (0 = default)", cfg.FullDuplexMaxHold)
+		}
+		if cfg.FullDuplexPipes < 0 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexPipes=%d must be >= 0 (0 = one pipe)", cfg.FullDuplexPipes)
+		}
+		// NumShards>1 is the 9.23.0 spelling of the pipe count under full duplex
+		// (see fdPipeCount). Two different counts are ambiguous; reject them.
+		if cfg.FullDuplexPipes > 1 && cfg.NumShards > 1 && cfg.FullDuplexPipes != cfg.NumShards &&
+			!cfg.contentSharded {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexPipes=%d and NumShards=%d disagree; "+
+				"set only FullDuplexPipes (NumShards is the older spelling of the full-duplex pipe count)",
+				cfg.FullDuplexPipes, cfg.NumShards)
 		}
 	}
 	return nil
@@ -1300,7 +1325,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	if pp, ok := pipeliner.(interface{ getPipelinePool() pool.Pooler }); ok {
 		ap.pipelinePool = pp.getPipelinePool()
 	}
-	// CSC probe (in-package assertion; *ClusterClient does not expose it).
+	// CSC probes for standalone and cluster clients.
 	if cc, ok := pipeliner.(interface {
 		autopipelineCSCActive() bool
 		autopipelineCSCEligible(Cmder) bool
@@ -1359,7 +1384,9 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			clusterFDOn, clusterFDCC = true, cc
 			nShards = 1
 			// Report the actual shard count (1), not the cluster default, from Config().
+			// Cluster full duplex runs one pipe per master (FullDuplexPipes is ignored).
 			config.NumShards = 1
+			config.FullDuplexPipes = 1
 			// Resolve the FD tuning defaults on the PARENT config now, mirroring
 			// newFDEngine (which only writes them onto each child's config). Without
 			// this, Config() on a default-constructed cluster-FD autopipeliner would
@@ -1409,15 +1436,24 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		// NumShards 8 pass here against a pool of 10, and the surplus spills.
 		// A client-wide engine count is a follow-up; until then size
 		// PipelinePoolSize for every full-duplex autopipeliner in use.
-		if n := fdShardCount(config); n > 1 {
+		n := fdPipeCount(config)
+		if n > 1 {
+			field := "FullDuplexPipes"
+			if config.FullDuplexPipes <= 0 {
+				field = "NumShards"
+			}
 			if pp := fdClient.getPipelinePool(); pp != nil && n > pp.Size() {
 				return nil, fmt.Errorf(
-					"redis: AutoPipelineOptions.NumShards=%d needs a pipeline pool of at "+
-						"least %d connections (each full-duplex engine holds one), but "+
+					"redis: AutoPipelineOptions.%s=%d needs a pipeline pool of at "+
+						"least %d connections (each full-duplex pipe holds one), but "+
 						"PipelinePoolSize gives %d; raise Options.PipelinePoolSize or lower "+
-						"NumShards", n, n, pp.Size())
+						"%s", field, n, n, pp.Size(), field,
+				)
 			}
 		}
+		// Report the effective pipe count from Config(), whichever field asked
+		// for it.
+		config.FullDuplexPipes = n
 		// One flusherless shard, exactly as the single-engine path does: no
 		// half-duplex flusher runs and enqueue never does a %0, even though
 		// submit routes past it entirely.
@@ -1477,10 +1513,10 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	}
 
 	if fdOn {
-		// NumShards>1 runs N engines on THIS client, each leasing its own
-		// connection from the pipeline pool. fds[0] is fd, so nothing
+		// FullDuplexPipes>1 runs N engines (pipes) on THIS client, each leasing
+		// its own connection from the pipeline pool. fds[0] is fd, so nothing
 		// downstream needs to know the difference when N==1.
-		n := fdShardCount(config)
+		n := fdPipeCount(config)
 		ap.fds = make([]*fdEngine, 0, n)
 		for i := 0; i < n; i++ {
 			e := newFDEngine(ap, fdClient)
