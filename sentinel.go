@@ -205,6 +205,10 @@ type FailoverOptions struct {
 	// Only applies to failover cluster clients. Default is 15 seconds.
 	FailingTimeoutSeconds int
 
+	// FTCursorIdleTimeout applies only to NewFailoverClusterClient.
+	// See ClusterOptions.FTCursorIdleTimeout.
+	FTCursorIdleTimeout time.Duration
+
 	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
 	// flag is a no-op. It is kept for backwards compatibility and will be removed
 	// in a future release.
@@ -412,6 +416,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		DisableIndentity:          opt.DisableIndentity,
 		IdentitySuffix:            opt.IdentitySuffix,
 		FailingTimeoutSeconds:     opt.FailingTimeoutSeconds,
+		FTCursorIdleTimeout:       opt.FTCursorIdleTimeout,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
 		CommandMetadata:           opt.CommandMetadata,
 
@@ -511,6 +516,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.RouteByLatency = q.bool("route_by_latency")
 	o.RouteByLatencyTolerance = q.duration("route_by_latency_tolerance")
 	o.RouteRandomly = q.bool("route_randomly")
+	o.FTCursorIdleTimeout = q.duration("ft_cursor_idle_timeout")
 	o.ReplicaOnly = q.bool("replica_only")
 	o.UseDisconnectedReplicas = q.bool("use_disconnected_replicas")
 	o.Protocol = q.int("protocol")
