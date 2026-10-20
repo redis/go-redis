@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
@@ -42,6 +43,7 @@ var (
 // ClusterOptions are used to configure a cluster client and should be
 // passed to NewClusterClient.
 type ClusterOptions struct {
+	cscCustomFactory bool // configuration only; custom factories may supply a cache
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
@@ -51,6 +53,32 @@ type ClusterOptions struct {
 	// NewClient creates a cluster node client with provided name and options.
 	// If NewClient is set by the user, the user is responsible for handling maintnotifications upgrades and push notifications.
 	NewClient func(opt *Options) *Client
+
+	// ClientSideCacheConfig enables an independent cache per node client. Capacity
+	// and memory limits apply to each node, not to the whole ClusterClient.
+	// Replies depending on missing keys are not cached. Commands whose replies
+	// cannot establish key existence bypass caching.
+	// A custom NewClient must preserve the supplied Options and create a fresh
+	// cache for each node-client lifetime.
+	// See Options.ClientSideCacheConfig.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheConfig *ClientSideCacheConfig
+	// ClientSideCacheStrategy shares tracking across a node's connections, not
+	// across cluster nodes. See Options.ClientSideCacheStrategy.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheStrategy CSCStrategy
+	// ClientSideCacheRefreshOnInvalidate enables node-local background refresh.
+	// See Options.ClientSideCacheRefreshOnInvalidate.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheRefreshOnInvalidate bool
+	// ClientSideCacheCoalesceMisses enables node-local miss coalescing.
+	// See Options.ClientSideCacheCoalesceMisses.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceMisses bool
+	// ClientSideCacheInvalidationBatchWindow batches node-local invalidations.
+	// See Options.ClientSideCacheInvalidationBatchWindow.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheInvalidationBatchWindow time.Duration
 
 	// The maximum number of retries before giving up. Command is retried
 	// on network errors and MOVED/ASK redirects.
@@ -113,6 +141,9 @@ type ClusterOptions struct {
 	DialerRetries int
 
 	// DialerRetryTimeout is the backoff duration between retry attempts.
+	// Values <= 0 use the default; use DialerRetryBackoff to retry without delay.
+	// A URL dialer_retry_timeout=0 sets DialerRetryBackoff, which takes precedence
+	// over this field, including when this field is changed after parsing.
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
@@ -330,11 +361,14 @@ func (opt *ClusterOptions) init() {
 //     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
+//   - dialer_retry_timeout is an exception: 0 means no retry delay, while negative
+//     values are rejected. Explicit zero sets DialerRetryBackoff to return 0.
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
+//   - use "skip_verify=true" to ignore TLS certificate validation
 //
 // Example:
 //
@@ -404,9 +438,14 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
 	o.DialTimeout = q.duration("dial_timeout")
 	o.DialerRetries = q.int("dialer_retries")
-	o.DialerRetryTimeout = q.duration("dialer_retry_timeout")
+	o.DialerRetryTimeout, o.DialerRetryBackoff = q.dialerRetryTimeout()
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
+	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
+	o.ReadBufferSize = q.nonNegativeInt("read_buffer_size")
+	o.WriteBufferSize = q.nonNegativeInt("write_buffer_size")
+	o.DisableIdentity = q.bool("disable_identity")
+	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
@@ -426,6 +465,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	}
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.FailingTimeoutSeconds = q.int("failing_timeout_seconds")
+	if o.TLSConfig != nil && q.has("skip_verify") {
+		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
+	}
 
 	if q.err != nil {
 		return nil, q.err
@@ -451,6 +493,12 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 }
 
 func (opt *ClusterOptions) clientOptions() *Options {
+	// Do not mutate the caller's configuration or share it between node factories.
+	var cacheConfig *ClientSideCacheConfig
+	if opt.ClientSideCacheConfig != nil {
+		configClone := *opt.ClientSideCacheConfig
+		cacheConfig = &configClone
+	}
 	// Clone MaintNotificationsConfig to avoid sharing between cluster node clients
 	var maintNotificationsConfig *maintnotifications.Config
 	if opt.MaintNotificationsConfig != nil {
@@ -459,9 +507,16 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	}
 
 	return &Options{
-		ClientName: opt.ClientName,
-		Dialer:     opt.Dialer,
-		OnConnect:  opt.OnConnect,
+		// A custom factory can enable CSC even without ClientSideCacheConfig.
+		cscPresenceOnly:                        true,
+		ClientSideCacheConfig:                  cacheConfig,
+		ClientSideCacheStrategy:                opt.ClientSideCacheStrategy,
+		ClientSideCacheRefreshOnInvalidate:     opt.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          opt.ClientSideCacheCoalesceMisses,
+		ClientSideCacheInvalidationBatchWindow: opt.ClientSideCacheInvalidationBatchWindow,
+		ClientName:                             opt.ClientName,
+		Dialer:                                 opt.Dialer,
+		OnConnect:                              opt.OnConnect,
 
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
@@ -548,6 +603,11 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 	}
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
+	}
+	if node.Client.csc != nil && !node.Client.opt.cscPresenceOnly {
+		// The factory discarded the node policy; do not enable unsafe negative caching.
+		node.Client.disableCSCServing(context.Background(), "node factory discarded CSC options")
+		node.Client.stopBackgroundDrainer()
 	}
 
 	node.latency.Store(unmeasuredNodeLatencyMicros)
@@ -1312,7 +1372,12 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 	if err != nil {
 		return nil, err
 	}
-	c.state.Store(state)
+	previous, _ := c.state.Load().(*clusterState)
+	// A node can be refilled after leaving routing. Clear it before re-entry.
+	flushCSCDifference(state, previous)
+	previous, _ = c.state.Swap(state).(*clusterState)
+	// Another reload may have published during cleanup; use the map we replaced.
+	flushCSCDifference(previous, state)
 	return state, nil
 }
 
@@ -1405,6 +1470,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	if opt == nil {
 		panic("redis: NewClusterClient nil options")
 	}
+	opt.cscCustomFactory = opt.NewClient != nil
 	opt.init()
 
 	c := &ClusterClient{
@@ -1417,8 +1483,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	// Every node client shares the cluster-wide fieldset registry, replicas
 	// included: a promoted replica's connections carry no prepared flags, so
 	// the first HIMPORT SET routed to it replays the PREPARE lazily.
+	registry := c.himport
 	c.nodes.OnNewNode(func(nodeClient *Client) {
-		nodeClient.himport = c.himport
+		nodeClient.himport = registry
 	})
 
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
@@ -1439,10 +1506,15 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	// When a node client receives a SMIGRATED notification, it should trigger
 	// cluster state reload on the parent ClusterClient
 	if opt.MaintNotificationsConfig != nil {
+		clusterWeak := weak.Make(c)
 		c.nodes.OnNewNode(func(nodeClient *Client) {
 			manager := nodeClient.GetMaintNotificationsManager()
 			if manager != nil {
 				manager.SetClusterStateReloadCallback(func(ctx context.Context, hostPort string, slotRanges []string) {
+					c := clusterWeak.Value()
+					if c == nil {
+						return
+					}
 					// Log the migration details for now
 					if internal.LogLevel.InfoOrAbove() {
 						internal.Logger.Printf(ctx, "cluster: slots %v migrated to %s, reloading cluster state", slotRanges, hostPort)
@@ -1504,12 +1576,18 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
+	callerCtx := ctx
 	slot := c.cmdSlot(cmd, -1)
 	var node *clusterNode
+	var redirected bool
 	var moved bool
 	var ask bool
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		ctx = callerCtx
+		if redirected {
+			ctx = cscBypass(ctx)
+		}
 		// MOVED and ASK responses are not transient errors that require retry delay; they
 		// should be attempted immediately.
 		if attempt > 0 && !moved && !ask {
@@ -1545,8 +1623,8 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		// If there is no error - we are done.
-		if lastErr == nil {
-			return nil
+		if lastErr == nil || lastErr == Nil {
+			return lastErr
 		}
 		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
 			if isReadOnly {
@@ -1566,6 +1644,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
+			redirected = true
 			c.state.LazyReload()
 
 			// Record error metrics
