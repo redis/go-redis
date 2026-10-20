@@ -16,7 +16,7 @@ import (
     "github.com/redis/go-redis/extra/redisotel/v9"
 )
 
-rdb := rdb.NewClient(&rdb.Options{...})
+rdb := redis.NewClient(&redis.Options{...})
 
 // Enable tracing instrumentation.
 if err := redisotel.InstrumentTracing(rdb); err != nil {

@@ -1,8 +1,12 @@
 package redis
 
 import (
+	"context"
 	"math"
+	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // TestParseFTInfo tests the parseFTInfo function with a comprehensive FT.INFO response
@@ -731,11 +735,13 @@ func ptrFloat64(f float64) *float64 {
 // produce semantically equivalent results as per the spec requirement R.1.1
 func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 	tests := []struct {
-		name       string
-		resp2Data  []interface{}
-		resp3Data  map[string]interface{}
-		noContent  bool
-		withScores bool
+		name         string
+		resp2Data    []interface{}
+		resp3Data    map[string]interface{}
+		noContent    bool
+		withScores   bool
+		withPayloads bool
+		withSortKeys bool
 	}{
 		{
 			name: "simple hash query",
@@ -848,6 +854,197 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 			withScores: false,
 		},
 		{
+			name: "NOCONTENT query with scores",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:2",
+				"0.25",
+				"doc:1",
+				"0.125",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":     "doc:2",
+						"score":  float64(0.25),
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"id":     "doc:1",
+						"score":  float64(0.125),
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:  true,
+			withScores: true,
+		},
+		{
+			name: "NOCONTENT query with sort keys",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				"#1",
+				"doc:2",
+				"#2",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":      "doc:1",
+						"sortkey": "#1",
+						"values":  []interface{}{},
+					},
+					map[string]interface{}{
+						"id":      "doc:2",
+						"sortkey": "#2",
+						"values":  []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:    true,
+			withSortKeys: true,
+		},
+		{
+			name: "query with empty payloads",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:2",
+				nil,
+				[]interface{}{"n", "2"},
+				"doc:1",
+				nil,
+				[]interface{}{"n", "1"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:2",
+						"extra_attributes": map[string]interface{}{"n": "2"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:1",
+						"extra_attributes": map[string]interface{}{"n": "1"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withPayloads: true,
+		},
+		{
+			name: "query with sort keys and a missing sort field",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				"#5",
+				[]interface{}{"n", "5"},
+				"doc:2",
+				nil,
+				[]interface{}{"txt", "hello"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:1",
+						"sortkey":          "#5",
+						"extra_attributes": map[string]interface{}{"n": "5"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:2",
+						"sortkey":          nil,
+						"extra_attributes": map[string]interface{}{"txt": "hello"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withSortKeys: true,
+		},
+		{
+			name: "NOCONTENT query with a missing sort field before another document",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				nil,
+				"doc:2",
+				"#5",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":      "doc:1",
+						"sortkey": nil,
+						"values":  []interface{}{},
+					},
+					map[string]interface{}{
+						"id":      "doc:2",
+						"sortkey": "#5",
+						"values":  []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:    true,
+			withSortKeys: true,
+		},
+		{
+			name: "query with empty payload and missing sort field",
+			resp2Data: []interface{}{
+				int64(2),
+				"doc:1",
+				nil,
+				nil,
+				[]interface{}{"txt", "hello"},
+				"doc:2",
+				"p",
+				"#5",
+				[]interface{}{"n", "5"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":               "doc:1",
+						"sortkey":          nil,
+						"extra_attributes": map[string]interface{}{"txt": "hello"},
+						"values":           []interface{}{},
+					},
+					map[string]interface{}{
+						"id":               "doc:2",
+						"payload":          "p",
+						"sortkey":          "#5",
+						"extra_attributes": map[string]interface{}{"n": "5"},
+						"values":           []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			withPayloads: true,
+			withSortKeys: true,
+		},
+		{
 			name: "empty result",
 			resp2Data: []interface{}{
 				int64(0),
@@ -867,7 +1064,7 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Parse RESP2
-			resp2Result, err := parseFTSearch(tt.resp2Data, tt.noContent, tt.withScores, false, false)
+			resp2Result, err := parseFTSearch(tt.resp2Data, tt.noContent, tt.withScores, tt.withPayloads, tt.withSortKeys)
 			if err != nil {
 				t.Fatalf("parseFTSearch() error = %v", err)
 			}
@@ -908,6 +1105,20 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 					}
 				}
 
+				if tt.withSortKeys {
+					if (resp2Doc.SortKey == nil) != (resp3Doc.SortKey == nil) ||
+						(resp2Doc.SortKey != nil && *resp2Doc.SortKey != *resp3Doc.SortKey) {
+						t.Errorf("Docs[%d].SortKey mismatch: RESP2=%v, RESP3=%v", i, resp2Doc.SortKey, resp3Doc.SortKey)
+					}
+				}
+
+				if tt.withPayloads {
+					if (resp2Doc.Payload == nil) != (resp3Doc.Payload == nil) ||
+						(resp2Doc.Payload != nil && *resp2Doc.Payload != *resp3Doc.Payload) {
+						t.Errorf("Docs[%d].Payload mismatch: RESP2=%v, RESP3=%v", i, resp2Doc.Payload, resp3Doc.Payload)
+					}
+				}
+
 				// Compare fields
 				if len(resp2Doc.Fields) != len(resp3Doc.Fields) {
 					t.Errorf("Docs[%d].Fields count mismatch: RESP2=%d, RESP3=%d", i, len(resp2Doc.Fields), len(resp3Doc.Fields))
@@ -920,6 +1131,206 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFTSearchExplainScoreRESP2AndRESP3 validates that the score is read from
+// the [score, explanation] pair returned with WITHSCORES EXPLAINSCORE
+func TestFTSearchExplainScoreRESP2AndRESP3(t *testing.T) {
+	explanation := []interface{}{"Final BM25 : words BM25 0.21 * document score 1.00", []interface{}{"hello: (0.21 = ...)"}}
+
+	resp2Data := []interface{}{
+		int64(2),
+		"doc:2",
+		[]interface{}{"0.21", explanation},
+		[]interface{}{"t", "hello there"},
+		"doc:1",
+		[]interface{}{"0.16", explanation},
+		[]interface{}{"t", "hello world"},
+	}
+	resp3Data := map[string]interface{}{
+		"attributes":    []interface{}{},
+		"total_results": int64(2),
+		"format":        "STRING",
+		"results": []interface{}{
+			map[string]interface{}{
+				"id":               "doc:2",
+				"score":            []interface{}{float64(0.21), explanation},
+				"extra_attributes": map[string]interface{}{"t": "hello there"},
+				"values":           []interface{}{},
+			},
+			map[string]interface{}{
+				"id":               "doc:1",
+				"score":            []interface{}{float64(0.16), explanation},
+				"extra_attributes": map[string]interface{}{"t": "hello world"},
+				"values":           []interface{}{},
+			},
+		},
+		"warning": []interface{}{},
+	}
+
+	resp2Result, err := parseFTSearch(resp2Data, false, true, false, false)
+	if err != nil {
+		t.Fatalf("parseFTSearch() error = %v", err)
+	}
+	resp3Result, err := parseFTSearchMapRESP3(toInterfaceMap(resp3Data))
+	if err != nil {
+		t.Fatalf("parseFTSearchMapRESP3() error = %v", err)
+	}
+
+	want := []Document{
+		{ID: "doc:2", Score: ptrFloat64(0.21), Fields: map[string]string{"t": "hello there"}},
+		{ID: "doc:1", Score: ptrFloat64(0.16), Fields: map[string]string{"t": "hello world"}},
+	}
+	for name, result := range map[string]FTSearchResult{"RESP2": resp2Result, "RESP3": resp3Result} {
+		if len(result.Docs) != len(want) {
+			t.Fatalf("%s: Docs count = %d, want %d", name, len(result.Docs), len(want))
+		}
+		for i, doc := range result.Docs {
+			if doc.ID != want[i].ID {
+				t.Errorf("%s: Docs[%d].ID = %s, want %s", name, i, doc.ID, want[i].ID)
+			}
+			if doc.Score == nil || *doc.Score != *want[i].Score {
+				t.Errorf("%s: Docs[%d].Score = %v, want %v", name, i, doc.Score, *want[i].Score)
+			}
+			if doc.Fields["t"] != want[i].Fields["t"] {
+				t.Errorf("%s: Docs[%d].Fields[t] = %s, want %s", name, i, doc.Fields["t"], want[i].Fields["t"])
+			}
+		}
+	}
+}
+
+// TestFTSearchCmdReadReplyRESP2 validates RESP2 readReply with nil options
+// and an empty RETURN
+func TestFTSearchCmdReadReplyRESP2(t *testing.T) {
+	tests := []struct {
+		name    string
+		options *FTSearchOptions
+		reply   string
+		want    []Document
+	}{
+		{
+			name:    "nil options",
+			options: nil,
+			reply:   "*3\r\n:1\r\n$5\r\ndoc:1\r\n*2\r\n$1\r\nt\r\n$11\r\nhello world\r\n",
+			want:    []Document{{ID: "doc:1", Fields: map[string]string{"t": "hello world"}}},
+		},
+		{
+			name:    "empty RETURN",
+			options: &FTSearchOptions{Return: []FTSearchReturn{}},
+			reply:   "*3\r\n:2\r\n$5\r\ndoc:2\r\n$5\r\ndoc:1\r\n",
+			want:    []Document{{ID: "doc:2", Fields: map[string]string{}}, {ID: "doc:1", Fields: map[string]string{}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newFTSearchCmd(context.Background(), tt.options)
+			if err := cmd.readReply(proto.NewReader(strings.NewReader(tt.reply))); err != nil {
+				t.Fatalf("readReply() error = %v", err)
+			}
+			if cmd.val.Total != len(tt.want) {
+				t.Errorf("Total = %d, want %d", cmd.val.Total, len(tt.want))
+			}
+			if len(cmd.val.Docs) != len(tt.want) {
+				t.Fatalf("Docs count = %d, want %d", len(cmd.val.Docs), len(tt.want))
+			}
+			for i, doc := range cmd.val.Docs {
+				if doc.ID != tt.want[i].ID {
+					t.Errorf("Docs[%d].ID = %s, want %s", i, doc.ID, tt.want[i].ID)
+				}
+				if len(doc.Fields) != len(tt.want[i].Fields) {
+					t.Errorf("Docs[%d].Fields = %v, want %v", i, doc.Fields, tt.want[i].Fields)
+				}
+				for k, v := range tt.want[i].Fields {
+					if doc.Fields[k] != v {
+						t.Errorf("Docs[%d].Fields[%s] = %s, want %s", i, k, doc.Fields[k], v)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestFTSearchCmdReadReplyReturnZero validates that an empty RETURN keeps the
+// scores, payloads and sort keys on RESP2 and RESP3
+func TestFTSearchCmdReadReplyReturnZero(t *testing.T) {
+	str := func(s string) *string { return &s }
+	tests := []struct {
+		name    string
+		options *FTSearchOptions
+		resp2   string
+		resp3   string
+		want    []Document
+	}{
+		{
+			name:    "scores",
+			options: &FTSearchOptions{Return: []FTSearchReturn{}, WithScores: true},
+			resp2:   "*5\r\n:2\r\n$5\r\ndoc:2\r\n$3\r\n0.5\r\n$5\r\ndoc:1\r\n$4\r\n0.25\r\n",
+			resp3: "%2\r\n+total_results\r\n:2\r\n+results\r\n*2\r\n" +
+				"%3\r\n+id\r\n$5\r\ndoc:2\r\n+score\r\n,0.5\r\n+values\r\n*0\r\n" +
+				"%3\r\n+id\r\n$5\r\ndoc:1\r\n+score\r\n,0.25\r\n+values\r\n*0\r\n",
+			want: []Document{
+				{ID: "doc:2", Score: ptrFloat64(0.5)},
+				{ID: "doc:1", Score: ptrFloat64(0.25)},
+			},
+		},
+		{
+			name:    "scores with explanation",
+			options: &FTSearchOptions{Return: []FTSearchReturn{}, WithScores: true, ExplainScore: true},
+			resp2:   "*3\r\n:1\r\n$5\r\ndoc:2\r\n*2\r\n$3\r\n0.5\r\n*1\r\n$4\r\nbm25\r\n",
+			resp3: "%2\r\n+total_results\r\n:1\r\n+results\r\n*1\r\n" +
+				"%3\r\n+id\r\n$5\r\ndoc:2\r\n+score\r\n*2\r\n,0.5\r\n*1\r\n+bm25\r\n+values\r\n*0\r\n",
+			want: []Document{{ID: "doc:2", Score: ptrFloat64(0.5)}},
+		},
+		{
+			name:    "scores, payloads and sort keys",
+			options: &FTSearchOptions{Return: []FTSearchReturn{}, WithScores: true, WithPayloads: true, WithSortKeys: true},
+			resp2: "*9\r\n:2\r\n$5\r\ndoc:1\r\n$4\r\n0.25\r\n$2\r\np1\r\n$2\r\n#1\r\n" +
+				"$5\r\ndoc:2\r\n$3\r\n0.5\r\n$-1\r\n$-1\r\n",
+			resp3: "%2\r\n+total_results\r\n:2\r\n+results\r\n*2\r\n" +
+				"%5\r\n+id\r\n$5\r\ndoc:1\r\n+score\r\n,0.25\r\n+payload\r\n$2\r\np1\r\n+sortkey\r\n$2\r\n#1\r\n+values\r\n*0\r\n" +
+				"%5\r\n+id\r\n$5\r\ndoc:2\r\n+score\r\n,0.5\r\n+payload\r\n_\r\n+sortkey\r\n_\r\n+values\r\n*0\r\n",
+			want: []Document{
+				{ID: "doc:1", Score: ptrFloat64(0.25), Payload: str("p1"), SortKey: str("#1")},
+				{ID: "doc:2", Score: ptrFloat64(0.5)},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		for protocol, reply := range map[string]string{"RESP2": tt.resp2, "RESP3": tt.resp3} {
+			t.Run(tt.name+"/"+protocol, func(t *testing.T) {
+				cmd := newFTSearchCmd(context.Background(), tt.options)
+				if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err != nil {
+					t.Fatalf("readReply() error = %v", err)
+				}
+				if cmd.val.Total != len(tt.want) {
+					t.Errorf("Total = %d, want %d", cmd.val.Total, len(tt.want))
+				}
+				if len(cmd.val.Docs) != len(tt.want) {
+					t.Fatalf("Docs count = %d, want %d", len(cmd.val.Docs), len(tt.want))
+				}
+				for i, doc := range cmd.val.Docs {
+					want := tt.want[i]
+					if doc.ID != want.ID {
+						t.Errorf("Docs[%d].ID = %s, want %s", i, doc.ID, want.ID)
+					}
+					if doc.Score == nil || *doc.Score != *want.Score {
+						t.Errorf("Docs[%d].Score = %v, want %v", i, doc.Score, *want.Score)
+					}
+					if (doc.Payload == nil) != (want.Payload == nil) || (doc.Payload != nil && *doc.Payload != *want.Payload) {
+						t.Errorf("Docs[%d].Payload = %v, want %v", i, doc.Payload, want.Payload)
+					}
+					if (doc.SortKey == nil) != (want.SortKey == nil) || (doc.SortKey != nil && *doc.SortKey != *want.SortKey) {
+						t.Errorf("Docs[%d].SortKey = %v, want %v", i, doc.SortKey, want.SortKey)
+					}
+					if len(doc.Fields) != 0 {
+						t.Errorf("Docs[%d].Fields = %v, want empty", i, doc.Fields)
+					}
+				}
+			})
+		}
 	}
 }
 
