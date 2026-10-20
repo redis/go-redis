@@ -36,3 +36,21 @@ func TestDialTimeoutDisabled(t *testing.T) {
 		conn.Close()
 	}
 }
+
+// The failover client derives its Options from the same FailoverOptions, and
+// masterReplicaDialer reads that derived value, so a disabled timeout has to end
+// up as "no deadline" there as well.
+func TestFailoverClientDisabledDialTimeout(t *testing.T) {
+	t.Parallel()
+
+	rdb := NewFailoverClient(&FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: []string{"127.0.0.1:26379"},
+		DialTimeout:   -1,
+	})
+	defer func() { _ = rdb.Close() }()
+
+	if got := rdb.Options().DialTimeout; got != 0 {
+		t.Errorf("Options().DialTimeout = %v, want 0", got)
+	}
+}

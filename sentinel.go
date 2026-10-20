@@ -101,6 +101,9 @@ type FailoverOptions struct {
 	DialerRetries int
 
 	// DialerRetryTimeout is the backoff duration between retry attempts.
+	// Values <= 0 use the default; use DialerRetryBackoff to retry without delay.
+	// A URL dialer_retry_timeout=0 sets DialerRetryBackoff, which takes precedence
+	// over this field, including when this field is changed after parsing.
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
@@ -402,6 +405,8 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 //     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
+//   - dialer_retry_timeout is an exception: 0 means no retry delay, while negative
+//     values are rejected. Explicit zero sets DialerRetryBackoff to return 0.
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "sentinel_username" and "sentinel_password" can only be set using other
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
@@ -480,12 +485,12 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
 	o.DialTimeout = q.duration("dial_timeout")
 	o.DialerRetries = q.int("dialer_retries")
-	o.DialerRetryTimeout = q.duration("dialer_retry_timeout")
+	o.DialerRetryTimeout, o.DialerRetryBackoff = q.dialerRetryTimeout()
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
 	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
-	o.ReadBufferSize = q.int("read_buffer_size")
-	o.WriteBufferSize = q.int("write_buffer_size")
+	o.ReadBufferSize = q.nonNegativeInt("read_buffer_size")
+	o.WriteBufferSize = q.nonNegativeInt("write_buffer_size")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
@@ -584,7 +589,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 
 	opt := failoverOpt.clientOptions()
-	opt.Dialer = masterReplicaDialer(failover)
+	opt.Dialer = masterReplicaDialer(failover, opt)
 	opt.init()
 
 	rdb := &Client{
@@ -697,6 +702,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 func masterReplicaDialer(
 	failover *sentinelFailover,
+	opt *Options,
 ) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, _ string) (net.Conn, error) {
 		var addr string
@@ -718,7 +724,7 @@ func masterReplicaDialer(
 		}
 
 		netDialer := &net.Dialer{
-			Timeout:         failoverDialTimeout(failover.opt.DialTimeout),
+			Timeout:         opt.DialTimeout,
 			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if failover.opt.TLSConfig == nil {
@@ -726,19 +732,6 @@ func masterReplicaDialer(
 		}
 		return tls.DialWithDialer(netDialer, network, addr, failover.opt.TLSConfig)
 	}
-}
-
-// failoverDialTimeout applies the rule Options.init uses for the derived Options
-// to the value the failover dialer reads directly. ParseFailoverURL disables a
-// duration option with a value of 0 or less, but a negative DialTimeout cannot
-// mean "no deadline" to net.Dialer: it reads it as a deadline that has already
-// passed, so every connection to the master the sentinel just returned would
-// fail at once.
-func failoverDialTimeout(d time.Duration) time.Duration {
-	if d < 0 {
-		return 0
-	}
-	return d
 }
 
 //------------------------------------------------------------------------------
