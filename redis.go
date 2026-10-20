@@ -2736,9 +2736,6 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
 	conn := newConn(connOpt, sticky, &c.hooksMixin, c.himport)
-	// A derived session may initialize a fresh socket and must register its
-	// credentials listener with the manager that owns the underlying pool.
-	conn.baseClient.streamingCredentialsManager = c.baseClient.streamingCredentialsManager
 	if isolated {
 		// Never enable tracking or attach the parent's cache to a socket whose
 		// session state the caller may change freely.
