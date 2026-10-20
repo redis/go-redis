@@ -74,6 +74,8 @@ func (p *PubSubPool) NewConn(ctx context.Context, network string, addr string, c
 func (p *PubSubPool) TrackConn(cn *Conn) error {
 	p.trackMu.Lock()
 	if p.closed.Load() {
+		// Conn.Close may run an onClose callback that reenters this pool.
+		p.trackMu.Unlock()
 		_ = cn.Close()
 		return ErrClosed
 	}
@@ -86,9 +88,9 @@ func (p *PubSubPool) TrackConn(cn *Conn) error {
 	if cb != nil {
 		cb(context.Background(), 1, cn, "used", true)
 	}
-	// Close may have drained the pool between the first check and Store.
-	// Recheck after publishing so either Close sees the connection or we
-	// remove it here. UntrackConn only decrements counters once if Close
+	// Close may have started after registration, including during the callback.
+	// Recheck so we reject the connection and complete its cleanup in that case.
+	// UntrackConn only decrements counters once if Close
 	// already removed it, and Conn.Close safely handles repeated cleanup.
 	if p.closed.Load() {
 		p.UntrackConn(cn)
