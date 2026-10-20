@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
+
 # 9.23.0 (2026-10-05)
 
 This is a minor release. It contains everything from 9.23.0-beta.1, so these notes cover the full 9.22.0 → 9.23.0 upgrade. The release adds:

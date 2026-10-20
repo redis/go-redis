@@ -553,6 +553,11 @@ func (c *baseClient) clone() *baseClient {
 		// exited, which is harmless.
 		cscRefreshQueue: c.cscRefreshQueue,
 	}
+	// A baseClient built without NewClient (e.g. internal CSC tests) has no
+	// hook state; keep the zero mixin instead of nil-dereferencing in clone.
+	if c.hooksMixin.state != nil {
+		clone.hooksMixin = c.hooksMixin.clone()
+	}
 	// The miss coalescer travels with the cache (an atomic.Pointer cannot appear
 	// in the literal above); a clone shares the OWNER's coalescer, whose
 	// lifecycle stays owner-only — a clone's Close does not stop it.
@@ -1043,7 +1048,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return initErr
 	} else {
 		helloFallbackToRESP2 = c.opt.Protocol == 3
-		if password != "" {
+		if username != "" || password != "" {
 			// Try legacy AUTH command if HELLO failed.
 			if username != "" {
 				initErr = conn.AuthACL(ctx, username, password).Err()

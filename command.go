@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
+	"math/big"
 	"net"
 	"regexp"
 	"strconv"
@@ -735,10 +737,44 @@ func toString(val interface{}) (string, error) {
 	switch val := val.(type) {
 	case string:
 		return val, nil
+	case float64:
+		return formatDouble(val), nil
+	case *big.Int:
+		return val.String(), nil
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for String", val)
 		return "", err
 	}
+}
+
+// formatDouble writes f the way Redis writes a double on RESP2 (d2string and
+// fpconv_dtoa), so that 1e100 is "1e+100" and not 101 digits. The digits come
+// from Go's shortest round-trip form, while Redis uses Grisu2, which sometimes
+// prints different last digits. Both strings parse to the same float64, so
+// Float64 always matches RESP2. Text can differ in the last digits, and so can
+// Int, Int64 and Uint64 for integral values above 2^62: RESP2 returns
+// 8430098825600961000 where this returns 8430098825600960000. A double does
+// not hold integers that large exactly, so both are approximations.
+func formatDouble(f float64) string {
+	if f == 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+		return internal.FormatFloat(f)
+	}
+	if f == math.Trunc(f) && math.Abs(f) <= 1<<62 {
+		return strconv.FormatInt(int64(f), 10)
+	}
+	mant, exp, _ := strings.Cut(strconv.FormatFloat(f, 'e', -1, 64), "e")
+	e, _ := strconv.Atoi(exp)
+	n := len(strings.Trim(strings.Replace(mant, ".", "", 1), "-"))
+	k := e - n + 1
+	absE := max(e, -e)
+	// Same switch to exponent form as emit_digits in fpconv_dtoa.c.
+	if (k >= 0 && absE < n+7) || (k < 0 && (k > -7 || absE < 4)) {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	if e >= 0 {
+		return mant + "e+" + strconv.Itoa(e)
+	}
+	return mant + "e" + strconv.Itoa(e)
 }
 
 func (cmd *Cmd) Int() (int, error) {
@@ -751,6 +787,10 @@ func (cmd *Cmd) Int() (int, error) {
 		return int(val), nil
 	case string:
 		return strconv.Atoi(val)
+	case float64:
+		return strconv.Atoi(formatDouble(val))
+	case *big.Int:
+		return strconv.Atoi(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Int", val)
 		return 0, err
@@ -771,6 +811,10 @@ func toInt64(val interface{}) (int64, error) {
 		return val, nil
 	case string:
 		return strconv.ParseInt(val, 10, 64)
+	case float64:
+		return toInt64(formatDouble(val))
+	case *big.Int:
+		return toInt64(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Int64", val)
 		return 0, err
@@ -791,6 +835,10 @@ func toUint64(val interface{}) (uint64, error) {
 		return uint64(val), nil
 	case string:
 		return strconv.ParseUint(val, 10, 64)
+	case float64:
+		return toUint64(formatDouble(val))
+	case *big.Int:
+		return toUint64(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Uint64", val)
 		return 0, err
@@ -807,6 +855,17 @@ func (cmd *Cmd) Float32() (float32, error) {
 
 func toFloat32(val interface{}) (float32, error) {
 	switch val := val.(type) {
+	case float64:
+		// Return the range error that ParseFloat returns for a RESP2 bulk
+		// string when a RESP3 double does not fit in a float32.
+		if f := float32(val); math.IsInf(float64(f), 0) && !math.IsInf(val, 0) {
+			return 0, &strconv.NumError{
+				Func: "ParseFloat",
+				Num:  strconv.FormatFloat(val, 'g', -1, 64),
+				Err:  strconv.ErrRange,
+			}
+		}
+		return float32(val), nil
 	case int64:
 		return float32(val), nil
 	case string:
@@ -815,6 +874,8 @@ func toFloat32(val interface{}) (float32, error) {
 			return 0, err
 		}
 		return float32(f), nil
+	case *big.Int:
+		return toFloat32(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Float32", val)
 		return 0, err
@@ -831,10 +892,14 @@ func (cmd *Cmd) Float64() (float64, error) {
 
 func toFloat64(val interface{}) (float64, error) {
 	switch val := val.(type) {
+	case float64:
+		return val, nil
 	case int64:
 		return float64(val), nil
 	case string:
 		return strconv.ParseFloat(val, 64)
+	case *big.Int:
+		return toFloat64(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Float64", val)
 		return 0, err
@@ -857,6 +922,10 @@ func toBool(val interface{}) (bool, error) {
 		return val != 0, nil
 	case string:
 		return strconv.ParseBool(val)
+	case float64:
+		return strconv.ParseBool(formatDouble(val))
+	case *big.Int:
+		return strconv.ParseBool(val.String())
 	default:
 		err := fmt.Errorf("redis: unexpected type=%T for Bool", val)
 		return false, err
@@ -1581,17 +1650,27 @@ func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]int64, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch num, err := rd.ReadInt(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			// TS.MADD and CMS.INCRBY report a rejected item as an error
+			// element and still answer for the items after it. The element
+			// is a complete frame, so read on and return the first one once
+			// the whole array is consumed.
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *IntSliceCmd) Clone() Cmder {
@@ -1649,17 +1728,23 @@ func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]uint64, n)
+	var elemErr error
 	for i := range cmd.val {
 		switch num, err := rd.ReadUint(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *UintSliceCmd) Clone() Cmder {
@@ -2080,17 +2165,23 @@ func (cmd *FloatSliceCmd) readReply(rd *proto.Reader) error {
 	}
 
 	cmd.val = make([]float64, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch num, err := rd.ReadFloat(); {
 		case err == Nil:
 			cmd.val[i] = 0
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = num
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *FloatSliceCmd) Clone() Cmder {
@@ -2155,17 +2246,23 @@ func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]string, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch s, err := rd.ReadString(); {
 		case err == Nil:
 			cmd.val[i] = ""
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = s
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *StringSliceCmd) Clone() Cmder {
@@ -2422,17 +2519,23 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]bool, n)
+	var elemErr error
 	for i := 0; i < len(cmd.val); i++ {
 		switch b, err := rd.ReadBool(); {
 		case err == Nil:
 			cmd.val[i] = false
 		case err != nil:
-			return err
+			if !isRedisError(err) {
+				return err
+			}
+			if elemErr == nil {
+				elemErr = err
+			}
 		default:
 			cmd.val[i] = b
 		}
 	}
-	return nil
+	return elemErr
 }
 
 func (cmd *BoolSliceCmd) Clone() Cmder {
@@ -8035,11 +8138,10 @@ func (cmd *ClientInfoCmd) readReply(rd *proto.Reader) (err error) {
 func parseClientInfo(txt string) (info *ClientInfo, err error) {
 	info = &ClientInfo{}
 	for _, s := range strings.Split(txt, " ") {
-		kv := strings.Split(s, "=")
-		if len(kv) != 2 {
+		key, val, ok := strings.Cut(s, "=")
+		if !ok {
 			return nil, fmt.Errorf("redis: unexpected client info data (%s)", s)
 		}
-		key, val := kv[0], kv[1]
 
 		switch key {
 		case "id":
