@@ -47,6 +47,9 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
+	// cscPresenceOnly enables node-local presence filtering and redirect eviction.
+	// It owns no Cluster state and leaves standalone defaults unchanged.
+	cscPresenceOnly bool
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.
@@ -84,6 +87,8 @@ type Options struct {
 	// Username is used to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
+	// A Username with an empty Password authenticates as that user with an
+	// empty password, which the server accepts for users created with nopass.
 	Username string
 
 	// Password is an optional password. Must match the password specified in the
@@ -142,6 +147,9 @@ type Options struct {
 	DialerRetries int
 
 	// DialerRetryTimeout is the backoff duration between retry attempts.
+	// Values <= 0 use the default; use DialerRetryBackoff to retry without delay.
+	// A URL dialer_retry_timeout=0 sets DialerRetryBackoff, which takes precedence
+	// over this field, including when this field is changed after parsing.
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
@@ -367,7 +375,7 @@ type Options struct {
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	//
-	// default: ReadTimeout + 1 second
+	// default: ReadTimeout + 1 second, or 30 seconds when ReadTimeout is not positive
 	PoolTimeout time.Duration
 
 	// MinIdleConns is the minimum number of idle connections which is useful when establishing
@@ -910,6 +918,11 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //     additionally a plain integer as value (i.e. without unit) is interpreted as seconds
 //   - to disable a duration field, use value less than or equal to 0; to use the default
 //     value, leave the value blank or remove the parameter
+//   - dialer_retry_timeout is an exception: 0 means no retry delay, while negative
+//     values are rejected. Explicit zero sets DialerRetryBackoff to return 0.
+//   - read_buffer_size and write_buffer_size must be non-negative; 0 uses the default.
+//     Invalid negative values are rejected so a configuration typo is not silently
+//     replaced with an unintended default.
 //   - only the last value is interpreted if a parameter is given multiple times
 //   - fields "network", "addr", "username" and "password" can only be set using other
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
@@ -1049,6 +1062,45 @@ func (o *queryOptions) int(name string) int {
 	return 0
 }
 
+func (o *queryOptions) nonNegativeInt(name string) int {
+	i := o.int(name)
+	if i < 0 && o.err == nil {
+		o.err = fmt.Errorf("redis: invalid %s number: must be non-negative", name)
+	}
+	return i
+}
+
+func (o *queryOptions) dialerRetryTimeout() (time.Duration, func(int) time.Duration) {
+	const name = "dialer_retry_timeout"
+	s := o.string(name)
+	if s == "" {
+		return 0, nil
+	}
+	// Like duration, accept plain integers as seconds. ParseDuration also
+	// rejects overflow rather than letting multiplication wrap to a negative.
+	if _, err := strconv.Atoi(s); err == nil {
+		s += "s"
+	}
+	d, err := time.ParseDuration(s)
+	// Check the sign too: ParseDuration rounds negative fractions of a
+	// nanosecond to zero, but those are still invalid configuration values.
+	if err == nil && strings.HasPrefix(s, "-") {
+		err = errors.New("must be non-negative")
+	}
+	if err != nil {
+		if o.err == nil {
+			o.err = fmt.Errorf("redis: invalid %s duration: %w", name, err)
+		}
+		return 0, nil
+	}
+	if d == 0 {
+		// A zero Options field means unset. Use the backoff callback to retain
+		// an explicit URL zero through client initialization and pool defaults.
+		return 0, func(int) time.Duration { return 0 }
+	}
+	return d, nil
+}
+
 func (o *queryOptions) duration(name string) time.Duration {
 	s := o.string(name)
 	if s == "" {
@@ -1118,8 +1170,15 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
 	o.DialTimeout = q.duration("dial_timeout")
+	o.DialerRetries = q.int("dialer_retries")
+	o.DialerRetryTimeout, o.DialerRetryBackoff = q.dialerRetryTimeout()
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
+	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
+	o.ReadBufferSize = q.nonNegativeInt("read_buffer_size")
+	o.WriteBufferSize = q.nonNegativeInt("write_buffer_size")
+	o.DisableIdentity = q.bool("disable_identity")
+	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.PoolTimeout = q.duration("pool_timeout")

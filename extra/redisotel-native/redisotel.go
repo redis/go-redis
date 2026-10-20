@@ -73,7 +73,8 @@ func GetObservabilityInstance() *ObservabilityInstance {
 }
 
 // Init initializes OpenTelemetry observability globally for all Redis clients.
-// This should be called once at application startup, BEFORE creating any Redis clients.
+// It is usually called once at application startup. Clients created before Init
+// are covered too: their existing connections are counted when Init runs.
 // After initialization, all Redis clients will automatically collect and export
 // metrics without needing any additional configuration.
 func (o *ObservabilityInstance) Init(cfg *Config) error {
