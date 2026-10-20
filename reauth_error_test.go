@@ -34,6 +34,11 @@ func TestOnAuthenticationErrRetiresConn(t *testing.T) {
 			err:  proto.RedisError("NOPERM this user has no permissions to run the 'auth' command"),
 		},
 		{
+			name:       "other server error",
+			err:        proto.RedisError("ERR AUTH <password> called without any password configured for the default user"),
+			wantPooled: true,
+		},
+		{
 			name: "transport failure",
 			err:  io.ErrUnexpectedEOF,
 		},
@@ -129,6 +134,15 @@ func TestStreamingReAuthRejectedRetiresConn(t *testing.T) {
 	}
 	if got := client.connPool.Len(); got != 0 {
 		t.Fatalf("pool size after rejected re-auth = %d, want 0", got)
+	}
+
+	// Len drops to 0 before the re-auth worker releases the conn, so check the
+	// conn stays CLOSED after the worker has had time to finish.
+	for i := 0; i < 20; i++ {
+		if !cn.IsClosed() {
+			t.Fatal("removed connection is not closed after the re-auth worker returned")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
