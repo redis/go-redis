@@ -747,6 +747,12 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	if opt == nil {
 		panic("redis: NewSentinelClient nil options")
 	}
+	// Clone like NewClient does: init() normalises fields, and construction must
+	// not rewrite the caller's *Options. Without the clone, initialising the same
+	// *Options twice turns a disabled DialTimeout (0 after the first init) into the
+	// 5 second default on the second pass — and that same pointer is captured by
+	// the first client's dialer.
+	opt = opt.clone()
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{

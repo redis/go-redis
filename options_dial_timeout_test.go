@@ -82,3 +82,38 @@ func TestNewDialerDisabledDialTimeout(t *testing.T) {
 	}
 	_ = conn.Close()
 }
+
+// NewSentinelClient takes the caller's *Options and runs init() on it, so the
+// clone is what keeps a disabled DialTimeout disabled: a second construction
+// would otherwise take the "== 0 -> 5s" default branch and, because the dialer
+// captures that same pointer, change the first client's dials as well.
+func TestNewSentinelClientKeepsDisabledDialTimeout(t *testing.T) {
+	t.Parallel()
+
+	opt, err := ParseURL("redis://127.0.0.1:26379?dial_timeout=0")
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	if opt.DialTimeout != -1 {
+		t.Fatalf("ParseURL should leave the disabled sentinel, got %v", opt.DialTimeout)
+	}
+
+	first := NewSentinelClient(opt)
+	defer func() { _ = first.Close() }()
+	if got := first.opt.DialTimeout; got != 0 {
+		t.Fatalf("first client DialTimeout = %v, want 0", got)
+	}
+
+	second := NewSentinelClient(opt)
+	defer func() { _ = second.Close() }()
+
+	if got := first.opt.DialTimeout; got != 0 {
+		t.Fatalf("constructing a second client changed the first client's DialTimeout to %v", got)
+	}
+	if got := second.opt.DialTimeout; got != 0 {
+		t.Fatalf("second client DialTimeout = %v, want 0", got)
+	}
+	if opt.DialTimeout != -1 {
+		t.Fatalf("NewSentinelClient rewrote the caller's options: DialTimeout = %v", opt.DialTimeout)
+	}
+}
