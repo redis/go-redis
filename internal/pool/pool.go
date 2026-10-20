@@ -711,10 +711,15 @@ func (p *ConnPool) spareAging(cn *Conn, nowNs int64) bool {
 }
 
 func (p *ConnPool) checkMinIdleConns() {
-	// If a check is already in progress, mark that we need another check and return
+	// If a check is already in progress, publish the request before deciding
+	// whether it will handle it or we need to take over.
 	if !p.idleCheckInProgress.CompareAndSwap(false, true) {
 		p.idleCheckNeeded.Store(true)
-		return
+		// The previous checker may have exited before our store. Retry
+		// ownership after publishing so the request always has a consumer.
+		if !p.idleCheckInProgress.CompareAndSwap(false, true) {
+			return
+		}
 	}
 
 	if p.minIdleConns() == 0 {

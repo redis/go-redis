@@ -11,6 +11,69 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
+func TestEphemeralConnStreamingCredentialsWithCSCConfigured(t *testing.T) {
+	for _, warm := range []bool{false, true} {
+		name := "cold"
+		if warm {
+			name = "warm"
+		}
+		t.Run(name, func(t *testing.T) {
+			provider := &entraidLikeProvider{}
+			client := NewClient(&Options{
+				Protocol: 3, MaxRetries: -1, DisableIdentity: true,
+				ClientSideCacheConfig:        &ClientSideCacheConfig{MaxEntries: 16},
+				StreamingCredentialsProvider: provider,
+				MaintNotificationsConfig:     &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+				Dialer: func(context.Context, string, string) (net.Conn, error) {
+					client, server := net.Pipe()
+					go serveTestRESPConn(server, func(command string) string {
+						if command == "hello" {
+							return "%0\r\n"
+						}
+						return "+OK\r\n"
+					})
+					return client, nil
+				},
+			})
+			t.Cleanup(func() { _ = client.Close() })
+			// Dynamic credentials disable CSC, so this uses the ordinary sticky
+			// session path and can reuse the parent's initialized connection.
+			if client.cscTrackingRequested() {
+				t.Fatal("CSC must be disabled with a streaming credentials provider")
+			}
+			ctx := context.Background()
+			if warm {
+				if err := client.Ping(ctx).Err(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			conn := client.EphemeralConn()
+			t.Cleanup(func() { _ = conn.Close() })
+			if err := conn.Ping(ctx).Err(); err != nil {
+				t.Fatal(err)
+			}
+			if provider.subscribeN.Load() != 1 || provider.listenerCount() != 1 {
+				t.Fatal("session must have exactly one credentials subscription")
+			}
+			if conn.cscTrackingRequested() || conn.maintNotificationsManager != nil {
+				t.Fatal("session unexpectedly enabled CSC or maintenance")
+			}
+			if err := conn.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if provider.listenerCount() != 0 || provider.unsubCalls.Load() != 1 {
+				t.Fatal("session Close must unsubscribe the discarded connection")
+			}
+			if err := client.Ping(ctx).Err(); err != nil {
+				t.Fatalf("parent after session Close: %v", err)
+			}
+			if provider.subscribeN.Load() != 2 || provider.listenerCount() != 1 {
+				t.Fatal("parent must authenticate a replacement connection after session Close")
+			}
+		})
+	}
+}
+
 func TestEphemeralConnCSCMaxActiveConns(t *testing.T) {
 	client := NewClient(&Options{
 		Protocol: 3, PoolSize: 4, MaxActiveConns: 1, MaxConcurrentDials: 1,
