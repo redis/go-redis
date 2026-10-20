@@ -54,3 +54,31 @@ func TestFailoverClientDisabledDialTimeout(t *testing.T) {
 		t.Errorf("Options().DialTimeout = %v, want 0", got)
 	}
 }
+
+// NewDialer is exported, so a caller can build a dialer straight from the Options
+// ParseURL returned — without NewClient, which clones the options and calls the
+// unexported init. The disabled value has to be normalised on that path too.
+func TestNewDialerDisabledDialTimeout(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	opt, err := ParseURL("redis://" + ln.Addr().String() + "?dial_timeout=0")
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	if opt.DialTimeout != -1 {
+		t.Fatalf("ParseURL should leave the disabled sentinel, got %v", opt.DialTimeout)
+	}
+
+	conn, err := opt.NewDialer()(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("NewDialer with a disabled dial timeout: dialing a listening socket failed: %v (DialTimeout=%v)",
+			err, opt.DialTimeout)
+	}
+	_ = conn.Close()
+}
