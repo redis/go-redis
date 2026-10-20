@@ -511,7 +511,9 @@ func (c *ClusterClient) prepareClusterCursors(cmds []Cmder) ([]*clusterCursorOpe
 			}
 			index, indexOK := routingArgText(cmd, 2)
 			value, valueOK := routingArgText(cmd, 3)
-			token, err := strconv.ParseUint(value, 10, 64)
+			// Local tokens must fit the int accepted by FTCursorRead/Del.
+			// Native server IDs are independent and retain their full range.
+			token, err := strconv.ParseUint(value, 10, strconv.IntSize-1)
 			if !indexOK || !valueOK || err != nil || token == 0 {
 				c.releaseClusterCursors(operations)
 				return nil, errInvalidCursorIdType
@@ -619,7 +621,7 @@ func (c *ClusterClient) finishClusterCursor(cmd Cmder, op *clusterCursorOperatio
 			return fmt.Errorf("redis: invalid FT.AGGREGATE index")
 		}
 		op.token = clusterCursorSequence.Add(1)
-		if op.token > uint64(^uint(0)>>1) || op.token == 0 {
+		if op.token > math.MaxInt || op.token == 0 {
 			return fmt.Errorf("redis: FT.CURSOR token space exhausted")
 		}
 		binding = &clusterCursorBinding{index: index, maxIdle: cmd.cursorIdleLimit()}

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -809,6 +811,40 @@ func TestClusterCursorLifetimeAndConcurrentUse(t *testing.T) {
 	}
 }
 
+func TestClusterCursorTokenRange(t *testing.T) {
+	c := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:1"}})
+	defer c.Close()
+	ctx := context.Background()
+	for _, token := range []string{
+		"0", "-1", strconv.FormatUint(uint64(math.MaxInt)+1, 10),
+		strconv.FormatUint(math.MaxUint64, 10),
+	} {
+		cmd := NewCmd(ctx, "ft.cursor", "read", "idx", token)
+		if _, err := c.prepareClusterCursors([]Cmder{cmd}); !errors.Is(err, errInvalidCursorIdType) {
+			t.Errorf("token %q: got %v, want invalid cursor ID", token, err)
+		}
+	}
+
+	// The largest local token still round-trips as an int. Its native server ID
+	// remains independent and can use the full uint64 range.
+	binding := &clusterCursorBinding{index: "idx", id: strconv.FormatUint(math.MaxUint64, 10)}
+	c.cursors.bindings = map[uint64]*clusterCursorBinding{uint64(math.MaxInt): binding}
+	cmd := NewCmd(ctx, "ft.cursor", "read", "idx", math.MaxInt)
+	ops, err := c.prepareClusterCursors([]Cmder{cmd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.releaseClusterCursors(ops)
+	if cmd.Args()[3] != binding.id {
+		t.Fatalf("native cursor ID = %v, want %s", cmd.Args()[3], binding.id)
+	}
+	cmd.SetVal([]interface{}{[]interface{}{int64(0)}, int(0)})
+	cmd.setCursorReply(ops[0].token)
+	if got := cmd.Val().([]interface{})[1]; got != math.MaxInt {
+		t.Fatalf("returned token = %v, want %d", got, math.MaxInt)
+	}
+}
+
 func TestClusterCursorIdleTimeout(t *testing.T) {
 	for _, tc := range []struct {
 		name                       string
@@ -1121,6 +1157,27 @@ func TestClusterDefaultReadonlyRoutingCompatibility(t *testing.T) {
 				}
 				if err != nil || node != want {
 					t.Fatalf("%v: node=%v error=%v, want %v", args, node, err, want)
+				}
+				if d.naturalSlot < 0 {
+					continue
+				}
+				for _, admitted := range []bool{false, true} {
+					batched := NewCmd(ctx, args...)
+					if admitted {
+						c.autoPipelineRoutingDecision(ctx, batched)
+					}
+					mapped := newCmdsMap()
+					if err := c.mapCmdsByNode(ctx, mapped, []Cmder{batched}); err != nil {
+						t.Fatal(err)
+					}
+					want := master
+					if wantReadOnly {
+						want = replica
+					}
+					if len(mapped.m[want]) != 1 {
+						t.Fatalf("%v: pipeline (admitted=%v) lost readonly=%v, want node %s",
+							args, admitted, wantReadOnly, want.Client.opt.Addr)
+					}
 				}
 			}
 		})
@@ -3740,7 +3797,7 @@ func TestClusterAutoPipelineFanoutAllowedModes(t *testing.T) {
 // TestClusterCursorExecutionModes uses a protocol fixture, not an external Redis.
 // It verifies the real parsers and dispatch paths, including MULTI/EXEC and FD.
 func TestClusterCursorExecutionModes(t *testing.T) {
-	for _, mode := range []string{"direct", "pipeline", "transaction", "blocking", "async", "blocking-fd", "async-fd"} {
+	for _, mode := range []string{"direct", "pipeline", "transaction", "blocking", "async", "blocking-fd", "async-fd", "blocking-fd-keyed", "async-fd-keyed"} {
 		t.Run(mode, func(t *testing.T) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -3820,8 +3877,15 @@ func TestClusterCursorExecutionModes(t *testing.T) {
 				}
 			}()
 			addr := ln.Addr().String()
+			var metadata *CommandMetadataConfig
+			if strings.HasSuffix(mode, "-keyed") {
+				metadata = &CommandMetadataConfig{Overrides: map[string]*CommandInfo{
+					"ft.aggregate": {Name: "ft.aggregate", Arity: -3, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1},
+				}}
+			}
 			c := NewClusterClient(&ClusterOptions{
 				Addrs: []string{addr}, DisableIdentity: true,
+				CommandMetadata:          metadata,
 				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 				ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
 					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
@@ -3836,7 +3900,7 @@ func TestClusterCursorExecutionModes(t *testing.T) {
 				FTCursorDel(context.Context, string, int) *StatusCmd
 			} = c
 			exec := func() error { return nil }
-			switch mode {
+			switch strings.TrimSuffix(mode, "-keyed") {
 			case "pipeline", "transaction":
 				pipe := c.Pipeline()
 				if mode == "transaction" {
@@ -3845,7 +3909,7 @@ func TestClusterCursorExecutionModes(t *testing.T) {
 				surface = pipe
 				exec = func() error { _, err := pipe.Exec(ctx); return err }
 			case "blocking", "async", "blocking-fd", "async-fd":
-				cfg := &AutoPipelineOptions{FullDuplex: strings.HasSuffix(mode, "-fd")}
+				cfg := &AutoPipelineOptions{FullDuplex: strings.Contains(mode, "-fd")}
 				var ap *AutoPipeliner
 				if strings.HasPrefix(mode, "blocking") {
 					ap, err = c.AutoPipelineWithOptions(cfg)

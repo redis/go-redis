@@ -3001,6 +3001,8 @@ func (c *ClusterClient) pipelineRoutingDecision(
 	}
 	// Preserve the immutable admission decision when suppressing fan-out.
 	*scratch = c.routingDecisionWithMeta(cmd, decision.view, nil, false, decision.meta, decision.metaOK)
+	// Suppressing execution policies must not change captured replica eligibility.
+	scratch.readOnly = decision.readOnly
 	return scratch
 }
 
