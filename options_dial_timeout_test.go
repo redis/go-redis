@@ -157,7 +157,7 @@ func TestNewDialerTLSHonoursContext(t *testing.T) {
 		TLSConfig:   &tls.Config{InsecureSkipVerify: true},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -169,14 +169,22 @@ func TestNewDialerTLSHonoursContext(t *testing.T) {
 		done <- err
 	}()
 
+	// Wait for the handshake to be in flight before cancelling, so the test does
+	// not depend on the connect landing inside a fixed window.
+	select {
+	case <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dial never reached the listener")
+	}
+
+	cancel()
+
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("expected the stalled TLS handshake to fail when the context expired")
+			t.Fatal("expected the stalled TLS handshake to fail when the context was cancelled")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("dial did not return after the context expired: the TLS handshake ignores the context")
+		t.Fatal("dial did not return after the context was cancelled: the TLS handshake ignores the context")
 	}
-
-	<-accepted
 }
