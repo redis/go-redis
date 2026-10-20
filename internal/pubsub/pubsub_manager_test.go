@@ -226,11 +226,13 @@ func TestManagerUnsubscribe(t *testing.T) {
 	fsc.expectCmd(t, "subscribe", "keep")
 
 	// h1 leaving "shared" must not unsubscribe it server-side: h2 still
-	// listens — no command. And a handle owning nothing stays usable and
-	// can subscribe again.
+	// listens — only the barrier PING whose pong confirms h1's release.
+	// And a handle owning nothing stays usable and can subscribe again.
 	if err := h1.Unsubscribe(ctx, "shared"); err != nil {
 		t.Fatalf("h1 Unsubscribe: %v", err)
 	}
+	fsc.expectCmd(t, "ping")
+	fsc.pong([]string{"ping"})
 	fsc.expectNoCmd(t, 100*time.Millisecond)
 	if _, err := h1.Subscribe(ctx, "revived"); err != nil {
 		t.Fatalf("Subscribe after drain: %v", err)

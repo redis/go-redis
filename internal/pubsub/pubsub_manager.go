@@ -182,10 +182,12 @@ type Manager struct {
 	regSeq uint64
 
 	// The per-kind leaving sets: per name, the handles that released it
-	// with an UNSUBSCRIBE (the name's last owner leaving) still in
-	// flight, and how many of its confirmations each awaits. The server
-	// delivers every message published before the UNSUBSCRIBE ahead of
-	// its confirmation, and so does the manager: a leaving handle keeps
+	// with an UNSUBSCRIBE (the name's last owner leaving) or a barrier
+	// PING (other handles keep the name, see handleUnsubscribeLocked)
+	// still in flight, and how many of its confirmations each awaits.
+	// The server delivers every message published before the
+	// UNSUBSCRIBE ahead of its confirmation, and so does the manager
+	// (a PING's pong likewise follows them): a leaving handle keeps
 	// receiving the name's messages until the confirmation arrives, and
 	// is delivered that confirmation — not a synthesized one at
 	// unsubscribe time, which would overtake them. A lost connection
@@ -251,6 +253,16 @@ type replyWaiter struct {
 	// the error reply of one slot concerns only the names that command
 	// carried (see deliverToReleasersLocked).
 	affected map[string][]*handle
+	// release marks a barrier PING (see handleUnsubscribeLocked): its
+	// pong settles the unsubscribe of kind release for names, which
+	// other handles keep, for the handles in affected.
+	release string
+}
+
+// unsubKind is the unsubscribe kind an entry settles for its leaving
+// handles: release for a barrier PING, else the command itself.
+func (w replyWaiter) unsubKind() string {
+	return cmp.Or(w.release, w.kind)
 }
 
 // NewManager creates a manager that multiplexes all subscriptions over
@@ -962,8 +974,9 @@ func (m *Manager) settleUnsubscribeWaitersLocked(entries []replyWaiter) {
 		if w.affected == nil {
 			continue
 		}
+		kind := w.unsubKind()
 		for _, name := range w.names {
-			m.settleLeavingLocked(w.kind, name, w.affected[name], &Subscription{Kind: w.kind, Channel: name})
+			m.settleLeavingLocked(kind, name, w.affected[name], &Subscription{Kind: kind, Channel: name})
 		}
 	}
 }
@@ -1050,7 +1063,17 @@ func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 // nil waiter (silent ping, or the writer closed) consumes the pong
 // without delivering it. Callers must hold the WRITE lock.
 func (m *Manager) fanoutPongLocked(pong *Pong) {
-	if w, ok := m.consumePongLocked(); ok && w.h != nil {
+	w, ok := m.consumePongLocked()
+	if !ok {
+		return
+	}
+	if w.release != "" {
+		// A barrier: every message read ahead of it has been fanned out,
+		// so its releasers get their confirmations now.
+		m.settleUnsubscribeWaitersLocked([]replyWaiter{w})
+		m.releaseIfIdleLocked()
+	}
+	if w.h != nil {
 		w.h.deliverPongLocked(pong)
 	}
 }
@@ -1893,8 +1916,9 @@ func (m *Manager) writeLocked(ctx context.Context, cn *pool.Conn, cmds [][]any) 
 // left with no subscriber are unsubscribed server-side (a bare
 // UNSUBSCRIBE would tear down other handles' subscriptions): their
 // releasers get the server's confirmation, after the messages ahead of
-// it. A name other handles keep is released at once, with a
-// synthesized confirmation.
+// it. A name other handles keep is released at once; its
+// confirmation follows the messages already read for it (see
+// handleUnsubscribeLocked).
 func (m *Manager) handleUnsubscribe(ctx context.Context, h *handle, redisCommand string, names ...string) error {
 	if err := ctx.Err(); err != nil {
 		return err // see handleSubscribe
@@ -1989,37 +2013,53 @@ func (m *Manager) handleUnsubscribeLocked(h *handle, redisCommand string, names 
 		}
 	}
 
-	// A name whose UNSUBSCRIBE goes to the server (its last owner left,
-	// and there is a connection to write it on) is confirmed by the
-	// server, after every message published before it: its releasers
-	// keep receiving it until then (see Manager.leavingChannels). They
-	// are registered before the write, so a failed write — which drops
-	// the connection and fails the ledger — settles them too. A name
-	// other handles still own is unsubscribed only here, so its
-	// confirmation is synthesized at once. A closing handle awaits
-	// nothing.
-	writes := m.conn.Load() != nil && len(orphanOrder) > 0
+	// A name whose UNSUBSCRIBE goes to the server (its last owner left)
+	// is confirmed by the server, after every message published before
+	// it: its releasers keep receiving it until then (see
+	// Manager.leavingChannels). A name other handles still own is
+	// unsubscribed only here; a PING written after the unsubscribes is
+	// its barrier, and its pong delivers the confirmation, after the
+	// messages the read loop already read for the name. Releasers are
+	// registered before the write, so a failed write — which drops the
+	// connection and fails the ledger — settles them too. With no
+	// connection the confirmations are synthesized at once. A closing
+	// handle awaits nothing.
+	live := m.conn.Load() != nil
 	orphaned := make(map[string]bool, len(orphanOrder))
 	for _, name := range orphanOrder {
 		orphaned[name] = true
 	}
+	var kept []string
+	keptBy := make(map[string][]*handle)
 	for _, r := range released {
 		if r.h.closing {
 			continue
 		}
-		if writes && orphaned[r.name] {
-			leaving := m.leavingForKind(redisCommand)
-			if leaving[r.name] == nil {
-				leaving[r.name] = make(map[*handle]int)
-			}
-			leaving[r.name][r.h]++
+		if !live {
+			r.h.deliverSubscriptionLocked(&Subscription{Kind: redisCommand, Channel: r.name})
 			continue
 		}
-		r.h.deliverSubscriptionLocked(&Subscription{Kind: redisCommand, Channel: r.name})
+		leaving := m.leavingForKind(redisCommand)
+		if leaving[r.name] == nil {
+			leaving[r.name] = make(map[*handle]int)
+		}
+		leaving[r.name][r.h]++
+		if !orphaned[r.name] {
+			if keptBy[r.name] == nil {
+				kept = append(kept, r.name)
+			}
+			keptBy[r.name] = append(keptBy[r.name], r.h)
+		}
 	}
 
-	if writes {
+	if live && (len(orphanOrder) > 0 || len(kept) > 0) {
 		cmds := m.prepareSubscribeLocked(redisCommand, replyWaiter{affected: affected}, orphanOrder)
+		if len(kept) > 0 {
+			m.replyQueue = append(m.replyQueue, replyWaiter{
+				kind: replyKindPong, names: kept, affected: keptBy, release: redisCommand,
+			})
+			cmds = append(cmds, []any{"ping"})
+		}
 		if err := m.writeLocked(socketCtx, m.conn.Load(), cmds); err != nil {
 			// The failed write dropped the connection; the reconnect
 			// replays exactly what is still registered.
@@ -2172,6 +2212,11 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 			m.markRejectedLocked(w)
 		}
 		switch {
+		case ok && w.release != "":
+			// A refused barrier PING still marks its place in the reply
+			// stream: settle it like its pong.
+			m.settleUnsubscribeWaitersLocked([]replyWaiter{w})
+			m.releaseIfIdleLocked()
 		case ok && !w.broadcast && w.h != nil:
 			w.h.deliverLocked(err)
 		case ok && len(w.affected) > 0:
