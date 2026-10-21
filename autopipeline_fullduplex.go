@@ -1513,7 +1513,6 @@ func (fd *fdEngine) run() {
 						carry = fd.failPipelines(eligible[n:], carry, aerr)
 					}
 					retryAttempts++
-					fd.sleepBackoff(retryAttempts)
 					// Already issued on the failed connection and about to be re-issued;
 					// bump attempts so a later success/failure reports the real
 					// retry_attempts (not always 1). The clean-recycle suffix path
@@ -1535,6 +1534,11 @@ func (fd *fdEngine) run() {
 						fd.rerouteReqs(bg, carry, aerr)
 						carry = nil
 					}
+					// Back off after the reroute, not before (as on the lease path):
+					// the owner serves the tail now, and the backoff only paces the
+					// re-lease so a flapping endpoint cannot spin this loop. The
+					// same-connection replay backs off before re-issuing.
+					fd.sleepBackoff(retryAttempts)
 					continue
 				}
 			}

@@ -85,8 +85,9 @@ aggregating correctly; only single-node commands route through a child.
   returns a per-command transport error even when the owner returns an earlier
   Redis error (`redis.Nil`), so the abort-on-transport-failure rule still holds.
   `flushReqsVia` reports per-command metrics before it completes a command, as the
-  reader does. Standalone FD (no owner) keeps the same-connection replay and
-  fail-fast paths.
+  reader does. Both reroutes run before the backoff, which then only paces the
+  re-lease. Standalone FD (no owner) keeps the same-connection replay (backoff
+  first) and fail-fast paths.
 - **Hooks on recovery**: recovery attempts (the reroute and the MOVED/ASK
   reprocess) run nested inside the command's `hostHook`, so node pipeline/process
   hooks see them as nested spans. Making internal recovery hookless is a separate

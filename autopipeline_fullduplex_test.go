@@ -7178,6 +7178,86 @@ func TestFDConnErrReroutesTail(t *testing.T) {
 	}
 }
 
+// With an owner reroute, the replayable tail after a connection error goes to
+// the owner before the reconnect backoff, not after it: the backoff only paces
+// the re-lease.
+func TestFDConnErrReroutesBeforeBackoff(t *testing.T) {
+	ctx := context.Background()
+	target := NewClient(&Options{Addr: ":6379"})
+	defer target.Close()
+	if err := target.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	const backoff = 2 * time.Second
+	c := NewClient(&Options{
+		Addr:             ":6379",
+		Protocol:         3,
+		PipelinePoolSize: 4,
+		PoolSize:         4,
+		MinRetryBackoff:  backoff,
+		MaxRetryBackoff:  backoff,
+	})
+	defer c.Close()
+	var rerouted atomic.Int64
+	var firstReroute atomic.Int64 // UnixNano of the first reroute call
+	inner := rerouteTo(target, &rerouted)
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		fdReroute: func(ctx context.Context, cmds []Cmder, maxRetries int) error {
+			firstReroute.CompareAndSwap(0, time.Now().UnixNano())
+			return inner(ctx, cmds, maxRetries)
+		},
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	killer := NewClient(&Options{Addr: ":6379"})
+	defer killer.Close()
+
+	const workers = 8
+	var stop atomic.Bool
+	done := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			key := "fd:reroute:backoff:" + itoa(w)
+			for n := 0; !stop.Load(); n++ {
+				if err := ap.Set(ctx, key, itoa(n), 0).Err(); err != nil {
+					done <- fmt.Errorf("worker %d set #%d: %w", w, n, err)
+					return
+				}
+			}
+			done <- nil
+		}(w)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	killAt := time.Now()
+	_ = killer.Do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes").Err()
+	time.Sleep(backoff + 500*time.Millisecond)
+	stop.Store(true)
+
+	deadline := time.After(10 * time.Second)
+	for w := 0; w < workers; w++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("timeout: a worker hung after a connection kill")
+		}
+	}
+	at := firstReroute.Load()
+	if at == 0 {
+		t.Skip("kill landed between sessions: nothing in flight to reroute")
+	}
+	if got := time.Unix(0, at).Sub(killAt); got >= backoff/2 {
+		t.Fatalf("first reroute %v after the connection kill, want < %v (it waited out the %v backoff)", got, backoff/2, backoff)
+	}
+}
+
 // The cluster full-duplex router gives its node children a reroute through
 // the ClusterClient, and Config never hands it back.
 func TestClusterFDRouterChildReroutes(t *testing.T) {
