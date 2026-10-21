@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -453,6 +454,45 @@ func TestDefaultKeepAliveConfig(t *testing.T) {
 	}
 	if defaultKeepAliveConfig != want {
 		t.Errorf("defaultKeepAliveConfig = %+v, want %+v", defaultKeepAliveConfig, want)
+	}
+}
+
+func TestNewDialerTLSContext(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	done := make(chan struct{})
+	defer close(done)
+
+	// Accept the TCP conn but never answer the TLS handshake.
+	go func() {
+		cn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		<-done
+		cn.Close()
+	}()
+
+	dial := NewDialer(&Options{
+		DialTimeout: 5 * time.Second,
+		TLSConfig:   &tls.Config{InsecureSkipVerify: true},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	cn, err := dial(ctx, "tcp", ln.Addr().String())
+	if err == nil {
+		cn.Close()
+		t.Fatal("expected dial to fail")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("dial returned after %v, want it to stop at the ctx deadline", elapsed)
 	}
 }
 
