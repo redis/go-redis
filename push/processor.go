@@ -230,9 +230,19 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 		// see if we should skip this notification
 		notificationName, err := rd.PeekPushNotificationName()
 		if err != nil {
-			// Name too long to peek: still consume the frame below so it isn't
-			// misread as a reply.
-			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) {
+			// The frame is a confirmed push (peeked above) whose name could not
+			// be peeked. Consume it below only when the header is well-formed
+			// and just the name is unpeekable, either too long for the peek
+			// window or not a string. Breaking in that case leaves the push at
+			// the buffer head for the caller's reply read to take as the command
+			// value (reply shift). Any other error breaks. On an I/O error the
+			// frame has not fully arrived, and on a header that does not parse
+			// ReadReply would stop partway and leave the rest of the push to be
+			// read as the reply. Both are left for the caller's own read to fail
+			// on. The peek cannot vouch for the body: one that fails to parse
+			// still stops the ReadReply below partway, as for a named push.
+			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) &&
+				!errors.Is(err, proto.ErrPushNotificationNameNotString) {
 				break
 			}
 		} else if willHandleNotificationInClient(notificationName) {
