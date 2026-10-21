@@ -3377,7 +3377,14 @@ func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries in
 		if c := reqs[i].ctx; c != nil {
 			fctx = context.WithoutCancel(c)
 		}
-		err := run(fctx, cmds, maxRetries) // per-command results/errors set inside
+		// Register this goroutine as the executor of the chunk's deferred-face
+		// batches: a pipeline hook in run (e.g. a MultiDB member hook on a
+		// reroute) that reads its command would otherwise await a batch that
+		// completes only after run returns.
+		err := func() error {
+			defer registerBatchExecutors(cmds)()
+			return run(fctx, cmds, maxRetries) // per-command results/errors set inside
+		}()
 		for j := i; j < end; j++ {
 			// Per-command metrics, as the reader reports them inline: this path
 			// bypasses the reader. A pipelined command is measured with its

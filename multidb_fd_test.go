@@ -953,6 +953,37 @@ func TestFDRerouteNeverSentReportsNothing(t *testing.T) {
 	}
 }
 
+// A member pipeline hook that reads a deferred-face command's result during
+// a reroute does not wedge the flush: the reroute goroutine is the batch's
+// executor, and the batch completes only after the owner returns.
+func TestFDRerouteHookReadsDeferredResult(t *testing.T) {
+	ctx := context.Background()
+	fd, _ := fdRerouteTestEngine(3, func(cmds []Cmder) error {
+		for _, c := range cmds {
+			c.SetErr(nil)
+			_ = c.Err() // a hook reading the result after next()
+		}
+		return nil
+	})
+	reqs := make([]fdReq, 2)
+	for i := range reqs {
+		b := newAPBatch()
+		cmd := NewStatusCmd(ctx, "set", "k"+itoa(i), "v")
+		cmd.setReady(b)
+		reqs[i] = fdReq{cmd: cmd, batch: b, attempts: 1}
+	}
+	done := make(chan struct{})
+	go func() {
+		fd.rerouteReqs(ctx, reqs, io.EOF)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reroute wedged: a hook reading its command awaited the batch the reroute completes")
+	}
+}
+
 // The childFor sweep leaves a removed member's child to its onRemove hook:
 // RemoveDatabase must find it and drain it before the member's client closes.
 func TestMultiDBFullDuplexSweepLeavesRemovedChildToRemoval(t *testing.T) {
@@ -983,6 +1014,52 @@ func TestMultiDBFullDuplexSweepLeavesRemovedChildToRemoval(t *testing.T) {
 	_ = db1.onRemove.run()
 	if !child.IsClosed() {
 		t.Fatal("removal hook did not close the child")
+	}
+}
+
+// A child that is closed but still draining (a lane switch) is not lost by
+// the childFor sweep: RemoveDatabase's hook still waits for its drain before
+// the member's client closes.
+func TestMultiDBFullDuplexSweepKeepsDrainingChild(t *testing.T) {
+	requireLocalRedis(t)
+	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+	r := ap.mdbFD
+	db0, db1 := mdb.core.dbByID(0), mdb.core.dbByID(1)
+	if c, _ := r.childFor(db1); c == nil {
+		t.Fatal("no child for member 1")
+	}
+	// Stand-in for a child mid-drain: closed, Close not finished.
+	draining := &AutoPipeliner{closeDone: make(chan struct{})}
+	draining.closed.Store(true)
+	r.mu.Lock()
+	real := r.children[db1]
+	r.children[db1] = draining
+	r.mu.Unlock()
+	defer func() { _ = real.Close() }()
+
+	// A cache miss for another member runs the sweep.
+	if c, _ := r.childFor(db0); c == nil {
+		t.Fatal("no child for member 0")
+	}
+	dropped := make(chan struct{})
+	go func() {
+		r.dropChild(db1)
+		close(dropped)
+	}()
+	select {
+	case <-dropped:
+		t.Fatal("removal hook returned before the draining child finished its drain")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(draining.closeDone)
+	select {
+	case <-dropped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("removal hook did not return after the drain finished")
 	}
 }
 

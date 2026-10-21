@@ -50,6 +50,10 @@ type multidbFDRouter struct {
 	// replica routing on a cluster member, or a build error): their commands
 	// divert without rebuilding a child each time.
 	noFD map[*multidbDatabase]struct{}
+	// retired holds closed children taken out of children before their drain
+	// finished (a lane switch closes a child without removing it), so
+	// dropChild and close still wait for those drains.
+	retired map[*multidbDatabase][]*AutoPipeliner
 
 	// Async face only: one ordered lane at a time (see submitOrdered). lane is
 	// the autopipeliner commands go to now: the active member's FD child, or hd,
@@ -87,6 +91,7 @@ func newMultiDBFDRouter(parent *AutoPipeliner, c *MultiDBClient, cfg *AutoPipeli
 		childCfg: child,
 		children: make(map[*multidbDatabase]*AutoPipeliner),
 		noFD:     make(map[*multidbDatabase]struct{}),
+		retired:  make(map[*multidbDatabase][]*AutoPipeliner),
 		hdCfg:    hd,
 	}
 }
@@ -297,12 +302,17 @@ func (r *multidbFDRouter) childFor(db *multidbDatabase) (*AutoPipeliner, bool) {
 		return child, false
 	}
 	// Drop closed children while the write lock is held anyway (a lane switch
-	// closed them). A removed member's child is left alone: its onRemove hook
-	// (dropChild) drains it before RemoveDatabase closes the member's client,
-	// and closing it here instead would let the client close mid-drain.
+	// closed them). One still draining moves to retired: IsClosed is true
+	// before the drain ends, and dropChild must still wait for it before
+	// RemoveDatabase closes the member's client. A removed member's open
+	// child is left alone: its onRemove hook (dropChild) drains it.
+	r.pruneRetiredLocked()
 	for m, ch := range r.children {
 		if ch.IsClosed() {
 			delete(r.children, m)
+			if !ch.drained() {
+				r.retired[m] = append(r.retired[m], ch)
+			}
 		}
 	}
 	if db.removed.Load() {
@@ -350,21 +360,44 @@ func (r *multidbFDRouter) registerRemoveLocked(db *multidbDatabase) bool {
 	return true
 }
 
+// pruneRetiredLocked drops retired children whose drain finished. r.mu MUST
+// be held.
+func (r *multidbFDRouter) pruneRetiredLocked() {
+	for m, list := range r.retired {
+		kept := list[:0]
+		for _, ch := range list {
+			if !ch.drained() {
+				kept = append(kept, ch)
+			}
+		}
+		if len(kept) == 0 {
+			delete(r.retired, m)
+		} else {
+			r.retired[m] = kept
+		}
+	}
+}
+
 func (r *multidbFDRouter) removeHookID() string {
 	return fmt.Sprintf("multidbFDRouter#%p", r)
 }
 
-// dropChild drains and closes db's child when db is removed. It runs before
-// the member's client is closed, so the child flushes its accepted commands
-// while the member is still open.
+// dropChild drains and closes db's children (the current one and any retired
+// one still draining) when db is removed. It runs before the member's client
+// is closed, so the children flush their accepted commands while the member
+// is still open.
 func (r *multidbFDRouter) dropChild(db *multidbDatabase) {
 	r.mu.Lock()
-	ch := r.children[db]
+	children := r.retired[db]
+	if ch := r.children[db]; ch != nil {
+		children = append(children, ch)
+	}
 	delete(r.children, db)
+	delete(r.retired, db)
 	delete(r.noFD, db)
 	delete(r.removeHooks, db)
 	r.mu.Unlock()
-	if ch != nil {
+	for _, ch := range children {
 		_ = ch.Close()
 		_ = ch.WaitClosed()
 	}
@@ -445,6 +478,9 @@ func (r *multidbFDRouter) close() error {
 	for _, ch := range r.children {
 		children = append(children, ch)
 	}
+	for _, list := range r.retired {
+		children = append(children, list...)
+	}
 	r.mu.Unlock()
 	r.laneMu.Lock()
 	if hd := r.hd.Swap(nil); hd != nil {
@@ -468,6 +504,7 @@ func (r *multidbFDRouter) close() error {
 	// marks go too, since no hook would clear them later.
 	r.mu.Lock()
 	r.children = make(map[*multidbDatabase]*AutoPipeliner)
+	r.retired = make(map[*multidbDatabase][]*AutoPipeliner)
 	r.noFD = make(map[*multidbDatabase]struct{})
 	hooked := make([]*multidbDatabase, 0, len(r.removeHooks))
 	for db := range r.removeHooks {
