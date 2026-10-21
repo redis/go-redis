@@ -291,6 +291,69 @@ rdb := redis.NewClient(&redis.Options{
 })
 ```
 
+### Redis Cluster fan-out safety
+
+Cluster routing uses shared command metadata for key positions and read-only
+status. The default resolver preserves existing routing behavior, including the
+cluster-wide `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers.
+`CommandMetadata` configuration alone does not enable new fan-out policies.
+
+Opt into metadata-based fan-out and aggregation explicitly, before using the client:
+
+```go
+c := redis.NewClusterClient(&redis.ClusterOptions{
+    Addrs: []string{"localhost:7000", "localhost:7001", "localhost:7002"},
+})
+c.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+```
+
+The resolver uses the client's metadata view, including configured overrides and
+live metadata. To request a live metadata attempt during resolution, install
+`c.NewDynamicResolver()` instead; this is also an explicit fan-out opt-in.
+Supported policies can send `PING` to all masters or split commands such as
+`MGET`, `DEL`, and `MSET` across slots. Without opt-in, their existing routing
+and server-side `CROSSSLOT` behavior remain unchanged.
+
+The default `CommandMetadataStatic` mode performs no metadata network requests
+unless resolution reaches an explicitly installed `NewDynamicResolver`.
+After that first live attempt, reconnects and topology changes trigger identity
+verification, and a configured `RefreshInterval` also checks for module or
+version changes on existing connections. With no interval, an in-place module
+change needs a reconnect or topology change to be detected.
+Only the initial verification can delay resolution. After failure or later
+invalidation, commands immediately use the conservative metadata view while
+background attempts retry with backoff. Live metadata is published only after
+all required server compatibility checks succeed.
+For commands missing from the bundled snapshot, configure
+`CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` to supply their
+key positions and read-only flags. Resolved key specifications take precedence
+over `SetFirstKeyPos`; that hint applies when command metadata is unavailable.
+
+For opted-in numeric fan-out, sum/min/max preserve integer replies as `int64`,
+including raw `Do(...).Result()` values; integer overflow returns an error.
+Aggregates containing floating-point replies return `float64`.
+
+Explicit `Pipeline` and `TxPipeline` calls keep each command local to its selected
+node; automatic metadata fan-out is suppressed inside these batches. A transaction
+still requires all keys to share a slot. Ordered `AsyncAutoPipeline` rejects
+metadata fan-out before dispatch; same-slot metadata commands remain batchable.
+Use the blocking face or unordered half-duplex mode for automatic fan-out.
+Existing direct helpers and special routing retain their separate execution
+path: await prior async results before a dependent direct call.
+`SCAN`, `INFO`, and known diagnostic commands remain node-local; use
+`ForEachMaster` for whole-cluster inspection or scanning.
+
+`FT.CURSOR READ` is not retried after a lost reply because the server may
+already have advanced the cursor. Native cursor IDs and the existing cursor
+routing remain unchanged; cluster-wide cursor ownership and reply parsing are
+being addressed separately.
+
+Cluster-wide operations and distributed DDL can affect multiple shards and are
+not atomic across them, whether fan-out is performed by go-redis or by a Redis
+server/coordinator. If one shard fails, earlier shards may already have applied
+the command. There is no automatic rollback of those successful operations;
+inspect the error and be prepared for manual intervention or cleanup.
+
 ### Client-side caching
 
 go-redis supports server-assisted client-side caching for standalone and Cluster clients.
@@ -569,7 +632,15 @@ overlapping batches without deepening them.
 They work on `ClusterClient` too: commands are routed to the correct shard per
 key, so a single batch may span many slots; ordering across nodes is per key
 (same-key commands stay in order, different nodes' sub-pipelines run
-concurrently). Because batches share a few pipeline connections, autopipelining
+concurrently). Ordered `AsyncAutoPipeline` rejects metadata fan-out and custom
+multi-shard policies that would bypass its batch stream. Same-slot commands
+with metadata policies remain batchable. Use the blocking face, or
+`Unordered: true` in half-duplex mode, for automatic fan-out. Alternatively,
+await pending results and execute the dependent command through `ClusterClient`.
+Existing direct helpers (`DBSize`, script-management methods, and `Do`) and
+special routing still bypass the batch stream; await dependent results when
+mixing these with async batches. Because batches share
+a few pipeline connections, autopipelining
 also needs far fewer connections than a plain client at the same concurrency
 (see `PipelinePoolSize`). Autopipelining is only a win under concurrency (or
 windowed submission) — a single goroutine issuing one blocking command at a

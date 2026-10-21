@@ -6,9 +6,25 @@ import (
 	"sync/atomic"
 )
 
+// Preserve the existing cluster-wide helpers unless a resolver selects a policy
+// for this invocation. A resolver for an unrelated command must not change them.
+func (c *ClusterClient) usesLegacyClusterHelpers(ctx context.Context, cmd Cmder) bool {
+	if c.opt.DisableRoutingPolicies || c.cmdInfoResolver == nil ||
+		(c.cmdInfoResolver.legacyDefault && c.cmdInfoResolver.fallBackResolver == nil) {
+		return true
+	}
+	decision := c.resolveCommandRoutingDecision(ctx, cmd)
+	if decision.policy == nil && !decision.policyFromMetadata {
+		return true
+	}
+	// Process consumes this decision without invoking a custom resolver twice.
+	cmd.setClusterRoutingDecision(&decision)
+	return false
+}
+
 func (c *ClusterClient) DBSize(ctx context.Context) *IntCmd {
 	cmd := NewIntCmd(ctx, "dbsize")
-	_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 		var size atomic.Int64
 		err := c.ForEachMaster(ctx, func(ctx context.Context, master *Client) error {
 			n, err := master.DBSize(ctx).Result()
@@ -18,19 +34,17 @@ func (c *ClusterClient) DBSize(ctx context.Context) *IntCmd {
 			size.Add(n)
 			return nil
 		})
-		if err != nil {
-			cmd.SetErr(err)
-		} else {
+		if err == nil {
 			cmd.val = size.Load()
 		}
-		return nil
+		return err
 	})
 	return cmd
 }
 
 func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	cmd := NewStringCmd(ctx, "script", "load", script)
-	_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
 		var mu sync.Mutex
 		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
 			val, err := shard.ScriptLoad(ctx, script).Result()
@@ -46,24 +60,17 @@ func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCm
 
 			return nil
 		})
-		if err != nil {
-			cmd.SetErr(err)
-		}
-		return nil
+		return err
 	})
 	return cmd
 }
 
 func (c *ClusterClient) ScriptFlush(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "script", "flush")
-	_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
-		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+		return c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
 			return shard.ScriptFlush(ctx).Err()
 		})
-		if err != nil {
-			cmd.SetErr(err)
-		}
-		return nil
 	})
 	return cmd
 }
@@ -76,13 +83,11 @@ func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		args[2+i] = hash
 	}
 	cmd := NewBoolSliceCmd(ctx, args...)
-
-	result := make([]bool, len(hashes))
-	for i := range result {
-		result[i] = true
-	}
-
-	_ = c.withProcessHook(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+		result := make([]bool, len(hashes))
+		for i := range result {
+			result[i] = true
+		}
 		var mu sync.Mutex
 		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
 			val, err := shard.ScriptExists(ctx, hashes...).Result()
@@ -98,12 +103,23 @@ func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 
 			return nil
 		})
-		if err != nil {
-			cmd.SetErr(err)
-		} else {
+		if err == nil {
 			cmd.val = result
 		}
-		return nil
+		return err
 	})
 	return cmd
+}
+
+// processClusterHelper resolves the helper policy only after process hooks
+// continue. Legacy helper fan-out and policy routing share the same hook call.
+func (c *ClusterClient) processClusterHelper(ctx context.Context, cmd Cmder, legacy ProcessHook) {
+	err := c.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
+		if c.usesLegacyClusterHelpers(ctx, cmd) {
+			return legacy(ctx, cmd)
+		}
+		return c.process(ctx, cmd)
+	})
+	cmd.SetErr(err)
+	cmd.setClusterRoutingDecision(nil)
 }
