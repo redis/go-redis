@@ -1346,7 +1346,12 @@ func (m *Manager) healthCheck() {
 			continue
 		}
 
-		// The write went out; now the server owes a reply.
+		// The write went out; now the server owes a reply — unless the
+		// reply requirement is off, which a maintenance window must not
+		// revive (EffectiveReadTimeout relaxes a non-positive timeout too).
+		if pingTimeout <= 0 {
+			continue
+		}
 		wait := cn.EffectiveReadTimeout(pingTimeout)
 		if wait <= 0 {
 			continue

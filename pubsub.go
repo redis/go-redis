@@ -12,7 +12,7 @@ import (
 )
 
 // The pub/sub engine lives in internal/pubsub; the types below are
-// re-exported as aliases so they keep their redis.* identity.
+// re-exported as aliases (%T and reflect print them as pubsub.*).
 type (
 	// Message received as result of a PUBLISH command issued by another
 	// client.

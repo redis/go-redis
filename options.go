@@ -170,6 +170,10 @@ type Options struct {
 	//	- `-1` - no timeout (block indefinitely).
 	//	- `-2` - disables SetWriteDeadline calls completely.
 	//
+	// Writes on the shared pub/sub connection always have a deadline: with
+	// `-1` or `-2` they use a 3-second fallback instead, because they run
+	// under a lock that every subscriber of the client waits on.
+	//
 	// default: 5 seconds (same as ReadTimeout, which it follows when unset)
 	WriteTimeout time.Duration
 

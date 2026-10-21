@@ -3003,25 +3003,6 @@ func (c *Client) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	return pubsub
 }
 
-// Unsubscribe removes channel subscriptions across every PubSub of the
-// client; UNSUBSCRIBE is sent for channels left with no subscriber.
-func (c *Client) Unsubscribe(ctx context.Context, channels ...string) error {
-	return c.pubSubManager.Unsubscribe(ctx, channels...)
-}
-
-// PUnsubscribe removes pattern subscriptions across every PubSub of the
-// client; PUNSUBSCRIBE is sent for patterns left with no subscriber.
-func (c *Client) PUnsubscribe(ctx context.Context, patterns ...string) error {
-	return c.pubSubManager.PUnsubscribe(ctx, patterns...)
-}
-
-// SUnsubscribe removes shard-channel subscriptions across every PubSub
-// of the client; SUNSUBSCRIBE is sent for shard channels left with no
-// subscriber.
-func (c *Client) SUnsubscribe(ctx context.Context, channels ...string) error {
-	return c.pubSubManager.SUnsubscribe(ctx, channels...)
-}
-
 //------------------------------------------------------------------------------
 
 // Conn represents a single Redis connection rather than a pool of connections.

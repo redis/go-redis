@@ -203,7 +203,7 @@ func configureClusterTopology(ctx context.Context, scenario *clusterScenario) er
 				return err
 			}
 			return assertSlotsEqual(res, wanted)
-		}, 600*time.Second)
+		}, 90*time.Second)
 		if err != nil {
 			return err
 		}
