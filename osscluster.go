@@ -976,6 +976,9 @@ func newClusterState(
 			// reachable, since it is the port that returned this slot map.
 			// See https://github.com/redis/go-redis/issues/3726.
 			addr = replaceZeroPort(addr, originPort)
+			// With cluster-preferred-endpoint-type unknown-endpoint the server
+			// sends no host and expects the client to reuse the origin host.
+			addr = replaceEmptyHost(addr, originHost)
 
 			node, err := c.nodes.GetOrCreateWithNodeAddress(addr, nodeAddress)
 			if err != nil {
@@ -1042,6 +1045,14 @@ func replaceZeroPort(nodeAddr, originPort string) string {
 		return nodeAddr
 	}
 	return net.JoinHostPort(nodeHost, originPort)
+}
+
+func replaceEmptyHost(nodeAddr, originHost string) string {
+	nodeHost, nodePort, err := net.SplitHostPort(nodeAddr)
+	if err != nil || nodeHost != "" {
+		return nodeAddr
+	}
+	return net.JoinHostPort(originHost, nodePort)
 }
 
 // isLoopback returns true if the host is a loopback address.
