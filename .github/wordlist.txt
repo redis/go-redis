@@ -92,6 +92,7 @@ CLI
 conns
 CSC
 DBs
+DDL
 goroutine
 goroutines
 PerConnection
@@ -130,3 +131,6 @@ fetch's
 loopback
 autopipeliner
 autopipeliner's
+AutoPipeline's
+uncached
+failback
