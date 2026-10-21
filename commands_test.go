@@ -5234,6 +5234,49 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("sets", func() {
+		Describe("member expiration", func() {
+			BeforeEach(func() {
+				SkipBeforeRedisVersion("8.12", "set member expiration needs Redis 8.12")
+			})
+
+			It("sets, reads and removes member expirations", func() {
+				Expect(client.SAddEX(ctx, "sexp", "a", "b", "c").Val()).To(Equal(int64(1)))
+
+				res, err := client.SExpire(ctx, "sexp", 100*time.Second, "a", "nosuch").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated, redis.SMemberNotFound}))
+
+				res, err = client.STTL(ctx, "sexp", "a", "b", "nosuch").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res[0]).To(BeNumerically("~", 100, 2))
+				Expect(res[1:]).To(Equal([]int64{redis.SMemberNoExpiration, redis.SMemberNotFound}))
+
+				res, err = client.SExpireWithArgs(ctx, "sexp", 50*time.Second, redis.SExpireArgs{GT: true}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireConditionFail}))
+
+				res, err = client.SPersist(ctx, "sexp", "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated, redis.SMemberNoExpiration}))
+
+				res, err = client.SPExpireAt(ctx, "sexp", time.UnixMilli(1), "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireDeleted}))
+			})
+
+			It("returns one -2 per member for a missing key", func() {
+				res, err := client.SPTTL(ctx, "sexp-missing", "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SMemberNotFound, redis.SMemberNotFound}))
+			})
+
+			It("honors SADDEX conditions", func() {
+				n, err := client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{Condition: redis.SAddEXMXX}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(0)))
+			})
+		})
+
 		It("should SAdd", func() {
 			sAdd := client.SAdd(ctx, "set", "Hello")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
