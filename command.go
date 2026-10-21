@@ -5061,29 +5061,31 @@ type GeoRadiusQuery struct {
 	Sort      string
 	Store     string
 	StoreDist string
-
-	// WithCoord+WithDist+WithGeoHash
-	withLen int
 }
 
 type GeoLocationCmd struct {
 	baseCmd
 
-	q         *GeoRadiusQuery
+	// q is a copy of the caller's query, taken when the command is built, so
+	// the reply is parsed with the flags that were sent even if the caller
+	// changes or reuses its query before the reply arrives (pipelines,
+	// autopipelining).
+	q         GeoRadiusQuery
 	locations []GeoLocation
 }
 
 var _ Cmder = (*GeoLocationCmd)(nil)
 
 func NewGeoLocationCmd(ctx context.Context, q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
-	return &GeoLocationCmd{
+	cmd := &GeoLocationCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
-			args:    geoLocationArgs(q, args...),
 			cmdType: CmdTypeGeoLocation,
 		},
-		q: q,
+		q: *q,
 	}
+	cmd.args = geoLocationArgs(&cmd.q, args...)
+	return cmd
 }
 
 func geoLocationArgs(q *GeoRadiusQuery, args ...interface{}) []interface{} {
@@ -5095,15 +5097,12 @@ func geoLocationArgs(q *GeoRadiusQuery, args ...interface{}) []interface{} {
 	}
 	if q.WithCoord {
 		args = append(args, "withcoord")
-		q.withLen++
 	}
 	if q.WithDist {
 		args = append(args, "withdist")
-		q.withLen++
 	}
 	if q.WithGeoHash {
 		args = append(args, "withhash")
-		q.withLen++
 	}
 	if q.Count > 0 {
 		args = append(args, "count", q.Count)
@@ -5148,9 +5147,21 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.locations = make([]GeoLocation, n)
 
+	// Count the WITH flags of the query this command was built with.
+	withLen := 0
+	if cmd.q.WithCoord {
+		withLen++
+	}
+	if cmd.q.WithDist {
+		withLen++
+	}
+	if cmd.q.WithGeoHash {
+		withLen++
+	}
+
 	for i := 0; i < len(cmd.locations); i++ {
 		// only name
-		if cmd.q.withLen == 0 {
+		if withLen == 0 {
 			if cmd.locations[i].Name, err = rd.ReadString(); err != nil {
 				return err
 			}
@@ -5158,7 +5169,7 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 		}
 
 		// +name
-		if err = rd.ReadFixedArrayLen(cmd.q.withLen + 1); err != nil {
+		if err = rd.ReadFixedArrayLen(withLen + 1); err != nil {
 			return err
 		}
 
@@ -5192,21 +5203,6 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *GeoLocationCmd) Clone() Cmder {
-	var q *GeoRadiusQuery
-	if cmd.q != nil {
-		q = &GeoRadiusQuery{
-			Radius:      cmd.q.Radius,
-			Unit:        cmd.q.Unit,
-			WithCoord:   cmd.q.WithCoord,
-			WithDist:    cmd.q.WithDist,
-			WithGeoHash: cmd.q.WithGeoHash,
-			Count:       cmd.q.Count,
-			Sort:        cmd.q.Sort,
-			Store:       cmd.q.Store,
-			StoreDist:   cmd.q.StoreDist,
-			withLen:     cmd.q.withLen,
-		}
-	}
 	var locations []GeoLocation
 	if cmd.locations != nil {
 		locations = make([]GeoLocation, len(cmd.locations))
@@ -5214,7 +5210,7 @@ func (cmd *GeoLocationCmd) Clone() Cmder {
 	}
 	return &GeoLocationCmd{
 		baseCmd:   cmd.cloneBaseCmd(),
-		q:         q,
+		q:         cmd.q,
 		locations: locations,
 	}
 }
@@ -5287,15 +5283,17 @@ func geoSearchArgs(q *GeoSearchQuery, args []interface{}) []interface{} {
 	}
 
 	if q.Radius > 0 {
-		if q.RadiusUnit == "" {
-			q.RadiusUnit = "km"
+		unit := q.RadiusUnit
+		if unit == "" {
+			unit = "km"
 		}
-		args = append(args, "byradius", q.Radius, q.RadiusUnit)
+		args = append(args, "byradius", q.Radius, unit)
 	} else {
-		if q.BoxUnit == "" {
-			q.BoxUnit = "km"
+		unit := q.BoxUnit
+		if unit == "" {
+			unit = "km"
 		}
-		args = append(args, "bybox", q.BoxWidth, q.BoxHeight, q.BoxUnit)
+		args = append(args, "bybox", q.BoxWidth, q.BoxHeight, unit)
 	}
 
 	if q.Sort != "" {
@@ -5315,7 +5313,8 @@ func geoSearchArgs(q *GeoSearchQuery, args []interface{}) []interface{} {
 type GeoSearchLocationCmd struct {
 	baseCmd
 
-	opt *GeoSearchLocationQuery
+	// opt is a copy of the caller's query; see GeoLocationCmd.q.
+	opt GeoSearchLocationQuery
 	val []GeoLocation
 }
 
@@ -5324,14 +5323,15 @@ var _ Cmder = (*GeoSearchLocationCmd)(nil)
 func NewGeoSearchLocationCmd(
 	ctx context.Context, opt *GeoSearchLocationQuery, args ...interface{},
 ) *GeoSearchLocationCmd {
-	return &GeoSearchLocationCmd{
+	cmd := &GeoSearchLocationCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
-			args:    geoSearchLocationArgs(opt, args),
 			cmdType: CmdTypeGeoSearchLocation,
 		},
-		opt: opt,
+		opt: *opt,
 	}
+	cmd.args = geoSearchLocationArgs(&cmd.opt, args)
+	return cmd
 }
 
 func (cmd *GeoSearchLocationCmd) SetVal(val []GeoLocation) {
@@ -5427,27 +5427,6 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *GeoSearchLocationCmd) Clone() Cmder {
-	var opt *GeoSearchLocationQuery
-	if cmd.opt != nil {
-		opt = &GeoSearchLocationQuery{
-			GeoSearchQuery: GeoSearchQuery{
-				Member:     cmd.opt.Member,
-				Longitude:  cmd.opt.Longitude,
-				Latitude:   cmd.opt.Latitude,
-				Radius:     cmd.opt.Radius,
-				RadiusUnit: cmd.opt.RadiusUnit,
-				BoxWidth:   cmd.opt.BoxWidth,
-				BoxHeight:  cmd.opt.BoxHeight,
-				BoxUnit:    cmd.opt.BoxUnit,
-				Sort:       cmd.opt.Sort,
-				Count:      cmd.opt.Count,
-				CountAny:   cmd.opt.CountAny,
-			},
-			WithCoord: cmd.opt.WithCoord,
-			WithDist:  cmd.opt.WithDist,
-			WithHash:  cmd.opt.WithHash,
-		}
-	}
 	var val []GeoLocation
 	if cmd.val != nil {
 		val = make([]GeoLocation, len(cmd.val))
@@ -5455,7 +5434,7 @@ func (cmd *GeoSearchLocationCmd) Clone() Cmder {
 	}
 	return &GeoSearchLocationCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		opt:     opt,
+		opt:     cmd.opt,
 		val:     val,
 	}
 }
