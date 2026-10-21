@@ -561,6 +561,9 @@ type FTSynDumpCmd struct {
 type FTAggregateResult struct {
 	Total int
 	Rows  []AggregateRow
+	// Cursor is the cursor id returned with WITHCURSOR. Zero when the cursor
+	// is exhausted or WITHCURSOR was not used.
+	Cursor int64
 	// Warnings holds server warnings for a partial result (search-on-timeout
 	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
@@ -1049,38 +1052,70 @@ func (cmd *AggregateCmd) String() string {
 }
 
 func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
-	readType, err := rd.PeekReplyType()
+	// Keep the raw reply for RawVal/RawResult.
+	cmd.rawVal, err = rd.ReadReply()
 	if err != nil {
 		return err
 	}
+	cmd.val, err = parseFTAggregateReply(cmd.rawVal)
+	return err
+}
 
-	// RESP3 returns a map, RESP2 returns an array
-	if readType == proto.RespMap {
-		// Read raw response first for backwards compatibility
-		cmd.rawVal, err = rd.ReadReply()
-		if err != nil {
-			return err
+// parseFTAggregateReply parses an FT.AGGREGATE or FT.CURSOR READ reply.
+// Without a cursor the reply is a RESP2 array [total, row, ...] or a RESP3
+// map. With WITHCURSOR, and for FT.CURSOR READ, the reply is
+// [payload, cursor_id], where payload is one of the two shapes above.
+func parseFTAggregateReply(data interface{}) (*FTAggregateResult, error) {
+	if arr, ok := data.([]interface{}); ok && len(arr) == 2 {
+		switch arr[0].(type) {
+		case []interface{}, map[interface{}]interface{}:
+			cursor, ok := arr[1].(int64)
+			if !ok {
+				return nil, fmt.Errorf("invalid cursor id format: %T", arr[1])
+			}
+			res, err := parseFTAggregatePayload(arr[0])
+			if err != nil {
+				return nil, err
+			}
+			res.Cursor = cursor
+			return res, nil
 		}
-		// Parse the raw response into structured result
-		if mapVal, ok := cmd.rawVal.(map[interface{}]interface{}); ok {
-			cmd.val, err = parseFTAggregateMapRESP3(mapVal)
-		} else {
-			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
-		}
-		return err
 	}
+	return parseFTAggregatePayload(data)
+}
 
-	// RESP2 format or error response - use ReadReply to handle errors properly
+func parseFTAggregatePayload(data interface{}) (*FTAggregateResult, error) {
+	switch v := data.(type) {
+	case map[interface{}]interface{}:
+		return parseFTAggregateMapRESP3(v)
+	case []interface{}:
+		return ProcessAggregateResult(v)
+	default:
+		return nil, fmt.Errorf("unexpected response type: %T", data)
+	}
+}
+
+// readFTCursorReadReply reads an FT.CURSOR READ reply into the map documented
+// on FTCursorRead. The keys are the same for RESP2 and RESP3.
+func readFTCursorReadReply(rd *proto.Reader) (map[string]interface{}, error) {
 	data, err := rd.ReadReply()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cmd.rawVal = data // Store raw value for debugging
-	if dataSlice, ok := data.([]interface{}); ok {
-		cmd.val, err = ProcessAggregateResult(dataSlice)
-		return err
+	res, err := parseFTAggregateReply(data)
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Errorf("unexpected response type: %T", data)
+	rows := make([]map[string]interface{}, len(res.Rows))
+	for i, row := range res.Rows {
+		rows[i] = row.Fields
+	}
+	return map[string]interface{}{
+		"cursor":        res.Cursor,
+		"total_results": res.Total,
+		"results":       rows,
+		"warning":       res.Warnings,
+	}, nil
 }
 
 // parseFTAggregateMapRESP3 parses the RESP3 format response from FT.AGGREGATE.
@@ -1178,7 +1213,8 @@ func (cmd *AggregateCmd) Clone() Cmder {
 	var val *FTAggregateResult
 	if cmd.val != nil {
 		val = &FTAggregateResult{
-			Total: cmd.val.Total,
+			Total:  cmd.val.Total,
+			Cursor: cmd.val.Cursor,
 		}
 		if cmd.val.Rows != nil {
 			val.Rows = make([]AggregateRow, len(cmd.val.Rows))
@@ -1206,6 +1242,9 @@ func (cmd *AggregateCmd) Clone() Cmder {
 // FTAggregateWithArgs - Performs a search query on an index and applies a series of aggregate transformations to the result.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // This function also allows for specifying additional options such as: Verbatim, LoadAll, Timeout, Steps, WithCursor, Params, and DialectVersion.
+// On ClusterClient, FT.CURSOR READ/DEL and FT.AGGREGATE with WithCursor route
+// by the slot of the index name and go to the slot master, so use the same
+// index name for the aggregate and its cursor calls.
 // For more information, please refer to the Redis documentation:
 // [FT.AGGREGATE]: (https://redis.io/commands/ft.aggregate/)
 func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd {
@@ -1694,6 +1733,9 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 
 // FTCursorDel - Deletes a cursor from an existing index.
 // The 'index' parameter specifies the index from which to delete the cursor, and the 'cursorId' parameter specifies the ID of the cursor to delete.
+// On ClusterClient, FT.CURSOR READ/DEL and FT.AGGREGATE with WithCursor route
+// by the slot of the index name and go to the slot master, so use the same
+// index name for the aggregate and its cursor calls.
 // For more information, please refer to the Redis documentation:
 // [FT.CURSOR DEL]: (https://redis.io/commands/ft.cursor-del/)
 func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *StatusCmd {
@@ -1704,6 +1746,16 @@ func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *S
 
 // FTCursorRead - Reads the next results from an existing cursor.
 // The 'index' parameter specifies the index from which to read the cursor, the 'cursorId' parameter specifies the ID of the cursor to read, and the 'count' parameter specifies the number of results to read.
+// The result map has the same keys for RESP2 and RESP3:
+//   - "cursor" (int64): the next cursor id; 0 when the cursor is exhausted.
+//   - "total_results" (int): see FTAggregateResult.Total.
+//   - "results" ([]map[string]interface{}): one map of fields per row.
+//   - "warning" ([]string): server warnings (RESP3 only; nil on RESP2).
+//
+// On ClusterClient, FT.CURSOR READ/DEL and FT.AGGREGATE with WithCursor route
+// by the slot of the index name and go to the slot master, so use the same
+// index name for the aggregate and its cursor calls.
+//
 // For more information, please refer to the Redis documentation:
 // [FT.CURSOR READ]: (https://redis.io/commands/ft.cursor-read/)
 func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int, count int) *MapStringInterfaceCmd {
@@ -1712,6 +1764,7 @@ func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int, c
 		args = append(args, "COUNT", count)
 	}
 	cmd := NewMapStringInterfaceCmd(ctx, args...)
+	cmd.parse = readFTCursorReadReply
 	_ = c(ctx, cmd)
 	return cmd
 }
