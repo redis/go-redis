@@ -3057,6 +3057,7 @@ func (c *ClusterClient) pubSub() *PubSub {
 			err = node.Client.initConn(ctx, cn)
 			if err != nil {
 				_ = cn.Close()
+				node.Client.removeStreamingCredentialsState(cn)
 				node = nil
 				return nil, err
 			}

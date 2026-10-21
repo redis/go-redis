@@ -849,6 +849,7 @@ func (c *SentinelClient) pubSub() *PubSub {
 			err = c.initConn(ctx, cn)
 			if err != nil {
 				_ = cn.Close()
+				c.removeStreamingCredentialsState(cn)
 				return nil, err
 			}
 			// Track connection in PubSubPool
