@@ -306,6 +306,30 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 	return true, Reservation{gen: gen, held: true, settled: new(atomic.Bool)}
 }
 
+// CurrentClosedReservation returns the slot-less reservation a closed-state
+// AllowReserve would hand out now, and false when the circuit is not closed.
+// It is for owners that admit work with AllowReserve but cannot carry the
+// reservation to where the outcome lands (the MultiDB full-duplex router: the
+// outcome comes from the engine's reader). Settling with it records the outcome
+// in the current closed episode, and nothing while the circuit is open or
+// half-open, so a late outcome cannot re-open or close a recovery episode it
+// never probed.
+//
+// The state and generation are read as a seqlock: generation, state,
+// generation again. Every transition into a new episode (Reset, Open ->
+// HalfOpen) bumps the generation before it publishes the new state, so an
+// unchanged generation around a Closed read means the generation belongs to
+// that closed episode. Without the re-check, a Closed read followed by a
+// Closed -> Open -> HalfOpen cycle would pair the old Closed state with the
+// new episode's generation. Lock-free: this runs once per reply.
+func (cb *CircuitBreaker) CurrentClosedReservation() (Reservation, bool) {
+	gen := cb.generation.Load()
+	if State(cb.state.Load()) != StateClosed || cb.generation.Load() != gen {
+		return Reservation{}, false
+	}
+	return Reservation{gen: gen}, true
+}
+
 // Held reports whether the reservation holds a half-open probe slot (a
 // half-open admission) rather than being a slot-less closed admission.
 func (r Reservation) Held() bool {

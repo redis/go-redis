@@ -52,6 +52,13 @@ type clusterFDRouter struct {
 	// the stale-child sweep and the hook itself drop children entries while the
 	// registration on the node client stays live.
 	evictHooks map[*Client]struct{}
+
+	// ownerDivert, when set by an owner above this router (MultiDB), runs a
+	// command this router cannot place on a node child through the owner's
+	// path instead of cc.Process, so it keeps the owner's admission,
+	// accounting, retries and failover. Set once before the router serves
+	// traffic.
+	ownerDivert func(ctx context.Context, cmd Cmder) AutoFuture
 }
 
 // clusterFDRouterEvictID is the onClose registry id of this router's evict
@@ -89,6 +96,17 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	// command on the first socket error. Give the child the cluster's MaxRedirects
 	// so a transient node blip replays the unacked tail on a fresh connection.
 	child.clusterRetryBudget = cc.opt.MaxRedirects
+	// Connection-error and lease-failure recovery: re-issue the child's
+	// replayable work through the ClusterClient pipeline, which routes each
+	// command by its slot against live topology, instead of only on a fresh
+	// connection to this node. A node removed or replaced by topology change
+	// would otherwise exhaust the budget and fail every accepted command on it.
+	// An owner above this router (MultiDB) may have set its own reroute, which
+	// already covers this cluster: keep it. The engine passes each group's
+	// remaining budget as the redirect bound.
+	if child.fdReroute == nil {
+		child.fdReroute = cc.processPipelineRetries
+	}
 	return &clusterFDRouter{
 		parent:   parent,
 		cc:       cc,
@@ -191,6 +209,9 @@ func (r *clusterFDRouter) rejectClosed(cmd Cmder) AutoFuture {
 // ready itself on the deferred face and returns a batch that completes when
 // the command has executed.
 func (r *clusterFDRouter) divertToProcess(ctx context.Context, cmd Cmder) AutoFuture {
+	if r.ownerDivert != nil {
+		return r.ownerDivert(ctx, cmd)
+	}
 	return AutoFuture{cmd: cmd, batch: r.parent.runOutsidePipeline(ctx, cmd)}
 }
 
@@ -261,6 +282,11 @@ func (r *clusterFDRouter) getOrCreateChild(nc *Client) (*AutoPipeliner, bool) {
 	// these to Process rather than dispatch through an engine that cannot follow
 	// redirects.
 	if err != nil || child == nil || child.fd == nil || child.IsClosed() || !child.fd.redirectAware {
+		return nil, false
+	}
+	// Same for an owner above this router (MultiDB): a node child cached
+	// without its outcome hook would skip the owner's accounting silently.
+	if r.childCfg.fdOutcome != nil && child.fd.outcome == nil {
 		return nil, false
 	}
 
