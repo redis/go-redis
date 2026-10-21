@@ -765,7 +765,10 @@ func masterReplicaDialer(
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return tls.DialWithDialer(netDialer, network, addr, failover.opt.TLSConfig)
+		// See NewDialer: tls.DialWithDialer ignores ctx, and a disabled DialTimeout
+		// would leave the handshake unbounded.
+		tlsDialer := &tls.Dialer{NetDialer: netDialer, Config: failover.opt.TLSConfig}
+		return tlsDialer.DialContext(ctx, network, addr)
 	}
 }
 
@@ -782,6 +785,12 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	if opt == nil {
 		panic("redis: NewSentinelClient nil options")
 	}
+	// Clone like NewClient does: init() normalises fields, and construction must
+	// not rewrite the caller's *Options. Without the clone, initialising the same
+	// *Options twice turns a disabled DialTimeout (0 after the first init) into the
+	// 5 second default on the second pass — and that same pointer is captured by
+	// the first client's dialer.
+	opt = opt.clone()
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{

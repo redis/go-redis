@@ -728,7 +728,13 @@ func (opt *Options) init() {
 	if opt.Protocol < 2 {
 		opt.Protocol = 3
 	}
-	if opt.DialTimeout == 0 {
+	// A duration option is disabled with a value of 0 or less in ParseURL, and
+	// ReadTimeout/WriteTimeout turn that into "no deadline". A negative value
+	// cannot do that for DialTimeout: net.Dialer reads it as a deadline that has
+	// already passed and fails every dial at once, so it has to become 0.
+	if opt.DialTimeout < 0 {
+		opt.DialTimeout = 0
+	} else if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
 	// <= 0, not == 0: the pool already treats a nonpositive value as the default
@@ -897,14 +903,28 @@ var defaultKeepAliveConfig = net.KeepAliveConfig{
 // when none is specified in Options.Dialer.
 func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// ParseURL disables DialTimeout with a value of 0 or less, and init turns
+		// that into 0 ("no deadline"). This dialer is exported and can be built
+		// straight from a parsed Options, without NewClient's clone or init, so it
+		// normalises the value itself: net.Dialer reads a negative timeout as a
+		// deadline that has already passed.
+		timeout := opt.DialTimeout
+		if timeout < 0 {
+			timeout = 0
+		}
 		netDialer := &net.Dialer{
-			Timeout:         opt.DialTimeout,
+			Timeout:         timeout,
 			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return tls.DialWithDialer(netDialer, network, addr, opt.TLSConfig)
+		// tls.DialWithDialer ignores ctx and dials with context.Background, so a
+		// peer that accepts TCP and then stalls the handshake could not be stopped
+		// by cancelling the caller, and a disabled DialTimeout leaves it unbounded.
+		// tls.Dialer.DialContext keeps the cancellation.
+		tlsDialer := &tls.Dialer{NetDialer: netDialer, Config: opt.TLSConfig}
+		return tlsDialer.DialContext(ctx, network, addr)
 	}
 }
 

@@ -645,6 +645,20 @@ func (c *baseClient) getConnLimited(ctx context.Context) (cn *pool.Conn, limited
 	return cn, false, nil
 }
 
+// initConnWaitContext caps ctx at dialTimeout, but never extends a deadline the
+// caller already set. A non-positive dialTimeout means the option is disabled
+// (ParseURL uses a value of 0 or less for that), so ctx is returned unchanged:
+// context.WithTimeout would expire the wait immediately.
+func initConnWaitContext(ctx context.Context, dialTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if dialTimeout <= 0 {
+		return ctx, nil
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < dialTimeout {
+		return ctx, nil
+	}
+	return context.WithTimeout(ctx, dialTimeout)
+}
+
 func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	cn, err := c.connPool.Get(ctx)
 	if err != nil {
@@ -921,28 +935,14 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			}
 
 			if finalState == pool.StateInitializing {
-				// Another goroutine is initializing - WAIT for it to complete
-				// Use a context with timeout = min(remaining command timeout, DialTimeout)
-				// This prevents waiting too long while respecting the caller's deadline
-				var waitCtx context.Context
-				var cancel context.CancelFunc
-				dialTimeout := c.opt.DialTimeout
-
-				if cmdDeadline, hasCmdDeadline := ctx.Deadline(); hasCmdDeadline {
-					// Calculate remaining time until command deadline
-					remainingTime := time.Until(cmdDeadline)
-					// Use the minimum of remaining time and DialTimeout
-					if remainingTime < dialTimeout {
-						// Command deadline is sooner, use it
-						waitCtx = ctx
-					} else {
-						// DialTimeout is shorter, cap the wait at DialTimeout
-						waitCtx, cancel = context.WithTimeout(ctx, dialTimeout)
-					}
-				} else {
-					// No command deadline, use DialTimeout to prevent waiting indefinitely
-					waitCtx, cancel = context.WithTimeout(ctx, dialTimeout)
-				}
+				// Another goroutine is initializing - WAIT for it to complete.
+				// The wait is capped at DialTimeout while respecting a sooner command
+				// deadline. A non-positive DialTimeout means the option is disabled
+				// (ParseURL uses 0 or less for that), so it must not cap the wait at
+				// all: context.WithTimeout(ctx, 0) expires the wait immediately, the
+				// same way it would have with the -1 sentinel. pool.go guards its own
+				// WithTimeout calls with "DialTimeout > 0"; this path does the same.
+				waitCtx, cancel := initConnWaitContext(ctx, c.opt.DialTimeout)
 				if cancel != nil {
 					defer cancel()
 				}
