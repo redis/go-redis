@@ -2259,7 +2259,7 @@ func (c *multidbCore) notifyPubSubs(ctx context.Context) {
 		wg.Add(1)
 		go func(ps *PubSub) {
 			defer wg.Done()
-			ps.Reconnect(rctx, reason)
+			ps.forceReconnect(rctx, reason)
 		}(ps)
 	}
 	go func() {

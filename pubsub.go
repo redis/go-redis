@@ -195,11 +195,11 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 	}
 }
 
-// Reconnect closes the current connection and re-dials through the PubSub's
-// connection factory, resubscribing to all channels and patterns. It is used
-// by MultiDBClient to move subscriptions to the new active database after a
-// failover, and can be called by applications to force a re-dial.
-func (c *PubSub) Reconnect(ctx context.Context, reason error) {
+// forceReconnect closes the current connection and re-dials through the
+// PubSub's connection factory, resubscribing to all channels and patterns.
+// MultiDBClient uses it to move subscriptions to the new active database after
+// a failover.
+func (c *PubSub) forceReconnect(ctx context.Context, reason error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
