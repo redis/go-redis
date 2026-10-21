@@ -226,11 +226,13 @@ func TestManagerUnsubscribe(t *testing.T) {
 	fsc.expectCmd(t, "subscribe", "keep")
 
 	// h1 leaving "shared" must not unsubscribe it server-side: h2 still
-	// listens — no command. And a handle owning nothing stays usable and
-	// can subscribe again.
+	// listens — only the barrier PING whose pong confirms h1's release.
+	// And a handle owning nothing stays usable and can subscribe again.
 	if err := h1.Unsubscribe(ctx, "shared"); err != nil {
 		t.Fatalf("h1 Unsubscribe: %v", err)
 	}
+	fsc.expectCmd(t, "ping")
+	fsc.pong([]string{"ping"})
 	fsc.expectNoCmd(t, 100*time.Millisecond)
 	if _, err := h1.Subscribe(ctx, "revived"); err != nil {
 		t.Fatalf("Subscribe after drain: %v", err)
@@ -968,13 +970,14 @@ func TestHealthCheckPingDoesNotRedial(t *testing.T) {
 	fsc2.sendMessage(t, "pong", "")
 }
 
-// TestManagerSlowConsumerDrop pins the drop policy: with a handle's
-// events buffer full and nobody consuming, further deliveries are
-// dropped without stalling the fan-out. A second handle on another
+// TestManagerSlowConsumerBacklog pins the slow-consumer policy: with a
+// handle's events buffer full and nobody consuming, further deliveries
+// queue behind it without stalling the fan-out, and the consumer gets
+// all of them, in order, once it reads. A second handle on another
 // channel serves as an ordering fence: the single listen goroutine fans
 // out FIFO, so receiving the fence message proves the burst fan-outs
 // completed.
-func TestManagerSlowConsumerDrop(t *testing.T) {
+func TestManagerSlowConsumerBacklog(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	cfg := testConfig("node:6379")
@@ -998,25 +1001,82 @@ func TestManagerSlowConsumerDrop(t *testing.T) {
 	fsc.sendConfirm(t, "subscribe", "fence", 2)
 
 	// slow has no consumer yet: its confirmation and m1 fill its 2-slot
-	// events buffer, m2 and m3 are dropped.
-	fsc.sendMessage(t, "message", "slow", "m1")
-	fsc.sendMessage(t, "message", "slow", "m2")
-	fsc.sendMessage(t, "message", "slow", "m3")
+	// events buffer, m2..m50 queue in its backlog.
+	for i := 1; i <= 50; i++ {
+		fsc.sendMessage(t, "message", "slow", fmt.Sprintf("m%d", i))
+	}
 	fsc.sendMessage(t, "message", "fence", "done")
 
 	if msg := recvMsg(t, fenceCh); msg.Payload != "done" {
 		t.Fatalf("fence got %q, want \"done\"", msg.Payload)
 	}
 
-	// The consumer catches up: the buffered message arrives, the dropped
-	// ones are gone, and the stream continues.
 	slowCh := slow.Channel()
-	if msg := recvMsg(t, slowCh); msg.Payload != "m1" {
-		t.Fatalf("buffered message = %q, want \"m1\"", msg.Payload)
+	for i := 1; i <= 50; i++ {
+		if msg := recvMsg(t, slowCh); msg.Payload != fmt.Sprintf("m%d", i) {
+			t.Fatalf("got %q, want m%d", msg.Payload, i)
+		}
 	}
-	fsc.sendMessage(t, "message", "slow", "m4")
-	if msg := recvMsg(t, slowCh); msg.Payload != "m4" {
-		t.Fatalf("got %q after drops, want \"m4\"", msg.Payload)
+	fsc.sendMessage(t, "message", "slow", "after")
+	if msg := recvMsg(t, slowCh); msg.Payload != "after" {
+		t.Fatalf("got %q, want \"after\"", msg.Payload)
+	}
+}
+
+// TestManagerBacklogLimitDropsMessagesOnly pins the backlog cap: once a
+// stalled handle has BacklogLimit bytes of messages queued, further
+// messages are dropped, but confirmations still queue, in order.
+func TestManagerBacklogLimitDropsMessagesOnly(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379")
+	cfg.ChanSize = 1
+	cfg.BacklogLimit = 3 * messageSize(&Message{Channel: "lim", Payload: "m1"})
+	m := newTestManager(t, srv, cfg)
+
+	h, err := m.Subscribe(ctx, "lim")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fence, err := m.Subscribe(ctx, "fence")
+	if err != nil {
+		t.Fatalf("Subscribe fence: %v", err)
+	}
+	fenceCh := fence.Channel()
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "lim")
+	fsc.expectCmd(t, "subscribe", "fence")
+	fsc.sendConfirm(t, "subscribe", "lim", 1) // fills the 1-slot buffer
+	fsc.sendConfirm(t, "subscribe", "fence", 2)
+
+	// m1..m3 fit the backlog, m4..m9 are dropped.
+	for i := 1; i <= 9; i++ {
+		fsc.sendMessage(t, "message", "lim", fmt.Sprintf("m%d", i))
+	}
+	if _, err := h.Subscribe(ctx, "lim2"); err != nil {
+		t.Fatalf("Subscribe lim2: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "lim2")
+	fsc.sendConfirm(t, "subscribe", "lim2", 2)
+	// The fan-out is FIFO: the fence message proves the burst was fanned
+	// out before anything is read.
+	fsc.sendMessage(t, "message", "fence", "done")
+	recvMsg(t, fenceCh)
+
+	var got []string
+	for range 5 {
+		switch ev := recvEvent(t, h.Events()).(type) {
+		case *Subscription:
+			got = append(got, ev.Kind+":"+ev.Channel)
+		case *Message:
+			got = append(got, ev.Payload)
+		default:
+			t.Fatalf("unexpected event %#v", ev)
+		}
+	}
+	want := "subscribe:lim m1 m2 m3 subscribe:lim2"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("events = %v, want %s", got, want)
 	}
 }
 

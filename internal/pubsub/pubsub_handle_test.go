@@ -98,8 +98,7 @@ func TestHandleLocking(t *testing.T) {
 		wg.Wait()
 
 		// The surviving handle still receives. The sentinel is re-sent
-		// until it lands: while the flood backlog drains, a full events
-		// buffer may legitimately drop it.
+		// until it lands: it queues behind the flood backlog.
 		deadline := time.After(5 * time.Second)
 		for {
 			fsc.writeRaw(messageFrame("busy", "after-close"))

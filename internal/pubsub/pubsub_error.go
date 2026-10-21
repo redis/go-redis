@@ -39,6 +39,11 @@ const (
 	ErrNoPatterns      pubSubError = "redis: pubsub: at least one pattern is required"
 	ErrNoShardChannels pubSubError = "redis: pubsub: at least one shard channel is required"
 
+	// ErrClientSetNameSubscribed is ClientSetName on a RESP2 shared
+	// connection that is subscribed: the server refuses CLIENT SETNAME
+	// there. Options.ClientName names the connection when it is dialed.
+	ErrClientSetNameSubscribed pubSubError = "redis: pubsub: CLIENT SETNAME is not allowed on a subscribed RESP2 connection (use Options.ClientName)"
+
 	// Frame-parsing sentinels, wrapped with the offending kind/type by
 	// parsePubSubMessage.
 	errUnsupportedMessage pubSubError = "redis: pubsub: unsupported message"

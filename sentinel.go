@@ -649,6 +649,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Generate unique pool names for metrics
 	uniqueID := generateUniqueID()
 	mainPoolName := opt.Addr + "_" + uniqueID
+	rdb.pubSubPoolName = mainPoolName + "_pubsub"
 
 	// Assign the pool fields only AFTER the error check, mirroring NewClient.
 	// newConnPool returns a nil *pool.ConnPool on error, and assigning that
@@ -880,6 +881,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	// Generate unique pool names for metrics
 	uniqueID := generateUniqueID()
 	mainPoolName := opt.Addr + "_" + uniqueID
+	c.pubSubPoolName = mainPoolName + "_pubsub"
 
 	var err error
 	c.connPool, err = newConnPool(opt, c.dialHook, mainPoolName)

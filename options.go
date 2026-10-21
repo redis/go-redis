@@ -321,7 +321,11 @@ type Options struct {
 	// stream and of the Go channels returned by PubSub.Channel /
 	// ChannelWithSubscriptions. Adjustable per client at channel
 	// creation with WithChannelSize. Non-positive values take the
-	// default.
+	// default. Events that do not fit are queued behind the buffer, per
+	// subscriber, so a slow subscriber never blocks the others; queued
+	// messages are capped at 32 MiB per subscriber (the server's default
+	// pub/sub output-buffer hard limit) and dropped beyond it.
+	// Subscription confirmations, pongs and errors are never dropped.
 	//
 	// default: 1000
 	PubSubChanSize int

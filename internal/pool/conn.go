@@ -141,6 +141,10 @@ type Conn struct {
 	expiresAt time.Time
 	poolName  string // Name of the pool this connection belongs to (for metrics)
 
+	// pubsubTracked is set while an unpooled pub/sub connection is
+	// counted in the connection-count metric (see TrackPubSubConn).
+	pubsubTracked atomic.Bool
+
 	// preparedFieldsets tracks HIMPORT fieldsets prepared on this
 	// connection's current server session: fieldset name -> client-side
 	// registry version. The server drops fieldsets when the session ends,

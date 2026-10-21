@@ -424,6 +424,8 @@ type baseClient struct {
 	// NewClient, NewFailoverClient and NewSentinelClient; nil on the
 	// internal Conn/Tx wrappers, which never subscribe.
 	pubSubManager pubsub.PubSubManagerer
+	// pubSubPoolName labels the shared pub/sub connection in metrics.
+	pubSubPoolName string
 	// pipelinePool is the dedicated connection pool for pipelining
 	// operations (Pipeline, TxPipeline and autopipeline batches), created
 	// unconditionally at NewClient/NewFailoverClient with
@@ -2480,6 +2482,7 @@ func NewClient(opt *Options) *Client {
 	// Generate unique pool names for metrics
 	uniqueID := generateUniqueID()
 	mainPoolName := opt.Addr + "_" + uniqueID
+	c.pubSubPoolName = mainPoolName + "_pubsub"
 
 	// Create connection pools. Assign the fields only AFTER the error check:
 	// newConnPool returns a nil *pool on error, and assigning that
@@ -2935,12 +2938,14 @@ func (c *baseClient) pubsubConnect(ctx context.Context, addr string) (*pool.Conn
 		_ = cn.Close()
 		return nil, err
 	}
+	pool.TrackPubSubConn(cn, c.pubSubPoolName)
 	return cn, nil
 }
 
 // pubsubDisconnect tears a pub/sub connection down; it is unpooled, so
-// closing it directly is the whole job.
+// closing it directly (and uncounting it) is the whole job.
 func (c *baseClient) pubsubDisconnect(cn *pool.Conn) error {
+	pool.UntrackPubSubConn(cn)
 	return cn.Close()
 }
 
