@@ -215,6 +215,7 @@ type Cmder interface {
 	// all args of the command.
 	// e.g. "set k v ex 10" -> "[set k v ex 10]".
 	Args() []interface{}
+	setArgs([]interface{})
 
 	// format request and response string.
 	// e.g. "set k v ex 10" -> "set k v ex 10: OK", "get k" -> "get k: v".
@@ -233,10 +234,15 @@ type Cmder interface {
 	// (in the autopipeline shard router) and reused at pipeline-flush routing.
 	cachedSlot() (int, bool)
 	setCachedSlot(int)
+	clusterRoutingDecision() *clusterRoutingDecision
+	setClusterRoutingDecision(*clusterRoutingDecision)
+	takeClusterRoutingDecision() *clusterRoutingDecision
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
 	readRawReply(rd *proto.Reader) error
+	// isRawReply stays visible when a command is embedded in a custom wrapper.
+	isRawReply() bool
 	SetErr(error)
 	Err() error
 
@@ -300,9 +306,6 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
-// cmdFirstKeyPosWithInfo returns the first key position in a command's args (0 if none).
-// Uses CommandInfo.FirstKeyPos when available (via cache peek, no network call), falling
-// back to a hardcoded table. eval/evalsha variants are resolved from the runtime numkeys arg.
 // cmdArgAfterToken returns the position after the first argument, from
 // position from on, that equals token (case-insensitive), or 0 when there is
 // none or nothing follows it.
@@ -318,16 +321,21 @@ func cmdArgAfterToken(cmd Cmder, from int, token string) int {
 
 // migrateKeysPos returns the position of the first key of a MIGRATE KEYS
 // clause, walking the options so an operand (an AUTH password that reads
-// "keys") is not taken for the clause. 0 when there is no key.
-func migrateKeysPos(cmd Cmder) int {
+// "keys") is not taken for the clause. The position is 0 when there is no
+// key; valid is false when an option token has no reproducible wire encoding.
+func migrateKeysPos(cmd Cmder) (pos int, valid bool) {
 	n := len(cmd.Args())
 	for i := 6; i < n; {
-		switch strings.ToLower(cmd.stringArg(i)) {
+		token, ok := routingArgText(cmd, i)
+		if !ok {
+			return 0, false
+		}
+		switch strings.ToLower(token) {
 		case "keys":
 			if i+1 < n {
-				return i + 1
+				return i + 1, true
 			}
-			return 0
+			return 0, true
 		case "auth":
 			i += 2 // AUTH password
 		case "auth2":
@@ -336,9 +344,12 @@ func migrateKeysPos(cmd Cmder) int {
 			i++ // COPY, REPLACE
 		}
 	}
-	return 0
+	return 0, true
 }
 
+// cmdFirstKeyPosWithInfo returns the first key position (0 if none, -1 if
+// MIGRATE options cannot be inspected safely). It uses CommandInfo when supplied
+// and otherwise falls back to the legacy command table and runtime arguments.
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
@@ -415,7 +426,11 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(3) != "" {
 			return 3
 		}
-		return migrateKeysPos(cmd)
+		pos, valid := migrateKeysPos(cmd)
+		if !valid {
+			return -1
+		}
+		return pos
 	case "bless":
 		// BLESS SCAN is keyless (cursor-based, server-wide); BLESS SET/GET/CLEAR
 		// take the key at position 2. The typed methods set this via
@@ -471,10 +486,9 @@ type baseCmd struct {
 	// autopipeline shard router and the pipeline flush router don't each
 	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
 	// distinguishable from unset. A plain field is safe by construction: it
-	// is written at most once, on the submitting goroutine BEFORE the command
-	// is published to a stripe queue (the stripe mutex is the happens-before
-	// edge to the flusher that later reads it). Do not write it from any
-	// other point in the command's life.
+	// is written during admission or explicit pipeline resolution, before the
+	// command is dispatched to any worker. Workers only read it until the
+	// command completes. A shared routing template carries no slot of its own.
 	slotCache uint16
 
 	// ready, when non-nil, is the batch whose done channel closes once the
@@ -489,6 +503,22 @@ type baseCmd struct {
 	// with reply processing). ready stays
 	// nil for ordinary synchronous commands, whose accessors never block.
 	ready atomic.Pointer[apBatch]
+
+	// routing pins admission metadata until cluster dispatch completes. Keeping
+	// it on the command avoids retaining commands in a client-wide lookup table.
+	routing atomic.Pointer[clusterRoutingDecision]
+}
+
+func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
+	return cmd.routing.Load()
+}
+
+func (cmd *baseCmd) setClusterRoutingDecision(decision *clusterRoutingDecision) {
+	cmd.routing.Store(decision)
+}
+
+func (cmd *baseCmd) takeClusterRoutingDecision() *clusterRoutingDecision {
+	return cmd.routing.Swap(nil)
 }
 
 // setReady publishes the batch gating this command's result accessors. The
@@ -607,6 +637,8 @@ func (cmd *baseCmd) firstKeyPos() int8 {
 	return cmd.keyPos
 }
 
+// SetFirstKeyPos sets the key position used when server metadata for a command
+// is unavailable. Resolved metadata remains authoritative when present.
 func (cmd *baseCmd) SetFirstKeyPos(keyPos int8) {
 	cmd.keyPos = keyPos
 }
@@ -656,16 +688,26 @@ func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	return err
 }
 
+func (cmd *baseCmd) isRawReply() bool { return false }
+
 // NoRetry returns true if the command should not be retried on failure.
 // By default, commands can be retried. Commands that write directly to an
 // io.Writer (like RawWriteToCmd) should override this to return true since
 // partial writes cannot be undone on retry.
 func (cmd *baseCmd) NoRetry() bool {
-	return false
+	// A READ advances server-side cursor state. Retrying after a lost reply
+	// would silently skip the results that were already consumed.
+	return len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(0), "ft.cursor") &&
+		strings.EqualFold(cmd.stringArg(1), "read")
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
 	return cmd.cmdType
+}
+
+func (cmd *baseCmd) setArgs(args []interface{}) {
+	cmd.args = args
+	cmd.slotCache = 0
 }
 
 func (cmd *baseCmd) cloneBaseCmd() baseCmd {
@@ -1072,6 +1114,8 @@ type RawCmd struct {
 
 var _ Cmder = (*RawCmd)(nil)
 
+func (cmd *RawCmd) isRawReply() bool { return true }
+
 func NewRawCmd(ctx context.Context, args ...interface{}) *RawCmd {
 	return &RawCmd{
 		baseCmd: baseCmd{
@@ -1133,6 +1177,8 @@ type RawWriteToCmd struct {
 }
 
 var _ Cmder = (*RawWriteToCmd)(nil)
+
+func (cmd *RawWriteToCmd) isRawReply() bool { return true }
 
 func NewRawWriteToCmd(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
 	return &RawWriteToCmd{
@@ -5015,29 +5061,31 @@ type GeoRadiusQuery struct {
 	Sort      string
 	Store     string
 	StoreDist string
-
-	// WithCoord+WithDist+WithGeoHash
-	withLen int
 }
 
 type GeoLocationCmd struct {
 	baseCmd
 
-	q         *GeoRadiusQuery
+	// q is a copy of the caller's query, taken when the command is built, so
+	// the reply is parsed with the flags that were sent even if the caller
+	// changes or reuses its query before the reply arrives (pipelines,
+	// autopipelining).
+	q         GeoRadiusQuery
 	locations []GeoLocation
 }
 
 var _ Cmder = (*GeoLocationCmd)(nil)
 
 func NewGeoLocationCmd(ctx context.Context, q *GeoRadiusQuery, args ...interface{}) *GeoLocationCmd {
-	return &GeoLocationCmd{
+	cmd := &GeoLocationCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
-			args:    geoLocationArgs(q, args...),
 			cmdType: CmdTypeGeoLocation,
 		},
-		q: q,
+		q: *q,
 	}
+	cmd.args = geoLocationArgs(&cmd.q, args...)
+	return cmd
 }
 
 func geoLocationArgs(q *GeoRadiusQuery, args ...interface{}) []interface{} {
@@ -5049,15 +5097,12 @@ func geoLocationArgs(q *GeoRadiusQuery, args ...interface{}) []interface{} {
 	}
 	if q.WithCoord {
 		args = append(args, "withcoord")
-		q.withLen++
 	}
 	if q.WithDist {
 		args = append(args, "withdist")
-		q.withLen++
 	}
 	if q.WithGeoHash {
 		args = append(args, "withhash")
-		q.withLen++
 	}
 	if q.Count > 0 {
 		args = append(args, "count", q.Count)
@@ -5102,9 +5147,21 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.locations = make([]GeoLocation, n)
 
+	// Count the WITH flags of the query this command was built with.
+	withLen := 0
+	if cmd.q.WithCoord {
+		withLen++
+	}
+	if cmd.q.WithDist {
+		withLen++
+	}
+	if cmd.q.WithGeoHash {
+		withLen++
+	}
+
 	for i := 0; i < len(cmd.locations); i++ {
 		// only name
-		if cmd.q.withLen == 0 {
+		if withLen == 0 {
 			if cmd.locations[i].Name, err = rd.ReadString(); err != nil {
 				return err
 			}
@@ -5112,7 +5169,7 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 		}
 
 		// +name
-		if err = rd.ReadFixedArrayLen(cmd.q.withLen + 1); err != nil {
+		if err = rd.ReadFixedArrayLen(withLen + 1); err != nil {
 			return err
 		}
 
@@ -5146,21 +5203,6 @@ func (cmd *GeoLocationCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *GeoLocationCmd) Clone() Cmder {
-	var q *GeoRadiusQuery
-	if cmd.q != nil {
-		q = &GeoRadiusQuery{
-			Radius:      cmd.q.Radius,
-			Unit:        cmd.q.Unit,
-			WithCoord:   cmd.q.WithCoord,
-			WithDist:    cmd.q.WithDist,
-			WithGeoHash: cmd.q.WithGeoHash,
-			Count:       cmd.q.Count,
-			Sort:        cmd.q.Sort,
-			Store:       cmd.q.Store,
-			StoreDist:   cmd.q.StoreDist,
-			withLen:     cmd.q.withLen,
-		}
-	}
 	var locations []GeoLocation
 	if cmd.locations != nil {
 		locations = make([]GeoLocation, len(cmd.locations))
@@ -5168,7 +5210,7 @@ func (cmd *GeoLocationCmd) Clone() Cmder {
 	}
 	return &GeoLocationCmd{
 		baseCmd:   cmd.cloneBaseCmd(),
-		q:         q,
+		q:         cmd.q,
 		locations: locations,
 	}
 }
@@ -5241,15 +5283,17 @@ func geoSearchArgs(q *GeoSearchQuery, args []interface{}) []interface{} {
 	}
 
 	if q.Radius > 0 {
-		if q.RadiusUnit == "" {
-			q.RadiusUnit = "km"
+		unit := q.RadiusUnit
+		if unit == "" {
+			unit = "km"
 		}
-		args = append(args, "byradius", q.Radius, q.RadiusUnit)
+		args = append(args, "byradius", q.Radius, unit)
 	} else {
-		if q.BoxUnit == "" {
-			q.BoxUnit = "km"
+		unit := q.BoxUnit
+		if unit == "" {
+			unit = "km"
 		}
-		args = append(args, "bybox", q.BoxWidth, q.BoxHeight, q.BoxUnit)
+		args = append(args, "bybox", q.BoxWidth, q.BoxHeight, unit)
 	}
 
 	if q.Sort != "" {
@@ -5269,7 +5313,8 @@ func geoSearchArgs(q *GeoSearchQuery, args []interface{}) []interface{} {
 type GeoSearchLocationCmd struct {
 	baseCmd
 
-	opt *GeoSearchLocationQuery
+	// opt is a copy of the caller's query; see GeoLocationCmd.q.
+	opt GeoSearchLocationQuery
 	val []GeoLocation
 }
 
@@ -5278,14 +5323,15 @@ var _ Cmder = (*GeoSearchLocationCmd)(nil)
 func NewGeoSearchLocationCmd(
 	ctx context.Context, opt *GeoSearchLocationQuery, args ...interface{},
 ) *GeoSearchLocationCmd {
-	return &GeoSearchLocationCmd{
+	cmd := &GeoSearchLocationCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
-			args:    geoSearchLocationArgs(opt, args),
 			cmdType: CmdTypeGeoSearchLocation,
 		},
-		opt: opt,
+		opt: *opt,
 	}
+	cmd.args = geoSearchLocationArgs(&cmd.opt, args)
+	return cmd
 }
 
 func (cmd *GeoSearchLocationCmd) SetVal(val []GeoLocation) {
@@ -5381,27 +5427,6 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *GeoSearchLocationCmd) Clone() Cmder {
-	var opt *GeoSearchLocationQuery
-	if cmd.opt != nil {
-		opt = &GeoSearchLocationQuery{
-			GeoSearchQuery: GeoSearchQuery{
-				Member:     cmd.opt.Member,
-				Longitude:  cmd.opt.Longitude,
-				Latitude:   cmd.opt.Latitude,
-				Radius:     cmd.opt.Radius,
-				RadiusUnit: cmd.opt.RadiusUnit,
-				BoxWidth:   cmd.opt.BoxWidth,
-				BoxHeight:  cmd.opt.BoxHeight,
-				BoxUnit:    cmd.opt.BoxUnit,
-				Sort:       cmd.opt.Sort,
-				Count:      cmd.opt.Count,
-				CountAny:   cmd.opt.CountAny,
-			},
-			WithCoord: cmd.opt.WithCoord,
-			WithDist:  cmd.opt.WithDist,
-			WithHash:  cmd.opt.WithHash,
-		}
-	}
 	var val []GeoLocation
 	if cmd.val != nil {
 		val = make([]GeoLocation, len(cmd.val))
@@ -5409,7 +5434,7 @@ func (cmd *GeoSearchLocationCmd) Clone() Cmder {
 	}
 	return &GeoSearchLocationCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		opt:     opt,
+		opt:     cmd.opt,
 		val:     val,
 	}
 }
@@ -8484,6 +8509,11 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 							cmd.val[i].Nodes[k].ID, err = rd.ReadString()
 						case "endpoint":
 							cmd.val[i].Nodes[k].Endpoint, err = rd.ReadString()
+							if err == Nil {
+								// Null means reuse the connection's endpoint.
+								cmd.val[i].Nodes[k].Endpoint = ""
+								err = nil
+							}
 						case "ip":
 							cmd.val[i].Nodes[k].IP, err = rd.ReadString()
 						case "hostname":
