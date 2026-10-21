@@ -348,6 +348,10 @@ func (opt *ClusterOptions) init() {
 //	or
 //	rediss://<user>:<password>@<host>:<port>
 //
+// For rediss URLs, TLS 1.2 is the minimum version and every node is verified
+// against the host of the first URL. To verify each node against the host it
+// is dialed at, set tls_verify_node_host=true or set TLSConfig.ServerName to "".
+//
 // To add additional addresses, specify the query parameter, "addr" one or more times. e.g:
 //
 //	redis://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
@@ -369,6 +373,7 @@ func (opt *ClusterOptions) init() {
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
 //   - use "skip_verify=true" to ignore TLS certificate validation
+//   - use "tls_verify_node_host=true" to verify each node against the host it is dialed at
 //
 // Example:
 //
@@ -405,7 +410,7 @@ func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
 func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptions, error) {
 	switch u.Scheme {
 	case "rediss":
-		o.TLSConfig = &tls.Config{ServerName: host}
+		o.TLSConfig = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
 		fallthrough
 	case "redis":
 		o.Username, o.Password = getUserPassword(u)
@@ -467,6 +472,11 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.FailingTimeoutSeconds = q.int("failing_timeout_seconds")
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
+	}
+	// An empty ServerName makes the TLS dialer verify each node against the
+	// host it is dialed at, instead of the host of the first URL.
+	if o.TLSConfig != nil && q.has("tls_verify_node_host") && q.bool("tls_verify_node_host") {
+		o.TLSConfig.ServerName = ""
 	}
 
 	if q.err != nil {
