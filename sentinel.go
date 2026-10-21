@@ -460,7 +460,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 //		ReadTimeout: 6 * time.Second,
 //	}
 func ParseFailoverURL(redisURL string) (*FailoverOptions, error) {
-	u, err := url.Parse(redisURL)
+	u, err := parseURL(redisURL)
 	if err != nil {
 		return nil, err
 	}
