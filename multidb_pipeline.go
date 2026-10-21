@@ -857,11 +857,24 @@ func (c *MultiDBClient) PoolStats() *PoolStats {
 // command judged pipelineable against a standalone member would then reach a
 // cluster member inside a merged batch — where one unfit command fails the whole
 // mapping, and with it the unrelated callers sharing that batch.
+//
+// The cluster members are copied under dbMu and asked with it released: a
+// member can wait for its first command-metadata fetch here, and holding dbMu
+// across that would stall every control operation and later submit behind
+// it. A member removed meanwhile is still safe to ask: its closed metadata
+// store falls back to the static view.
 func (c *MultiDBClient) canPipeline(ctx context.Context, cmd Cmder) bool {
 	c.core.dbMu.RLock()
-	defer c.core.dbMu.RUnlock()
+	var buf [4]*ClusterClient // no allocation per submit for a few members
+	clusters := buf[:0]
 	for _, db := range c.core.dbs {
-		if db.cc != nil && !db.cc.canPipeline(ctx, cmd) {
+		if db.cc != nil {
+			clusters = append(clusters, db.cc)
+		}
+	}
+	c.core.dbMu.RUnlock()
+	for _, cc := range clusters {
+		if !cc.canPipeline(ctx, cmd) {
 			return false
 		}
 	}

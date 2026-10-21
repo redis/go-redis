@@ -294,6 +294,12 @@ type multidbCore struct {
 	// close() cancels them here instead of through closeAll.
 	pendingAddMu sync.Mutex
 	pendingAdds  map[*multidbDatabase]context.CancelFunc
+	// closing is set when MultiDBClient.Close starts, before its autopipeliner
+	// drain; closed is set only after it. Only addDatabase reads it: an add
+	// must not publish a member that the running Close then tears down. The
+	// drain itself still routes through the core, so closed must stay unset
+	// until it ends.
+	closing atomic.Bool
 
 	// nextID hands out member ids: monotonic, never decremented, never reset
 	// (not even in closeAll). Reuse would let a stale handle or a queued
@@ -766,6 +772,15 @@ func (c *multidbCore) resetDetectorSafely() {
 	// in-flight command that sampled the old one cannot record a pre-reset
 	// outcome into the new window, even if it lands between the bump and Reset.
 	c.detectorGen.Add(1)
+	c.clearDetectorSafely()
+}
+
+// clearDetectorSafely resets the detector's state without opening a new
+// window (no generation bump). recordDetector* use it to wipe a stale write:
+// bumping there would drop recorders that already sampled the current window,
+// and each of their cleanups would bump again, so steady traffic could keep
+// the detector empty.
+func (c *multidbCore) clearDetectorSafely() {
 	defer func() {
 		if r := recover(); r != nil {
 			internal.Logger.Printf(context.Background(), "multidb: failure detector Reset panicked: %v", r)
@@ -778,16 +793,17 @@ func (c *multidbCore) resetDetectorSafely() {
 // sampled as gen, and nothing into a later window. The generation check and
 // the write are not atomic: a reset that lands between them puts a pre-reset
 // failure into the fresh window. So the window is re-checked after the write
-// and, if it moved, reset again. A second reset is idempotent, and wiping the
-// few legitimate outcomes recorded in between is the conservative direction:
-// it can only delay a failover, never cause one.
+// and, if it moved, cleared (same window, no new generation). Only recorders
+// that sampled an old generation clear, so this cannot cascade. A stale outcome
+// is visible only until its recorder clears it; the clear also wipes the few
+// legitimate outcomes recorded in between, which can only delay a failover.
 func (c *multidbCore) recordDetectorFailure(gen uint64, err error) {
 	if c.detectorGen.Load() != gen {
 		return
 	}
 	c.detector.RecordFailure(err)
 	if c.detectorGen.Load() != gen {
-		c.resetDetectorSafely()
+		c.clearDetectorSafely()
 	}
 }
 
@@ -801,7 +817,7 @@ func (c *multidbCore) recordDetectorSuccess(gen uint64) {
 	}
 	c.detector.RecordSuccess()
 	if c.detectorGen.Load() != gen {
-		c.resetDetectorSafely()
+		c.clearDetectorSafely()
 	}
 }
 
@@ -1206,6 +1222,12 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 					return nil
 				}
 			}
+			if c.closed.Load() {
+				// close() takes no lock: the candidates may be gone because
+				// closeAll drained the membership. Report the terminal state
+				// and charge no failover attempt.
+				return ErrClosed
+			}
 			return c.recordFailedFailoverLocked()
 		}
 		// Commit-time revalidation: candidates() is a snapshot, and background
@@ -1307,9 +1329,21 @@ func (c *multidbCore) trackPendingAdd(db *multidbDatabase, cancel context.Cancel
 	}
 	c.pendingAdds[db] = cancel
 	c.pendingAddMu.Unlock()
-	if c.closed.Load() {
+	if c.addsClosed() {
 		cancel()
 	}
+}
+
+// beginClose stops new members from being added and cancels the in-flight
+// add probes. MultiDBClient.Close calls it before its autopipeliner drain.
+func (c *multidbCore) beginClose() {
+	c.closing.Store(true)
+	c.cancelPendingAdds()
+}
+
+// addsClosed reports whether Close has started (see closing).
+func (c *multidbCore) addsClosed() bool {
+	return c.closing.Load() || c.closed.Load()
 }
 
 func (c *multidbCore) untrackPendingAdd(db *multidbDatabase) {
@@ -1557,7 +1591,7 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	if err := cfg.validate(); err != nil {
 		return -1, err
 	}
-	if c.closed.Load() {
+	if c.addsClosed() {
 		return -1, ErrClosed
 	}
 	if err := ctx.Err(); err != nil {
@@ -1629,10 +1663,10 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	}
 
 	c.dbMu.Lock()
-	if c.closed.Load() {
-		// Close ran while the member was being prepared: closeAll has
-		// already drained c.dbs, so inserting here would leak the client
-		// (nothing would ever close it).
+	if c.addsClosed() {
+		// Close started while the member was being prepared: closeAll has
+		// drained c.dbs or is about to, so inserting here would leak the
+		// client or hand the caller an id for a member Close tears down.
 		c.dbMu.Unlock()
 		db.removed.Store(true)
 		unlock()
@@ -1656,7 +1690,7 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	// callback fires for a member reported as not added. The residual window
 	// (closed flips right after this check) is the inherent Close-vs-AddDatabase
 	// race.
-	if c.closed.Load() {
+	if c.addsClosed() {
 		return -1, ErrClosed
 	}
 	if !healthy {
@@ -1759,7 +1793,8 @@ func (c *multidbCore) addDatabaseHook(id int, hook Hook) error {
 	// Resolve the member under dbMu and re-check closed there (not via dbByID),
 	// so a Close racing this call reports the terminal ErrClosed rather than a
 	// misleading ErrDatabaseNotFound — consistent with setWeight and the entry
-	// checks elsewhere. AddHook itself runs outside the lock.
+	// checks elsewhere. AddHook itself runs outside the lock: it calls the
+	// hook's methods to rebuild the chain, and that is user code.
 	c.dbMu.RLock()
 	if c.closed.Load() {
 		c.dbMu.RUnlock()
@@ -1774,6 +1809,14 @@ func (c *multidbCore) addDatabaseHook(id int, hook Hook) error {
 		db.cc.AddHook(hook)
 	} else {
 		db.c.AddHook(hook)
+	}
+	// A RemoveDatabase or Close that ran during AddHook closed the member:
+	// the hook will never see traffic, so do not report it as installed.
+	if db.removed.Load() {
+		if c.closed.Load() {
+			return ErrClosed
+		}
+		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
 	}
 	return nil
 }
@@ -1906,6 +1949,12 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 			gen := db.cb.ResetGeneration()
 			start := time.Now()
 			healthy := db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, db.checks)
+			if ctx.Err() != nil {
+				// The pass was canceled (Close stops the loop this way): the
+				// probe was cut short, not failed. Record nothing, as probeWith
+				// does for a canceled parent.
+				return
+			}
 			if again, _ := c.activeSnapshot(); again == db {
 				db.probeAsActive(ctx, c.opts.HealthCheckTimeout)
 				return
@@ -2298,7 +2347,7 @@ func (c *multidbCore) close() error {
 	}
 	// Members whose startup probe is still running are not in dbs yet; unblock
 	// those adds so they discard their member promptly (see trackPendingAdd).
-	c.cancelPendingAdds()
+	c.beginClose()
 	close(c.stopCh)
 	c.wg.Wait()
 

@@ -611,6 +611,9 @@ func (c *MultiDBClient) Close() error {
 		c.autopipeliner, c.asyncAutopipeliner = nil, nil
 		c.autopipelinerClosed = true
 		c.autopipelinerMu.Unlock()
+		// An AddDatabase that passed the check above must not publish a
+		// member during the drain: core.close would tear it down.
+		c.core.beginClose()
 		var firstErr error
 		for _, p := range aps {
 			if p == nil {
@@ -798,19 +801,31 @@ func (c *MultiDBClient) PSubscribe(ctx context.Context, patterns ...string) *Pub
 // Member health is driven by the data path, which does feed the accounting.
 // The active is still admitted like any command, though: one whose breaker
 // is open, or whose failure detector has tripped, is failed over BEFORE the
-// command is sent (see activeClusterAfterGate).
+// command is sent (see activeClusterAfterGate). When that failover fails, the
+// command fails with its error.
 func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
-	if c.core.closed.Load() {
+	db, err := c.controlTarget(ctx)
+	if err != nil {
 		cmd := NewIntCmd(ctx, "dbsize")
-		cmd.SetErr(ErrClosed)
+		cmd.SetErr(err)
 		return cmd
 	}
-	if db, err := c.activeClusterAfterGate(ctx); err == nil && db != nil {
+	if db != nil {
 		res := db.cc.DBSize(ctx)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
 	return c.cmdable.DBSize(ctx)
+}
+
+// controlTarget returns the cluster member a cluster control command runs on,
+// nil when the command takes the regular path, or the error to fail it with
+// (ErrClosed, or the gate's failover error).
+func (c *MultiDBClient) controlTarget(ctx context.Context) (*multidbDatabase, error) {
+	if c.core.closed.Load() {
+		return nil, ErrClosed
+	}
+	return c.activeClusterAfterGate(ctx)
 }
 
 // activeAfterGate returns the active member after the admission the data
@@ -834,9 +849,10 @@ func (c *MultiDBClient) activeAfterGate(ctx context.Context) (*multidbDatabase, 
 }
 
 // activeClusterAfterGate is activeAfterGate restricted to a cluster member:
-// it returns nil when the active is not one. On nil the caller takes the
-// regular hook-wrapped path (see DBSize), which repeats the gate verdict as
-// the command's error when the failover failed.
+// it returns nil when the active is not one, and the caller then takes the
+// regular hook-wrapped path (see DBSize). On a gate error the caller fails the
+// command with it: the regular path would gate again, and a cluster member
+// that became active in between would get a plain single-shard Process.
 func (c *MultiDBClient) activeClusterAfterGate(ctx context.Context) (*multidbDatabase, error) {
 	db, err := c.activeAfterGate(ctx)
 	if err != nil {
@@ -852,12 +868,13 @@ func (c *MultiDBClient) activeClusterAfterGate(ctx context.Context) (*multidbDat
 // script on every shard — a single-shard load would make later EVALSHA calls
 // fail with NOSCRIPT on the other shards.
 func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCmd {
-	if c.core.closed.Load() {
+	db, err := c.controlTarget(ctx)
+	if err != nil {
 		cmd := NewStringCmd(ctx, "script", "load", script)
-		cmd.SetErr(ErrClosed)
+		cmd.SetErr(err)
 		return cmd
 	}
-	if db, err := c.activeClusterAfterGate(ctx); err == nil && db != nil {
+	if db != nil {
 		res := db.cc.ScriptLoad(ctx, script)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
@@ -868,12 +885,13 @@ func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCm
 // ScriptFlush delegates to the active member (cluster members flush every
 // shard).
 func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
-	if c.core.closed.Load() {
+	db, err := c.controlTarget(ctx)
+	if err != nil {
 		cmd := NewStatusCmd(ctx, "script", "flush")
-		cmd.SetErr(ErrClosed)
+		cmd.SetErr(err)
 		return cmd
 	}
-	if db, err := c.activeClusterAfterGate(ctx); err == nil && db != nil {
+	if db != nil {
 		res := db.cc.ScriptFlush(ctx)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
@@ -885,17 +903,18 @@ func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
 // per-shard answers so a script only counts as present when every shard has
 // it).
 func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
-	if c.core.closed.Load() {
+	db, err := c.controlTarget(ctx)
+	if err != nil {
 		args := make([]interface{}, 2, 2+len(hashes))
 		args[0], args[1] = "script", "exists"
 		for _, h := range hashes {
 			args = append(args, h)
 		}
 		cmd := NewBoolSliceCmd(ctx, args...)
-		cmd.SetErr(ErrClosed)
+		cmd.SetErr(err)
 		return cmd
 	}
-	if db, err := c.activeClusterAfterGate(ctx); err == nil && db != nil {
+	if db != nil {
 		res := db.cc.ScriptExists(ctx, hashes...)
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
