@@ -13,7 +13,6 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/redis/go-redis/extra/rediscmd/v9"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -124,7 +123,7 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		}
 
 		if th.conf.dbStmtEnabled {
-			cmdString := rediscmd.CmdString(cmd)
+			cmdString := buildCmdStatement(cmd, th.conf.dbStmtMaxLen)
 			attrs = append(attrs, semconv.DBStatement(cmdString))
 		}
 
@@ -165,8 +164,9 @@ func (th *tracingHook) ProcessPipelineHook(
 			)
 		}
 
-		summary, cmdsString := rediscmd.CmdsString(cmds)
+		summary := pipelineSummary(cmds)
 		if th.conf.dbStmtEnabled {
+			cmdsString := buildPipelineStatement(cmds, th.conf.dbStmtMaxLen)
 			attrs = append(attrs, semconv.DBStatement(cmdsString))
 		}
 
