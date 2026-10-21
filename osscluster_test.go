@@ -3510,7 +3510,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "ParseRedissURL",
 				url:  "rediss://localhost:123",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "MissingRedisPort",
 				url:  "redis://localhost",
@@ -3518,7 +3518,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "MissingRedissPort",
 				url:  "rediss://localhost",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "MultipleRedisURLs",
 				url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
@@ -3526,7 +3526,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "MultipleRedissURLs",
 				url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "OnlyPassword",
 				url:  "redis://:bar@localhost:123",
@@ -3542,11 +3542,19 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "RedissUsernamePassword",
 				url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "RedissSkipVerify",
 				url:  "rediss://localhost:123?skip_verify=true",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", InsecureSkipVerify: true}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
+			}, {
+				test: "RedissVerifyNodeHost",
+				url:  "rediss://localhost:123?addr=127.0.0.1:1234&tls_verify_node_host=true",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "127.0.0.1:1234"}, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
+			}, {
+				test: "RedissVerifyNodeHostFalse",
+				url:  "rediss://localhost:123?tls_verify_node_host=false",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "QueryParameters",
 				url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
@@ -3595,6 +3603,14 @@ var _ = Describe("Command Tips tests", func() {
 				test: "SkipVerifyWithoutTLS",
 				url:  "redis://localhost?skip_verify=true",
 				err:  errors.New("redis: unexpected option: skip_verify"),
+			}, {
+				test: "InvalidVerifyNodeHost",
+				url:  "rediss://localhost?tls_verify_node_host=yes",
+				err:  errors.New(`redis: invalid tls_verify_node_host boolean: expected true/false/1/0 or an empty string, got "yes"`),
+			}, {
+				test: "VerifyNodeHostWithoutTLS",
+				url:  "redis://localhost?tls_verify_node_host=true",
+				err:  errors.New("redis: unexpected option: tls_verify_node_host"),
 			}, {
 				test: "UnknownParam",
 				url:  "redis://localhost?abc=123",
