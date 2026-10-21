@@ -69,10 +69,10 @@ func (p *fdTestProxy) kill() {
 
 func requireLocalRedis(t *testing.T) {
 	t.Helper()
-	c := NewClient(&Options{Addr: ":6379"})
+	c := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer c.Close()
 	if err := c.Ping(context.Background()).Err(); err != nil {
-		t.Skipf("no redis on :6379: %v", err)
+		t.Skipf("no redis on %s: %v", internalTestRedisAddr(), err)
 	}
 }
 
@@ -115,7 +115,7 @@ func member(addr string, weight float64) MultiDBClientConfig {
 // member's FD child, and its outcomes reach MultiDB's accounting.
 func TestMultiDBFullDuplexEngages(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	ctx := context.Background()
 
 	for _, async := range []bool{false, true} {
@@ -153,7 +153,7 @@ func TestMultiDBFullDuplexEngages(t *testing.T) {
 // leaves the fast path and runs on MultiDB's normal path, which fails over.
 func TestMultiDBFullDuplexDivertsWhenNotClosed(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	ctx := context.Background()
 	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
@@ -181,8 +181,8 @@ func TestMultiDBFullDuplexSurvivesMemberDeath(t *testing.T) {
 
 func testFDMemberDeath(t *testing.T, retries int) {
 	requireLocalRedis(t)
-	proxy := startFDTestProxy(t, "127.0.0.1:6379")
-	mdb := newFDTestMultiDBRetries(t, retries, member(proxy.addr(), 2), member(":6379", 1))
+	proxy := startFDTestProxy(t, internalTestRedisAddr())
+	mdb := newFDTestMultiDBRetries(t, retries, member(proxy.addr(), 2), member(internalTestRedisAddr(), 1))
 	ctx := context.Background()
 	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
@@ -292,7 +292,7 @@ func TestMultiDBFullDuplexClusterMember(t *testing.T) {
 // Close drains the children and later submits are rejected.
 func TestMultiDBFullDuplexClose(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 1))
 	ctx := context.Background()
 	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
@@ -320,7 +320,7 @@ func TestMultiDBFullDuplexClose(t *testing.T) {
 func TestMultiDBFullDuplexMemberWithoutFD(t *testing.T) {
 	requireLocalRedis(t)
 	noPool := MultiDBClientConfig{
-		Options: &Options{Addr: ":6379", PipelinePoolSize: -1, MaxRetries: -1},
+		Options: &Options{Addr: internalTestRedisAddr(), PipelinePoolSize: -1, MaxRetries: -1},
 		Weight:  1,
 	}
 	mdb := newFDTestMultiDB(t, noPool)
@@ -364,8 +364,8 @@ func TestMultiDBFullDuplexMemberWithoutFD(t *testing.T) {
 // reroute and the failover).
 func TestMultiDBFullDuplexOrderAcrossMemberDeath(t *testing.T) {
 	requireLocalRedis(t)
-	proxy := startFDTestProxy(t, "127.0.0.1:6379")
-	mdb := newFDTestMultiDB(t, member(proxy.addr(), 2), member(":6379", 1))
+	proxy := startFDTestProxy(t, internalTestRedisAddr())
+	mdb := newFDTestMultiDB(t, member(proxy.addr(), 2), member(internalTestRedisAddr(), 1))
 	ctx := context.Background()
 	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
@@ -386,7 +386,7 @@ func TestMultiDBFullDuplexOrderAcrossMemberDeath(t *testing.T) {
 			t.Fatalf("Set %d: %v", i, err)
 		}
 	}
-	direct := NewClient(&Options{Addr: ":6379"})
+	direct := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer direct.Close()
 	got, err := direct.Get(ctx, key).Int()
 	if err != nil {
@@ -458,7 +458,7 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 // duplex instead of being rejected by the generic ordering check.
 func TestMultiDBFullDuplexForcesNumShards(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 1))
 	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true, NumShards: 4})
 	if err != nil {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
@@ -481,7 +481,7 @@ func TestMultiDBFullDuplexForcesNumShards(t *testing.T) {
 // accounts: the breaker sees the hook chain's final result, not the raw reply.
 func TestMultiDBFullDuplexAccountsHookResult(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	var hooked atomic.Int64
 	if err := mdb.AddDatabaseHook(0, fdProcessFuncHook{process: func(next ProcessHook) ProcessHook {
 		return func(ctx context.Context, cmd Cmder) error {
@@ -519,7 +519,7 @@ func TestMultiDBFullDuplexAccountsHookResult(t *testing.T) {
 // Len counts the half-duplex lane's backlog on the async face.
 func TestMultiDBFullDuplexLenCountsHalfDuplexLane(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
 		FullDuplex:    true,
 		MaxFlushDelay: 300 * time.Millisecond,
@@ -555,7 +555,7 @@ func TestMultiDBFullDuplexLenCountsHalfDuplexLane(t *testing.T) {
 // waiting for a later cache miss.
 func TestMultiDBFullDuplexRemoveClosesChild(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
@@ -667,8 +667,8 @@ func TestFDRerouteOwnerBudget(t *testing.T) {
 // async face.
 func TestMultiDBHalfDuplexOrderAcrossMemberDeath(t *testing.T) {
 	requireLocalRedis(t)
-	proxy := startFDTestProxy(t, "127.0.0.1:6379")
-	mdb := newFDTestMultiDB(t, member(proxy.addr(), 2), member(":6379", 1))
+	proxy := startFDTestProxy(t, internalTestRedisAddr())
+	mdb := newFDTestMultiDB(t, member(proxy.addr(), 2), member(internalTestRedisAddr(), 1))
 	ctx := context.Background()
 	ap, err := mdb.AsyncAutoPipeline()
 	if err != nil {
@@ -689,7 +689,7 @@ func TestMultiDBHalfDuplexOrderAcrossMemberDeath(t *testing.T) {
 			failed++
 		}
 	}
-	direct := NewClient(&Options{Addr: ":6379"})
+	direct := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer direct.Close()
 	got, err := direct.Get(ctx, key).Int()
 	t.Logf("half-duplex: final=%d want=%d failed=%d err=%v", got, n-1, failed, err)
@@ -732,7 +732,7 @@ func benchmarkFDSet(b *testing.B, ap *AutoPipeliner) {
 }
 
 func BenchmarkFDSetPlainClient(b *testing.B) {
-	c := NewClient(&Options{Addr: ":6379"})
+	c := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer c.Close()
 	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
@@ -747,8 +747,8 @@ func BenchmarkFDSetMultiDB(b *testing.B) {
 	defer cancel()
 	mdb, err := NewMultiDBClient(ctx, &MultiDBOptions{
 		Clients: []MultiDBClientConfig{
-			{Options: &Options{Addr: ":6379"}, Weight: 2},
-			{Options: &Options{Addr: ":6379"}, Weight: 1},
+			{Options: &Options{Addr: internalTestRedisAddr()}, Weight: 2},
+			{Options: &Options{Addr: internalTestRedisAddr()}, Weight: 1},
 		},
 		AutoFallbackInterval: -1,
 	})
@@ -772,8 +772,8 @@ func BenchmarkFDSetMultiDBHalfDuplex(b *testing.B) {
 	defer cancel()
 	mdb, err := NewMultiDBClient(ctx, &MultiDBOptions{
 		Clients: []MultiDBClientConfig{
-			{Options: &Options{Addr: ":6379"}, Weight: 2},
-			{Options: &Options{Addr: ":6379"}, Weight: 1},
+			{Options: &Options{Addr: internalTestRedisAddr()}, Weight: 2},
+			{Options: &Options{Addr: internalTestRedisAddr()}, Weight: 1},
 		},
 		AutoFallbackInterval: -1,
 	})
@@ -822,7 +822,7 @@ func TestFDRerouteAbortReportsOncePerAttempt(t *testing.T) {
 // submit, under laneMu; the command lands on the new lane.
 func TestMultiDBFullDuplexLaneSwitchesToActive(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
@@ -865,10 +865,10 @@ func TestMultiDBFullDuplexLaneSwitchesToActive(t *testing.T) {
 func TestMultiDBFullDuplexRemoveClearsNoFD(t *testing.T) {
 	requireLocalRedis(t)
 	noPool := MultiDBClientConfig{
-		Options: &Options{Addr: ":6379", PipelinePoolSize: -1, MaxRetries: -1},
+		Options: &Options{Addr: internalTestRedisAddr(), PipelinePoolSize: -1, MaxRetries: -1},
 		Weight:  1,
 	}
-	mdb := newFDTestMultiDB(t, member(":6379", 2), noPool)
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), noPool)
 	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
@@ -900,7 +900,7 @@ func TestMultiDBFullDuplexRemoveClearsNoFD(t *testing.T) {
 // returns, so a later command on a new lane cannot run ahead of it.
 func TestMultiDBFullDuplexDivertKeepsOrder(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	mdb.AddHook(fdProcessFuncHook{process: func(next ProcessHook) ProcessHook {
 		return func(ctx context.Context, cmd Cmder) error {
 			if cmd.Name() == "set" {
@@ -988,7 +988,7 @@ func TestFDRerouteHookReadsDeferredResult(t *testing.T) {
 // RemoveDatabase must find it and drain it before the member's client closes.
 func TestMultiDBFullDuplexSweepLeavesRemovedChildToRemoval(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
@@ -1022,7 +1022,7 @@ func TestMultiDBFullDuplexSweepLeavesRemovedChildToRemoval(t *testing.T) {
 // the member's client closes.
 func TestMultiDBFullDuplexSweepKeepsDrainingChild(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
@@ -1093,10 +1093,10 @@ func TestFDShutdownFlushOwnerAbortSkipsQueuedReports(t *testing.T) {
 func TestMultiDBFullDuplexCloseClearsNoFD(t *testing.T) {
 	requireLocalRedis(t)
 	noPool := MultiDBClientConfig{
-		Options: &Options{Addr: ":6379", PipelinePoolSize: -1, MaxRetries: -1},
+		Options: &Options{Addr: internalTestRedisAddr(), PipelinePoolSize: -1, MaxRetries: -1},
 		Weight:  1,
 	}
-	mdb := newFDTestMultiDB(t, member(":6379", 2), noPool)
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), noPool)
 	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
@@ -1120,7 +1120,7 @@ func TestMultiDBFullDuplexCloseClearsNoFD(t *testing.T) {
 // drain, so the member's client is not closed under accepted commands.
 func TestMultiDBFullDuplexRemoveWaitsForCloseDrain(t *testing.T) {
 	requireLocalRedis(t)
-	mdb := newFDTestMultiDB(t, member(":6379", 2), member(":6379", 1))
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 2), member(internalTestRedisAddr(), 1))
 	release := make(chan struct{})
 	var held atomic.Bool
 	if err := mdb.AddDatabaseHook(1, fdProcessFuncHook{process: func(next ProcessHook) ProcessHook {
