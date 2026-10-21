@@ -15,7 +15,7 @@ import (
 // keeps one full-duplex child autopipeliner per member — a standalone FD
 // engine on a *Client member, a cluster FD router on a *ClusterClient member —
 // and sends each command to the ACTIVE member's child. The parent
-// AutoPipeliner keeps diversion (blocking, fan-out, HIMPORT, mustDivert), so
+// AutoPipeliner keeps diversion (blocking, fan-out, HIMPORT, routeCommand), so
 // only batchable commands reach here.
 //
 // MultiDB semantics on the fast path:
@@ -76,6 +76,7 @@ func newMultiDBFDRouter(parent *AutoPipeliner, c *MultiDBClient, cfg *AutoPipeli
 	child.Unordered = false
 	child.MaxConcurrentBatches = 1
 	child.NumShards = 1
+	child.FullDuplexPipes = 1 // ordered single engine per member
 	child.contentSharded = false
 	child.clusterReprocess = nil
 	child.clusterRetryBudget = 0

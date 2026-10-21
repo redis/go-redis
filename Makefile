@@ -3,6 +3,9 @@ REDIS_VERSION ?= 8.10
 RE_CLUSTER ?= false
 RCE_DOCKER ?= true
 CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:8.10.0
+# CI runs private live CSC fixtures inside the matching Redis image first, then
+# excludes only those already-executed tests from the host's race/coverage run.
+TEST_SKIP ?= Example
 
 docker.start:
 	export RE_CLUSTER=$(RE_CLUSTER) && \
@@ -51,7 +54,7 @@ test.ci:
 	    export REDIS_VERSION=$(REDIS_VERSION) && \
 	    go mod tidy && \
 	    go vet && \
-	    go test -v -coverprofile=coverage.txt -covermode=atomic ./... -race -skip Example); \
+	    go test -v -coverprofile=coverage.txt -covermode=atomic ./... -race -skip '$(TEST_SKIP)'); \
 	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
@@ -66,7 +69,7 @@ test.ci.skip-vectorsets:
 	    go mod tidy && \
 	    go vet && \
 	    go test -v -coverprofile=coverage.txt -covermode=atomic ./... -race \
-	      -run '^(?!.*(?:VectorSet|vectorset|ExampleClient_vectorset)).*$$' -skip Example); \
+	      -run '^(?!.*(?:VectorSet|vectorset|ExampleClient_vectorset)).*$$' -skip '$(TEST_SKIP)'); \
 	done
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet

@@ -698,3 +698,13 @@ func TestParseFTHybridWarnings(t *testing.T) {
 		})
 	}
 }
+
+func TestDropIndexBuilderDeleteDocs(t *testing.T) {
+	client := NewClient(&Options{Addr: "localhost:6379"})
+	defer client.Close()
+
+	builder := client.NewDropIndexBuilder(context.Background(), "idx").DeleteDocs()
+	if builder.options == nil || !builder.options.DeleteDocs {
+		t.Fatal("expected DeleteDocs to be true")
+	}
+}

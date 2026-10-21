@@ -846,6 +846,9 @@ func (c *multidbCore) dbByID(id int) *multidbDatabase {
 // the command, and records the outcome on both the breaker and the aggregate
 // failure detector. Failures can trigger failover before the next attempt.
 func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
+	// A cluster routing decision pinned by one member's autopipeliner (its
+	// metadata view and policy) must not be reused by another member.
+	cmd.setClusterRoutingDecision(nil)
 	if c.closed.Load() {
 		cmd.SetErr(ErrClosed)
 		return ErrClosed

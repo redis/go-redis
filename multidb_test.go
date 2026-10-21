@@ -551,7 +551,11 @@ func TestMultiDBOutOfRangeIDNotTruncated(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:2", 2, true) // active
 	mdb := newTestMultiDB(t, baseOptions(), db0, db1)
 	ctx := context.Background()
-	aliasID := int(int64(1) << 32) // int32(aliasID) == 0 would alias member 0
+	// A variable shift keeps the 64-bit-only value out of constant folding, so
+	// the file still compiles on 32-bit (GOARCH=386 vet). The skip above
+	// guards the runtime path.
+	shift := 32
+	aliasID := int(int64(1) << shift) // int32(aliasID) == 0 would alias member 0
 	if err := mdb.SetActiveDatabase(ctx, aliasID); !errors.Is(err, redis.ErrDatabaseNotFound) {
 		t.Errorf("SetActiveDatabase(1<<32) = %v, want ErrDatabaseNotFound", err)
 	}

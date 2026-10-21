@@ -218,6 +218,14 @@ func cmdsContainHImport(cmds []Cmder) bool {
 	return false
 }
 
+// clearRoutingDecisions drops cluster routing decisions pinned on cmds by a
+// member's autopipeliner, so the member that runs them resolves its own.
+func clearRoutingDecisions(cmds []Cmder) {
+	for _, cmd := range cmds {
+		cmd.setClusterRoutingDecision(nil)
+	}
+}
+
 // processPipeline is the batch analogue of process: an attempt loop bounded
 // by CommandRetries that snapshots the active database, executes the whole
 // batch through the member's hook-wrapped pipeline path, records per-command
@@ -237,6 +245,9 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 	if len(cmds) == 0 {
 		return nil
 	}
+	// The full-duplex reroute reaches here with decisions pinned by the old
+	// member's cluster router; the next member resolves its own.
+	clearRoutingDecisions(cmds)
 	if c.closed.Load() {
 		setCmdsErr(cmds, ErrClosed)
 		return ErrClosed
@@ -464,6 +475,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	if len(cmds) == 0 {
 		return nil
 	}
+	clearRoutingDecisions(cmds)
 	if c.closed.Load() {
 		setCmdsErr(cmds, ErrClosed)
 		return ErrClosed
@@ -874,7 +886,7 @@ func (c *MultiDBClient) canPipeline(ctx context.Context, cmd Cmder) bool {
 // avoid it.
 //
 // AutoPipelineOptions.FullDuplex is supported (ordered, single engine:
-// NumShards is forced to 1): each command streams on a held connection of the
+// NumShards and FullDuplexPipes are forced to 1): each command streams on a held connection of the
 // ACTIVE member — a full-duplex engine on a standalone member, the cluster
 // full-duplex router on a cluster member. A command rides it only while the
 // member's breaker is closed and the failure detector has not tripped;
@@ -942,9 +954,9 @@ func (c *MultiDBClient) newMultiDBAutoPipeliner(cfg *AutoPipelineOptions, blocki
 	// unrelated callers sharing it. Diverted commands run through
 	// MultiDBClient.Process, so a fan-out command still fans out on the active
 	// member and still passes the gate.
-	ap.setMustDivert(func(ctx context.Context, cmd Cmder) bool {
-		return !c.canPipeline(ctx, cmd)
-	})
+	ap.routeCommand = func(ctx context.Context, cmd Cmder) (bool, error) {
+		return !c.canPipeline(ctx, cmd), nil
+	}
 	return ap, nil
 }
 
