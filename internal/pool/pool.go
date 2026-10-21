@@ -1599,6 +1599,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
+	// Read before the hooks: the maintnotifications OnPut hook can hand the
+	// connection to a handoff worker, which may start at once (see below).
+	ownerGen := cn.HandoffOwnerGen()
+
 	if hookManager != nil {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
@@ -1626,10 +1630,16 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
 		// Hot path optimization: try fast IN_USE → IDLE transition
 		// Using inline Release() method for better performance (avoids pointer dereference)
-		transitionedToIdle := cn.Release()
+		//
+		// Not when a hook handed the connection to a handoff worker: the worker
+		// owns it now and may already hold it IN_USE for its init commands, so
+		// Release would free the worker's IN_USE and a Get would take the
+		// connection mid-init. Pool it as-is; the worker makes it IDLE when done.
+		handedOff := cn.HandedOffSince(ownerGen)
+		transitionedToIdle := !handedOff && cn.Release()
 
 		// Handle unexpected state changes
-		if !transitionedToIdle {
+		if !transitionedToIdle && !handedOff {
 			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
 			sm := cn.GetStateMachine()
@@ -1777,7 +1787,10 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 		hookManager.ProcessOnRemove(ctx, cn, reason)
 	}
 
-	removed, countCb := p.removeConnWithLock(cn)
+	p.connsMu.Lock()
+	removed, wasIdle := p.removeConnState(cn)
+	countCb := getMetricConnectionCountCallback()
+	p.connsMu.Unlock()
 
 	if freeTurn {
 		p.freeTurn()
@@ -1786,13 +1799,17 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	// Only emit metric decrements if we actually removed the connection from the map.
 	// If removed is false, Close() already removed it and emitted the -1 delta.
 	if removed {
-		// Notify metrics: connection removed (assume from used state)
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, MetricStateUsed, "")
+		// A connection still in idleConns is counted idle (e.g. one a
+		// handoff claimed straight from the idle list); any other is used.
+		fromState := MetricStateUsed
+		if wasIdle {
+			fromState = MetricStateIdle
 		}
-		// Record connection count decrement (connection removed, assume from used state)
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, fromState, "")
+		}
 		if countCb != nil {
-			countCb(ctx, -1, cn, "used", false)
+			countCb(ctx, -1, cn, fromState, false)
 		}
 	}
 
@@ -1869,9 +1886,16 @@ func (p *ConnPool) removeConnWithLock(cn *Conn) (bool, connectionCountCallback) 
 // removeConn removes a connection from the pool's internal data structures.
 // Returns true if the connection was present and removed, false otherwise.
 func (p *ConnPool) removeConn(cn *Conn) bool {
+	removed, _ := p.removeConnState(cn)
+	return removed
+}
+
+// removeConnState is removeConn that also reports whether the connection was
+// in idleConns, i.e. counted in the idle metric state. Caller holds connsMu.
+func (p *ConnPool) removeConnState(cn *Conn) (removed, wasIdle bool) {
 	cid := cn.GetID()
 	if _, exists := p.conns[cid]; !exists {
-		return false
+		return false, false
 	}
 	delete(p.conns, cid)
 	atomic.AddUint32(&p.stats.StaleConns, 1)
@@ -1886,10 +1910,11 @@ func (p *ConnPool) removeConn(cn *Conn) bool {
 		if ic == cn {
 			p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
 			p.idleConnsLen.Add(-1)
+			wasIdle = true
 			break
 		}
 	}
-	return true
+	return true, wasIdle
 }
 
 func (p *ConnPool) closeConn(cn *Conn) error {

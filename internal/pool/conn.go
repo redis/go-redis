@@ -134,6 +134,10 @@ type Conn struct {
 	// These are atomic for lock-free access during handoff operations
 	handoffStateAtomic   atomic.Value  // stores *HandoffState
 	handoffRetriesAtomic atomic.Uint32 // retry counter
+	// handoffOwnerGen counts the times a handoff took the connection over
+	// (queued: -> UNUSABLE). putConn compares it across the OnPut hook to
+	// tell its caller's IN_USE from a worker's (see HandedOffSince).
+	handoffOwnerGen atomic.Uint32
 
 	pooled    bool
 	pubsub    bool
@@ -1024,7 +1028,53 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 		cn.handoffStateAtomic.CompareAndSwap(newState, currentState)
 		return fmt.Errorf("failed to mark connection as unusable: %w", err)
 	}
+	cn.handoffOwnerGen.Add(1)
 	return nil
+}
+
+// ClaimIdleForHandoff takes an IDLE connection out of circulation for a
+// handoff (IDLE -> UNUSABLE) and keeps its handoff mark, so the handoff can
+// then be queued. It is for a connection nobody holds, which would never
+// reach OnPut. It returns false when the connection is not IDLE: a Get
+// acquired it, and OnPut queues the handoff when the holder returns it.
+func (cn *Conn) ClaimIdleForHandoff() bool {
+	if _, err := cn.stateMachine.TryTransition(validFromIdle, StateUnusable); err != nil {
+		return false
+	}
+	cn.handoffOwnerGen.Add(1)
+	return true
+}
+
+// MarkHandoffQueued clears the ShouldHandoff mark of a connection whose
+// handoff was claimed (ClaimIdleForHandoff) and queued, so it is not queued
+// again. Endpoint and seqID stay for the worker. It does not touch the
+// connection state: the worker may already own it. A no-op once the worker
+// cleared the handoff state.
+func (cn *Conn) MarkHandoffQueued() {
+	current := cn.handoffStateAtomic.Load()
+	state, ok := current.(*HandoffState)
+	if !ok || !state.ShouldHandoff {
+		return
+	}
+	cn.handoffStateAtomic.CompareAndSwap(current, &HandoffState{
+		ShouldHandoff: false,
+		Endpoint:      state.Endpoint,
+		SeqID:         state.SeqID,
+	})
+}
+
+// HandoffOwnerGen returns the current handoff takeover count; pass it to
+// HandedOffSince.
+func (cn *Conn) HandoffOwnerGen() uint32 {
+	return cn.handoffOwnerGen.Load()
+}
+
+// HandedOffSince reports whether a handoff took the connection over since
+// gen was read. The state alone cannot tell: the handoff worker can take the
+// connection back through IN_USE (its init commands run on it), so an IN_USE
+// seen after the takeover is the worker's, not the previous holder's.
+func (cn *Conn) HandedOffSince(gen uint32) bool {
+	return cn.handoffOwnerGen.Load() != gen
 }
 
 // GetID returns the unique identifier for this connection.
@@ -1097,10 +1147,12 @@ func (cn *Conn) ClearHandoffState() {
 	// Reset retry counter
 	cn.handoffRetriesAtomic.Store(0)
 
-	// Mark connection as usable again
-	// Use state machine directly instead of deprecated SetUsable
-	// probably done by initConn
-	cn.stateMachine.Transition(StateIdle)
+	// Make the connection usable again only while the handoff still owns it
+	// (queued: UNUSABLE, or being re-initialized: INITIALIZING). initConn
+	// already returns it IDLE, and a Get may have acquired it since: a plain
+	// Transition(StateIdle) would release that holder's connection to a
+	// second Get, and the two would read each other's replies.
+	_, _ = cn.stateMachine.TryTransition(validFromInitializingOrUnusable, StateIdle)
 }
 
 // ExpiresAt returns the connection's absolute lifetime expiry (zero when no
