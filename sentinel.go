@@ -137,6 +137,17 @@ type FailoverOptions struct {
 	PipelinePoolSize        int
 	PipelineMinIdleConns    int
 
+	// The PubSub* fields configure the client's pub/sub engine, including
+	// the sentinel event subscription (+switch-master). See the
+	// same-named fields on Options for details and defaults.
+	PubSubChanSize               int
+	PubSubHealthCheckInterval    time.Duration
+	PubSubSubscribeRetryInterval time.Duration
+	PubSubPingTimeout            time.Duration
+	PubSubReconnectTimeout       time.Duration
+	PubSubReconnectMaxBackoff    time.Duration
+	PubSubLogInterval            time.Duration
+
 	// AutoPipelineOptions is the default config for the client's autopipeliner
 	// faces. See Options.AutoPipelineOptions.
 	AutoPipelineOptions *AutoPipelineOptions
@@ -226,6 +237,14 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
 		AutoPipelineOptions:     opt.AutoPipelineOptions,
 
+		PubSubChanSize:               opt.PubSubChanSize,
+		PubSubHealthCheckInterval:    opt.PubSubHealthCheckInterval,
+		PubSubSubscribeRetryInterval: opt.PubSubSubscribeRetryInterval,
+		PubSubPingTimeout:            opt.PubSubPingTimeout,
+		PubSubReconnectTimeout:       opt.PubSubReconnectTimeout,
+		PubSubReconnectMaxBackoff:    opt.PubSubReconnectMaxBackoff,
+		PubSubLogInterval:            opt.PubSubLogInterval,
+
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
@@ -280,6 +299,14 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		// The sentinel client uses a 4KiB read/write buffer size.
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
+
+		PubSubChanSize:               opt.PubSubChanSize,
+		PubSubHealthCheckInterval:    opt.PubSubHealthCheckInterval,
+		PubSubSubscribeRetryInterval: opt.PubSubSubscribeRetryInterval,
+		PubSubPingTimeout:            opt.PubSubPingTimeout,
+		PubSubReconnectTimeout:       opt.PubSubReconnectTimeout,
+		PubSubReconnectMaxBackoff:    opt.PubSubReconnectMaxBackoff,
+		PubSubLogInterval:            opt.PubSubLogInterval,
 
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
@@ -622,7 +649,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Generate unique pool names for metrics
 	uniqueID := generateUniqueID()
 	mainPoolName := opt.Addr + "_" + uniqueID
-	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
+	rdb.pubSubPoolName = mainPoolName + "_pubsub"
 
 	// Assign the pool fields only AFTER the error check, mirroring NewClient.
 	// newConnPool returns a nil *pool.ConnPool on error, and assigning that
@@ -630,19 +657,24 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// interface that closeResources treats as present (its != nil check passes),
 	// so the panic-cleanup defer above would nil-deref inside ConnPool.Close and
 	// replace the intended "failed to create connection pool" panic. A local var
-	// keeps the field nil on failure. (pubSubPool is a concrete *pool.PubSubPool
-	// whose nil is caught correctly by the != nil check, but assign it the same
-	// way to keep this constructor identical to NewClient.)
+	// keeps the field nil on failure.
 	connPool, err := newConnPool(opt, rdb.dialHook, mainPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
 	rdb.connPool = connPool
-	pubSubPool, err := newPubSubPool(opt, rdb.dialHook, pubsubPoolName)
-	if err != nil {
-		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+
+	// The shared pub/sub connection dials through the master-resolving
+	// dialer above, so a reconnect lands on the current master and
+	// replays the subscriptions there; the failover hooks retire the
+	// connection after a master switch (see failoverPubSubHooks).
+	pubSubHooks := &failoverPubSubHooks{
+		baseClient:  rdb.baseClient,
+		replicaOnly: failoverOpt.ReplicaOnly,
 	}
-	rdb.pubSubPool = pubSubPool
+	pubSubManager := newPubSubManager(pubSubHooks, rdb.cloneOpt())
+	pubSubHooks.recheck = pubSubManager.RecheckConn
+	rdb.pubSubManager = pubSubManager
 
 	// Create the dedicated pipeline pool unconditionally, mirroring NewClient
 	// via the shared buildPipelinePool helper. PipelinePoolSize < 0 opts out.
@@ -658,11 +690,32 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// failover client previously registered none, so pool gauges were silent
 	// for the identical standalone setup). The pipeline pool is nil when not
 	// configured.
-	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
+	otel.RegisterPools(rdb.connPool, rdb.getPipelinePool(), opt.Addr)
 
+	installOnFailover(failover, rdb.baseClient, pubSubHooks)
+
+	built = true
+	return rdb
+}
+
+// installOnFailover installs the failover client's master-switch
+// callback and seeds pubSubHooks with the master already discovered: a
+// pool dial (MinIdleConns > 0) can resolve it before the callback
+// exists, and an unseeded hooks would treat the first real switch as
+// the initial discovery and leave the pub/sub connection on the demoted
+// master. Both happen under failover.mu, which trySwitchMaster holds
+// while it updates masterAddr and calls onFailover, so no switch falls
+// in between.
+func installOnFailover(failover *sentinelFailover, c *baseClient, pubSubHooks *failoverPubSubHooks) {
 	failover.mu.Lock()
+	defer failover.mu.Unlock()
+
+	if failover.masterAddr != "" {
+		pubSubHooks.masterSwitched(failover.masterAddr)
+	}
 	failover.onFailover = func(ctx context.Context, addr string) {
-		if connPool, ok := rdb.connPool.(*pool.ConnPool); ok {
+		pubSubHooks.masterSwitched(addr)
+		if connPool, ok := c.connPool.(*pool.ConnPool); ok {
 			_ = connPool.Filter(func(cn *pool.Conn) bool {
 				return cn.RemoteAddr().String() != addr
 			})
@@ -671,16 +724,94 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		// otherwise pipelined traffic keeps using the old address after failover.
 		// The pipeline pool is created at construction (before this callback can
 		// fire), so the ref is simply read here.
-		if ref := rdb.loadPipelinePool(); ref != nil {
+		if ref := c.loadPipelinePool(); ref != nil {
 			_ = ref.pool.Filter(func(cn *pool.Conn) bool {
 				return cn.RemoteAddr().String() != addr
 			})
 		}
 	}
-	failover.mu.Unlock()
+}
 
-	built = true
-	return rdb
+// failoverPubSubHooks are the failover client's pub/sub hooks: the
+// baseClient defaults, plus retirement of the shared connection after a
+// master switch. Without it the connection stays on a demoted master
+// that still answers PING (e.g. after a partition Sentinel resolved by
+// failing over) and subscribers silently miss everything published on
+// the new master.
+//
+// A connection is tagged with the master generation it was dialed
+// under, rather than compared by address: with a custom Dialer, a proxy
+// or announced hostnames, the connection's remote address need not
+// match the address Sentinel reports, and a mismatch would retire every
+// connection forever. The engine consults pubsubShouldReplaceConn after
+// every frame read; a switch also asks it at once through recheck, so an
+// idle connection (or one with the health check disabled) moves without
+// waiting for a frame.
+type failoverPubSubHooks struct {
+	*baseClient
+
+	// replicaOnly disables the retirement: a ReplicaOnly client's
+	// connection is on a replica, which a master switch does not demote.
+	replicaOnly bool
+
+	// master is the last master address known (nil before the first:
+	// seeded by installOnFailover, then reported by onFailover); gen
+	// counts the switches between two known masters, so the initial
+	// discovery — racing the very first dial — retires nothing.
+	master atomic.Pointer[string]
+	gen    atomic.Uint64
+	// connGen maps each live connection (*pool.Conn) to the gen it was
+	// dialed under; entries are dropped in pubsubDisconnect.
+	connGen sync.Map
+
+	// recheck asks the manager to re-evaluate pubsubShouldReplaceConn
+	// now (pubsub.Manager.RecheckConn; non-blocking). Set once at
+	// construction, before onFailover is installed; nil in tests that
+	// drive the hooks without a manager.
+	recheck func()
+}
+
+// masterSwitched records a new master address. Called from onFailover
+// under the failover lock, so it must not block.
+func (h *failoverPubSubHooks) masterSwitched(addr string) {
+	if prev := h.master.Swap(&addr); prev != nil && *prev != addr {
+		h.gen.Add(1)
+		if h.recheck != nil && !h.replicaOnly {
+			h.recheck()
+		}
+	}
+}
+
+func (h *failoverPubSubHooks) pubsubConnect(ctx context.Context, addr string) (*pool.Conn, error) {
+	// Loaded before the dial: a switch during the dial tags the new
+	// connection stale, costing one extra reconnect, never a connection
+	// left on a demoted master.
+	gen := h.gen.Load()
+	cn, err := h.baseClient.pubsubConnect(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	h.connGen.Store(cn, gen)
+	return cn, nil
+}
+
+func (h *failoverPubSubHooks) pubsubDisconnect(cn *pool.Conn) error {
+	h.connGen.Delete(cn)
+	return h.baseClient.pubsubDisconnect(cn)
+}
+
+// pubsubShouldReplaceConn retires cn on a maintenance handoff, like the
+// default, and once a master switch made its generation stale. Lock-free
+// and idempotent, as the engine requires.
+func (h *failoverPubSubHooks) pubsubShouldReplaceConn(cn *pool.Conn) bool {
+	if h.baseClient.pubsubShouldReplaceConn(cn) {
+		return true
+	}
+	if h.replicaOnly {
+		return false
+	}
+	gen, ok := h.connGen.Load(cn)
+	return ok && gen.(uint64) != h.gen.Load()
 }
 
 func masterReplicaDialer(
@@ -750,17 +881,17 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	// Generate unique pool names for metrics
 	uniqueID := generateUniqueID()
 	mainPoolName := opt.Addr + "_" + uniqueID
-	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
+	c.pubSubPoolName = mainPoolName + "_pubsub"
 
 	var err error
 	c.connPool, err = newConnPool(opt, c.dialHook, mainPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
-	c.pubSubPool, err = newPubSubPool(opt, c.dialHook, pubsubPoolName)
-	if err != nil {
-		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
-	}
+
+	// Shared connection multiplexing the sentinel event subscriptions
+	// (+switch-master etc.); connects lazily on the first Subscribe.
+	c.pubSubManager = newPubSubManager(c.baseClient, c.cloneOpt())
 
 	return c
 }
@@ -784,37 +915,6 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-func (c *SentinelClient) pubSub() *PubSub {
-	pubsub := &PubSub{
-		opt: c.cloneOpt(),
-		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
-			if err != nil {
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = c.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				return nil, err
-			}
-			// Track connection in PubSubPool
-			c.pubSubPool.TrackConn(cn)
-			return cn, nil
-		},
-		closeConn: func(cn *pool.Conn) error {
-			// Untrack connection from PubSubPool
-			c.pubSubPool.UntrackConn(cn)
-			_ = cn.Close()
-			return nil
-		},
-		pushProcessor: c.pushProcessor,
-	}
-	pubsub.init()
-
-	return pubsub
-}
-
 // Ping is used to test if a connection is still alive, or to
 // measure latency.
 func (c *SentinelClient) Ping(ctx context.Context) *StringCmd {
@@ -823,12 +923,13 @@ func (c *SentinelClient) Ping(ctx context.Context) *StringCmd {
 	return cmd
 }
 
-// Subscribe subscribes the client to the specified channels.
+// Subscribe subscribes the client to the specified channels over the
+// shared pub/sub connection.
 // Channels can be omitted to create empty subscription.
 func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) *PubSub {
-	pubsub := c.pubSub()
+	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.Subscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.Subscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -836,9 +937,9 @@ func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) *Pub
 // PSubscribe subscribes the client to the given patterns.
 // Patterns can be omitted to create empty subscription.
 func (c *SentinelClient) PSubscribe(ctx context.Context, channels ...string) *PubSub {
-	pubsub := c.pubSub()
+	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.PSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.PSubscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -971,8 +1072,12 @@ func (c *sentinelFailover) Close() error {
 }
 
 func (c *sentinelFailover) closeSentinel() error {
-	firstErr := c.pubsub.Close()
-	c.pubsub = nil
+	var firstErr error
+	// nil when the event subscription was never set up.
+	if c.pubsub != nil {
+		firstErr = c.pubsub.Close()
+		c.pubsub = nil
+	}
 
 	err := c.sentinel.Close()
 	if err != nil && firstErr == nil {
@@ -1305,11 +1410,11 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 		if msg.Channel == "+switch-master" {
 			parts := strings.Split(msg.Payload, " ")
 			if parts[0] != c.opt.MasterName {
-				internal.Logger.Printf(pubsub.getContext(), "sentinel: ignore addr for master=%q", parts[0])
+				internal.Logger.Printf(ctx, "sentinel: ignore addr for master=%q", parts[0])
 				continue
 			}
 			addr := net.JoinHostPort(parts[3], parts[4])
-			c.trySwitchMaster(pubsub.getContext(), addr)
+			c.trySwitchMaster(ctx, addr)
 		}
 
 		if c.onUpdate != nil {

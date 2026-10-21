@@ -38,13 +38,15 @@ type PubSuber interface {
 
 	// Ping pings the subscriber's connection(s); at most one pong per
 	// call surfaces on Events, however many connections were pinged.
-	// Like messages, a pong is dropped if the subscriber's buffer is
-	// full (see PubSubChanSize), so callers awaiting one should apply
-	// a timeout.
+	// A pong lost with the connection is reported as an error event.
 	Ping(ctx context.Context, payload ...string) error
 	// PingSilent is Ping without the Events pong.
 	PingSilent(ctx context.Context, payload ...string) error
 	ClientSetName(ctx context.Context, name string) error
+	// DeliverError puts err on Events, for a failure the caller could
+	// not return (a client's Subscribe hands out the PubSub without its
+	// error). Dropped on a closed handle.
+	DeliverError(err error)
 	Close() error
 }
 

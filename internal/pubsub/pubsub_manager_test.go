@@ -36,6 +36,7 @@ func TestManagerFanout(t *testing.T) {
 			t.Fatalf("dialed %q, want %q", fsc.addr, "node:6379")
 		}
 		fsc.expectCmd(t, "subscribe", "ch1")
+		fsc.sendConfirm(t, "subscribe", "ch1", 1)
 
 		fsc.sendMessage(t, "message", "ch1", "hello")
 		msg := recvMsg(t, ch)
@@ -61,6 +62,8 @@ func TestManagerFanout(t *testing.T) {
 		fsc := srv.waitDial(t)
 		fsc.expectCmd(t, "subscribe", "shared")
 		fsc.expectCmd(t, "subscribe", "shared") // re-sent, harmless
+		fsc.sendConfirm(t, "subscribe", "shared", 1)
+		fsc.sendConfirm(t, "subscribe", "shared", 1)
 
 		fsc.sendMessage(t, "message", "shared", "both")
 		if msg := recvMsg(t, ch1); msg.Payload != "both" {
@@ -88,6 +91,8 @@ func TestManagerFanout(t *testing.T) {
 		fsc := srv.waitDial(t)
 		fsc.expectCmd(t, "psubscribe", "news.*")
 		fsc.expectCmd(t, "ssubscribe", "news.tech")
+		fsc.sendConfirm(t, "psubscribe", "news.*", 1)
+		fsc.sendConfirm(t, "ssubscribe", "news.tech", 1)
 
 		fsc.sendMessage(t, "pmessage", "news.*", "news.tech", "p-payload")
 		if msg := recvMsg(t, chp); msg.Pattern != "news.*" || msg.Payload != "p-payload" {
@@ -104,6 +109,50 @@ func TestManagerFanout(t *testing.T) {
 		case msg := <-chp:
 			t.Fatalf("pattern handle received cross-namespace message %+v", msg)
 		case <-time.After(50 * time.Millisecond):
+		}
+	})
+
+	t.Run("JoiningHandleGetsNoMessagesBeforeItsConfirmation", func(t *testing.T) {
+		// A handle joining a name another handle already holds must not
+		// receive messages read ahead of its own confirmation: they were
+		// published before the server processed its SUBSCRIBE, and a
+		// dedicated connection would have delivered the confirmation first.
+		srv := newFakeServer()
+		m := newTestManager(t, srv, testConfig("node:6379"))
+
+		owner, err := m.Subscribe(ctx, "live")
+		if err != nil {
+			t.Fatalf("Subscribe owner: %v", err)
+		}
+		fsc := srv.waitDial(t)
+		fsc.expectCmd(t, "subscribe", "live")
+		fsc.sendConfirm(t, "subscribe", "live", 1)
+		if sub, ok := recvEvent(t, owner.Events()).(*Subscription); !ok || sub.Channel != "live" {
+			t.Fatalf("owner event = %#v, want the live confirmation", sub)
+		}
+
+		joiner, err := m.Subscribe(ctx, "live")
+		if err != nil {
+			t.Fatalf("Subscribe joiner: %v", err)
+		}
+		fsc.expectCmd(t, "subscribe", "live")
+
+		// Published before the server processed the joiner's SUBSCRIBE.
+		fsc.sendMessage(t, "message", "live", "early")
+		if msg, ok := recvEvent(t, owner.Events()).(*Message); !ok || msg.Payload != "early" {
+			t.Fatalf("owner event = %#v, want the early message", msg)
+		}
+
+		fsc.sendConfirm(t, "subscribe", "live", 1)
+		fsc.sendMessage(t, "message", "live", "late")
+		if sub, ok := recvEvent(t, joiner.Events()).(*Subscription); !ok || sub.Channel != "live" || sub.Count != 1 {
+			t.Fatalf("joiner's first event = %#v, want its live confirmation (count 1)", sub)
+		}
+		if msg, ok := recvEvent(t, joiner.Events()).(*Message); !ok || msg.Payload != "late" {
+			t.Fatalf("joiner's second event = %#v, want the late message", msg)
+		}
+		if msg, ok := recvEvent(t, owner.Events()).(*Message); !ok || msg.Payload != "late" {
+			t.Fatalf("owner event = %#v, want the late message", msg)
 		}
 	})
 
@@ -177,21 +226,23 @@ func TestManagerUnsubscribe(t *testing.T) {
 	fsc.expectCmd(t, "subscribe", "keep")
 
 	// h1 leaving "shared" must not unsubscribe it server-side: h2 still
-	// listens — no command. And a handle owning nothing stays usable and
-	// can subscribe again.
+	// listens — only the barrier PING whose pong confirms h1's release.
+	// And a handle owning nothing stays usable and can subscribe again.
 	if err := h1.Unsubscribe(ctx, "shared"); err != nil {
 		t.Fatalf("h1 Unsubscribe: %v", err)
 	}
+	fsc.expectCmd(t, "ping")
+	fsc.pong([]string{"ping"})
 	fsc.expectNoCmd(t, 100*time.Millisecond)
 	if _, err := h1.Subscribe(ctx, "revived"); err != nil {
 		t.Fatalf("Subscribe after drain: %v", err)
 	}
 	fsc.expectCmd(t, "subscribe", "revived")
 
-	// The last owner leaving sends the server-side unsubscribe and the
-	// removal is immediate: messages the server sent before processing
-	// the UNSUBSCRIBE find no registered handle and are discarded, and
-	// the confirmation fans out to nobody.
+	// The last owner leaving sends the server-side unsubscribe, and keeps
+	// the name's messages until its confirmation, as on a dedicated
+	// connection: the server delivers every message published before the
+	// UNSUBSCRIBE ahead of the confirmation. Nothing after it arrives.
 	if err := h2.Unsubscribe(ctx, "shared"); err != nil {
 		t.Fatalf("h2 Unsubscribe shared: %v", err)
 	}
@@ -201,12 +252,21 @@ func TestManagerUnsubscribe(t *testing.T) {
 	fsc.sendMessage(t, "message", "shared", "late")
 	select {
 	case msg := <-ch2:
-		t.Fatalf("message %q delivered after Unsubscribe returned", msg.Payload)
+		if msg.Payload != "in-flight" {
+			t.Fatalf("got %q, want the message sent ahead of the unsubscribe confirmation", msg.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("message sent ahead of the unsubscribe confirmation was not delivered")
+	}
+	select {
+	case msg := <-ch2:
+		t.Fatalf("message %q delivered after the unsubscribe confirmation", msg.Payload)
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	// Draining the last subscriptions quiesces the connection as soon as
-	// the final UNSUBSCRIBE is written — no confirmations needed.
+	// Draining the last subscriptions quiesces the connection once the
+	// final UNSUBSCRIBE is confirmed: until then messages ahead of the
+	// confirmation are still owed to the releasing handle.
 	if err := h1.Unsubscribe(ctx); err != nil {
 		t.Fatalf("h1 Unsubscribe all: %v", err)
 	}
@@ -215,6 +275,9 @@ func TestManagerUnsubscribe(t *testing.T) {
 		t.Fatalf("h2 Unsubscribe keep: %v", err)
 	}
 	fsc.expectCmd(t, "unsubscribe", "keep")
+	fsc.sendConfirm(t, "unsubscribe", "revived", 1)
+	fsc.expectNoCmd(t, 50*time.Millisecond)
+	fsc.sendConfirm(t, "unsubscribe", "keep", 0)
 	fsc.expectClosed(t)
 
 	// Only an explicit Close ends a handle.
@@ -234,6 +297,7 @@ func TestManagerUnsubscribe(t *testing.T) {
 	ch3 := h3.Channel()
 	fsc2 := srv.waitDial(t)
 	fsc2.expectCmd(t, "subscribe", "fresh")
+	fsc2.sendConfirm(t, "subscribe", "fresh", 1)
 	fsc2.sendMessage(t, "message", "fresh", "hello")
 	if msg := recvMsg(t, ch3); msg.Payload != "hello" {
 		t.Fatalf("got %q, want \"hello\"", msg.Payload)
@@ -266,6 +330,8 @@ func TestManagerReconnect(t *testing.T) {
 		fsc2 := srv.waitDial(t)
 		fsc2.expectCmd(t, "subscribe", "ch1")
 		fsc2.expectCmd(t, "psubscribe", "pat.*")
+		fsc2.sendConfirm(t, "subscribe", "ch1", 1)
+		fsc2.sendConfirm(t, "psubscribe", "pat.*", 2)
 
 		fsc2.sendMessage(t, "message", "ch1", "back")
 		if msg := recvMsg(t, ch); msg.Payload != "back" {
@@ -292,6 +358,7 @@ func TestManagerReconnect(t *testing.T) {
 		_ = fsc1.conn.Close()
 		fsc2 := srv.waitDial(t)
 		fsc2.expectCmd(t, "ssubscribe", "{a}ch")
+		fsc2.sendConfirm(t, "ssubscribe", "{a}ch", 1)
 
 		fsc2.sendMessage(t, "smessage", "{a}ch", "back")
 		if msg := recvMsg(t, ch); msg.Payload != "back" {
@@ -352,6 +419,14 @@ func TestManagerReconnect(t *testing.T) {
 		bystander := m.NewHandle()
 		fsc := srv.waitDial(t)
 		fsc.expectCmd(t, "subscribe", "ch1")
+		fsc.sendConfirm(t, "subscribe", "ch1", 1)
+		if sub, ok := recvEvent(t, h.Events()).(*Subscription); !ok || sub.Channel != "ch1" {
+			t.Fatalf("event = %#v, want the ch1 confirmation", sub)
+		}
+		if _, err := h.Subscribe(ctx, "denied"); err != nil {
+			t.Fatalf("Subscribe denied: %v", err)
+		}
+		fsc.expectCmd(t, "subscribe", "denied")
 
 		// A RESP error reply (e.g. NOPERM) is not treated as a broken
 		// connection: no redial, the stream keeps working, and — since
@@ -895,17 +970,18 @@ func TestHealthCheckPingDoesNotRedial(t *testing.T) {
 	fsc2.sendMessage(t, "pong", "")
 }
 
-// TestManagerSlowConsumerDrop pins the drop policy: with a handle's
-// events buffer full and nobody consuming, further deliveries are
-// dropped without stalling the fan-out. A second handle on another
+// TestManagerSlowConsumerBacklog pins the slow-consumer policy: with a
+// handle's events buffer full and nobody consuming, further deliveries
+// queue behind it without stalling the fan-out, and the consumer gets
+// all of them, in order, once it reads. A second handle on another
 // channel serves as an ordering fence: the single listen goroutine fans
 // out FIFO, so receiving the fence message proves the burst fan-outs
 // completed.
-func TestManagerSlowConsumerDrop(t *testing.T) {
+func TestManagerSlowConsumerBacklog(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	cfg := testConfig("node:6379")
-	cfg.ChanSize = 1 // events buffer size
+	cfg.ChanSize = 2 // events buffer size: the confirmation and one message
 	m := newTestManager(t, srv, cfg)
 
 	slow, err := m.Subscribe(ctx, "slow")
@@ -921,27 +997,86 @@ func TestManagerSlowConsumerDrop(t *testing.T) {
 	fsc := srv.waitDial(t)
 	fsc.expectCmd(t, "subscribe", "slow")
 	fsc.expectCmd(t, "subscribe", "fence")
+	fsc.sendConfirm(t, "subscribe", "slow", 1)
+	fsc.sendConfirm(t, "subscribe", "fence", 2)
 
-	// slow has no consumer yet: m1 fills its 1-slot events buffer, m2
-	// and m3 are dropped.
-	fsc.sendMessage(t, "message", "slow", "m1")
-	fsc.sendMessage(t, "message", "slow", "m2")
-	fsc.sendMessage(t, "message", "slow", "m3")
+	// slow has no consumer yet: its confirmation and m1 fill its 2-slot
+	// events buffer, m2..m50 queue in its backlog.
+	for i := 1; i <= 50; i++ {
+		fsc.sendMessage(t, "message", "slow", fmt.Sprintf("m%d", i))
+	}
 	fsc.sendMessage(t, "message", "fence", "done")
 
 	if msg := recvMsg(t, fenceCh); msg.Payload != "done" {
 		t.Fatalf("fence got %q, want \"done\"", msg.Payload)
 	}
 
-	// The consumer catches up: the buffered message arrives, the dropped
-	// ones are gone, and the stream continues.
 	slowCh := slow.Channel()
-	if msg := recvMsg(t, slowCh); msg.Payload != "m1" {
-		t.Fatalf("buffered message = %q, want \"m1\"", msg.Payload)
+	for i := 1; i <= 50; i++ {
+		if msg := recvMsg(t, slowCh); msg.Payload != fmt.Sprintf("m%d", i) {
+			t.Fatalf("got %q, want m%d", msg.Payload, i)
+		}
 	}
-	fsc.sendMessage(t, "message", "slow", "m4")
-	if msg := recvMsg(t, slowCh); msg.Payload != "m4" {
-		t.Fatalf("got %q after drops, want \"m4\"", msg.Payload)
+	fsc.sendMessage(t, "message", "slow", "after")
+	if msg := recvMsg(t, slowCh); msg.Payload != "after" {
+		t.Fatalf("got %q, want \"after\"", msg.Payload)
+	}
+}
+
+// TestManagerBacklogLimitDropsMessagesOnly pins the backlog cap: once a
+// stalled handle has BacklogLimit bytes of messages queued, further
+// messages are dropped, but confirmations still queue, in order.
+func TestManagerBacklogLimitDropsMessagesOnly(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node:6379")
+	cfg.ChanSize = 1
+	cfg.BacklogLimit = 3 * messageSize(&Message{Channel: "lim", Payload: "m1"})
+	m := newTestManager(t, srv, cfg)
+
+	h, err := m.Subscribe(ctx, "lim")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fence, err := m.Subscribe(ctx, "fence")
+	if err != nil {
+		t.Fatalf("Subscribe fence: %v", err)
+	}
+	fenceCh := fence.Channel()
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "lim")
+	fsc.expectCmd(t, "subscribe", "fence")
+	fsc.sendConfirm(t, "subscribe", "lim", 1) // fills the 1-slot buffer
+	fsc.sendConfirm(t, "subscribe", "fence", 2)
+
+	// m1..m3 fit the backlog, m4..m9 are dropped.
+	for i := 1; i <= 9; i++ {
+		fsc.sendMessage(t, "message", "lim", fmt.Sprintf("m%d", i))
+	}
+	if _, err := h.Subscribe(ctx, "lim2"); err != nil {
+		t.Fatalf("Subscribe lim2: %v", err)
+	}
+	fsc.expectCmd(t, "subscribe", "lim2")
+	fsc.sendConfirm(t, "subscribe", "lim2", 2)
+	// The fan-out is FIFO: the fence message proves the burst was fanned
+	// out before anything is read.
+	fsc.sendMessage(t, "message", "fence", "done")
+	recvMsg(t, fenceCh)
+
+	var got []string
+	for range 5 {
+		switch ev := recvEvent(t, h.Events()).(type) {
+		case *Subscription:
+			got = append(got, ev.Kind+":"+ev.Channel)
+		case *Message:
+			got = append(got, ev.Payload)
+		default:
+			t.Fatalf("unexpected event %#v", ev)
+		}
+	}
+	want := "subscribe:lim m1 m2 m3 subscribe:lim2"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("events = %v, want %s", got, want)
 	}
 }
 
@@ -1554,6 +1689,61 @@ func TestHandoffDropsStaleProtocolFrames(t *testing.T) {
 	}
 	if !resent["ch"] || !resent["ch2"] {
 		t.Fatalf("retry re-sent %v, want ch and ch2", resent)
+	}
+}
+
+// TestHandoffKeepsLeavingConnection pins that a planned retirement (a
+// handoff mark) of a connection left with only an UNSUBSCRIBE in flight
+// does not drop it as idle: the releasing handle still gets every
+// message published ahead of the confirmation, then the server's
+// confirmation, after which the connection is released — nothing is
+// subscribed, so nothing redials.
+func TestHandoffKeepsLeavingConnection(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node-a:6379"))
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	fsc.sendConfirm(t, "subscribe", "ch", 1)
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	if err := h.Unsubscribe(ctx, "ch"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	fsc.expectCmd(t, "unsubscribe", "ch")
+	if err := fsc.poolConn.MarkForHandoff("node-b:6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	// Each frame read consults the retirement; the first must not drop
+	// the connection out from under the second.
+	fsc.sendMessage(t, "message", "ch", "in-flight-1")
+	fsc.sendMessage(t, "message", "ch", "in-flight-2")
+	fsc.sendConfirm(t, "unsubscribe", "ch", 0)
+
+	for _, want := range []string{"in-flight-1", "in-flight-2"} {
+		msg, ok := recvEvent(t, h.Events()).(*Message)
+		if !ok || msg.Payload != want {
+			t.Fatalf("got %#v, want message %q ahead of the unsubscribe confirmation", msg, want)
+		}
+	}
+	if sub, ok := recvEvent(t, h.Events()).(*Subscription); !ok || sub.Kind != "unsubscribe" || sub.Channel != "ch" {
+		t.Fatalf("got %#v, want the unsubscribe ch confirmation", sub)
+	}
+
+	for deadline := time.Now().Add(5 * time.Second); m.conn.Load() != nil; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("connection not released after the last confirmation")
+		}
+	}
+	select {
+	case fsc2 := <-srv.dialCh:
+		t.Fatalf("nothing subscribed, yet the handoff redialed to %q", fsc2.addr)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

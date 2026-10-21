@@ -364,6 +364,98 @@ func TestDialRetriesWithBackoff(t *testing.T) {
 	}
 }
 
+// TestDialRetryBackoffPolicy pins that a configured DialRetryBackoff
+// paces a dial's retries — with the 0-based attempt index — instead of
+// the reconnect backoff, which keeps bounding only the pause between
+// dials.
+func TestDialRetryBackoffPolicy(t *testing.T) {
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	cfg := testConfig("node:6379")
+	cfg.DialRetries = 2
+	cfg.MinRetryBackoff = time.Millisecond
+	cfg.ReconnectMaxBackoff = time.Millisecond
+
+	var asked []int
+	cfg.DialRetryBackoff = func(attempt int) time.Duration {
+		asked = append(asked, attempt)
+		return 40 * time.Millisecond
+	}
+
+	var attempts []time.Time
+	newConn := func(ctx context.Context, addr string) (*pool.Conn, error) {
+		attempts = append(attempts, time.Now())
+		if len(attempts) <= 2 {
+			return nil, errors.New("connection refused")
+		}
+		return srv.dial(ctx, addr)
+	}
+	m := NewManager(cfg, newConn, func(cn *pool.Conn) error { return cn.Close() },
+		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
+		testIsBadConn, nil, nil, nil)
+	t.Cleanup(func() { _ = m.Close() })
+
+	if _, err := m.Subscribe(context.Background(), "a"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	srv.waitDial(t).expectCmd(t, "subscribe", "a")
+
+	if len(attempts) != 3 {
+		t.Fatalf("dial attempts = %d, want 1 + DialRetries = 3", len(attempts))
+	}
+	if !slices.Equal(asked, []int{0, 1}) {
+		t.Fatalf("DialRetryBackoff asked for attempts %v, want [0 1]", asked)
+	}
+	for i := 1; i < len(attempts); i++ {
+		if gap := attempts[i].Sub(attempts[i-1]); gap < 35*time.Millisecond {
+			t.Fatalf("retry %d came %v after the previous attempt, want DialRetryBackoff's 40ms", i, gap)
+		}
+	}
+}
+
+// TestDialCarriesCallerContextValues pins that every dial of the shared
+// connection sees the context values of the Subscribe that established
+// it — a CredentialsProviderContext reads them during the handshake —
+// with the caller's cancellation detached: the background redial after
+// a lost connection runs with the same values, though the subscribing
+// context is long cancelled.
+func TestDialCarriesCallerContextValues(t *testing.T) {
+	type tenantKey struct{}
+	srv := newFakeServer()
+	srv.autoConfirm = true
+
+	type seen struct {
+		tenant any
+		ctxErr error
+	}
+	dials := make(chan seen, 4)
+	newConn := func(ctx context.Context, addr string) (*pool.Conn, error) {
+		dials <- seen{tenant: ctx.Value(tenantKey{}), ctxErr: ctx.Err()}
+		return srv.dial(ctx, addr)
+	}
+	m := NewManager(testConfig("node:6379"), newConn, func(cn *pool.Conn) error { return cn.Close() },
+		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
+		testIsBadConn, nil, nil, nil)
+	t.Cleanup(func() { _ = m.Close() })
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), tenantKey{}, "acme"))
+	if _, err := m.Subscribe(ctx, "a"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	cancel()
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "a")
+	if d := <-dials; d.tenant != "acme" || d.ctxErr != nil {
+		t.Fatalf("first dial saw tenant %v (ctx err %v), want \"acme\" and a live context", d.tenant, d.ctxErr)
+	}
+
+	_ = fsc1.conn.Close()
+	srv.waitDial(t).expectCmd(t, "subscribe", "a")
+	if d := <-dials; d.tenant != "acme" || d.ctxErr != nil {
+		t.Fatalf("redial saw tenant %v (ctx err %v), want \"acme\" with the caller's cancellation detached", d.tenant, d.ctxErr)
+	}
+}
+
 // stallWrite subscribes "a" on a fresh manager, then stops the fake
 // server reading so the next write parks on the pipe, and starts that
 // write (a Subscribe of "b") in the background. It returns the handle,
@@ -765,6 +857,54 @@ func TestResolverPluggable(t *testing.T) {
 	}
 }
 
+// TestRecheckConnRetiresIdleConn pins RecheckConn: an owner whose
+// shouldReplaceConn answer changed without a frame arriving (the
+// failover client's master switch) gets the idle connection retired at
+// once — the health check is off in testConfig, so no frame would ever
+// come to trigger it.
+func TestRecheckConnRetiresIdleConn(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	r := &redirectingResolver{target: "node-b:6379"}
+	m := newResolverTestManager(t, srv, testConfig("node-a:6379"), r.ShouldReplace, r.Resolve)
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	r.replace.Store(true)
+	m.RecheckConn()
+	fsc2 := srv.waitDial(t)
+	if fsc2.addr != "node-b:6379" {
+		t.Fatalf("reconnect dialed %q, want the resolver's node-b:6379", fsc2.addr)
+	}
+	fsc2.expectCmd(t, "subscribe", "ch")
+	fsc1.expectClosed(t)
+}
+
+// TestRecheckConnWithoutConnIsNoop pins that RecheckConn is safe with no
+// live connection: before the first subscribe and after Close.
+func TestRecheckConnWithoutConnIsNoop(t *testing.T) {
+	srv := newFakeServer()
+	r := &redirectingResolver{target: "node-b:6379"}
+	m := newResolverTestManager(t, srv, testConfig("node-a:6379"), r.ShouldReplace, r.Resolve)
+
+	r.replace.Store(true)
+	m.RecheckConn()
+	_ = m.Close()
+	m.RecheckConn()
+	select {
+	case fsc := <-srv.dialCh:
+		t.Fatalf("RecheckConn without a live connection dialed %q", fsc.addr)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // TestReplacementDialKeepsDelivering pins that retiring a connection
 // does not stall delivery: the replacement is dialed in the background,
 // so while its dial is parked the read loop keeps delivering from the
@@ -1098,10 +1238,11 @@ func TestFailedFirstDialResolvesLaterDials(t *testing.T) {
 }
 
 // TestExpiredContextDoesNotDropConnection pins that a caller whose
-// context is already done gets its error back without touching the
-// shared connection: a write on its behalf would fail before any byte
-// is sent, and dropping the connection for it would cost every other
-// subscriber a reconnect.
+// context is already done never costs the shared connection: dropping it
+// would cost every other subscriber a reconnect. A Ping gets its error
+// back with nothing written. A Subscribe on a held handle keeps its
+// intent — a client's Subscribe hands out the PubSub whatever it
+// returns — and, the write ignoring the caller's ctx, subscribes.
 func TestExpiredContextDoesNotDropConnection(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
@@ -1118,22 +1259,23 @@ func TestExpiredContextDoesNotDropConnection(t *testing.T) {
 
 	expired, cancel := context.WithCancel(ctx)
 	cancel()
-	// Repeated: no attempt may write or redial on the caller's behalf.
+	// Repeated: no Ping may write or redial on the caller's behalf.
 	for range 20 {
 		if err := h.Ping(expired); !errors.Is(err, context.Canceled) {
 			t.Fatalf("Ping with a cancelled context = %v, want context.Canceled", err)
 		}
-		if _, err := h.Subscribe(expired, "b"); !errors.Is(err, context.Canceled) {
-			t.Fatalf("Subscribe with a cancelled context = %v, want context.Canceled", err)
-		}
 	}
-	if channels, _, _ := h.Subscriptions(); len(channels) != 1 || channels[0] != "a" {
-		t.Fatalf("subscriptions after cancelled Subscribe = %v, want [a]", channels)
+	fsc.expectNoCmd(t, 100*time.Millisecond)
+
+	if _, err := h.Subscribe(expired, "b"); err != nil {
+		t.Fatalf("Subscribe with a cancelled context on a live connection = %v, want nil", err)
+	}
+	fsc.expectCmd(t, "subscribe", "b")
+	if channels, _, _ := h.Subscriptions(); len(channels) != 2 {
+		t.Fatalf("subscriptions after cancelled Subscribe = %v, want [a b]", channels)
 	}
 
-	// The connection is intact: nothing was written, nothing redialed,
-	// and delivery continues.
-	fsc.expectNoCmd(t, 100*time.Millisecond)
+	// The connection is intact: nothing redialed, and delivery continues.
 	select {
 	case fsc2 := <-srv.dialCh:
 		t.Fatalf("a cancelled caller cost a reconnect to %s", fsc2.addr)
@@ -1143,6 +1285,32 @@ func TestExpiredContextDoesNotDropConnection(t *testing.T) {
 	if msg := recvMsg(t, ch); msg.Payload != "alive" {
 		t.Fatalf("got %q, want \"alive\"", msg.Payload)
 	}
+}
+
+// TestExpiredContextSubscribeKeepsIntent pins that a held handle's
+// Subscribe with a context already done, and no connection yet, keeps
+// its registration: a client's Subscribe hands out the PubSub without
+// the error, so dropping the names would leave a live PubSub that never
+// subscribes. The dial it starts outlives the abandoned wait and its
+// replay subscribes them.
+func TestExpiredContextSubscribeKeepsIntent(t *testing.T) {
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	m := newTestManager(t, srv, testConfig("node:6379"))
+
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	h := m.NewHandle()
+	if _, err := h.Subscribe(expired, "ch"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Subscribe with a cancelled context = %v, want context.Canceled", err)
+	}
+	if channels, _, _ := h.Subscriptions(); len(channels) != 1 || channels[0] != "ch" {
+		t.Fatalf("subscriptions after cancelled Subscribe = %v, want [ch]", channels)
+	}
+
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
 }
 
 // TestCallerDeadlineDoesNotBoundSharedWrite pins the other half of the

@@ -1568,6 +1568,11 @@ func TestCSCDoesNotEnableTrackingOnPubSubConnections(t *testing.T) {
 					return "%0\r\n"
 				case "client":
 					trackingCalls.Add(1)
+				case "subscribe":
+					// A subscribe confirmation, like a real server; a bare
+					// +OK would parse as a pong, which is only delivered
+					// to subscribers with a ping in flight.
+					return "*3\r\n$9\r\nsubscribe\r\n$13\r\ncsc-pubsub-ch\r\n:1\r\n"
 				}
 				return "+OK\r\n"
 			})
@@ -1586,17 +1591,15 @@ func TestCSCDoesNotEnableTrackingOnPubSubConnections(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = client.Close() })
 
-	pubsub := client.pubSub()
-	cn, err := pubsub.newConn(context.Background(), ln.Addr().String(), nil)
-	if err != nil {
-		t.Fatalf("create Pub/Sub connection: %v", err)
-	}
-	t.Cleanup(func() {
-		client.pubSubPool.UntrackConn(cn)
-		_ = cn.Close()
-	})
-	if !cn.IsPubSub() {
-		t.Fatal("test connection is not marked as Pub/Sub")
+	// Subscribing dials the shared pub/sub connection through the
+	// pub/sub dial path (MarkPubSub before initConn), so a CLIENT
+	// TRACKING reaching the server means the pubsub marking was lost.
+	// Receiving the subscribe confirmation proves the dial and handshake
+	// completed.
+	pubsub := client.Subscribe(context.Background(), "csc-pubsub-ch")
+	t.Cleanup(func() { _ = pubsub.Close() })
+	if _, err := pubsub.ReceiveTimeout(context.Background(), 5*time.Second); err != nil {
+		t.Fatalf("Pub/Sub connection did not come up: %v", err)
 	}
 	if got := trackingCalls.Load(); got != 0 {
 		t.Fatalf("Pub/Sub initialization sent %d CLIENT commands, want 0", got)
