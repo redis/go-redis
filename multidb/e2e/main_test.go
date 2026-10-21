@@ -25,8 +25,13 @@
 package e2e
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	fi "github.com/redis/go-redis/v9/maintnotifications/e2e"
 )
@@ -75,4 +80,79 @@ func TestMain(m *testing.M) {
 		mockServer.Close()
 	}
 	os.Exit(code)
+}
+
+func TestLoadTopologyAcceptsNumericAndQuotedBDBID(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{`{"a":{"bdb_id":1,"endpoints":["redis://h:1","redis://h:2"]}}`, 1},
+		{`{"a":{"bdb_id":"7","endpoints":["redis://h:1","redis://h:2"]}}`, 7},
+	} {
+		path := t.TempDir() + "/endpoints.json"
+		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("REDIS_ENDPOINTS_CONFIG_PATH", path)
+		t.Setenv("REDIS_ENDPOINT_NAME", "")
+		topo, err := LoadTopology()
+		if err != nil || topo.BDBID != tc.want {
+			t.Fatalf("%s: BDBID %d, err %v; want %d", tc.body, topo.BDBID, err, tc.want)
+		}
+	}
+	t.Setenv("REDIS_ENDPOINTS_CONFIG_PATH", "testdata/endpoints.example.json")
+	if _, err := LoadTopology(); err != nil {
+		t.Fatalf("testdata/endpoints.example.json: %v", err)
+	}
+}
+
+// noopFaultMechanism changes nothing; the sleeps keep each action running
+// while the test polls its status.
+type noopFaultMechanism struct{}
+
+func (noopFaultMechanism) name() string { return "noop" }
+
+func (noopFaultMechanism) Sever(context.Context, string) error {
+	time.Sleep(2 * time.Millisecond)
+	return nil
+}
+
+func (noopFaultMechanism) Restore(context.Context, string, string) error {
+	time.Sleep(2 * time.Millisecond)
+	return nil
+}
+
+// The status handler must read an action under the mock's mutex: run with
+// -race while the action changes state.
+func TestMockFaultInjectorStatusWhileRunning(t *testing.T) {
+	mock := NewMockFaultInjector(MockBDBID, []MockMember{{Container: "c", Addr: "127.0.0.1:1"}}, noopFaultMechanism{})
+	srv := mock.Start()
+	defer srv.Close()
+
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("race-%d", i)
+		mock.mu.Lock()
+		mock.actions[id] = &mockAction{status: fi.StatusPending}
+		mock.mu.Unlock()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			mock.execute(id, mock.members[0], 0)
+		}()
+		for polling := true; polling; {
+			select {
+			case <-done:
+				polling = false
+			default:
+			}
+			resp, err := http.Get(srv.URL + "/action/" + id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}
 }

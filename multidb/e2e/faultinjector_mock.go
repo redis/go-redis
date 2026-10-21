@@ -256,14 +256,19 @@ func (s *MockFaultInjector) handleActionStatus(w http.ResponseWriter, r *http.Re
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/action/")
+	// Copy the action under the lock: execute updates it concurrently.
 	s.mu.Lock()
 	a, ok := s.actions[id]
+	var snap mockAction
+	if ok {
+		snap = *a
+	}
 	s.mu.Unlock()
 	if !ok {
 		http.Error(w, "action not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, fi.ActionStatusResponse{ActionID: id, Status: a.status, Error: errOrNil(a.err)})
+	writeJSON(w, http.StatusOK, fi.ActionStatusResponse{ActionID: id, Status: snap.status, Error: errOrNil(snap.err)})
 }
 
 // errOrNil returns nil for an empty message so the response's Error field

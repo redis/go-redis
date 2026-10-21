@@ -4,16 +4,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // EndpointEntry is one named entry in a REDIS_ENDPOINTS_CONFIG_PATH file —
 // the same JSON shape cae-client-testing writes for redis-py's and
 // go-redis's other e2e suites (one bdb_id, N region endpoints).
 type EndpointEntry struct {
-	BDBID     int      `json:"bdb_id,string"`
+	BDBID     int      `json:"bdb_id"`
 	Username  string   `json:"username"`
 	Password  string   `json:"password"`
 	Endpoints []string `json:"endpoints"`
+}
+
+// UnmarshalJSON accepts bdb_id as a JSON number or a quoted number:
+// cae-client-testing writes "1", testdata/endpoints.example.json has 1.
+func (e *EndpointEntry) UnmarshalJSON(data []byte) error {
+	type plain EndpointEntry
+	var raw struct {
+		plain
+		BDBID json.Number `json:"bdb_id"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*e = EndpointEntry(raw.plain)
+	if raw.BDBID == "" {
+		return nil
+	}
+	id, err := strconv.Atoi(raw.BDBID.String())
+	if err != nil {
+		return fmt.Errorf("bdb_id %q: %w", raw.BDBID, err)
+	}
+	e.BDBID = id
+	return nil
 }
 
 // Topology is the resolved (bdb_id, per-region address, credentials) set
