@@ -525,16 +525,42 @@ func TestClusterBlessScanUsesOneNode(t *testing.T) {
 	}
 }
 
-func TestClusterPipelineRejectsSpecialRequestBeforeDispatch(t *testing.T) {
-	c := newMetadataTestCluster(t, nil)
-	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
-	c.state.state.Store(&clusterState{generation: 1, nodes: c.nodes})
-	ctx := context.Background()
-	cmd := NewMapStringInterfaceCmd(ctx, "ft.cursor", "read", "idx", 42)
-	route := c.resolvePipelineRouting(ctx, []Cmder{cmd})
-	err := c.mapCmdsByNodeInView(ctx, newCmdsMap(), []Cmder{cmd}, route)
-	if err == nil || !errors.Is(cmd.Err(), err) {
-		t.Fatalf("special request pipeline error=%v cmd error=%v", err, cmd.Err())
+func TestClusterPipelineKeepsCursorCommandsNodeLocal(t *testing.T) {
+	for _, metadata := range []bool{false, true} {
+		t.Run(fmt.Sprintf("metadata=%v", metadata), func(t *testing.T) {
+			c := newMetadataTestCluster(t, nil)
+			if !metadata {
+				c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
+			}
+			node, err := c.nodes.GetOrCreate("127.0.0.1:7521")
+			if err != nil {
+				t.Fatal(err)
+			}
+			installMetadataClusterState(c, []*clusterNode{node}, &clusterSlot{start: 0, end: 16383, nodes: []*clusterNode{node}})
+			ctx := context.Background()
+			pipe := c.Pipeline()
+			read := pipe.FTCursorRead(ctx, "idx", 42, 1)
+			del := pipe.FTCursorDel(ctx, "idx", 42)
+			ping := pipe.Ping(ctx)
+			want := map[string]interface{}{"cursor": int64(0)}
+			calls := 0
+			node.Client.AddHook(clusterMetadataNodeHook{pipeline: func(_ context.Context, cmds []Cmder) error {
+				calls++
+				if !reflect.DeepEqual(cmds, []Cmder{read, del, ping}) {
+					t.Errorf("dispatched commands=%v, want READ, DEL, PING", cmds)
+				}
+				read.SetVal(want)
+				del.SetVal("OK")
+				ping.SetVal("PONG")
+				return nil
+			}})
+			if _, err := pipe.Exec(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || !reflect.DeepEqual(read.Val(), want) || del.Val() != "OK" || ping.Val() != "PONG" {
+				t.Fatalf("calls=%d READ=%v DEL=%q PING=%q", calls, read.Val(), del.Val(), ping.Val())
+			}
+		})
 	}
 }
 

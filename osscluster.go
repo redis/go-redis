@@ -2938,6 +2938,11 @@ func (c *ClusterClient) pipelineRoutingError(cmd Cmder, decision *clusterRouting
 	if decision.policy == nil || decision.policy.Request == routing.ReqDefault {
 		return nil
 	}
+	// FT.CURSOR READ/DEL stay node-local in pipelines, as on master.
+	if decision.policy.Request == routing.ReqSpecial && decision.meta != nil &&
+		clusterSpecialRequestHandlers[decision.meta.name] != nil {
+		return nil
+	}
 	if decision.policy.Request != routing.ReqDefault {
 		return fmt.Errorf(
 			"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard/ReqSpecial; Note: This behavior is subject to change in the future",
