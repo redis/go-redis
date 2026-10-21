@@ -1294,12 +1294,17 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if c.cmdMeta.wantsServerHello() {
 		// Without HELLO, a reconnect must verify the old identity in the
 		// background.
-		fingerprint := ""
 		if helloOK {
-			fingerprint = helloServerFingerprint(helloCmd.Val())
-			c.cmdMeta.onServerHello(fingerprint)
+			c.cmdMeta.onServerHello(helloServerFingerprint(helloCmd.Val()))
 		} else {
 			c.cmdMeta.requestVerification()
+		}
+	}
+	if c.opt.onServerHello != nil {
+		if helloOK {
+			c.opt.onServerHello(helloCmd.Val())
+		} else {
+			c.opt.onServerHello(nil)
 		}
 	}
 

@@ -15,19 +15,26 @@ import (
 // (newClusterState grows it via appendIfNotExist, so cap > len is common), so two
 // goroutines routing commands at the same time write the same slots. Run with
 // -race against the pre-fix tree to see the report at osscluster_router.go.
-func TestPickArbitraryNodeConcurrent(t *testing.T) {
+func TestPickKeylessReadOnlyNodeConcurrent(t *testing.T) {
+	nodes := make([]*clusterNode, 4)
+	for i := range nodes {
+		client := NewClient(&Options{})
+		t.Cleanup(func() { _ = client.Close() })
+		nodes[i] = &clusterNode{Client: client}
+		nodes[i].loaded.Store(1)
+	}
 	// len 3, cap 4 mirrors the appendIfNotExist growth for a 3-master cluster;
 	// one replica fits the spare slot, so append would alias without the fix.
 	masters := make([]*clusterNode, 0, 4)
-	masters = append(masters, &clusterNode{}, &clusterNode{}, &clusterNode{})
+	masters = append(masters, nodes[:3]...)
 	state := &clusterState{
 		Masters:   masters,
-		Slaves:    []*clusterNode{{}},
+		Slaves:    nodes[3:],
 		createdAt: time.Now(),
 	}
 
 	c := &ClusterClient{
-		opt: &ClusterOptions{ShardPicker: &routing.RoundRobinPicker{}},
+		opt: &ClusterOptions{ShardPicker: &routing.RoundRobinPicker{}, ReadOnly: true},
 		state: newClusterStateHolder(
 			func(ctx context.Context) (*clusterState, error) { return state, nil },
 			time.Hour,
@@ -41,8 +48,12 @@ func TestPickArbitraryNodeConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				if node := c.pickArbitraryNode(context.Background()); node == nil {
-					t.Error("pickArbitraryNode returned nil")
+				node, err := c.cmdNodeWithShardPickerAndDecision(
+					context.Background(), -1, c.opt.ShardPicker,
+					&clusterRoutingDecision{readOnly: true, policyFromMetadata: true},
+				)
+				if err != nil || node == nil {
+					t.Errorf("keyless readonly selection node=%v err=%v", node, err)
 					return
 				}
 			}

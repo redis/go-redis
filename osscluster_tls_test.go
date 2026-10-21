@@ -85,7 +85,7 @@ func TestParseClusterURLTLSNodeVerification(t *testing.T) {
 			opt.init()
 
 			for _, addr := range opt.Addrs {
-				node := newClusterNodeWithNodeAddress(opt, addr, addr)
+				node := newClusterNodeWithNodeAddress(opt, addr, addr, nil)
 				defer node.Close()
 				conn, err := node.Client.Options().Dialer(context.Background(), "tcp", addr)
 				if err == nil {
@@ -148,7 +148,7 @@ func TestParseClusterURLTLSSharedCertificate(t *testing.T) {
 			opt.init()
 
 			for _, addr := range opt.Addrs {
-				node := newClusterNodeWithNodeAddress(opt, addr, addr)
+				node := newClusterNodeWithNodeAddress(opt, addr, addr, nil)
 				defer node.Close()
 				conn, err := node.Client.Options().Dialer(context.Background(), "tcp", addr)
 				if err == nil {

@@ -534,6 +534,12 @@ type Options struct {
 	// Experimental: this API may change in a minor release.
 	CommandMetadata *CommandMetadataConfig
 
+	// onServerHello lets cluster nodes report identity changes to their
+	// parent's metadata store without owning a store or refresh worker.
+	// A nil reply requests verification after a HELLO fallback. The parent
+	// fingerprints the reply only after live metadata has been requested.
+	onServerHello func(map[string]interface{})
+
 	// ClientSideCacheStrategy selects the invalidation architecture used when
 	// client-side caching is enabled (via ClientSideCacheConfig or
 	// ClientSideCache); it is ignored when CSC is disabled. The zero value is

@@ -215,6 +215,7 @@ type Cmder interface {
 	// all args of the command.
 	// e.g. "set k v ex 10" -> "[set k v ex 10]".
 	Args() []interface{}
+	setArgs([]interface{})
 
 	// format request and response string.
 	// e.g. "set k v ex 10" -> "set k v ex 10: OK", "get k" -> "get k: v".
@@ -233,10 +234,15 @@ type Cmder interface {
 	// (in the autopipeline shard router) and reused at pipeline-flush routing.
 	cachedSlot() (int, bool)
 	setCachedSlot(int)
+	clusterRoutingDecision() *clusterRoutingDecision
+	setClusterRoutingDecision(*clusterRoutingDecision)
+	takeClusterRoutingDecision() *clusterRoutingDecision
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
 	readRawReply(rd *proto.Reader) error
+	// isRawReply stays visible when a command is embedded in a custom wrapper.
+	isRawReply() bool
 	SetErr(error)
 	Err() error
 
@@ -300,9 +306,6 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
-// cmdFirstKeyPosWithInfo returns the first key position in a command's args (0 if none).
-// Uses CommandInfo.FirstKeyPos when available (via cache peek, no network call), falling
-// back to a hardcoded table. eval/evalsha variants are resolved from the runtime numkeys arg.
 // cmdArgAfterToken returns the position after the first argument, from
 // position from on, that equals token (case-insensitive), or 0 when there is
 // none or nothing follows it.
@@ -318,16 +321,21 @@ func cmdArgAfterToken(cmd Cmder, from int, token string) int {
 
 // migrateKeysPos returns the position of the first key of a MIGRATE KEYS
 // clause, walking the options so an operand (an AUTH password that reads
-// "keys") is not taken for the clause. 0 when there is no key.
-func migrateKeysPos(cmd Cmder) int {
+// "keys") is not taken for the clause. The position is 0 when there is no
+// key; valid is false when an option token has no reproducible wire encoding.
+func migrateKeysPos(cmd Cmder) (pos int, valid bool) {
 	n := len(cmd.Args())
 	for i := 6; i < n; {
-		switch strings.ToLower(cmd.stringArg(i)) {
+		token, ok := routingArgText(cmd, i)
+		if !ok {
+			return 0, false
+		}
+		switch strings.ToLower(token) {
 		case "keys":
 			if i+1 < n {
-				return i + 1
+				return i + 1, true
 			}
-			return 0
+			return 0, true
 		case "auth":
 			i += 2 // AUTH password
 		case "auth2":
@@ -336,9 +344,12 @@ func migrateKeysPos(cmd Cmder) int {
 			i++ // COPY, REPLACE
 		}
 	}
-	return 0
+	return 0, true
 }
 
+// cmdFirstKeyPosWithInfo returns the first key position (0 if none, -1 if
+// MIGRATE options cannot be inspected safely). It uses CommandInfo when supplied
+// and otherwise falls back to the legacy command table and runtime arguments.
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
@@ -415,7 +426,11 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(3) != "" {
 			return 3
 		}
-		return migrateKeysPos(cmd)
+		pos, valid := migrateKeysPos(cmd)
+		if !valid {
+			return -1
+		}
+		return pos
 	case "bless":
 		// BLESS SCAN is keyless (cursor-based, server-wide); BLESS SET/GET/CLEAR
 		// take the key at position 2. The typed methods set this via
@@ -471,10 +486,9 @@ type baseCmd struct {
 	// autopipeline shard router and the pipeline flush router don't each
 	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
 	// distinguishable from unset. A plain field is safe by construction: it
-	// is written at most once, on the submitting goroutine BEFORE the command
-	// is published to a stripe queue (the stripe mutex is the happens-before
-	// edge to the flusher that later reads it). Do not write it from any
-	// other point in the command's life.
+	// is written during admission or explicit pipeline resolution, before the
+	// command is dispatched to any worker. Workers only read it until the
+	// command completes. A shared routing template carries no slot of its own.
 	slotCache uint16
 
 	// ready, when non-nil, is the batch whose done channel closes once the
@@ -489,6 +503,22 @@ type baseCmd struct {
 	// with reply processing). ready stays
 	// nil for ordinary synchronous commands, whose accessors never block.
 	ready atomic.Pointer[apBatch]
+
+	// routing pins admission metadata until cluster dispatch completes. Keeping
+	// it on the command avoids retaining commands in a client-wide lookup table.
+	routing atomic.Pointer[clusterRoutingDecision]
+}
+
+func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
+	return cmd.routing.Load()
+}
+
+func (cmd *baseCmd) setClusterRoutingDecision(decision *clusterRoutingDecision) {
+	cmd.routing.Store(decision)
+}
+
+func (cmd *baseCmd) takeClusterRoutingDecision() *clusterRoutingDecision {
+	return cmd.routing.Swap(nil)
 }
 
 // setReady publishes the batch gating this command's result accessors. The
@@ -607,6 +637,8 @@ func (cmd *baseCmd) firstKeyPos() int8 {
 	return cmd.keyPos
 }
 
+// SetFirstKeyPos sets the key position used when server metadata for a command
+// is unavailable. Resolved metadata remains authoritative when present.
 func (cmd *baseCmd) SetFirstKeyPos(keyPos int8) {
 	cmd.keyPos = keyPos
 }
@@ -656,16 +688,26 @@ func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	return err
 }
 
+func (cmd *baseCmd) isRawReply() bool { return false }
+
 // NoRetry returns true if the command should not be retried on failure.
 // By default, commands can be retried. Commands that write directly to an
 // io.Writer (like RawWriteToCmd) should override this to return true since
 // partial writes cannot be undone on retry.
 func (cmd *baseCmd) NoRetry() bool {
-	return false
+	// A READ advances server-side cursor state. Retrying after a lost reply
+	// would silently skip the results that were already consumed.
+	return len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(0), "ft.cursor") &&
+		strings.EqualFold(cmd.stringArg(1), "read")
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
 	return cmd.cmdType
+}
+
+func (cmd *baseCmd) setArgs(args []interface{}) {
+	cmd.args = args
+	cmd.slotCache = 0
 }
 
 func (cmd *baseCmd) cloneBaseCmd() baseCmd {
@@ -1072,6 +1114,8 @@ type RawCmd struct {
 
 var _ Cmder = (*RawCmd)(nil)
 
+func (cmd *RawCmd) isRawReply() bool { return true }
+
 func NewRawCmd(ctx context.Context, args ...interface{}) *RawCmd {
 	return &RawCmd{
 		baseCmd: baseCmd{
@@ -1133,6 +1177,8 @@ type RawWriteToCmd struct {
 }
 
 var _ Cmder = (*RawWriteToCmd)(nil)
+
+func (cmd *RawWriteToCmd) isRawReply() bool { return true }
 
 func NewRawWriteToCmd(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
 	return &RawWriteToCmd{
@@ -8463,6 +8509,11 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 							cmd.val[i].Nodes[k].ID, err = rd.ReadString()
 						case "endpoint":
 							cmd.val[i].Nodes[k].Endpoint, err = rd.ReadString()
+							if err == Nil {
+								// Null means reuse the connection's endpoint.
+								cmd.val[i].Nodes[k].Endpoint = ""
+								err = nil
+							}
 						case "ip":
 							cmd.val[i].Nodes[k].IP, err = rd.ReadString()
 						case "hostname":
