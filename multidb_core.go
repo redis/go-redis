@@ -331,6 +331,10 @@ type multidbCore struct {
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 	closed atomic.Bool
+	// removing counts RemoveDatabase calls that detached a member and are
+	// still closing it. Add runs under dbMu in detach, and closeAll waits after
+	// taking the membership under dbMu, so Close also waits for those members.
+	removing sync.WaitGroup
 
 	// cbq runs the OnFailover / OnActiveDatabaseChanged callbacks on its own
 	// goroutine (FIFO). They fire from switchActive's announce closure, which
@@ -1095,10 +1099,12 @@ func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 		return outcomeFailure
 	case errors.Is(err, ErrCrossSlot):
 		return outcomeNeutral
-	case errors.Is(err, errClusterNoNodes):
-		// The active member is a cluster client with no known nodes (topology
-		// empty or never loaded): it cannot route any command — an availability
-		// failure that must drive failover, not a neutral client-side error.
+	case errors.Is(err, errClusterNoNodes), errors.Is(err, ErrClusterTopologyUnhealthy):
+		// The active member is a cluster client that cannot route the command:
+		// no known nodes (topology empty or never loaded), or a slot master
+		// still reported fail/loading after the topology-reload retries. An
+		// availability failure that must drive failover, not a neutral
+		// client-side error.
 		return outcomeFailure
 	case isRedirectReply(err):
 		// A MOVED/ASK that surfaced to this layer means the active cluster
@@ -1336,8 +1342,9 @@ func (c *multidbCore) resetFailoverEscalationLocked() {
 // recordFailedFailoverLocked implements the escalation chain: attempts are
 // rate-limited by FailoverAttemptDelay (a burst within the window counts as
 // one attempt), ErrTemporarilyNotAvailable is returned until
-// MaxFailoverAttempts consecutive attempts have failed, then the terminal
-// ErrPermanentlyNotAvailable. failoverMu must be held.
+// MaxFailoverAttempts consecutive attempts have failed, then
+// ErrPermanentlyNotAvailable (escalated, not terminal: a later successful
+// failover resets the chain). failoverMu must be held.
 func (c *multidbCore) recordFailedFailoverLocked() error {
 	if c.successSinceFailover.Swap(false) {
 		// Successful traffic since the last failed attempt: the chain of
@@ -1700,12 +1707,14 @@ func (c *multidbCore) removeDatabase(ctx context.Context, id int) error {
 		// Ids are stable and `active` is an id, so removing a non-active member
 		// renumbers nothing and never shifts the active — just drop the key.
 		delete(c.dbs, id)
+		c.removing.Add(1)
 		return db, nil
 	}
 	db, err := detach()
 	if err != nil {
 		return err
 	}
+	defer c.removing.Done()
 	// Drain what was built on the member (full-duplex children) while its
 	// client is still open, then close the client.
 	_ = db.onRemove.run()
@@ -1841,6 +1850,12 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 		}
 	}
 
+	// Passives are probed concurrently, after the active: one slow or
+	// unreachable passive (up to HealthCheckTimeout each) must not push back the
+	// next pass, and with it the active's next probe, by the sum of all their
+	// timeouts. Each passive's probe touches only its own member.
+	var passives sync.WaitGroup
+	defer passives.Wait()
 	for _, db := range dbs {
 		select {
 		case <-c.stopCh:
@@ -1885,14 +1900,18 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 		// (a failover between the recheck and the record) is not fully closed
 		// without per-check verdict granularity; a stale verdict is additionally
 		// dropped by the reset generation if an operator reselect intervened.
-		gen := db.cb.ResetGeneration()
-		start := time.Now()
-		healthy := db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, db.checks)
-		if again, _ := c.activeSnapshot(); again == db {
-			db.probeAsActive(ctx, c.opts.HealthCheckTimeout)
-			continue
-		}
-		db.applyProbeVerdict(ctx, gen, healthy, time.Since(start))
+		passives.Add(1)
+		go func(db *multidbDatabase) {
+			defer passives.Done()
+			gen := db.cb.ResetGeneration()
+			start := time.Now()
+			healthy := db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, db.checks)
+			if again, _ := c.activeSnapshot(); again == db {
+				db.probeAsActive(ctx, c.opts.HealthCheckTimeout)
+				return
+			}
+			db.applyProbeVerdict(ctx, gen, healthy, time.Since(start))
+		}(db)
 	}
 }
 
@@ -2324,6 +2343,10 @@ func (c *multidbCore) closeAll() error {
 			firstErr = err
 		}
 	}
+	// A RemoveDatabase that detached a member before the dbMu section above is
+	// still closing it: wait, so no member client outlives Close. Later calls
+	// find dbs nil and detach nothing.
+	c.removing.Wait()
 	return firstErr
 }
 
