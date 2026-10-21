@@ -1024,7 +1024,21 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// Any future code path that could hand out a distinct unsubscribe on
 		// re-initialization must first invoke the existing one to avoid
 		// orphaning the old subscription on the credentials provider.
-		cn.SetOnClose(unsubscribeFromCredentialsProvider)
+		onClose := unsubscribeFromCredentialsProvider
+		if cn.IsPubSub() {
+			// A pub/sub connection never returns to the pool, so the re-auth
+			// pool hook never removes its state. Remove it on every close
+			// path: PubSub.Close, a reconnect and PubSubPool.Close. The
+			// connection is already closed here, so a concurrent OnNext can
+			// no longer add state afterwards (see MarkForReAuth).
+			manager, connID := c.streamingCredentialsManager, cn.GetID()
+			onClose = func() error {
+				err := unsubscribeFromCredentialsProvider()
+				manager.RemoveConn(connID)
+				return err
+			}
+		}
+		cn.SetOnClose(onClose)
 
 		username, password = credentials.BasicAuth()
 	} else {
@@ -2946,6 +2960,15 @@ func (c *Client) TxPipeline() Pipeliner {
 	return &pipe
 }
 
+// removeStreamingCredentialsState drops the re-auth state of a pub/sub
+// connection whose initConn failed before it installed the close callback
+// that removes it.
+func (c *baseClient) removeStreamingCredentialsState(cn *pool.Conn) {
+	if c.streamingCredentialsManager != nil {
+		c.streamingCredentialsManager.RemoveConn(cn.GetID())
+	}
+}
+
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
@@ -2958,6 +2981,7 @@ func (c *Client) pubSub() *PubSub {
 			err = c.initConn(ctx, cn)
 			if err != nil {
 				_ = cn.Close()
+				c.removeStreamingCredentialsState(cn)
 				return nil, err
 			}
 			// Track connection in PubSubPool
