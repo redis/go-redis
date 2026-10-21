@@ -15,6 +15,8 @@ import "context"
 // MultiDBCtrl methods, or Close): see MultiDBCtrl. A check that calls Close,
 // for example, blocks forever, because Close waits for the loop the check is
 // running on. The same holds for a health-check policy.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBHealthCheck interface {
 	// CheckHealth checks if a standalone client is healthy.
 	CheckHealth(ctx context.Context, client *Client) (bool, error)

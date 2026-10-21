@@ -1,5 +1,7 @@
-// Package multidb provides health check and failover strategy implementations
-// for use with redis.MultiDBClient.
+// Package multidb provides health checks (ping, lag-aware) and health-check
+// policies (all, majority, any) for use with redis.MultiDBClient.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 package multidb
 
 import (
@@ -37,6 +39,12 @@ func DefaultHealthCheckConfig() HealthCheckConfig {
 type HealthCheckOption func(*HealthCheckConfig)
 
 // WithProbes sets the number of probes.
+//
+// Probes and Delay apply only under a multidb package policy (e.g.
+// NewHealthyAllPolicy). The default redis.MultiDBClient policy runs each
+// check once. A check still running when MultiDBOptions.HealthCheckTimeout
+// (default 3s; lowered to HealthCheckInterval/2 when not below the interval)
+// expires fails, so keep Probes*Delay below it.
 func WithProbes(probes int) HealthCheckOption {
 	return func(c *HealthCheckConfig) {
 		if probes > 0 {
@@ -45,7 +53,8 @@ func WithProbes(probes int) HealthCheckOption {
 	}
 }
 
-// WithDelay sets the delay between probes.
+// WithDelay sets the delay between probes. See WithProbes for when it
+// applies.
 func WithDelay(delay time.Duration) HealthCheckOption {
 	return func(c *HealthCheckConfig) {
 		if delay >= 0 {
@@ -54,7 +63,9 @@ func WithDelay(delay time.Duration) HealthCheckOption {
 	}
 }
 
-// WithTimeout sets the timeout for the health check.
+// WithTimeout sets the timeout for the health check (all its probes). It
+// applies only under a multidb package policy, and is capped by
+// MultiDBOptions.HealthCheckTimeout.
 func WithTimeout(timeout time.Duration) HealthCheckOption {
 	return func(c *HealthCheckConfig) {
 		if timeout > 0 {

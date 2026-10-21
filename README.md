@@ -87,6 +87,7 @@ surface. The API is experimental and may change in a future release.
 - [Redis Sentinel](https://redis.uptrace.dev/guide/go-redis-sentinel.html).
 - [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
 - [Client-side caching](#client-side-caching).
+- [MultiDB (Active-Active failover)](#multidb-active-active-failover) (experimental).
 - [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
 - [Redis Probabilistic [RedisStack]](https://redis.io/docs/data-types/probabilistic/)
 - [Customizable read and write buffers size.](#custom-buffer-sizes)
@@ -665,6 +666,49 @@ engine only recovers by failing that flush after its 30s permit backstops.
 pipeline), not once per command. An autopipeliner created on a
 `WithTimeout`/`WithReadTimeout` clone is not stopped by the parent's `Close` —
 close it explicitly.
+
+### MultiDB (Active-Active failover)
+
+> **EXPERIMENTAL:** the MultiDB API is subject to change in a future release.
+
+`MultiDBClient` routes all commands to one active database out of several
+member databases (standalone or cluster), for example the regions of a Redis
+Enterprise Active-Active database. It fails over to another member based on
+circuit breakers, background health checks and a failover strategy (highest
+weight by default), and falls back to a higher-weight member once it recovers.
+It implements `UniversalClient`; the control API (`SetActiveDatabase`,
+`AddDatabase`, `RemoveDatabase`, ...) is described by `MultiDBCtrl`. Extra
+health checks and policies (lag-aware, probe counts) live in the
+`github.com/redis/go-redis/v9/multidb` package.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+client, err := redis.NewMultiDBClient(ctx, &redis.MultiDBOptions{
+	Clients: []redis.MultiDBClientConfig{
+		{Options: &redis.Options{Addr: "east.example.com:6379"}, Weight: 2},
+		{Options: &redis.Options{Addr: "west.example.com:6379"}, Weight: 1},
+	},
+})
+if err != nil {
+	panic(err)
+}
+defer client.Close()
+
+if err := client.Set(ctx, "key", "value", 0).Err(); err != nil {
+	panic(err)
+}
+fmt.Println("active database:", client.ActiveDatabaseID())
+```
+
+Members get ids `0..len(Clients)-1` in slice order. By default a strict
+majority of members must be healthy for `NewMultiDBClient` to succeed (both,
+with two members); set `InitialDBState` to change this. MultiDB does not
+require RESP3. Cluster members cannot use `RouteByLatency`, `RouteRandomly` or
+`ReadOnly` (health checks probe masters only). Maintenance notifications are
+off on members unless `MaintNotificationsConfig` is set. A runnable example
+lives in [`example/multidb`](example/multidb).
 
 ### Advanced Configuration
 

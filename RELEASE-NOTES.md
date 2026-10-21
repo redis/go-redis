@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **MultiDB client (experimental):** `NewMultiDBClient` routes commands to one
+  active database out of several standalone or cluster members (e.g. Redis
+  Enterprise Active-Active) and fails over based on circuit breakers, health
+  checks and a weight-based failover strategy, with auto-fallback to
+  higher-weight members. The `multidb` package adds ping and lag-aware health
+  checks and probe policies. See `example/multidb`
+  ([#3954](https://github.com/redis/go-redis/pull/3954)).
 - **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
 - Cluster routing shares command metadata with client-side caching for key
   extraction and read-only status. Existing default routing and cluster-wide

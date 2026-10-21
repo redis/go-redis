@@ -16,6 +16,8 @@ import (
 
 // InitialDBState controls how many databases must be healthy for
 // NewMultiDBClient to succeed.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type InitialDBState string
 
 const (
@@ -30,6 +32,9 @@ const (
 	InitialDBStateOneAvailable InitialDBState = "one_available"
 )
 
+// MultiDBClient errors.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 var (
 	// ErrTemporarilyNotAvailable is returned when no healthy database can be
 	// selected right now; the client keeps attempting failover on subsequent
@@ -38,9 +43,9 @@ var (
 	// client is still open and the next attempt lands on the live active, so the
 	// caller should retry rather than treat it as terminal.
 	ErrTemporarilyNotAvailable = errors.New("redis: multidb: no healthy database available (temporarily)")
-	// ErrPermanentlyNotAvailable is returned once MaxFailoverAttempts
-	// consecutive failover attempts have failed; the application should stop
-	// using this client.
+	// ErrPermanentlyNotAvailable is returned after MaxFailoverAttempts
+	// consecutive failed failover attempts. The client keeps probing members
+	// and recovers when one becomes healthy again.
 	ErrPermanentlyNotAvailable = errors.New("redis: multidb: no healthy database available (permanently)")
 	// ErrInsufficientHealthyDatabases is returned by NewMultiDBClient when the
 	// InitialDBState policy is not satisfied.
@@ -63,6 +68,8 @@ var (
 //
 // A detector is called from inside the command and failover paths and must
 // not call the control operations (see MultiDBCtrl).
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBFailureDetector interface {
 	RecordSuccess()
 	RecordFailure(err error)
@@ -74,6 +81,8 @@ type MultiDBFailureDetector interface {
 // database. Implementations with probe/delay semantics live in the multidb
 // package (HealthyAllPolicy, HealthyMajorityPolicy, HealthyAnyPolicy) and
 // satisfy this interface structurally.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBHealthCheckPolicy interface {
 	Execute(ctx context.Context, checks []MultiDBHealthCheck, client *Client) bool
 	ExecuteCluster(ctx context.Context, checks []MultiDBHealthCheck, client *ClusterClient) bool
@@ -81,6 +90,8 @@ type MultiDBHealthCheckPolicy interface {
 
 // MultiDBDatabaseState is a snapshot of one database handed to a failover
 // strategy.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBDatabaseState struct {
 	// ID is the database's stable member id (the value AddDatabase returned and
 	// ActiveDatabaseID reports), not a position. It is what Select must return.
@@ -100,12 +111,16 @@ type MultiDBDatabaseState struct {
 //
 // Select runs under MultiDB's failover lock and must not call the control
 // operations (see MultiDBCtrl).
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBFailoverStrategy interface {
 	Select(candidates []MultiDBDatabaseState) int
 }
 
 // WeightBasedFailoverStrategy selects the allowed candidate with the highest
 // weight. It is the default strategy.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type WeightBasedFailoverStrategy struct{}
 
 func (WeightBasedFailoverStrategy) Select(candidates []MultiDBDatabaseState) int {
@@ -124,6 +139,8 @@ func (WeightBasedFailoverStrategy) Select(candidates []MultiDBDatabaseState) int
 }
 
 // MultiDBCircuitBreakerConfig configures the per-database circuit breaker.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBCircuitBreakerConfig struct {
 	// FailureThreshold is the number of consecutive failures before the
 	// circuit opens. Default: 5. Commands and health probes keep separate
@@ -141,6 +158,8 @@ type MultiDBCircuitBreakerConfig struct {
 
 // MultiDBClientConfig describes one member database. Exactly one of Options
 // or ClusterOptions must be set.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBClientConfig struct {
 	// Options configures a standalone client for this database.
 	Options *Options
@@ -161,7 +180,7 @@ type MultiDBClientConfig struct {
 	// evict the active.
 	HealthChecks []MultiDBHealthCheck
 	// HealthCheckPolicy overrides MultiDBOptions.HealthCheckPolicy for this
-	// database.
+	// database (see there for the default's behavior).
 	HealthCheckPolicy MultiDBHealthCheckPolicy
 
 	// SkipInitialHealthCheck makes AddDatabase register the database as a
@@ -171,15 +190,21 @@ type MultiDBClientConfig struct {
 }
 
 // MultiDBOptions configures MultiDBClient.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBOptions struct {
 	// Clients configures the member databases. At least one is required.
+	// Members get ids 0..len(Clients)-1 in slice order.
 	Clients []MultiDBClientConfig
 
 	// HealthCheckInterval is the cadence of the background health checks.
 	// Default: 5s.
 	HealthCheckInterval time.Duration
 	// HealthCheckTimeout bounds one health-check pass against one database
-	// via the probe context. Note that with the default PING check the
+	// via the probe context. It covers the whole policy run (all checks, and
+	// all probes and delays under the multidb package policies), so it also
+	// caps any per-check timeout (multidb.WithTimeout, the lag-aware HTTP
+	// timeout). Note that with the default PING check the
 	// member client applies its own dial/read/write timeouts to the socket
 	// unless ContextTimeoutEnabled is set on the member options — enable it
 	// there when the probe deadline must also cut socket waits short.
@@ -189,7 +214,10 @@ type MultiDBOptions struct {
 	// for the merge semantics).
 	HealthChecks []MultiDBHealthCheck
 	// HealthCheckPolicy is the default policy for evaluating a database's
-	// health checks. Default: every check must pass.
+	// health checks. Default: every check must pass; checks run once each, in order, until one fails.
+	// The default ignores a check's Config() (Probes, Delay, Timeout; see
+	// multidb.ConfigurableHealthCheck); use a multidb package policy such as
+	// multidb.NewHealthyAllPolicy to apply it.
 	HealthCheckPolicy MultiDBHealthCheckPolicy
 
 	// FailureDetector aggregates command outcomes; when it trips, traffic is
@@ -260,6 +288,8 @@ type MultiDBOptions struct {
 }
 
 // CommandRetriesNone disables command retries.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 const CommandRetriesNone = -2
 
 const (
@@ -360,8 +390,8 @@ func (cfg *MultiDBClientConfig) validate() error {
 	return nil
 }
 
-// fqdn derives the host-only identifier used for callbacks and metrics:
-// the option's host for standalone and cluster databases.
+// hostOnly returns the host part of addr, or addr unchanged when it has no
+// port.
 func hostOnly(addr string) string {
 	if host, _, err := net.SplitHostPort(addr); err == nil {
 		return host
@@ -369,6 +399,8 @@ func hostOnly(addr string) string {
 	return addr
 }
 
+// fqdn derives the host-only identifier used for callbacks and metrics:
+// the host of Options.Addr, or of the first ClusterOptions.Addrs entry.
 func (cfg *MultiDBClientConfig) fqdn() string {
 	switch {
 	case cfg.Options != nil:
@@ -400,6 +432,8 @@ func (cfg *MultiDBClientConfig) fqdn() string {
 // The asynchronous callbacks (OnFailover, OnActiveDatabaseChanged,
 // OnCircuitStateChanged) are the exception: they run on their own queue and
 // may call control operations.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBCtrl interface {
 	// ActiveDatabaseID returns the stable id of the currently active database,
 	// or -1 when none is selected.
@@ -433,7 +467,9 @@ var _ MultiDBCtrl = (*MultiDBClient)(nil)
 // surface and is a drop-in replacement for *Client in application code; the
 // operational surface is available via MultiDBCtrl.
 //
-// See the Active-Active client design for details.
+// See example/multidb for a usage example.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBClient struct {
 	cmdable
 	hooksMixin
@@ -466,6 +502,8 @@ type MultiDBClient struct {
 // ErrInsufficientHealthyDatabases when the InitialDBState policy is not
 // satisfied; when ctx carries a deadline the initialization blocks and
 // retries until the deadline.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient, error) {
 	if opts == nil {
 		return nil, errors.New("redis: multidb: nil options")
@@ -551,7 +589,9 @@ func (c *MultiDBClient) Process(ctx context.Context, cmd Cmder) error {
 // OnCircuitStateChanged is fine: those callbacks run on a queue Close does not
 // wait for. Close is a control operation like the MultiDBCtrl methods, so the
 // rule there applies: do not call it from hooks, health checks, policies,
-// strategies or detectors.
+// strategies or detectors, or from code that runs while a member client
+// closes (e.g. an OTel pool registrar): Close waits for a RemoveDatabase that
+// is still closing its member.
 func (c *MultiDBClient) Close() error {
 	// Serialize concurrent Close calls. Without this a second caller can
 	// observe the autopipeliner pointers already cleared, skip the drain loop,
