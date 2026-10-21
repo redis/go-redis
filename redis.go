@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -2431,6 +2432,13 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 
 	if line[0] != proto.RespArray {
 		return fmt.Errorf("redis: expected '*', but got line %q", line)
+	}
+	// EXEC replies once per queued command. A command the server rejects
+	// without queuing (WATCH or MULTI inside MULTI) shortens the array, so the
+	// replies would be read into the wrong commands; a longer array would leave
+	// replies unread on the connection.
+	if n, err := strconv.Atoi(string(line[1:])); err != nil || n != len(cmds) {
+		return fmt.Errorf("redis: EXEC returned %q for %d commands", line, len(cmds))
 	}
 
 	return nil
