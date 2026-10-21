@@ -1926,6 +1926,12 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	if opt == nil {
 		panic("redis: NewClusterClient nil options")
 	}
+	optCopy := *opt
+	if opt.ClientSideCacheConfig != nil {
+		cfg := *opt.ClientSideCacheConfig
+		optCopy.ClientSideCacheConfig = &cfg
+	}
+	opt = &optCopy
 	opt.cscCustomFactory = opt.NewClient != nil
 	opt.init()
 
@@ -2062,6 +2068,18 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
+	policy := cachePolicy(c.opt.ClientSideCacheConfig)
+	if err := policy.validate(); err != nil {
+		return err
+	}
+	newPolicy := policy.configured() || cmd.cacheState().mark != cacheUnmarked
+	if newPolicy {
+		if policy.strict && cmd.cacheState().mark == cacheRequested {
+			cmd.cacheState().strict = true
+		}
+		cscEnter(cmd)
+		defer cscLeave(cmd)
+	}
 	callerCtx := ctx
 	decision := c.commandRoutingDecision(ctx, cmd)
 	if decision.policyErr != nil {
@@ -2078,7 +2096,12 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		ctx = callerCtx
 		if redirected {
-			ctx = cscBypass(ctx)
+			if !newPolicy {
+				ctx = cscBypass(ctx)
+			} else {
+				cmd.cacheState().noLookup = true
+				cmd.cacheState().ask = ask
+			}
 		}
 		// MOVED and ASK responses are not transient errors that require retry delay; they
 		// should be attempted immediately.
@@ -2104,6 +2127,11 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
+		if newPolicy && node != nil {
+			if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
+				return err
+			}
+		}
 		if ask {
 			ask = false
 			pipe := node.Client.Pipeline()

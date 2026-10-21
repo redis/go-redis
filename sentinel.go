@@ -630,10 +630,11 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 	rdb := &Client{
 		baseClient: &baseClient{
-			apClosed: &atomic.Bool{},
-			opt:      opt,
-			onClose:  &onCloseHooks{},
-			himport:  newHImportRegistry(),
+			cscPolicy: cachePolicy(failoverOpt.ClientSideCacheConfig),
+			apClosed:  &atomic.Bool{},
+			opt:       opt,
+			onClose:   &onCloseHooks{},
+			himport:   newHImportRegistry(),
 		},
 	}
 	rdb.init()

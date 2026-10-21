@@ -409,6 +409,7 @@ type pipelinePoolRef struct {
 }
 
 type baseClient struct {
+	cscPolicy cscPolicy
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -549,6 +550,7 @@ func (c *baseClient) clone() *baseClient {
 		cscPoolHook:  c.cscPoolHook,
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
+		cscPolicy:    c.cscPolicy,
 		// Derived clients share the owner's immutable metadata view.
 		cmdMeta:       c.cmdMeta,
 		staticCmdMeta: c.staticCmdMeta,
@@ -1113,7 +1115,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 		if trackingEnabled {
 			// Must run before any cacheable command is issued on this conn.
-			trackingCmd = pipe.ClientTrackingOn(ctx, nil)
+			trackingCmd = pipe.ClientTrackingOn(ctx, &ClientTrackingOptions{OptIn: c.cscPolicy.mode == TrackingModeOptIn, OptOut: c.cscPolicy.mode == TrackingModeOptOut})
 		}
 
 		return nil
@@ -1588,16 +1590,33 @@ type processState struct {
 }
 
 func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
+	cs := cmd.cacheState()
+	policyCall := c.cscPolicy.configured() || cs.mark != cacheUnmarked || cs.forceBypass || cs.ask
+	if policyCall {
+		cscEnter(cmd)
+		defer cscLeave(cmd)
+	}
 	// Reject commands that would make one pooled connection diverge from CSC's
 	// tracking or database assumptions. Pipelines mirror this guard below.
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
-	if c.csc != nil {
-		// One view per invocation: eligibility, key extraction, and the cache
-		// key all come from the same metadata generation.
+	if !policyCall {
+		if c.csc != nil {
+			view := c.metadataView()
+			if meta, ok := cscEligibleMeta(view, cmd); ok {
+				return c.processCached(ctx, cmd, state, view, meta, startAttempt)
+			}
+		}
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+	}
+	if c.csc != nil || cmd.cacheState().mark != cacheUnmarked || c.cscPolicy.configured() {
 		view := c.metadataView()
-		if meta, ok := cscEligibleMeta(view, cmd); ok {
+		meta, use, err := c.cscDecide(ctx, cmd, view)
+		if err != nil {
+			return err
+		}
+		if use {
 			return c.processCached(ctx, cmd, state, view, meta, startAttempt)
 		}
 	}
@@ -1809,6 +1828,23 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 			return err
 		}
 
+		if capture != nil {
+			capture.noStore = false
+		}
+		tracked := c.autopipelineCSCActive() && c.cscConnInitGen(cn.GetID()) != 0
+		if !tracked && cmd.cacheState().mark == cacheRequested {
+			if err := c.cscUnsupported(ctx, cmd, "connection tracking is unavailable"); err != nil {
+				return err
+			}
+		}
+		if capture != nil && !tracked {
+			capture.noStore = true
+		}
+		flag := byte(0)
+		if tracked {
+			flag = c.cscFlag(cmd, capture != nil)
+		}
+
 		// HIMPORT bookkeeping: pending discards for this session and the
 		// PREPARE for an HIMPORT SET's registered fieldset are written in
 		// the same round trip, right before the command.
@@ -1823,8 +1859,16 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 					return err
 				}
 			}
+			if err := writeCSCPrefix(wr, flag); err != nil {
+				return err
+			}
 			return writeCmd(wr, cmd)
 		}); err != nil {
+			// Even an encoder error typed as a Redis error must retire a partial
+			// pair: its prefix may already be buffered or on the wire.
+			if flag != 0 {
+				_ = cn.Close()
+			}
 			retryTimeout.Store(1)
 			return err
 		}
@@ -1847,6 +1891,10 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		readErr := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				if flag != 0 {
+					_ = cn.Close()
+					return err
+				}
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
 			if len(injected) > 0 {
@@ -1858,6 +1906,20 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				// reply read below does not consume it as the command's.
 				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+				}
+			}
+			if flag != 0 {
+				ok, err := c.readCSCAck(ctx, cn, rd)
+				if err != nil {
+					_ = cn.Close()
+					return err
+				}
+				if capture != nil && !ok {
+					capture.noStore = true
+				}
+				if err := c.drainPushFrames(ctx, cn, rd, true); err != nil {
+					_ = cn.Close()
+					return err
 				}
 			}
 			err := readReplyFunc(rd)
@@ -2476,10 +2538,11 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: &baseClient{
-			apClosed: &atomic.Bool{},
-			opt:      opt,
-			onClose:  &onCloseHooks{},
-			himport:  newHImportRegistry(),
+			apClosed:  &atomic.Bool{},
+			opt:       opt,
+			cscPolicy: cachePolicy(opt.ClientSideCacheConfig),
+			onClose:   &onCloseHooks{},
+			himport:   newHImportRegistry(),
 		},
 	}
 	c.init()

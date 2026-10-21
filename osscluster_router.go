@@ -249,6 +249,9 @@ func (c *ClusterClient) executeMultiSlot(
 	policy *routing.CommandPolicy,
 	decision clusterRoutingDecision,
 ) error {
+	if err := c.cscMultiTarget(ctx, cmd, len(slotMap)); err != nil {
+		return err
+	}
 	if len(slotMap) == 1 {
 		// Keep single-slot execution and retries local.
 		for slot := range slotMap {
@@ -300,10 +303,20 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	slot int,
 	decision *clusterRoutingDecision,
 ) error {
+	newPolicy := cachePolicy(c.opt.ClientSideCacheConfig).configured() || cmd.cacheState().mark != cacheUnmarked || cmd.cacheState().forceBypass
+	if newPolicy {
+		cscEnter(cmd)
+		defer cscLeave(cmd)
+	}
 	var node *clusterNode
 	var moved, ask bool
+	var redirected bool
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		if newPolicy && redirected {
+			cmd.cacheState().noLookup = true
+			cmd.cacheState().ask = ask
+		}
 		if attempt > 0 && !moved && !ask {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
@@ -326,6 +339,9 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			}
 		}
 
+		if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
+			return err
+		}
 		if ask {
 			ask = false
 			pipe := node.Client.Pipeline()
@@ -355,6 +371,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
+			redirected = true
 			c.state.LazyReload()
 			recordClusterRedirectMetric(ctx, ask)
 			redirected, err := c.nodes.GetOrCreate(addr)
@@ -456,6 +473,9 @@ func (c *ClusterClient) executeCursorCommand(
 		}
 	}
 
+	if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
+		return err
+	}
 	return node.Client.Process(ctx, cmd)
 }
 
@@ -494,6 +514,10 @@ func (c *ClusterClient) executeParallel(
 			return &clusterFanoutExecutionError{err: err}
 		}
 		return nil
+	}
+
+	if err := c.cscMultiTarget(ctx, cmd, len(nodes)); err != nil {
+		return err
 	}
 
 	type nodeResult struct {
@@ -554,12 +578,17 @@ func (c *ClusterClient) executeParallelTarget(
 	targetSlot int,
 	cmd Cmder,
 ) error {
+	cscEnter(cmd)
+	defer cscLeave(cmd)
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
 			}
+		}
+		if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
+			return err
 		}
 		lastErr = node.Client.Process(ctx, cmd)
 		if lastErr == nil {

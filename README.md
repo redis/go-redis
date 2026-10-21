@@ -385,6 +385,56 @@ reused after the client's ACL identity changes. Only deterministic read
 commands supported by the cache are stored; writes and streaming responses
 bypass it.
 
+Tracking modes and application intent are configured in the same cache config:
+
+```go
+ClientSideCacheConfig: &redis.ClientSideCacheConfig{
+    MaxEntries:   10_000,
+    TrackingMode: redis.TrackingModeOptIn,
+    Cacheable: func(command string, keys []string) bool {
+        return command == "get" && len(keys) == 1 && strings.HasPrefix(keys[0], "user:")
+    },
+    Strict: true,
+},
+```
+
+`plain` (including the zero value) caches eligible reads by default; `optin`
+bypasses by default; `optout` caches by default. The predicate has the same
+meaning in every mode, including plain. It runs concurrently, outside cache
+locks, on eligible unmarked calls, and receives actual Redis keys. Its owned
+key slice may be retained but must not be modified. Mode/policy are fixed at
+client construction. These policy fields also apply with an explicit custom Cache.
+
+Use reusable, non-owning command views to override intent for a call:
+
+```go
+cached := rdb.WithCache(true)
+fresh := rdb.WithCache(false)
+value, err := cached.Get(ctx, "user:42").Result()
+value, err = fresh.Get(ctx, "user:42").Result()
+// For a UniversalClient: redis.WithCache(rdb, true).Get(ctx, "user:42")
+```
+
+Views expose typed commands and Do/Process without Close, pipeline or transaction
+constructors. A bypass reads the server without using, refreshing or removing
+an existing entry. Positive marks never override eligibility. Unsupported marks
+warn and execute uncached; `Strict` rejects before the data write, including
+when connection initialization discovers tracking is unavailable. Strict does
+not guarantee cache admission or publication of every reply. A fully read Redis
+error from CLIENT CACHING returns successful data uncached; protocol/transport
+failures retire the connection. Hits send no commands.
+
+All three fetch paths (foreground, miss coalescer, background refresh) support
+the modes. `AutoPipeliner.WithCache` explicitly executes synchronously through
+the normal path and respects its admission/close lifecycle. Public batches,
+pipelines, transactions and scripts remain uncached.
+
+Stage A supports existing single-target Cluster execution. Multi-target plans
+with a new mode/predicate/mark run uncached; strict positive marks fail before
+child dispatch. Untouched plain behavior is preserved. See
+[the review map and Stage B checklist](.claude/specs/csc-opt-modes.md) for the
+remaining metadata-routing integration after #4093.
+
 For a Cluster client, use the same configuration on `ClusterOptions`:
 
 ```go
@@ -423,7 +473,9 @@ When a cache miss, coalesced fetch or background refresh receives MOVED or ASK,
 the node client evicts results depending on that fetch's known Redis keys across
 its local cache, including pending reservations. Unknown keys and uncached
 commands rely on server invalidations; they never trigger a whole-cache flush.
-Unrelated entries and other nodes' caches are untouched. Redirected attempts bypass caching.
+Unrelated entries and other nodes' caches are untouched. Legacy plain redirected
+attempts bypass caching. With a new policy, MOVED forces a destination fetch with
+fresh tracking and permits safe publication; ASK always bypasses lookup and storage.
 Background refresh stays node-local: it applies the same key eviction but does
 not follow redirects or cache errors. Ordinary Cluster routing and topology reload
 triggers remain unchanged. Losing a tracking connection evicts only entries
@@ -472,7 +524,7 @@ interface does not expose one for `ClusterClient` to enforce. For a built-in
 invalidation batching retain their standalone built-in-cache limitations.
 
 While client-side caching is enabled, go-redis rejects `SELECT`, `AUTH`,
-`HELLO` with arguments, `RESET`, `CLIENT TRACKING`, and raw `SUBSCRIBE`,
+`HELLO` with arguments, `RESET`, `CLIENT TRACKING`, `CLIENT CACHING`, and raw `SUBSCRIBE`,
 `PSUBSCRIBE`, or `SSUBSCRIBE` commands because they would change connection
 state that the cache relies on. A guarded command also fails its whole
 pipeline. The typed `Subscribe`, `PSubscribe`, and `SSubscribe` APIs remain

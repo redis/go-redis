@@ -2066,7 +2066,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 	}
-	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
+	diverted = diverted || cmd.cacheState().mark != cacheUnmarked || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,
 		// so an HIMPORT SET on the FD pipe can fail "no such fieldset". Divert it to

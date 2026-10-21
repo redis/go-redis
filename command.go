@@ -204,6 +204,7 @@ type (
 )
 
 type Cmder interface {
+	cacheState() *cscCommandState
 	// command name.
 	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster".
 	Name() string
@@ -507,6 +508,8 @@ type baseCmd struct {
 	// routing pins admission metadata until cluster dispatch completes. Keeping
 	// it on the command avoids retaining commands in a client-wide lookup table.
 	routing atomic.Pointer[clusterRoutingDecision]
+	// CSC invocation state is independent of the consumed routing decision.
+	csc cscCommandState
 }
 
 func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
@@ -584,6 +587,8 @@ func (cmd *baseCmd) resultReady() bool {
 }
 
 var _ Cmder = (*Cmd)(nil)
+
+func (cmd *baseCmd) cacheState() *cscCommandState { return &cmd.csc }
 
 func (cmd *baseCmd) Name() string {
 	if len(cmd.args) == 0 {
@@ -711,6 +716,10 @@ func (cmd *baseCmd) setArgs(args []interface{}) {
 }
 
 func (cmd *baseCmd) cloneBaseCmd() baseCmd {
+	mark := cmd.csc.mark
+	if cmd.csc.forceBypass {
+		mark = cacheBypassed
+	}
 	var readTimeout *time.Duration
 	if cmd._readTimeout != nil {
 		timeout := *cmd._readTimeout
@@ -722,6 +731,7 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 	copy(args, cmd.args)
 
 	return baseCmd{
+		csc:          cscCommandState{mark: mark, forceBypass: cmd.csc.forceBypass, ask: cmd.csc.ask, warned: cmd.csc.warned, strict: cmd.csc.strict},
 		ctx:          cmd.ctx,
 		args:         args,
 		err:          cmd.err,
