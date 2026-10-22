@@ -87,8 +87,8 @@ type Options struct {
 	// Username is used to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
-	// A Username with an empty Password authenticates as that user with an
-	// empty password, which the server accepts for users created with nopass.
+	// A Username without a Password sends no AUTH unless AuthEmptyPassword
+	// is set.
 	Username string
 
 	// Password is an optional password. Must match the password specified in the
@@ -96,6 +96,18 @@ type Options struct {
 	// or the User Password when connecting to a Redis 6.0 instance, or greater,
 	// that is using the Redis ACL system.
 	Password string
+
+	// AuthEmptyPassword, when true, makes a Username with an empty Password
+	// authenticate as that user with an empty password (AUTH user ""), as
+	// needed for ACL users created with nopass. The rule also applies to
+	// credentials from CredentialsProvider, CredentialsProviderContext and
+	// StreamingCredentialsProvider used when a connection is set up.
+	// Re-authentication on a credentials refresh is not affected.
+	//
+	// By default a Username without a Password sends no AUTH: some servers
+	// (Redis Enterprise, Redis Cloud databases with unauthenticated access)
+	// reject an empty password. Redis OSS accepts it.
+	AuthEmptyPassword bool
 
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
@@ -493,7 +505,7 @@ type Options struct {
 	// CredentialsProviderContext, or StreamingCredentialsProvider is set:
 	// provider-backed credentials can change the ACL identity after the cache
 	// namespace is selected. Fixed Username/Password values are supported and
-	// included in the cache namespace.
+	// the ACL user they authenticate as is included in the cache namespace.
 	//
 	// Invalidation freshness: a server invalidation is applied when the client
 	// next reads from the connection that carries it — at arrival on a
@@ -1180,6 +1192,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 
 	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
+	o.AuthEmptyPassword = q.bool("auth_empty_password")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")

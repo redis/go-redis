@@ -358,12 +358,20 @@ func (info LibraryInfo) Validate() error {
 }
 
 // Hello sets the resp protocol used.
+// It sends AUTH only when password is not empty.
 func (c statefulCmdable) Hello(ctx context.Context,
 	ver int, username, password, clientName string,
 ) *MapStringInterfaceCmd {
+	return c.hello(ctx, ver, username, password, clientName, password != "")
+}
+
+// hello sends HELLO with AUTH when auth is true.
+func (c statefulCmdable) hello(ctx context.Context,
+	ver int, username, password, clientName string, auth bool,
+) *MapStringInterfaceCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "hello", ver)
-	if username != "" || password != "" {
+	if auth {
 		if username == "" {
 			username = "default"
 		}
