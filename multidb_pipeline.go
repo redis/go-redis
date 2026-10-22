@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"reflect"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
@@ -27,6 +28,22 @@ func resetCmds(cmds []Cmder) {
 	for _, cmd := range cmds {
 		cmd.SetErr(nil)
 	}
+}
+
+// sameErr reports whether a and b are the same error value. Unlike ==, it
+// does not panic on non-comparable error types, including a comparable
+// struct whose interface field holds a non-comparable value.
+func sameErr(a, b error) (same bool) {
+	t := reflect.TypeOf(a)
+	if t != reflect.TypeOf(b) || t == nil || !t.Comparable() {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a == b
 }
 
 // recordBatchOutcomes records one breaker/detector outcome per command,
@@ -80,6 +97,10 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 	// deadline the blocker itself does not retry. The first carrier of an
 	// error in slice order is its originator: stamping only ever reaches
 	// later commands, and a node sub-batch keeps the original order.
+	//
+	// Errors are matched by identity, not errors.Is: the readers stamp the
+	// same value, and an independent failure on another node can wrap the
+	// same sentinel (e.g. os.ErrDeadlineExceeded) as the blocker's timeout.
 	var neutralPropagated []error
 	var seen []error
 	for _, cmd := range cmds {
@@ -89,7 +110,7 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 		}
 		known := false
 		for _, s := range seen {
-			if errors.Is(err, s) {
+			if sameErr(err, s) {
 				known = true
 				break
 			}
@@ -105,7 +126,7 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 	classify := func(cmd Cmder) outcomeKind {
 		err := cmd.rawErr()
 		for _, origin := range neutralPropagated {
-			if errors.Is(err, origin) {
+			if sameErr(err, origin) {
 				return outcomeNeutral
 			}
 		}

@@ -1297,6 +1297,15 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			return nil
 		}
 	}
+	// Fail over from the CURRENT active, not the caller's snapshot: a
+	// concurrent failover may have moved it since this call queued. Excluding
+	// the stale `from` would drop a member that can serve (evicted only by the
+	// detector, breaker closed) and offer the unselectable current one, and the
+	// switch CAS on a stale `from` would never succeed. Every runtime writer of
+	// the active holds failoverMu, so this read is stable until the switch.
+	if _, idx := c.activeSnapshot(); idx >= 0 {
+		from = idx
+	}
 
 	start := time.Now()
 	cands := c.candidates(from)
@@ -2166,10 +2175,9 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	now := multidbNowNano()
 	// Collect every higher-weight, breaker-closed candidate not in its
 	// post-failover suppression window, then RELEASE failoverMu BEFORE probing.
-	// The probes are serial and each waits up to HealthCheckTimeout; holding
-	// failoverMu across them would block a command-path emergency tryFailover
-	// (which needs the same lock) for up to N_candidates x HealthCheckTimeout
-	// and let command contexts expire. Weights are captured here under dbMu
+	// Each probe waits up to HealthCheckTimeout; holding failoverMu across
+	// them would block a command-path emergency tryFailover (which needs the
+	// same lock) and let command contexts expire. Weights are captured here under dbMu
 	// (SetWeight mutates them under dbMu).
 	type fbCand struct {
 		id     int
@@ -2196,35 +2204,44 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	c.dbMu.RUnlock()
 	c.failoverMu.Unlock()
 
-	// Probe candidates highest-weight first with the full check set (incl
+	// Probe every candidate concurrently with the full check set (incl
 	// fail-back-only lag), WITHOUT recording and WITHOUT failoverMu held: the
 	// breaker's consecutive-failure model leaves an intermittently-laggy member
-	// "closed", so CheckState alone would fall back onto it. A candidate that
-	// fails the probe is dropped and the next-highest is tried, so a laggy
-	// top-weight member cannot shadow a healthy lower-weight one; recording
-	// nothing means the probe never evicts a member from failover.
-	best := -1
-	var bestDB *multidbDatabase
-	for len(cands) > 0 {
-		top := 0
-		for j := 1; j < len(cands); j++ {
-			// Highest weight wins; ties break by lowest id so map iteration
-			// order never decides which member fallback picks.
-			if cands[j].weight > cands[top].weight ||
-				(cands[j].weight == cands[top].weight && cands[j].id < cands[top].id) {
-				top = j
-			}
-		}
-		cand := cands[top]
-		cands = append(cands[:top], cands[top+1:]...)
-		if cand.db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, cand.db.checks) {
-			best, bestDB = cand.id, cand.db
-			break
-		}
+	// "closed", so CheckState alone would fall back onto it. Concurrent, like
+	// the passive probes: this runs on the background loop, and serial probes
+	// would delay the active's next probe by up to N x HealthCheckTimeout.
+	// The highest-weight candidate that passes wins, so a laggy top-weight
+	// member cannot shadow a healthy lower-weight one; recording nothing means
+	// the probe never evicts a member from failover.
+	passed := make([]bool, len(cands))
+	var probes sync.WaitGroup
+	for i, cand := range cands {
+		probes.Add(1)
+		go func(i int, db *multidbDatabase) {
+			defer probes.Done()
+			passed[i] = db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, db.checks)
+		}(i, cand.db)
 	}
-	if best < 0 {
+	probes.Wait()
+	if ctx.Err() != nil {
 		return
 	}
+	top := -1
+	for i, cand := range cands {
+		if !passed[i] {
+			continue
+		}
+		// Highest weight wins; ties break by lowest id so map iteration order
+		// never decides which member fallback picks.
+		if top < 0 || cand.weight > cands[top].weight ||
+			(cand.weight == cands[top].weight && cand.id < cands[top].id) {
+			top = i
+		}
+	}
+	if top < 0 {
+		return
+	}
+	best, bestDB := cands[top].id, cands[top].db
 
 	// Reacquire failoverMu and REVALIDATE before switching: the probes ran
 	// off-lock, so the active may have moved (another failover/fallback) or the

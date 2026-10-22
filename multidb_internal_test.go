@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -598,6 +599,51 @@ func TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral(t *testing.T) {
 			t.Errorf("breaker %v, want open", st)
 		}
 	})
+}
+
+// TestRecordBatchOutcomesIndependentTimeoutNotPropagation pins that only the
+// identical stamped error is a propagation. Cluster node sub-batches fail
+// independently; a transport error on one node that merely wraps the same
+// sentinel as another node's neutral blocking timeout is a real failure.
+func TestRecordBatchOutcomesIndependentTimeoutNotPropagation(t *testing.T) {
+	blocking := func() *StatusCmd {
+		b := NewStatusCmd(context.Background(), "blpop", "k", "5")
+		b.setReadTimeout(5 * time.Second)
+		return b
+	}
+	ordinary := func() *StatusCmd { return NewStatusCmd(context.Background(), "set", "k", "v") }
+	opErr := func() error { return &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded} }
+
+	for _, tc := range []struct {
+		name               string
+		blockErr, ordErr   error
+		blockingFirstInCmd bool
+	}{
+		{"bare sentinel blocker first", os.ErrDeadlineExceeded, opErr(), true},
+		{"bare sentinel blocker last", os.ErrDeadlineExceeded, opErr(), false},
+		{"distinct op errors", opErr(), opErr(), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			core := newMultidbCore(&MultiDBOptions{})
+			db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+				FailureThreshold: 1,
+				SuccessThreshold: 1,
+			})}
+			b, o := blocking(), ordinary()
+			b.SetErr(tc.blockErr)
+			o.SetErr(tc.ordErr)
+			cmds := []Cmder{b, o}
+			if !tc.blockingFirstInCmd {
+				cmds = []Cmder{o, b}
+			}
+			if got := core.recordBatchOutcomes(db, cmds, cmds[0].rawErr(), execAll(cmds), imultidb.Reservation{}, 0); got != 1 {
+				t.Errorf("transportFailures = %d, want 1: the ordinary command's own timeout is a transport failure", got)
+			}
+			if st := db.cb.State(); st != imultidb.CircuitOpen {
+				t.Errorf("breaker %v, want open", st)
+			}
+		})
+	}
 }
 
 // TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen pins the failure

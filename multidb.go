@@ -72,6 +72,10 @@ var (
 // least a minimum number of failures AND a minimum failure rate are observed
 // within the detection window.
 //
+// All four methods must be safe for concurrent use: commands record outcomes
+// from many goroutines while the command gate, the background loop and
+// failover call ShouldFailover and Reset. The default detector uses atomics.
+//
 // A detector is called from inside the command and failover paths and must
 // not call the control operations (see MultiDBCtrl).
 //
@@ -125,6 +129,10 @@ func DefaultMultiDBFailureDetectorConfig() MultiDBFailureDetectorConfig {
 // The multidb package has HealthyAllPolicy, HealthyMajorityPolicy and
 // HealthyAnyPolicy, which satisfy this interface structurally.
 //
+// A policy must be safe for concurrent use: one policy can serve several
+// members, and the background loop probes members concurrently, as do
+// failover, fallback, SetActiveDatabase and AddDatabase.
+//
 // EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBHealthCheckPolicy interface {
 	Execute(ctx context.Context, checks []MultiDBHealthCheck, client *Client) bool
@@ -153,8 +161,10 @@ type MultiDBDatabaseState struct {
 // returns an allowed id or -1. An id that is not among the offered candidates
 // ends the selection with no target.
 //
-// Select runs under MultiDB's failover lock and must not call the control
-// operations (see MultiDBCtrl).
+// Select runs under MultiDB's failover lock (or during construction), so one
+// client never calls it concurrently; a strategy shared across clients must
+// be safe for concurrent use. It must not call the control operations (see
+// MultiDBCtrl).
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBFailoverStrategy interface {

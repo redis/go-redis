@@ -1279,3 +1279,139 @@ func TestMultiDBInitDeadlineBeforeVerdictsNotPermanent(t *testing.T) {
 		t.Fatalf("err = %v matches ErrPermanentlyNotAvailable, but no member answered before the deadline", err)
 	}
 }
+
+// slowFailCheck passes until armed, then waits delay and fails.
+type slowFailCheck struct {
+	oneProbe
+	armed  *atomic.Bool
+	probes *atomic.Int32
+	delay  time.Duration
+}
+
+func (c slowFailCheck) wait(ctx context.Context) (bool, error) {
+	if !c.armed.Load() {
+		return true, nil
+	}
+	c.probes.Add(1)
+	select {
+	case <-time.After(c.delay):
+		return false, errors.New("lagging")
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+func (c slowFailCheck) CheckHealth(ctx context.Context, _ *Client) (bool, error) { return c.wait(ctx) }
+
+func (c slowFailCheck) CheckClusterHealth(ctx context.Context, _ *ClusterClient) (bool, error) {
+	return c.wait(ctx)
+}
+
+// Fallback candidates are probed concurrently: a cycle over two slow-failing
+// candidates takes about one probe, not their sum, so it does not delay the
+// background loop's next active probe.
+func TestMultiDBFallbackProbesCandidatesConcurrently(t *testing.T) {
+	const delay = 400 * time.Millisecond
+	var armed atomic.Bool
+	var probes atomic.Int32
+	slow := slowFailCheck{armed: &armed, probes: &probes, delay: delay}
+	ctx := context.Background()
+	mdb := newLifecycleTestClient(
+		t, func(o *MultiDBOptions) { o.HealthCheckTimeout = 2 * time.Second },
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{slow}},
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 0.75, HealthChecks: []MultiDBHealthCheck{slow}},
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:3"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+	)
+	if err := mdb.ForceActiveDatabase(ctx, 2); err != nil {
+		t.Fatalf("ForceActiveDatabase(2) = %v", err)
+	}
+	mdb.SetAutoFallback(true)
+
+	armed.Store(true)
+	start := time.Now()
+	mdb.core.tryFallbackToPrimary(ctx)
+	took := time.Since(start)
+	if n := probes.Load(); n != 2 {
+		t.Fatalf("candidate probes = %d, want 2", n)
+	}
+	if took >= 2*delay-150*time.Millisecond {
+		t.Fatalf("fallback cycle over two %v candidates took %v, want about %v (probed one after another)", delay, took, delay)
+	}
+	if got := mdb.ActiveDatabaseID(); got != 2 {
+		t.Fatalf("active after failed fallback = %d, want 2", got)
+	}
+}
+
+// Fallback still picks the highest-weight candidate that passes, even when a
+// lower-weight one answers first.
+func TestMultiDBFallbackPicksHighestPassingCandidate(t *testing.T) {
+	var armed atomic.Bool
+	var probes atomic.Int32
+	slowOK := slowCheck{armed: &armed, delay: 200 * time.Millisecond}
+	failing := slowFailCheck{armed: &armed, probes: &probes, delay: 50 * time.Millisecond}
+	ctx := context.Background()
+	mdb := newLifecycleTestClient(
+		t, nil,
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{failing}},
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 0.75, HealthChecks: []MultiDBHealthCheck{slowOK}},
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:3"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:4"}, Weight: 0.25, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+	)
+	if err := mdb.ForceActiveDatabase(ctx, 3); err != nil {
+		t.Fatalf("ForceActiveDatabase(3) = %v", err)
+	}
+	mdb.SetAutoFallback(true)
+
+	armed.Store(true)
+	mdb.core.tryFallbackToPrimary(ctx)
+	if got := mdb.ActiveDatabaseID(); got != 1 {
+		t.Fatalf("active after fallback = %d, want 1 (highest weight that passes; 0 fails, 2 answers first)", got)
+	}
+}
+
+// A failover queued with a stale `from` (the active moved since) works from
+// the CURRENT active: the old active, evicted only by the detector and still
+// closed, is a valid candidate when the new active becomes unselectable.
+func TestMultiDBStaleFailoverExcludesCurrentActive(t *testing.T) {
+	ctx := context.Background()
+	mdb := newLifecycleTestClient(
+		t, nil,
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+	)
+	if err := mdb.ForceActiveDatabase(ctx, 1); err != nil {
+		t.Fatalf("ForceActiveDatabase(1) = %v", err)
+	}
+	mdb.core.dbByID(1).cb.ForceOpen()
+
+	if err := mdb.core.tryFailover(ctx, 0); err != nil {
+		t.Fatalf("tryFailover(stale from=0) = %v, want nil (0 is closed and can serve)", err)
+	}
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("active = %d, want 0", got)
+	}
+}
+
+type sliceErr []string
+
+func (sliceErr) Error() string { return "slice" }
+
+type wrapIfaceErr struct{ inner error }
+
+func (wrapIfaceErr) Error() string { return "wrap" }
+
+// sameErr must not panic on a comparable struct whose interface field holds a
+// non-comparable error.
+func TestSameErrNonComparableField(t *testing.T) {
+	a := wrapIfaceErr{inner: sliceErr{"a"}}
+	if sameErr(a, a) {
+		t.Fatal("sameErr on a non-comparable dynamic value = true, want false")
+	}
+	if sameErr(sliceErr{"a"}, sliceErr{"a"}) {
+		t.Fatal("sameErr on a slice error = true, want false")
+	}
+	e := errors.New("x")
+	if !sameErr(e, e) {
+		t.Fatal("sameErr(e, e) = false, want true")
+	}
+}
