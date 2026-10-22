@@ -678,9 +678,15 @@ type fdEngine struct {
 	epoch  time.Time
 	closed bool // set once run() is tearing down; submit then rejects new work
 
-	retryWg  sync.WaitGroup // tracks off-pipe retries diverted to the normal client path; run() waits it so Close does too
-	retrySem chan struct{}  // caps concurrent off-pipe retries at the window (see retryOnNormalConn)
+	retryWg  sync.WaitGroup // tracks off-pipe retries and the reply-reroute worker; run() waits it so Close does too
+	retrySem chan struct{}  // caps concurrent off-pipe retries and queued reply reroutes (see acquireRetrySlot)
 	hostWg   sync.WaitGroup // tracks per-command hook-host goroutines (see hostHook); run() waits it so Close does not return while a post-next ProcessHook is still running
+
+	// Reply reroutes to the owner, in reply order (see rerouteReplyToOwner).
+	// rerouteDone is non-nil while the worker runs and closes when it exits.
+	rerouteMu   sync.Mutex
+	rerouteQ    []fdReplyReroute
+	rerouteDone chan struct{}
 
 	// runPipeline runs a shutdown-flush chunk through the client's pipeline retry
 	// loop. Test seam: nil in production (flushReqs falls back to
@@ -734,8 +740,8 @@ type fdEngine struct {
 // the ClusterClient's MaxRedirects (clusterRetryBudget) for that case. Reading the
 // client's option live (rather than caching a field) keeps test-constructed engines
 // working: they set client but not the cluster budget. The reply-side standalone
-// retryable divert still uses client.opt.MaxRetries directly (only reached when
-// !redirectAware).
+// retryable divert uses client.opt.MaxRetries directly, or ownerRetryBudget when
+// an owner reroutes it (only reached when !redirectAware).
 func (fd *fdEngine) retryBudget() int {
 	if fd.ownerRetries {
 		return fd.ownerRetryBudget
@@ -1181,62 +1187,9 @@ func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error,
 // command and reports via req.complete(). Background ctx: the command was already
 // accepted, so it completes even under a Close.
 func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
-	// Bound concurrent off-pipe retries to about 2x the main pool (see newFDEngine's
-	// retryCap): a sustained retryable stream would otherwise spawn one goroutine per
-	// reply, all parked in backoff/pool acquisition. Blocking here blocks the READER,
-	// which stops advancing the deque, which fills the window and blocks the writer and
-	// then submitters — end-to-end backpressure. No cycle: retries drain on the main
-	// pool, independent of the reader waiting here.
-	//
-	// Take a free slot if one is available. Otherwise, by state:
-	//   - Close (ap.ctx done): FAIL ErrClosed. Never block (a spilled session pins a
-	//     main-pool conn until the reader drains, so parking the reader deadlocks the
-	//     retries that need that pool) and never run slot-less (a Close-time storm would
-	//     spawn a goroutine per in-flight reply, up to FullDuplexWindow, and OOM). The
-	//     engine is closing; retryWg still covers granted slots.
-	//   - spilled session (curConnSpilled): run SLOT-LESS rather than block, for the
-	//     same deadlock reason — the reader must keep draining so the session releases
-	//     its pinned main-pool conn (fCCni). Residual: up to a window of transient retry
-	//     goroutines while spilled, reachable only when the pipeline pool is saturated
-	//     at a small PoolSize; documented, and the lesser evil versus a hang.
-	//   - otherwise: BLOCK for a slot — end-to-end backpressure, safe because a
-	//     pipeline-pool session does not compete with the main-pool retries.
-	slot := false
-	select {
-	case fd.retrySem <- struct{}{}:
-		slot = true
-	case <-fd.ap.ctx.Done():
-		select {
-		case fd.retrySem <- struct{}{}:
-			slot = true
-		default:
-			// fdSetErrSafe: this runs synchronously on the READER goroutine, before
-			// the retry's own recover (below) is even in play — a panicking custom
-			// Cmder here would escape to the reader's session-failure recovery,
-			// tearing down the whole session and replaying the unacked tail,
-			// including requests already written (double execution).
-			fdSetErrSafe(req.cmd, ErrClosed)
-			fd.finish(req)
-			return
-		}
-	default:
-		if fd.curConnSpilled.Load() {
-			// slot stays false: run slot-less, do NOT block the reader.
-		} else {
-			// Block for a slot, but stay cancellable. A Close that arrives while
-			// the reader is parked here must not deadlock: cancelAndDrain waits on
-			// the reader to advance the deque, and the reader is the goroutine
-			// blocked on this send. On ctx cancel, FAIL ErrClosed (same as the
-			// ctx.Done arm above) rather than park forever.
-			select {
-			case fd.retrySem <- struct{}{}:
-				slot = true
-			case <-fd.ap.ctx.Done():
-				fdSetErrSafe(req.cmd, ErrClosed) // same reason as the ctx.Done arm above
-				fd.finish(req)
-				return
-			}
-		}
+	slot, ok := fd.acquireRetrySlot(req, ErrClosed)
+	if !ok {
+		return
 	}
 	fd.retryWg.Add(1)
 	go func() {
@@ -1300,6 +1253,156 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		fdSetErrSafe(req.cmd, err)
 		fd.finish(req)
 	}()
+}
+
+// acquireRetrySlot takes an off-pipe retry slot for req. ok is false when req
+// was already failed with closedErr and completed (the engine is closing).
+// slot reports whether a slot was taken and must be released.
+func (fd *fdEngine) acquireRetrySlot(req fdReq, closedErr error) (slot, ok bool) {
+	// Bound concurrent off-pipe retries to about 2x the main pool (see newFDEngine's
+	// retryCap): a sustained retryable stream would otherwise spawn one goroutine per
+	// reply, all parked in backoff/pool acquisition. Blocking here blocks the READER,
+	// which stops advancing the deque, which fills the window and blocks the writer and
+	// then submitters — end-to-end backpressure. No cycle: retries drain on the main
+	// pool, independent of the reader waiting here.
+	//
+	// Take a free slot if one is available. Otherwise, by state:
+	//   - Close (ap.ctx done): FAIL with closedErr. Never block (a spilled session pins a
+	//     main-pool conn until the reader drains, so parking the reader deadlocks the
+	//     retries that need that pool) and never run slot-less (a Close-time storm would
+	//     spawn a goroutine per in-flight reply, up to FullDuplexWindow, and OOM). The
+	//     engine is closing; retryWg still covers granted slots.
+	//   - spilled session (curConnSpilled): run SLOT-LESS rather than block, for the
+	//     same deadlock reason — the reader must keep draining so the session releases
+	//     its pinned main-pool conn (fCCni). Residual: up to a window of transient retry
+	//     goroutines while spilled, reachable only when the pipeline pool is saturated
+	//     at a small PoolSize; documented, and the lesser evil versus a hang.
+	//   - otherwise: BLOCK for a slot — end-to-end backpressure, safe because a
+	//     pipeline-pool session does not compete with the main-pool retries.
+	select {
+	case fd.retrySem <- struct{}{}:
+		slot = true
+	case <-fd.ap.ctx.Done():
+		select {
+		case fd.retrySem <- struct{}{}:
+			slot = true
+		default:
+			// fdSetErrSafe: this runs synchronously on the READER goroutine, before
+			// the retry goroutine's own recover is even in play — a panicking custom
+			// Cmder here would escape to the reader's session-failure recovery,
+			// tearing down the whole session and replaying the unacked tail,
+			// including requests already written (double execution).
+			fdSetErrSafe(req.cmd, closedErr)
+			fd.finish(req)
+			return false, false
+		}
+	default:
+		if fd.curConnSpilled.Load() {
+			// slot stays false: run slot-less, do NOT block the reader.
+		} else {
+			// Block for a slot, but stay cancellable. A Close that arrives while
+			// the reader is parked here must not deadlock: cancelAndDrain waits on
+			// the reader to advance the deque, and the reader is the goroutine
+			// blocked on this send. On ctx cancel, FAIL with closedErr (same as the
+			// ctx.Done arm above) rather than park forever.
+			select {
+			case fd.retrySem <- struct{}{}:
+				slot = true
+			case <-fd.ap.ctx.Done():
+				fdSetErrSafe(req.cmd, closedErr) // same reason as the ctx.Done arm above
+				fd.finish(req)
+				return false, false
+			}
+		}
+	}
+	return slot, true
+}
+
+// rerouteReplyToOwner reruns a command that got a retryable reply through the
+// owner's path (fd.reroute), so the owner's retry policy applies instead of the
+// member client's MaxRetries: the failed attempt is reported to the owner,
+// which re-gates (and may fail over) and retries within the command's
+// remaining budget.
+//
+// Reroutes run in reply order (= submit order) on one FIFO worker, so the
+// ordered async face keeps order among retried commands: parallel reroutes
+// could apply SET k v2 before SET k v1 on the new member. The reader only
+// enqueues; acquireRetrySlot keeps the backpressure of retryOnNormalConn. If
+// the engine is closing and no slot is free, req fails with its own reply
+// error (cause), reported once by finish.
+func (fd *fdEngine) rerouteReplyToOwner(req fdReq, cause error) {
+	slot, ok := fd.acquireRetrySlot(req, cause)
+	if !ok {
+		return
+	}
+	// The flush takes post-bump attempts: req has completed req.attempts
+	// executions, so the bump leaves it ownerRetryBudget-req.attempts retries.
+	req.attempts++
+	fd.rerouteMu.Lock()
+	fd.rerouteQ = append(fd.rerouteQ, fdReplyReroute{req: req, cause: cause, slot: slot})
+	if fd.rerouteDone == nil {
+		done := make(chan struct{})
+		fd.rerouteDone = done
+		fd.retryWg.Add(1)
+		go fd.runReplyReroutes(done)
+	}
+	fd.rerouteMu.Unlock()
+}
+
+// fdReplyReroute is a retryable reply queued for rerouteReplyToOwner's worker.
+type fdReplyReroute struct {
+	req   fdReq
+	cause error
+	slot  bool // holds a retrySem slot
+}
+
+// runReplyReroutes is the reply-reroute worker: it drains fd.rerouteQ in
+// order, one batch at a time, and exits when the queue is empty.
+func (fd *fdEngine) runReplyReroutes(done chan struct{}) {
+	defer fd.retryWg.Done()
+	var reqs []fdReq
+	for {
+		fd.rerouteMu.Lock()
+		batch := fd.rerouteQ
+		fd.rerouteQ = nil
+		if len(batch) == 0 {
+			fd.rerouteDone = nil
+			fd.rerouteMu.Unlock()
+			close(done)
+			return
+		}
+		fd.rerouteMu.Unlock()
+		reqs = reqs[:0]
+		for _, r := range batch {
+			// Each reply is a failed attempt on this member: report it first,
+			// as rerouteReqs does; the owner's path settles the rerouted one.
+			if fd.outcome != nil {
+				fd.reportOutcome(r.req.ctx, r.req.cmd, r.cause)
+			}
+			reqs = append(reqs, r.req)
+		}
+		// In order, grouped by remaining budget; flushReqsVia recovers panics
+		// and completes every req.
+		_ = fd.flushCarryBudgeted(context.Background(), reqs)
+		for _, r := range batch {
+			if r.slot {
+				<-fd.retrySem
+			}
+		}
+	}
+}
+
+// waitReplyReroutes waits for queued reply reroutes to finish. The engine
+// calls it before it sends later commands through the owner (a tail reroute,
+// the Close-time flush), so those cannot pass an earlier rerouted command.
+// Called after the session's reader has exited, so nothing new is queued.
+func (fd *fdEngine) waitReplyReroutes() {
+	fd.rerouteMu.Lock()
+	done := fd.rerouteDone
+	fd.rerouteMu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // run owns the engine for the AutoPipeliner's lifetime: acquire a pipeline-pool
@@ -1897,6 +2000,18 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 								done++
 								continue
 							}
+							// An owner with its own retry policy (MultiDB) reruns a retryable
+							// reply through its path, like a dropped session's tail: the member
+							// client's MaxRetries is commonly off there. req.attempts counts the
+							// executions done, so the guard keeps the total within
+							// ownerRetryBudget+1; once spent, the reply settles inline below.
+							ownerRetries := fd.ownerRetries && fd.reroute != nil
+							if ownerRetries && !moved && !ask && shouldRetry(e, false) &&
+								req.attempts <= fd.ownerRetryBudget {
+								fd.rerouteReplyToOwner(req, e)
+								done++
+								continue
+							}
 							// Standalone FD: divert a RETRYABLE reply only while retries are
 							// enabled AND the budget is not already spent. req.attempts counts FD
 							// attempts spent (1 at submit, +1 on each fdConnErr carry replay). Once
@@ -1905,7 +2020,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 							// final error and reports the true attempt count. Without this guard the
 							// startAttempt clamp in processWithRetry would turn an exhausted budget
 							// into one more send.
-							if !moved && !ask &&
+							if !ownerRetries && !moved && !ask &&
 								shouldRetry(e, false) &&
 								fd.client.opt.MaxRetries > 0 &&
 								req.attempts <= fd.client.opt.MaxRetries {
@@ -3141,7 +3256,9 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// it runs, so fdPipelineExec does not run them again.
 	// Flush the carried tail honoring EACH command's remaining retry budget across
 	// the Close boundary (flushCarryBudgeted), then the fresh queue at the full
-	// budget. Flushing carry first keeps FIFO order across the two sets.
+	// budget. Flushing carry first keeps FIFO order across the two sets. Both
+	// were submitted after any queued reply reroute, so that goes first.
+	fd.waitReplyReroutes()
 	if err := fd.flushCarryBudgeted(bg, carry); err != nil {
 		// Carry hit an unreachable endpoint; do not run the fresh queue through a full
 		// retry cycle against the same dead endpoint (Close would otherwise stall for
@@ -3278,6 +3395,8 @@ func (fd *fdEngine) flushesViaOwner() bool {
 // the Close-time carry, so flushCarryBudgeted gives each group its remaining
 // budget (fdCarryRemainingRetries) and flushReqs sends it to the owner.
 func (fd *fdEngine) rerouteReqs(bg context.Context, reqs []fdReq, cause error) {
+	// reqs were submitted after any queued reply reroute: let it run first.
+	fd.waitReplyReroutes()
 	// Each command that may have reached this engine's connection failed its
 	// attempt there: report that to the owner first. A never-sent command (the
 	// refunded unwritten suffix, a queue drained on lease failure) made no

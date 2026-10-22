@@ -157,6 +157,13 @@ func (r *multidbFDRouter) target() (child *AutoPipeliner, reject bool) {
 // switches happen on failover, fallback and breaker transitions; the switch
 // stalls submitters for the drain.
 //
+// A retryable reply (READONLY, LOADING, ...) on a child is retried through
+// MultiDB. The child reroutes such replies on one worker, in reply order, and
+// a later tail reroute or Close-time flush waits for them, so retried
+// commands keep submit order. As with pipeline retries, a later command that
+// already ran on the first member (or settled with its budget spent)
+// completes before an earlier command's retry.
+//
 // Fast path: the lane picked now is the current lane, so submit without
 // laneMu. Anything else (a lane switch, a lane closed under the command) takes
 // submitLocked, which picks, switches and submits under laneMu, so no caller
@@ -417,8 +424,9 @@ func (r *multidbFDRouter) newChild(db *multidbDatabase) (*AutoPipeliner, error) 
 	// runs more than CommandRetries+1 times in total.
 	cfg.fdReroute = core.processPipelineRetries
 	// Recovery follows MultiDB's retry policy, not the member's MaxRetries
-	// (members commonly run with retries off): a dropped session's tail gets
-	// re-issued through MultiDB as often as core.process would retry.
+	// (members commonly run with retries off): a dropped session's tail and a
+	// retryable reply (READONLY, LOADING, ...) get re-issued through MultiDB as
+	// often as core.process would retry.
 	cfg.fdOwnerRetries = true
 	cfg.fdRetryBudget = core.opts.CommandRetries
 

@@ -154,7 +154,18 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
   member the lane orders per key (slot), like plain cluster FD: commands the
   cluster router cannot place (keyless, topology miss, non-FD node) leave
   through `ownerDivert` and are not ordered against the lane, and a lane drain
-  does not wait for them.
+  does not wait for them. A retryable reply on a child is rerouted through
+  MultiDB by one FIFO worker per engine (`rerouteReplyToOwner`), in reply
+  order; a tail reroute or Close-time flush waits for it
+  (`waitReplyReroutes`). So order among retried commands holds (pinned by
+  `TestMultiDBFullDuplexRetryableReplyKeepsOrder` and
+  `TestMultiDBFullDuplexTailRerouteAfterReplyReroutes`). Relaxation, as with
+  pipeline retries: a later command that already ran on the first member (or
+  settled with its budget spent) completes before an earlier command's retry.
+  If the engine is closing and no retry slot is free, the reply settles with
+  its own error, not `ErrClosed`. A transport failure aborts only the rest of
+  its reroute batch (those commands complete with the error); later batches
+  and the tail reroute still run, as with separate `rerouteReqs` calls.
 - **No-FD members** (no pipeline pool, replica routing): remembered in `noFD`,
   their commands divert without rebuilding a child.
 - **Cluster member misses**: a command the member's `clusterFDRouter` cannot

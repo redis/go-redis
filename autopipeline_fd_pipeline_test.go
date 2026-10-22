@@ -20,9 +20,9 @@ import (
 
 // fdStateServer is a minimal stateful RESP2 server for the FD pipeline tests.
 // SET stores, GET reads ($-1 when missing), HELLO gets a minimal map, anything
-// else +OK. It can answer the first N SETs with -LOADING (not applied), counts
-// SETs, and can delay every GET/SET reply. Commands are parsed with readRESPCommand from
-// internal_maint_notif_test.go.
+// else +OK. It can answer the first N SETs with -LOADING, or every SET with
+// -READONLY (neither applied), counts SETs, logs applied SET values in order,
+// and can delay every GET/SET reply. Commands are parsed with readRESPCommand from internal_maint_notif_test.go.
 type fdStateServer struct {
 	ln       net.Listener
 	mu       sync.Mutex
@@ -32,9 +32,22 @@ type fdStateServer struct {
 	// dropFirst closes the connection on the first SET instead of replying,
 	// so the client sees the write land and the reply never arrive.
 	dropFirst atomic.Bool
-	delay     time.Duration
-	wg        sync.WaitGroup
-	conns     []net.Conn
+	// dropAt (> 0) closes the connection on that SET, counted from 1.
+	dropAt atomic.Int64
+	// readOnly answers every SET with -READONLY (not applied).
+	readOnly atomic.Bool
+	// onSet, if set, runs before a SET is applied (set before traffic starts).
+	onSet  func(val string)
+	setLog []string // applied SET values, in order; guarded by mu
+	delay  time.Duration
+	wg     sync.WaitGroup
+	conns  []net.Conn
+}
+
+func (s *fdStateServer) appliedSets() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.setLog...)
 }
 
 func newFDStateServer(t *testing.T) *fdStateServer {
@@ -95,16 +108,26 @@ func (s *fdStateServer) serve(c net.Conn) {
 		case name == "hello":
 			reply = "*4\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:2\r\n"
 		case name == "set" && len(args) >= 3:
-			s.setCalls.Add(1)
+			if n := s.setCalls.Add(1); n == s.dropAt.Load() {
+				return // closes c on the dropAt-th SET
+			}
 			if s.dropFirst.CompareAndSwap(true, false) {
 				return // closes c: the reply never arrives
+			}
+			if s.readOnly.Load() {
+				reply = "-READONLY You can't write against a read only replica.\r\n"
+				break
 			}
 			if s.loading.Add(-1) >= 0 {
 				reply = "-LOADING Redis is loading the dataset in memory\r\n"
 				break
 			}
+			if s.onSet != nil {
+				s.onSet(args[2])
+			}
 			s.mu.Lock()
 			s.kv[args[1]] = args[2]
+			s.setLog = append(s.setLog, args[2])
 			s.mu.Unlock()
 			reply = "+OK\r\n"
 		case name == "get" && len(args) == 2:

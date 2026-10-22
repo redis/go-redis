@@ -9,12 +9,14 @@ import (
 	"net"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // fdTestProxy forwards TCP to target until killed: a member that can die.
@@ -1173,5 +1175,234 @@ func TestMultiDBFullDuplexRemoveWaitsForCloseDrain(t *testing.T) {
 	}
 	if err := cmd.Err(); err != nil {
 		t.Fatalf("accepted SET: %v", err)
+	}
+}
+
+// newFDReplyRetryMultiDB builds a full-duplex MultiDB over two fdStateServer
+// members (A preferred) with members' retries off, as MultiDB defaults them.
+func newFDReplyRetryMultiDB(t *testing.T, retries, failureThreshold int, a, b *fdStateServer) *AutoPipeliner {
+	t.Helper()
+	return newFDReplyRetryAP(t, false, retries, failureThreshold, a, b)
+}
+
+// newFDReplyRetryAP is newFDReplyRetryMultiDB; async picks the ordered async
+// face.
+func newFDReplyRetryAP(t *testing.T, async bool, retries, failureThreshold int, a, b *fdStateServer) *AutoPipeliner {
+	t.Helper()
+	mem := func(addr string, weight float64) MultiDBClientConfig {
+		return MultiDBClientConfig{
+			Options: &Options{Addr: addr, Protocol: 2, DisableIdentity: true, MaxRetries: -1},
+			Weight:  weight,
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mdb, err := NewMultiDBClient(ctx, &MultiDBOptions{
+		Clients:             []MultiDBClientConfig{mem(a.addr(), 0.75), mem(b.addr(), 0.5)},
+		HealthCheckInterval: time.Hour,
+		HealthChecks:        []MultiDBHealthCheck{onePingCheck{}},
+		CircuitBreakerConfig: &MultiDBCircuitBreakerConfig{
+			FailureThreshold: failureThreshold,
+			SuccessThreshold: 1,
+			GracePeriod:      time.Hour,
+		},
+		CommandRetries:       retries,
+		AutoFallbackInterval: -1,
+	})
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	newAP := mdb.AutoPipelineWithOptions
+	if async {
+		newAP = mdb.AsyncAutoPipelineWithOptions
+	}
+	ap, err := newAP(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+	if ap.mdbFD == nil {
+		t.Fatal("full duplex not engaged")
+	}
+	return ap
+}
+
+// A retryable reply (READONLY) on the FD path follows MultiDB's retry policy,
+// not the member's disabled MaxRetries: the failed attempt is recorded (the
+// breaker opens at FailureThreshold 1) and the command reruns on the member
+// MultiDB fails over to.
+func TestMultiDBFullDuplexRetryableReplyFailsOver(t *testing.T) {
+	a, b := newFDStateServer(t), newFDStateServer(t)
+	a.readOnly.Store(true)
+	ap := newFDReplyRetryMultiDB(t, 2, 1, a, b)
+	if err := ap.Set(context.Background(), "k", "v", 0).Err(); err != nil {
+		t.Fatalf("Set: %v, want served by the second member", err)
+	}
+	if a.setCalls.Load() != 1 || b.setCalls.Load() != 1 {
+		t.Fatalf("SETs: a=%d b=%d, want 1 each", a.setCalls.Load(), b.setCalls.Load())
+	}
+}
+
+// A command that keeps getting a retryable reply runs at most
+// CommandRetries+1 times in total, FD attempt included.
+func TestMultiDBFullDuplexRetryableReplyBudget(t *testing.T) {
+	a, b := newFDStateServer(t), newFDStateServer(t)
+	a.readOnly.Store(true)
+	b.readOnly.Store(true)
+	const retries = 2
+	// A high threshold keeps the breaker closed, so every retry runs.
+	ap := newFDReplyRetryMultiDB(t, retries, 100, a, b)
+	err := ap.Set(context.Background(), "k", "v", 0).Err()
+	if err == nil || !strings.HasPrefix(err.Error(), "READONLY") {
+		t.Fatalf("Set err = %v, want READONLY", err)
+	}
+	if got := a.setCalls.Load() + b.setCalls.Load(); got != retries+1 {
+		t.Fatalf("SETs sent = %d, want CommandRetries+1 = %d", got, retries+1)
+	}
+}
+
+// Retryable replies rerouted through MultiDB keep submit order on the ordered
+// async face: B applies the SETs in the order they were submitted. B's slow
+// odd SETs reorder them when reroutes run in parallel.
+func TestMultiDBFullDuplexRetryableReplyKeepsOrder(t *testing.T) {
+	a, b := newFDStateServer(t), newFDStateServer(t)
+	a.readOnly.Store(true)
+	// A's replies come after every SET is submitted, faster than B applies
+	// an odd SET.
+	a.delay = 2 * time.Millisecond
+	b.onSet = func(val string) {
+		if n, _ := strconv.Atoi(val); n%2 == 1 {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	ap := newFDReplyRetryAP(t, true, 5, 1, a, b)
+	ctx := context.Background()
+	const n = 20
+	cmds := make([]*StatusCmd, n)
+	want := make([]string, n)
+	for i := range cmds {
+		want[i] = strconv.Itoa(i)
+		cmds[i] = ap.Set(ctx, "k", i, 0)
+	}
+	for i, c := range cmds {
+		if err := c.Err(); err != nil {
+			t.Fatalf("Set %d: %v", i, err)
+		}
+	}
+	if got := b.appliedSets(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("B applied %v, want submit order %v", got, want)
+	}
+}
+
+// A dropped session's tail, rerouted through MultiDB, waits for the earlier
+// commands' reply reroutes: B still applies the SETs in submit order.
+func TestMultiDBFullDuplexTailRerouteAfterReplyReroutes(t *testing.T) {
+	a, b := newFDStateServer(t), newFDStateServer(t)
+	a.readOnly.Store(true)
+	a.dropAt.Store(5) // READONLY for 0..3, then the connection drops
+	b.onSet = func(val string) {
+		if n, _ := strconv.Atoi(val); n%2 == 1 {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	ap := newFDReplyRetryAP(t, true, 5, 1, a, b)
+	ctx := context.Background()
+	const n = 20
+	cmds := make([]*StatusCmd, n)
+	want := make([]string, n)
+	for i := range cmds {
+		want[i] = strconv.Itoa(i)
+		cmds[i] = ap.Set(ctx, "k", i, 0)
+	}
+	for i, c := range cmds {
+		if err := c.Err(); err != nil {
+			t.Fatalf("Set %d: %v", i, err)
+		}
+	}
+	if got := b.appliedSets(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("B applied %v, want submit order %v", got, want)
+	}
+}
+
+// A retryable reply the engine cannot reroute because it is closing (a lane
+// switch closes the child while its reader drains READONLY replies) fails
+// with the reply's own error, reported to the owner once, not ErrClosed.
+func TestFDOwnerRerouteClosingKeepsReplyError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fd, _ := fdRerouteTestEngine(3, fdServeOK)
+	fd.ap.ctx = ctx
+	fd.ownerRetries = true
+	fd.ownerRetryBudget = 3
+	fd.retrySem = make(chan struct{}, 1)
+	fd.retrySem <- struct{}{} // no free slot
+	var outcomes []error
+	fd.outcome = func(_ context.Context, cmd Cmder, err error) {
+		if err == nil {
+			err = cmd.Err()
+		}
+		outcomes = append(outcomes, err)
+	}
+	cmd := NewStatusCmd(context.Background(), "set", "k", "v")
+	cause := proto.RedisError("READONLY You can't write against a read only replica.")
+	cmd.SetErr(cause)
+	fd.rerouteReplyToOwner(fdReq{ctx: context.Background(), cmd: cmd, batch: newAPBatch(), attempts: 1, sent: true}, cause)
+	fd.retryWg.Wait()
+	if err := cmd.Err(); err == nil || !strings.HasPrefix(err.Error(), "READONLY") {
+		t.Fatalf("cmd err = %v, want the READONLY reply", err)
+	}
+	if len(outcomes) != 1 || outcomes[0] == nil || !strings.HasPrefix(outcomes[0].Error(), "READONLY") {
+		t.Fatalf("outcomes = %v, want one READONLY", outcomes)
+	}
+}
+
+// Close with owner reroutes queued returns, and every queued command
+// completes.
+func TestMultiDBFullDuplexCloseDuringReroute(t *testing.T) {
+	a, b := newFDStateServer(t), newFDStateServer(t)
+	a.readOnly.Store(true)
+	a.delay = 5 * time.Millisecond
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock() // a failure before the release must not hang cleanup
+	first := make(chan struct{})
+	var once sync.Once
+	b.onSet = func(string) {
+		once.Do(func() { close(first) })
+		<-release
+	}
+	ap := newFDReplyRetryAP(t, true, 5, 1, a, b)
+	ctx := context.Background()
+	const n = 20
+	cmds := make([]*StatusCmd, n)
+	for i := range cmds {
+		cmds[i] = ap.Set(ctx, "k", i, 0)
+	}
+	select {
+	case <-first:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reroute reached B")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- ap.Close() }()
+	time.Sleep(50 * time.Millisecond)
+	unblock()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close hung with reroutes queued")
+	}
+	for i, c := range cmds {
+		done := make(chan struct{})
+		go func() {
+			_ = c.Err()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Set %d never completed", i)
+		}
 	}
 }
