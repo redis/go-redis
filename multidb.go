@@ -970,8 +970,9 @@ func (c *MultiDBClient) PSubscribe(ctx context.Context, patterns ...string) *Pub
 // MultiDB-level hooks (AddHook) do not wrap it — the member's own hooks
 // apply, so install hooks via AddDatabaseHook when this traffic must be
 // instrumented. Against a non-cluster member the command takes the regular
-// hook-wrapped path. The same holds for ScriptLoad, ScriptFlush and
-// ScriptExists.
+// hook-wrapped path; if that path fails over to a cluster member, the member
+// still runs the typed override (see clusterControlKey). The same holds for
+// ScriptLoad, ScriptFlush and ScriptExists.
 //
 // A fan-out failure here is deliberately NOT recorded on the circuit breaker
 // or failure detector and does NOT trigger failover: these are cluster
@@ -995,7 +996,13 @@ func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
-	return c.cmdable.DBSize(ctx)
+	cmd := NewIntCmd(ctx, "dbsize")
+	_ = c.Process(withClusterControl(ctx, cmd, func(ctx context.Context, cc *ClusterClient) error {
+		res := cc.DBSize(ctx)
+		cmd.SetVal(res.Val())
+		return res.Err()
+	}), cmd)
+	return cmd
 }
 
 // controlTarget returns the cluster member a cluster control command runs on,
@@ -1059,7 +1066,13 @@ func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCm
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
-	return c.cmdable.ScriptLoad(ctx, script)
+	cmd := NewStringCmd(ctx, "script", "load", script)
+	_ = c.Process(withClusterControl(ctx, cmd, func(ctx context.Context, cc *ClusterClient) error {
+		res := cc.ScriptLoad(ctx, script)
+		cmd.SetVal(res.Val())
+		return res.Err()
+	}), cmd)
+	return cmd
 }
 
 // ScriptFlush delegates to the active member (cluster members flush every
@@ -1076,7 +1089,13 @@ func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
-	return c.cmdable.ScriptFlush(ctx)
+	cmd := NewStatusCmd(ctx, "script", "flush")
+	_ = c.Process(withClusterControl(ctx, cmd, func(ctx context.Context, cc *ClusterClient) error {
+		res := cc.ScriptFlush(ctx)
+		cmd.SetVal(res.Val())
+		return res.Err()
+	}), cmd)
+	return cmd
 }
 
 // ScriptExists delegates to the active member (cluster members AND the
@@ -1085,12 +1104,7 @@ func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
 func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
 	db, err := c.controlTarget(ctx)
 	if err != nil {
-		args := make([]interface{}, 2, 2+len(hashes))
-		args[0], args[1] = "script", "exists"
-		for _, h := range hashes {
-			args = append(args, h)
-		}
-		cmd := NewBoolSliceCmd(ctx, args...)
+		cmd := NewBoolSliceCmd(ctx, scriptExistsArgs(hashes)...)
 		cmd.SetErr(err)
 		return cmd
 	}
@@ -1099,7 +1113,49 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
 		return res
 	}
-	return c.cmdable.ScriptExists(ctx, hashes...)
+	cmd := NewBoolSliceCmd(ctx, scriptExistsArgs(hashes)...)
+	_ = c.Process(withClusterControl(ctx, cmd, func(ctx context.Context, cc *ClusterClient) error {
+		res := cc.ScriptExists(ctx, hashes...)
+		cmd.SetVal(res.Val())
+		return res.Err()
+	}), cmd)
+	return cmd
+}
+
+func scriptExistsArgs(hashes []string) []interface{} {
+	args := make([]interface{}, 2, 2+len(hashes))
+	args[0], args[1] = "script", "exists"
+	for _, h := range hashes {
+		args = append(args, h)
+	}
+	return args
+}
+
+// clusterControlKey marks a cluster control command (DBSize, ScriptLoad,
+// ScriptFlush, ScriptExists) that took the regular path because the active
+// was standalone. When core.process admits a cluster member for that command
+// (a failover during the command), it runs the typed ClusterClient override
+// instead of sending the command to a single shard.
+type clusterControlKey struct{}
+
+type clusterControl struct {
+	cmd Cmder
+	run func(ctx context.Context, cc *ClusterClient) error
+}
+
+func withClusterControl(ctx context.Context, cmd Cmder, run func(context.Context, *ClusterClient) error) context.Context {
+	return context.WithValue(ctx, clusterControlKey{}, &clusterControl{cmd: cmd, run: run})
+}
+
+// clusterControlFor returns the typed override for cmd, or nil. It matches
+// the command itself, so other commands sharing the ctx (e.g. issued from a
+// hook) are not affected.
+func clusterControlFor(ctx context.Context, cmd Cmder) func(context.Context, *ClusterClient) error {
+	cc, _ := ctx.Value(clusterControlKey{}).(*clusterControl)
+	if cc == nil || cc.cmd != cmd {
+		return nil
+	}
+	return cc.run
 }
 
 // rewriteRemovedMemberErr handles a cluster control command delegated to a

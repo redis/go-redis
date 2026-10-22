@@ -313,6 +313,59 @@ func TestMultiDBClusterControlCommandsGateErrorSkipsGenericPath(t *testing.T) {
 	}
 }
 
+// A cluster control command that starts on a standalone active keeps its
+// typed cluster semantics when a retry inside the command fails over to a
+// cluster member: the member runs its typed override (fan-out), not the
+// caller's command as a single-shard Process.
+func TestMultiDBClusterControlCommandsFailoverToClusterUsesTypedPath(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		run  func(*MultiDBClient) Cmder
+	}{
+		{"DBSize", func(m *MultiDBClient) Cmder { return m.DBSize(ctx) }},
+		{"ScriptLoad", func(m *MultiDBClient) Cmder { return m.ScriptLoad(ctx, "return 1") }},
+		{"ScriptFlush", func(m *MultiDBClient) Cmder { return m.ScriptFlush(ctx) }},
+		{"ScriptExists", func(m *MultiDBClient) Cmder { return m.ScriptExists(ctx, "abc") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mdb := newLifecycleTestClient(
+				t, func(o *MultiDBOptions) {
+					o.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: time.Minute}
+				},
+				MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+				MultiDBClientConfig{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:2"}}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			)
+			var mu sync.Mutex
+			var seen []Cmder
+			if err := mdb.AddDatabaseHook(1, lifecycleHook{process: func(cmd Cmder) {
+				mu.Lock()
+				seen = append(seen, cmd)
+				mu.Unlock()
+			}}); err != nil {
+				t.Fatalf("AddDatabaseHook(1) = %v", err)
+			}
+			if got := mdb.ActiveDatabaseID(); got != 0 {
+				t.Fatalf("active = %d, want 0 (standalone)", got)
+			}
+			cmd := tc.run(mdb)
+			if got := mdb.ActiveDatabaseID(); got != 1 {
+				t.Fatalf("active after the command = %d, want 1 (failed over to the cluster member)", got)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(seen) == 0 {
+				t.Fatal("cluster member saw no command")
+			}
+			for _, c := range seen {
+				if c == cmd {
+					t.Fatalf("cluster member received the caller's %s cmd (generic single-shard path)", tc.name)
+				}
+			}
+		})
+	}
+}
+
 // A passive probe cut short by the pass context (Close stops the loop this
 // way) is not a health verdict and must not be recorded on the breaker.
 func TestMultiDBCanceledPassiveProbeNotRecorded(t *testing.T) {
@@ -1366,6 +1419,69 @@ func TestMultiDBFallbackPicksHighestPassingCandidate(t *testing.T) {
 	mdb.core.tryFallbackToPrimary(ctx)
 	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("active after fallback = %d, want 1 (highest weight that passes; 0 fails, 2 answers first)", got)
+	}
+}
+
+// armedGatedCheck passes until armed, then blocks like gatedCheck.
+type armedGatedCheck struct {
+	gatedCheck
+	armed *atomic.Bool
+}
+
+func (c armedGatedCheck) CheckHealth(ctx context.Context, _ *Client) (bool, error) {
+	if !c.armed.Load() {
+		return true, nil
+	}
+	return c.wait(ctx)
+}
+
+func (c armedGatedCheck) CheckClusterHealth(ctx context.Context, _ *ClusterClient) (bool, error) {
+	if !c.armed.Load() {
+		return true, nil
+	}
+	return c.wait(ctx)
+}
+
+// A fallback whose candidate probe passes after Close has started must not
+// switch the active: Close is tearing the members down.
+func TestMultiDBFallbackStopsWhenCloseStarts(t *testing.T) {
+	var armed atomic.Bool
+	gate := armedGatedCheck{
+		gatedCheck: gatedCheck{entered: make(chan struct{}, 1), release: make(chan struct{})},
+		armed:      &armed,
+	}
+	ctx := context.Background()
+	mdb := newLifecycleTestClient(
+		t, func(o *MultiDBOptions) { o.HealthCheckTimeout = time.Minute },
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{gate}},
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+	)
+	if err := mdb.ForceActiveDatabase(ctx, 1); err != nil {
+		t.Fatalf("ForceActiveDatabase(1) = %v", err)
+	}
+	mdb.SetAutoFallback(true)
+
+	armed.Store(true)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mdb.core.tryFallbackToPrimary(ctx)
+	}()
+	select {
+	case <-gate.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fallback probe did not start")
+	}
+	// The phase of Close before the members are torn down.
+	mdb.core.beginClose()
+	close(gate.release)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fallback did not return")
+	}
+	if got := mdb.ActiveDatabaseID(); got != 1 {
+		t.Fatalf("active after a fallback that raced Close = %d, want 1", got)
 	}
 }
 

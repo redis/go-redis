@@ -1071,6 +1071,18 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		}
 		gateRejections = 0
 
+		if db.cc != nil {
+			if run := clusterControlFor(ctx, cmd); run != nil {
+				// A cluster control command that started on a standalone active
+				// and failed over to a cluster member: run the typed fan-out,
+				// with the typed path's accounting (no outcome recorded).
+				db.cb.ReleaseFor(res)
+				cmd.SetErr(run(ctx, db.cc))
+				rewriteRemovedMemberErr(db, cmd, c.closed.Load())
+				return cmd.rawErr()
+			}
+		}
+
 		if attempt > 0 {
 			// Clear the previous attempt's error so a successful retry does
 			// not leave the command in a stale error state.
@@ -2266,6 +2278,11 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 			announce()
 		}
 	}()
+	// Close may have started during the probes. Fallback is optional, so
+	// stop on closing too: the members are about to be torn down.
+	if c.addsClosed() {
+		return
+	}
 	cur, curIdx := c.activeSnapshot()
 	if cur == nil || curIdx != idx {
 		return
