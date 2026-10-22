@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -170,13 +171,20 @@ func fiMultiDBOptions() *redis.MultiDBOptions {
 	for i, addr := range e2eTopology.Endpoints {
 		clients[i] = redis.MultiDBClientConfig{Options: endpointOptions(addr), Weight: float64(n-i) / float64(n+1)}
 	}
+	interval, timeout := 500*time.Millisecond, 250*time.Millisecond
+	if os.Getenv("FAULT_INJECTION_API_URL") != "" {
+		// Real regions are remote: a probe on a fresh connection (dial,
+		// HELLO+AUTH, PING) measured 110-446ms in cae (TestAAEndpointsReachable),
+		// so 250ms fails cold probes on slower environments.
+		interval, timeout = 2*time.Second, time.Second
+	}
 	return &redis.MultiDBOptions{
 		Clients:             clients,
 		InitialDBState:      redis.InitialDBStateAllAvailable,
-		HealthCheckInterval: 500 * time.Millisecond,
-		HealthCheckTimeout:  250 * time.Millisecond,
+		HealthCheckInterval: interval,
+		HealthCheckTimeout:  timeout,
 		// One probe per pass: the default 3 probes 500ms apart do not fit
-		// the 250ms timeout.
+		// the timeout.
 		HealthChecks: []redis.MultiDBHealthCheck{multidb.NewPingHealthCheck(multidb.WithProbes(1))},
 		CircuitBreakerConfig: &redis.MultiDBCircuitBreakerConfig{
 			FailureThreshold: 3,
