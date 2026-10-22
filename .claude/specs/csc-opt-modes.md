@@ -38,27 +38,53 @@ Pipeline, TxPipeline, Watch and AutoPipeline constructors are not exposed.
 The view's Process/Do clean their mark even if a hook terminates execution.
 Commands must not be executed concurrently; sequential reuse starts fresh.
 
-`AutoPipeliner.WithCache` is explicitly synchronous and diverts through the
-normal submission/routing validation followed by the outside-pipeline
-admission/lifecycle gate. Marks never depend on
-whether a batch happened to contain one command. Async completion is joined
-before the view returns. Existing unmarked batching remains uncached, except
-for the existing cache-aware solo execution path.
+`AutoPipeliner.WithCache` is explicitly synchronous. Blocking and unordered
+faces divert through normal submission/routing validation and the existing
+outside-pipeline admission/lifecycle gate. Ordered async marks remain in the
+ordered stream, uncached; a positive mark warns or fails at submission in strict
+mode. The forced bypass survives normal-path fallback and retries, and excludes
+the cache-aware solo shortcut. Marks never depend on batch size. Completion is
+joined before clearing invocation state. Existing unmarked batching is unchanged.
+
+Typed DBSize, script-management and HIMPORT fieldset helpers delegate to the
+underlying client, preserving its aggregation, fan-out and registry semantics.
+They reject strict positive marks before side effects. AutoPipeline helper calls
+join its existing diversion gate synchronously, so Close and queue limits still
+cover them. No new pool, worker or resource owner is introduced.
+
+Cold Conn/EphemeralConn and Watch wrappers copy the parent's immutable policy
+when borrowing its pool. Their reads remain uncached, but every connection they
+initialize must use the parent's tracking mode before returning to that pool.
+Ordinary uncached reads on their tracked OPTOUT sockets also receive NO;
+public pipelines and transactions retain their existing uncached contract.
+Trackability accepts known wire key encodings independently of the narrower
+cache-key eligibility gate, without invoking user marshalers.
+
+## Test organization
+
+The tracking-mode API, intent rules, protocol pairing and borrowed-connection
+contracts share `csc_policy_test.go`, including their fake-server fixture.
+Cluster routing, fan-out, metadata ownership, native helpers and owned live
+Cluster fixtures are in `csc_cluster_test.go`. AutoPipeline ordering, admission,
+context replacement and completion tests are in `autopipeline_internal_test.go`.
+Coalescer and refresh mode coverage lives alongside the existing tests in
+`csc_miss_coalesce_modes_test.go` and `csc_refresh_on_invalidate_test.go`.
+Test names and CI selectors are unchanged by this consolidation.
 
 ## Original Stage A review units
 
 1. **A1 policy and carrier:** `csc_policy.go`, `command.go`, policy fields in
    `local_cache.go`, immutable option snapshots. Tests: `csc_policy_test.go`.
 2. **A2 protocol/foreground:** `csc_protocol.go`, `redis.go`,
-   `csc_integration.go`. Tests: `csc_protocol_test.go`.
+   `csc_integration.go`. Tests: `csc_policy_test.go`.
 3. **A3 miss coalescer:** `csc_miss_coalesce.go`,
-   `csc_miss_coalesce_modes.go`. Tests: `csc_policy_coalesce_test.go`, plus the
+   `csc_miss_coalesce_modes.go`. Tests: `csc_miss_coalesce_modes_test.go`, plus the
    coalesced variants of control/cancellation/handshake tests in A2.
 4. **A4 refresh:** `csc_refresh_on_invalidate.go`. Tests:
-   `csc_policy_refresh_test.go`.
+   `csc_refresh_on_invalidate_test.go`.
 5. **A5 current Cluster/capability boundaries:** `osscluster.go`,
    `osscluster_router.go`, `autopipeline.go`, `sentinel.go` policy snapshot.
-   Tests: `csc_policy_cluster_test.go` and `csc_policy_live_test.go`.
+   Tests: `csc_cluster_test.go` and `autopipeline_internal_test.go`.
 
 The feature is integrated atomically: all three publishing paths support the
 protocol before modes are exposed. Unit grouping is for review, not permission
@@ -160,7 +186,7 @@ positive mark on the former still rejects without a data write.
 1. **Shared metadata access/ownership:** private source forwarding through
    ClusterOptions/Options, NewClient and clones; node CSC reads the parent's
    current view without owning shutdown. Tests: metadata ownership, overrides,
-   node creation and custom-factory omission in `csc_policy_routing_test.go`.
+   node creation and custom-factory omission in `csc_cluster_test.go`.
 2. **Original invocation policy:** `cscPrepareInvocation`, shared eligibility
    and intent resolution, immutable view/intent copied by Clone. Tests: predicate
    counts/inputs, byte keys, ineligible suffix commands and pinned generations.
@@ -321,3 +347,56 @@ flush with no separate CACHING round trip; wire-contract tests assert this.
 
 No Stage B feature commit, staging or push was performed. Rebase replayed only
 the already-existing Stage A commit; its original is retained by the backup ref.
+
+### Review corrections, 2026-10-22
+
+Corrections are unstaged on `support-csc-opt-in-opt-out`, HEAD
+`421cf5c711d2896b38ecf0f33126beee317b1619`; the PR merge-base remains
+`48d65e5641b7ceaf83dce2019fbb3c26e7e6a74b`. No Git history or index changes
+were made for this correction pass.
+
+The four verified regressions have behavioral tests: ordered marked reads,
+Cluster typed-helper semantics, cold borrowed-connection handshakes, and known
+wire-key forms in OPTOUT. The tests failed before their respective fixes.
+Additional review covered normal-path retry without losing bypass, helpers'
+Close/queue admission, and NO on ordinary borrowed Conn reads. Removing the
+helper admission gate in an isolated copy made its regression test fail.
+Sticky acquisition still deliberately revokes old connection-owned entries;
+these corrections do not weaken that existing drainer-coverage protection.
+
+Validation on Go 1.26 / macOS arm64 with owned Redis 7.4.4 fixtures:
+
+- Broad regression selection above: 1,140 passing test/subtest events and
+  12 skips, both normal (117.410 s) and race (123.155 s), no failures/races.
+- `go test -race ./internal/... ./push/... ./maintnotifications -count=1
+  -timeout=180s`: passed.
+- Redis 8.10 CI live selection: 45 passing test/subtest events, no skips.
+  Includes the new cold Conn/Watch and ordered half/full-duplex scenarios.
+- Redis 8.10 with modules: 10 passing events, no skips. Covers the local
+  metadata/module skips; atomic slot migration is covered by the live selection.
+- `go vet ./...` and `go vet -vettool /private/tmp/csc-customvet ./...` passed
+  in an isolated snapshot of tracked files plus all working changes (excluding
+  the unrelated ignored bench harness described above).
+- Five maintenance-notification integration scenarios remain skipped without
+  their server environment. Enterprise/proxy and the complete Compose/Ginkgo
+  matrix were not run. A skip is not counted as a pass.
+
+Performance used six alternating 500 ms samples per side, GOMAXPROCS=4, Apple
+M4 Max, with no concurrent test/build work. Medians in ns/op:
+
+| Scenario | PR base | Before fixes | After fixes | After B/op; allocs/op |
+| --- | ---: | ---: | ---: | --- |
+| CSC off GET | 23592 | 23541 | 23287.5 | 232; 8 |
+| Plain Client hit | 199.05 | 209.75 | 210.00 | 240; 3 |
+| Plain Cluster hit | 269.80 | 289.60 | 290.05 | 240; 3 |
+| Plain Client miss | 26296 | 26319 | 26285 | 1105; 24 |
+| Async batch of 32 | 73213 | 72893.5 | 73309.5 | 7188; 177 |
+| Reused marked view hit | n/a | 240.10 | 239.35 | 240; 3 |
+| Predicate off/on | n/a | 248.75 / 310.30 | 249.05 / 309.80 | 240 / 256; 3 / 4 |
+
+The corrections added no allocations in these measured hot paths. The feature's
+previously reported 16-byte GET size increase and plain-hit CPU overhead versus
+the PR base remain. Small timing differences overlap sample ranges; these local
+loopback measurements do not establish a production improvement or prove zero
+regression. View creation and rare administrative helper calls are outside the
+hot-hit measurements. Protocol pairing still uses one writer flush.

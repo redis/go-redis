@@ -96,15 +96,22 @@ func cscLeave(cmd Cmder) {
 // CacheView is a synchronous, non-owning command view. It exposes typed
 // commands and Do/Process, but no pools, Close, pipelines or transactions.
 // Its immutable mark overrides the configured predicate for each invocation.
-type CacheView struct{ cmdable }
+type CacheView struct {
+	cmdable
+	client UniversalClient // borrowed, for typed helpers with client-specific semantics
+	mark   cacheMark
+}
 
-func newCacheView(process func(context.Context, Cmder) error, cache bool) *CacheView {
+func newCacheView(client UniversalClient, process func(context.Context, Cmder) error, cache bool) *CacheView {
 	mark := cacheBypassed
 	if cache {
 		mark = cacheRequested
 	}
-	return &CacheView{cmdable: func(ctx context.Context, cmd Cmder) error {
+	return &CacheView{client: client, mark: mark, cmdable: func(ctx context.Context, cmd Cmder) error {
 		cmd.cacheState().mark = mark
+		// Keep admission decisions alive across nested execution and retries;
+		// this synchronous view owns the state until completion is joined.
+		cscEnter(cmd)
 		defer func() { *cmd.cacheState() = cscCommandState{} }()
 		err := process(ctx, cmd)
 		cmd.SetErr(err)
@@ -114,15 +121,16 @@ func newCacheView(process func(context.Context, Cmder) error, cache bool) *Cache
 
 // WithCache returns a reusable view carrying an explicit cache or bypass mark.
 // The client retains all resource ownership.
-func (c *Client) WithCache(cache bool) *CacheView { return newCacheView(c.Process, cache) }
+func (c *Client) WithCache(cache bool) *CacheView { return newCacheView(c, c.Process, cache) }
 
 // WithCache returns a marked, non-owning view of this cluster client.
-func (c *ClusterClient) WithCache(cache bool) *CacheView { return newCacheView(c.Process, cache) }
+func (c *ClusterClient) WithCache(cache bool) *CacheView { return newCacheView(c, c.Process, cache) }
 
-// WithCache explicitly diverts marked calls to the underlying client's normal
-// synchronous execution path, independently of batch size and async mode.
+// WithCache waits for marked calls to complete. Blocking and unordered faces
+// use the normal cache path. Ordered async calls stay in the ordered stream
+// uncached: positive marks warn, or fail at submission when Strict is enabled.
 func (ap *AutoPipeliner) WithCache(cache bool) *CacheView {
-	return newCacheView(func(ctx context.Context, cmd Cmder) error {
+	return newCacheView(ap, func(ctx context.Context, cmd Cmder) error {
 		if ap.isClosed() {
 			cmd.setClusterRoutingDecision(nil)
 			return ErrClosed
@@ -131,6 +139,21 @@ func (ap *AutoPipeliner) WithCache(cache bool) *CacheView {
 		<-future.batch.done
 		return cmd.rawErr()
 	}, cache)
+}
+
+// cscAdmitMarked fixes capability at submission, not at batch-size-dependent
+// dispatch. Ordered async callers must not overtake earlier queued commands.
+func (ap *AutoPipeliner) cscAdmitMarked(ctx context.Context, cmd Cmder) (bool, error) {
+	if ap.blocking || ap.config.Unordered {
+		return true, nil
+	}
+	if err := cscUnsupported(ctx, cmd, clientCachePolicy(ap.pipeliner), "ordered AsyncAutoPipeline does not cache marked calls"); err != nil {
+		return false, err
+	}
+	s := cmd.cacheState()
+	s.forceBypass = true
+	s.intent = cscIntentBypass
+	return false, nil
 }
 
 // Process executes a command with this view's mark. A command must not be
@@ -263,7 +286,12 @@ func (c *baseClient) cscTrackable(cmd Cmder) bool {
 		return false
 	}
 	for i, pos := 0, first; i < count; i, pos = i+1, pos+step {
-		if !keyArgOK(cmd, pos) {
+		if keyArgOK(cmd, pos) {
+			continue
+		}
+		// Tracking needs a known wire key, not the narrower cache-key contract.
+		// This conversion never invokes a user BinaryMarshaler.
+		if _, ok := routingArgText(cmd, pos); !ok {
 			return false
 		}
 	}
@@ -276,7 +304,20 @@ func WithCache(client UniversalClient, cache bool) *CacheView {
 	if c, ok := client.(interface{ WithCache(bool) *CacheView }); ok {
 		return c.WithCache(cache)
 	}
-	return newCacheView(client.Process, cache)
+	return newCacheView(client, client.Process, cache)
+}
+
+func clientCachePolicy(client UniversalClient) cscPolicy {
+	switch c := client.(type) {
+	case *Client:
+		return c.cscPolicy
+	case *ClusterClient:
+		return cachePolicy(c.opt.ClientSideCacheConfig)
+	case *AutoPipeliner:
+		return clientCachePolicy(c.pipeliner)
+	default:
+		return cscPolicy{}
+	}
 }
 
 // A custom factory must honor the requested policy. Fail closed for observable

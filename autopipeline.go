@@ -2066,7 +2066,16 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 	}
-	diverted = diverted || cmd.cacheState().mark != cacheUnmarked || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
+	if cmd.cacheState().mark != cacheUnmarked {
+		cacheDivert, err := ap.cscAdmitMarked(ctx, cmd)
+		if err != nil {
+			cmd.SetErr(err)
+			cmd.setClusterRoutingDecision(nil)
+			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
+		}
+		diverted = diverted || cacheDivert
+	}
+	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,
 		// so an HIMPORT SET on the FD pipe can fail "no such fieldset". Divert it to
@@ -3393,7 +3402,7 @@ func (s *apShard) flushBatchSlice() {
 				// is honored (processPipeline bypasses processCached). Gated on
 				// the LIVE CSC state: without active CSC, Process would just run on
 				// the MAIN pool, ignoring the pipeline pool the straggler gate probed.
-				if ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
+				if !cmd.cacheState().forceBypass && ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
 					return ap.pipeliner.process(ctx, cmd)
 				}
 				// One-command pipeline on the PIPELINE pool (falls back to the main

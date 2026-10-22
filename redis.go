@@ -1834,7 +1834,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		if capture != nil {
 			capture.noStore = false
 		}
-		tracked := c.autopipelineCSCActive() && c.cscConnInitGen(cn.GetID()) != 0
+		// Borrowed Conn/Tx wrappers do not serve cache hits, but can still hold
+		// a tracked connection and need NO for an ordinary uncached OPTOUT read.
+		tracked := c.cscTrackingRequested() && c.cscConnInitGen(cn.GetID()) != 0
 		if !tracked && cmd.cacheState().mark == cacheRequested {
 			if err := c.cscUnsupported(ctx, cmd, "connection tracking is unavailable"); err != nil {
 				return err
@@ -2825,6 +2827,9 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// successful-attachment signal so that connection is tracked exactly when
 	// the parent's CSC is active.
 	conn.baseClient.cscActive = c.baseClient.cscActive
+	// A cold borrowed connection must select the parent's immutable mode before
+	// returning to its pool, even though this wrapper never serves cache hits.
+	conn.baseClient.cscPolicy = c.baseClient.cscPolicy
 	// No-op today: the strategy needs an idle-conn drainer and a StickyConnPool
 	// has none, so CSC isn't active on a Conn() (its reads hit the server). Kept
 	// so a future sticky-pool-capable strategy attaches here.

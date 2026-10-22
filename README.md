@@ -425,9 +425,15 @@ error from CLIENT CACHING returns successful data uncached; protocol/transport
 failures retire the connection. Hits send no commands.
 
 All three fetch paths (foreground, miss coalescer, background refresh) support
-the modes. `AutoPipeliner.WithCache` explicitly executes synchronously through
-the normal path and respects its admission/close lifecycle. Public batches,
-pipelines, transactions and scripts remain uncached.
+the modes. `AutoPipeliner.WithCache` waits for completion and respects its
+admission/close lifecycle. Blocking and explicitly unordered faces use the normal
+cache path. On ordered AsyncAutoPipeline, marked reads remain in the ordered
+stream and execute uncached: positive marks warn, or fail at submission with
+`Strict`. Bypass marks also retain ordering. This does not change the existing
+ordering exceptions for blocking commands and direct administrative helpers.
+Public batches, pipelines, transactions and scripts remain uncached. Views
+preserve typed helpers such as Cluster DBSize and script/fieldset management;
+these helpers cannot cache and retain their underlying client's shard coverage.
 
 Cluster CSC supports single-target execution and eligible metadata-based
 fan-out. Enable metadata routing explicitly as described above. The predicate
