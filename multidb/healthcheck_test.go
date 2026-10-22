@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -502,10 +503,13 @@ func TestLagAwareClusterTriesAllSeedAddresses(t *testing.T) {
 // which hosts are probed is not fixed; keying by host keeps the script
 // deterministic while the per-host sequence (bdbs, then availability) is.
 type hostScriptedHTTPClient struct {
+	mu        sync.Mutex                  // masters are checked concurrently
 	responses map[string][]*http.Response // keyed by URL hostname
 }
 
 func (c *hostScriptedHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	host := req.URL.Hostname()
 	rs := c.responses[host]
 	if len(rs) == 0 {

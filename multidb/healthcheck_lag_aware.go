@@ -389,23 +389,7 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 		// or unavailable master exposes stale data or failures for that
 		// master's slots, and no other master can serve them. Fail on the
 		// first master that does not pass.
-		for _, addr := range addrs {
-			host, port, ok := hostPortFromAddr(addr)
-			if !ok {
-				return false, fmt.Errorf("multidb: cannot derive REST API host from address %q", addr)
-			}
-			healthy, err := h.checkLagHealth(ctx, host, port)
-			if !healthy {
-				if err == nil {
-					err = fmt.Errorf("multidb: master %s did not pass the lag check", addr)
-				}
-				return false, err
-			}
-			if err := ctx.Err(); err != nil {
-				return false, err
-			}
-		}
-		return true, nil
+		return h.checkMasters(ctx, addrs)
 	}
 
 	// Seed fallback: the topology could not be enumerated, and seeds are ways
@@ -428,6 +412,75 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 		}
 	}
 	return false, lastErr
+}
+
+// maxConcurrentMasterChecks bounds the REST calls one cluster probe runs at
+// once. Masters are deduplicated by address, so the count is at most the
+// cluster's node count: typical clusters finish in one round (about one
+// master's latency), and a large one does not open a connection per master
+// at once against the REST API.
+const maxConcurrentMasterChecks = 16
+
+// checkMasters runs the lag check for every routed master concurrently, so a
+// probe costs about one master's REST latency instead of the sum, and
+// requires all of them to pass. The first failure cancels the remaining
+// checks and is the returned error.
+func (h *LagAwareHealthCheck) checkMasters(ctx context.Context, addrs []string) (bool, error) {
+	type target struct {
+		addr string
+		host string
+		port int
+	}
+	targets := make([]target, 0, len(addrs))
+	for _, addr := range addrs {
+		host, port, ok := hostPortFromAddr(addr)
+		if !ok {
+			return false, fmt.Errorf("multidb: cannot derive REST API host from address %q", addr)
+		}
+		targets = append(targets, target{addr: addr, host: host, port: port})
+	}
+
+	checkCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		wg       sync.WaitGroup
+		once     sync.Once
+		firstErr error
+	)
+	sem := make(chan struct{}, maxConcurrentMasterChecks)
+	for _, t := range targets {
+		wg.Add(1)
+		go func(t target) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-checkCtx.Done():
+				return
+			}
+			healthy, err := h.checkLagHealth(checkCtx, t.host, t.port)
+			if healthy {
+				return
+			}
+			if err == nil {
+				err = fmt.Errorf("multidb: master %s did not pass the lag check", t.addr)
+			}
+			once.Do(func() {
+				firstErr = err
+				cancel()
+			})
+		}(t)
+	}
+	wg.Wait()
+	// Only the first failure cancels checkCtx, so firstErr is never a check
+	// canceled by it. With no failure the parent context may still be done.
+	if firstErr != nil {
+		return false, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string, dbPort int) (bool, error) {
