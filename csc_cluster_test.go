@@ -2554,6 +2554,35 @@ func TestClusterCSCLive(t *testing.T) {
 
 // CSC tracking modes: OPTIN/OPTOUT policy and integration.
 
+func TestCSCPolicyClusterConstructorSnapshot(t *testing.T) {
+	s := newCSCPolicyServer(t, nil)
+	opt := clusterCSCTestOptions(func() []ClusterSlot {
+		return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
+	})
+	opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
+	opt.ClientSideCacheConfig.Cacheable = func(string, []string) bool { return true }
+	c := NewClusterClient(opt)
+	t.Cleanup(func() { _ = c.Close() })
+	if opt.FailingTimeoutSeconds != 15 || c.Options().FailingTimeoutSeconds != 15 {
+		t.Errorf("caller and client defaults differ: caller=%d client=%d", opt.FailingTimeoutSeconds, c.Options().FailingTimeoutSeconds)
+	}
+
+	// Mutations before the first node is created must not change its policy.
+	opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptOut
+	opt.ClientSideCacheConfig.Cacheable = func(string, []string) bool {
+		t.Error("node used the mutated predicate")
+		return false
+	}
+	for i := 0; i < 2; i++ {
+		if got, err := c.Get(context.Background(), "k").Result(); err != nil || got != "v" {
+			t.Fatal(got, err)
+		}
+	}
+	if s.count("get") != 1 || s.prefixes() != 1 {
+		t.Fatalf("node did not retain OPTIN caching: %v", s.snapshot())
+	}
+}
+
 func TestCSCPolicyClusterRedirect(t *testing.T) {
 	for _, kind := range []string{"MOVED", "ASK"} {
 		t.Run(kind, func(t *testing.T) {

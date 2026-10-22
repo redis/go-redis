@@ -1928,14 +1928,15 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	if opt == nil {
 		panic("redis: NewClusterClient nil options")
 	}
+	opt.cscCustomFactory = opt.NewClient != nil
+	opt.init()
+	// Preserve caller-visible defaults before taking the private CSC snapshot.
 	optCopy := *opt
 	if opt.ClientSideCacheConfig != nil {
 		cfg := *opt.ClientSideCacheConfig
 		optCopy.ClientSideCacheConfig = &cfg
 	}
 	opt = &optCopy
-	opt.cscCustomFactory = opt.NewClient != nil
-	opt.init()
 
 	c := &ClusterClient{
 		opt:             opt,
