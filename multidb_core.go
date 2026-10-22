@@ -1133,6 +1133,14 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 				cmd.SetErr(ErrTemporarilyNotAvailable)
 				return ErrTemporarilyNotAvailable
 			}
+			if attempt < attempts && !cmd.NoRetry() && shouldRetry(err, retryTimeout) {
+				// A pool wait timeout: the command never left the client.
+				// Members run with MaxRetries -1, so retry it here within
+				// CommandRetries as *Client does (#3289), still recording no
+				// health outcome.
+				lastErr = err
+				continue
+			}
 			return err
 		case outcomeFailure:
 			// Settle the reservation: a failure from a stale half-open episode

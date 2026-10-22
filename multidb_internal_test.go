@@ -2892,3 +2892,140 @@ func TestMultiDBAddDatabaseClosesAbortedClientOutsideFailoverLock(t *testing.T) 
 		t.Fatal("the registrar's unregister callback never ran: the re-entrant path was not exercised")
 	}
 }
+
+// poolTimeoutReleaseHook releases a held connection when the member reports a
+// pool wait timeout, so the next attempt finds a free connection.
+type poolTimeoutReleaseHook struct {
+	held     *Conn
+	timeouts atomic.Int64
+}
+
+func (h *poolTimeoutReleaseHook) release(err error) {
+	if errors.Is(err, pool.ErrPoolTimeout) && h.timeouts.Add(1) == 1 {
+		_ = h.held.Close()
+	}
+}
+
+func (h *poolTimeoutReleaseHook) DialHook(next DialHook) DialHook { return next }
+
+func (h *poolTimeoutReleaseHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		err := next(ctx, cmd)
+		h.release(err)
+		return err
+	}
+}
+
+func (h *poolTimeoutReleaseHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		err := next(ctx, cmds)
+		h.release(err)
+		return err
+	}
+}
+
+// newPoolTimeoutCore builds a core whose only member has PoolSize 1 with its
+// single connection held, so the first attempt times out on the pool. The
+// hook releases the connection after that timeout.
+func newPoolTimeoutCore(t *testing.T, retries int) (*multidbCore, *countingFD, *poolTimeoutReleaseHook) {
+	t.Helper()
+	member := NewClient(&Options{
+		Addr:        "127.0.0.1:6379",
+		PoolSize:    1,
+		PoolTimeout: 50 * time.Millisecond,
+		MaxRetries:  -1,
+		// Pipelines share the main pool, so they hit the held connection too.
+		PipelinePoolSize: -1,
+	})
+	t.Cleanup(func() { _ = member.Close() })
+	held := member.Conn()
+	if err := held.Ping(context.Background()).Err(); err != nil {
+		_ = held.Close()
+		t.Skipf("redis at 127.0.0.1:6379 unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	hook := &poolTimeoutReleaseHook{held: held}
+	member.AddHook(hook)
+
+	det := &countingFD{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det, CommandRetries: retries})
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: member, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	})}
+	core.active.Store(0)
+	return core, det, hook
+}
+
+// A pool wait timeout is retried within CommandRetries, as *Client retries
+// it (#3289), and records no breaker or detector failure.
+func TestMultiDBProcessRetriesPoolTimeout(t *testing.T) {
+	core, det, hook := newPoolTimeoutCore(t, 1)
+	cmd := NewStatusCmd(context.Background(), "ping")
+	if err := core.process(context.Background(), cmd); err != nil {
+		t.Fatalf("process = %v, want success after a pool-timeout retry", err)
+	}
+	if got := hook.timeouts.Load(); got != 1 {
+		t.Fatalf("pool timeouts = %d, want 1", got)
+	}
+	if det.failures != 0 {
+		t.Fatalf("detector failures = %d, want 0 for a pool timeout", det.failures)
+	}
+	if st := core.dbs[0].cb.State(); st != imultidb.CircuitClosed {
+		t.Fatalf("breaker state = %v, want closed", st)
+	}
+}
+
+// Without retries the pool timeout is returned as-is after one attempt.
+func TestMultiDBProcessPoolTimeoutNoRetries(t *testing.T) {
+	core, det, hook := newPoolTimeoutCore(t, 0)
+	cmd := NewStatusCmd(context.Background(), "ping")
+	if err := core.process(context.Background(), cmd); !errors.Is(err, pool.ErrPoolTimeout) {
+		t.Fatalf("process = %v, want ErrPoolTimeout", err)
+	}
+	if got := hook.timeouts.Load(); got != 1 {
+		t.Fatalf("pool timeouts = %d, want 1 attempt", got)
+	}
+	if det.failures != 0 || det.successes != 0 {
+		t.Fatalf("detector = %d failures, %d successes; want none for a pool timeout", det.failures, det.successes)
+	}
+	if st := core.dbs[0].cb.State(); st != imultidb.CircuitClosed {
+		t.Fatalf("breaker state = %v, want closed", st)
+	}
+}
+
+// The pipeline path retries a pool timeout the same way.
+func TestMultiDBProcessPipelineRetriesPoolTimeout(t *testing.T) {
+	core, det, hook := newPoolTimeoutCore(t, 1)
+	cmds := []Cmder{NewStatusCmd(context.Background(), "ping"), NewStatusCmd(context.Background(), "ping")}
+	if err := core.processPipeline(context.Background(), cmds); err != nil {
+		t.Fatalf("processPipeline = %v, want success after a pool-timeout retry", err)
+	}
+	if got := hook.timeouts.Load(); got != 1 {
+		t.Fatalf("pool timeouts = %d, want 1", got)
+	}
+	if det.failures != 0 {
+		t.Fatalf("detector failures = %d, want 0 for a pool timeout", det.failures)
+	}
+	if st := core.dbs[0].cb.State(); st != imultidb.CircuitClosed {
+		t.Fatalf("breaker state = %v, want closed", st)
+	}
+}
+
+// Without retries the pipeline returns the pool timeout after one attempt.
+func TestMultiDBProcessPipelinePoolTimeoutNoRetries(t *testing.T) {
+	core, det, hook := newPoolTimeoutCore(t, 0)
+	cmds := []Cmder{NewStatusCmd(context.Background(), "ping"), NewStatusCmd(context.Background(), "ping")}
+	if err := core.processPipeline(context.Background(), cmds); !errors.Is(err, pool.ErrPoolTimeout) {
+		t.Fatalf("processPipeline = %v, want ErrPoolTimeout", err)
+	}
+	if got := hook.timeouts.Load(); got != 1 {
+		t.Fatalf("pool timeouts = %d, want 1 attempt", got)
+	}
+	if det.failures != 0 || det.successes != 0 {
+		t.Fatalf("detector = %d failures, %d successes; want none for a pool timeout", det.failures, det.successes)
+	}
+	if st := core.dbs[0].cb.State(); st != imultidb.CircuitClosed {
+		t.Fatalf("breaker state = %v, want closed", st)
+	}
+}

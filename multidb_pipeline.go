@@ -479,6 +479,12 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 				}
 				return exitErr(ErrTemporarilyNotAvailable)
 			}
+			if err != nil && attempt < attempts && !executed.any() && shouldRetry(err, true) {
+				// A pool wait timeout before anything executed: neutral, so
+				// nothing was recorded, and replay is safe. Retry within
+				// CommandRetries as *Client does (#3289).
+				continue
+			}
 			// Only server replies (or clean success) — done, whatever the
 			// user-level outcome is.
 			return exitErr(err)
