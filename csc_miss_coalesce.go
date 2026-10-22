@@ -145,6 +145,7 @@ const (
 type cscMissReq struct {
 	cmd      Cmder
 	cacheKey string
+	view     *commandMetadataView // captured with eligibility and the cache key
 	token    uint64
 	done     chan error
 	// Already namespaced, immutable dependencies survive caller abandonment.
@@ -507,8 +508,8 @@ func (mc *cscMissCoalescer) emitReplyErr(ctx context.Context, req *cscMissReq, e
 	errorCallback(ctx, errorType, req.servedBy, statusCode, isInternal, 0)
 }
 
-func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64, redisKeys []string) (served *pool.Conn, err error) {
-	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
+func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64, view *commandMetadataView, redisKeys []string) (served *pool.Conn, err error) {
+	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, view: view, done: make(chan error, 1)}
 	if mc.c.opt.cscPresenceOnly {
 		req.redisKeys = redisKeys
 	}
@@ -663,7 +664,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// req may be stranded past the shutdown drain (cancelIfStopping). Return ctx.Err()
 		// either way, matching processWithRetry.
 		if !req.claimAbandon() {
-			<-req.done //nolint:errcheck // the reader's result is in req.servedBy; ctx.Err() wins
+			<-req.done //nolint:errcheck // Wait for completion; cancellation returns ctx.Err() below.
 			return req.servedBy, ctx.Err()
 		}
 		mc.cancelIfStopping(cacheKey, token)
@@ -775,7 +776,7 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 			key:     req.cacheKey,
 			token:   req.token,
 		}
-		c.fulfillCached(req.cacheKey, req.token, fc)
+		c.fulfillCached(req.cacheKey, req.token, fc, req.view)
 	} else {
 		// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
 		c.cscEvictOnRedirect(req.redisKeys, applyErr)

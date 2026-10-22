@@ -62,9 +62,17 @@ func clusterCSCCommandPolicy(name string) clusterCSCReplyPolicy {
 // a caller's possibly abandoned/reused Cmder. No second copy of the command or
 // reply payload is needed. Protocol validity is checked by the normal readers;
 // this additional check decides whether the successful reply proves presence.
-func (c *baseClient) clusterCSCReplyCacheable(key string, raw []byte) bool {
+func (c *baseClient) clusterCSCReplyCacheable(key string, raw []byte, view *commandMetadataView) bool {
 	wire, ok := strings.CutPrefix(key, c.cscKeyPrefix)
 	if !ok || c.cscKeyPrefix == "" {
+		return false
+	}
+	wire, ok = strings.CutPrefix(wire, view.cscFingerprint)
+	if !ok {
+		return false
+	}
+	wire, ok = strings.CutPrefix(wire, cscNamespaceSep)
+	if !ok {
 		return false
 	}
 	r := proto.NewReaderSize(strings.NewReader(wire), 128)
