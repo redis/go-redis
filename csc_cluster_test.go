@@ -3379,10 +3379,10 @@ func cscPolicyLiveMGetPolicy(_ context.Context, cmd Cmder) *routing.CommandPolic
 
 // Validate mode selection and ordered marked reads against actual Redis tracking,
 // using the same owned Cluster fixture as the other CSC live tests.
-func TestCSCPolicyLiveReviewFixes(t *testing.T) {
+func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 	writer, _ := newClusterCSCLive(t)
 	ctx := context.Background()
-	key := "{review-fixes}:key"
+	key := "{csc-policy}:key"
 	owner, err := writer.MasterForKey(ctx, key)
 	if err != nil {
 		t.Fatal(err)

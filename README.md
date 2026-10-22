@@ -444,11 +444,8 @@ ASK executes without cache lookup or publication.
 
 Marked `AutoPipeline` views pass through normal routing admission. Ordered async
 mode rejects cross-slot fan-out before dispatch; blocking and unordered
-half-duplex modes support it. Node CSC borrows the Cluster's metadata view
-without owning its shutdown. Custom node factories must preserve the supplied
-Options, including policy and metadata access. See
-[the implementation and review map](.claude/specs/csc-opt-modes.md) for contracts,
-validation and remaining execution limits.
+half-duplex modes support it. Custom node factories must preserve the supplied
+Options, including cache policy and command metadata configuration.
 
 For a Cluster client, use the same configuration on `ClusterOptions`:
 
@@ -488,9 +485,11 @@ When a cache miss, coalesced fetch or background refresh receives MOVED or ASK,
 the node client evicts results depending on that fetch's known Redis keys across
 its local cache, including pending reservations. Unknown keys and uncached
 commands rely on server invalidations; they never trigger a whole-cache flush.
-Unrelated entries and other nodes' caches are untouched. Legacy plain redirected
-attempts bypass caching. With a new policy, MOVED forces a destination fetch with
-fresh tracking and permits safe publication; ASK always bypasses lookup and storage.
+Unrelated entries and other nodes' caches are untouched. With plain tracking and
+no predicate or per-call mark, redirected attempts bypass caching. With opt-in,
+opt-out, a predicate or a per-call mark, MOVED forces a destination fetch and
+allows caching when requested and tracking is available. ASK always bypasses
+lookup and storage.
 Background refresh stays node-local: it applies the same key eviction but does
 not follow redirects or cache errors. Ordinary Cluster routing and topology reload
 triggers remain unchanged. Losing a tracking connection evicts only entries

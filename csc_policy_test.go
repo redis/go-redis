@@ -488,7 +488,7 @@ func TestCSCPolicyBorrowedOptOutRead(t *testing.T) {
 	}
 }
 
-func TestCSCPolicyR6(t *testing.T) {
+func TestCSCPolicyBypassPreservesCachedEntry(t *testing.T) {
 	for _, mode := range []TrackingMode{TrackingModePlain, TrackingModeOptIn, TrackingModeOptOut} {
 		t.Run(string(mode), func(t *testing.T) {
 			var n atomic.Int32
