@@ -70,9 +70,13 @@ type FailoverOptions struct {
 	Password string
 
 	// AuthEmptyPassword: see Options.AuthEmptyPassword. It applies to the
-	// master/replica connections and to the sentinel connections
-	// (SentinelUsername without SentinelPassword).
+	// master/replica connections (Username without Password).
 	AuthEmptyPassword bool
+
+	// SentinelAuthEmptyPassword is AuthEmptyPassword for the sentinel
+	// connections (SentinelUsername without SentinelPassword). The two are
+	// independent, like the sentinel and data-node credentials.
+	SentinelAuthEmptyPassword bool
 
 	// Push notifications are always enabled for RESP3 connections
 	// CredentialsProvider allows the username and password to be updated
@@ -311,7 +315,7 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		DB:                0,
 		Username:          opt.SentinelUsername,
 		Password:          opt.SentinelPassword,
-		AuthEmptyPassword: opt.AuthEmptyPassword,
+		AuthEmptyPassword: opt.SentinelAuthEmptyPassword,
 
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
@@ -525,6 +529,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.Username = q.string("username")
 	o.Password = q.string("password")
 	o.AuthEmptyPassword = q.bool("auth_empty_password")
+	o.SentinelAuthEmptyPassword = q.bool("sentinel_auth_empty_password")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")

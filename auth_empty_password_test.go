@@ -113,11 +113,32 @@ func TestAuthEmptyPasswordPlumbing(t *testing.T) {
 	if !fo.clientOptions().AuthEmptyPassword {
 		t.Error("FailoverOptions.clientOptions")
 	}
-	if !fo.sentinelOptions("a:1").AuthEmptyPassword {
-		t.Error("FailoverOptions.sentinelOptions")
-	}
 	if !fo.clusterOptions().AuthEmptyPassword {
 		t.Error("FailoverOptions.clusterOptions")
+	}
+	// Sentinel and data-node credentials are independent, and so are their
+	// opt-ins.
+	if fo.sentinelOptions("a:1").AuthEmptyPassword {
+		t.Error("FailoverOptions.AuthEmptyPassword reached the sentinel connections")
+	}
+	so := &FailoverOptions{MasterName: "m", SentinelAuthEmptyPassword: true}
+	if !so.sentinelOptions("a:1").AuthEmptyPassword {
+		t.Error("FailoverOptions.SentinelAuthEmptyPassword not on sentinelOptions")
+	}
+	if so.clientOptions().AuthEmptyPassword || so.clusterOptions().AuthEmptyPassword {
+		t.Error("FailoverOptions.SentinelAuthEmptyPassword reached the data-node connections")
+	}
+	us := &UniversalOptions{Addrs: []string{"a:1"}, MasterName: "m", SentinelAuthEmptyPassword: true}
+	if f := us.Failover(); !f.SentinelAuthEmptyPassword || f.AuthEmptyPassword {
+		t.Error("UniversalOptions.Failover: SentinelAuthEmptyPassword not kept apart")
+	}
+
+	pf, err := ParseFailoverURL("redis://sentinel:26379?master_name=m&sentinel_auth_empty_password=true")
+	if err != nil {
+		t.Fatalf("ParseFailoverURL: %v", err)
+	}
+	if !pf.SentinelAuthEmptyPassword || pf.AuthEmptyPassword {
+		t.Errorf("ParseFailoverURL: SentinelAuthEmptyPassword=%v AuthEmptyPassword=%v", pf.SentinelAuthEmptyPassword, pf.AuthEmptyPassword)
 	}
 
 	ro := &RingOptions{AuthEmptyPassword: true}

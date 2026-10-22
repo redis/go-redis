@@ -55,6 +55,8 @@ type UniversalOptions struct {
 
 	SentinelUsername string
 	SentinelPassword string
+	// SentinelAuthEmptyPassword: see FailoverOptions.SentinelAuthEmptyPassword.
+	SentinelAuthEmptyPassword bool
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -342,8 +344,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
 
-		SentinelUsername: o.SentinelUsername,
-		SentinelPassword: o.SentinelPassword,
+		SentinelUsername:          o.SentinelUsername,
+		SentinelPassword:          o.SentinelPassword,
+		SentinelAuthEmptyPassword: o.SentinelAuthEmptyPassword,
 
 		RouteByLatency:          o.RouteByLatency,
 		RouteByLatencyTolerance: o.RouteByLatencyTolerance,
