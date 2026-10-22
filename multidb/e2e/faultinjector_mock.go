@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -61,16 +62,54 @@ func (DockerStopStartMechanism) Restore(ctx context.Context, container, addr str
 // compose service, neither of which has been verified in an environment
 // with a live Docker daemon. Opt in via MULTIDB_E2E_FI_MECHANISM=iptables
 // once both are confirmed (see the design doc's verification command).
-type DockerIptablesMechanism struct{}
+type DockerIptablesMechanism struct {
+	// run executes one docker CLI invocation; nil means RunDocker. Tests
+	// replace it to record the command sequence.
+	run func(ctx context.Context, args ...string) error
+}
 
 func (DockerIptablesMechanism) name() string { return "docker-iptables" }
 
-func (DockerIptablesMechanism) Sever(ctx context.Context, container string) error {
-	return RunDocker(ctx, "exec", container, "iptables", "-P", "INPUT", "DROP", "-P", "FORWARD", "DROP")
+// iptablesChains are the chains whose policy Sever and Restore set. iptables
+// accepts one command per invocation, so each chain is set separately.
+var iptablesChains = []string{"INPUT", "FORWARD"}
+
+func (m DockerIptablesMechanism) setPolicy(ctx context.Context, container, chain, policy string) error {
+	run := m.run
+	if run == nil {
+		run = RunDocker
+	}
+	return run(ctx, "exec", container, "iptables", "-P", chain, policy)
 }
 
-func (DockerIptablesMechanism) Restore(ctx context.Context, container, addr string) error {
-	if err := RunDocker(ctx, "exec", container, "iptables", "-P", "INPUT", "ACCEPT", "-P", "FORWARD", "ACCEPT"); err != nil {
+// Sever drops INPUT then FORWARD. If a later chain fails, the chains already
+// set are rolled back to ACCEPT so a failed sever leaves the container
+// reachable.
+func (m DockerIptablesMechanism) Sever(ctx context.Context, container string) error {
+	for i, chain := range iptablesChains {
+		if err := m.setPolicy(ctx, container, chain, "DROP"); err != nil {
+			errs := []error{err}
+			for _, done := range iptablesChains[:i] {
+				if rerr := m.setPolicy(ctx, container, done, "ACCEPT"); rerr != nil {
+					errs = append(errs, fmt.Errorf("rollback %s: %w", done, rerr))
+				}
+			}
+			return errors.Join(errs...)
+		}
+	}
+	return nil
+}
+
+// Restore sets every chain back to ACCEPT, attempting all of them even if one
+// fails.
+func (m DockerIptablesMechanism) Restore(ctx context.Context, container, addr string) error {
+	var errs []error
+	for _, chain := range iptablesChains {
+		if err := m.setPolicy(ctx, container, chain, "ACCEPT"); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
 		return err
 	}
 	return AwaitTCPReachable(ctx, addr, 30*time.Second)

@@ -1,6 +1,9 @@
 package circuitbreaker
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestRecordFailureForReset pins the reset-generation gate used by out-of-band
 // health probes: a failure sampled before an operator Reset (reselect) must not
@@ -34,25 +37,25 @@ func TestRecordFailureForReset(t *testing.T) {
 // TestRecordExternalSuccessForReset pins the symmetric success gate: a probe
 // success sampled before a Reset must not count toward closing the new episode.
 func TestRecordExternalSuccessForReset(t *testing.T) {
-	cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1})
-	// Open then transition to half-open so a success would otherwise close it.
+	cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1, OpenTimeout: time.Millisecond})
+	gen := cb.ResetGeneration()
+	cb.Reset() // reselect: resetGen bumped, gen is now stale
+	// Open, then move to half-open, where a success would close the circuit.
 	cb.RecordFailure()
 	if cb.State() != StateOpen {
 		t.Fatalf("setup: state = %v, want Open", cb.State())
 	}
-	gen := cb.ResetGeneration()
-	cb.Reset() // reselect: back to closed, resetGen bumped
-	// Re-open so we can observe whether the stale success closes it.
-	cb.RecordFailure()
-	if cb.State() != StateOpen {
-		t.Fatalf("setup: state = %v, want Open after re-failure", cb.State())
+	time.Sleep(5 * time.Millisecond)
+	if st := cb.CheckState(); st != StateHalfOpen {
+		t.Fatalf("setup: state = %v, want HalfOpen after OpenTimeout", st)
 	}
-	cb.CheckState() // may move to half-open once grace elapses; here it stays Open
 	cb.RecordExternalSuccessForReset(gen)
-	// The stale success (gen from before the Reset) must be dropped, so the
-	// circuit is not closed by it.
-	if cb.State() == StateClosed {
-		t.Fatalf("state = Closed: a probe success sampled before the Reset must not close the new episode")
+	if cb.State() != StateHalfOpen {
+		t.Fatalf("state = %v, want HalfOpen: a probe success sampled before the Reset must not close the new episode", cb.State())
+	}
+	cb.RecordExternalSuccessForReset(cb.ResetGeneration())
+	if cb.State() != StateClosed {
+		t.Fatalf("state = %v, want Closed: a current-generation probe success must close the circuit", cb.State())
 	}
 }
 
