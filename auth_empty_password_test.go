@@ -126,9 +126,10 @@ func TestAuthEmptyPasswordPlumbing(t *testing.T) {
 	}
 }
 
-// TestAuthEmptyPasswordCSCNamespace checks that the CSC namespace follows the
-// ACL user the connection runs as, so clients that share a Cache do not share
-// entries across ACL users.
+// TestAuthEmptyPasswordCSCNamespace checks that clients sharing a Cache do not
+// share entries across ACL identities: a Username sends AUTH (its own
+// namespace), or sends none and runs as the default user or a TLS-certificate
+// user (a separate namespace per Username, never the default one).
 func TestAuthEmptyPasswordCSCNamespace(t *testing.T) {
 	tests := []struct {
 		name string
@@ -136,7 +137,8 @@ func TestAuthEmptyPasswordCSCNamespace(t *testing.T) {
 		want string
 	}{
 		{"no credentials", Options{}, cscNamespacePrefix(0, "")},
-		{"username empty password", Options{Username: "u"}, cscNamespacePrefix(0, "")},
+		{"username empty password", Options{Username: "u"}, cscNamespacePrefix(0, "noauth u")},
+		{"other username empty password", Options{Username: "v"}, cscNamespacePrefix(0, "noauth v")},
 		{"username empty password opt-in", Options{Username: "u", AuthEmptyPassword: true}, cscNamespacePrefix(0, "u")},
 		{"username and password", Options{Username: "u", Password: "pw"}, cscNamespacePrefix(0, "u")},
 	}
@@ -167,7 +169,9 @@ func TestAuthEmptyPasswordConnect(t *testing.T) {
 		t.Skipf("no redis: %v", err)
 	}
 	admin := NewClient(&Options{Addr: addr})
-	defer admin.Close()
+	// t.Cleanup, not defer: cleanups run LIFO after the test returns, so the
+	// ACL user deletion registered below runs while admin is still open.
+	t.Cleanup(func() { _ = admin.Close() })
 	if err := admin.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -179,7 +183,10 @@ func TestAuthEmptyPasswordConnect(t *testing.T) {
 		t.Skipf("ACL SETUSER unsupported: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = admin.ACLDelUser(context.Background(), user).Err()
+		// Other ACL specs expect only the default user.
+		if err := admin.ACLDelUser(context.Background(), user).Err(); err != nil {
+			t.Errorf("ACL DELUSER %s: %v", user, err)
+		}
 	})
 
 	credsProvider := func() (string, string) { return user, "" }
