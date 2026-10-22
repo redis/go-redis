@@ -731,7 +731,11 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 	copy(args, cmd.args)
 
 	return baseCmd{
-		csc:          cscCommandState{mark: mark, forceBypass: cmd.csc.forceBypass, ask: cmd.csc.ask, warned: cmd.csc.warned, strict: cmd.csc.strict},
+		csc: cscCommandState{
+			view: cmd.csc.view, mark: mark, intent: cmd.csc.intent,
+			forceBypass: cmd.csc.forceBypass, ask: cmd.csc.ask,
+			warned: cmd.csc.warned, strict: cmd.csc.strict,
+		},
 		ctx:          cmd.ctx,
 		args:         args,
 		err:          cmd.err,

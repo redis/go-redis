@@ -85,7 +85,7 @@ runs:
         docker run --rm --platform linux/amd64 --network none -e GOREDIS_CSC_LIVE=1 \
           --mount "type=bind,src=$RUNNER_TEMP/csc-cluster.test,dst=/csc-cluster.test,readonly" \
           --entrypoint /csc-cluster.test "$CLIENT_LIBS_TEST_IMAGE" \
-          -test.run '^TestClusterCSCLive' -test.v -test.timeout=3m
+          -test.run '^(TestClusterCSCLive|TestCSCPolicy(Fanout)?Live)' -test.v -test.timeout=3m
     - name: Run tests
       env:
         RCE_DOCKER: "true"
@@ -95,5 +95,5 @@ runs:
         MAKE_TARGET: ${{ inputs.make-target }}
       run: |
         # The live fixtures already passed above against this matrix's Redis.
-        make -- "${MAKE_TARGET:?make-target must not be empty}" TEST_SKIP='Example|^TestClusterCSCLive'
+        make -- "${MAKE_TARGET:?make-target must not be empty}" TEST_SKIP='Example|^(TestClusterCSCLive|TestCSCPolicy(Fanout)?Live)'
       shell: bash

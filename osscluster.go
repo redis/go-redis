@@ -256,7 +256,8 @@ type ClusterOptions struct {
 	// CommandMetadata configures cluster-owned metadata for routing.
 	//
 	// Experimental: this API may change in a minor release.
-	CommandMetadata *CommandMetadataConfig
+	CommandMetadata   *CommandMetadataConfig
+	cscMetadataSource *commandMetadataStore
 
 	// ShardPicker is used to pick a shard when the request_policy is
 	// ReqDefault and the command has no keys.
@@ -589,6 +590,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// situations in the options below will prevent that from happening.
 		readOnly:                  opt.ReadOnly && opt.ClusterSlots == nil,
 		UnstableResp3:             opt.UnstableResp3,
+		cscMetadataSource:         opt.cscMetadataSource,
 		MaintNotificationsConfig:  maintNotificationsConfig,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
 	}
@@ -1968,6 +1970,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		return metadata, err
 	})
 	runtime.AddCleanup(c, func(store *commandMetadataStore) { store.signalStop() }, c.cmdMeta)
+	opt.cscMetadataSource = c.cmdMeta
 	// Node callbacks remain dormant until a dynamic resolver requests live metadata.
 	c.nodes.onServerHello = c.cmdMeta.onClusterServerHelloReply
 	c.state.beforeReload = func(_, _ *clusterState) {
@@ -2073,7 +2076,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		return err
 	}
 	newPolicy := policy.configured() || cmd.cacheState().mark != cacheUnmarked
-	if newPolicy {
+	if newPolicy || c.opt.ClientSideCacheConfig != nil || c.opt.cscCustomFactory {
 		if policy.strict && cmd.cacheState().mark == cacheRequested {
 			cmd.cacheState().strict = true
 		}
@@ -2084,6 +2087,17 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	decision := c.commandRoutingDecision(ctx, cmd)
 	if decision.policyErr != nil {
 		return decision.policyErr
+	}
+	if cmd.cacheState().depth != 0 {
+		cmd.cacheState().view = decision.view
+		if cmd.cacheState().view == nil {
+			cmd.cacheState().view = c.metadataView()
+		}
+		if newPolicy {
+			if err := c.cscPrepareInvocation(ctx, cmd); err != nil {
+				return err
+			}
+		}
 	}
 	slot := decision.naturalSlot
 	var node *clusterNode
@@ -2127,7 +2141,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
-		if newPolicy && node != nil {
+		if (newPolicy || c.opt.cscCustomFactory) && node != nil {
 			if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
 				return err
 			}

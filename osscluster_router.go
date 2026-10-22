@@ -249,9 +249,6 @@ func (c *ClusterClient) executeMultiSlot(
 	policy *routing.CommandPolicy,
 	decision clusterRoutingDecision,
 ) error {
-	if err := c.cscMultiTarget(ctx, cmd, len(slotMap)); err != nil {
-		return err
-	}
 	if len(slotMap) == 1 {
 		// Keep single-slot execution and retries local.
 		for slot := range slotMap {
@@ -514,10 +511,6 @@ func (c *ClusterClient) executeParallel(
 			return &clusterFanoutExecutionError{err: err}
 		}
 		return nil
-	}
-
-	if err := c.cscMultiTarget(ctx, cmd, len(nodes)); err != nil {
-		return err
 	}
 
 	type nodeResult struct {

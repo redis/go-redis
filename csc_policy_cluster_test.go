@@ -146,7 +146,7 @@ func TestCSCPolicyClusterRedirect(t *testing.T) {
 	}
 }
 
-func TestCSCPolicyClusterFanoutGuard(t *testing.T) {
+func TestCSCPolicyClusterIneligibleFanout(t *testing.T) {
 	for _, strict := range []bool{false, true} {
 		t.Run(strconv.FormatBool(strict), func(t *testing.T) {
 			a, b := newCSCPolicyServer(t, nil), newCSCPolicyServer(t, nil)
@@ -154,6 +154,9 @@ func TestCSCPolicyClusterFanoutGuard(t *testing.T) {
 				return []ClusterSlot{{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: a.addr}}}, {Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: b.addr}}}}
 			})
 			opt.DisableRoutingPolicies = false
+			info := cloneCommandInfo(defaultCommandMetadataView().records["mget"])
+			info.Tips = append(info.Tips, "dont_cache")
+			opt.CommandMetadata = &CommandMetadataConfig{Overrides: map[string]*CommandInfo{"mget": info}}
 			opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptOut
 			opt.ClientSideCacheConfig.Strict = strict
 			c := NewClusterClient(opt)

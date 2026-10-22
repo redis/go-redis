@@ -70,6 +70,9 @@ const (
 )
 
 type cscCommandState struct {
+	// view pins the same immutable metadata used by the Cluster router. It is
+	// separate from routing decisions, which may be shared or consumed at dispatch.
+	view        *commandMetadataView
 	mark        cacheMark
 	depth       uint8
 	intent      cscIntent
@@ -121,10 +124,11 @@ func (c *ClusterClient) WithCache(cache bool) *CacheView { return newCacheView(c
 func (ap *AutoPipeliner) WithCache(cache bool) *CacheView {
 	return newCacheView(func(ctx context.Context, cmd Cmder) error {
 		if ap.isClosed() {
+			cmd.setClusterRoutingDecision(nil)
 			return ErrClosed
 		}
-		batch := ap.runOutsidePipeline(ctx, cmd)
-		<-batch.done
+		future := ap.submit(ctx, cmd)
+		<-future.batch.done
 		return cmd.rawErr()
 	}, cache)
 }
@@ -145,12 +149,16 @@ func (v *CacheView) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *baseClient) cscUnsupported(ctx context.Context, cmd Cmder, reason string) error {
+	return cscUnsupported(ctx, cmd, c.cscPolicy, reason)
+}
+
+func cscUnsupported(ctx context.Context, cmd Cmder, policy cscPolicy, reason string) error {
 	s := cmd.cacheState()
 	if s.mark != cacheRequested {
 		return nil
 	}
 	err := fmt.Errorf("redis: cannot cache %s: %s", cmd.Name(), reason)
-	if c.cscPolicy.strict || s.strict {
+	if policy.strict || s.strict {
 		return err
 	}
 	if !s.warned {
@@ -165,14 +173,7 @@ func (c *baseClient) cscDecide(ctx context.Context, cmd Cmder, view *commandMeta
 		return cscCommandMeta{}, false, err
 	}
 	s := cmd.cacheState()
-	meta, eligible := cscEligibleMeta(view, cmd)
-	if eligible {
-		first, step, count := cscRedisKeyLayout(meta, cmd)
-		eligible = count > 0 && commandArgsRepeatable(cmd)
-		for i, pos := 0, first; eligible && i < count; i, pos = i+1, pos+step {
-			eligible = keyArgOK(cmd, pos)
-		}
-	}
+	meta, eligible := cscInvocationMeta(view, cmd)
 	capable := eligible && c.csc != nil && c.autopipelineCSCActive() && !s.forceBypass && !s.ask && !cscIsBypassed(ctx)
 	if c.opt.cscPresenceOnly && clusterCSCCommandPolicy(cmd.Name()) == clusterCSCReplyBypass {
 		capable = false
@@ -185,9 +186,29 @@ func (c *baseClient) cscDecide(ctx context.Context, cmd Cmder, view *commandMeta
 		}
 		return meta, false, nil
 	}
+	cscResolveIntent(cmd, view, meta, c.cscPolicy)
+	return meta, s.intent == cscIntentCache, nil
+}
+
+func cscInvocationMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bool) {
+	meta, eligible := cscEligibleMeta(view, cmd)
+	if !eligible || !commandArgsRepeatable(cmd) {
+		return meta, false
+	}
+	first, step, count := cscRedisKeyLayout(meta, cmd)
+	for i, pos := 0, first; i < count; i, pos = i+1, pos+step {
+		if !keyArgOK(cmd, pos) {
+			return meta, false
+		}
+	}
+	return meta, count > 0
+}
+
+func cscResolveIntent(cmd Cmder, view *commandMetadataView, meta cscCommandMeta, policy cscPolicy) {
+	s := cmd.cacheState()
 	if s.intent == cscIntentUnresolved {
-		wantCache := s.mark == cacheRequested || (s.mark == cacheUnmarked && c.cscPolicy.mode != TrackingModeOptIn)
-		if s.mark == cacheUnmarked && c.cscPolicy.cacheable != nil {
+		wantCache := s.mark == cacheRequested || (s.mark == cacheUnmarked && policy.mode != TrackingModeOptIn)
+		if s.mark == cacheUnmarked && policy.cacheable != nil {
 			first, step, count := cscRedisKeyLayout(meta, cmd)
 			keys := make([]string, count)
 			for i, pos := 0, first; i < count; i, pos = i+1, pos+step {
@@ -199,21 +220,41 @@ func (c *baseClient) cscDecide(ctx context.Context, cmd Cmder, view *commandMeta
 					name += "|" + strings.ToLower(sub)
 				}
 			}
-			if len(keys) == 0 {
-				return meta, false, nil
-			}
-			wantCache = c.cscPolicy.cacheable(name, keys)
+			wantCache = policy.cacheable(name, keys)
 		}
 		s.intent = cscIntentBypass
 		if wantCache {
 			s.intent = cscIntentCache
 		}
 	}
-	return meta, s.intent == cscIntentCache, nil
+}
+
+func (c *baseClient) cscInvocationView(cmd Cmder) *commandMetadataView {
+	if view := cmd.cacheState().view; view != nil {
+		return view
+	}
+	return c.metadataView()
+}
+
+// Resolve application intent on the complete original call, before fragments
+// change its arguments. Each target still validates eligibility and coverage.
+func (c *ClusterClient) cscPrepareInvocation(ctx context.Context, cmd Cmder) error {
+	s := cmd.cacheState()
+	meta, eligible := cscInvocationMeta(s.view, cmd)
+	capable := eligible && c.opt.Protocol == 3 &&
+		(c.opt.ClientSideCacheConfig != nil || c.opt.cscCustomFactory) &&
+		c.opt.StreamingCredentialsProvider == nil && c.opt.CredentialsProvider == nil && c.opt.CredentialsProviderContext == nil &&
+		clusterCSCCommandPolicy(cmd.Name()) != clusterCSCReplyBypass
+	if !capable {
+		s.forceBypass = true
+		return cscUnsupported(ctx, cmd, cachePolicy(c.opt.ClientSideCacheConfig), "command or execution path is unsupported")
+	}
+	cscResolveIntent(cmd, s.view, meta, cachePolicy(c.opt.ClientSideCacheConfig))
+	return nil
 }
 
 func (c *baseClient) cscTrackable(cmd Cmder) bool {
-	meta, ok := cscLookupMeta(c.metadataView(), cmd)
+	meta, ok := cscLookupMeta(c.cscInvocationView(cmd), cmd)
 	if !ok || meta.bits&cscFlagReadonly == 0 {
 		return false
 	}
@@ -227,28 +268,6 @@ func (c *baseClient) cscTrackable(cmd Cmder) bool {
 		}
 	}
 	return true
-}
-
-// Stage A deliberately leaves multi-target CSC intent unsupported. The routing
-// algorithm remains unchanged; only cache participation is gated before dispatch.
-func (c *ClusterClient) cscMultiTarget(ctx context.Context, cmd Cmder, targets int) error {
-	p := cachePolicy(c.opt.ClientSideCacheConfig)
-	if targets <= 1 || (!p.configured() && cmd.cacheState().mark == cacheUnmarked) {
-		return nil
-	}
-	s := cmd.cacheState()
-	if s.mark == cacheRequested {
-		err := fmt.Errorf("redis: cannot cache %s: multi-target CSC awaits metadata routing integration", cmd.Name())
-		if p.strict {
-			return err
-		}
-		if !s.warned {
-			internal.Logger.Printf(ctx, "%v; executing uncached", err)
-			s.warned = true
-		}
-	}
-	s.forceBypass = true
-	return nil
 }
 
 // WithCache creates a command view for a UniversalClient without widening its
@@ -271,7 +290,7 @@ func (c *ClusterClient) cscCheckNode(ctx context.Context, cmd Cmder, node *Clien
 	if s.mark == cacheRequested && p.strict {
 		s.strict = true
 	}
-	if !p.configured() {
+	if !p.configured() && !c.opt.cscCustomFactory {
 		return nil
 	}
 	mode := func(m TrackingMode) TrackingMode {
@@ -280,7 +299,7 @@ func (c *ClusterClient) cscCheckNode(ctx context.Context, cmd Cmder, node *Clien
 		}
 		return m
 	}
-	if mode(p.mode) == mode(node.cscPolicy.mode) && (p.cacheable == nil) == (node.cscPolicy.cacheable == nil) {
+	if mode(p.mode) == mode(node.cscPolicy.mode) && (p.cacheable == nil) == (node.cscPolicy.cacheable == nil) && node.metadataSource == c.cmdMeta {
 		return nil
 	}
 	if s.mark == cacheRequested {

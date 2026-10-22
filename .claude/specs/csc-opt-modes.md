@@ -1,8 +1,14 @@
-# CSC tracking modes: Stage A
+# CSC tracking modes
 
-Baseline: master `856a2f0acd7e9a11267657b1368e7f3fe2bf016f`.
-PR #4093 was open at `bb87339aca920dbc6860cef755f62294ad8d60c7`
-when implementation began. No code from that branch is included.
+Stage A started on master `856a2f0acd7e9a11267657b1368e7f3fe2bf016f`, before
+PR #4093. Stage B integrates the actual merge, master
+`48d65e5641b7ceaf83dce2019fbb3c26e7e6a74b` (2026-10-21). The final PR head
+was `a9fb728d9f5a9ae39a805ae9390167ff2740cec6`; the earlier research head was
+not used as the integration target.
+
+The existing Stage A commit was rebased from `6a576212` to `3a5955cc`.
+`backup/csc-stage-a-6a576212` preserves the original local history. Stage B
+changes remain unstaged on `support-csc-opt-in-opt-out`; nothing was pushed.
 
 Normative specification:
 https://redislabs.atlassian.net/wiki/spaces/CAE/pages/6605438982/Client-Side+Caching+OPTIN+OPTOUT+Introduction+and+Requirements
@@ -33,12 +39,13 @@ The view's Process/Do clean their mark even if a hook terminates execution.
 Commands must not be executed concurrently; sequential reuse starts fresh.
 
 `AutoPipeliner.WithCache` is explicitly synchronous and diverts through the
-existing outside-pipeline admission/lifecycle gate. Marks never depend on
+normal submission/routing validation followed by the outside-pipeline
+admission/lifecycle gate. Marks never depend on
 whether a batch happened to contain one command. Async completion is joined
 before the view returns. Existing unmarked batching remains uncached, except
 for the existing cache-aware solo execution path.
 
-## Five review units
+## Original Stage A review units
 
 1. **A1 policy and carrier:** `csc_policy.go`, `command.go`, policy fields in
    `local_cache.go`, immutable option snapshots. Tests: `csc_policy_test.go`.
@@ -87,12 +94,12 @@ Cluster replies, or coverage lost after send are not late misuse errors.
 Bypass precedes Get/Reserve/demand signaling. It neither waits for an active
 fetch nor modifies a prior entry. Predicate decisions are not authorization.
 
-## Stage A Cluster boundary
+## Cluster execution and metadata
 
 Single-target execution supports the policy, including a one-slot multi-shard
 request policy. Such a plan executes the original command without an unnecessary
 child/aggregation boundary, keeping predicate intent and redirect errors intact.
-Its redirected attempt uses the outer loop's explicit destination instead of
+Its redirected attempt uses the active retry loop's explicit destination instead of
 re-resolving a stale slot owner. These changes apply only to the new policy;
 untouched plain routing remains as before. MOVED under new policy forces a
 destination network fetch, retires that command's old destination cache entry/reservation, re-pairs
@@ -100,18 +107,43 @@ and permits safe node-local publication. ASK uses the existing ASKING/read unit
 without lookup, CACHING or storage. Untouched plain calls preserve legacy
 redirect behavior. Refresh does not independently follow redirects.
 
-Multi-target plans with a new mode, predicate or mark execute uncached. A
-positive mark warns once at the parent; strict rejects before child dispatch.
-Children inherit a forced bypass marker and get NO under actual OPTOUT when
-trackability is known. Plain without a predicate/mark preserves existing
-behavior. No temporary cluster metadata owner or alternate planner is added.
+Metadata-based multi-target execution supports the modes, marks and predicate.
+Enable routing policies explicitly with `SetCommandInfoResolver`, as required by
+#4093; caching configuration does not itself enable fan-out. Resolve eligibility
+and intent once on the complete original invocation. Children clone this intent
+and the immutable routing metadata view; retry loops retain them until completion.
+Intent is never stored in a shared/consumed routing decision. Each fragment
+independently reserves, fetches and publishes under its destination's tracking
+coverage. A rejected reply, Redis error or redirect in one fragment neither
+rolls back nor replays a successful sibling. Fan-out reads are not atomic across
+shards, as in the router itself.
 
-Custom node factories must preserve supplied configuration. Observable mode or
-predicate-presence omissions force uncached execution; a positive strict mark
-fails before data dispatch. Actual tracking is checked after acquisition.
+Nodes borrow read access to the parent-owned metadata store. They do not start
+metadata workers and node Close never stops that store. Routing, dependency
+extraction and cache keys use the same captured view, while publication compares
+against the current parent view. A metadata change during a fetch may therefore
+return data without publishing it. Background refresh uses current metadata and
+does not retain the original predicate or Cmder.
+
+Known unsupported original invocations fail before dispatch with a strict
+positive mark. Connection/tracking capability is checked separately on each
+actual target before its data write; this is not an all-shard handshake or
+transaction. Independent siblings may already have completed if another target
+fails acquisition/initialization. Late reply rejection or retired coverage is
+an ordinary uncached result, including under strict.
+
+Ordered AsyncAutoPipeline rejects cross-slot fan-out at submission, including
+marked views. Blocking and unordered half-duplex faces permit the normal CSC
+execution path. Marked views remain synchronous; they join deferred completion.
+Rejection, full queue, Close and completion clear routing pins and invocation
+state. Full-duplex public batches are not given caching support.
+
+Custom node factories must preserve supplied configuration. Observable mode,
+predicate-presence or parent-metadata-source omissions force uncached execution;
+a positive strict mark fails before data dispatch. Actual tracking is checked after acquisition.
 Deliberately replacing one non-nil predicate with another is a factory contract
-violation: callback identity/equivalence is not probed or inferred. Supporting
-arbitrary conflicting per-node application policies is deferred to Stage B.
+violation: callback identity/equivalence is not probed or inferred. Arbitrary
+conflicting per-node application policies are outside this factory contract.
 Go functions cannot be compared for equivalence; checking a code pointer would
 both miss different closure state and reject valid wrappers. The simpler check
 detects omitted configuration and validates actual connection tracking. A factory
@@ -123,28 +155,32 @@ BCAST and full-duplex public batches are uncached. NewFailoverClusterClient is
 supported. NewFailoverClient/Sentinel discovery remain uncached; a strict
 positive mark on the former still rejects without a data write.
 
-## Stage B after the actual #4093 merge
+## Stage B review units
 
-- Record Stage A's base SHA and validation results; update this branch against the
-  actual merged master in a separate integration step. Do not apply a patch
-  prepared against the current PR head without inspecting the final diff.
-- Replay Stage A tests before expanding capabilities, including plain defaults.
-- Align the immutable view used for routing with node CSC eligibility,
-  dependency extraction, entry keys and current-generation publication checks.
-- Separate access to parent metadata from ownership of its shutdown. Node Close
-  must not stop a parent-owned store. Do not merely alias cmdMeta pointers.
-- Carry original invocation intent once through child Clone/setArgs. Keep it
-  separate from consumed/shared routing decisions; propagate children without
-  rerunning a keys-sensitive predicate on subgroups.
-- Adapt MOVED/ASK pairing to every new subgroup retry loop without replaying
-  completed siblings or increasing retry budgets.
-- Compose cache validation with routeCommand and its async/full-duplex
-  admission, rejection, cancellation and cleanup paths. Test sequential reuse.
-- Remove the multi-target guard only after cross-slot tests cover original
-  predicate input, independent fragment publication, missing replies, redirects,
-  metadata changes and node removal. No distributed cache commit/rollback.
-- Retest Enterprise through the same code path. Shard-add/same-proxy slot move
-  reconnect requirements are inherited operational limits, not fixed by modes.
+1. **Shared metadata access/ownership:** private source forwarding through
+   ClusterOptions/Options, NewClient and clones; node CSC reads the parent's
+   current view without owning shutdown. Tests: metadata ownership, overrides,
+   node creation and custom-factory omission in `csc_policy_routing_test.go`.
+2. **Original invocation policy:** `cscPrepareInvocation`, shared eligibility
+   and intent resolution, immutable view/intent copied by Clone. Tests: predicate
+   counts/inputs, byte keys, ineligible suffix commands and pinned generations.
+3. **Fragment execution:** remove the Stage A multi-target gate; use #4093's
+   existing per-subgroup retries with MOVED/ASK handling. No alternate planner
+   or new retry budget. Tests: independent publication, absent/error replies,
+   redirects and bypass in all modes, including the coalescer.
+4. **AutoPipeline composition:** marked views use submit/routeCommand before
+   diversion; submission determines ordered-face support. Tests cover all faces,
+   sequential reuse, queue-full and Close cleanup, plus context-replacing hooks.
+5. **Integration/CI:** real three-master fan-out, live metadata, invalidation,
+   refresh without predicate replay, concurrent reads, owner disconnect, MOVED
+   and ASK. CI runs both policy live fixtures alongside existing Cluster CSC
+   fixtures inside the matching Redis image.
+
+The post-#4093 checklist is implemented. Remaining limits are eligibility and
+execution constraints stated above, not a blanket fan-out prohibition. This
+change does not add arbitrary aggregators, cache public pipelines/transactions,
+or implement a distributed commit/rollback. Enterprise/proxy slot moves retain
+the existing reconnect requirements; they are not fixed by tracking modes.
 
 ## Validation
 
@@ -166,7 +202,7 @@ It never connects to an external application database. Validate Redis 8.x and
 Enterprise in the normal CI environments; a local Redis 7.4 run is not evidence
 for the full supported-version matrix or atomic slot migration (Redis 8.4+).
 
-### Recorded results, 2026-10-21
+### Historical Stage A results, 2026-10-21 (before #4093)
 
 Environment: Go 1.26, macOS arm64 / Apple M4 Max, Redis 7.4.4. The full focused
 regression selection also used an owned temporary standalone Redis process;
@@ -214,5 +250,74 @@ timings vary with scheduling; the small miss delta is not conclusive. CACHING
 and the data command share one writer flush; there is no separate control
 round trip. Hits send neither command.
 
-All implementation and test changes remain unstaged/untracked on
-`support-csc-opt-in-opt-out`; no add, commit or push was performed.
+These figures describe Stage A on its original base. Stage B measurements
+and validation below compare against the rebased Stage A commit instead.
+
+
+### Stage B results, 2026-10-21 (merged #4093)
+
+Comparison base: rebased Stage A `3a5955cc`, parent master `48d65e56`.
+Environment: Go 1.26, Apple M4 Max / macOS arm64. Owned local fixtures use
+Redis 7.4.4. Docker runs use the existing `redislabs/client-libs-test:8.10.0`
+image and an amd64 static test binary, following the CI action. Containers have
+no external network; Redis processes and databases are private to each run.
+
+- Broad root regression selection without race: 1,084 passing test/subtest
+  events, 12 skips, no failures (113.422 s).
+- Broad root regression selection with race: 1,080 passing test/subtest events,
+  12 skips, no failures (120.123 s). Subsequent additions for factory metadata
+  omission and fan-out metadata replacement passed with race; the full policy
+  selection including them and updated AutoPipeline reuse tests passed (13.446 s).
+- Internal routing, RESP reader/writer and push package tests passed with race.
+- Redis 8.10 live Cluster selection: 36 passing test/subtest events, no skips.
+  This includes real three-master fan-out in every mode, coalescing, refresh,
+  original predicate input/counts, concurrent reads, tracking-owner disconnect,
+  MOVED, ASK, failover and the existing atomic-slot-migration fixture.
+- Redis 8.10 with JSON, TimeSeries, Bloom and Search modules: 10 passing
+  test/subtest events, no skips. Live metadata E2E and all previously skipped
+  module eligibility/invalidation cases passed.
+- `go build ./...`, root `go vet` and root custom vet passed in the active repo.
+  `go vet ./...` and full custom vet also passed in an exact copy of tracked
+  working-tree sources plus new feature tests. The active repo contains an
+  ignored, pre-existing `bench/` harness with an undeclared HdrHistogram test
+  dependency; it blocks `go vet ./...` there. It was left untouched.
+- Formatter checks and `git diff --check` passed. The complete Compose image
+  matrix, Redis Enterprise/proxy environment and unrelated Ginkgo integration
+  suites were not run. These focused runs do not replace that matrix.
+
+The local 7.4 skips comprise live-authoritative-metadata E2E (needs 8.10), atomic
+slot migration (8.4+), five module cases, and five maintenance notification
+migration cases. The first seven were exercised successfully in the owned
+8.10 runs above; the maintenance-notification environment was not provided.
+
+Reproduce the broad selection with an owned standalone Redis via REDIS_ADDR and
+REDIS_PORT, and `REDIS_VERSION` matching that server (add `-race` for the race run):
+
+```sh
+go test -run '^(TestCSC|TestCluster|TestCommandMetadata|TestAutopipeline.*CSC|TestFDPipelineRejectsCSCStateCommands|TestAPCluster|TestAsyncAutoPipeline|TestAutoPipeline|TestFDShards|TestTruth)' -count=1 -timeout=300s .
+go test -race -run '^TestCSCPolicy' -count=1 -timeout=120s .
+go test -race ./internal/routing ./internal/proto ./push -count=1 -timeout=120s
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -o /tmp/csc-cluster.test .
+docker run --rm --platform linux/amd64 --network none -e GOREDIS_CSC_LIVE=1 -e REDIS_VERSION=8.10 --mount type=bind,src=/tmp/csc-cluster.test,dst=/csc-cluster.test,readonly --entrypoint /csc-cluster.test redislabs/client-libs-test:8.10.0 -test.run '^(TestClusterCSCLive|TestCSCPolicy(Fanout)?Live)' -test.v -test.timeout=3m
+```
+
+Benchmarks ran serially with no concurrent test/build process, six 500 ms samples
+per case. Baseline sources were exported from `3a5955cc`, without changing the
+active branch. These are sample medians, not production throughput guarantees.
+
+| Benchmark | Before Stage B | After Stage B | Allocations before/after |
+| --- | ---: | ---: | --- |
+| Plain Client hit | 212.4 ns | 210.5 ns | 240 B, 3 / 240 B, 3 |
+| Plain routed Cluster hit | 282.3 ns | 295.5 ns | 240 B, 3 / 240 B, 3 |
+| Plain Cluster miss | 27.523 us | 27.140 us | 1640 B, 31 / 1638–1640 B, 31 |
+| Policy hit, predicate off | 258.5 ns | 256.9 ns | 240 B, 3 / 240 B, 3 |
+| Policy hit, predicate on | 317.2 ns | 318.8 ns | 256 B, 4 / 256 B, 4 |
+
+Cluster hit CPU cost rose about 4.7% while pinning/cleaning the invocation view;
+there is no extra heap object on a hit. The predicate adds one owned key-slice
+allocation, about 62 ns in this one-key sample. Miss changes are within the
+limits of a loopback timing comparison. Protocol pairing remains one writer
+flush with no separate CACHING round trip; wire-contract tests assert this.
+
+No Stage B feature commit, staging or push was performed. Rebase replayed only
+the already-existing Stage A commit; its original is retained by the backup ref.

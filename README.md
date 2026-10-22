@@ -429,11 +429,20 @@ the modes. `AutoPipeliner.WithCache` explicitly executes synchronously through
 the normal path and respects its admission/close lifecycle. Public batches,
 pipelines, transactions and scripts remain uncached.
 
-Stage A supports existing single-target Cluster execution. Multi-target plans
-with a new mode/predicate/mark run uncached; strict positive marks fail before
-child dispatch. Untouched plain behavior is preserved. See
-[the review map and Stage B checklist](.claude/specs/csc-opt-modes.md) for the
-remaining metadata-routing integration after #4093.
+Cluster CSC supports single-target execution and eligible metadata-based
+fan-out. Enable metadata routing explicitly as described above. The predicate
+runs once on the original call and receives all its Redis keys. Each fragment
+is cached independently; failed, absent or redirected fragments do not roll
+back successful siblings. MOVED permits a fresh tracked destination fetch;
+ASK executes without cache lookup or publication.
+
+Marked AutoPipeline views pass through normal routing admission. Ordered async
+mode rejects cross-slot fan-out before dispatch; blocking and unordered
+half-duplex modes support it. Node CSC borrows the Cluster's metadata view
+without owning its shutdown. Custom node factories must preserve the supplied
+Options, including policy and metadata access. See
+[the implementation and review map](.claude/specs/csc-opt-modes.md) for contracts,
+validation and remaining execution limits.
 
 For a Cluster client, use the same configuration on `ClusterOptions`:
 

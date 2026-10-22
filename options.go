@@ -50,6 +50,8 @@ type Options struct {
 	// cscPresenceOnly enables node-local presence filtering and redirect eviction.
 	// It owns no Cluster state and leaves standalone defaults unchanged.
 	cscPresenceOnly bool
+	// cscMetadataSource is borrowed from a ClusterClient; it grants no ownership.
+	cscMetadataSource *commandMetadataStore
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.

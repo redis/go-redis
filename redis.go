@@ -469,6 +469,8 @@ type baseClient struct {
 	// command_metadata.go); nil when the client uses the shared static
 	// default. Shared with clones; only the owner's Close stops its worker.
 	cmdMeta *commandMetadataStore
+	// metadataSource is read-only access to a parent's store. Only cmdMeta is owned.
+	metadataSource *commandMetadataStore
 	// staticCmdMeta caches the lazy default when CSC attaches without a store,
 	// so serving a cached command does not need to call sync.OnceValue.
 	staticCmdMeta *commandMetadataView
@@ -552,8 +554,9 @@ func (c *baseClient) clone() *baseClient {
 		cscKeyPrefix: c.cscKeyPrefix,
 		cscPolicy:    c.cscPolicy,
 		// Derived clients share the owner's immutable metadata view.
-		cmdMeta:       c.cmdMeta,
-		staticCmdMeta: c.staticCmdMeta,
+		cmdMeta:        c.cmdMeta,
+		metadataSource: c.metadataSource,
+		staticCmdMeta:  c.staticCmdMeta,
 
 		// cscRefreshQueue is SHARED (pointer copy), like cscPoolHook: processCached
 		// calls signalDemand on it so a miss for a key still in the refresher's
@@ -1603,7 +1606,7 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 	}
 	if !policyCall {
 		if c.csc != nil {
-			view := c.metadataView()
+			view := c.cscInvocationView(cmd)
 			if meta, ok := cscEligibleMeta(view, cmd); ok {
 				return c.processCached(ctx, cmd, state, view, meta, startAttempt)
 			}
@@ -1611,7 +1614,7 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 	if c.csc != nil || cmd.cacheState().mark != cacheUnmarked || c.cscPolicy.configured() {
-		view := c.metadataView()
+		view := c.cscInvocationView(cmd)
 		meta, use, err := c.cscDecide(ctx, cmd, view)
 		if err != nil {
 			return err
@@ -2626,7 +2629,10 @@ func NewClient(opt *Options) *Client {
 
 	// Create metadata independently of CSC. The zero config reuses the package
 	// default without allocating a store.
-	c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
+	c.baseClient.metadataSource = opt.cscMetadataSource
+	if c.baseClient.metadataSource == nil {
+		c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
+	}
 
 	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
 	// background drainer. attachCSC is the strategy dispatch entry.
