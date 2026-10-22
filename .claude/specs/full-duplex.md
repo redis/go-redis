@@ -85,8 +85,9 @@ aggregating correctly; only single-node commands route through a child.
   returns a per-command transport error even when the owner returns an earlier
   Redis error (`redis.Nil`), so the abort-on-transport-failure rule still holds.
   `flushReqsVia` reports per-command metrics before it completes a command, as the
-  reader does. Standalone FD (no owner) keeps the same-connection replay and
-  fail-fast paths.
+  reader does. Both reroutes run before the backoff, which then only paces the
+  re-lease. Standalone FD (no owner) keeps the same-connection replay (backoff
+  first) and fail-fast paths.
 - **Hooks on recovery**: recovery attempts (the reroute and the MOVED/ASK
   reprocess) run nested inside the command's `hostHook`, so node pipeline/process
   hooks see them as nested spans. Making internal recovery hookless is a separate
@@ -109,6 +110,85 @@ aggregating correctly; only single-node commands route through a child.
   the caller. This is a single bounded retry immediately before/after the
   dispatch call, not a lock held across it — a second, much rarer double-unlucky
   race on the retry itself is not further retried and does surface `ErrClosed`.
+
+## MultiDB support
+
+`multidbFDRouter` (`multidb_fd.go`) runs FD on a `*MultiDBClient`, which has no
+connection of its own: one FD child per member, built privately (never through
+the member's cached getters) — a standalone engine on a `*Client` member, a
+`clusterFDRouter` on a `*ClusterClient` member. The parent keeps diversion.
+
+- **Admission**: a command takes the fast path only on a closed-state breaker
+  admission (`!res.Held()`) with the detector not tripped; otherwise it runs on
+  MultiDB's path, which owns failover and half-open probes.
+- **Owner seams** (internal `AutoPipelineOptions` fields, copied into cluster node
+  children, stripped by `Config()`):
+  - `fdOutcome` — the engine reports every final outcome it settles itself
+    (`fdEngine.finish`; reader, retries, fail paths, shutdown flush) and the failed
+    attempt of every command it reroutes. The router settles it into the member's
+    breaker (`CurrentClosedReservation`: current closed episode only) and the
+    detector (only while the member is active, current window). `reportOutcome`
+    reads `rawErr()`: `Err()` waits on the async face's batch, which the engine
+    completes after reporting. A hooked command reports from `hostHook` after
+    the member hook chain returns (`apBatch.fdOutcomeOwed`), so the owner sees
+    the chain's final result. An error is skipped only when the caller's own
+    ctx ended (as in `core.process`).
+  - `fdReroute` = `core.processPipelineRetries` — dropped tail, lease failure and
+    the close-time backlog go through MultiDB to whichever member it selects,
+    bounded by the commands' remaining `CommandRetries` budget.
+  - `fdOwnerRetries` + `fdRetryBudget` = `CommandRetries` (0 = none): bounds
+    re-issues; a failed lease reroutes at once (no lease retries against a dead
+    member; `CommandRetries=MaxInt` must not hang).
+- **Ordered async face (lanes)**: commands go to ONE lane at a time — the active
+  member's child, or a private ordered half-duplex MultiDB autopipeliner (`hd`)
+  for commands off the fast path. Switching lanes Closes the old lane and waits
+  for its drain first, so submit order holds across failover, fallback and
+  breaker transitions. Only the fast path (picked lane == current lane) runs
+  without `laneMu`; a switch picks, drains and submits under it
+  (`submitLocked`), so a stale pick cannot switch back. If no lane takes the
+  command, the current lane is drained before it diverts to MultiDB's path,
+  and the divert completes before `laneMu` is released (pinned by
+  `TestMultiDBFullDuplexOrderAcrossMemberDeath` and
+  `TestMultiDBFullDuplexDivertKeepsOrder`). Submitters stall for the drain. The
+  blocking face needs no lanes (each caller waits for its command). On a cluster
+  member the lane orders per key (slot), like plain cluster FD: commands the
+  cluster router cannot place (keyless, topology miss, non-FD node) leave
+  through `ownerDivert` and are not ordered against the lane, and a lane drain
+  does not wait for them. A retryable reply on a child is rerouted through
+  MultiDB by one FIFO worker per engine (`rerouteReplyToOwner`), in reply
+  order; a tail reroute or Close-time flush waits for it
+  (`waitReplyReroutes`). So order among retried commands holds (pinned by
+  `TestMultiDBFullDuplexRetryableReplyKeepsOrder` and
+  `TestMultiDBFullDuplexTailRerouteAfterReplyReroutes`). Relaxation, as with
+  pipeline retries: a later command that already ran on the first member (or
+  settled with its budget spent) completes before an earlier command's retry.
+  If the engine is closing and no retry slot is free, the reply settles with
+  its own error, not `ErrClosed`. A transport failure aborts only the rest of
+  its reroute batch (those commands complete with the error); later batches
+  and the tail reroute still run, as with separate `rerouteReqs` calls.
+- **No-FD members** (no pipeline pool, replica routing): remembered in `noFD`,
+  their commands divert without rebuilding a child.
+- **Cluster member misses**: a command the member's `clusterFDRouter` cannot
+  place on a node child (keyless, topology miss, non-FD node) runs through
+  `clusterFDRouter.ownerDivert` = the MultiDB router's divert, not
+  `db.cc.Process`, so MultiDB admission, accounting and failover still apply.
+- **Member removal**: each child registers on `multidbDatabase.onRemove`;
+  `RemoveDatabase` runs it before closing the member's client, which drains and
+  closes the child.
+- `Len` counts the children and the `hd` lane (`hd` is atomic so `Len` does not
+  wait out a lane switch's drain).
+- **v1 limits**: `MultiDBClient.AddHook` hooks do not run on the FD path. A
+  standalone member's hooks (`AddDatabaseHook`) do; a cluster member's do not,
+  because `AddDatabaseHook` installs them on the `ClusterClient` and the cluster
+  FD router sends through node clients (same as plain cluster FD, see
+  "Cluster-level process hooks on the cluster FD fast path"; register per node
+  via `OnNewNode`). `Pipeline()`/`TxPipeline()` stay on MultiDB's pipeline path;
+  NumShards forced to 1; outcomes count toward the episode/window current when
+  the reply lands. `Config().FullDuplex` means the router is installed, not that
+  every member runs FD: a member that cannot host it (`PipelinePoolSize < 0`,
+  replica routing on a cluster member, a build error) always goes half-duplex,
+  and any member does while the fast path is unavailable (no active member,
+  failover pending, breaker open/half-open).
 
 ## Panic boundaries
 

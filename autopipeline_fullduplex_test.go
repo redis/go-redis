@@ -2098,6 +2098,12 @@ func (r *fdOtelRecorder) RecordStreamLag(context.Context, time.Duration, *pool.C
 }
 func (r *fdOtelRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
 func (r *fdOtelRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
+func (r *fdOtelRecorder) RecordMultiDBFailover(context.Context, string, string, string, time.Duration) {
+}
+func (r *fdOtelRecorder) RecordMultiDBActiveDatabaseChange(context.Context, string, string) {}
+func (r *fdOtelRecorder) RecordMultiDBCircuitStateChange(context.Context, string, string, string) {
+}
+func (r *fdOtelRecorder) RecordMultiDBHealthCheck(context.Context, string, bool, time.Duration) {}
 
 // TestFullDuplexRecordsOTelOperationDuration verifies the FD reader records the
 // native per-command OTel duration metric (redisotel-native) itself, which it
@@ -6593,9 +6599,11 @@ func TestFullDuplexGroupPanicDoesNotReplayReadReplies(t *testing.T) {
 		}
 	}()
 
-	cl := NewClient(&Options{Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
+	cl := NewClient(&Options{
+		Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
 		PipelinePoolSize: 2, MaxRetries: 1,
-		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond})
+		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond,
+	})
 	defer cl.Close()
 	ap, err := cl.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
@@ -6962,7 +6970,7 @@ func TestFDRerouteKeepsRemainingRetryBudget(t *testing.T) {
 		{cmd: NewStatusCmd(ctx, "set", "b", "1"), batch: newAPBatch(), attempts: 2},
 		{cmd: NewStatusCmd(ctx, "set", "c", "1"), batch: newAPBatch(), attempts: 1},
 	}
-	fd.rerouteReqs(ctx, reqs)
+	fd.rerouteReqs(ctx, reqs, io.EOF)
 	if got, want := fmt.Sprint(*bounds), "[2 3]"; got != want {
 		t.Fatalf("reroute retry bounds = %s, want %s (budget 3 minus executions done)", got, want)
 	}
@@ -7013,7 +7021,7 @@ func TestFDRerouteDetectsMaskedTransportError(t *testing.T) {
 	for i := range reqs {
 		reqs[i] = fdReq{cmd: NewStringCmd(ctx, "get", "k"+itoa(i)), batch: newAPBatch(), attempts: 1}
 	}
-	fd.rerouteReqs(ctx, reqs)
+	fd.rerouteReqs(ctx, reqs, io.EOF)
 	if calls != 1 {
 		t.Fatalf("owner ran %d chunks, want 1: the second ran after a transport failure", calls)
 	}
@@ -7037,7 +7045,7 @@ func TestFDRerouteRecordsCommandMetrics(t *testing.T) {
 		{cmd: NewStatusCmd(ctx, "set", "a", "1"), batch: newAPBatch(), attempts: 2},
 		{cmd: NewStatusCmd(ctx, "set", "b", "1"), batch: newAPBatch(), attempts: 1},
 	}
-	fd.rerouteReqs(ctx, reqs)
+	fd.rerouteReqs(ctx, reqs, io.EOF)
 	if n := rec.opDurations.Load(); n != int64(len(reqs)) {
 		t.Fatalf("operation durations recorded = %d, want %d", n, len(reqs))
 	}
@@ -7167,6 +7175,86 @@ func TestFDConnErrReroutesTail(t *testing.T) {
 	}
 	if rerouted.Load() == 0 {
 		t.Fatal("no command went through the reroute across 5 connection kills")
+	}
+}
+
+// With an owner reroute, the replayable tail after a connection error goes to
+// the owner before the reconnect backoff, not after it: the backoff only paces
+// the re-lease.
+func TestFDConnErrReroutesBeforeBackoff(t *testing.T) {
+	ctx := context.Background()
+	target := NewClient(&Options{Addr: ":6379"})
+	defer target.Close()
+	if err := target.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	const backoff = 2 * time.Second
+	c := NewClient(&Options{
+		Addr:             ":6379",
+		Protocol:         3,
+		PipelinePoolSize: 4,
+		PoolSize:         4,
+		MinRetryBackoff:  backoff,
+		MaxRetryBackoff:  backoff,
+	})
+	defer c.Close()
+	var rerouted atomic.Int64
+	var firstReroute atomic.Int64 // UnixNano of the first reroute call
+	inner := rerouteTo(target, &rerouted)
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		fdReroute: func(ctx context.Context, cmds []Cmder, maxRetries int) error {
+			firstReroute.CompareAndSwap(0, time.Now().UnixNano())
+			return inner(ctx, cmds, maxRetries)
+		},
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	killer := NewClient(&Options{Addr: ":6379"})
+	defer killer.Close()
+
+	const workers = 8
+	var stop atomic.Bool
+	done := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			key := "fd:reroute:backoff:" + itoa(w)
+			for n := 0; !stop.Load(); n++ {
+				if err := ap.Set(ctx, key, itoa(n), 0).Err(); err != nil {
+					done <- fmt.Errorf("worker %d set #%d: %w", w, n, err)
+					return
+				}
+			}
+			done <- nil
+		}(w)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	killAt := time.Now()
+	_ = killer.Do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes").Err()
+	time.Sleep(backoff + 500*time.Millisecond)
+	stop.Store(true)
+
+	deadline := time.After(10 * time.Second)
+	for w := 0; w < workers; w++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("timeout: a worker hung after a connection kill")
+		}
+	}
+	at := firstReroute.Load()
+	if at == 0 {
+		t.Skip("kill landed between sessions: nothing in flight to reroute")
+	}
+	if got := time.Unix(0, at).Sub(killAt); got >= backoff/2 {
+		t.Fatalf("first reroute %v after the connection kill, want < %v (it waited out the %v backoff)", got, backoff/2, backoff)
 	}
 }
 

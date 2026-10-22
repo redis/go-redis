@@ -2536,6 +2536,36 @@ func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*A
 		})
 }
 
+// canPipeline reports whether cmd may join a merged batch on this cluster
+// client. It answers false for the commands the cluster autopipeliner keeps
+// out of its batches (see installAutoPipelineSharding): actual fan-out, a
+// custom multi-shard policy, and special (non-slot) routing. It also answers
+// false when cmd would fail the whole pipeline mapping (pipelineRoutingError)
+// or has no usable routing (policyErr): run alone, it fails only itself.
+//
+// The decision is computed without pinning it on cmd, so MultiDBClient can ask
+// several cluster members about one command.
+func (c *ClusterClient) canPipeline(ctx context.Context, cmd Cmder) bool {
+	var decision clusterRoutingDecision
+	if c.opt.DisableRoutingPolicies {
+		decision = c.legacyRoutingDecision(cmd)
+	} else {
+		decision = c.resolveCommandRoutingDecision(ctx, cmd)
+	}
+	if decision.policyErr != nil || c.pipelineRoutingError(cmd, &decision) != nil {
+		return false
+	}
+	if decision.policy == nil {
+		return true
+	}
+	// Same divert set as installAutoPipelineSharding's routeCommand.
+	if clusterCommandFansOut(cmd, &decision) ||
+		decision.policy.Request == routing.ReqMultiShard && !decision.policyFromMetadata {
+		return false
+	}
+	return decision.policy.Request != routing.ReqSpecial
+}
+
 // installAutoPipelineSharding buckets single-node commands by admitted slot.
 func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 	ap.routeCommand = func(ctx context.Context, cmd Cmder) (bool, error) {
@@ -3066,6 +3096,7 @@ func (c *ClusterClient) processPipelineNodeConn(
 	failedCmds *cmdsMap,
 	route *clusterPipelineRouting,
 ) error {
+	markPipelineExecuted(ctx, cmds)
 	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
 	// for registered fieldsets the batch references get written ahead of
 	// the batch (see himport.go).
@@ -3585,6 +3616,7 @@ func (c *ClusterClient) processTxPipelineNode(
 func (c *ClusterClient) processTxPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, wire []Cmder, cmds []Cmder, asking bool,
 ) *txOutcome {
+	markPipelineExecuted(ctx, cmds)
 	// HIMPORT bookkeeping: pending discards and PREPAREs for registered
 	// fieldsets the transaction references get written ahead of the wire
 	// batch (before ASKING/MULTI; the session state is visible at EXEC).

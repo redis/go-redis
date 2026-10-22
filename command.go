@@ -257,6 +257,15 @@ type Cmder interface {
 	// Commands that write directly to an io.Writer should return true since
 	// partial writes cannot be undone on retry.
 	NoRetry() bool
+	// setNoRetry sets the flag NoRetry reports. Part of the interface (not
+	// only of baseCmd) so a decorator that embeds a Cmder promotes it: the
+	// MultiDB transaction path marks every command of a transaction, and a
+	// decorated command must not slip through unmarked.
+	setNoRetry(bool)
+	// base returns the command's embedded baseCmd: the identity of the
+	// command that executes, stable across decorators, and usable as a map
+	// key where the Cmder value itself may not be comparable.
+	base() *baseCmd
 
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
@@ -491,6 +500,10 @@ type baseCmd struct {
 	// command completes. A shared routing template carries no slot of its own.
 	slotCache uint16
 
+	// noRetry marks the command as never-retryable (see NoRetry). It is set
+	// before the command is handed to an execution path, never concurrently.
+	noRetry bool
+
 	// ready, when non-nil, is the batch whose done channel closes once the
 	// command has executed. It is set only by the deferred (async)
 	// autopipeliner, which hands the command back to the caller before it
@@ -695,10 +708,25 @@ func (cmd *baseCmd) isRawReply() bool { return false }
 // io.Writer (like RawWriteToCmd) should override this to return true since
 // partial writes cannot be undone on retry.
 func (cmd *baseCmd) NoRetry() bool {
+	if cmd.noRetry {
+		return true
+	}
 	// A READ advances server-side cursor state. Retrying after a lost reply
 	// would silently skip the results that were already consumed.
 	return len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(0), "ft.cursor") &&
 		strings.EqualFold(cmd.stringArg(1), "read")
+}
+
+// setNoRetry marks the command as never-retryable, e.g. the synthetic MULTI
+// of a MultiDB transaction whose batch must not be replayed by the member
+// client's retry loop.
+func (cmd *baseCmd) setNoRetry(v bool) {
+	cmd.noRetry = v
+}
+
+// base returns the command's identity (see Cmder.base).
+func (cmd *baseCmd) base() *baseCmd {
+	return cmd
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -730,6 +758,7 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 		rawVal:       cmd.rawVal,
 		_readTimeout: readTimeout,
 		cmdType:      cmd.cmdType,
+		noRetry:      cmd.noRetry,
 	}
 }
 
