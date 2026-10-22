@@ -2404,6 +2404,10 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 	// Parse +OK.
 	if err := statusCmd.readReply(rd); err != nil {
+		// A rejected MULTI (e.g. NOPERM) does not stop the server from
+		// replying to the commands that follow it and to EXEC, so those
+		// replies are still owed on this connection.
+		cn.MarkCloseOnPut("tx: MULTI rejected")
 		return err
 	}
 
