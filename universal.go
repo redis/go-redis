@@ -33,6 +33,8 @@ type UniversalOptions struct {
 	Protocol int
 	Username string
 	Password string
+	// AuthEmptyPassword: see Options.AuthEmptyPassword.
+	AuthEmptyPassword bool
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -256,6 +258,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
@@ -334,6 +337,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
@@ -408,6 +412,7 @@ func (o *UniversalOptions) Simple() *Options {
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,

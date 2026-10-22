@@ -894,6 +894,13 @@ func (opt *Options) resolveCredentials(ctx context.Context) (username, password 
 	return username, password, nil
 }
 
+// sendAuth reports whether initConn authenticates with the given credentials:
+// always with a password, and with a username alone only when
+// AuthEmptyPassword is set.
+func (opt *Options) sendAuth(username, password string) bool {
+	return password != "" || (username != "" && opt.AuthEmptyPassword)
+}
+
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// This function is called in two scenarios:
 	// 1. First-time init: Connection is in CREATED state (from pool.Get())
@@ -1045,7 +1052,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// be used. Remember that negotiated fallback: configured Protocol remains 3,
 	// but CSC must not serve without RESP3 invalidations.
 	helloFallbackToRESP2 := false
-	helloCmd := conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName)
+	sendAuth := c.opt.sendAuth(username, password)
+	helloCmd := conn.hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName, sendAuth)
 	if initErr = helloCmd.Err(); initErr == nil {
 		// Authentication successful with HELLO command
 		helloOK = true
@@ -1061,7 +1069,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return initErr
 	} else {
 		helloFallbackToRESP2 = c.opt.Protocol == 3
-		if username != "" || password != "" {
+		if sendAuth {
 			// Try legacy AUTH command if HELLO failed.
 			if username != "" {
 				initErr = conn.AuthACL(ctx, username, password).Err()

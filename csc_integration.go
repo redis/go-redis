@@ -687,7 +687,14 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 			"redis: client-side caching is disabled with credential providers")
 		return
 	}
-	c.cscKeyPrefix = cscNamespacePrefix(c.opt.DB, c.opt.Username)
+	// Namespace by the ACL user the connection runs as: a Username that
+	// sends no AUTH (empty Password, AuthEmptyPassword unset) runs as the
+	// default user.
+	username := ""
+	if c.opt.sendAuth(c.opt.Username, c.opt.Password) {
+		username = c.opt.Username
+	}
+	c.cscKeyPrefix = cscNamespacePrefix(c.opt.DB, username)
 	switch c.opt.ClientSideCacheStrategy {
 	case CSCStrategySharedTracking:
 		c.attachSharedTrackingCSC(ctx, cache)
