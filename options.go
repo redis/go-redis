@@ -50,6 +50,8 @@ type Options struct {
 	// cscPresenceOnly enables node-local presence filtering and redirect eviction.
 	// It owns no Cluster state and leaves standalone defaults unchanged.
 	cscPresenceOnly bool
+	// cscMetadataSource is borrowed from a ClusterClient; it grants no ownership.
+	cscMetadataSource *commandMetadataStore
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.
@@ -512,7 +514,8 @@ type Options struct {
 	ClientSideCacheConfig *ClientSideCacheConfig
 
 	// ClientSideCache is an explicit Cache implementation used for client-side
-	// caching. When set, it overrides ClientSideCacheConfig. Intended for
+	// caching. When set, it overrides the storage settings of ClientSideCacheConfig;
+	// its TrackingMode, Cacheable and Strict policy settings still apply. Intended for
 	// advanced users that want to share a cache across clients or supply a
 	// custom implementation.
 	//
@@ -872,6 +875,10 @@ func (opt *Options) init() {
 
 func (opt *Options) clone() *Options {
 	clone := *opt
+	if opt.ClientSideCacheConfig != nil {
+		cfg := *opt.ClientSideCacheConfig
+		clone.ClientSideCacheConfig = &cfg
+	}
 
 	// Deep clone MaintNotificationsConfig to avoid sharing between clients
 	if opt.MaintNotificationsConfig != nil {

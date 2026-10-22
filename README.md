@@ -385,6 +385,68 @@ reused after the client's ACL identity changes. Only deterministic read
 commands supported by the cache are stored; writes and streaming responses
 bypass it.
 
+Tracking modes and application intent are configured in the same cache config:
+
+```go
+ClientSideCacheConfig: &redis.ClientSideCacheConfig{
+    MaxEntries:   10_000,
+    TrackingMode: redis.TrackingModeOptIn,
+    Cacheable: func(command string, keys []string) bool {
+        return command == "get" && len(keys) == 1 && strings.HasPrefix(keys[0], "user:")
+    },
+    Strict: true,
+},
+```
+
+`plain` (including the zero value) caches eligible reads by default; `optin`
+bypasses by default; `optout` caches by default. The predicate has the same
+meaning in every mode, including plain. It runs concurrently, outside cache
+locks, on eligible unmarked calls, and receives actual Redis keys. Its owned
+key slice may be retained but must not be modified. Mode/policy are fixed at
+client construction. These policy fields also apply with an explicit custom Cache.
+
+Use reusable, non-owning command views to override intent for a call:
+
+```go
+cached := rdb.WithCache(true)
+fresh := rdb.WithCache(false)
+value, err := cached.Get(ctx, "user:42").Result()
+value, err = fresh.Get(ctx, "user:42").Result()
+// For a UniversalClient: redis.WithCache(rdb, true).Get(ctx, "user:42")
+```
+
+Views expose typed commands and Do/Process without Close, pipeline or transaction
+constructors. A bypass reads the server without using, refreshing or removing
+an existing entry. Positive marks never override eligibility. Unsupported marks
+warn and execute uncached; `Strict` rejects before the data write, including
+when connection initialization discovers tracking is unavailable. Strict does
+not guarantee cache admission or publication of every reply. A fully read Redis
+error from CLIENT CACHING returns successful data uncached; protocol/transport
+failures retire the connection. Hits send no commands.
+
+All three fetch paths (foreground, miss coalescer, background refresh) support
+the modes. `AutoPipeliner.WithCache` waits for completion and respects its
+admission/close lifecycle. Blocking and explicitly unordered faces use the normal
+cache path. On ordered `AsyncAutoPipeline`, marked reads remain in the ordered
+stream and execute uncached: positive marks warn, or fail at submission with
+`Strict`. Bypass marks also retain ordering. This does not change the existing
+ordering exceptions for blocking commands and direct administrative helpers.
+Public batches, pipelines, transactions and scripts remain uncached. Views
+preserve typed helpers such as Cluster `DBSize` and script/fieldset management;
+these helpers cannot cache and retain their underlying client's shard coverage.
+
+Cluster CSC supports single-target execution and eligible metadata-based
+fan-out. Enable metadata routing explicitly as described above. The predicate
+runs once on the original call and receives all its Redis keys. Each fragment
+is cached independently; failed, absent or redirected fragments do not roll
+back successful siblings. MOVED permits a fresh tracked destination fetch;
+ASK executes without cache lookup or publication.
+
+Marked `AutoPipeline` views pass through normal routing admission. Ordered async
+mode rejects cross-slot fan-out before dispatch; blocking and unordered
+half-duplex modes support it. Custom node factories must preserve the supplied
+Options, including cache policy and command metadata configuration.
+
 For a Cluster client, use the same configuration on `ClusterOptions`:
 
 ```go
@@ -423,7 +485,11 @@ When a cache miss, coalesced fetch or background refresh receives MOVED or ASK,
 the node client evicts results depending on that fetch's known Redis keys across
 its local cache, including pending reservations. Unknown keys and uncached
 commands rely on server invalidations; they never trigger a whole-cache flush.
-Unrelated entries and other nodes' caches are untouched. Redirected attempts bypass caching.
+Unrelated entries and other nodes' caches are untouched. With plain tracking and
+no predicate or per-call mark, redirected attempts bypass caching. With opt-in,
+opt-out, a predicate or a per-call mark, MOVED forces a destination fetch and
+allows caching when requested and tracking is available. ASK always bypasses
+lookup and storage.
 Background refresh stays node-local: it applies the same key eviction but does
 not follow redirects or cache errors. Ordinary Cluster routing and topology reload
 triggers remain unchanged. Losing a tracking connection evicts only entries
@@ -472,7 +538,7 @@ interface does not expose one for `ClusterClient` to enforce. For a built-in
 invalidation batching retain their standalone built-in-cache limitations.
 
 While client-side caching is enabled, go-redis rejects `SELECT`, `AUTH`,
-`HELLO` with arguments, `RESET`, `CLIENT TRACKING`, and raw `SUBSCRIBE`,
+`HELLO` with arguments, `RESET`, `CLIENT TRACKING`, `CLIENT CACHING`, and raw `SUBSCRIBE`,
 `PSUBSCRIBE`, or `SSUBSCRIBE` commands because they would change connection
 state that the cache relies on. A guarded command also fails its whole
 pipeline. The typed `Subscribe`, `PSubscribe`, and `SSubscribe` APIs remain
