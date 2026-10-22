@@ -20,6 +20,7 @@ In `go-redis` we are aiming to support the last three releases of Redis. Current
 - [Redis 8.0](https://raw.githubusercontent.com/redis/redis/8.0/00-RELEASENOTES) - using Redis CE 8.0
 - [Redis 8.2](https://raw.githubusercontent.com/redis/redis/8.2/00-RELEASENOTES) - using Redis CE 8.2
 - [Redis 8.4](https://raw.githubusercontent.com/redis/redis/8.4/00-RELEASENOTES) - using Redis CE 8.4
+- [Redis 8.6](https://raw.githubusercontent.com/redis/redis/8.6/00-RELEASENOTES) - using Redis CE 8.6
 - [Redis 8.8](https://raw.githubusercontent.com/redis/redis/8.8/00-RELEASENOTES) - using Redis CE 8.8
 - [Redis 8.10](https://raw.githubusercontent.com/redis/redis/8.10/00-RELEASENOTES) - using Redis CE 8.10
 
@@ -290,9 +291,72 @@ rdb := redis.NewClient(&redis.Options{
 })
 ```
 
+### Redis Cluster fan-out safety
+
+Cluster routing uses shared command metadata for key positions and read-only
+status. The default resolver preserves existing routing behavior, including the
+cluster-wide `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers.
+`CommandMetadata` configuration alone does not enable new fan-out policies.
+
+Opt into metadata-based fan-out and aggregation explicitly, before using the client:
+
+```go
+c := redis.NewClusterClient(&redis.ClusterOptions{
+    Addrs: []string{"localhost:7000", "localhost:7001", "localhost:7002"},
+})
+c.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+```
+
+The resolver uses the client's metadata view, including configured overrides and
+live metadata. To request a live metadata attempt during resolution, install
+`c.NewDynamicResolver()` instead; this is also an explicit fan-out opt-in.
+Supported policies can send `PING` to all masters or split commands such as
+`MGET`, `DEL`, and `MSET` across slots. Without opt-in, their existing routing
+and server-side `CROSSSLOT` behavior remain unchanged.
+
+The default `CommandMetadataStatic` mode performs no metadata network requests
+unless resolution reaches an explicitly installed `NewDynamicResolver`.
+After that first live attempt, reconnects and topology changes trigger identity
+verification, and a configured `RefreshInterval` also checks for module or
+version changes on existing connections. With no interval, an in-place module
+change needs a reconnect or topology change to be detected.
+Only the initial verification can delay resolution. After failure or later
+invalidation, commands immediately use the conservative metadata view while
+background attempts retry with backoff. Live metadata is published only after
+all required server compatibility checks succeed.
+For commands missing from the bundled snapshot, configure
+`CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` to supply their
+key positions and read-only flags. Resolved key specifications take precedence
+over `SetFirstKeyPos`; that hint applies when command metadata is unavailable.
+
+For opted-in numeric fan-out, sum/min/max preserve integer replies as `int64`,
+including raw `Do(...).Result()` values; integer overflow returns an error.
+Aggregates containing floating-point replies return `float64`.
+
+Explicit `Pipeline` and `TxPipeline` calls keep each command local to its selected
+node; automatic metadata fan-out is suppressed inside these batches. A transaction
+still requires all keys to share a slot. Ordered `AsyncAutoPipeline` rejects
+metadata fan-out before dispatch; same-slot metadata commands remain batchable.
+Use the blocking face or unordered half-duplex mode for automatic fan-out.
+Existing direct helpers and special routing retain their separate execution
+path: await prior async results before a dependent direct call.
+`SCAN`, `INFO`, and known diagnostic commands remain node-local; use
+`ForEachMaster` for whole-cluster inspection or scanning.
+
+`FT.CURSOR READ` is not retried after a lost reply because the server may
+already have advanced the cursor. Native cursor IDs and the existing cursor
+routing remain unchanged; cluster-wide cursor ownership and reply parsing are
+being addressed separately.
+
+Cluster-wide operations and distributed DDL can affect multiple shards and are
+not atomic across them, whether fan-out is performed by go-redis or by a Redis
+server/coordinator. If one shard fails, earlier shards may already have applied
+the command. There is no automatic rollback of those successful operations;
+inspect the error and be prepared for manual intervention or cleanup.
+
 ### Client-side caching
 
-go-redis supports server-assisted client-side caching for standalone clients.
+go-redis supports server-assisted client-side caching for standalone and Cluster clients.
 Eligible read replies are stored in the application's memory, so repeated reads
 can avoid a Redis round trip. Redis tracks which keys each connection has read
 and sends RESP3 invalidation notifications when those keys change. go-redis
@@ -314,12 +378,98 @@ rdb := redis.NewClient(&redis.Options{
 defer rdb.Close()
 ```
 
-Client-side caching currently requires RESP3, a standalone client, and database
+Client-side caching currently requires RESP3 and database
 0. Fixed `Username` and `Password` values are supported. It is disabled when a
 dynamic credential provider is configured, because cached data must never be
 reused after the client's ACL identity changes. Only deterministic read
 commands supported by the cache are stored; writes and streaming responses
 bypass it.
+
+For a Cluster client, use the same configuration on `ClusterOptions`:
+
+```go
+rdb := redis.NewClusterClient(&redis.ClusterOptions{
+    Addrs: []string{"localhost:7000", "localhost:7001"},
+    Protocol: 3,
+    ClientSideCacheConfig: &redis.ClientSideCacheConfig{MaxEntries: 10_000},
+})
+defer rdb.Close()
+```
+
+Each internal node client owns an independent cache shared by its connections.
+Limits apply **per node**: discovering more nodes can increase total memory.
+Cluster cache hits still perform slot routing, but do not acquire a connection.
+Primary and replica reads use their selected node's cache. Replica routing and
+its replication-lag trade-off are unchanged.
+Ordinary pipelines, transactions and full-duplex batches remain uncached;
+AutoPipeline's existing ordered solo path can use CSC. Direct node handles
+(`MasterForKey`, `SlaveForKey`, `ForEachShard`) and their clones behave as standalone
+clients, including caching when enabled. `ClusterClient.CSCStats()` and
+`CSCRefreshStats()` aggregate currently registered node statistics; counters of
+removed nodes are not retained.
+
+`NewFailoverClusterClient` also accepts CSC configuration, including when selected
+by `NewUniversalClient`. Sentinel discovery connections remain uncached, and
+`NewFailoverClient` does not support CSC. The existing DB-0-only CSC
+restriction applies; nonzero databases execute normally without caching.
+
+Cache lifecycle belongs to each standalone node client. There is no Cluster CSC
+manager or transfer of cached values between nodes. Nodes entering routing have
+their caches cleared before publication; nodes leaving routing are cleared afterward,
+instead of waiting for registry GC. Clearing on entry also removes values refilled
+after an earlier removal. Nodes present in both maps, including replicas, keep
+their caches. Concurrent reloads retain last-publication-wins behavior.
+When a cache miss, coalesced fetch or background refresh receives MOVED or ASK,
+the node client evicts results depending on that fetch's known Redis keys across
+its local cache, including pending reservations. Unknown keys and uncached
+commands rely on server invalidations; they never trigger a whole-cache flush.
+Unrelated entries and other nodes' caches are untouched. Redirected attempts bypass caching.
+Background refresh stays node-local: it applies the same key eviction but does
+not follow redirects or cache errors. Ordinary Cluster routing and topology reload
+triggers remain unchanged. Losing a tracking connection evicts only entries
+dependent on that connection, not the entire node or Cluster cache. Reconnected
+connections establish tracking again for future reads.
+
+For nodes that remain routed, cache correctness relies on server tracking
+invalidations and connection-loss eviction, not on topology polling. A fresh slot
+map cannot rule out migration or failback between observations. Cluster caches only replies establishing that all
+Redis keys they depend on exist. During migration, a different client can create a missing key
+on an importing node without invalidating the source node's tracked absence.
+Therefore `GET` null replies and `MGET`/`JSON.MGET` replies containing any null element
+are returned normally but not cached. `EXISTS` is cached only when its count equals
+the number of key arguments (including duplicates). Single-key commands use
+command-specific presence checks: an empty `GET` string is cached, but an empty
+`GETRANGE` reply or zero `STRLEN` is not, since it can also represent a missing key.
+`HMGET` can be cached when at least one field is present: its fields belong to one
+Redis key, unlike `MGET`'s separate keys. Ambiguous commands (`SDIFF`, `SUNION`, `ZDIFF`,
+`ZUNION`, `LCS`, `BITPOS`, `BITFIELD_RO`, and `JSON` commands other than `GET`/`MGET`) bypass
+Cluster caching. This trades cache hits on ambiguous/absent results for safety
+without extra existence probes. The same filter applies to refresh and
+coalesced fills, including custom per-node caches.
+
+Standalone negative caching is unchanged. Cluster adds no cache-age policy or
+topology trust window; by default, entries do not expire based on age.
+Presence filtering and asynchronous invalidations do not
+guarantee immediate consistency or an ownership fence. Redis Enterprise
+proxy deployments may require reconnecting caching clients after shard additions
+or same-node slot moves; this policy does not remove that operational requirement.
+
+With atomic slot migration (`CLUSTER MIGRATION`, Redis 8.4+), the importing node
+can accept writes before the source sends invalidations for the moved keys.
+Cached reads can return the previous value during that window; tens of
+milliseconds have been observed. This implementation relies on the server's
+invalidations and does not eliminate that handoff window.
+Legacy `MIGRATE`-based slot migration does not use this atomic-migration handoff;
+ordinary asynchronous invalidation delays still apply.
+
+Custom per-node caches can be created with `ClusterOptions.NewClient`: preserve
+the supplied options and create a fresh cache for each node-client lifetime.
+Custom caches remain responsible for any optional entry-age policy; the Cache
+interface does not expose one for `ClusterClient` to enforce. For a built-in
+`LocalCache` created in a factory, use the supplied cache configuration.
+`UniversalOptions` forwards CSC configuration to Cluster, but its explicit
+`ClientSideCache` instance remains standalone-only. Refresh, miss coalescing and
+invalidation batching retain their standalone built-in-cache limitations.
 
 While client-side caching is enabled, go-redis rejects `SELECT`, `AUTH`,
 `HELLO` with arguments, `RESET`, `CLIENT TRACKING`, and raw `SUBSCRIBE`,
@@ -482,7 +632,15 @@ overlapping batches without deepening them.
 They work on `ClusterClient` too: commands are routed to the correct shard per
 key, so a single batch may span many slots; ordering across nodes is per key
 (same-key commands stay in order, different nodes' sub-pipelines run
-concurrently). Because batches share a few pipeline connections, autopipelining
+concurrently). Ordered `AsyncAutoPipeline` rejects metadata fan-out and custom
+multi-shard policies that would bypass its batch stream. Same-slot commands
+with metadata policies remain batchable. Use the blocking face, or
+`Unordered: true` in half-duplex mode, for automatic fan-out. Alternatively,
+await pending results and execute the dependent command through `ClusterClient`.
+Existing direct helpers (`DBSize`, script-management methods, and `Do`) and
+special routing still bypass the batch stream; await dependent results when
+mixing these with async batches. Because batches share
+a few pipeline connections, autopipelining
 also needs far fewer connections than a plain client at the same concurrency
 (see `PipelinePoolSize`). Autopipelining is only a win under concurrency (or
 windowed submission) — a single goroutine issuing one blocking command at a
@@ -598,7 +756,7 @@ Some corner cases:
 // SET key value EX 10 NX
 set, err := rdb.SetNX(ctx, "key", "value", 10*time.Second).Result()
 
-// SET key value keepttl NX
+// SET key value KEEPTTL NX
 set, err := rdb.SetNX(ctx, "key", "value", redis.KeepTTL).Result()
 
 // SORT list LIMIT 0 2 ASC
@@ -615,7 +773,7 @@ vals, err := rdb.ZRangeByScoreWithScores(ctx, "zset", &redis.ZRangeBy{
 // ZINTERSTORE out 2 zset1 zset2 WEIGHTS 2 3 AGGREGATE SUM
 vals, err := rdb.ZInterStore(ctx, "out", &redis.ZStore{
     Keys: []string{"zset1", "zset2"},
-    Weights: []int64{2, 3}
+    Weights: []float64{2, 3},
 }).Result()
 
 // EVAL "return {KEYS[1],ARGV[1]}" 1 "key" "hello"
@@ -641,7 +799,10 @@ them, while a raw `Do(ctx, "himport", "prepare", ...)` bypasses that
 entirely, with no replay, recovery, or discard propagation.
 
 For session-scoped work without a typed API, hold a dedicated connection
-(`client.Conn()`) for its whole lifetime and close it afterwards.
+(`client.EphemeralConn()`) for its whole lifetime and close it afterwards.
+`client.Conn()` is also a dedicated connection, but `Close` returns it to the
+pool with whatever session state is left on it, so it only suits commands that
+leave the connection as they found it.
 
 ## Typed Errors
 

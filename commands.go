@@ -251,6 +251,7 @@ type Cmdable interface {
 	TimeseriesCmdable
 	JSONCmdable
 	VectorSetCmdable
+	BlessCmdable
 }
 
 type StatefulCmdable interface {
@@ -362,12 +363,11 @@ func (c statefulCmdable) Hello(ctx context.Context,
 ) *MapStringInterfaceCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "hello", ver)
-	if password != "" {
-		if username != "" {
-			args = append(args, "auth", username, password)
-		} else {
-			args = append(args, "auth", "default", password)
+	if username != "" || password != "" {
+		if username == "" {
+			username = "default"
 		}
+		args = append(args, "auth", username, password)
 	}
 	if clientName != "" {
 		args = append(args, "setname", clientName)
