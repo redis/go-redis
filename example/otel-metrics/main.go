@@ -62,8 +62,8 @@ func main() {
 	// STEP_START redis_client_setup
 	// Initialize OTel instrumentation BEFORE creating Redis clients
 	otelInstance := redisotel.GetObservabilityInstance()
-	// Custom attributes are added to every emitted metric; built-in
-	// semconv attributes with the same key take precedence.
+	// Custom attributes are added to every emitted metric; one with the
+	// same key as a built-in semconv attribute replaces it.
 	config := redisotel.NewConfig().
 		WithEnabled(true).
 		WithCustomAttributes(attribute.String("deployment.environment", "example"))

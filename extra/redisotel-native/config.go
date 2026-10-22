@@ -292,7 +292,7 @@ func (c *Config) WithHistogramBuckets(buckets []float64) *Config {
 }
 
 // WithCustomAttributes appends attributes that are added to every metric.
-// Built-in attributes with the same key take precedence.
+// A custom attribute with the same key as a built-in one replaces it.
 func (c *Config) WithCustomAttributes(attrs ...attribute.KeyValue) *Config {
 	c.CustomAttributes = append(c.CustomAttributes, attrs...)
 	return c

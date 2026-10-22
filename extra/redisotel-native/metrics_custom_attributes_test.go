@@ -100,9 +100,9 @@ func TestCustomAttributesOnEveryMetric(t *testing.T) {
 	}
 }
 
-// TestCustomAttributesDoNotOverrideBuiltIns verifies a custom attribute with a
-// built-in key loses to the built-in value.
-func TestCustomAttributesDoNotOverrideBuiltIns(t *testing.T) {
+// TestCustomAttributesOverrideBuiltIns verifies a custom attribute with a
+// built-in key replaces the built-in value.
+func TestCustomAttributesOverrideBuiltIns(t *testing.T) {
 	ctx := context.Background()
 	reader := metric.NewManualReader()
 	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
@@ -122,7 +122,7 @@ func TestCustomAttributesDoNotOverrideBuiltIns(t *testing.T) {
 	if len(sets) != 1 {
 		t.Fatalf("recorded %d data points, want 1", len(sets))
 	}
-	requireAttr(t, sets[0], AttrDBSystemName, DBSystemRedis)
+	requireAttr(t, sets[0], AttrDBSystemName, "other")
 }
 
 // TestCustomAttributesNilConfig verifies a recorder without a config still

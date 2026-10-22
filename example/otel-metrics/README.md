@@ -60,9 +60,9 @@ exporter, err := otlpmetricgrpc.New(ctx,
 ```
 
 To attach your own attributes to every emitted metric (deployment, team, tier, …),
-use `WithCustomAttributes`. Built-in semantic-convention attributes with the same
-key take precedence, and every value lands on every data point, so keep the
-cardinality low:
+use `WithCustomAttributes`. A custom attribute with the same key as a built-in
+semantic-convention attribute replaces it, and every value lands on every data
+point, so keep the cardinality low:
 
 ```go
 config := redisotel.NewConfig().

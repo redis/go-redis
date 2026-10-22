@@ -67,17 +67,17 @@ type metricsRecorder struct {
 	cfg *config
 }
 
-// withAttrs returns the measurement option for attrs, prefixed with the
-// configured custom attributes. Custom attributes come first so a built-in
-// attribute with the same key wins (attribute.NewSet keeps the last value for
-// a duplicate key).
+// withAttrs returns the measurement option for attrs followed by the
+// configured custom attributes. Custom attributes come last so one with the
+// same key as a built-in attribute wins (attribute.NewSet keeps the last value
+// for a duplicate key).
 func (r *metricsRecorder) withAttrs(attrs []attribute.KeyValue) metric.MeasurementOption {
 	if r.cfg == nil || len(r.cfg.customAttributes) == 0 {
 		return metric.WithAttributes(attrs...)
 	}
-	all := make([]attribute.KeyValue, 0, len(r.cfg.customAttributes)+len(attrs))
-	all = append(all, r.cfg.customAttributes...)
+	all := make([]attribute.KeyValue, 0, len(attrs)+len(r.cfg.customAttributes))
 	all = append(all, attrs...)
+	all = append(all, r.cfg.customAttributes...)
 	return metric.WithAttributes(all...)
 }
 
