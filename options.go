@@ -47,6 +47,9 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
+	// cscPresenceOnly enables node-local presence filtering and redirect eviction.
+	// It owns no Cluster state and leaves standalone defaults unchanged.
+	cscPresenceOnly bool
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.
@@ -372,7 +375,7 @@ type Options struct {
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	//
-	// default: ReadTimeout + 1 second
+	// default: ReadTimeout + 1 second, or 30 seconds when ReadTimeout is not positive
 	PoolTimeout time.Duration
 
 	// MinIdleConns is the minimum number of idle connections which is useful when establishing
@@ -522,6 +525,20 @@ type Options struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCache Cache
+
+	// CommandMetadata configures how the client resolves the COMMAND metadata
+	// that drives client-side-cache eligibility: static (shipped snapshot,
+	// the default), live-upgraded in the background, and per-command
+	// overrides. Nil is the static default.
+	//
+	// Experimental: this API may change in a minor release.
+	CommandMetadata *CommandMetadataConfig
+
+	// onServerHello lets cluster nodes report identity changes to their
+	// parent's metadata store without owning a store or refresh worker.
+	// A nil reply requests verification after a HELLO fallback. The parent
+	// fingerprints the reply only after live metadata has been requested.
+	onServerHello func(map[string]interface{})
 
 	// ClientSideCacheStrategy selects the invalidation architecture used when
 	// client-side caching is enabled (via ClientSideCacheConfig or

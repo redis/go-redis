@@ -6,8 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-
-	"github.com/redis/go-redis/v9/internal/util"
 )
 
 // structMap contains the map of struct fields for target structs
@@ -108,9 +106,12 @@ func (s StructValue) Scan(key string, value string) error {
 		case Scanner:
 			return scan.ScanRedis(value)
 		case encoding.TextUnmarshaler:
-			return scan.UnmarshalText(util.StringToBytes(value))
+			// Copy: both contracts allow decoding in place, so the bytes must
+			// not alias value's backing array (internal/proto.Scan copies
+			// before UnmarshalBinary for the same reason).
+			return scan.UnmarshalText([]byte(value))
 		case encoding.BinaryUnmarshaler:
-			return scan.UnmarshalBinary(util.StringToBytes(value))
+			return scan.UnmarshalBinary([]byte(value))
 		}
 	}
 
