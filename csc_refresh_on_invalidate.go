@@ -310,14 +310,11 @@ func cscRefreshTargetBytes(t cscRefreshTarget) int {
 // cscRefreshChunkEnd returns the exclusive end index of the next refresh round
 // trip starting at `start`: at most cscRefreshBatchMax targets, request bytes
 // (cache key sans prefix = wire form) within writeBudget, and expected reply
-// bytes (valBytes of the evicted values) within cscRefreshReplyBudgetBytes. The
+// bytes (valBytes of the evicted values) within cscRefreshReplyBudgetBytes.
+// Nonzero preludeBytes includes the CACHING prefix and its expected ACK. The
 // first target always goes, so a single oversized key or value cannot stall the
 // loop. Pure; unit-tested like fdBatchEnd.
-func cscRefreshChunkEnd(targets []cscRefreshTarget, start, prefixLen, writeBudget int) int {
-	return cscRefreshChunkEndWithPrelude(targets, start, prefixLen, writeBudget, 0)
-}
-
-func cscRefreshChunkEndWithPrelude(targets []cscRefreshTarget, start, prefixLen, writeBudget, preludeBytes int) int {
+func cscRefreshChunkEnd(targets []cscRefreshTarget, start, prefixLen, writeBudget, preludeBytes int) int {
 	end, reqBytes, replyBytes := start, 0, 0
 	for end < len(targets) && end-start < cscRefreshBatchMax {
 		w := len(targets[end].cacheKey) - prefixLen + preludeBytes
@@ -645,7 +642,7 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 				if c.cscPolicy.mode == TrackingModeOptIn {
 					preludeBytes = len(cscYesWire)
 				}
-				end := cscRefreshChunkEndWithPrelude(targets, start, prefixLen, writeBudget, preludeBytes)
+				end := cscRefreshChunkEnd(targets, start, prefixLen, writeBudget, preludeBytes)
 				// Per-chunk deadline: each round trip gets its own cscRefreshBatchTimeout,
 				// so aggregate latency across chunks cannot expire the later chunks (#3989).
 				rctx, rcancel := context.WithTimeout(context.Background(), cscRefreshBatchTimeout)

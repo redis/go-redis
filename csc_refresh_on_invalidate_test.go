@@ -542,7 +542,7 @@ func TestCSCPolicyRefreshDeniedTracking(t *testing.T) {
 
 func TestCSCPolicyRefreshPreludeBudget(t *testing.T) {
 	targets := []cscRefreshTarget{{cacheKey: "123456", valBytes: 1}, {cacheKey: "123456", valBytes: 1}}
-	end := cscRefreshChunkEndWithPrelude(targets, 0, 0, 12+len(cscYesWire), len(cscYesWire))
+	end := cscRefreshChunkEnd(targets, 0, 0, 12+len(cscYesWire), len(cscYesWire))
 	if end != 1 {
 		t.Fatalf("prelude excluded from byte budget: %d", end)
 	}

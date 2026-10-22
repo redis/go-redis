@@ -90,6 +90,7 @@ oldstable
 backoff
 BCAST
 cacheable
+coalescer
 CLI
 conns
 CSC
