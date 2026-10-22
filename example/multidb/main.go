@@ -35,14 +35,13 @@ func main() {
 
 	client, err := redis.NewMultiDBClient(ctx, &redis.MultiDBOptions{
 		// Members get ids 0 and 1, in slice order. The higher weight is
-		// preferred.
+		// preferred; weights are in (0, 1], and -1 disables a member.
 		Clients: []redis.MultiDBClientConfig{
-			{Options: &redis.Options{Addr: *addr1}, Weight: 2},
-			{Options: &redis.Options{Addr: *addr2}, Weight: 1},
+			{Options: &redis.Options{Addr: *addr1}, Weight: 1.0},
+			{Options: &redis.Options{Addr: *addr2}, Weight: 0.5},
 		},
-		// Start when at least one member is healthy. The default (majority)
-		// needs both of two members.
-		InitialDBState: redis.InitialDBStateOneAvailable,
+		// The default InitialDBState (majority, half rounded up) starts when
+		// one of the two members is healthy.
 		OnActiveDatabaseChanged: func(from, to int) {
 			fmt.Printf("active database changed: %d -> %d\n", from, to)
 		},

@@ -8,7 +8,25 @@
   checks and a weight-based failover strategy, with auto-fallback to
   higher-weight members. The `multidb` package adds ping and lag-aware health
   checks and probe policies. See `example/multidb`
-  ([#3954](https://github.com/redis/go-redis/pull/3954)).
+  ([#3954](https://github.com/redis/go-redis/pull/3954)). Defaults:
+  - MultiDB owns retries: `CommandRetries` (0 = 2, -1 = none) retries on the
+    database active at each attempt, and every attempt is counted by the
+    breaker and failure detector. Standalone members get no retries of their
+    own (`MaxRetries` 0 becomes -1); an explicit `MaxRetries` is kept.
+  - Health checks: HEALTHY_ALL, 3 probes 500ms apart per check, honoring
+    `multidb.WithProbes` / `WithDelay` / `WithTimeout`; `HealthCheckTimeout`
+    (3s) caps the pass. Probes that cannot fit it are rejected at
+    construction and by `AddDatabase`. Under the default policy,
+    `SetActiveDatabase` and `ProbeTargetBeforeFailover` use one probe per
+    check.
+  - Startup: `InitialDBStateMajorityAvailable` needs half the members, rounded
+    up (1 of 2). A failed start matches `ErrInsufficientHealthyDatabases`;
+    with no healthy member it also matches `ErrPermanentlyNotAvailable`.
+  - Weights are in (0, 1] (0 = 1.0); -1 disables a member. The last enabled
+    member cannot be disabled.
+  - The default failure detector (1000 failures and 10% within 2s) is set
+    with `FailureDetectorConfig`, whose fields are used as given; start from
+    `DefaultMultiDBFailureDetectorConfig()`.
 - **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
 - Cluster routing shares command metadata with client-side caching for key
   extraction and read-only status. Existing default routing and cluster-wide

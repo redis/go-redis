@@ -177,7 +177,10 @@ func TestNewPubSubAllClusterAtCreationTerminal(t *testing.T) {
 
 // resettingHealthCheck reports unhealthy and runs onCheck while it executes,
 // simulating an operator reselect (breaker Reset) landing mid-probe.
-type resettingHealthCheck struct{ onCheck func() }
+type resettingHealthCheck struct {
+	oneProbe
+	onCheck func()
+}
 
 func (c *resettingHealthCheck) CheckHealth(context.Context, *Client) (bool, error) {
 	c.onCheck()
@@ -211,9 +214,21 @@ func TestProbeVerdictVoidedByResetDuringProbe(t *testing.T) {
 	}
 }
 
+// oneProbe gives a test check a single probe per pass, so tests are not
+// slowed down (or timed out) by the default 3 probes 500ms apart.
+type oneProbe struct{}
+
+func (oneProbe) Config() MultiDBHealthCheckConfig { return MultiDBHealthCheckConfig{Probes: 1} }
+
+// onePingCheck is the built-in PING check with a single probe per pass.
+type onePingCheck struct {
+	oneProbe
+	defaultPingHealthCheck
+}
+
 // okLivenessCheck is an always-healthy, non-fail-back-only check: it stands in
 // for the default PING liveness floor on members built without a client.
-type okLivenessCheck struct{}
+type okLivenessCheck struct{ oneProbe }
 
 func (okLivenessCheck) CheckHealth(context.Context, *Client) (bool, error) { return true, nil }
 func (okLivenessCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
@@ -223,7 +238,10 @@ func (okLivenessCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool
 // failbackLagCheck is a fail-back-only check that reports unhealthy and, as a
 // side effect, flips the active member mid-probe — simulating a failover that
 // lands while a passive member is being probed with the full check set.
-type failbackLagCheck struct{ onCheck func() }
+type failbackLagCheck struct {
+	oneProbe
+	onCheck func()
+}
 
 func (c *failbackLagCheck) CheckHealth(context.Context, *Client) (bool, error) {
 	c.onCheck()
@@ -271,6 +289,7 @@ func TestBackgroundProbeDoesNotEvictMemberGoneActive(t *testing.T) {
 // lockProbeCheck records whether failoverMu was UNheld at the moment the health
 // check ran — i.e. whether the initial probe runs off the failover lock.
 type lockProbeCheck struct {
+	oneProbe
 	core    *multidbCore
 	offLock *bool
 }
@@ -304,7 +323,7 @@ func TestAddDatabaseProbesOffFailoverLock(t *testing.T) {
 	_, _ = core.addDatabase(context.Background(), MultiDBClientConfig{
 		Options:      &Options{Addr: "127.0.0.1:6379"},
 		HealthChecks: []MultiDBHealthCheck{chk},
-		Weight:       1,
+		Weight:       0.5,
 	})
 
 	if !offLock {
@@ -361,6 +380,7 @@ func TestAddStandaloneDatabaseRejectedAfterCloseBegan(t *testing.T) {
 // AutoPipeline() from inside the probe — the re-entrant pattern that would
 // deadlock a cluster AddDatabase holding autopipelinerMu across the probe.
 type apCallingCheck struct {
+	oneProbe
 	mdb *MultiDBClient
 	got chan error
 }
@@ -398,7 +418,7 @@ func TestAddClusterDatabaseProbeMayCallAutoPipeline(t *testing.T) {
 		_, err := mdb.AddDatabase(context.Background(), MultiDBClientConfig{
 			ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:6379"}},
 			HealthChecks:   []MultiDBHealthCheck{chk},
-			Weight:         1,
+			Weight:         0.5,
 		})
 		done <- err
 	}()
@@ -1255,8 +1275,8 @@ func TestSelectCandidateDropsDisallowedPick(t *testing.T) {
 	s := &scriptedStrategy{picks: []int{0, 1}}
 	core := newMultidbCore(&MultiDBOptions{FailoverStrategy: s})
 	cands := []MultiDBDatabaseState{
-		{ID: 0, Weight: 1, Allowed: false},
-		{ID: 1, Weight: 1, Allowed: true},
+		{ID: 0, Weight: 0.5, Allowed: false},
+		{ID: 1, Weight: 0.5, Allowed: true},
 	}
 	if got := core.selectCandidate(cands); got != 1 {
 		t.Fatalf("selectCandidate = %d, want 1 (the allowed candidate after dropping the disallowed pick)", got)
@@ -1276,8 +1296,8 @@ func TestSelectCandidateGivesUpWhenOnlyDisallowedPicked(t *testing.T) {
 	s := &scriptedStrategy{picks: []int{0, 0}}
 	core := newMultidbCore(&MultiDBOptions{FailoverStrategy: s})
 	cands := []MultiDBDatabaseState{
-		{ID: 0, Weight: 1, Allowed: false},
-		{ID: 1, Weight: 1, Allowed: true},
+		{ID: 0, Weight: 0.5, Allowed: false},
+		{ID: 1, Weight: 0.5, Allowed: true},
 	}
 	if got := core.selectCandidate(cands); got != -1 {
 		t.Fatalf("selectCandidate = %d, want -1", got)
@@ -1462,6 +1482,7 @@ func TestWatchRewritesRemovedMemberClosed(t *testing.T) {
 
 // blockingCheck signals when it starts and then blocks until its context ends.
 type blockingCheck struct {
+	oneProbe
 	started chan struct{}
 	once    sync.Once
 }
@@ -1493,7 +1514,7 @@ func TestCloseCancelsInFlightAddDatabaseProbe(t *testing.T) {
 	go func() {
 		_, err := core.addDatabase(context.Background(), MultiDBClientConfig{
 			Options:      &Options{Addr: "127.0.0.1:6379", MaxRetries: -1},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []MultiDBHealthCheck{check},
 		})
 		done <- err
@@ -1518,7 +1539,7 @@ func TestCloseCancelsInFlightAddDatabaseProbe(t *testing.T) {
 
 // lagOnlyStub is a fail-back-only check (like the lag-aware REST check) that
 // always passes, to exercise a member with no liveness check of its own.
-type lagOnlyStub struct{}
+type lagOnlyStub struct{ oneProbe }
 
 func (lagOnlyStub) CheckHealth(context.Context, *Client) (bool, error) { return true, nil }
 func (lagOnlyStub) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
@@ -1576,7 +1597,8 @@ func (pongHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHoo
 // real liveness verdict) and must not record the lag failure — the member
 // stays closed because PONG came back, not because nothing was probed.
 func TestBackgroundProbeLagOnlyMemberGoneActiveUsesPingFloor(t *testing.T) {
-	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second})
+	// The PING floor runs the default 3 probes 500ms apart: give it room.
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: 2 * time.Second})
 	mkCB := func() *imultidb.CircuitBreaker {
 		return imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1})
 	}
@@ -1741,14 +1763,14 @@ func TestMultiDBAutoPipelineDivertsUnpipelineableOnClusterMember(t *testing.T) {
 			// dispatches are observable through the hook below.
 			{
 				Options:      &Options{Addr: "127.0.0.1:1"},
-				Weight:       2,
+				Weight:       0.75,
 				HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
 			},
 			// Cluster member, passive. It never serves a command here; it only
 			// has to be present for canPipeline to consult it.
 			{
 				ClusterOptions:         &ClusterOptions{Addrs: []string{"127.0.0.1:2"}},
-				Weight:                 1,
+				Weight:                 0.5,
 				HealthChecks:           []MultiDBHealthCheck{okLivenessCheck{}},
 				SkipInitialHealthCheck: true,
 			},
@@ -1816,9 +1838,9 @@ func TestInitializeSucceedsAtDeadlineWhenPolicyMet(t *testing.T) {
 		weights    [3]float64 // members 0, 1, 2; member 2 is the blocked one
 		wantActive int
 	}{
-		{"one_available", InitialDBStateOneAvailable, [3]float64{3, 2, 1}, 0},
-		{"majority", InitialDBStateMajorityAvailable, [3]float64{3, 2, 1}, 0},
-		{"majority_blocked_outranks", InitialDBStateMajorityAvailable, [3]float64{2, 1, 3}, 0},
+		{"one_available", InitialDBStateOneAvailable, [3]float64{1.0, 0.75, 0.5}, 0},
+		{"majority", InitialDBStateMajorityAvailable, [3]float64{1.0, 0.75, 0.5}, 0},
+		{"majority_blocked_outranks", InitialDBStateMajorityAvailable, [3]float64{0.75, 0.5, 1.0}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stuck := &blockingCheck{started: make(chan struct{})}
@@ -1864,6 +1886,7 @@ func TestInitializeSucceedsAtDeadlineWhenPolicyMet(t *testing.T) {
 
 // seqCheck answers one scripted verdict per call and repeats the last one.
 type seqCheck struct {
+	oneProbe
 	mu       sync.Mutex
 	verdicts []bool
 }
@@ -1899,7 +1922,7 @@ func TestInitializeProbesDoNotRecordOnBreakers(t *testing.T) {
 		OnCircuitStateChanged: func(int, string, string) { transitions.Add(1) },
 		Clients: []MultiDBClientConfig{{
 			Options:      &Options{Addr: "127.0.0.1:1"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []MultiDBHealthCheck{&seqCheck{verdicts: []bool{false, true}}},
 		}},
 	}
@@ -1947,7 +1970,7 @@ func TestMultiDBCloseReleasesMembershipLockBeforeClosingClients(t *testing.T) {
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{{
 			Options:      &Options{Addr: "127.0.0.1:1"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
 		}},
 	}
@@ -1983,6 +2006,7 @@ func TestMultiDBCloseReleasesMembershipLockBeforeClosingClients(t *testing.T) {
 
 // activeObservingCheck records which member was active when it ran.
 type activeObservingCheck struct {
+	oneProbe
 	core    *multidbCore
 	healthy bool
 	saw     chan int64
@@ -2092,8 +2116,8 @@ func TestMultiDBClusterControlCommandsFailOverOpenActive(t *testing.T) {
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
-			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 0.75, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2150,7 +2174,7 @@ func TestMultiDBTxMarksDecoratedCommandsNoRetry(t *testing.T) {
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2195,8 +2219,8 @@ func TestMultiDBSSubscribeFailsOverOpenActive(t *testing.T) {
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
-			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 0.75, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2261,8 +2285,8 @@ func TestMultiDBRemoveDatabaseClosesClientOutsideFailoverLock(t *testing.T) {
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
-			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 0.75, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2309,7 +2333,7 @@ func TestMultiDBClusterControlCommandsDoNotRunOnRejectedMember(t *testing.T) {
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2339,7 +2363,7 @@ func TestMultiDBSSubscribeFallsBackToFollowerWhenGateRejects(t *testing.T) {
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2370,7 +2394,7 @@ func TestMultiDBSSubscribeAllClusterGateRejectBindsToClusterMember(t *testing.T)
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{ClusterOptions: &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2494,7 +2518,7 @@ func TestMultiDBPubSubInitConnErrTranslatedForRemovedMember(t *testing.T) {
 					return "", "", pool.ErrClosed
 				},
 			},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
 		}},
 	}
@@ -2531,7 +2555,7 @@ func TestMultiDBTrackedAutopipelinersDropDrainedReferences(t *testing.T) {
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{{
 			Options:      &Options{Addr: "127.0.0.1:1"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
 		}},
 	}
@@ -2632,8 +2656,8 @@ func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
 		AutoFallbackInterval: -1,
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{
-			{Options: member("127.0.0.1:1", 2), Weight: 2, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
-			{Options: member("127.0.0.1:2", 3), Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: member("127.0.0.1:1", 2), Weight: 0.75, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: member("127.0.0.1:2", 3), Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2687,7 +2711,7 @@ func TestMultiDBPubSubDropsPushesOnClosedConnection(t *testing.T) {
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{{
 			Options:      &Options{Addr: "127.0.0.1:1", Dialer: helloRespondingDialer, Protocol: 3, DisableIdentity: true},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
 		}},
 	}
@@ -2767,7 +2791,7 @@ func TestMultiDBAddDatabaseClosesAbortedClientOutsideFailoverLock(t *testing.T) 
 		HealthCheckTimeout:   time.Second,
 		Clients: []MultiDBClientConfig{{
 			Options:      &Options{Addr: "127.0.0.1:1"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
 		}},
 	}
@@ -2795,7 +2819,7 @@ func TestMultiDBAddDatabaseClosesAbortedClientOutsideFailoverLock(t *testing.T) 
 	go func() {
 		_, err := mdb.AddDatabase(addCtx, MultiDBClientConfig{
 			Options:                &Options{Addr: "127.0.0.1:9"},
-			Weight:                 1,
+			Weight:                 0.5,
 			HealthChecks:           []MultiDBHealthCheck{okLivenessCheck{}},
 			SkipInitialHealthCheck: true,
 		})

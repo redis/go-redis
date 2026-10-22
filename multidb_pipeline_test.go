@@ -40,8 +40,8 @@ func fastBreaker() *redis.MultiDBCircuitBreakerConfig {
 }
 
 func TestMultiDBPipelineRoutesToActive(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1, db2)
 	ctx := context.Background()
 
@@ -64,8 +64,8 @@ func TestMultiDBPipelineRoutesToActive(t *testing.T) {
 }
 
 func TestMultiDBPipelineFailoverRetry(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 2
@@ -96,13 +96,13 @@ func TestMultiDBPipelineFailoverRetry(t *testing.T) {
 }
 
 func TestMultiDBPipelinePerCommandRecording(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	det := &countingDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 100, // stay closed; we only count
 		SuccessThreshold: 1,
@@ -138,8 +138,8 @@ func TestMultiDBPipelinePerCommandRecording(t *testing.T) {
 }
 
 func TestMultiDBPipelineNoRetryCommandDisablesRetry(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 3 // must be ignored when the batch has a NoRetry command
@@ -162,8 +162,8 @@ func TestMultiDBPipelineNoRetryCommandDisablesRetry(t *testing.T) {
 }
 
 func TestMultiDBTxPipelineNotRetried(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 3 // must be ignored for tx pipelines
@@ -185,8 +185,8 @@ func TestMultiDBTxPipelineNotRetried(t *testing.T) {
 }
 
 func TestMultiDBTxPipelineRecordsOnlyUserCommands(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	det := &countingDetector{}
 	opts := baseOptions()
@@ -214,14 +214,14 @@ func TestMultiDBTxPipelineRecordsOnlyUserCommands(t *testing.T) {
 // ride a pipeline on it are diverted per command instead (see
 // TestMultiDBAutoPipelineDivertsUnpipelineableOnClusterMember).
 func TestMultiDBAutoPipelineAllowsClusterMembers(t *testing.T) {
-	standalone := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	standalone := newTestDB("db1", "127.0.0.1:1", 0.75, true)
 	clusterCheck := newFakeHealthCheck(true)
 
 	opts := baseOptions()
 	opts.InitialDBState = redis.InitialDBStateOneAvailable
 	opts.Clients = append(opts.Clients, standalone.cfg, redis.MultiDBClientConfig{
 		ClusterOptions: &redis.ClusterOptions{Addrs: []string{"127.0.0.1:2"}},
-		Weight:         1.0,
+		Weight:         0.5,
 		HealthChecks:   []redis.MultiDBHealthCheck{clusterCheck},
 	})
 
@@ -245,7 +245,7 @@ func TestMultiDBAutoPipelineAllowsClusterMembers(t *testing.T) {
 // per-command check consults every cluster member, so an instance built before
 // the member landed starts keeping unfit commands out of its batches too.
 func TestMultiDBAddClusterMemberWithLiveAutoPipeliner(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1)
 	ctx := context.Background()
 
@@ -255,7 +255,7 @@ func TestMultiDBAddClusterMemberWithLiveAutoPipeliner(t *testing.T) {
 
 	clusterCfg := redis.MultiDBClientConfig{
 		ClusterOptions:         &redis.ClusterOptions{Addrs: []string{"127.0.0.1:2"}},
-		Weight:                 1.0,
+		Weight:                 0.5,
 		HealthChecks:           []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
 		SkipInitialHealthCheck: true,
 	}
@@ -270,8 +270,8 @@ func TestMultiDBAddClusterMemberWithLiveAutoPipeliner(t *testing.T) {
 }
 
 func TestMultiDBAutoPipelineRoutesAndFailsOver(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 2
@@ -304,8 +304,8 @@ func TestMultiDBAutoPipelineRoutesAndFailsOver(t *testing.T) {
 }
 
 func TestMultiDBAutoPipelineEscalation(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 1
@@ -339,7 +339,7 @@ func TestMultiDBAutoPipelineEscalation(t *testing.T) {
 }
 
 func TestMultiDBAutoPipelineInstanceCachedAndClosed(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1)
 
 	ap1, err := mdb.AutoPipeline()
@@ -363,7 +363,7 @@ func TestMultiDBAutoPipelineInstanceCachedAndClosed(t *testing.T) {
 }
 
 func TestMultiDBDo(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1)
 
 	if err := mdb.Do(context.Background(), "set", "k", "v").Err(); err != nil {
@@ -378,7 +378,7 @@ func TestMultiDBTxPipelineNotRetriedByMemberClient(t *testing.T) {
 	var dials atomic.Int64
 	opts := baseOptions()
 	opts.Clients = []redis.MultiDBClientConfig{{
-		Weight: 1,
+		Weight: 0.5,
 		Options: &redis.Options{
 			Addr:          "127.0.0.1:1",
 			MaxRetries:    2, // member-level retries that must NOT apply to transactions
@@ -420,8 +420,8 @@ func TestMultiDBTxPipelineNotRetriedByMemberClient(t *testing.T) {
 }
 
 func TestMultiDBBatchRegatesAfterFailover(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -484,7 +484,7 @@ func TestMultiDBTxPipelineMarksCmdsNoRetryDuringExecOnly(t *testing.T) {
 	opts := baseOptions()
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -534,7 +534,7 @@ func TestMultiDBTxPipelinePanicRestoresNoRetry(t *testing.T) {
 	opts := baseOptions()
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -604,7 +604,7 @@ func TestMultiDBBatchPanicReleasesHalfOpenProbeSlot(t *testing.T) {
 		opts := baseOptions()
 		opts.Clients = []redis.MultiDBClientConfig{{
 			Options:      &redis.Options{Addr: "127.0.0.1:1"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{check},
 		}}
 		opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
@@ -684,8 +684,8 @@ func TestMultiDBBatchPanicReleasesHalfOpenProbeSlot(t *testing.T) {
 
 func TestMultiDBBatchDetectorFailoverDoesNotLeakProbeSlot(t *testing.T) {
 	newClient := func(t *testing.T, det *fakeDetector) (*redis.MultiDBClient, *testDB, *testDB) {
-		dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-		dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+		dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+		dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 		opts := baseOptions()
 		opts.FailureDetector = det
 		opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
@@ -751,7 +751,7 @@ func (mixedResultHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis
 func TestMultiDBFailedBatchDoesNotCloseHalfOpenBreaker(t *testing.T) {
 	check := newFakeHealthCheck(true)
 	opts := baseOptions()
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 2,
 		SuccessThreshold: 1, // one successful probe would close the circuit
@@ -759,7 +759,7 @@ func TestMultiDBFailedBatchDoesNotCloseHalfOpenBreaker(t *testing.T) {
 	}
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -808,7 +808,7 @@ func (abortHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Proce
 func TestMultiDBHookAbortedBatchNotRecordedAsSuccess(t *testing.T) {
 	check := newFakeHealthCheck(true)
 	opts := baseOptions()
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
 		SuccessThreshold: 1, // one half-open probe slot; one success closes
@@ -816,7 +816,7 @@ func TestMultiDBHookAbortedBatchNotRecordedAsSuccess(t *testing.T) {
 	}
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -868,7 +868,7 @@ func TestMultiDBHookAbortedBatchNotRecordedAsSuccess(t *testing.T) {
 // directly.)
 
 func TestMultiDBBatchRejectsHImport(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 	ctx := context.Background()
 
@@ -921,7 +921,7 @@ func (nilStampAbortHook) ProcessPipelineHook(next redis.ProcessPipelineHook) red
 func TestMultiDBUnexecutedBatchRecordsNoSuccesses(t *testing.T) {
 	check := newFakeHealthCheck(true)
 	opts := baseOptions()
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
 		SuccessThreshold: 1, // one fabricated success would close the circuit
@@ -929,7 +929,7 @@ func TestMultiDBUnexecutedBatchRecordsNoSuccesses(t *testing.T) {
 	}
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -964,9 +964,9 @@ func TestMultiDBUnexecutedBatchRecordsNoSuccesses(t *testing.T) {
 }
 
 func TestMultiDBHookServedBatchIsNeutral(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
 		SuccessThreshold: 1, // one recorded success would close the circuit
@@ -1018,7 +1018,7 @@ func (partialNeutralAbortHook) ProcessPipelineHook(next redis.ProcessPipelineHoo
 func TestMultiDBPartiallyStampedAbortDoesNotFabricateSuccesses(t *testing.T) {
 	check := newFakeHealthCheck(true)
 	opts := baseOptions()
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
 		SuccessThreshold: 1, // one fabricated success would close the circuit
@@ -1026,7 +1026,7 @@ func TestMultiDBPartiallyStampedAbortDoesNotFabricateSuccesses(t *testing.T) {
 	}
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1066,7 +1066,7 @@ func TestMultiDBPartiallyStampedAbortDoesNotFabricateSuccesses(t *testing.T) {
 }
 
 func TestMultiDBBatchHImportDoesNotPoisonOtherCommands(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 	ctx := context.Background()
 
@@ -1095,7 +1095,7 @@ func TestMultiDBBatchHImportDoesNotPoisonOtherCommands(t *testing.T) {
 }
 
 func TestMultiDBBatchEarlyExitKeepsPositionalFirstError(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1121,8 +1121,8 @@ func TestMultiDBBatchEarlyExitKeepsPositionalFirstError(t *testing.T) {
 }
 
 func TestMultiDBTxRetriesAnotherMemberWhenHalfOpenFull(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -1160,8 +1160,8 @@ func TestMultiDBTxRetriesAnotherMemberWhenHalfOpenFull(t *testing.T) {
 }
 
 func TestMultiDBWatchRegatesAfterFailover(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -1198,7 +1198,7 @@ func TestMultiDBWatchRegatesAfterFailover(t *testing.T) {
 }
 
 func TestMultiDBWatchDoesNotReleaseUnreservedSlot(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
@@ -1249,7 +1249,7 @@ func (h *midflightBatchHook) ProcessPipelineHook(next redis.ProcessPipelineHook)
 }
 
 func TestMultiDBBatchClosedAdmissionDoesNotFreeProbeSlot(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
@@ -1296,8 +1296,8 @@ func TestMultiDBBatchClosedAdmissionDoesNotFreeProbeSlot(t *testing.T) {
 }
 
 func TestMultiDBBatchAllHalfOpenFullReturnsUnavailable(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	opts := baseOptions()
 	opts.CommandRetries = 2
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
@@ -1362,7 +1362,7 @@ func TestMultiDBPipelineCallerCancelPreservesCommandResults(t *testing.T) {
 	}
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1418,7 +1418,7 @@ func TestMultiDBPipelineCallerCancelDoesNotPoisonBreaker(t *testing.T) {
 	}
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1446,8 +1446,8 @@ func TestMultiDBPipelineCallerCancelDoesNotPoisonBreaker(t *testing.T) {
 }
 
 func TestMultiDBTxAndWatchReturnContextErrorBeforeFailover(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -1509,8 +1509,8 @@ func (h *switchThenFailPipelineHook) ProcessPipelineHook(next redis.ProcessPipel
 // vacated member could immediately trip failover away from the healthy
 // replacement. The per-member breaker is still updated — that is member-scoped.
 func TestMultiDBPipelineStaleOutcomeNotRecordedOnDetector(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2, true) // active
-	db2 := newTestDB("db2", "127.0.0.1:2", 1, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true) // active
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -1558,7 +1558,7 @@ func TestMultiDBPipelineStaleOutcomeNotRecordedOnDetector(t *testing.T) {
 // negative count, which would skip the loop and silently drop the batch
 // (Pipelined returning a nil error with nothing executed).
 func TestMultiDBPipelineMaxIntRetriesDoesNotDropBatch(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.CommandRetries = math.MaxInt
 	mdb := newTestMultiDB(t, opts, dbA)
@@ -1579,7 +1579,7 @@ func TestMultiDBConcurrentCloseSerializes(t *testing.T) {
 	opts := baseOptions()
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1630,7 +1630,7 @@ func TestMultiDBTxPipelineCallerCancelReturnsCancellation(t *testing.T) {
 	}
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1664,7 +1664,7 @@ func TestMultiDBTxPipelineCallerCancelReturnsCancellation(t *testing.T) {
 // exit). A server-free fake cannot produce an executed success, so this asserts
 // attempt 0's transport error survives instead of being overwritten.
 func TestMultiDBPipelineRetryExitPreservesPriorAttemptResults(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	dbA.hook.fail.Store(true) // every batch fails at transport level (wrapped io.EOF)
 	opts := baseOptions()
 	opts.CommandRetries = 1
@@ -1733,7 +1733,7 @@ func (h *blockingPipelineHook) ProcessPipelineHook(redis.ProcessPipelineHook) re
 // nil immediately. MultiDBClient.Close must still block until the drain
 // finishes.
 func TestMultiDBCloseWaitsForAutopipelinerDrain(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 1, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.Clients = append(opts.Clients, db1.cfg)
 	mdb, err := redis.NewMultiDBClient(context.Background(), opts)
@@ -1831,7 +1831,7 @@ func TestMultiDBCloseWaitsForAutopipelinerDrain(t *testing.T) {
 // flushing accepted commands into the member pools core.close() tears down,
 // which is the same failure the WaitClosed wiring exists to prevent.
 func TestMultiDBCloseWaitsForReplacedAutopipelinerDrain(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 1, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.Clients = append(opts.Clients, db1.cfg)
 	mdb, err := redis.NewMultiDBClient(context.Background(), opts)

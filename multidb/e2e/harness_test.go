@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	fi "github.com/redis/go-redis/v9/maintnotifications/e2e"
+	"github.com/redis/go-redis/v9/multidb"
 )
 
 // proxyFarm drives the per-member proxy containers (MockMembers, shared
@@ -92,7 +93,6 @@ func isNotPaused(err error) bool {
 	return strings.Contains(err.Error(), "is not paused")
 }
 
-
 func (f *proxyFarm) awaitListening(i int, timeout time.Duration) {
 	f.t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -111,9 +111,9 @@ func (f *proxyFarm) awaitListening(i int, timeout time.Duration) {
 func fastMultiDBOptions(f *proxyFarm) *redis.MultiDBOptions {
 	return &redis.MultiDBOptions{
 		Clients: []redis.MultiDBClientConfig{
-			{Options: memberOptions(f, 0), Weight: 3},
-			{Options: memberOptions(f, 1), Weight: 2},
-			{Options: memberOptions(f, 2), Weight: 1},
+			{Options: memberOptions(f, 0), Weight: 1.0},
+			{Options: memberOptions(f, 1), Weight: 0.75},
+			{Options: memberOptions(f, 2), Weight: 0.5},
 		},
 		// Every proxy must be genuinely healthy at startup: with the default
 		// majority policy a mis-wired member could slip through and scenarios
@@ -121,6 +121,9 @@ func fastMultiDBOptions(f *proxyFarm) *redis.MultiDBOptions {
 		InitialDBState:      redis.InitialDBStateAllAvailable,
 		HealthCheckInterval: 500 * time.Millisecond,
 		HealthCheckTimeout:  250 * time.Millisecond,
+		// One probe per pass: the default 3 probes 500ms apart do not fit
+		// the 250ms timeout.
+		HealthChecks: []redis.MultiDBHealthCheck{multidb.NewPingHealthCheck(multidb.WithProbes(1))},
 		CircuitBreakerConfig: &redis.MultiDBCircuitBreakerConfig{
 			FailureThreshold: 3,
 			SuccessThreshold: 1,
@@ -158,19 +161,23 @@ func memberOptions(f *proxyFarm, i int) *redis.Options {
 // real Active-Active regions or the 3-member local mock Topology alike.
 
 // fiMultiDBOptions builds MultiDBOptions from e2eTopology: weights descend
-// N..1 so index 0 is always the initial highest-weight active, matching the
+// N/(N+1)..1/(N+1) (below 1, so a test can still raise one member above the
+// rest) and index 0 is always the initial highest-weight active, matching the
 // fixed-Topology fastMultiDBOptions' convention.
 func fiMultiDBOptions() *redis.MultiDBOptions {
 	n := len(e2eTopology.Endpoints)
 	clients := make([]redis.MultiDBClientConfig, n)
 	for i, addr := range e2eTopology.Endpoints {
-		clients[i] = redis.MultiDBClientConfig{Options: endpointOptions(addr), Weight: float64(n - i)}
+		clients[i] = redis.MultiDBClientConfig{Options: endpointOptions(addr), Weight: float64(n-i) / float64(n+1)}
 	}
 	return &redis.MultiDBOptions{
 		Clients:             clients,
 		InitialDBState:      redis.InitialDBStateAllAvailable,
 		HealthCheckInterval: 500 * time.Millisecond,
 		HealthCheckTimeout:  250 * time.Millisecond,
+		// One probe per pass: the default 3 probes 500ms apart do not fit
+		// the 250ms timeout.
+		HealthChecks: []redis.MultiDBHealthCheck{multidb.NewPingHealthCheck(multidb.WithProbes(1))},
 		CircuitBreakerConfig: &redis.MultiDBCircuitBreakerConfig{
 			FailureThreshold: 3,
 			SuccessThreshold: 1,

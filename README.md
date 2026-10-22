@@ -687,8 +687,8 @@ defer cancel()
 
 client, err := redis.NewMultiDBClient(ctx, &redis.MultiDBOptions{
 	Clients: []redis.MultiDBClientConfig{
-		{Options: &redis.Options{Addr: "east.example.com:6379"}, Weight: 2},
-		{Options: &redis.Options{Addr: "west.example.com:6379"}, Weight: 1},
+		{Options: &redis.Options{Addr: "east.example.com:6379"}, Weight: 1.0},
+		{Options: &redis.Options{Addr: "west.example.com:6379"}, Weight: 0.5},
 	},
 })
 if err != nil {
@@ -702,10 +702,27 @@ if err := client.Set(ctx, "key", "value", 0).Err(); err != nil {
 fmt.Println("active database:", client.ActiveDatabaseID())
 ```
 
-Members get ids `0..len(Clients)-1` in slice order. By default a strict
-majority of members must be healthy for `NewMultiDBClient` to succeed (both,
-with two members); set `InitialDBState` to change this. MultiDB does not
-require RESP3. Cluster members cannot use `RouteByLatency`, `RouteRandomly` or
+Members get ids `0..len(Clients)-1` in slice order. A weight is in `(0, 1]`
+(0 means the default 1.0); -1 disables a member, so failover never picks it.
+By default half of the members, rounded up, must be healthy for
+`NewMultiDBClient` to succeed (one of two, two of three); set `InitialDBState`
+to change this. A failed start matches `ErrInsufficientHealthyDatabases`; when
+no member is healthy it also matches `ErrPermanentlyNotAvailable`.
+
+MultiDB owns retries: a failed command is retried `CommandRetries` times (0
+means 2, -1 none), each time on the database active at that moment, and every
+attempt counts toward the circuit breaker and the failure detector. Standalone
+members get no retries of their own unless `Options.MaxRetries` is set. The
+default failure detector trips at 1000 failures and a 10% failure rate within
+2s. A `FailureDetectorConfig` replaces these values as given (a zero field is
+not filled in), so start from `redis.DefaultMultiDBFailureDetectorConfig()`
+and change the fields you need. Health checks are probed 3 times, 500ms apart,
+and every probe must pass, so a healthy start or `AddDatabase` takes at least
+1s; under the default policy `SetActiveDatabase` uses one probe. Set `multidb.WithProbes` /
+`multidb.WithDelay` on a check to change that. Probes that cannot fit
+`HealthCheckTimeout` (default 3s, at most half of `HealthCheckInterval`) are
+rejected at construction. MultiDB does not require
+RESP3. Cluster members cannot use `RouteByLatency`, `RouteRandomly` or
 `ReadOnly` (health checks probe masters only). Maintenance notifications are
 off on members unless `MaintNotificationsConfig` is set. A runnable example
 lives in [`example/multidb`](example/multidb).

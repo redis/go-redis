@@ -30,8 +30,17 @@ var (
 // fakeHealthCheck reports the health stored in an atomic flag, ignoring the
 // client argument entirely so no server is needed.
 type fakeHealthCheck struct {
+	testOneProbe
 	healthy atomic.Bool
 	calls   atomic.Int64
+}
+
+// testOneProbe gives a test check a single probe per pass, so tests are not
+// slowed down (or timed out) by the default 3 probes 500ms apart.
+type testOneProbe struct{}
+
+func (testOneProbe) Config() redis.MultiDBHealthCheckConfig {
+	return redis.MultiDBHealthCheckConfig{Probes: 1}
 }
 
 func newFakeHealthCheck(healthy bool) *fakeHealthCheck {
@@ -162,7 +171,7 @@ func TestMultiDBInitialDBStatePolicies(t *testing.T) {
 		opts := baseOptions()
 		opts.InitialDBState = state
 		for i, h := range []bool{h1, h2, h3} {
-			db := newTestDB(string(rune('a'+i)), "127.0.0.1:1", 1.0, h)
+			db := newTestDB(string(rune('a'+i)), "127.0.0.1:1", 0.5, h)
 			opts.Clients = append(opts.Clients, db.cfg)
 		}
 		mdb, err := redis.NewMultiDBClient(ctx, opts)
@@ -207,7 +216,7 @@ func TestMultiDBInitialDBStatePolicies(t *testing.T) {
 // lands on. Previously the mid-pass and after-pass exits returned the bare
 // context error, so which sentinel a caller saw was timing-dependent.
 func TestMultiDBInitDeadlineReturnsInsufficientSentinel(t *testing.T) {
-	unhealthy := newTestDB("a", "127.0.0.1:1", 1, false)
+	unhealthy := newTestDB("a", "127.0.0.1:1", 0.5, false)
 	opts := baseOptions()
 	opts.InitialDBState = redis.InitialDBStateOneAvailable
 	opts.Clients = append(opts.Clients, unhealthy.cfg)
@@ -221,12 +230,61 @@ func TestMultiDBInitDeadlineReturnsInsufficientSentinel(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want it to also wrap context.DeadlineExceeded", err)
 	}
+	if !errors.Is(err, redis.ErrPermanentlyNotAvailable) {
+		t.Errorf("err = %v, want it to also match ErrPermanentlyNotAvailable", err)
+	}
+}
+
+// Majority is ceil(N/2): a two-member pair starts with one member down. A
+// failed start matches ErrInsufficientHealthyDatabases; it also matches
+// ErrPermanentlyNotAvailable only when every member is unhealthy.
+func TestMultiDBInitialMajorityIsHalfRoundedUp(t *testing.T) {
+	mk := func(healthy ...bool) error {
+		opts := baseOptions()
+		for i, h := range healthy {
+			db := newTestDB(string(rune('a'+i)), "127.0.0.1:1", 0.5, h)
+			opts.Clients = append(opts.Clients, db.cfg)
+		}
+		mdb, err := redis.NewMultiDBClient(context.Background(), opts)
+		if err == nil {
+			_ = mdb.Close()
+		}
+		return err
+	}
+	for _, tc := range []struct {
+		name    string
+		healthy []bool
+		ok      bool
+	}{
+		{"1 of 2", []bool{true, false}, true},
+		{"0 of 2", []bool{false, false}, false},
+		{"1 of 3", []bool{true, false, false}, false},
+		{"2 of 3", []bool{true, true, false}, true},
+		{"2 of 4", []bool{true, true, false, false}, true},
+		{"2 of 5", []bool{true, true, false, false, false}, false},
+		{"3 of 5", []bool{true, true, true, false, false}, true},
+	} {
+		err := mk(tc.healthy...)
+		if tc.ok {
+			if err != nil {
+				t.Errorf("%s healthy: NewMultiDBClient = %v, want success", tc.name, err)
+			}
+			continue
+		}
+		if !errors.Is(err, redis.ErrInsufficientHealthyDatabases) {
+			t.Errorf("%s healthy: err = %v, want ErrInsufficientHealthyDatabases", tc.name, err)
+		}
+		allDown := !tc.healthy[0]
+		if got := errors.Is(err, redis.ErrPermanentlyNotAvailable); got != allDown {
+			t.Errorf("%s healthy: errors.Is(err, ErrPermanentlyNotAvailable) = %v, want %v", tc.name, got, allDown)
+		}
+	}
 }
 
 func TestMultiDBActiveIsHighestWeight(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 2.0, true)
-	db3 := newTestDB("db3", "127.0.0.1:3", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.25, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.75, true)
+	db3 := newTestDB("db3", "127.0.0.1:3", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1, db2, db3)
 
 	if got := mdb.ActiveDatabaseID(); got != 1 {
@@ -235,8 +293,8 @@ func TestMultiDBActiveIsHighestWeight(t *testing.T) {
 }
 
 func TestMultiDBProcessRoutesToActive(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1, db2)
 
 	ctx := context.Background()
@@ -252,8 +310,8 @@ func TestMultiDBProcessRoutesToActive(t *testing.T) {
 }
 
 func TestMultiDBFailoverOnCommandFailures(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 3
@@ -301,8 +359,8 @@ func TestMultiDBFailoverOnCommandFailures(t *testing.T) {
 // automatic failover. FailureThreshold=3, so the probe's single failure is not
 // enough on its own.
 func TestMultiDBSetActiveDatabaseUnhealthyTargetOpensBreaker(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true) // healthy at init, sick later
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true) // active
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)  // healthy at init, sick later
 	opts := baseOptions()
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 3,
@@ -332,9 +390,9 @@ func TestMultiDBSetActiveDatabaseUnhealthyTargetOpensBreaker(t *testing.T) {
 // (lag) check, even though its breaker is closed — and the gate must NOT evict
 // it (non-recording).
 func TestMultiDBFallbackDeclinesLaggyTarget(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true) // lower weight
-	dbB := newTestDB("b", "127.0.0.1:2", 2, true) // higher weight = initial active + fallback target
-	fbB := newFailbackOnlyCheck(true)             // lag check, healthy at init
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)  // lower weight
+	dbB := newTestDB("b", "127.0.0.1:2", 0.75, true) // higher weight = initial active + fallback target
+	fbB := newFailbackOnlyCheck(true)                // lag check, healthy at init
 	dbB.cfg.HealthChecks = append(dbB.cfg.HealthChecks, fbB)
 	opts := baseOptions()
 	opts.AutoFallbackInterval = time.Hour // fallback enabled; loop quiet, driven via TestTryFallback
@@ -368,9 +426,9 @@ func TestMultiDBFallbackDeclinesLaggyTarget(t *testing.T) {
 // try the next-highest healthy candidate instead of giving up (a laggy top
 // member must not shadow a healthy lower-weight one forever).
 func TestMultiDBFallbackSkipsLaggyToNextCandidate(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true) // lowest; forced active
-	dbB := newTestDB("b", "127.0.0.1:2", 3, true) // highest; will be laggy
-	dbC := newTestDB("c", "127.0.0.1:3", 2, true) // middle; healthy
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)  // lowest; forced active
+	dbB := newTestDB("b", "127.0.0.1:2", 1.0, true)  // highest; will be laggy
+	dbC := newTestDB("c", "127.0.0.1:3", 0.75, true) // middle; healthy
 	fbB := newFailbackOnlyCheck(true)
 	fbC := newFailbackOnlyCheck(true)
 	dbB.cfg.HealthChecks = append(dbB.cfg.HealthChecks, fbB)
@@ -397,9 +455,9 @@ func TestMultiDBFallbackSkipsLaggyToNextCandidate(t *testing.T) {
 // target by a stable id, so a concurrent RemoveDatabase of another member does
 // not make the delivered id name a different database.
 func TestMultiDBFailoverCallbackCarriesStableID(t *testing.T) {
-	db0 := newTestDB("db0", "127.0.0.1:1", 3.0, true) // id 0, initial active
-	db1 := newTestDB("db1", "127.0.0.1:2", 1.0, true) // id 1, removed below target
-	db2 := newTestDB("db2", "127.0.0.1:3", 2.0, true) // id 2, failover target
+	db0 := newTestDB("db0", "127.0.0.1:1", 1.0, true)  // id 0, initial active
+	db1 := newTestDB("db1", "127.0.0.1:2", 0.5, true)  // id 1, removed below target
+	db2 := newTestDB("db2", "127.0.0.1:3", 0.75, true) // id 2, failover target
 
 	opts := baseOptions()
 	opts.CommandRetries = 3
@@ -442,9 +500,9 @@ func TestMultiDBFailoverCallbackCarriesStableID(t *testing.T) {
 // across a RemoveDatabase, a removed id stays invalid, and new members draw
 // fresh ids without reusing freed ones.
 func TestMultiDBStableIDSurvivesRemoval(t *testing.T) {
-	db0 := newTestDB("db0", "127.0.0.1:1", 3.0, true) // id 0, active
-	db1 := newTestDB("db1", "127.0.0.1:2", 1.0, true) // id 1
-	db2 := newTestDB("db2", "127.0.0.1:3", 2.0, true) // id 2
+	db0 := newTestDB("db0", "127.0.0.1:1", 1.0, true)  // id 0, active
+	db1 := newTestDB("db1", "127.0.0.1:2", 0.5, true)  // id 1
+	db2 := newTestDB("db2", "127.0.0.1:3", 0.75, true) // id 2
 	mdb := newTestMultiDB(t, baseOptions(), db0, db1, db2)
 	ctx := context.Background()
 	if got := mdb.ActiveDatabaseID(); got != 0 {
@@ -456,7 +514,7 @@ func TestMultiDBStableIDSurvivesRemoval(t *testing.T) {
 	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Errorf("active id after removal = %d, want 0 (stable)", got)
 	}
-	if err := mdb.SetWeight(2, 5.0); err != nil {
+	if err := mdb.SetWeight(2, 1.0); err != nil {
 		t.Errorf("SetWeight(2) after removal = %v, want nil (id 2 still valid)", err)
 	}
 	if err := mdb.RemoveDatabase(ctx, 1); !errors.Is(err, redis.ErrDatabaseNotFound) {
@@ -465,7 +523,7 @@ func TestMultiDBStableIDSurvivesRemoval(t *testing.T) {
 	if err := mdb.SetWeight(1, 1.0); !errors.Is(err, redis.ErrDatabaseNotFound) {
 		t.Errorf("SetWeight(1) after removal = %v, want ErrDatabaseNotFound", err)
 	}
-	db3 := newTestDB("db3", "127.0.0.1:4", 1.0, true)
+	db3 := newTestDB("db3", "127.0.0.1:4", 0.5, true)
 	newID, err := mdb.AddDatabase(ctx, db3.cfg)
 	if err != nil {
 		t.Fatalf("AddDatabase: %v", err)
@@ -507,9 +565,9 @@ func (s *recordingStrategy) lastSeen() []int {
 // TestMultiDBStrategySeesStableID: the failover strategy is offered stable ids
 // in MultiDBDatabaseState.ID, not renumbered positions.
 func TestMultiDBStrategySeesStableID(t *testing.T) {
-	db0 := newTestDB("db0", "127.0.0.1:1", 3.0, true) // id 0, active
-	db1 := newTestDB("db1", "127.0.0.1:2", 1.0, true) // id 1, removed
-	db2 := newTestDB("db2", "127.0.0.1:3", 2.0, true) // id 2, failover target
+	db0 := newTestDB("db0", "127.0.0.1:1", 1.0, true)  // id 0, active
+	db1 := newTestDB("db1", "127.0.0.1:2", 0.5, true)  // id 1, removed
+	db2 := newTestDB("db2", "127.0.0.1:3", 0.75, true) // id 2, failover target
 	strat := &recordingStrategy{}
 	opts := baseOptions()
 	opts.FailoverStrategy = strat
@@ -547,8 +605,8 @@ func TestMultiDBOutOfRangeIDNotTruncated(t *testing.T) {
 	if ^uint(0)>>32 == 0 {
 		t.Skip("int is 32-bit: high-bit truncation cannot occur")
 	}
-	db0 := newTestDB("db0", "127.0.0.1:1", 1, true)
-	db1 := newTestDB("db1", "127.0.0.1:2", 2, true) // active
+	db0 := newTestDB("db0", "127.0.0.1:1", 0.5, true)
+	db1 := newTestDB("db1", "127.0.0.1:2", 0.75, true) // active
 	mdb := newTestMultiDB(t, baseOptions(), db0, db1)
 	ctx := context.Background()
 	// A variable shift keeps the 64-bit-only value out of constant folding, so
@@ -568,8 +626,8 @@ func TestMultiDBOutOfRangeIDNotTruncated(t *testing.T) {
 }
 
 func TestMultiDBEscalation(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 1
@@ -620,8 +678,8 @@ func TestMultiDBEscalation(t *testing.T) {
 // the old burst and never escalates — permanently stuck on temporary here,
 // since the delay is an hour.
 func TestMultiDBEscalationResetsTimestampOnOperatorSelection(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 1
@@ -664,8 +722,8 @@ func TestMultiDBEscalationResetsTimestampOnOperatorSelection(t *testing.T) {
 }
 
 func TestMultiDBManualFailover(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, false) // unhealthy target
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, false) // unhealthy target
 	opts := baseOptions()
 	// db2 is intentionally unhealthy; majority (2 of 2) would fail init.
 	opts.InitialDBState = redis.InitialDBStateOneAvailable
@@ -707,12 +765,12 @@ func TestMultiDBManualFailover(t *testing.T) {
 }
 
 func TestMultiDBRuntimeMembership(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1, db2)
 	ctx := context.Background()
 
-	db3 := newTestDB("db3", "127.0.0.1:3", 3.0, true)
+	db3 := newTestDB("db3", "127.0.0.1:3", 1.0, true)
 	db3.cfg.SkipInitialHealthCheck = true
 	id, err := mdb.AddDatabase(ctx, db3.cfg)
 	if err != nil {
@@ -722,7 +780,7 @@ func TestMultiDBRuntimeMembership(t *testing.T) {
 		t.Fatalf("AddDatabase id = %d, want 2", id)
 	}
 
-	if err := mdb.SetWeight(id, 5.0); err != nil {
+	if err := mdb.SetWeight(id, 1.0); err != nil {
 		t.Fatalf("SetWeight: %v", err)
 	}
 	if err := mdb.SetWeight(42, 1.0); err == nil {
@@ -742,11 +800,11 @@ func TestMultiDBHealthCheckMergeAndDefault(t *testing.T) {
 	global := newFakeHealthCheck(true)
 
 	// db1 has a per-DB check; db2 has none (gets the global + nothing else).
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
 	db2 := &testDB{hook: &hookedDB{name: "db2"}}
 	db2.cfg = redis.MultiDBClientConfig{
 		Options: &redis.Options{Addr: "127.0.0.1:2"},
-		Weight:  1.0,
+		Weight:  0.5,
 	}
 
 	opts := baseOptions()
@@ -771,8 +829,8 @@ func TestMultiDBHealthCheckMergeAndDefault(t *testing.T) {
 }
 
 func TestMultiDBBackgroundFailover(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.HealthCheckInterval = 30 * time.Millisecond
@@ -799,8 +857,8 @@ func TestMultiDBBackgroundFailover(t *testing.T) {
 }
 
 func TestMultiDBAutoFallback(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.HealthCheckInterval = 20 * time.Millisecond
@@ -850,8 +908,8 @@ func TestMultiDBInitSelectsProbeHealthyDatabase(t *testing.T) {
 	// The highest-weight member fails its startup probe; its breaker is still
 	// closed (one failure < threshold), so selection must key off the probe
 	// result, not the circuit state.
-	db1 := newTestDB("db1", "127.0.0.1:1", 3.0, false) // unhealthy, highest weight
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 1.0, false) // unhealthy, highest weight
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.InitialDBState = redis.InitialDBStateOneAvailable
@@ -863,7 +921,7 @@ func TestMultiDBInitSelectsProbeHealthyDatabase(t *testing.T) {
 }
 
 func TestMultiDBCloseWithOpenPubSub(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 
 	opts := baseOptions()
 	opts.Clients = append(opts.Clients, db1.cfg)
@@ -912,8 +970,8 @@ func (ctxWaitHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Pro
 // is a client-side signal, not a database-health verdict: it must not record a
 // breaker/detector failure or drive failover.
 func TestMultiDBCallerCanceledDialStaysNeutral(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 1
@@ -973,7 +1031,7 @@ func TestMultiDBRejectsReplicaRoutedClusterMember(t *testing.T) {
 	for name, co := range cases {
 		t.Run(name, func(t *testing.T) {
 			opts := baseOptions()
-			opts.Clients = []redis.MultiDBClientConfig{{ClusterOptions: co, Weight: 1}}
+			opts.Clients = []redis.MultiDBClientConfig{{ClusterOptions: co, Weight: 0.5}}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			mdb, err := redis.NewMultiDBClient(ctx, opts)
@@ -991,6 +1049,7 @@ func TestMultiDBRejectsReplicaRoutedClusterMember(t *testing.T) {
 // signals `started` on the first probe and blocks until `release` is closed —
 // letting a test open a controlled window inside a probe.
 type gatedHealthCheck struct {
+	testOneProbe
 	armed   atomic.Bool
 	started chan struct{}
 	release chan struct{}
@@ -1022,8 +1081,8 @@ func (h *gatedHealthCheck) CheckClusterHealth(context.Context, *redis.ClusterCli
 // closed DURING its probe: close() takes no lock, so it can drain the
 // membership while the probe (bounded by HealthCheckTimeout) is still running.
 func TestMultiDBSetActiveDatabaseLosesToConcurrentClose(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true) // active (higher weight)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true) // active (higher weight)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	gate := newGatedHealthCheck()
 	db2.cfg.HealthChecks = []redis.MultiDBHealthCheck{gate}
@@ -1062,8 +1121,8 @@ func TestMultiDBSetActiveDatabaseLosesToConcurrentClose(t *testing.T) {
 }
 
 func TestMultiDBClientSideErrorsDoNotFailOver(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 3
@@ -1091,8 +1150,8 @@ func TestMultiDBClientSideErrorsDoNotFailOver(t *testing.T) {
 }
 
 func TestMultiDBLocalRedisErrorIsNeutral(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 3
@@ -1119,8 +1178,8 @@ func TestMultiDBLocalRedisErrorIsNeutral(t *testing.T) {
 }
 
 func TestMultiDBNoRetryCommandNotReplayed(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 3
@@ -1149,8 +1208,8 @@ func TestMultiDBNoRetryCommandNotReplayed(t *testing.T) {
 }
 
 func TestMultiDBManualFailoverResetsBreaker(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 1
@@ -1187,7 +1246,7 @@ func TestMultiDBManualFailoverResetsBreaker(t *testing.T) {
 }
 
 func TestMultiDBProcessAfterClose(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 
 	opts := baseOptions()
 	opts.Clients = append(opts.Clients, db1.cfg)
@@ -1208,8 +1267,8 @@ func TestMultiDBProcessAfterClose(t *testing.T) {
 func TestMultiDBFailoverSkipsStartupUnhealthyMember(t *testing.T) {
 	// db2 fails its startup probe. When the active db1 dies, failover must
 	// escalate rather than switch to the member already known to be down.
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, false)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, false)
 
 	opts := baseOptions()
 	opts.InitialDBState = redis.InitialDBStateOneAvailable
@@ -1240,8 +1299,8 @@ func TestMultiDBFailoverSkipsStartupUnhealthyMember(t *testing.T) {
 }
 
 func TestMultiDBForceActiveDatabaseThroughOpenBreaker(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 1
@@ -1291,15 +1350,15 @@ func TestMultiDBValidation(t *testing.T) {
 		t.Error("config with two client types should fail")
 	}
 
-	none := &redis.MultiDBOptions{Clients: []redis.MultiDBClientConfig{{Weight: 1}}}
+	none := &redis.MultiDBOptions{Clients: []redis.MultiDBClientConfig{{Weight: 0.5}}}
 	if _, err := redis.NewMultiDBClient(ctx, none); err == nil {
 		t.Error("config with no client type should fail")
 	}
 }
 
 func TestMultiDBConcurrentProcess(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 2
@@ -1351,7 +1410,7 @@ func (d *fakeDetector) Reset() {
 
 // ctxHealthCheck fails when the probe context is already done and reports
 // healthy otherwise — like a real network check would.
-type ctxHealthCheck struct{}
+type ctxHealthCheck struct{ testOneProbe }
 
 func (ctxHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) (bool, error) {
 	if err := ctx.Err(); err != nil {
@@ -1368,16 +1427,16 @@ func (ctxHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.Clus
 }
 
 func TestMultiDBOptionsNotMutatedByConstruction(t *testing.T) {
-	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbA := newTestDB("a", "db-a:6379", 0.75, true)
 	opts := baseOptions()
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	_ = newTestMultiDB(t, opts, dbA)
 
 	// The caller's options value must stay untouched: a second client built
 	// from it would otherwise see the normalized 0 and "default" it to 2,
 	// silently re-enabling retries — also for the first client, which still
 	// reads the shared struct.
-	if opts.CommandRetries != redis.CommandRetriesNone {
+	if opts.CommandRetries != -1 {
 		t.Fatalf("NewMultiDBClient mutated the caller's options: CommandRetries = %d", opts.CommandRetries)
 	}
 
@@ -1394,25 +1453,25 @@ func TestMultiDBOptionsNotMutatedByConstruction(t *testing.T) {
 	before := dbA.hook.commands.Load()
 	_ = mdb2.Get(context.Background(), "k").Err()
 	if got := dbA.hook.commands.Load() - before; got != 1 {
-		t.Errorf("client with CommandRetriesNone made %d attempts, want 1", got)
+		t.Errorf("client with CommandRetries -1 made %d attempts, want 1", got)
 	}
 }
 
 func TestMultiDBAddDatabaseAfterClose(t *testing.T) {
-	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbA := newTestDB("a", "db-a:6379", 0.75, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 	if err := mdb.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	dbB := newTestDB("b", "db-b:6379", 1, true)
+	dbB := newTestDB("b", "db-b:6379", 0.5, true)
 	if _, err := mdb.AddDatabase(context.Background(), dbB.cfg); !errors.Is(err, redis.ErrClosed) {
 		t.Errorf("AddDatabase after Close: err = %v, want ErrClosed", err)
 	}
 }
 
 func TestMultiDBRecoveredActiveClearsTrippedDetector(t *testing.T) {
-	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbA := newTestDB("a", "db-a:6379", 0.75, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -1431,7 +1490,7 @@ func TestMultiDBRecoveredActiveClearsTrippedDetector(t *testing.T) {
 }
 
 func TestMultiDBAddDatabaseCallbackSeesNewID(t *testing.T) {
-	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbA := newTestDB("a", "db-a:6379", 0.75, true)
 
 	var mu sync.Mutex
 	var ids []int
@@ -1446,7 +1505,7 @@ func TestMultiDBAddDatabaseCallbackSeesNewID(t *testing.T) {
 	// Adding an unhealthy member opens its breaker during the initial probe;
 	// the state-change callback must report the member's real id, not the zero
 	// default.
-	dbB := newTestDB("b", "db-b:6379", 1, false)
+	dbB := newTestDB("b", "db-b:6379", 0.5, false)
 	id, err := mdb.AddDatabase(context.Background(), dbB.cfg)
 	if err != nil {
 		t.Fatalf("AddDatabase: %v", err)
@@ -1480,7 +1539,7 @@ func TestMultiDBAddDatabaseCallbackSeesNewID(t *testing.T) {
 // fires, so a callback that resolves the member by id through a control API
 // finds it rather than getting ErrDatabaseNotFound.
 func TestMultiDBAddedMemberResolvableFromCircuitCallback(t *testing.T) {
-	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbA := newTestDB("a", "db-a:6379", 0.75, true)
 	var mdbRef atomic.Pointer[redis.MultiDBClient]
 	lookup := make(chan error, 4)
 	opts := baseOptions()
@@ -1495,7 +1554,7 @@ func TestMultiDBAddedMemberResolvableFromCircuitCallback(t *testing.T) {
 	mdb := newTestMultiDB(t, opts, dbA)
 	mdbRef.Store(mdb)
 
-	dbB := newTestDB("b", "db-b:6379", 1, false) // unhealthy -> ForceOpen on add
+	dbB := newTestDB("b", "db-b:6379", 0.5, false) // unhealthy -> ForceOpen on add
 	if _, err := mdb.AddDatabase(context.Background(), dbB.cfg); err != nil {
 		t.Fatalf("AddDatabase: %v", err)
 	}
@@ -1515,8 +1574,8 @@ func TestMultiDBAddedMemberResolvableFromCircuitCallback(t *testing.T) {
 // application traffic to a member the probe just found unhealthy. A failed
 // probe must fire no ->half-open transition.
 func TestMultiDBFailedProbeDoesNotHalfOpen(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true) // non-active probe target
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true) // active
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)  // non-active probe target
 
 	var mu sync.Mutex
 	var transitions []string
@@ -1557,8 +1616,8 @@ func TestMultiDBFailedProbeDoesNotHalfOpen(t *testing.T) {
 }
 
 func TestMultiDBCircuitCallbackMayCallControlAPIs(t *testing.T) {
-	dbA := newTestDB("a", "db-a:6379", 2, true)
-	dbB := newTestDB("b", "db-b:6379", 1, true)
+	dbA := newTestDB("a", "db-a:6379", 0.75, true)
+	dbB := newTestDB("b", "db-b:6379", 0.5, true)
 
 	var mdbRef atomic.Pointer[redis.MultiDBClient]
 	opts := baseOptions()
@@ -1596,7 +1655,7 @@ func TestMultiDBCircuitCallbackMayCallControlAPIs(t *testing.T) {
 }
 
 func TestMultiDBSubscribeAfterCloseReturnsErrClosed(t *testing.T) {
-	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbA := newTestDB("a", "db-a:6379", 0.75, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 	if err := mdb.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -1614,8 +1673,8 @@ func TestMultiDBSubscribeAfterCloseReturnsErrClosed(t *testing.T) {
 }
 
 func TestMultiDBDetectorFailoverDoesNotLeakProbeSlot(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -1648,6 +1707,7 @@ func TestMultiDBDetectorFailoverDoesNotLeakProbeSlot(t *testing.T) {
 // caller's context mid-probe and reports the cancellation — simulating a
 // command deadline expiring while a pre-failover target probe runs.
 type armableCancelCheck struct {
+	testOneProbe
 	armed  atomic.Bool
 	cancel context.CancelFunc
 }
@@ -1673,12 +1733,12 @@ func TestMultiDBCanceledPreFailoverProbeNotChargedAsAttempt(t *testing.T) {
 	defer cancel()
 	check := &armableCancelCheck{cancel: cancel}
 
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
 	dbB := &testDB{
 		hook: &hookedDB{name: "b"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "127.0.0.1:2"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{check},
 		},
 	}
@@ -1704,7 +1764,7 @@ func TestMultiDBCanceledPreFailoverProbeNotChargedAsAttempt(t *testing.T) {
 }
 
 func TestMultiDBSuccessResetsFailoverEscalation(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.CommandRetries = 1
 	opts.MaxFailoverAttempts = 2
@@ -1745,7 +1805,7 @@ func TestMultiDBSubscribeOnClusterOnlyClientTerminates(t *testing.T) {
 	opts := baseOptions()
 	opts.Clients = []redis.MultiDBClientConfig{{
 		ClusterOptions: &redis.ClusterOptions{Addrs: []string{"127.0.0.1:1"}},
-		Weight:         1,
+		Weight:         0.5,
 		HealthChecks:   []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1775,7 +1835,7 @@ func TestMultiDBSubscribeOnClusterOnlyClientTerminates(t *testing.T) {
 // path must clear the stale detector so the next command probes the recovering
 // member instead of escalating forever.
 func TestMultiDBLatchedDetectorDoesNotWedgeHalfOpenSingleMember(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -1818,8 +1878,8 @@ func TestMultiDBLatchedDetectorDoesNotWedgeHalfOpenSingleMember(t *testing.T) {
 // while it was unhealthy would otherwise switch to another candidate on stale
 // evidence and undo the operator's in-place re-selection.
 func TestMultiDBFailoverStaysOnRepairedCurrentMember(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // higher weight, active
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true) // higher weight, active
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	opts := baseOptions()
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
@@ -1845,8 +1905,8 @@ func TestMultiDBFailoverStaysOnRepairedCurrentMember(t *testing.T) {
 // higher-weight primary whose failure rate trips the detector (without its
 // breaker ever opening) must stay failed over, not ping-pong.
 func TestMultiDBAutoFallbackDoesNotUndoDetectorFailover(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // higher weight, active
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true) // higher weight, active
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 
 	opts := baseOptions()
@@ -1890,8 +1950,8 @@ func TestMultiDBAutoFallbackDoesNotUndoDetectorFailover(t *testing.T) {
 // fallback, or disabling fallback could return and still be followed by an
 // automatic active-member change.
 func TestMultiDBAutoFallbackDisabledDoesNotSwitch(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true) // lower weight
-	dbB := newTestDB("b", "127.0.0.1:2", 2, true) // higher weight fallback target
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)  // lower weight
+	dbB := newTestDB("b", "127.0.0.1:2", 0.75, true) // higher weight fallback target
 	opts := baseOptions()
 	opts.AutoFallbackInterval = time.Hour // enabled, but drive it explicitly
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
@@ -1921,7 +1981,7 @@ func TestMultiDBAutoFallbackDisabledDoesNotSwitch(t *testing.T) {
 // reports the terminal ErrClosed after Close, not a misleading
 // ErrDatabaseNotFound for an id that was valid before the client shut down.
 func TestMultiDBControlAPIsReturnErrClosedAfterClose(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 	id := mdb.ActiveDatabaseID()
 	if id < 0 {
@@ -1931,7 +1991,7 @@ func TestMultiDBControlAPIsReturnErrClosedAfterClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if err := mdb.SetWeight(id, 2.0); !errors.Is(err, redis.ErrClosed) {
+	if err := mdb.SetWeight(id, 0.5); !errors.Is(err, redis.ErrClosed) {
 		t.Errorf("SetWeight after Close = %v, want ErrClosed", err)
 	}
 	if err := mdb.AddDatabaseHook(id, errHook{}); !errors.Is(err, redis.ErrClosed) {
@@ -1958,8 +2018,8 @@ func (errHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Process
 // its redirect budget) is an availability failure and must drive failover, not
 // be treated as a healthy reply.
 func TestMultiDBSurfacedRedirectTriggersFailover(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true) // active
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 
 	opts := baseOptions()
 	opts.CommandRetries = 2
@@ -2002,8 +2062,8 @@ type badStrategy struct{ id int }
 func (s badStrategy) Select([]redis.MultiDBDatabaseState) int { return s.id }
 
 func TestMultiDBInvalidStrategyIDRejected(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2, true)
-	db2 := newTestDB("db2", "127.0.0.1:2", 1, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 	opts := baseOptions()
 	opts.FailoverStrategy = badStrategy{id: 99} // no such member
 	opts.Clients = append(opts.Clients, db1.cfg, db2.cfg)
@@ -2035,7 +2095,7 @@ func (panicPolicy) ExecuteCluster(context.Context, []redis.MultiDBHealthCheck, *
 }
 
 func TestMultiDBPanickingHealthPolicyDoesNotCrash(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 1, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.HealthCheckPolicy = panicPolicy{}
 	opts.InitialDBState = redis.InitialDBStateOneAvailable
@@ -2056,12 +2116,12 @@ func TestMultiDBPanickingHealthPolicyDoesNotCrash(t *testing.T) {
 }
 
 func TestMultiDBSetWeightAfterCloseReturnsErrClosed(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 1, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1)
 	if err := mdb.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := mdb.SetWeight(0, 5.0); !errors.Is(err, redis.ErrClosed) {
+	if err := mdb.SetWeight(0, 0.5); !errors.Is(err, redis.ErrClosed) {
 		t.Errorf("SetWeight after Close = %v, want ErrClosed", err)
 	}
 }
@@ -2089,8 +2149,8 @@ func (*switchThenFailHook) ProcessPipelineHook(next redis.ProcessPipelineHook) r
 }
 
 func TestMultiDBStaleOutcomeNotRecordedOnDetector(t *testing.T) {
-	db1 := newTestDB("db1", "127.0.0.1:1", 2, true) // active
-	db2 := newTestDB("db2", "127.0.0.1:2", 1, true)
+	db1 := newTestDB("db1", "127.0.0.1:1", 0.75, true) // active
+	db2 := newTestDB("db2", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -2126,8 +2186,8 @@ func TestMultiDBStaleOutcomeNotRecordedOnDetector(t *testing.T) {
 }
 
 func TestMultiDBFallbackResetsDetector(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	det := &fakeDetector{}
 	opts := baseOptions()
 	opts.FailureDetector = det
@@ -2172,8 +2232,8 @@ func TestMultiDBFallbackResetsDetector(t *testing.T) {
 }
 
 func TestMultiDBNoCallbacksForRemovedMember(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 
 	var mu sync.Mutex
 	var events []int
@@ -2206,8 +2266,8 @@ func TestMultiDBNoCallbacksForRemovedMember(t *testing.T) {
 }
 
 func TestMultiDBFailoverNotBlockedByPubSubReconnect(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	// B's dialer blocks: a PubSub reconnect onto B must not run on the
 	// command path that triggered the failover.
 	dbB.cfg.Options.DialerRetries = 1
@@ -2242,8 +2302,8 @@ func TestMultiDBFailoverNotBlockedByPubSubReconnect(t *testing.T) {
 // holds the subscription's lock across the dial; unless that dial is bound to
 // client shutdown, Close hangs waiting for the same lock.
 func TestMultiDBCloseUnblocksPubSubReconnectDial(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	// B's dial blocks until its context is canceled, with a long DialTimeout so
 	// only a shutdown-bound reconnect context (not the dial timeout) unblocks
 	// Close in time.
@@ -2289,9 +2349,9 @@ func TestMultiDBCloseUnblocksPubSubReconnectDial(t *testing.T) {
 // mutex across a long dial timeout and the newer reconnect blocks behind it,
 // stranding the subscription off the healthy member.
 func TestMultiDBNewerSwitchCancelsStuckPubSubReconnect(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 3, true) // active first (highest weight)
-	dbB := newTestDB("b", "127.0.0.1:2", 2, true)
-	dbC := newTestDB("c", "127.0.0.1:3", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 1.0, true) // active first (highest weight)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.75, true)
+	dbC := newTestDB("c", "127.0.0.1:3", 0.5, true)
 	// B's pubsub dial blocks until its context is canceled, with a long
 	// DialTimeout so only a superseding switch (not the dial timeout) can free
 	// it in time. Signal when that cancellation actually reaches the dial.
@@ -2344,15 +2404,15 @@ func TestMultiDBCanceledStartupProbeDoesNotOpenBreaker(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	dbA := newTestDB("a", "127.0.0.1:1", 3, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 2, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 1.0, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.75, true)
 	cancelCheck := &armableCancelCheck{cancel: cancel}
 	cancelCheck.armed.Store(true)
 	dbC := &testDB{
 		hook: &hookedDB{name: "c"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "127.0.0.1:3"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{cancelCheck},
 		},
 	}
@@ -2392,8 +2452,8 @@ func newFailbackOnlyCheck(healthy bool) *failbackOnlyCheck {
 func (c *failbackOnlyCheck) FailbackOnly() bool { return true }
 
 func TestMultiDBFailbackOnlyCheckDoesNotEvictActive(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	opts := baseOptions()
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
@@ -2434,8 +2494,8 @@ func TestMultiDBFailbackOnlyCheckDoesNotEvictActive(t *testing.T) {
 // SetActiveDatabase on the current active with a failing lag check must succeed
 // and must not record a failure on the active's breaker.
 func TestMultiDBSetActiveDatabaseReselectIgnoresFailbackOnly(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active (higher weight)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true) // active (higher weight)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	fbA := newFailbackOnlyCheck(true)
 	dbA.cfg.HealthChecks = append(dbA.cfg.HealthChecks, fbA)
 
@@ -2468,9 +2528,9 @@ func TestMultiDBSetActiveDatabaseReselectIgnoresFailbackOnly(t *testing.T) {
 // enqueued in switch order — the bug being that enqueuing in the announce
 // closure (after failoverMu is released) lets two switches reorder.
 func TestMultiDBActiveChangeCallbackOrderUnderConcurrency(t *testing.T) {
-	db0 := newTestDB("d0", "127.0.0.1:10", 3, true)
-	db1 := newTestDB("d1", "127.0.0.1:11", 2, true)
-	db2 := newTestDB("d2", "127.0.0.1:12", 1, true)
+	db0 := newTestDB("d0", "127.0.0.1:10", 1.0, true)
+	db1 := newTestDB("d1", "127.0.0.1:11", 0.75, true)
+	db2 := newTestDB("d2", "127.0.0.1:12", 0.5, true)
 
 	opts := baseOptions()
 	var mu sync.Mutex
@@ -2542,7 +2602,7 @@ func (h *midflightHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redi
 }
 
 func TestMultiDBCommandClosedAdmissionDoesNotFreeProbeSlot(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
@@ -2587,7 +2647,7 @@ func TestMultiDBCommandClosedAdmissionDoesNotFreeProbeSlot(t *testing.T) {
 }
 
 func TestMultiDBRejectsHImportCommands(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 	ctx := context.Background()
 
@@ -2611,7 +2671,7 @@ func TestMultiDBRejectsHImportCommands(t *testing.T) {
 
 func TestMultiDBClusterCommandsDelegateToActiveClusterClient(t *testing.T) {
 	opts := baseOptions()
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
@@ -2622,7 +2682,7 @@ func TestMultiDBClusterCommandsDelegateToActiveClusterClient(t *testing.T) {
 			DialTimeout: 100 * time.Millisecond,
 			MaxRetries:  -1,
 		},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2646,7 +2706,7 @@ func TestMultiDBClusterCommandsDelegateToActiveClusterClient(t *testing.T) {
 }
 
 func TestMultiDBHealthCheckSuccessKeepsCommandSlots(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
@@ -2690,7 +2750,7 @@ func TestMultiDBPanickyCircuitCallbackDoesNotStallQueue(t *testing.T) {
 		}
 		delivered.Add(1)
 	}
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, opts, dbA)
 
 	// Callbacks run on a library-owned goroutine: the first delivery panics,
@@ -2714,6 +2774,7 @@ func TestMultiDBPanickyCircuitCallbackDoesNotStallQueue(t *testing.T) {
 // but still reports healthy — a probe whose PING succeeded right as the
 // caller's deadline expired.
 type cancelingHealthyCheck struct {
+	testOneProbe
 	armed  atomic.Bool
 	cancel context.CancelFunc
 }
@@ -2737,12 +2798,12 @@ func TestMultiDBCanceledHealthyProbeDoesNotSwitch(t *testing.T) {
 	defer cancel()
 	check := &cancelingHealthyCheck{cancel: cancel}
 
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
 	dbB := &testDB{
 		hook: &hookedDB{name: "b"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "127.0.0.1:2"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{check},
 		},
 	}
@@ -2765,12 +2826,12 @@ func TestMultiDBCanceledHealthyPreFailoverProbeDoesNotSwitch(t *testing.T) {
 	defer cancel()
 	check := &cancelingHealthyCheck{cancel: cancel}
 
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
 	dbB := &testDB{
 		hook: &hookedDB{name: "b"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "127.0.0.1:2"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{check},
 		},
 	}
@@ -2799,9 +2860,9 @@ func TestMultiDBCanceledHealthyPreFailoverProbeDoesNotSwitch(t *testing.T) {
 }
 
 func TestMultiDBPoolTimeoutIsNeutral(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
-	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CommandRetries = -1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
@@ -2821,8 +2882,8 @@ func TestMultiDBPoolTimeoutIsNeutral(t *testing.T) {
 }
 
 func TestMultiDBAllHalfOpenFullReturnsUnavailable(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	opts := baseOptions()
 	opts.CommandRetries = 2
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
@@ -2853,8 +2914,8 @@ func TestMultiDBAllHalfOpenFullReturnsUnavailable(t *testing.T) {
 }
 
 func TestMultiDBStaleBreakerRecordAfterRemovalFiresNoCallback(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 
 	var mu sync.Mutex
 	var events []int
@@ -2888,6 +2949,7 @@ func TestMultiDBStaleBreakerRecordAfterRemovalFiresNoCallback(t *testing.T) {
 // blocks on its gate, letting a test hold the failover lock (via a probing
 // control operation) at will.
 type armableBlockingCheck struct {
+	testOneProbe
 	armed atomic.Bool
 	gate  chan struct{}
 }
@@ -2908,12 +2970,12 @@ func (c *armableBlockingCheck) CheckClusterHealth(context.Context, *redis.Cluste
 
 func TestMultiDBMembershipOpsCanceledWhileWaitingForLock(t *testing.T) {
 	check := &armableBlockingCheck{gate: make(chan struct{})}
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
 	dbB := &testDB{
 		hook: &hookedDB{name: "b"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "127.0.0.1:2"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{check},
 		},
 	}
@@ -2939,7 +3001,7 @@ func TestMultiDBMembershipOpsCanceledWhileWaitingForLock(t *testing.T) {
 	go func() {
 		_, err := mdb.AddDatabase(canceled, redis.MultiDBClientConfig{
 			Options:                &redis.Options{Addr: "127.0.0.1:3"},
-			Weight:                 1,
+			Weight:                 0.5,
 			HealthChecks:           []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
 			SkipInitialHealthCheck: true, // no probe: the post-probe ctx check never runs
 		})
@@ -2960,16 +3022,16 @@ func TestMultiDBMembershipOpsCanceledWhileWaitingForLock(t *testing.T) {
 	<-holderDone
 
 	// Membership unchanged: B still present, no third member.
-	if err := mdb.SetWeight(1, 1.5); err != nil {
+	if err := mdb.SetWeight(1, 0.5); err != nil {
 		t.Errorf("member 1 disappeared after a canceled RemoveDatabase: %v", err)
 	}
-	if err := mdb.SetWeight(2, 1.5); err == nil {
+	if err := mdb.SetWeight(2, 0.5); !errors.Is(err, redis.ErrDatabaseNotFound) {
 		t.Error("a member was added by a canceled AddDatabase")
 	}
 }
 
 func TestMultiDBManualSelectionAfterClose(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 	if err := mdb.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -2989,7 +3051,7 @@ func TestMultiDBManualSelectionAfterClose(t *testing.T) {
 }
 
 func TestMultiDBConnectionResetRecordsOnBreaker(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.CommandRetries = 2
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
@@ -3015,8 +3077,8 @@ func TestMultiDBConnectionResetRecordsOnBreaker(t *testing.T) {
 }
 
 func TestMultiDBPanickyFailoverCallbacksDoNotCrash(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
-	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 0.5, true)
 	opts := baseOptions()
 	opts.CommandRetries = 1
 	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
@@ -3044,7 +3106,7 @@ func TestMultiDBPanickyFailoverCallbacksDoNotCrash(t *testing.T) {
 }
 
 func TestMultiDBProcessRejectsRawHImportCmd(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
 
 	// A hand-built HIMPORT command through Process must be rejected like
@@ -3070,7 +3132,7 @@ func TestMultiDBClusterOverridesAfterClose(t *testing.T) {
 	opts := baseOptions()
 	opts.Clients = []redis.MultiDBClientConfig{{
 		ClusterOptions: &redis.ClusterOptions{Addrs: []string{"127.0.0.1:1"}},
-		Weight:         1,
+		Weight:         0.5,
 		HealthChecks:   []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -3100,7 +3162,7 @@ func TestMultiDBClusterOverridesAfterClose(t *testing.T) {
 }
 
 func TestMultiDBSameActiveManualSelectionResetsEscalation(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.CommandRetries = 1
 	opts.MaxFailoverAttempts = 2
@@ -3137,12 +3199,12 @@ func TestMultiDBSameActiveManualSelectionResetsEscalation(t *testing.T) {
 
 func TestMultiDBControlOpsClosedWhileWaitingForLock(t *testing.T) {
 	check := &armableBlockingCheck{gate: make(chan struct{})}
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
 	dbB := &testDB{
 		hook: &hookedDB{name: "b"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "127.0.0.1:2"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{check},
 		},
 	}
@@ -3217,7 +3279,7 @@ func TestMultiDBProcessNoticesCloseMidRetry(t *testing.T) {
 	}
 	opts.Clients = []redis.MultiDBClientConfig{{
 		Options:      &redis.Options{Addr: "127.0.0.1:1"},
-		Weight:       1,
+		Weight:       0.5,
 		HealthChecks: []redis.MultiDBHealthCheck{check},
 	}}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -3251,12 +3313,12 @@ func TestMultiDBCanceledHealthyProbeDoesNotTouchBreaker(t *testing.T) {
 	defer cancel()
 	check := &cancelingHealthyCheck{cancel: cancel}
 
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
 	dbB := &testDB{
 		hook: &hookedDB{name: "b"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "127.0.0.1:2"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{check},
 		},
 	}
@@ -3300,7 +3362,7 @@ func (s *panickyStrategy) Select(cands []redis.MultiDBDatabaseState) int {
 
 func TestMultiDBPanickyStrategyDoesNotCrash(t *testing.T) {
 	strategy := &panickyStrategy{}
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
 	opts := baseOptions()
 	opts.FailoverStrategy = strategy
 	opts.CommandRetries = 1
@@ -3322,7 +3384,7 @@ func TestMultiDBPanickyStrategyDoesNotCrash(t *testing.T) {
 }
 
 // panickyCheck panics on every probe — the worst-case custom health check.
-type panickyCheck struct{}
+type panickyCheck struct{ testOneProbe }
 
 func (panickyCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
 	panic("panicky health check")
@@ -3333,12 +3395,12 @@ func (panickyCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (b
 }
 
 func TestMultiDBDefaultPolicySurvivesPanickyCheck(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbA := newTestDB("a", "127.0.0.1:1", 0.75, true)
 	dbB := &testDB{
 		hook: &hookedDB{name: "b"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "127.0.0.1:2"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{panickyCheck{}},
 		},
 	}
@@ -3354,12 +3416,12 @@ func TestMultiDBDefaultPolicySurvivesPanickyCheck(t *testing.T) {
 }
 
 func TestMultiDBCanceledProbeDoesNotDamageBreaker(t *testing.T) {
-	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbA := newTestDB("a", "db-a:6379", 0.75, true)
 	dbB := &testDB{
 		hook: &hookedDB{name: "b"},
 		cfg: redis.MultiDBClientConfig{
 			Options:      &redis.Options{Addr: "db-b:6379"},
-			Weight:       1,
+			Weight:       0.5,
 			HealthChecks: []redis.MultiDBHealthCheck{ctxHealthCheck{}},
 		},
 	}
@@ -3387,5 +3449,83 @@ func TestMultiDBCanceledProbeDoesNotDamageBreaker(t *testing.T) {
 	}
 	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Errorf("active = %d, want 1", got)
+	}
+}
+
+// okConfiguredCheck is always healthy and takes its probe settings from an
+// embedded multidb.PingHealthCheck.
+type okConfiguredCheck struct{ *multidb.PingHealthCheck }
+
+func (okConfiguredCheck) CheckHealth(context.Context, *redis.Client) (bool, error) { return true, nil }
+
+func (okConfiguredCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	return true, nil
+}
+
+// Under the default policy a check whose probes cannot fit its timeout is
+// rejected up front: HealthCheckInterval 1s clamps HealthCheckTimeout to 500ms,
+// and the default 3 probes 500ms apart need 1s.
+func TestMultiDBProbeBudgetValidation(t *testing.T) {
+	ctx := context.Background()
+	mk := func(checks ...redis.MultiDBHealthCheck) (*redis.MultiDBClient, error) {
+		opts := baseOptions()
+		opts.HealthCheckInterval = time.Second
+		opts.Clients = []redis.MultiDBClientConfig{
+			{Options: &redis.Options{Addr: "127.0.0.1:1"}, HealthChecks: checks},
+		}
+		return redis.NewMultiDBClient(ctx, opts)
+	}
+
+	// Implicit default PING.
+	if _, err := mk(); err == nil || !strings.Contains(err.Error(), "multidb.WithProbes") {
+		t.Errorf("default checks at 1s interval: err = %v, want a probe-budget error", err)
+	}
+	// Default config through multidb.
+	if _, err := mk(okConfiguredCheck{multidb.NewPingHealthCheck()}); err == nil || !strings.Contains(err.Error(), "multidb.WithProbes") {
+		t.Errorf("3-probe check at 1s interval: err = %v, want a probe-budget error", err)
+	}
+	// Lag-only member: the PING floor it gets while active has the defaults.
+	lagOnly := newFailbackOnlyCheck(true)
+	if _, err := mk(lagOnly); err == nil || !strings.Contains(err.Error(), "PING") {
+		t.Errorf("fail-back-only checks at 1s interval: err = %v, want a probe-budget error for the PING floor", err)
+	}
+	// One probe fits.
+	mdb, err := mk(okConfiguredCheck{multidb.NewPingHealthCheck(multidb.WithProbes(1))})
+	if err != nil {
+		t.Fatalf("WithProbes(1) at 1s interval: err = %v, want nil", err)
+	}
+	defer mdb.Close()
+
+	// AddDatabase validates the same way.
+	if _, err := mdb.AddDatabase(ctx, redis.MultiDBClientConfig{Options: &redis.Options{Addr: "127.0.0.1:2"}}); err == nil || !strings.Contains(err.Error(), "multidb.WithProbes") {
+		t.Errorf("AddDatabase with default checks: err = %v, want a probe-budget error", err)
+	}
+	if _, err := mdb.AddDatabase(ctx, redis.MultiDBClientConfig{
+		Options:      &redis.Options{Addr: "127.0.0.1:2"},
+		HealthChecks: []redis.MultiDBHealthCheck{okConfiguredCheck{multidb.NewPingHealthCheck(multidb.WithProbes(1))}},
+	}); err != nil {
+		t.Errorf("AddDatabase with WithProbes(1): err = %v, want nil", err)
+	}
+
+	// A custom policy is not validated.
+	opts := baseOptions()
+	opts.HealthCheckInterval = time.Second
+	opts.HealthCheckPolicy = multidb.NewHealthyAnyPolicy()
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		HealthChecks: []redis.MultiDBHealthCheck{okConfiguredCheck{multidb.NewPingHealthCheck(multidb.WithProbes(1))}},
+	}}
+	opts.HealthChecks = []redis.MultiDBHealthCheck{okConfiguredCheck{multidb.NewPingHealthCheck()}}
+	custom, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("custom policy: err = %v, want nil", err)
+	}
+	_ = custom.Close()
+}
+
+func TestDefaultMultiDBFailureDetectorConfig(t *testing.T) {
+	want := redis.MultiDBFailureDetectorConfig{MinNumFailures: 1000, FailureRateThreshold: 0.1, Window: 2 * time.Second}
+	if got := redis.DefaultMultiDBFailureDetectorConfig(); got != want {
+		t.Fatalf("DefaultMultiDBFailureDetectorConfig() = %+v, want %+v", got, want)
 	}
 }

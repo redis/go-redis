@@ -6,25 +6,23 @@ package multidb
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
 
 // Default values for health check configuration
 const (
-	DefaultHealthCheckProbes  = 3
-	DefaultHealthCheckDelay   = 500 * time.Millisecond
-	DefaultHealthCheckTimeout = 3 * time.Second
+	DefaultHealthCheckProbes  = imultidb.DefaultProbes       // 3
+	DefaultHealthCheckDelay   = imultidb.DefaultProbeDelay   // 500ms
+	DefaultHealthCheckTimeout = imultidb.DefaultProbeTimeout // 3s
 )
 
-// HealthCheckConfig holds configuration for health checks.
-type HealthCheckConfig struct {
-	Probes  int
-	Delay   time.Duration
-	Timeout time.Duration
-}
+// HealthCheckConfig holds configuration for health checks. It is the same
+// type as redis.MultiDBHealthCheckConfig, so the default MultiDBClient policy
+// honors it too.
+type HealthCheckConfig = redis.MultiDBHealthCheckConfig
 
 // DefaultHealthCheckConfig returns the default health check configuration.
 func DefaultHealthCheckConfig() HealthCheckConfig {
@@ -38,13 +36,14 @@ func DefaultHealthCheckConfig() HealthCheckConfig {
 // HealthCheckOption is a functional option for configuring health checks.
 type HealthCheckOption func(*HealthCheckConfig)
 
-// WithProbes sets the number of probes.
-//
-// Probes and Delay apply only under a multidb package policy (e.g.
-// NewHealthyAllPolicy). The default redis.MultiDBClient policy runs each
-// check once. A check still running when MultiDBOptions.HealthCheckTimeout
-// (default 3s; lowered to HealthCheckInterval/2 when not below the interval)
-// expires fails, so keep Probes*Delay below it.
+// WithProbes sets the number of probes. Every policy honors it, including
+// the default redis.MultiDBClient policy. A check still running when
+// MultiDBOptions.HealthCheckTimeout (default 3s; lowered to
+// HealthCheckInterval/2 when not below the interval) expires fails, so keep
+// (Probes-1)*Delay plus the probe time below it. Under the default policy
+// NewMultiDBClient and AddDatabase reject a check whose (Probes-1)*Delay is
+// not below that timeout or the check's own Timeout. Under the default policy
+// SetActiveDatabase and ProbeTargetBeforeFailover run one probe.
 func WithProbes(probes int) HealthCheckOption {
 	return func(c *HealthCheckConfig) {
 		if probes > 0 {
@@ -53,8 +52,8 @@ func WithProbes(probes int) HealthCheckOption {
 	}
 }
 
-// WithDelay sets the delay between probes. See WithProbes for when it
-// applies.
+// WithDelay sets the delay between probes. See WithProbes for the timeout
+// cap.
 func WithDelay(delay time.Duration) HealthCheckOption {
 	return func(c *HealthCheckConfig) {
 		if delay >= 0 {
@@ -63,9 +62,8 @@ func WithDelay(delay time.Duration) HealthCheckOption {
 	}
 }
 
-// WithTimeout sets the timeout for the health check (all its probes). It
-// applies only under a multidb package policy, and is capped by
-// MultiDBOptions.HealthCheckTimeout.
+// WithTimeout sets the timeout for the health check (all its probes). It is
+// capped by MultiDBOptions.HealthCheckTimeout.
 func WithTimeout(timeout time.Duration) HealthCheckOption {
 	return func(c *HealthCheckConfig) {
 		if timeout > 0 {
@@ -103,61 +101,21 @@ type ConfigurableHealthCheck interface {
 	Config() HealthCheckConfig
 }
 
-// probeFunc runs one probe of a health check and reports whether it passed
-// along with any error that caused a failure.
+// probeFunc runs one probe of a health check.
 type probeFunc func(context.Context, redis.MultiDBHealthCheck) (bool, error)
 
-// checkRunner interprets the probes of a single health check (all / majority /
-// any) and reports whether that check is healthy.
-type checkRunner func(ctx context.Context, hc redis.MultiDBHealthCheck, probe probeFunc) bool
-
-// runChecks executes every health check concurrently, each with its own
-// timeout, and returns true only if all of them pass (AND across checks). The
-// per-check probe interpretation is delegated to runner. It is the single
-// implementation shared by every policy; the policies differ only in which
-// runner they pass in.
-func runChecks(ctx context.Context, checks []redis.MultiDBHealthCheck, probe probeFunc, runner checkRunner) bool {
-	if len(checks) == 0 {
-		return true
-	}
-	// Cancelable so an early failure stops the remaining workers instead of
-	// letting a slow probe run to its own timeout.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Buffered to the number of checks so a worker never blocks on send even
-	// when we return early, preventing goroutine leaks.
-	results := make(chan bool, len(checks))
-	var wg sync.WaitGroup
-	for _, hc := range checks {
-		wg.Add(1)
-		go func(check redis.MultiDBHealthCheck) {
-			defer wg.Done()
-			results <- safeRunner(ctx, check, probe, runner)
-		}(hc)
-	}
-	go func() { wg.Wait(); close(results) }()
-
-	// Every health check must pass (AND across checks).
-	for result := range results {
-		if !result {
-			return false
-		}
-	}
-	return true
-}
-
-// safeRunner invokes runner and recovers from any panic, reporting the check
-// as unhealthy in that case. This guarantees every worker in runChecks sends
-// exactly one result: a panicking runner must not be silently dropped, which
-// would let the consumer return true after fewer than len(checks) results.
-func safeRunner(ctx context.Context, hc redis.MultiDBHealthCheck, probe probeFunc, runner checkRunner) (ok bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			ok = false
-		}
-	}()
-	return runner(ctx, hc, probe)
+// runChecks runs every check concurrently and returns true only if all pass
+// (AND across checks). runner interprets the probes of one check. The logic is
+// shared with the default redis.MultiDBClient policy, which also runs one
+// probe per check for SetActiveDatabase and ProbeTargetBeforeFailover; these
+// policies always run the configured probes.
+func runChecks(ctx context.Context, checks []redis.MultiDBHealthCheck, probe probeFunc, runner imultidb.ProbeRunner) bool {
+	return imultidb.RunChecks(ctx, len(checks), func(ctx context.Context, i int) bool {
+		hc := checks[i]
+		return runner(ctx, imultidb.ProbeConfig(getConfig(hc)), func(ctx context.Context) (bool, error) {
+			return probe(ctx, hc)
+		})
+	})
 }
 
 func standaloneProbe(client *redis.Client) probeFunc {
@@ -185,11 +143,11 @@ type HealthyAllPolicy struct{}
 func NewHealthyAllPolicy() *HealthyAllPolicy { return &HealthyAllPolicy{} }
 
 func (p *HealthyAllPolicy) Execute(ctx context.Context, checks []redis.MultiDBHealthCheck, client *redis.Client) bool {
-	return runChecks(ctx, checks, standaloneProbe(client), runProbesAllMustPass)
+	return runChecks(ctx, checks, standaloneProbe(client), imultidb.ProbesAllMustPass)
 }
 
 func (p *HealthyAllPolicy) ExecuteCluster(ctx context.Context, checks []redis.MultiDBHealthCheck, client *redis.ClusterClient) bool {
-	return runChecks(ctx, checks, clusterProbe(client), runProbesAllMustPass)
+	return runChecks(ctx, checks, clusterProbe(client), imultidb.ProbesAllMustPass)
 }
 
 // HealthyMajorityPolicy returns true if a MAJORITY of probes succeed.
@@ -204,11 +162,11 @@ type HealthyMajorityPolicy struct{}
 func NewHealthyMajorityPolicy() *HealthyMajorityPolicy { return &HealthyMajorityPolicy{} }
 
 func (p *HealthyMajorityPolicy) Execute(ctx context.Context, checks []redis.MultiDBHealthCheck, client *redis.Client) bool {
-	return runChecks(ctx, checks, standaloneProbe(client), runProbesMajority)
+	return runChecks(ctx, checks, standaloneProbe(client), imultidb.ProbesMajority)
 }
 
 func (p *HealthyMajorityPolicy) ExecuteCluster(ctx context.Context, checks []redis.MultiDBHealthCheck, client *redis.ClusterClient) bool {
-	return runChecks(ctx, checks, clusterProbe(client), runProbesMajority)
+	return runChecks(ctx, checks, clusterProbe(client), imultidb.ProbesMajority)
 }
 
 // HealthyAnyPolicy returns true if AT LEAST ONE probe succeeds.
@@ -222,11 +180,11 @@ type HealthyAnyPolicy struct{}
 func NewHealthyAnyPolicy() *HealthyAnyPolicy { return &HealthyAnyPolicy{} }
 
 func (p *HealthyAnyPolicy) Execute(ctx context.Context, checks []redis.MultiDBHealthCheck, client *redis.Client) bool {
-	return runChecks(ctx, checks, standaloneProbe(client), runProbesAny)
+	return runChecks(ctx, checks, standaloneProbe(client), imultidb.ProbesAny)
 }
 
 func (p *HealthyAnyPolicy) ExecuteCluster(ctx context.Context, checks []redis.MultiDBHealthCheck, client *redis.ClusterClient) bool {
-	return runChecks(ctx, checks, clusterProbe(client), runProbesAny)
+	return runChecks(ctx, checks, clusterProbe(client), imultidb.ProbesAny)
 }
 
 // getConfig returns the health check config, using defaults if not
@@ -249,99 +207,4 @@ func getConfig(hc redis.MultiDBHealthCheck) HealthCheckConfig {
 		cfg.Delay = DefaultHealthCheckDelay
 	}
 	return cfg
-}
-
-// runProbesAllMustPass runs probes where ALL must succeed.
-func runProbesAllMustPass(ctx context.Context, hc redis.MultiDBHealthCheck, probe probeFunc) bool {
-	cfg := getConfig(hc)
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-
-	for i := 0; i < cfg.Probes; i++ {
-		ok, _ := probe(ctx, hc)
-		// A pass that arrives after the check's Timeout does not count:
-		// the timeout bounds how long a healthy member may take to answer,
-		// and a check that ignores ctx can otherwise return true late.
-		if !ok || ctx.Err() != nil {
-			return false
-		}
-		if i < cfg.Probes-1 && cfg.Delay > 0 {
-			select {
-			case <-ctx.Done():
-				return false
-			case <-time.After(cfg.Delay):
-			}
-		}
-	}
-	return true
-}
-
-// runProbesMajority runs probes where MAJORITY must succeed.
-func runProbesMajority(ctx context.Context, hc redis.MultiDBHealthCheck, probe probeFunc) bool {
-	cfg := getConfig(hc)
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-
-	// Strict majority: more than half must pass
-	// (probes - 1) // 2 gives the max allowed failures
-	allowedFailures := (cfg.Probes - 1) / 2
-	// requiredSuccesses is the number of successful probes that guarantees a
-	// strict majority, allowing an early exit once it is reached.
-	requiredSuccesses := cfg.Probes - allowedFailures
-	failures := 0
-	successes := 0
-
-	for i := 0; i < cfg.Probes; i++ {
-		ok, _ := probe(ctx, hc)
-		if ok && ctx.Err() != nil {
-			// Late pass (see runProbesAllMustPass): counts as a failure.
-			ok = false
-		}
-		if ok {
-			successes++
-			if successes >= requiredSuccesses {
-				return true
-			}
-		} else {
-			failures++
-			if failures > allowedFailures {
-				return false
-			}
-		}
-		if i < cfg.Probes-1 && cfg.Delay > 0 {
-			select {
-			case <-ctx.Done():
-				return false
-			case <-time.After(cfg.Delay):
-			}
-		}
-	}
-	return true
-}
-
-// runProbesAny runs probes where ANY success is enough.
-func runProbesAny(ctx context.Context, hc redis.MultiDBHealthCheck, probe probeFunc) bool {
-	cfg := getConfig(hc)
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-
-	for i := 0; i < cfg.Probes; i++ {
-		ok, _ := probe(ctx, hc)
-		if ctx.Err() != nil {
-			// Late pass (see runProbesAllMustPass): does not count, and no
-			// probe after the timeout can.
-			return false
-		}
-		if ok {
-			return true
-		}
-		if i < cfg.Probes-1 && cfg.Delay > 0 {
-			select {
-			case <-ctx.Done():
-				return false
-			case <-time.After(cfg.Delay):
-			}
-		}
-	}
-	return false
 }

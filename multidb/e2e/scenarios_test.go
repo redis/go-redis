@@ -433,7 +433,7 @@ func TestSetWeightSteersFallback(t *testing.T) {
 	// The target member becomes the heaviest healthy member: the next
 	// fallback pass must switch to it — not back toward the (still down)
 	// member 0.
-	if err := mdb.SetWeight(target, 10); err != nil {
+	if err := mdb.SetWeight(target, 1); err != nil {
 		t.Fatalf("SetWeight: %v", err)
 	}
 	eventually(t, 30*time.Second, "fallback to the re-weighted member", func() bool {

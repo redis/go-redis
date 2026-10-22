@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/failuredetector"
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
@@ -24,8 +25,9 @@ const (
 	// InitialDBStateAllAvailable requires every configured database to be
 	// healthy on initialization.
 	InitialDBStateAllAvailable InitialDBState = "all_available"
-	// InitialDBStateMajorityAvailable requires a strict majority of the
-	// configured databases to be healthy on initialization. This is the default.
+	// InitialDBStateMajorityAvailable requires half of the configured
+	// databases, rounded up, to be healthy on initialization: 1 of 2, 2 of 3,
+	// 2 of 4, 3 of 5. This is the default.
 	InitialDBStateMajorityAvailable InitialDBState = "majority_available"
 	// InitialDBStateOneAvailable requires at least one configured database to
 	// be healthy on initialization.
@@ -48,7 +50,8 @@ var (
 	// and recovers when one becomes healthy again.
 	ErrPermanentlyNotAvailable = errors.New("redis: multidb: no healthy database available (permanently)")
 	// ErrInsufficientHealthyDatabases is returned by NewMultiDBClient when the
-	// InitialDBState policy is not satisfied.
+	// InitialDBState policy is not satisfied. When no enabled member was
+	// healthy, that error also matches ErrPermanentlyNotAvailable.
 	ErrInsufficientHealthyDatabases = errors.New("redis: multidb: insufficient healthy databases on initialization")
 	// ErrTargetUnhealthy is returned by SetActiveDatabase when the requested
 	// target database fails its health probe. Use ForceActiveDatabase to switch
@@ -58,6 +61,9 @@ var (
 	// given id (never added, or already removed). Member ids are stable and
 	// never reused, so a removed member's id stays invalid forever.
 	ErrDatabaseNotFound = errors.New("redis: multidb: no database with the given id")
+	// ErrDatabaseDisabled is returned by SetActiveDatabase when the target's
+	// weight is -1 (disabled). Use ForceActiveDatabase to select it anyway.
+	ErrDatabaseDisabled = errors.New("redis: multidb: database is disabled (weight -1)")
 )
 
 // MultiDBFailureDetector aggregates command outcomes and decides when the
@@ -77,10 +83,47 @@ type MultiDBFailureDetector interface {
 	Reset()
 }
 
+// MultiDBFailureDetectorConfig configures the default command failure
+// detector. The detector trips when, within Window, at least MinNumFailures
+// commands failed AND the failure rate is at least FailureRateThreshold.
+//
+// When set, the fields are used as given; unset fields do not take the
+// defaults. MinNumFailures alone (rate 0) drops the 10% rate condition. A
+// rate alone (MinNumFailures 0) trips on the first failure of an idle client:
+// 1 failure out of 1 command is 100%. Only Window 0 falls back to its default
+// (2s). Start from DefaultMultiDBFailureDetectorConfig to change one field.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
+type MultiDBFailureDetectorConfig struct {
+	// MinNumFailures is the minimum number of failures in the window. 0
+	// ignores the count (the rate alone decides).
+	MinNumFailures int
+	// FailureRateThreshold is the minimum failure rate in the window, in
+	// (0, 1]. 0 ignores the rate (the count alone decides). MinNumFailures and
+	// FailureRateThreshold cannot both be 0.
+	FailureRateThreshold float64
+	// Window is the sliding window the outcomes are counted in. 0 means the
+	// default of 2s.
+	Window time.Duration
+}
+
+// DefaultMultiDBFailureDetectorConfig returns the default detector settings:
+// 1000 failures AND a 10% failure rate within 2s.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
+func DefaultMultiDBFailureDetectorConfig() MultiDBFailureDetectorConfig {
+	def := failuredetector.DefaultCommandFailureDetectorConfig()
+	return MultiDBFailureDetectorConfig{
+		MinNumFailures:       int(def.MinNumFailures),
+		FailureRateThreshold: def.FailureRateThreshold,
+		Window:               def.FailureDetectionWindow,
+	}
+}
+
 // MultiDBHealthCheckPolicy evaluates a set of health checks against a
-// database. Implementations with probe/delay semantics live in the multidb
-// package (HealthyAllPolicy, HealthyMajorityPolicy, HealthyAnyPolicy) and
-// satisfy this interface structurally.
+// database. The default is HEALTHY_ALL (see MultiDBOptions.HealthCheckPolicy).
+// The multidb package has HealthyAllPolicy, HealthyMajorityPolicy and
+// HealthyAnyPolicy, which satisfy this interface structurally.
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBHealthCheckPolicy interface {
@@ -102,7 +145,8 @@ type MultiDBDatabaseState struct {
 
 // MultiDBFailoverStrategy selects the failover target from candidate
 // databases. Return the chosen database's id (MultiDBDatabaseState.ID), or -1
-// when no candidate is acceptable.
+// when no candidate is acceptable. Disabled members (weight -1) are not
+// among the candidates.
 //
 // A candidate whose Allowed is false is never seated: returning its id drops
 // that candidate and Select is asked again with the remaining ones, until it
@@ -118,7 +162,8 @@ type MultiDBFailoverStrategy interface {
 }
 
 // WeightBasedFailoverStrategy selects the allowed candidate with the highest
-// weight. It is the default strategy.
+// weight. It is the default strategy. Disabled members (weight -1) are never
+// offered as candidates; the strategy also skips any negative weight.
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 type WeightBasedFailoverStrategy struct{}
@@ -127,7 +172,7 @@ func (WeightBasedFailoverStrategy) Select(candidates []MultiDBDatabaseState) int
 	best := -1
 	bestWeight := 0.0
 	for _, c := range candidates {
-		if !c.Allowed {
+		if !c.Allowed || c.Weight < 0 {
 			continue
 		}
 		if best == -1 || c.Weight > bestWeight {
@@ -161,13 +206,21 @@ type MultiDBCircuitBreakerConfig struct {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 type MultiDBClientConfig struct {
-	// Options configures a standalone client for this database.
+	// Options configures a standalone client for this database. MaxRetries
+	// left at 0 becomes -1 (no member retries): MultiDB retries through
+	// CommandRetries instead. An explicit MaxRetries is kept, but it
+	// multiplies the sends of every attempt and its retries are not seen by
+	// the circuit breaker or the failure detector.
 	Options *Options
 	// ClusterOptions configures a cluster client.
 	ClusterOptions *ClusterOptions
 
 	// Weight is the database's selection priority; the failover strategy
-	// prefers higher weights. Default: 1.0.
+	// prefers higher weights. Valid values are in (0, 1]; 0 means the default
+	// of 1.0. -1 disables the member: initial selection, failover and
+	// auto-fallback never pick it, and SetActiveDatabase refuses it with
+	// ErrDatabaseDisabled (ForceActiveDatabase still selects it). Any other
+	// value is rejected. At least one member must be enabled.
 	Weight float64
 
 	// HealthChecks run against this database in addition to the global
@@ -198,37 +251,55 @@ type MultiDBOptions struct {
 	Clients []MultiDBClientConfig
 
 	// HealthCheckInterval is the cadence of the background health checks.
-	// Default: 5s.
+	// Default: 5s. It also lowers HealthCheckTimeout (see there).
 	HealthCheckInterval time.Duration
 	// HealthCheckTimeout bounds one health-check pass against one database
-	// via the probe context. It covers the whole policy run (all checks, and
-	// all probes and delays under the multidb package policies), so it also
-	// caps any per-check timeout (multidb.WithTimeout, the lag-aware HTTP
-	// timeout). Note that with the default PING check the
-	// member client applies its own dial/read/write timeouts to the socket
-	// unless ContextTimeoutEnabled is set on the member options — enable it
-	// there when the probe deadline must also cut socket waits short.
+	// via the probe context. It covers the whole policy run (all checks, all
+	// probes and the delays between them), so it also caps any per-check
+	// timeout (multidb.WithTimeout, the lag-aware HTTP timeout). A pass whose
+	// probes do not finish within it fails: the default 3 probes 500ms apart
+	// need more than 1s. Under the default policy, NewMultiDBClient and
+	// AddDatabase reject a check whose (Probes-1)*Delay is not below
+	// min(HealthCheckTimeout, the check's Timeout); with the default probes
+	// that is any timeout of 1s or less, i.e. a HealthCheckInterval of 2s or
+	// less. Lower the probes for such timeouts, e.g. with
+	// multidb.NewPingHealthCheck(multidb.WithProbes(1)). Note that with the
+	// default PING check the member client applies its own dial/read/write
+	// timeouts to the socket unless ContextTimeoutEnabled is set on the member
+	// options — enable it there when the probe deadline must also cut socket
+	// waits short.
 	// Default: 3s; clamped to HealthCheckInterval/2 when >= interval.
 	HealthCheckTimeout time.Duration
 	// HealthChecks run against every database (see MultiDBClientConfig.HealthChecks
 	// for the merge semantics).
 	HealthChecks []MultiDBHealthCheck
 	// HealthCheckPolicy is the default policy for evaluating a database's
-	// health checks. Default: every check must pass; checks run once each, in order, until one fails.
-	// The default ignores a check's Config() (Probes, Delay, Timeout; see
-	// multidb.ConfigurableHealthCheck); use a multidb package policy such as
-	// multidb.NewHealthyAllPolicy to apply it.
+	// health checks. Default: HEALTHY_ALL, the same logic as
+	// multidb.NewHealthyAllPolicy. The checks run concurrently and every probe
+	// of every check must pass. Each check is probed as its Config() says
+	// (Probes, Delay, Timeout; see MultiDBHealthCheckConfig); a check without
+	// Config(), including the built-in PING, gets 3 probes 500ms apart. Only
+	// the built-in default runs one probe per check for SetActiveDatabase and
+	// ProbeTargetBeforeFailover; an explicit multidb policy runs the full
+	// probes there too.
 	HealthCheckPolicy MultiDBHealthCheckPolicy
 
 	// FailureDetector aggregates command outcomes; when it trips, traffic is
 	// moved even before the active breaker fully opens. Default: a
-	// sliding-window detector (1000 failures AND 10% failure rate within 2s).
+	// sliding-window detector (1000 failures AND 10% failure rate within 2s),
+	// tunable through FailureDetectorConfig.
 	//
 	// A non-nil detector is used as-is and is stateful: do NOT share one
 	// options value carrying a custom detector across multiple clients, or
 	// outcomes recorded by one client will trip failover on the others.
 	// Leave nil to get an independent default detector per client.
 	FailureDetector MultiDBFailureDetector
+	// FailureDetectorConfig configures the default detector. nil means the
+	// defaults (1000 failures, 10% rate, 2s window). When set, its fields are
+	// used as given (see MultiDBFailureDetectorConfig); start from
+	// DefaultMultiDBFailureDetectorConfig. It cannot be combined with
+	// FailureDetector.
+	FailureDetectorConfig *MultiDBFailureDetectorConfig
 	// CircuitBreakerConfig configures every database's circuit breaker.
 	CircuitBreakerConfig *MultiDBCircuitBreakerConfig
 	// FailoverStrategy selects failover targets. Default:
@@ -236,8 +307,10 @@ type MultiDBOptions struct {
 	FailoverStrategy MultiDBFailoverStrategy
 
 	// CommandRetries is the number of additional attempts a failed command
-	// gets (against the newly selected database after a failover).
-	// -1 or 0 means the default of 2; use CommandRetriesNone for no retries.
+	// gets. Each attempt goes to the database selected at that moment, so a
+	// retry lands on the new active once the breaker or failure detector has
+	// failed over. Like Options.MaxRetries: 0 means the default of 2, -1
+	// disables retries, and other negative values are rejected.
 	CommandRetries int
 
 	// AutoFallbackInterval is how often the client checks whether a
@@ -263,7 +336,10 @@ type MultiDBOptions struct {
 	FailoverAttemptDelay time.Duration
 
 	// ProbeTargetBeforeFailover makes automatic failover run a synchronous
-	// health-check pass against the selected candidate before switching.
+	// health-check pass against the selected candidate before switching. The
+	// default policy runs one probe per check there (each check's Timeout and
+	// HealthCheckTimeout still apply), so the probe fits short command
+	// deadlines; a custom policy runs as configured.
 	// Default: false (trust the circuit state maintained by the background
 	// health checks).
 	ProbeTargetBeforeFailover bool
@@ -286,11 +362,6 @@ type MultiDBOptions struct {
 	// rely on it running synchronously with the transition.
 	OnCircuitStateChanged func(dbID int, from, to string)
 }
-
-// CommandRetriesNone disables command retries.
-//
-// EXPERIMENTAL: this API is subject to change, use with caution.
-const CommandRetriesNone = -2
 
 const (
 	defaultMultiDBHealthCheckInterval = 5 * time.Second
@@ -318,10 +389,12 @@ func (opt *MultiDBOptions) init() error {
 		opt.HealthCheckTimeout = opt.HealthCheckInterval / 2
 	}
 	switch {
-	case opt.CommandRetries == CommandRetriesNone:
+	case opt.CommandRetries == -1:
 		opt.CommandRetries = 0
-	case opt.CommandRetries <= 0:
+	case opt.CommandRetries == 0:
 		opt.CommandRetries = defaultMultiDBCommandRetries
+	case opt.CommandRetries < 0:
+		return fmt.Errorf("redis: multidb: invalid CommandRetries %d (use -1 to disable retries)", opt.CommandRetries)
 	}
 	if opt.AutoFallbackInterval == 0 {
 		opt.AutoFallbackInterval = defaultMultiDBAutoFallback
@@ -339,6 +412,9 @@ func (opt *MultiDBOptions) init() error {
 	}
 	if opt.FailoverAttemptDelay <= 0 {
 		opt.FailoverAttemptDelay = defaultMultiDBFailoverDelay
+	}
+	if err := opt.validateFailureDetectorConfig(); err != nil {
+		return err
 	}
 	// Note: the default FailureDetector is deliberately NOT filled in here.
 	// It is stateful, and writing it back into the caller's options would
@@ -361,6 +437,46 @@ func (opt *MultiDBOptions) init() error {
 	return nil
 }
 
+func (opt *MultiDBOptions) validateFailureDetectorConfig() error {
+	fdc := opt.FailureDetectorConfig
+	if fdc == nil {
+		return nil
+	}
+	if opt.FailureDetector != nil {
+		return errors.New("redis: multidb: FailureDetector and FailureDetectorConfig are mutually exclusive")
+	}
+	if fdc.MinNumFailures < 0 {
+		return fmt.Errorf("redis: multidb: invalid FailureDetectorConfig.MinNumFailures %d", fdc.MinNumFailures)
+	}
+	if math.IsNaN(fdc.FailureRateThreshold) || fdc.FailureRateThreshold < 0 || fdc.FailureRateThreshold > 1 {
+		return fmt.Errorf("redis: multidb: invalid FailureDetectorConfig.FailureRateThreshold %v (want 0 or a value in (0, 1])", fdc.FailureRateThreshold)
+	}
+	if fdc.MinNumFailures == 0 && fdc.FailureRateThreshold == 0 {
+		return errors.New("redis: multidb: FailureDetectorConfig needs MinNumFailures or FailureRateThreshold")
+	}
+	if fdc.Window < 0 {
+		return fmt.Errorf("redis: multidb: invalid FailureDetectorConfig.Window %v", fdc.Window)
+	}
+	return nil
+}
+
+// commandFailureDetectorConfig maps the public config onto the internal
+// detector config. nil yields the defaults.
+func commandFailureDetectorConfig(fdc *MultiDBFailureDetectorConfig) failuredetector.CommandFailureDetectorConfig {
+	cfg := failuredetector.DefaultCommandFailureDetectorConfig()
+	if fdc == nil {
+		return cfg
+	}
+	cfg.MinNumFailures = uint64(fdc.MinNumFailures)
+	cfg.IgnoreMinNumFailures = fdc.MinNumFailures == 0
+	cfg.FailureRateThreshold = fdc.FailureRateThreshold
+	cfg.IgnoreFailureRateThreshold = fdc.FailureRateThreshold == 0
+	if fdc.Window > 0 {
+		cfg.FailureDetectionWindow = fdc.Window
+	}
+	return cfg
+}
+
 func (cfg *MultiDBClientConfig) validate() error {
 	set := 0
 	if cfg.Options != nil {
@@ -372,12 +488,8 @@ func (cfg *MultiDBClientConfig) validate() error {
 	if set != 1 {
 		return fmt.Errorf("redis: multidb: exactly one of Options or ClusterOptions must be set per database (got %d)", set)
 	}
-	if math.IsNaN(cfg.Weight) {
-		// A NaN weight makes every ordered comparison false, so the failover
-		// strategy and auto-fallback can neither prefer nor reject the member on
-		// priority — selection degenerates to iteration order. Reject it here
-		// (and in SetWeight) instead of storing a value that poisons selection.
-		return errors.New("redis: multidb: database Weight must not be NaN")
+	if err := validateMultiDBWeight(cfg.Weight); err != nil {
+		return err
 	}
 	if cfg.ClusterOptions != nil && (cfg.ClusterOptions.RouteByLatency || cfg.ClusterOptions.RouteRandomly || cfg.ClusterOptions.ReadOnly) {
 		// The cluster health checks (built-in PING and lag-aware) probe masters
@@ -388,6 +500,31 @@ func (cfg *MultiDBClientConfig) validate() error {
 		return errors.New("redis: multidb: RouteByLatency/RouteRandomly/ReadOnly are not supported for cluster member databases (health checks probe masters only)")
 	}
 	return nil
+}
+
+// multidbWeightDisabled is the weight of a member that is never selected
+// automatically.
+const multidbWeightDisabled = -1
+
+// validateMultiDBWeight accepts -1 (disabled), 0 (default) and values in
+// (0, 1]. NaN is rejected explicitly: it makes every ordered comparison false,
+// so selection would degenerate to iteration order.
+func validateMultiDBWeight(w float64) error {
+	if w == multidbWeightDisabled || w == 0 {
+		return nil
+	}
+	if math.IsNaN(w) || w < 0 || w > 1 {
+		return fmt.Errorf("redis: multidb: invalid database weight %v (want -1 to disable, 0 for the default 1.0, or a value in (0, 1])", w)
+	}
+	return nil
+}
+
+// normalizeMultiDBWeight maps the 0 default to 1.0.
+func normalizeMultiDBWeight(w float64) float64 {
+	if w == 0 {
+		return defaultMultiDBWeight
+	}
+	return w
 }
 
 // hostOnly returns the host part of addr, or addr unchanged when it has no
@@ -440,19 +577,30 @@ type MultiDBCtrl interface {
 	ActiveDatabaseID() int
 	// SetActiveDatabase switches to the database with the given id after a fresh
 	// health probe of the target; it refuses with ErrTargetUnhealthy when the
-	// probe fails, or ErrDatabaseNotFound for an unknown id.
+	// probe fails, ErrDatabaseDisabled when the target's weight is -1, or
+	// ErrDatabaseNotFound for an unknown id. Under the default policy the
+	// probe is a single probe per check, not the 3-probe background pass.
 	SetActiveDatabase(ctx context.Context, id int) error
 	// ForceActiveDatabase switches to the database with the given id
-	// unconditionally (operator override); it returns ErrDatabaseNotFound for an
-	// unknown id.
+	// unconditionally (operator override), also to a disabled member; it
+	// returns ErrDatabaseNotFound for an unknown id. A disabled active has
+	// weight -1, so when auto-fallback is enabled it moves to an enabled,
+	// healthy member at the next fallback check.
 	ForceActiveDatabase(ctx context.Context, id int) error
 	// AddDatabase adds a member database at runtime and returns its stable id.
+	// Its startup probe is a full pass (see NewMultiDBClient).
 	AddDatabase(ctx context.Context, cfg MultiDBClientConfig) (int, error)
 	// RemoveDatabase removes the database with the given id. The active database
 	// cannot be removed. Returns ErrDatabaseNotFound for an unknown id.
 	RemoveDatabase(ctx context.Context, id int) error
-	// SetWeight changes the weight of the database with the given id. Returns
-	// ErrDatabaseNotFound for an unknown id.
+	// SetWeight changes the weight of the database with the given id. The
+	// values are those of MultiDBClientConfig.Weight: 0 sets the default 1.0,
+	// -1 disables the member. The active database cannot be disabled; switch
+	// away first. The last enabled member cannot be disabled either. Disabling
+	// waits for an in-flight failover or SetActiveDatabase; if that switch
+	// lands on the member, the call is rejected. When auto-fallback is
+	// enabled, it moves off an active that ForceActiveDatabase put on a
+	// disabled member. Returns ErrDatabaseNotFound for an unknown id.
 	SetWeight(id int, weight float64) error
 	// SetAutoFallback enables or disables automatic fallback at runtime.
 	SetAutoFallback(enabled bool)
@@ -503,6 +651,11 @@ type MultiDBClient struct {
 // satisfied; when ctx carries a deadline the initialization blocks and
 // retries until the deadline.
 //
+// With the default checks a healthy start takes at least 1s: every check
+// runs 3 probes 500ms apart, and all must pass. AddDatabase probes the same
+// way. Under the default policy, SetActiveDatabase and
+// ProbeTargetBeforeFailover use one probe per check.
+//
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient, error) {
 	if opts == nil {
@@ -510,7 +663,7 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	}
 	// Work on a private copy: init() normalizes fields in place, and writing
 	// them back into the caller's value would leak into other clients built
-	// from the same options (e.g. CommandRetriesNone normalizes to 0, which
+	// from the same options (e.g. CommandRetries -1 normalizes to 0, which
 	// a second construction would then treat as "unset" and default to 2 —
 	// re-enabling retries for a running client that reads the shared struct).
 	private := *opts
@@ -527,15 +680,32 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 		cbc := *opts.CircuitBreakerConfig
 		private.CircuitBreakerConfig = &cbc
 	}
+	if opts.FailureDetectorConfig != nil {
+		fdc := *opts.FailureDetectorConfig
+		private.FailureDetectorConfig = &fdc
+	}
 	opts = &private
 	if err := opts.init(); err != nil {
 		return nil, err
+	}
+	enabled := 0
+	for i := range opts.Clients {
+		if opts.Clients[i].Weight != multidbWeightDisabled {
+			enabled++
+		}
+	}
+	if enabled == 0 {
+		return nil, errors.New("redis: multidb: every database is disabled (weight -1); at least one must be enabled")
 	}
 
 	core := newMultidbCore(opts)
 	for i := range opts.Clients {
 		cfg := &opts.Clients[i]
 		if err := cfg.validate(); err != nil {
+			_ = core.closeAll()
+			return nil, err
+		}
+		if err := core.validateProbeBudget(cfg, fmt.Sprintf("%d (%s)", i, cfg.fqdn())); err != nil {
 			_ = core.closeAll()
 			return nil, err
 		}
