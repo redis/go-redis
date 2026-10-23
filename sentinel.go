@@ -413,6 +413,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		IdentitySuffix:            opt.IdentitySuffix,
 		FailingTimeoutSeconds:     opt.FailingTimeoutSeconds,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
+		CommandMetadata:           opt.CommandMetadata,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
