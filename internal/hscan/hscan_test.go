@@ -253,14 +253,40 @@ var _ = Describe("Scan", func() {
 		Expect(td.Time).To(BeNil())
 	})
 
-	It("returns an error for uintptr fields after a bad value", func() {
-		var d struct {
-			I int     `redis:"i"`
+	It("returns the first error when a later field can't be set", func() {
+		type withUintptr struct {
+			A int     `redis:"a"`
 			P uintptr `redis:"p"`
 		}
-		err := Scan(&d, i{"i", "p"}, i{"x", "1"})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring(".I of type int"))
+		type withUnexported struct {
+			A int    `redis:"a"`
+			b string `redis:"b"`
+		}
+		type withUnexportedPtr struct {
+			A int     `redis:"a"`
+			b *string `redis:"b"`
+		}
+		type withUnexportedBytes struct {
+			A int    `redis:"a"`
+			b []byte `redis:"b"`
+		}
+		type withString struct {
+			A int    `redis:"a"`
+			B string `redis:"b"`
+		}
+
+		for _, dst := range []interface{}{
+			&withUintptr{}, &withUnexported{}, &withUnexportedPtr{},
+			&withUnexportedBytes{}, &withString{},
+		} {
+			err := Scan(dst, i{"a", "b", "p"}, i{"x", "1", "1"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(".A of type int"))
+		}
+
+		var u withUnexported
+		Expect(Scan(&u, i{"b"}, i{"1"})).To(HaveOccurred())
+		Expect(u.b).To(BeEmpty())
 	})
 
 	It("catches bad values", func() {

@@ -91,6 +91,10 @@ func (s StructValue) Scan(key string, value string) error {
 	}
 
 	v := s.value.Field(field.index)
+	if !v.CanSet() {
+		t := s.value.Type()
+		return fmt.Errorf("redis.Scan(unexported field %s.%s)", t.Name(), t.Field(field.index).Name)
+	}
 	if v.Kind() == reflect.Pointer && v.IsNil() {
 		ptr := reflect.New(v.Type().Elem())
 		if err := s.decode(field, ptr, value); err != nil {
