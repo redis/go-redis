@@ -877,10 +877,16 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 }
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
+	if err := commandConstructorErr(cmd); err != nil {
+		return err
+	}
+
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		cmd.SetErr(nil)
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				cmd.SetErr(err)
 				return err
 			}
 		}

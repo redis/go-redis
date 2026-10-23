@@ -2061,7 +2061,83 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
+func (c *ClusterClient) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	cmd := NewMonitorCmd(ctx, ch, "monitor")
+	_ = c.Process(ctx, cmd)
+	return cmd
+}
+
+func (c *ClusterClient) processMonitor(ctx context.Context, cmd Cmder) error {
+	if err := commandConstructorErr(cmd); err != nil {
+		return err
+	}
+	decision := c.commandRoutingDecision(ctx, cmd)
+	if decision.policyErr != nil {
+		return decision.policyErr
+	}
+	if decision.policy != nil && decision.policy.Request != routing.ReqDefault {
+		return fmt.Errorf("redis: cannot route monitor command %q with request policy %s", cmd.Name(), decision.policy.Request)
+	}
+	callerCtx := ctx
+	var node *clusterNode
+	var lastErr error
+	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		cmd.SetErr(nil)
+		ctx = callerCtx
+		if attempt > 0 {
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				cmd.SetErr(err)
+				return err
+			}
+		}
+		if node == nil {
+			var err error
+			if !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
+				node, err = c.cmdNodeWithShardPickerAndDecision(ctx, decision.naturalSlot, c.opt.ShardPicker, &decision)
+			} else {
+				node, err = c.cmdNodeWithDecision(ctx, decision.naturalSlot, &decision)
+			}
+			if err != nil {
+				lastErr = err
+				if c.reloadTopologyForRetry(ctx, err, attempt) {
+					continue
+				}
+				return err
+			}
+		}
+
+		lastErr = node.Client.processMonitor(ctx, cmd)
+		if lastErr == nil || lastErr == Nil {
+			return lastErr
+		}
+		if c.reloadTopologyForRetry(ctx, lastErr, attempt) {
+			node = nil
+			continue
+		}
+		if errors.Is(lastErr, pool.ErrClosed) {
+			node = nil
+			continue
+		}
+		if shouldRetry(lastErr, true) {
+			if attempt > 0 {
+				node.MarkAsFailing()
+				node = nil
+			}
+			continue
+		}
+		return lastErr
+	}
+	return lastErr
+}
+
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
+	if err := commandConstructorErr(cmd); err != nil {
+		return err
+	}
+	if isMonitorCmd(ctx, cmd) {
+		return c.processMonitor(ctx, cmd)
+	}
+
 	callerCtx := ctx
 	decision := c.commandRoutingDecision(ctx, cmd)
 	if decision.policyErr != nil {
@@ -2076,6 +2152,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	needsInitialNode := c.opt.DisableRoutingPolicies || decision.policy == nil ||
 		decision.policy.Request == routing.ReqDefault
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		cmd.SetErr(nil)
 		ctx = callerCtx
 		if redirected {
 			ctx = cscBypass(ctx)
@@ -2084,6 +2161,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		// should be attempted immediately.
 		if attempt > 0 && !moved && !ask {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				cmd.SetErr(err)
 				return err
 			}
 		}
@@ -2540,6 +2618,9 @@ func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*A
 func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 	ap.routeCommand = func(ctx context.Context, cmd Cmder) (bool, error) {
 		if c.opt.DisableRoutingPolicies {
+			if isMonitorCmd(ctx, cmd) {
+				return true, nil
+			}
 			return false, c.legacyRoutingDecision(cmd).policyErr
 		}
 		decision := c.autoPipelineRoutingDecision(ctx, cmd)
@@ -2547,6 +2628,9 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 			return false, decision.policyErr
 		}
 		fansOut := clusterCommandFansOut(cmd, decision)
+		if isMonitorCmd(ctx, cmd) && fansOut {
+			return false, fmt.Errorf("redis: cannot route monitor command %q to multiple cluster nodes", cmd.Name())
+		}
 		divert := fansOut || decision.policy.Request == routing.ReqMultiShard && !decision.policyFromMetadata
 		// Diverted commands bypass the ordered batch stream. The blocking face
 		// already waits per call; async callers must explicitly opt out of order.

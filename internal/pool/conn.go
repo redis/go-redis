@@ -1177,7 +1177,7 @@ func (cn *Conn) WithReader(
 			return err
 		}
 	} else {
-		// A negative timeout skips SetReadDeadline, and thus deadline(), which is
+		// A negative timeout skips SetReadDeadline and deadline(), which is
 		// the only per-I/O usedAt update. Record usage anyway so a long
 		// deadline-free hold (e.g. a full-duplex CSC session under ReadTimeout=-2)
 		// is not misjudged as idle-expired by the pool on the next Get and
@@ -1193,6 +1193,18 @@ func (cn *Conn) WithReader(
 // it (used by the CSC drainer). Takes no context: an expired cycle ctx must not
 // become the socket deadline, or the read surfaces context.DeadlineExceeded, which
 // isBadConn treats as fatal.
+func (cn *Conn) WithReaderNoDeadline(fn func(rd *proto.Reader) error) error {
+	netConn := cn.getNetConn()
+	if netConn == nil {
+		return errConnectionNotAvailable
+	}
+	if err := netConn.SetReadDeadline(time.Time{}); err != nil {
+		return err
+	}
+	cn.SetUsedAtNs(getCachedTimeNs())
+	return fn(cn.rd)
+}
+
 func (cn *Conn) WithReaderHardDeadline(
 	timeout time.Duration, fn func(rd *proto.Reader) error,
 ) (err error) {
