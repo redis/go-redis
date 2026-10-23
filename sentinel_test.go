@@ -736,6 +736,39 @@ func compareSlices(t *testing.T, a, b []string, name string) {
 	}
 }
 
+func TestFailoverClusterClientKeepsOptions(t *testing.T) {
+	// The clients are only built, never used, so nothing needs to listen here.
+	addrs := []string{"127.0.0.1:1"}
+	clients := map[string]*redis.ClusterClient{
+		"NewFailoverClusterClient": redis.NewFailoverClusterClient(&redis.FailoverOptions{
+			MasterName:            "mymaster",
+			SentinelAddrs:         addrs,
+			RouteByLatency:        true,
+			ConnMaxLifetime:       time.Hour,
+			ConnMaxLifetimeJitter: 6 * time.Minute,
+			FailingTimeoutSeconds: 30,
+		}),
+		"NewUniversalClient": redis.NewUniversalClient(&redis.UniversalOptions{
+			MasterName:            "mymaster",
+			Addrs:                 addrs,
+			RouteByLatency:        true,
+			ConnMaxLifetime:       time.Hour,
+			ConnMaxLifetimeJitter: 6 * time.Minute,
+			FailingTimeoutSeconds: 30,
+		}).(*redis.ClusterClient),
+	}
+	for name, client := range clients {
+		opt := client.Options()
+		if opt.ConnMaxLifetimeJitter != 6*time.Minute {
+			t.Errorf("%s: ConnMaxLifetimeJitter = %v, want 6m0s", name, opt.ConnMaxLifetimeJitter)
+		}
+		if opt.FailingTimeoutSeconds != 30 {
+			t.Errorf("%s: FailingTimeoutSeconds = %d, want 30", name, opt.FailingTimeoutSeconds)
+		}
+		_ = client.Close()
+	}
+}
+
 // countUsableReplicas mirrors the filter applied by parseReplicaAddrs in
 // sentinel.go: a replica is usable only when it is not s_down, o_down, or
 // disconnected. Plain len() on Sentinel's Replicas reply is not enough —
