@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -53,10 +54,17 @@ type PubSub struct {
 
 	// Cleanup callback for maintenanceNotifications upgrade tracking
 	onClose func()
+
+	// In-place re-authentication coordination state (RESP3)
+	reAuthMu    sync.Mutex
+	authWaitCh  chan error
+	readerInUse bool
+	readerCond  *sync.Cond
 }
 
 func (c *PubSub) init() {
 	c.exit = make(chan struct{})
+	c.readerCond = sync.NewCond(&c.mu)
 }
 
 func (c *PubSub) String() string {
@@ -118,6 +126,7 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	}
 
 	c.cn = cn
+	cn.SetPubSubReAuth(c.reauth)
 	return cn, nil
 }
 
@@ -212,6 +221,7 @@ func (c *PubSub) closeTheCn(reason error) error {
 	if c.cn == nil {
 		return nil
 	}
+	c.cn.SetPubSubReAuth(nil)
 	err := c.closeConn(c.cn)
 	c.cn = nil
 	return err
@@ -226,6 +236,17 @@ func (c *PubSub) Close() error {
 	}
 	c.closed = true
 	close(c.exit)
+
+	if c.authWaitCh != nil {
+		select {
+		case c.authWaitCh <- pool.ErrClosed:
+		default:
+		}
+		c.authWaitCh = nil
+	}
+	if c.readerCond != nil {
+		c.readerCond.Broadcast()
+	}
 
 	// Call cleanup callback if set
 	if c.onClose != nil {
@@ -500,21 +521,70 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		c.cmd = NewCmd(ctx)
 	}
 
+	c.mu.Lock()
+	if c.readerCond == nil {
+		c.readerCond = sync.NewCond(&c.mu)
+	}
+	for c.readerInUse {
+		c.readerCond.Wait()
+	}
+	c.readerInUse = true
+	c.mu.Unlock()
+
+	defer func() {
+		c.mu.Lock()
+		c.readerInUse = false
+		if c.readerCond != nil {
+			c.readerCond.Signal()
+		}
+		c.mu.Unlock()
+	}()
+
 	// Don't hold the lock to allow subscriptions and pings.
 	cn, err := c.connWithLock(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
-		// To be sure there are no buffered push notifications, we process them before reading the reply
-		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			// Log the error but don't fail the command execution
-			// Push notification processing errors shouldn't break normal Redis operations
-			internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
+	for {
+		err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
+			// To be sure there are no buffered push notifications, we process them before reading the reply
+			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				// Log the error but don't fail the command execution
+				// Push notification processing errors shouldn't break normal Redis operations
+				internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
+			}
+			return c.cmd.readReply(rd)
+		})
+
+		// Coordinate reply with pending in-place re-authentication if active
+		c.mu.Lock()
+		waitCh := c.authWaitCh
+		if waitCh != nil {
+			if isAuthReply(c.cmd.Val(), err) {
+				c.authWaitCh = nil
+				c.mu.Unlock()
+				waitCh <- err
+				if err != nil {
+					c.releaseConnWithLock(ctx, cn, err, timeout > 0)
+					return nil, err
+				}
+				// Re-auth succeeded; continue reading next message for subscriber
+				c.cmd = NewCmd(ctx)
+				continue
+			} else if err != nil {
+				c.authWaitCh = nil
+				c.mu.Unlock()
+				waitCh <- err
+				c.releaseConnWithLock(ctx, cn, err, timeout > 0)
+				return nil, err
+			}
 		}
-		return c.cmd.readReply(rd)
-	})
+		c.mu.Unlock()
+
+		break
+	}
+
 	c.releaseConnWithLock(ctx, cn, err, timeout > 0)
 
 	if err != nil {
@@ -909,4 +979,132 @@ func (c *channel) initAllChan() {
 			}
 		}
 	}()
+}
+
+func isAuthReply(val interface{}, err error) bool {
+	if err != nil {
+		var redisErr proto.RedisError
+		return errors.As(err, &redisErr)
+	}
+	if s, ok := val.(string); ok {
+		return strings.EqualFold(s, "OK")
+	}
+	return false
+}
+
+func (c *PubSub) readReAuthReply(ctx context.Context, cn *pool.Conn, cmd *StatusCmd, timeout time.Duration) error {
+	defer func() {
+		c.mu.Lock()
+		c.readerInUse = false
+		if c.readerCond != nil {
+			c.readerCond.Signal()
+		}
+		c.mu.Unlock()
+	}()
+
+	return cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
+		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reauth reply: %v", cn.GetID(), err)
+		}
+		return cmd.readReply(rd)
+	})
+}
+
+func (c *PubSub) reauth(username, password string) error {
+	if c.opt.Protocol != 3 {
+		return nil
+	}
+
+	c.reAuthMu.Lock()
+	defer c.reAuthMu.Unlock()
+
+	c.mu.Lock()
+	if c.closed || c.cn == nil {
+		c.mu.Unlock()
+		return pool.ErrClosed
+	}
+	cn := c.cn
+
+	ctx := context.Background()
+	var cmd *StatusCmd
+	if username != "" {
+		cmd = NewStatusCmd(ctx, "AUTH", username, password)
+	} else {
+		cmd = NewStatusCmd(ctx, "AUTH", password)
+	}
+
+	timeout := c.opt.ReadTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	if c.readerInUse {
+		done := make(chan error, 1)
+		c.authWaitCh = done
+
+		err := c.writeCmd(ctx, cn, cmd)
+		c.mu.Unlock()
+		if err != nil {
+			c.mu.Lock()
+			c.authWaitCh = nil
+			c.mu.Unlock()
+			return err
+		}
+
+		for {
+			c.mu.Lock()
+			select {
+			case err := <-done:
+				c.mu.Unlock()
+				return err
+			default:
+			}
+			if !c.readerInUse {
+				c.authWaitCh = nil
+				c.readerInUse = true
+				c.mu.Unlock()
+				return c.readReAuthReply(ctx, cn, cmd, timeout)
+			}
+			c.mu.Unlock()
+
+			select {
+			case err := <-done:
+				return err
+			case <-c.exit:
+				return pool.ErrClosed
+			case <-time.After(timeout):
+				c.mu.Lock()
+				select {
+				case err := <-done:
+					c.mu.Unlock()
+					return err
+				default:
+				}
+				if !c.readerInUse {
+					c.authWaitCh = nil
+					c.readerInUse = true
+					c.mu.Unlock()
+					return c.readReAuthReply(ctx, cn, cmd, timeout)
+				}
+				c.authWaitCh = nil
+				c.mu.Unlock()
+				return errors.New("redis: pubsub re-auth timed out waiting for reader")
+			}
+		}
+	}
+
+	// No reader is active. Take reader ownership and execute inline.
+	c.readerInUse = true
+	err := c.writeCmd(ctx, cn, cmd)
+	if err != nil {
+		c.readerInUse = false
+		if c.readerCond != nil {
+			c.readerCond.Signal()
+		}
+		c.mu.Unlock()
+		return err
+	}
+	c.mu.Unlock()
+
+	return c.readReAuthReply(ctx, cn, cmd, timeout)
 }
