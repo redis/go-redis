@@ -136,4 +136,20 @@ func TestFailoverClientStreamingCredentials(t *testing.T) {
 	if err := c.initConn(context.Background(), pool.NewConn(clientSide)); err == nil {
 		t.Fatal("expected a handshake error from the unresponsive pipe")
 	}
+
+	// The pipeline pool must exist and carry the re-auth hook: removing a
+	// conn from it should drop that conn's listener from the manager.
+	pp := c.getPipelinePool()
+	if pp == nil {
+		t.Fatal("expected failover client to build a pipeline pool")
+	}
+	pipeClient, pipeServer := net.Pipe()
+	t.Cleanup(func() { _ = pipeServer.Close() })
+	cn := pool.NewConn(pipeClient)
+	before, _ := c.streamingCredentialsManager.Listener(cn, nil, nil)
+	pp.RemoveWithoutTurn(context.Background(), cn, nil)
+	after, _ := c.streamingCredentialsManager.Listener(cn, nil, nil)
+	if before == after {
+		t.Fatal("pipeline pool has no streaming credentials hook; initStreamingCredentials ran before the pipeline pool was built")
+	}
 }
