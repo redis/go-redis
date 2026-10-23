@@ -30,6 +30,7 @@ var (
 		reflect.Uint16:        decodeUint16,
 		reflect.Uint32:        decodeUint32,
 		reflect.Uint64:        decodeUint64,
+		reflect.Uintptr:       decodeUnsupported,
 		reflect.Float32:       decodeFloat32,
 		reflect.Float64:       decodeFloat64,
 		reflect.Complex64:     decodeUnsupported,
@@ -72,7 +73,9 @@ func Struct(dst interface{}) (StructValue, error) {
 }
 
 // Scan scans the results from a key-value Redis map result set to a destination struct.
-// The Redis keys are matched to the struct's field with the `redis` tag.
+// The Redis keys are matched to the struct's field with the `redis` tag. If a field
+// fails to decode, Scan still sets every other field it can and returns the first
+// error in key order.
 func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 	if len(keys) != len(vals) {
 		return errors.New("args should have the same number of keys and vals")
@@ -82,6 +85,8 @@ func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 	if err != nil {
 		return err
 	}
+
+	var firstErr error
 
 	// Iterate through the (key, value) sequence.
 	for i := 0; i < len(vals); i++ {
@@ -95,12 +100,12 @@ func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
 			continue
 		}
 
-		if err := strct.Scan(key, val); err != nil {
-			return err
+		if err := strct.Scan(key, val); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 
-	return nil
+	return firstErr
 }
 
 func decodeBool(f reflect.Value, s string) error {
