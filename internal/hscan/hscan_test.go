@@ -253,6 +253,16 @@ var _ = Describe("Scan", func() {
 		Expect(td.Time).To(BeNil())
 	})
 
+	It("returns an error for uintptr fields after a bad value", func() {
+		var d struct {
+			I int     `redis:"i"`
+			P uintptr `redis:"p"`
+		}
+		err := Scan(&d, i{"i", "p"}, i{"x", "1"})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(".I of type int"))
+	})
+
 	It("catches bad values", func() {
 		var d data
 

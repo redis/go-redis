@@ -30,6 +30,7 @@ var (
 		reflect.Uint16:        decodeUint16,
 		reflect.Uint32:        decodeUint32,
 		reflect.Uint64:        decodeUint64,
+		reflect.Uintptr:       decodeUnsupported,
 		reflect.Float32:       decodeFloat32,
 		reflect.Float64:       decodeFloat64,
 		reflect.Complex64:     decodeUnsupported,
