@@ -886,7 +886,10 @@ var _ = Describe("race", func() {
 	})
 
 	AfterEach(func() {
-		connPool.Close()
+		if connPool != nil {
+			connPool.Close()
+			connPool = nil
+		}
 	})
 
 	It("does not happen on Get, Put, and Remove", func() {
@@ -930,20 +933,29 @@ var _ = Describe("race", func() {
 			DialTimeout:        1 * time.Second,
 		}
 		p := pool.NewConnPool(opt)
+		defer p.Close()
 
+		var getErrs atomic.Int32
 		var wg sync.WaitGroup
 		for i := int32(0); i < opt.PoolSize; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, _ = p.Get(ctx)
+				if _, err := p.Get(ctx); err != nil {
+					getErrs.Add(1)
+				}
 			}()
 		}
 		wg.Wait()
+		Expect(getErrs.Load()).To(BeZero())
 
+		// PoolSize is a soft cap on pooled conns. A Get that misses while
+		// MinIdleConns dials are still in flight dials an excess non-pooled
+		// conn, and the late min-idle conns stay idle. So total and idle can
+		// exceed PoolSize/0 by the same amount; only the pooled count is capped.
 		stats := p.Stats()
-		Expect(stats.IdleConns).To(Equal(uint32(0)))
-		Expect(stats.TotalConns).To(Equal(uint32(opt.PoolSize)))
+		Expect(stats.TotalConns - stats.IdleConns).To(Equal(uint32(opt.PoolSize)))
+		Expect(p.PooledLen()).To(BeNumerically("<=", int(opt.PoolSize)))
 	})
 
 	It("recover addIdleConn panic", func() {
