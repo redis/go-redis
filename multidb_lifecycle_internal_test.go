@@ -2118,6 +2118,64 @@ func (c *closeFlagConn) Close() error {
 // member's PubSub pool before the dial finished, so nothing would ever close
 // it. The late connection is closed and the dial fails with the retryable
 // ErrTemporarilyNotAvailable, so the PubSub re-dials on the active member.
+// A control call that passed its closed checks and then lost the membership
+// lookup to Close reports ErrClosed, not ErrDatabaseNotFound for a member
+// that existed when the call began. The test holds dbMu until the call is
+// parked on the lookup, then applies Close's order (closed, then the drain).
+func TestMultiDBControlRacingCloseReportsClosed(t *testing.T) {
+	d := &scriptedDialer{handle: func(string, int, []string) (string, fakeAction) {
+		return "+OK\r\n", fakeReply
+	}}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, frame string // frame: a stack frame of the parked lookup
+		op          func(*MultiDBClient) error
+	}{
+		{"ForceActiveDatabase", "multidbCore).dbByID", func(m *MultiDBClient) error { return m.ForceActiveDatabase(ctx, 1) }},
+		{"RemoveDatabase", "multidbCore).removeDatabase", func(m *MultiDBClient) error { return m.RemoveDatabase(ctx, 1) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mdb := newScriptedClient(t, d, nil, nil)
+			c := mdb.core
+			c.dbMu.Lock()
+			done := make(chan error, 1)
+			go func() { done <- tc.op(mdb) }()
+			waitForParkedOnDBMu(t, tc.frame)
+			c.closed.Store(true)
+			dbs := c.dbs
+			c.dbs = nil
+			c.dbMu.Unlock()
+			err := <-done
+			// Undo the simulation so cleanup closes the members.
+			c.dbMu.Lock()
+			c.dbs = dbs
+			c.dbMu.Unlock()
+			c.closed.Store(false)
+			if !errors.Is(err, ErrClosed) {
+				t.Fatalf("%s after Close drained the membership = %v, want ErrClosed", tc.name, err)
+			}
+		})
+	}
+}
+
+// waitForParkedOnDBMu waits until a goroutine whose stack contains frame is
+// blocked acquiring an RWMutex.
+func waitForParkedOnDBMu(t *testing.T, frame string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	buf := make([]byte, 1<<20)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buf, true)
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, frame) && strings.Contains(g, "sync.(*RWMutex).") {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("no goroutine parked on dbMu in %s", frame)
+}
+
 func TestMultiDBPubSubDialCompletedAfterRemovalIsRejected(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})

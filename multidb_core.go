@@ -1731,6 +1731,12 @@ func (c *multidbCore) setActiveDatabase(ctx context.Context, index int, probe bo
 
 	db := c.dbByID(index)
 	if db == nil {
+		// Close does not take failoverMu: it may have drained the membership
+		// since the check above. closed is set before the drain, so a miss it
+		// caused sees it.
+		if c.closed.Load() {
+			return ErrClosed
+		}
 		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, index)
 	}
 	// Weights are written under dbMu, so read them under it.
@@ -1962,6 +1968,10 @@ func (c *multidbCore) removeDatabase(ctx context.Context, id int) error {
 		defer c.dbMu.Unlock()
 		db, ok := c.dbs[id]
 		if !ok {
+			// A concurrent Close drained the membership (see setActiveDatabase).
+			if c.closed.Load() {
+				return nil, ErrClosed
+			}
 			return nil, fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
 		}
 		if int(c.active.Load()) == id {
