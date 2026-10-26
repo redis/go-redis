@@ -5410,9 +5410,137 @@ func TestCSCTableFingerprintEncoding(t *testing.T) {
 	}
 }
 
-// TestCSCPerformanceCompatibility pins the sorted eligible-command dump and
-// cache namespace before performance changes. Set CSC_COMPATIBILITY_DUMP to a
-// file path to compare the full dump byte-for-byte between revisions.
+// cscPinnedEligibleCommands is the sorted set of commands the default (static)
+// metadata reports as client-side cacheable. One name per line keeps a snapshot
+// change reviewable as a one-line diff.
+const cscPinnedEligibleCommands = `
+arcount
+arget
+argetrange
+argrep
+arinfo
+arlastitems
+arlen
+armget
+arnext
+arop
+arscan
+bf.card
+bf.exists
+bf.mexists
+bitcount
+bitfield_ro
+bitpos
+cf.count
+cf.exists
+cf.mexists
+cms.query
+digest
+exists
+expiretime
+ft.sugget
+ft.suglen
+geodist
+geohash
+geopos
+georadius_ro
+georadiusbymember_ro
+geosearch
+get
+getbit
+getrange
+hexists
+hexpiretime
+hget
+hgetall
+hkeys
+hlen
+hmget
+hpexpiretime
+hstrlen
+hvals
+json.arrindex
+json.arrlen
+json.get
+json.objkeys
+json.objlen
+json.resp
+json.strlen
+json.type
+lcs
+lindex
+llen
+lpos
+lrange
+mget
+pexpiretime
+pfcount
+scard
+sdiff
+sdiffcard
+sinter
+sintercard
+sismember
+smembers
+smismember
+sort_ro
+strlen
+substr
+sunion
+sunioncard
+tdigest.byrank
+tdigest.byrevrank
+tdigest.cdf
+tdigest.max
+tdigest.min
+tdigest.quantile
+tdigest.rank
+tdigest.revrank
+tdigest.trimmed_mean
+topk.count
+topk.info
+topk.list
+topk.query
+ts.get
+ts.range
+ts.revrange
+type
+vcard
+vdim
+vemb
+vgetattr
+vinfo
+vismember
+vlinks
+vrange
+vsim
+xlen
+xrange
+xrevrange
+zcard
+zcount
+zdiff
+zinter
+zintercard
+zlexcount
+zmscore
+zrange
+zrangebylex
+zrangebyscore
+zrank
+zrevrange
+zrevrangebylex
+zrevrangebyscore
+zrevrank
+zscore
+zunion
+`
+
+// TestCSCPerformanceCompatibility pins the eligible-command set and the cache
+// namespace before performance changes. The set is the sorted list in
+// cscPinnedEligibleCommands, so a failure names the commands that moved instead
+// of only reporting a count and a digest. Set CSC_COMPATIBILITY_DUMP to a file
+// path to compare the full dump byte-for-byte between revisions.
 func TestCSCPerformanceCompatibility(t *testing.T) {
 	view := (&baseClient{}).metadataView()
 	var names []string
@@ -5423,12 +5551,16 @@ func TestCSCPerformanceCompatibility(t *testing.T) {
 	}
 	sort.Strings(names)
 	dump := strings.Join(names, "\n") + "\n"
-	if len(names) != 120 {
-		t.Fatalf("eligible commands: got %d, want 120", len(names))
+
+	pinned := strings.Fields(cscPinnedEligibleCommands)
+	if !sort.StringsAreSorted(pinned) {
+		t.Fatal("cscPinnedEligibleCommands must list the commands in sorted order")
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(dump))); got != "cd52438234a475701fd546e2a685cf493e7486bd78ebe2bbb8ac7f224485b609" {
-		t.Fatalf("eligible-command dump changed: sha256=%s", got)
+	removed, added := diffSortedStrings(pinned, names)
+	if len(removed) != 0 || len(added) != 0 {
+		t.Fatalf("eligible commands changed: removed %v, added %v", removed, added)
 	}
+
 	if view.cscFingerprint != "0255d4ea837ce42f4814b7b4b9ff820c" {
 		t.Fatalf("default CSC fingerprint changed: %s", view.cscFingerprint)
 	}
@@ -5437,4 +5569,23 @@ func TestCSCPerformanceCompatibility(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// diffSortedStrings reports the entries only in a and the entries only in b.
+func diffSortedStrings(a, b []string) (onlyA, onlyB []string) {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] < b[j]:
+			onlyA = append(onlyA, a[i])
+			i++
+		case b[j] < a[i]:
+			onlyB = append(onlyB, b[j])
+			j++
+		default:
+			i++
+			j++
+		}
+	}
+	return append(onlyA, a[i:]...), append(onlyB, b[j:]...)
 }
