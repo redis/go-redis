@@ -557,9 +557,9 @@ func (r *multidbFDRouter) close() error {
 // episode and the detector window are the current ones (see multidbFDRouter).
 // Runs on the child's reader or engine goroutine: it must not block.
 //
-// grp groups the failures of one connection drop: the breaker counts the
-// group once (the first failure recorded), the detector every command, as
-// recordBatchOutcomes does for a batch.
+// grp groups the failures of one connection drop: the breaker and the
+// detector each count the group once (the first failure recorded), as
+// recordBatchOutcomes does for a batch. Successes count per command.
 func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, cmd Cmder, err error, grp *fdFailGroup) {
 	if callerEnded(ctx, err, false) {
 		// The caller's own context ended the command (a context error or a
@@ -595,7 +595,7 @@ func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, 
 	if kind == outcomeSuccess {
 		c.successSinceFailover.Store(true)
 		c.recordDetectorSuccess(gen)
-	} else {
+	} else if grp.takeDetector() {
 		c.recordDetectorFailure(gen, err)
 	}
 }

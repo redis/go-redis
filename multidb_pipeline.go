@@ -12,8 +12,8 @@ import (
 // This file makes MultiDBClient a full UniversalClient and wires pipelines
 // and autopipelining through the MultiDB core, per the MultiDB × AutoPipeline
 // design: batches resolve the active database at exec time, feed the circuit
-// breaker and failure detector per command, and are retried against the newly
-// selected database after a failover.
+// breaker and failure detector (failures once per distinct error), and are
+// retried against the newly selected database after a failover.
 
 var _ UniversalClient = (*MultiDBClient)(nil)
 
@@ -46,10 +46,11 @@ func sameErr(a, b error) (same bool) {
 	return a == b
 }
 
-// recordBatchOutcomes records one detector outcome per command, mirroring the
-// single-command path: an error reply from the server proves the database is
-// reachable and counts as a success; transport-level errors count as failures
-// (on the breaker once per distinct error, see charged); client-side errors
+// recordBatchOutcomes records batch outcomes, mirroring the single-command
+// path: an error reply from the server proves the database is reachable and
+// counts as a success; transport-level errors count as failures (once per
+// distinct error on the breaker and the detector, see chargeBreaker);
+// client-side errors
 // (context cancellation, deterministic
 // local rejections per shouldRetry) record nothing and do not trigger
 // failover. It returns the number of transport-level failures.
@@ -154,19 +155,23 @@ func (c *multidbCore) recordBatchOutcomes(ctx context.Context, db *multidbDataba
 	// distinct error once: one connection drop is one member failure, and N
 	// failed nodes are N. Matched by identity (sameErr), like the propagation
 	// scan above. Identity also merges a bare singleton sentinel: two nodes
-	// each failing with a bare io.EOF count once. The detector still sees
-	// every command: it is rate-based and weighs failures against per-command
-	// successes.
-	var charged []error
-	chargeBreaker := func(err error) bool {
-		for _, c := range charged {
-			if sameErr(err, c) {
-				return false
+	// each failing with a bare io.EOF count once. The detector counts
+	// failures the same way (its own set: it is fed only while db is active),
+	// so one drop in a large batch does not trip it alone; successes still
+	// count per command.
+	firstOfErr := func() func(error) bool {
+		var seen []error
+		return func(err error) bool {
+			for _, e := range seen {
+				if sameErr(err, e) {
+					return false
+				}
 			}
+			seen = append(seen, err)
+			return true
 		}
-		charged = append(charged, err)
-		return true
 	}
+	chargeBreaker, chargeDetector := firstOfErr(), firstOfErr()
 	recordOne := func(cmd Cmder) {
 		switch classify(cmd) {
 		case outcomeSuccess:
@@ -208,12 +213,12 @@ func (c *multidbCore) recordBatchOutcomes(ctx context.Context, db *multidbDataba
 			// records only while its half-open episode is still current — a
 			// batch that outlived a failed recovery must not re-open the NEW
 			// episode it was never admitted to; a closed admission always
-			// counts toward opening. One breaker failure per distinct error
-			// (see charged).
+			// counts toward opening. One breaker and one detector failure per
+			// distinct error (see chargeBreaker).
 			if chargeBreaker(cmd.rawErr()) {
 				db.cb.RecordFailureFor(res)
 			}
-			if cur, _ := c.activeSnapshot(); cur == db {
+			if cur, _ := c.activeSnapshot(); cur == db && chargeDetector(cmd.rawErr()) {
 				c.recordDetectorFailure(detectorGen, cmd.rawErr())
 			}
 			transportFailures++
@@ -350,6 +355,9 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 	// failover keeps handing back members the gate rejects — surface
 	// unavailability instead of busy-looping the active index.
 	gateRejections := 0
+	// narrowed is set once cmds holds only the unsettled commands of a failed
+	// attempt: the others keep definitive results in orig.
+	narrowed := false
 
 	// exitErr picks the batch error for every exit: with a rejected HIMPORT
 	// in the batch the positionally first error over the ORIGINAL slice wins,
@@ -363,6 +371,16 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 			}
 		}
 		return err
+	}
+	// gateExitErr is exitErr for a gate failure: after a narrowed retry the
+	// earlier attempts' errors are the batch result, as when attempts run out.
+	gateExitErr := func(err error) error {
+		if narrowed {
+			if ferr := cmdsFirstErr(orig); ferr != nil {
+				return ferr
+			}
+		}
+		return exitErr(err)
 	}
 
 	// The current attempt's admission, released on any exit that did not
@@ -424,7 +442,7 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 					resetCmds(cmds)
 					setCmdsErr(cmds, err)
 				}
-				return exitErr(err)
+				return gateExitErr(err)
 			}
 			if err := c.tryFailover(ctx, idx); err != nil {
 				// Stamp only when nothing has executed yet; a prior attempt's
@@ -433,7 +451,7 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 					resetCmds(cmds)
 					setCmdsErr(cmds, err)
 				}
-				return exitErr(err)
+				return gateExitErr(err)
 			}
 			// Re-enter the gate on the newly selected database — mirroring
 			// the single-command path: its breaker may be half-open and the
@@ -538,9 +556,15 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 			return exitErr(err)
 		}
 		// Retry only the commands without a definitive result.
-		if cmds = unsettledCmds(cmds, executed); len(cmds) == 0 {
+		next := unsettledCmds(cmds, executed)
+		if len(next) == 0 {
 			return cmdsFirstErr(orig)
 		}
+		// Only a smaller retry set leaves definitive results behind; a whole
+		// batch resent (e.g. a standalone drop) keeps the gate error as the
+		// result if the retry is gated.
+		narrowed = narrowed || len(next) < len(cmds)
+		cmds = next
 	}
 	return cmdsFirstErr(orig)
 }

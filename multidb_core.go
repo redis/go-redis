@@ -2460,6 +2460,15 @@ func (c *multidbCore) newPubSub() *PubSub {
 				return nil, pubSubDialErr(db, err, c.closed.Load())
 			}
 			db.c.pubSubPool.TrackConn(cn)
+			// Removal (and Close) marks the member before closing its PubSub
+			// pool, which checks closed only before dialing: re-check after
+			// tracking, so either the pool close sees this conn or this sees
+			// the mark. A conn to a removed member would otherwise stay open.
+			if db.removed.Load() {
+				db.c.pubSubPool.UntrackConn(cn)
+				_ = cn.Close()
+				return nil, pubSubDialErr(db, pool.ErrClosed, c.closed.Load())
+			}
 			ownersMu.Lock()
 			owners[cn] = db.c
 			ownersMu.Unlock()

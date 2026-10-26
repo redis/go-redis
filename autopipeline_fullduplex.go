@@ -906,12 +906,18 @@ func (fd *fdEngine) finishGrouped(r fdReq, grp *fdFailGroup) {
 // can settle through up to three calls (failPipelines for the exhausted set,
 // failPipelines for the NoRetry tail, rerouteReqs), so it is charged once per
 // settle call (bounded per drop), not strictly once.
-type fdFailGroup struct{ charged atomic.Bool }
+type fdFailGroup struct{ charged, detected atomic.Bool }
 
 // take reports whether the caller is the first to charge the group. A nil
 // group is never shared, so it always charges.
 func (g *fdFailGroup) take() bool {
 	return g == nil || g.charged.CompareAndSwap(false, true)
+}
+
+// takeDetector is take for a second per-event counter (the MultiDB failure
+// detector), charged independently of the first.
+func (g *fdFailGroup) takeDetector() bool {
+	return g == nil || g.detected.CompareAndSwap(false, true)
 }
 
 // fdGroupsByErr returns the failure group for each error of one settle: the

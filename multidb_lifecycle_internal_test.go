@@ -19,6 +19,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // countingDetector counts outcomes and can run a hook inside RecordFailure.
@@ -1834,7 +1835,7 @@ func TestCallerEndedClassifiesClientSideOnly(t *testing.T) {
 
 // One transport error stamped on every unread command of a batch is one
 // member failure for the breaker, however many commands carry it; a second,
-// distinct error counts again. The detector still sees every command.
+// distinct error counts again. The detector counts failures the same way.
 func TestRecordBatchOutcomesOneBreakerFailurePerTransportError(t *testing.T) {
 	det := &countingDetector{}
 	core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
@@ -1860,8 +1861,8 @@ func TestRecordBatchOutcomesOneBreakerFailurePerTransportError(t *testing.T) {
 	if got := db.cb.Stats().Failures; got != 2 {
 		t.Errorf("breaker failures = %d, want 2 (one per distinct transport error)", got)
 	}
-	if got := det.failures.Load(); got != 5 {
-		t.Errorf("detector failures = %d, want 5 (one per command)", got)
+	if got := det.failures.Load(); got != 2 {
+		t.Errorf("detector failures = %d, want 2 (one per distinct transport error)", got)
 	}
 }
 
@@ -1897,6 +1898,38 @@ func TestMultiDBPipelineDropChargesBreakerOnce(t *testing.T) {
 	}
 	if st := a.cb.State(); st != imultidb.CircuitClosed {
 		t.Errorf("breaker = %v, want closed", st)
+	}
+}
+
+// One connection drop in a pipeline larger than the default detector's
+// failure minimum (1000) is one detector failure, so it does not fail the
+// client over on its own.
+func TestMultiDBLargePipelineDropDoesNotTripDetector(t *testing.T) {
+	var sets atomic.Int64
+	d := &scriptedDialer{handle: func(addr string, _ int, args []string) (string, fakeAction) {
+		if addr == "a:1" && strings.EqualFold(args[0], "set") && sets.Add(1) > 3 {
+			return "", fakeClose
+		}
+		return "+OK\r\n", fakeReply
+	}}
+	mdb := newScriptedClient(t, d, nil, func(o *MultiDBOptions) {
+		o.CommandRetries = -1
+	})
+	ctx := context.Background()
+	_, err := mdb.Pipelined(ctx, func(p Pipeliner) error {
+		for i := 0; i < 1200; i++ {
+			p.Set(ctx, "k", i, 0)
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("Exec on a dropping member succeeded")
+	}
+	if mdb.core.shouldFailoverSafely() {
+		t.Error("detector tripped on one connection drop")
+	}
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Errorf("active member = %d after one drop, want 0", got)
 	}
 }
 
@@ -1971,5 +2004,181 @@ func TestMultiDBPipelineRetryResendsOnlyUnsettled(t *testing.T) {
 	}
 	if got := count("n2:1", k2).Load(); got != 2 {
 		t.Errorf("INCR %s ran %d times on n2, want 2 (drop + retry)", k2, got)
+	}
+}
+
+// A retry that the gate rejects must not displace the positionally first
+// error: k1's WRONGTYPE reply is definitive and kept, k2's drop opens the
+// breaker, and the retry for k2 finds no member to run on. Exec reports
+// WRONGTYPE, as Pipeline.Exec would; k2 keeps its transport error (it may
+// have applied), as on every retry-loop exit after an executed attempt.
+func TestMultiDBPipelineRetryGateFailureKeepsFirstError(t *testing.T) {
+	keyFor := func(lo, hi int) string {
+		for i := 0; ; i++ {
+			k := fmt.Sprintf("k%d", i)
+			if s := hashtag.Slot(k); s >= lo && s <= hi {
+				return k
+			}
+		}
+	}
+	k1, k2 := keyFor(0, 8191), keyFor(8192, 16383)
+	const slots = "*2\r\n" +
+		"*3\r\n:0\r\n:8191\r\n*2\r\n$2\r\nn1\r\n:1\r\n" +
+		"*3\r\n:8192\r\n:16383\r\n*2\r\n$2\r\nn2\r\n:1\r\n"
+	const wrongType = "WRONGTYPE Operation against a key holding the wrong kind of value"
+	var n2Incrs atomic.Int64
+	d := &scriptedDialer{handle: func(addr string, _ int, args []string) (string, fakeAction) {
+		switch {
+		case strings.EqualFold(args[0], "cluster") && len(args) > 1 && strings.EqualFold(args[1], "slots"):
+			return slots, fakeReply
+		case strings.EqualFold(args[0], "incr") && addr == "n1:1":
+			return "-" + wrongType + "\r\n", fakeReply
+		case strings.EqualFold(args[0], "incr"):
+			n2Incrs.Add(1)
+			return "", fakeClose
+		}
+		return "+OK\r\n", fakeReply
+	}}
+	mdb := newLifecycleTestClient(t, func(o *MultiDBOptions) {
+		o.CommandRetries = 1
+		o.FailureDetector = &countingDetector{}
+		o.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{FailureThreshold: 1, GracePeriod: time.Hour}
+	}, MultiDBClientConfig{
+		ClusterOptions: &ClusterOptions{
+			Addrs:           []string{"n1:1"},
+			Dialer:          d.dial,
+			DisableIdentity: true,
+			MaxRetries:      -1,
+			MaxRedirects:    -1,
+		},
+		Weight:       1,
+		HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+	})
+	ctx := context.Background()
+	var c1, c2 *IntCmd
+	_, err := mdb.Pipelined(ctx, func(p Pipeliner) error {
+		c1 = p.Incr(ctx, k1)
+		c2 = p.Incr(ctx, k2)
+		return nil
+	})
+	if got := n2Incrs.Load(); got != 1 {
+		t.Fatalf("INCR %s ran %d times on n2, want 1 (the retry must be gated)", k2, got)
+	}
+	if err == nil || err.Error() != wrongType {
+		t.Errorf("Exec = %v; want the first error %q", err, wrongType)
+	}
+	if err := c1.Err(); err == nil || err.Error() != wrongType {
+		t.Errorf("INCR %s = %v; want %q", k1, err, wrongType)
+	}
+	if err := c2.Err(); !errors.Is(err, io.EOF) {
+		t.Errorf("INCR %s = %v; want the preserved transport error (io.EOF)", k2, err)
+	}
+}
+
+// A whole batch dropped on a standalone member is resent whole, so nothing is
+// left behind: if that retry is gated, Exec reports the gate error (the
+// availability signal), not the earlier transport error.
+func TestMultiDBPipelineWholeBatchGatedRetryKeepsGateError(t *testing.T) {
+	d := &scriptedDialer{handle: func(addr string, _ int, args []string) (string, fakeAction) {
+		if strings.EqualFold(args[0], "set") {
+			return "", fakeClose
+		}
+		return "+OK\r\n", fakeReply
+	}}
+	mdb := newScriptedClient(t, d, func(o *Options) { o.MaxRetries = -1 }, func(o *MultiDBOptions) {
+		o.CommandRetries = 1
+		o.FailureDetector = &countingDetector{}
+		o.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{FailureThreshold: 1, GracePeriod: time.Hour}
+	})
+	mdb.core.dbByID(1).cb.ForceOpen()
+	ctx := context.Background()
+	_, err := mdb.Pipelined(ctx, func(p Pipeliner) error {
+		p.Set(ctx, "k1", "v", 0)
+		p.Set(ctx, "k2", "v", 0)
+		return nil
+	})
+	if !errors.Is(err, ErrTemporarilyNotAvailable) && !errors.Is(err, ErrPermanentlyNotAvailable) {
+		t.Fatalf("Exec = %v; want the gate error, not the transport error", err)
+	}
+}
+
+// closeFlagConn records Close on the client side of a dialed connection.
+type closeFlagConn struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (c *closeFlagConn) Close() error {
+	c.closed.Store(true)
+	return c.Conn.Close()
+}
+
+// A PubSub dial that completes after its member was removed must not hand
+// out (or track) a connection to the removed member: the removal closed the
+// member's PubSub pool before the dial finished, so nothing would ever close
+// it. The late connection is closed and the dial fails with the retryable
+// ErrTemporarilyNotAvailable, so the PubSub re-dials on the active member.
+func TestMultiDBPubSubDialCompletedAfterRemovalIsRejected(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var dialed atomic.Pointer[closeFlagConn]
+	var block atomic.Bool
+	dialA := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if block.Load() {
+			close(entered)
+			<-release
+		}
+		nc, err := helloRespondingDialer(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		fc := &closeFlagConn{Conn: nc}
+		dialed.Store(fc)
+		return fc, nil
+	}
+	mdb := newLifecycleTestClient(
+		t, nil,
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:1", Dialer: dialA, Protocol: 3, DisableIdentity: true}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+		MultiDBClientConfig{Options: &Options{Addr: "127.0.0.1:2", Dialer: helloRespondingDialer, Protocol: 3, DisableIdentity: true}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+	)
+	a := mdb.core.dbs[0].c
+	ps := mdb.core.newPubSub()
+	t.Cleanup(func() { _ = ps.Close() })
+
+	block.Store(true)
+	type result struct {
+		cn  *pool.Conn
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		cn, err := ps.newConn(context.Background(), "", nil)
+		done <- result{cn, err}
+	}()
+	<-entered
+	// Member 0 becomes passive and is removed while its dial is in flight.
+	mdb.core.active.Store(1)
+	if err := mdb.RemoveDatabase(context.Background(), 0); err != nil {
+		t.Fatalf("RemoveDatabase(0) = %v", err)
+	}
+	close(release)
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("newConn did not return")
+	}
+	if r.err == nil {
+		_ = ps.closeConn(r.cn)
+		t.Fatal("newConn returned a connection to the removed member")
+	}
+	if !errors.Is(r.err, ErrTemporarilyNotAvailable) {
+		t.Errorf("newConn err = %v, want %v (retryable)", r.err, ErrTemporarilyNotAvailable)
+	}
+	if fc := dialed.Load(); fc == nil || !fc.closed.Load() {
+		t.Error("the late connection to the removed member was not closed")
+	}
+	if got := a.pubSubPool.Stats().Active; got != 0 {
+		t.Errorf("removed member's PubSub pool tracks %d connections, want 0", got)
 	}
 }

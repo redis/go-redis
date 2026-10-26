@@ -473,7 +473,7 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 		}
 	})
 
-	t.Run("one failure group charges the breaker once", func(t *testing.T) {
+	t.Run("one failure group charges the breaker and detector once", func(t *testing.T) {
 		det := &countingFD{}
 		core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
 		db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
@@ -490,8 +490,8 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 		if got := db.cb.Stats().Failures; got != 2 {
 			t.Errorf("breaker failures = %d, want 2 (one per group)", got)
 		}
-		if det.failures != 5 {
-			t.Errorf("detector failures = %d, want 5", det.failures)
+		if det.failures != 2 {
+			t.Errorf("detector failures = %d, want 2 (one per group)", det.failures)
 		}
 	})
 }
@@ -636,7 +636,7 @@ func TestMultiDBFullDuplexLaneWaitHonorsContext(t *testing.T) {
 }
 
 // A full-duplex connection drop with N commands in flight charges the
-// member's breaker once, not N times; the detector still sees each command.
+// member's breaker and detector once, not N times.
 // With retries off the tail fails on the engine (failReqs); with retries on it
 // is rerouted through MultiDB (rerouteReqs), and every further drop on the
 // reroute is charged once too.
@@ -692,8 +692,8 @@ func TestMultiDBFullDuplexDropChargesBreakerOnce(t *testing.T) {
 				t.Errorf("breaker failures = %d, want %d (one per connection drop; %d commands failed)", got, want, failed)
 			}
 			if retries < 0 {
-				if got := det.failures.Load(); got != int64(failed) {
-					t.Errorf("detector failures = %d, want %d (one per failed command)", got, failed)
+				if got := det.failures.Load(); got != drops.Load() {
+					t.Errorf("detector failures = %d, want %d (one per connection drop; %d commands failed)", got, drops.Load(), failed)
 				}
 			}
 		})
