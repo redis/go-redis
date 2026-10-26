@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -190,6 +191,27 @@ func TestRedirectAddr(t *testing.T) {
 	for _, tc := range tests {
 		if got := redirectAddr(tc.addr, tc.node); got != tc.want {
 			t.Errorf("redirectAddr(%q) = %q, want %q", tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestIsMovedSameConnAddr(t *testing.T) {
+	tests := []struct {
+		moved string
+		addr  string
+		want  bool
+	}{
+		{"MOVED 1 10.0.0.5:6380", "10.0.0.5:6380", true},
+		{"MOVED 1 10.0.0.6:6380", "10.0.0.5:6380", false},
+		// Without a host the redirect is relative to the sending connection.
+		{"MOVED 1 :6380", "10.0.0.5:6380", true},
+		{"MOVED 1 :6381", "10.0.0.5:6380", false},
+		{"ASK 1 :6380", "10.0.0.5:6380", false},
+	}
+	for _, tc := range tests {
+		err := proto.ParseErrorReply([]byte("-" + tc.moved))
+		if got := isMovedSameConnAddr(err, tc.addr); got != tc.want {
+			t.Errorf("isMovedSameConnAddr(%q, %q) = %v, want %v", tc.moved, tc.addr, got, tc.want)
 		}
 	}
 }
