@@ -2072,6 +2072,68 @@ var _ = Describe("ClusterClient", func() {
 	})
 })
 
+// With cluster-preferred-endpoint-type unknown-endpoint the servers send a
+// null host in CLUSTER SLOTS and an empty host in MOVED and ASK.
+// The MOVED check passes only because the test cluster is on loopback: the
+// client dials an empty-host target ":port" on the local machine, so a
+// redirect from a remote host is not covered. Taking the host of the node
+// that sent the redirect is left for a follow-up.
+var _ = Describe("ClusterClient with unknown-endpoint", func() {
+	const param = "cluster-preferred-endpoint-type"
+
+	var client *redis.ClusterClient
+	var saved map[string]string
+
+	BeforeEach(func() {
+		saved = map[string]string{}
+		for port, node := range cluster.clients {
+			old, err := node.ConfigGet(ctx, param).Result()
+			Expect(err).NotTo(HaveOccurred())
+			saved[port] = old[param]
+			Expect(node.ConfigSet(ctx, param, "unknown-endpoint").Err()).NotTo(HaveOccurred())
+		}
+		client = cluster.newClusterClientUnstable(redisClusterOptions())
+	})
+
+	AfterEach(func() {
+		_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			return master.FlushDB(ctx).Err()
+		})
+		for port, value := range saved {
+			Expect(cluster.clients[port].ConfigSet(ctx, param, value).Err()).NotTo(HaveOccurred())
+		}
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should load the topology and follow a MOVED redirect on loopback", func() {
+		slots, err := cluster.masters()[0].ClusterSlots(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		for _, slot := range slots {
+			for _, node := range slot.Nodes {
+				Expect(node.Addr).To(HavePrefix(":"))
+			}
+		}
+
+		state, err := client.LoadState(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		for _, master := range state.Masters {
+			Expect(master.Client.Options().Addr).To(HavePrefix("127.0.0.1:"))
+		}
+
+		// A (slot 6373) and C (slot 14503) belong to different masters.
+		for _, key := range []string{"A", "C"} {
+			Expect(client.Set(ctx, key, "VALUE", 0).Err()).NotTo(HaveOccurred())
+			Expect(client.Get(ctx, key).Val()).To(Equal("VALUE"))
+		}
+
+		// Route the slot of A at its replica, which answers with
+		// -MOVED <slot> :<port>; see the note above the Describe.
+		Expect(client.SwapNodes(ctx, "A")).NotTo(HaveOccurred())
+		Expect(client.Set(ctx, "A", "MOVED", 0).Err()).NotTo(HaveOccurred())
+		Expect(client.Get(ctx, "A").Val()).To(Equal("MOVED"))
+	})
+})
+
 var _ = Describe("ClusterClient without nodes", func() {
 	var client *redis.ClusterClient
 
