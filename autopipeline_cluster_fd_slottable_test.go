@@ -110,3 +110,53 @@ func TestClusterFDSlotTableFollowsNewState(t *testing.T) {
 		t.Fatal("the slot table was not rebuilt for the new cluster state")
 	}
 }
+
+// A slot with no owner in the cluster state is not stored: slotMasterNode picks a
+// master for it on every call (skipping failing or loading nodes), which a fixed
+// table entry would bypass. A covered slot is stored as usual.
+func TestClusterFDSlotTableSkipsUncoveredSlot(t *testing.T) {
+	addr := clusterFDTestAddrs[0]
+	probe := NewClient(&Options{Addr: addr})
+	defer probe.Close()
+	if err := probe.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("local cluster not reachable at %s: %v", addr, err)
+	}
+	// Slots 8192-16383 have no owner in this topology.
+	cc := NewClusterClient(&ClusterOptions{
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+		},
+	})
+	t.Cleanup(func() { _ = cc.Close() })
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ap.Close() })
+	r := ap.clusterFD
+	if r == nil {
+		t.Fatal("cluster full duplex did not engage")
+	}
+	ctx := context.Background()
+	var covered, uncovered string
+	for i := 0; covered == "" || uncovered == ""; i++ {
+		k := fmt.Sprintf("slottable:uncovered:%d", i)
+		if clusterKeySlot(k) < 8192 {
+			covered = k
+		} else {
+			uncovered = k
+		}
+	}
+	for _, k := range []string{covered, uncovered} {
+		if ch, closed := r.childFor(ctx, NewStringCmd(ctx, "get", k)); ch == nil || closed {
+			t.Fatalf("%s: no FD child (closed=%v)", k, closed)
+		}
+	}
+	table := r.slots.Load()
+	if table == nil || table.child[clusterKeySlot(covered)].Load() == nil {
+		t.Fatal("the covered slot was not stored")
+	}
+	if table.child[clusterKeySlot(uncovered)].Load() != nil {
+		t.Fatal("the uncovered slot was stored with a fixed fallback master")
+	}
+}

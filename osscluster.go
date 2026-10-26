@@ -1899,9 +1899,6 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
-	// fastRoute memoizes the shared routing template per command name (see
-	// osscluster_fastroute.go).
-	fastRoute       atomic.Pointer[fastRouteMemo]
 	opt             *ClusterOptions
 	nodes           *clusterNodes
 	state           *clusterStateHolder
@@ -2546,6 +2543,13 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 			return false, c.legacyRoutingDecision(cmd).policyErr
 		}
 		decision := c.autoPipelineRoutingDecision(ctx, cmd)
+		// A fast-route hit is not stored on the command. The half-duplex face routes
+		// again at flush, so pin it here: a metadata refresh while the command is
+		// queued must not move it. The full-duplex router routes inside this submit
+		// and needs no pin.
+		if ap.clusterFD == nil && cmd.clusterRoutingDecision() == nil {
+			cmd.setClusterRoutingDecision(decision)
+		}
 		if decision.policyErr != nil || decision.policy == nil {
 			return false, decision.policyErr
 		}

@@ -275,7 +275,10 @@ func (r *clusterFDRouter) childFor(ctx context.Context, cmd Cmder) (*AutoPipelin
 			return ch, false
 		} else if slot >= 0 && st != nil {
 			ch, closed := r.childForSlow(ctx, cmd)
-			if ch != nil && !closed {
+			// Only a slot with an owner in this state: for an uncovered slot
+			// slotMasterNode picks a master per call, skipping failing or loading
+			// nodes, which a fixed entry would not.
+			if ch != nil && !closed && len(st.slotNodes(slot)) > 0 {
 				r.slotTableStore(st, slot, ch)
 			}
 			return ch, closed
