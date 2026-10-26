@@ -1330,7 +1330,12 @@ func TestMultiDBBatchAllHalfOpenFullReturnsUnavailable(t *testing.T) {
 // cancelingFailHook fails every batch AND cancels the given context, so the
 // retry loop's next iteration sees a canceled context while the commands
 // still carry the previous attempt's transport errors.
-type cancelingFailHook struct{ cancel context.CancelFunc }
+// cancelingFailHook cancels the caller's context and fails the batch with err
+// (io.EOF when nil).
+type cancelingFailHook struct {
+	cancel context.CancelFunc
+	err    error
+}
 
 func (h *cancelingFailHook) DialHook(next redis.DialHook) redis.DialHook { return next }
 
@@ -1341,7 +1346,10 @@ func (h *cancelingFailHook) ProcessHook(next redis.ProcessHook) redis.ProcessHoo
 func (h *cancelingFailHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		h.cancel()
-		err := io.EOF
+		err := h.err
+		if err == nil {
+			err = io.EOF
+		}
 		for _, cmd := range cmds {
 			cmd.SetErr(err)
 		}
@@ -1401,8 +1409,11 @@ func TestMultiDBPipelineCallerCancelPreservesCommandResults(t *testing.T) {
 // for the canceled-batch finding: when the caller's own context ends during
 // batch execution, the failure is a client-side signal, not a database health
 // verdict, so the pipeline must record nothing on the breaker or the detector
-// (mirroring the single-command path's post-exec ctx.Err guard). FailureThreshold
-// is 1, so any recorded failure would open the breaker.
+// (mirroring the single-command path's post-exec guard). The batch fails with
+// the dial the cancel cut short, the outcome the guard targets; a member
+// read/write failure after the cancel is recorded (see
+// TestMultiDBReadTimeoutAfterCallerDeadlineRecorded). FailureThreshold is 1,
+// so any recorded failure would open the breaker.
 func TestMultiDBPipelineCallerCancelDoesNotPoisonBreaker(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1428,7 +1439,7 @@ func TestMultiDBPipelineCallerCancelDoesNotPoisonBreaker(t *testing.T) {
 		t.Fatalf("NewMultiDBClient: %v", err)
 	}
 	defer mdb.Close()
-	if err := mdb.AddDatabaseHook(0, &cancelingFailHook{cancel: cancel}); err != nil {
+	if err := mdb.AddDatabaseHook(0, &cancelingFailHook{cancel: cancel, err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("operation was canceled")}}); err != nil {
 		t.Fatalf("AddDatabaseHook: %v", err)
 	}
 

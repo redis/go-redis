@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -977,6 +978,10 @@ func (c *multidbCore) dbByID(id int) *multidbDatabase {
 // that snapshots the active database, checks its circuit breaker, executes
 // the command, and records the outcome on both the breaker and the aggregate
 // failure detector. Failures can trigger failover before the next attempt.
+//
+// When the caller's ctx ends during a command, process returns the member's
+// error (e.g. a dial or read timeout); processPipeline and processTxPipeline
+// return ctx.Err() and leave the per-command errors on the commands.
 func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 	// A cluster routing decision pinned by one member's autopipeliner (its
 	// metadata view and policy) must not be reused by another member.
@@ -1094,16 +1099,20 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		// Back from the member: every path below settles the admission
 		// itself, so the deferred release must stand down.
 		pendingDB = nil
-		if err != nil && ctx.Err() != nil {
+		if callerEnded(ctx, err, db.ctxTimeouts()) {
 			// The caller's own context ended (deadline/cancel) while the
 			// command ran — typically cutting a dial short, which surfaces as
 			// a *net.OpError{Op:"dial"} the classifier would otherwise count
-			// as a database failure. That is a client-side signal, not a
+			// as a database failure, or (ContextTimeoutEnabled) a socket
+			// timeout armed from the caller's deadline. That is a client-side signal, not a
 			// health verdict: recording it would let short caller deadlines
 			// open the breaker and drive false failover. Give back any
 			// reserved half-open slot (as the neutral branch does) and return
 			// without recording an outcome. A genuine unreachable-endpoint
-			// dial, where ctx is still alive, still reaches classifyOutcome.
+			// dial, where ctx is still alive, still reaches classifyOutcome,
+			// and so does a member read/write timeout that lands after ctx
+			// expired on a member without ContextTimeoutEnabled (see
+			// callerEnded).
 			db.cb.ReleaseFor(res)
 			return err
 		}
@@ -1145,7 +1154,7 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 				cmd.SetErr(ErrTemporarilyNotAvailable)
 				return ErrTemporarilyNotAvailable
 			}
-			if attempt < attempts && !cmd.NoRetry() && shouldRetry(err, retryTimeout) {
+			if attempt < attempts && !cmd.NoRetry() && ctx.Err() == nil && shouldRetry(err, retryTimeout) {
 				// A pool wait timeout: the command never left the client.
 				// Members run with MaxRetries -1, so retry it here within
 				// CommandRetries as *Client does (#3289), still recording no
@@ -1176,6 +1185,12 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 				// Commands that stream into caller-owned writers/buffers
 				// must never be replayed after a partial read: the failure
 				// is recorded, but the error goes straight to the caller.
+				return err
+			}
+			if ctx.Err() != nil {
+				// The caller's ctx ended while the member failed: recorded
+				// above, but no retry, and the command keeps the member error
+				// (the loop top would overwrite it with ctx.Err()).
 				return err
 			}
 		}
@@ -1266,6 +1281,52 @@ func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 	default:
 		return outcomeNeutral
 	}
+}
+
+// callerEnded reports whether err is the caller's own context cutting the
+// operation short: ctx is done and err is a context error, or a dial the
+// expired ctx interrupted (net.OpError Op "dial", same rule as the failure
+// detector). Such outcomes are not a health verdict.
+//
+// ctxTimeouts is the member's ContextTimeoutEnabled. When set, socket deadlines
+// follow ctx, so a net timeout after ctx ended is the caller's deadline too.
+// When not set, socket I/O does not watch ctx: a read or write timeout (or a
+// reset) is a member failure even when ctx has expired.
+func callerEnded(ctx context.Context, err error, ctxTimeouts bool) bool {
+	if err == nil || ctx == nil {
+		return false
+	}
+	if ctx.Err() == nil {
+		// With ctxTimeouts the socket deadline is the ctx deadline itself, so
+		// the read can time out just before ctx's own timer marks it done.
+		dl, ok := ctx.Deadline()
+		if !ctxTimeouts || !ok || time.Now().Before(dl) {
+			return false
+		}
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	if ctxTimeouts {
+		var nerr net.Error
+		return errors.As(err, &nerr) && nerr.Timeout()
+	}
+	return false
+}
+
+// ctxTimeouts reports the member's ContextTimeoutEnabled option.
+func (db *multidbDatabase) ctxTimeouts() bool {
+	switch {
+	case db.c != nil:
+		return db.c.opt.ContextTimeoutEnabled
+	case db.cc != nil:
+		return db.cc.opt.ContextTimeoutEnabled
+	}
+	return false
 }
 
 const (

@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -436,7 +437,7 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 
 	t.Run("live caller context records the failure", func(t *testing.T) {
 		core, db, det := setup()
-		core.settleFDOutcome(context.Background(), db, cmd, dialErr)
+		core.settleFDOutcome(context.Background(), db, cmd, dialErr, nil)
 		if det.failures != 1 {
 			t.Errorf("detector failures = %d, want 1", det.failures)
 		}
@@ -449,12 +450,48 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 		core, db, det := setup()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		core.settleFDOutcome(ctx, db, cmd, dialErr)
+		core.settleFDOutcome(ctx, db, cmd, dialErr, nil)
 		if det.failures != 0 || det.successes != 0 {
 			t.Errorf("detector recorded %d failures, %d successes; want none", det.failures, det.successes)
 		}
 		if got := db.cb.State(); got != imultidb.CircuitClosed {
 			t.Errorf("breaker state = %v, want closed", got)
+		}
+	})
+
+	t.Run("member read timeout after the caller context ended records", func(t *testing.T) {
+		core, db, det := setup()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		readErr := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+		core.settleFDOutcome(ctx, db, cmd, readErr, nil)
+		if det.failures != 1 {
+			t.Errorf("detector failures = %d, want 1", det.failures)
+		}
+		if got := db.cb.State(); got != imultidb.CircuitOpen {
+			t.Errorf("breaker state = %v, want open", got)
+		}
+	})
+
+	t.Run("one failure group charges the breaker once", func(t *testing.T) {
+		det := &countingFD{}
+		core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+		db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 100,
+			SuccessThreshold: 1,
+		})}
+		core.dbs[0] = db
+		core.active.Store(0)
+		grp := &fdFailGroup{}
+		for i := 0; i < 4; i++ {
+			core.settleFDOutcome(context.Background(), db, cmd, io.EOF, grp)
+		}
+		core.settleFDOutcome(context.Background(), db, cmd, io.EOF, &fdFailGroup{})
+		if got := db.cb.Stats().Failures; got != 2 {
+			t.Errorf("breaker failures = %d, want 2 (one per group)", got)
+		}
+		if det.failures != 5 {
+			t.Errorf("detector failures = %d, want 5", det.failures)
 		}
 	})
 }
@@ -534,9 +571,9 @@ func TestMultiDBFullDuplexLenCountsHalfDuplexLane(t *testing.T) {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}
 	ctx := context.Background()
-	ap.mdbFD.laneMu.Lock()
+	ap.mdbFD.lockLane()
 	hd, reject := ap.mdbFD.hdLaneLocked()
-	ap.mdbFD.laneMu.Unlock()
+	ap.mdbFD.unlockLane()
 	if reject || hd == nil {
 		t.Fatal("no half-duplex lane")
 	}
@@ -553,6 +590,113 @@ func TestMultiDBFullDuplexLenCountsHalfDuplexLane(t *testing.T) {
 		if err := c.Err(); err != nil {
 			t.Fatalf("Set %d: %v", i, err)
 		}
+	}
+}
+
+// A submit waiting for the lane (held by a lane switch's drain) honors its
+// context: it returns the context error once the deadline passes, and the
+// command is never sent.
+func TestMultiDBFullDuplexLaneWaitHonorsContext(t *testing.T) {
+	requireLocalRedis(t)
+	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 0.75), member(internalTestRedisAddr(), 0.5))
+	ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	const key = "mdbfd:lanewait"
+	if err := mdb.Del(context.Background(), key).Err(); err != nil {
+		t.Fatalf("Del: %v", err)
+	}
+	r := ap.mdbFD
+	r.lockLane()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- ap.Set(ctx, key, "v", 0).Err() }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Set = %v, want context.DeadlineExceeded", err)
+		}
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("Set returned after %v, want about 50ms", d)
+		}
+		r.unlockLane()
+	case <-time.After(2 * time.Second):
+		t.Error("Set still waiting for the held lane past its deadline")
+		r.unlockLane()
+		if err := <-done; err == nil {
+			t.Fatal("Set succeeded after the lane was released")
+		}
+	}
+	if n, err := mdb.Exists(context.Background(), key).Result(); err != nil || n != 0 {
+		t.Fatalf("Exists = %d, %v; want 0: a command that timed out waiting for the lane was sent", n, err)
+	}
+}
+
+// A full-duplex connection drop with N commands in flight charges the
+// member's breaker once, not N times; the detector still sees each command.
+// With retries off the tail fails on the engine (failReqs); with retries on it
+// is rerouted through MultiDB (rerouteReqs), and every further drop on the
+// reroute is charged once too.
+func TestMultiDBFullDuplexDropChargesBreakerOnce(t *testing.T) {
+	for _, retries := range []int{-1, 1} {
+		t.Run(fmt.Sprintf("retries=%d", retries), func(t *testing.T) {
+			var sets, drops atomic.Int64
+			d := &scriptedDialer{handle: func(addr string, _ int, args []string) (string, fakeAction) {
+				if addr == "a:1" && strings.EqualFold(args[0], "set") && sets.Add(1) > 3 {
+					drops.Add(1)
+					return "", fakeClose
+				}
+				return "+OK\r\n", fakeReply
+			}}
+			det := &countingDetector{}
+			mdb := newScriptedClient(t, d, func(o *Options) { o.MaxRetries = -1 }, func(o *MultiDBOptions) {
+				o.CommandRetries = retries
+				o.FailureDetector = det
+				o.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{
+					FailureThreshold: 100,
+					SuccessThreshold: 1,
+					GracePeriod:      time.Hour,
+				}
+			})
+			ap, err := mdb.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+				FullDuplex:    true,
+				MaxBatchSize:  1000,
+				MaxFlushDelay: 20 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("AsyncAutoPipeline: %v", err)
+			}
+			if !ap.Config().FullDuplex || ap.mdbFD == nil {
+				t.Fatal("full duplex not engaged")
+			}
+			ctx := context.Background()
+			const n = 10
+			cmds := make([]*StatusCmd, n)
+			for i := range cmds {
+				cmds[i] = ap.Set(ctx, "k", i, 0)
+			}
+			failed := 0
+			for _, c := range cmds {
+				if c.Err() != nil {
+					failed++
+				}
+			}
+			if failed == 0 {
+				t.Fatal("no command failed: the drop was not exercised")
+			}
+			a := mdb.core.dbByID(0)
+			if got, want := a.cb.Stats().Failures, int32(drops.Load()); got != want {
+				t.Errorf("breaker failures = %d, want %d (one per connection drop; %d commands failed)", got, want, failed)
+			}
+			if retries < 0 {
+				if got := det.failures.Load(); got != int64(failed) {
+					t.Errorf("detector failures = %d, want %d (one per failed command)", got, failed)
+				}
+			}
+		})
 	}
 }
 
@@ -805,7 +949,7 @@ func TestFDRerouteAbortReportsOncePerAttempt(t *testing.T) {
 		return io.EOF
 	})
 	reports := 0
-	fd.outcome = func(context.Context, Cmder, error) { reports++ }
+	fd.outcome = func(context.Context, Cmder, error, *fdFailGroup) { reports++ }
 	fd.maxBatch = 2 // two chunks: the second never runs
 	reqs := make([]fdReq, 4)
 	for i := range reqs {
@@ -824,7 +968,7 @@ func TestFDRerouteAbortReportsOncePerAttempt(t *testing.T) {
 
 // A lane left over from before a failover (here: the non-active member's
 // child) is drained and replaced by the active member's child on the next
-// submit, under laneMu; the command lands on the new lane.
+// submit, under laneSem; the command lands on the new lane.
 func TestMultiDBFullDuplexLaneSwitchesToActive(t *testing.T) {
 	requireLocalRedis(t)
 	mdb := newFDTestMultiDB(t, member(internalTestRedisAddr(), 0.75), member(internalTestRedisAddr(), 0.5))
@@ -945,7 +1089,7 @@ func TestFDRerouteNeverSentReportsNothing(t *testing.T) {
 	ctx := context.Background()
 	fd, _ := fdRerouteTestEngine(3, fdServeOK)
 	var reported []string
-	fd.outcome = func(_ context.Context, cmd Cmder, _ error) {
+	fd.outcome = func(_ context.Context, cmd Cmder, _ error, _ *fdFailGroup) {
 		reported = append(reported, fmt.Sprint(cmd.Args()[1]))
 	}
 	reqs := []fdReq{
@@ -1079,7 +1223,7 @@ func TestFDShutdownFlushOwnerAbortSkipsQueuedReports(t *testing.T) {
 		return io.EOF
 	})
 	reports := 0
-	fd.outcome = func(context.Context, Cmder, error) { reports++ }
+	fd.outcome = func(context.Context, Cmder, error, *fdFailGroup) { reports++ }
 	queued := NewStatusCmd(ctx, "set", "queued", "v")
 	if fd.q.push(fdReq{cmd: queued, batch: newAPBatch(), attempts: 1}) != fdPushOK {
 		t.Fatal("queue push failed")
@@ -1337,7 +1481,7 @@ func TestFDOwnerRerouteClosingKeepsReplyError(t *testing.T) {
 	fd.retrySem = make(chan struct{}, 1)
 	fd.retrySem <- struct{}{} // no free slot
 	var outcomes []error
-	fd.outcome = func(_ context.Context, cmd Cmder, err error) {
+	fd.outcome = func(_ context.Context, cmd Cmder, err error, _ *fdFailGroup) {
 		if err == nil {
 			err = cmd.Err()
 		}

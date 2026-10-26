@@ -301,8 +301,12 @@ type AutoPipelineOptions struct {
 	// MultiDB full-duplex router: breaker and failure detector). The engine
 	// calls it with every command's final outcome it settles itself, and with
 	// the failed attempt of every command it reroutes. Never set by users
-	// (unexported). ctx is the command's submit context. See fdEngine.finish.
-	fdOutcome func(ctx context.Context, cmd Cmder, err error)
+	// (unexported). ctx is the command's submit context. grp, when non-nil,
+	// groups the reports of one settle call that carry the same error, so the
+	// owner can count per-event state (the breaker) once per settle call
+	// (fdFailGroup.take); a drop is bounded to a few such calls. See
+	// fdEngine.finish.
+	fdOutcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup)
 
 	// fdOwnerRetries and fdRetryBudget are set internally by an owner that has
 	// its own retry policy (the MultiDB full-duplex router, from CommandRetries;
@@ -630,6 +634,9 @@ type apBatch struct {
 	// owner sees the chain's final result. False for commands whose outcome
 	// the owner's own path settled (a reroute).
 	fdOutcomeOwed bool
+	// fdOutcomeGroup is the owed report's failure group (see
+	// AutoPipelineOptions.fdOutcome). Set and published with fdOutcomeOwed.
+	fdOutcomeGroup *fdFailGroup
 	// closed makes close() idempotent: on the async faces the dispatch closes
 	// the batch at the innermost exec seam (under the user hooks, so a hook
 	// reading a result after next() does not block on a channel its own
@@ -794,6 +801,7 @@ func getFDBlockingBatch() *apBatch {
 	// Never set on a pooled batch today (pooled only on the hook-free path,
 	// owed only on the hooked one); cleared so reuse cannot inherit it.
 	b.fdOutcomeOwed = false
+	b.fdOutcomeGroup = nil
 	// Drain any stray signal so the reused channel starts empty. Insurance: the
 	// blocking face always drains done in Wait, so this is normally a no-op.
 	select {

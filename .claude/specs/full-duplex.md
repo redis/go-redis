@@ -132,7 +132,13 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
     completes after reporting. A hooked command reports from `hostHook` after
     the member hook chain returns (`apBatch.fdOutcomeOwed`), so the owner sees
     the chain's final result. An error is skipped only when the caller's own
-    ctx ended (as in `core.process`).
+    ctx ended it — a context error or a cut-short dial (`callerEnded`, as in
+    `core.process`); a member read/write failure after the ctx ended still
+    counts. Reports of one settle call that carry the same error share an
+    `fdFailGroup`: the breaker counts the group once, the detector every
+    command. A drop can settle through up to three calls (`failPipelines` for
+    the exhausted set, `failPipelines` for the NoRetry tail, `rerouteReqs`), so
+    the breaker is charged per settle call (bounded per drop).
   - `fdReroute` = `core.processPipelineRetries` — dropped tail, lease failure and
     the close-time backlog go through MultiDB to whichever member it selects,
     bounded by the commands' remaining `CommandRetries` budget.
@@ -144,12 +150,14 @@ the member's cached getters) — a standalone engine on a `*Client` member, a
   for commands off the fast path. Switching lanes Closes the old lane and waits
   for its drain first, so submit order holds across failover, fallback and
   breaker transitions. Only the fast path (picked lane == current lane) runs
-  without `laneMu`; a switch picks, drains and submits under it
+  without `laneSem` (a 1-slot channel semaphore); a switch picks, drains and
+  submits under it
   (`submitLocked`), so a stale pick cannot switch back. If no lane takes the
   command, the current lane is drained before it diverts to MultiDB's path,
-  and the divert completes before `laneMu` is released (pinned by
+  and the divert completes before `laneSem` is released (pinned by
   `TestMultiDBFullDuplexOrderAcrossMemberDeath` and
-  `TestMultiDBFullDuplexDivertKeepsOrder`). Submitters stall for the drain. The
+  `TestMultiDBFullDuplexDivertKeepsOrder`). Submitters stall for the drain; one
+  whose ctx ends while waiting for `laneSem` completes with `ctx.Err()`, unsent. The
   blocking face needs no lanes (each caller waits for its command). On a cluster
   member the lane orders per key (slot), like plain cluster FD: commands the
   cluster router cannot place (keyless, topology miss, non-FD node) leave

@@ -58,12 +58,14 @@ type multidbFDRouter struct {
 	// Async face only: one ordered lane at a time (see submitOrdered). lane is
 	// the autopipeliner commands go to now: the active member's FD child, or hd,
 	// an ordered half-duplex MultiDB autopipeliner for commands that cannot
-	// take the fast path. laneMu serializes lane switches and hd writes; hd is
-	// atomic so len can read it without waiting out a lane switch's drain.
-	lane   atomic.Pointer[AutoPipeliner]
-	laneMu sync.Mutex
-	hd     atomic.Pointer[AutoPipeliner]
-	hdCfg  AutoPipelineOptions
+	// take the fast path. laneSem (a 1-slot semaphore, so a submit can give up
+	// on its context while a drain holds it) serializes lane switches and hd
+	// writes; hd is atomic so len can read it without waiting out a lane
+	// switch's drain.
+	lane    atomic.Pointer[AutoPipeliner]
+	laneSem chan struct{}
+	hd      atomic.Pointer[AutoPipeliner]
+	hdCfg   AutoPipelineOptions
 
 	// removeHooks holds the members this router registered an onRemove hook
 	// on (see childFor), so close can unregister them. Guarded by mu.
@@ -93,9 +95,15 @@ func newMultiDBFDRouter(parent *AutoPipeliner, c *MultiDBClient, cfg *AutoPipeli
 		children: make(map[*multidbDatabase]*AutoPipeliner),
 		noFD:     make(map[*multidbDatabase]struct{}),
 		retired:  make(map[*multidbDatabase][]*AutoPipeliner),
+		laneSem:  make(chan struct{}, 1),
 		hdCfg:    hd,
 	}
 }
+
+// lockLane takes the lane semaphore unconditionally.
+func (r *multidbFDRouter) lockLane() { r.laneSem <- struct{}{} }
+
+func (r *multidbFDRouter) unlockLane() { <-r.laneSem }
 
 // submit routes cmd to the active member's FD child, or diverts it to
 // MultiDB's normal path. Called from AutoPipeliner.submit after diversion.
@@ -165,8 +173,8 @@ func (r *multidbFDRouter) target() (child *AutoPipeliner, reject bool) {
 // completes before an earlier command's retry.
 //
 // Fast path: the lane picked now is the current lane, so submit without
-// laneMu. Anything else (a lane switch, a lane closed under the command) takes
-// submitLocked, which picks, switches and submits under laneMu, so no caller
+// laneSem. Anything else (a lane switch, a lane closed under the command) takes
+// submitLocked, which picks, switches and submits under laneSem, so no caller
 // can act on a stale pick.
 func (r *multidbFDRouter) submitOrdered(ctx context.Context, cmd Cmder) AutoFuture {
 	want, reject := r.target()
@@ -182,7 +190,7 @@ func (r *multidbFDRouter) submitOrdered(ctx context.Context, cmd Cmder) AutoFutu
 			return fut
 		}
 		// The lane closed under this command (a switch by another caller):
-		// pick again under laneMu.
+		// pick again under laneSem.
 		cmd.SetErr(nil)
 	}
 	return r.submitLocked(ctx, cmd)
@@ -193,14 +201,28 @@ func (r *multidbFDRouter) submitOrdered(ctx context.Context, cmd Cmder) AutoFutu
 const fdLaneAttempts = 4
 
 // submitLocked picks the lane, switches to it and submits cmd, all under
-// laneMu. If no lane can take the command (no hd lane could be built, or the
+// laneSem. If no lane can take the command (no hd lane could be built, or the
 // picked lane kept closing), it drains the current lane, runs cmd on
-// MultiDB's normal path and waits for it, still under laneMu: every command
+// MultiDB's normal path and waits for it, still under laneSem: every command
 // accepted before it has completed by then, and none after it can start
 // first, so the fallback keeps submit order.
+//
+// Waiting for laneSem honors ctx: a drain can hold it for seconds during a
+// failover. A command whose ctx ends first was never submitted and completes
+// with the context error.
 func (r *multidbFDRouter) submitLocked(ctx context.Context, cmd Cmder) AutoFuture {
-	r.laneMu.Lock()
-	defer r.laneMu.Unlock()
+	select {
+	case r.laneSem <- struct{}{}:
+	default:
+		select {
+		case r.laneSem <- struct{}{}:
+		case <-ctx.Done():
+			cmd.SetErr(ctx.Err())
+			cmd.setReady(completedBatch)
+			return AutoFuture{cmd: cmd, batch: completedBatch}
+		}
+	}
+	defer r.unlockLane()
 	for attempt := 0; ; attempt++ {
 		want, reject := r.target()
 		if !reject && want == nil {
@@ -211,7 +233,7 @@ func (r *multidbFDRouter) submitLocked(ctx context.Context, cmd Cmder) AutoFutur
 		}
 		if want == nil || attempt >= fdLaneAttempts {
 			// Drain first, then wait for the diverted command itself while
-			// laneMu is held: the async divert runs on its own goroutine, and a
+			// laneSem is held: the async divert runs on its own goroutine, and a
 			// later command must not reach a new lane before it completes.
 			r.drainLaneLocked()
 			fut := r.divert(ctx, cmd)
@@ -231,7 +253,7 @@ func (r *multidbFDRouter) submitLocked(ctx context.Context, cmd Cmder) AutoFutur
 }
 
 // hdLaneLocked returns the ordered half-duplex lane, building it on first
-// use. reject is true when the router is closed. laneMu MUST be held.
+// use. reject is true when the router is closed. laneSem MUST be held.
 func (r *multidbFDRouter) hdLaneLocked() (ap *AutoPipeliner, reject bool) {
 	if r.isClosed() {
 		return nil, true
@@ -251,7 +273,7 @@ func (r *multidbFDRouter) hdLaneLocked() (ap *AutoPipeliner, reject bool) {
 // drainLaneLocked closes the current lane and waits for its drain: every
 // command it accepted completes (or is rerouted through MultiDB) before this
 // returns. A closed member child is rebuilt by childFor on its next use; a
-// closed hd by hdLaneLocked. laneMu MUST be held.
+// closed hd by hdLaneLocked. laneSem MUST be held.
 func (r *multidbFDRouter) drainLaneLocked() {
 	cur := r.lane.Load()
 	if cur == nil {
@@ -418,7 +440,9 @@ func (r *multidbFDRouter) dropChild(db *multidbDatabase) {
 func (r *multidbFDRouter) newChild(db *multidbDatabase) (*AutoPipeliner, error) {
 	core := r.c.core
 	cfg := r.childCfg
-	cfg.fdOutcome = func(ctx context.Context, cmd Cmder, err error) { core.settleFDOutcome(ctx, db, cmd, err) }
+	cfg.fdOutcome = func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup) {
+		core.settleFDOutcome(ctx, db, cmd, err, grp)
+	}
 	// The engine passes the commands' remaining budget (derived from
 	// fdRetryBudget below) as the retry bound, so a rerouted command never
 	// runs more than CommandRetries+1 times in total.
@@ -491,12 +515,12 @@ func (r *multidbFDRouter) close() error {
 		children = append(children, list...)
 	}
 	r.mu.Unlock()
-	r.laneMu.Lock()
+	r.lockLane()
 	if hd := r.hd.Swap(nil); hd != nil {
 		children = append(children, hd)
 	}
 	r.lane.Store(nil)
-	r.laneMu.Unlock()
+	r.unlockLane()
 
 	var firstErr error
 	for _, ch := range children {
@@ -532,12 +556,20 @@ func (r *multidbFDRouter) close() error {
 // failure detector only while db is still the active member. The breaker
 // episode and the detector window are the current ones (see multidbFDRouter).
 // Runs on the child's reader or engine goroutine: it must not block.
-func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, cmd Cmder, err error) {
-	if err != nil && ctx != nil && ctx.Err() != nil {
-		// The caller's own context ended: a client-side signal, not a health
-		// verdict (core.process skips it the same way). A context error with
-		// the caller's context still live (a member-side dial or limiter
-		// deadline) is classified like any other error.
+//
+// grp groups the failures of one connection drop: the breaker counts the
+// group once (the first failure recorded), the detector every command, as
+// recordBatchOutcomes does for a batch.
+func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, cmd Cmder, err error, grp *fdFailGroup) {
+	if callerEnded(ctx, err, false) {
+		// The caller's own context ended the command (a context error or a
+		// cut-short dial): a client-side signal, not a health verdict
+		// (core.process skips it the same way). A context error with the
+		// caller's context still live (a member-side dial or limiter deadline)
+		// is classified like any other error, and so is a member read/write
+		// failure that lands after the caller's context ended. ctxTimeouts is
+		// false: the shared FD reader and writer arm socket deadlines from
+		// ReadTimeout/WriteTimeout, never from a command's ctx.
 		return
 	}
 	kind := classifyOutcome(err, cmd.readTimeout() == nil)
@@ -547,7 +579,7 @@ func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, 
 	if res, ok := db.cb.CurrentClosedReservation(); ok {
 		if kind == outcomeSuccess {
 			db.cb.RecordSuccessFor(res)
-		} else {
+		} else if grp.take() {
 			db.cb.RecordFailureFor(res)
 		}
 	}

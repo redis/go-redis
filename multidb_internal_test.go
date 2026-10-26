@@ -536,7 +536,7 @@ func TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral(t *testing.T) {
 		cmds := []Cmder{blocking(), ordinary("set"), ordinary("get")}
 		stamp(e, cmds...) // reader: origin + identical instance on followers
 
-		got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0)
+		got := core.recordBatchOutcomes(context.Background(), db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0)
 		if got != 0 {
 			t.Errorf("transportFailures = %d, want 0: the followers carry the blocker's neutral deadline", got)
 		}
@@ -557,7 +557,7 @@ func TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral(t *testing.T) {
 		cmds := []Cmder{ordinary("set"), ordinary("get"), ordinary("incr")}
 		stamp(e, cmds...)
 
-		if got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0); got != 3 {
+		if got := core.recordBatchOutcomes(context.Background(), db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0); got != 3 {
 			t.Errorf("transportFailures = %d, want 3: an ordinary command's timeout is a real transport failure", got)
 		}
 		if st := db.cb.State(); st != imultidb.CircuitOpen {
@@ -573,7 +573,7 @@ func TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral(t *testing.T) {
 		stamp(origin, cmds[0])
 		stamp(other, cmds[1], cmds[2]) // distinct instance: not a propagation
 
-		if got := core.recordBatchOutcomes(db, cmds, origin, execAll(cmds), imultidb.Reservation{}, 0); got != 2 {
+		if got := core.recordBatchOutcomes(context.Background(), db, cmds, origin, execAll(cmds), imultidb.Reservation{}, 0); got != 2 {
 			t.Errorf("transportFailures = %d, want 2: only an identical stamped error is a propagation", got)
 		}
 		if st := db.cb.State(); st != imultidb.CircuitOpen {
@@ -592,7 +592,7 @@ func TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral(t *testing.T) {
 		stamp(e, cmds...)
 
 		// set: failure (origin); blpop: neutral (its own rule); get: failure.
-		if got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0); got != 2 {
+		if got := core.recordBatchOutcomes(context.Background(), db, cmds, e, execAll(cmds), imultidb.Reservation{}, 0); got != 2 {
 			t.Errorf("transportFailures = %d, want 2: the ordinary originator's timeout is real", got)
 		}
 		if st := db.cb.State(); st != imultidb.CircuitOpen {
@@ -636,7 +636,7 @@ func TestRecordBatchOutcomesIndependentTimeoutNotPropagation(t *testing.T) {
 			if !tc.blockingFirstInCmd {
 				cmds = []Cmder{o, b}
 			}
-			if got := core.recordBatchOutcomes(db, cmds, cmds[0].rawErr(), execAll(cmds), imultidb.Reservation{}, 0); got != 1 {
+			if got := core.recordBatchOutcomes(context.Background(), db, cmds, cmds[0].rawErr(), execAll(cmds), imultidb.Reservation{}, 0); got != 1 {
 				t.Errorf("transportFailures = %d, want 1: the ordinary command's own timeout is a transport failure", got)
 			}
 			if st := db.cb.State(); st != imultidb.CircuitOpen {
@@ -688,7 +688,7 @@ func TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen(t *testing.T) {
 		}
 
 		cmds := failedBatch()
-		got := core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), stale, 0)
+		got := core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, execAll(cmds), stale, 0)
 		if got != 1 {
 			t.Errorf("transportFailures = %d, want 1: the caller still sees a transport failure", got)
 		}
@@ -705,7 +705,7 @@ func TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen(t *testing.T) {
 			t.Fatal("AllowReserve on a half-open breaker with a free slot was rejected")
 		}
 		cmds := failedBatch()
-		core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), cur, 0)
+		core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, execAll(cmds), cur, 0)
 		if st := db.cb.State(); st != imultidb.CircuitOpen {
 			t.Errorf("breaker %v, want open: a live probe's failure aborts the recovery", st)
 		}
@@ -718,7 +718,7 @@ func TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen(t *testing.T) {
 			SuccessThreshold: 1,
 		})}
 		cmds := failedBatch()
-		core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0)
+		core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0)
 		if st := db.cb.State(); st != imultidb.CircuitOpen {
 			t.Errorf("breaker %v, want open", st)
 		}
@@ -763,7 +763,7 @@ func TestRecordBatchOutcomesPostExecHookError(t *testing.T) {
 	// Executed batch, every reply read fine, then a post-exec hook injected
 	// a retryable error without stamping the commands: the commands are
 	// authoritative — no phantom failures, no stamping, no replay signal.
-	if got := core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0); got != 0 {
+	if got := core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0); got != 0 {
 		t.Errorf("transportFailures = %d for an executed all-success batch, want 0", got)
 	}
 	if err := cmds[0].Err(); err != nil {
@@ -773,7 +773,7 @@ func TestRecordBatchOutcomesPostExecHookError(t *testing.T) {
 	// Not executed (hook aborted before next): the batch error stands in
 	// for the commands and is stamped so callers see it.
 	resetCmds(cmds)
-	if got := core.recordBatchOutcomes(db, cmds, io.EOF, newExecutedCmds(0), imultidb.Reservation{}, 0); got != 1 {
+	if got := core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, newExecutedCmds(0), imultidb.Reservation{}, 0); got != 1 {
 		t.Errorf("transportFailures = %d for an unexecuted batch, want 1", got)
 	}
 	if err := cmds[0].Err(); err == nil {
@@ -813,7 +813,7 @@ func TestRecordBatchOutcomesExecutedBatchKeepsSuccessfulPrefix(t *testing.T) {
 	}
 	cmds[1].SetErr(loading)
 
-	if got := core.recordBatchOutcomes(db, cmds, loading, execAll(cmds), imultidb.Reservation{}, 0); got != 1 {
+	if got := core.recordBatchOutcomes(context.Background(), db, cmds, loading, execAll(cmds), imultidb.Reservation{}, 0); got != 1 {
 		t.Errorf("transportFailures = %d, want 1 (prefix must not count)", got)
 	}
 	if err := cmds[0].Err(); err != nil {
@@ -842,7 +842,7 @@ func TestRecordBatchOutcomesFailuresBeforeSuccesses(t *testing.T) {
 	}
 	cmds[1].SetErr(io.EOF)
 	_, res := db.cb.AllowReserve() // authentic half-open admission for this batch
-	core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), res, 0)
+	core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, execAll(cmds), res, 0)
 
 	if got := db.cb.State(); got != imultidb.CircuitOpen {
 		t.Errorf("breaker state = %v after a failed recovery batch, want open", got)
@@ -867,7 +867,7 @@ func TestRecordBatchOutcomesClosedStateKeepsArrivalOrder(t *testing.T) {
 		NewStatusCmd(context.Background(), "set", "k2", "v"),
 	}
 	cmds[1].SetErr(io.EOF)
-	core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0)
+	core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, 0)
 
 	if got := db.cb.State(); got != imultidb.CircuitClosed {
 		t.Errorf("breaker state = %v, want closed (stale failure must be reset by the earlier success)", got)
@@ -889,7 +889,7 @@ func TestRecordBatchOutcomesSuccessSinceFailover(t *testing.T) {
 	// An executed batch success is recovery traffic: it breaks the
 	// consecutive-failed-failover escalation chain.
 	cmds := []Cmder{NewStatusCmd(context.Background(), "set", "k", "v")}
-	core.recordBatchOutcomes(db, cmds, nil, execAll(cmds), imultidb.Reservation{}, 0)
+	core.recordBatchOutcomes(context.Background(), db, cmds, nil, execAll(cmds), imultidb.Reservation{}, 0)
 	if !core.successSinceFailover.Load() {
 		t.Error("executed batch success did not mark recovery traffic")
 	}
@@ -897,7 +897,7 @@ func TestRecordBatchOutcomesSuccessSinceFailover(t *testing.T) {
 	// A hook-served batch (nil without execution) is not.
 	core.successSinceFailover.Store(false)
 	resetCmds(cmds)
-	core.recordBatchOutcomes(db, cmds, nil, newExecutedCmds(0), imultidb.Reservation{}, 0)
+	core.recordBatchOutcomes(context.Background(), db, cmds, nil, newExecutedCmds(0), imultidb.Reservation{}, 0)
 	if core.successSinceFailover.Load() {
 		t.Error("hook-served batch counted as recovery traffic")
 	}
@@ -938,7 +938,7 @@ func TestRecordBatchOutcomesPartialExecutionDoesNotCountUntouched(t *testing.T) 
 	ec := newExecutedCmds(len(cmds))
 	ec.mark(cmds[:1])
 
-	core.recordBatchOutcomes(db, cmds, nil, ec, imultidb.Reservation{}, 0)
+	core.recordBatchOutcomes(context.Background(), db, cmds, nil, ec, imultidb.Reservation{}, 0)
 
 	if det.successes != 1 {
 		t.Errorf("detector successes = %d, want 1 (an untouched command must not count as a success)", det.successes)
@@ -1209,11 +1209,11 @@ func TestRecordBatchOutcomesSkipsDetectorAfterReset(t *testing.T) {
 
 	dg := core.detectorGen.Load()
 	core.resetDetectorSafely() // a reset lands after the batch sampled its window
-	core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, dg)
+	core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, dg)
 	if det.failures != 0 {
 		t.Fatalf("pre-reset failure recorded into the fresh detector window: %d", det.failures)
 	}
-	core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, core.detectorGen.Load())
+	core.recordBatchOutcomes(context.Background(), db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{}, core.detectorGen.Load())
 	if det.failures != 1 {
 		t.Fatalf("current-window failure not recorded: %d", det.failures)
 	}

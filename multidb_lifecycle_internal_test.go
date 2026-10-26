@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1529,5 +1530,371 @@ func TestSameErrNonComparableField(t *testing.T) {
 	e := errors.New("x")
 	if !sameErr(e, e) {
 		t.Fatal("sameErr(e, e) = false, want true")
+	}
+}
+
+// fakeAction is what a scriptedDialer server does with one command.
+type fakeAction int
+
+const (
+	fakeReply fakeAction = iota // write the reply
+	fakeHang                    // never reply (keep the connection open)
+	fakeClose                   // close the connection (the client reads EOF)
+)
+
+// scriptedDialer fakes one RESP server per address over a loopback TCP pair.
+// HELLO gets an empty map; every other command goes to handle with the
+// connection's 0-based command index (HELLO excluded).
+type scriptedDialer struct {
+	handle func(addr string, seq int, args []string) (string, fakeAction)
+}
+
+func (d *scriptedDialer) dial(ctx context.Context, _, addr string) (net.Conn, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			c = nil
+		}
+		accepted <- c
+	}()
+	var dialer net.Dialer
+	c1, err := dialer.DialContext(ctx, "tcp", ln.Addr().String())
+	if err != nil {
+		return nil, err
+	}
+	c2 := <-accepted
+	if c2 == nil {
+		_ = c1.Close()
+		return nil, errors.New("accept failed")
+	}
+	go func() {
+		defer c2.Close()
+		rd := bufio.NewReader(c2)
+		seq := 0
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if len(line) == 0 || line[0] != '*' {
+				continue
+			}
+			n, _ := strconv.Atoi(strings.TrimSpace(line[1:]))
+			var args []string
+			for i := 0; i < n; i++ {
+				if _, err := rd.ReadString('\n'); err != nil {
+					return
+				}
+				arg, err := rd.ReadString('\n')
+				if err != nil {
+					return
+				}
+				args = append(args, strings.TrimSpace(arg))
+			}
+			reply, act := "%0\r\n", fakeReply
+			if len(args) == 0 || !strings.EqualFold(args[0], "hello") {
+				reply, act = d.handle(addr, seq, args)
+				seq++
+			}
+			switch act {
+			case fakeHang:
+				continue
+			case fakeClose:
+				// Half-close and drain: a full close with unread input
+				// sends RST, which can discard replies already written.
+				if tc, ok := c2.(*net.TCPConn); ok {
+					_ = tc.CloseWrite()
+					_, _ = io.Copy(io.Discard, rd)
+				}
+				return
+			}
+			if _, err := c2.Write([]byte(reply)); err != nil {
+				return
+			}
+		}
+	}()
+	return c1, nil
+}
+
+func newScriptedClient(t *testing.T, d *scriptedDialer, opt func(*Options), tweak func(*MultiDBOptions)) *MultiDBClient {
+	t.Helper()
+	member := func(addr string, weight float64) MultiDBClientConfig {
+		o := &Options{Addr: addr, Dialer: d.dial, DisableIdentity: true}
+		if opt != nil {
+			opt(o)
+		}
+		return MultiDBClientConfig{
+			Options:      o,
+			Weight:       weight,
+			HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+		}
+	}
+	return newLifecycleTestClient(t, tweak, member("a:1", 1), member("b:1", 0.5))
+}
+
+// A member read timeout that lands after a short caller deadline is still a
+// member failure. With ContextTimeoutEnabled off the member's socket I/O
+// ignores ctx, so the hung read ends on ReadTimeout (a net.OpError "read"),
+// not on the caller's context; it must reach the breaker.
+func TestMultiDBReadTimeoutAfterCallerDeadlineRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context, mdb *MultiDBClient) error
+	}{
+		{"process", func(ctx context.Context, mdb *MultiDBClient) error {
+			return mdb.Get(ctx, "k").Err()
+		}},
+		{"pipeline", func(ctx context.Context, mdb *MultiDBClient) error {
+			_, err := mdb.Pipelined(ctx, func(p Pipeliner) error {
+				p.Get(ctx, "k")
+				return nil
+			})
+			return err
+		}},
+		{"tx pipeline", func(ctx context.Context, mdb *MultiDBClient) error {
+			_, err := mdb.TxPipelined(ctx, func(p Pipeliner) error {
+				p.Get(ctx, "k")
+				return nil
+			})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &scriptedDialer{handle: func(addr string, _ int, _ []string) (string, fakeAction) {
+				if addr == "a:1" {
+					return "", fakeHang
+				}
+				return "+OK\r\n", fakeReply
+			}}
+			mdb := newScriptedClient(t, d, func(o *Options) {
+				o.ReadTimeout = 200 * time.Millisecond
+			}, func(o *MultiDBOptions) {
+				o.CommandRetries = -1
+				o.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{
+					FailureThreshold: 1,
+					SuccessThreshold: 1,
+					GracePeriod:      time.Hour,
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			if err := tc.run(ctx, mdb); err == nil {
+				t.Fatal("command on a hung member succeeded")
+			}
+			if ctx.Err() == nil {
+				t.Fatal("caller deadline did not pass before the member read timed out")
+			}
+			if st := mdb.core.dbByID(0).cb.State(); st != imultidb.CircuitOpen {
+				t.Fatalf("breaker = %v, want open: the member read timeout was dropped as a caller-side signal", st)
+			}
+		})
+	}
+}
+
+// With ContextTimeoutEnabled the member arms its socket deadline from the
+// caller's ctx, so a short caller deadline surfaces as a read timeout. That is
+// the caller's deadline, not a member failure: the breaker must stay closed.
+func TestMultiDBCallerDeadlineWithContextTimeoutNotRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context, mdb *MultiDBClient) error
+	}{
+		{"process", func(ctx context.Context, mdb *MultiDBClient) error {
+			return mdb.Get(ctx, "k").Err()
+		}},
+		{"pipeline", func(ctx context.Context, mdb *MultiDBClient) error {
+			_, err := mdb.Pipelined(ctx, func(p Pipeliner) error {
+				p.Get(ctx, "k")
+				return nil
+			})
+			return err
+		}},
+		{"tx pipeline", func(ctx context.Context, mdb *MultiDBClient) error {
+			_, err := mdb.TxPipelined(ctx, func(p Pipeliner) error {
+				p.Get(ctx, "k")
+				return nil
+			})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &scriptedDialer{handle: func(addr string, _ int, _ []string) (string, fakeAction) {
+				if addr == "a:1" {
+					return "", fakeHang
+				}
+				return "+OK\r\n", fakeReply
+			}}
+			mdb := newScriptedClient(t, d, func(o *Options) {
+				o.ReadTimeout = 5 * time.Second
+				o.ContextTimeoutEnabled = true
+			}, func(o *MultiDBOptions) {
+				o.CommandRetries = -1
+				o.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{
+					FailureThreshold: 1,
+					SuccessThreshold: 1,
+					GracePeriod:      time.Hour,
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			if err := tc.run(ctx, mdb); err == nil {
+				t.Fatal("command on a hung member succeeded")
+			}
+			if el := time.Since(start); el > 2*time.Second {
+				t.Fatalf("command took %v: the caller deadline did not bound the read", el)
+			}
+			if st := mdb.core.dbByID(0).cb.State(); st != imultidb.CircuitClosed {
+				t.Fatalf("breaker = %v, want closed: the caller deadline was charged as a member failure", st)
+			}
+		})
+	}
+}
+
+// After the caller's ctx ended, each command is checked on its own: on a
+// cluster fan-out one node's dial can be cut by the ctx while another node's
+// read times out. The cut dial is neutral; the read timeout (member
+// ContextTimeoutEnabled off) is a failure.
+func TestRecordBatchOutcomesCallerEndedPerCommand(t *testing.T) {
+	det := &countingDetector{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 100,
+		SuccessThreshold: 1,
+	})}
+	core.dbs[0] = db
+	core.active.Store(0)
+	dialCut := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("i/o timeout")}
+	readTimeout := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	a := NewStatusCmd(context.Background(), "get", "a")
+	a.SetErr(dialCut)
+	b := NewStatusCmd(context.Background(), "get", "b")
+	b.SetErr(readTimeout)
+	cmds := []Cmder{a, b}
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	core.recordBatchOutcomes(done, db, cmds, readTimeout, execAll(cmds), imultidb.Reservation{}, core.detectorGen.Load())
+	if got := db.cb.Stats().Failures; got != 1 {
+		t.Errorf("breaker failures = %d, want 1 (the read timeout only)", got)
+	}
+	if got := det.failures.Load(); got != 1 {
+		t.Errorf("detector failures = %d, want 1 (the read timeout only)", got)
+	}
+}
+
+// pastDeadlineCtx has a passed deadline but Err not yet set, as a ctx is
+// between its deadline and its timer firing.
+type pastDeadlineCtx struct{ context.Context }
+
+func (pastDeadlineCtx) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+func (pastDeadlineCtx) Err() error                  { return nil }
+
+// callerEnded matches only the caller's own context ending the operation.
+func TestCallerEndedClassifiesClientSideOnly(t *testing.T) {
+	live := context.Background()
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	readTimeout := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	dialCut := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("i/o timeout")}
+	for _, tc := range []struct {
+		name        string
+		ctx         context.Context
+		err         error
+		ctxTimeouts bool
+		want        bool
+	}{
+		{"nil error", done, nil, false, false},
+		{"context error, ctx done", done, context.Canceled, false, true},
+		{"wrapped deadline, ctx done", done, fmt.Errorf("x: %w", context.DeadlineExceeded), false, true},
+		{"dial cut short, ctx done", done, dialCut, false, true},
+		{"read timeout, ctx done", done, readTimeout, false, false},
+		{"read timeout, ctx done, ctx timeouts", done, readTimeout, true, true},
+		{"read timeout, ctx live, ctx timeouts", live, readTimeout, true, false},
+		{"reset, ctx done", done, io.EOF, false, false},
+		{"reset, ctx done, ctx timeouts", done, io.EOF, true, false},
+		{"context error, ctx live", live, context.DeadlineExceeded, false, false},
+		{"dial error, ctx live", live, dialCut, false, false},
+		{"nil ctx", nil, context.Canceled, false, false},
+		// Socket deadline fired before ctx's timer marked ctx done.
+		{"read timeout, deadline passed, ctx timeouts", pastDeadlineCtx{}, readTimeout, true, true},
+		{"read timeout, deadline passed", pastDeadlineCtx{}, readTimeout, false, false},
+	} {
+		if got := callerEnded(tc.ctx, tc.err, tc.ctxTimeouts); got != tc.want {
+			t.Errorf("%s: callerEnded = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// One transport error stamped on every unread command of a batch is one
+// member failure for the breaker, however many commands carry it; a second,
+// distinct error counts again. The detector still sees every command.
+func TestRecordBatchOutcomesOneBreakerFailurePerTransportError(t *testing.T) {
+	det := &countingDetector{}
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 100,
+		SuccessThreshold: 1,
+	})}
+	core.dbs[0] = db
+	core.active.Store(0)
+	errA := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("reset")}
+	errB := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("reset")}
+	var cmds []Cmder
+	for i := 0; i < 5; i++ {
+		cmd := NewStatusCmd(context.Background(), "set", "k", i)
+		if i < 3 {
+			cmd.SetErr(errA)
+		} else {
+			cmd.SetErr(errB)
+		}
+		cmds = append(cmds, cmd)
+	}
+	core.recordBatchOutcomes(context.Background(), db, cmds, errA, execAll(cmds), imultidb.Reservation{}, core.detectorGen.Load())
+	if got := db.cb.Stats().Failures; got != 2 {
+		t.Errorf("breaker failures = %d, want 2 (one per distinct transport error)", got)
+	}
+	if got := det.failures.Load(); got != 5 {
+		t.Errorf("detector failures = %d, want 5 (one per command)", got)
+	}
+}
+
+// A connection that drops mid-pipeline after replying to a prefix charges the
+// breaker once, not once per unread command: one reset must not open a
+// default breaker (FailureThreshold 5) and fail the member over.
+func TestMultiDBPipelineDropChargesBreakerOnce(t *testing.T) {
+	var sets atomic.Int64
+	d := &scriptedDialer{handle: func(addr string, _ int, args []string) (string, fakeAction) {
+		if addr == "a:1" && strings.EqualFold(args[0], "set") && sets.Add(1) > 3 {
+			return "", fakeClose
+		}
+		return "+OK\r\n", fakeReply
+	}}
+	mdb := newScriptedClient(t, d, nil, func(o *MultiDBOptions) {
+		o.CommandRetries = -1
+	})
+	ctx := context.Background()
+	// The member pipeline stamps the drop's error on every command with no
+	// error, so all ten carry the same io.EOF.
+	_, err := mdb.Pipelined(ctx, func(p Pipeliner) error {
+		for i := 0; i < 10; i++ {
+			p.Set(ctx, "k", i, 0)
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("Exec on a dropping member succeeded")
+	}
+	a := mdb.core.dbByID(0)
+	if got := a.cb.Stats().Failures; got != 1 {
+		t.Errorf("breaker failures = %d, want 1 for one connection drop", got)
+	}
+	if st := a.cb.State(); st != imultidb.CircuitClosed {
+		t.Errorf("breaker = %v, want closed", st)
 	}
 }

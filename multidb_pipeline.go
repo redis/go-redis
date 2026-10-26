@@ -46,10 +46,11 @@ func sameErr(a, b error) (same bool) {
 	return a == b
 }
 
-// recordBatchOutcomes records one breaker/detector outcome per command,
-// mirroring the single-command path: an error reply from the server proves
-// the database is reachable and counts as a success; transport-level errors
-// count as failures; client-side errors (context cancellation, deterministic
+// recordBatchOutcomes records one detector outcome per command, mirroring the
+// single-command path: an error reply from the server proves the database is
+// reachable and counts as a success; transport-level errors count as failures
+// (on the breaker once per distinct error, see charged); client-side errors
+// (context cancellation, deterministic
 // local rejections per shouldRetry) record nothing and do not trigger
 // failover. It returns the number of transport-level failures.
 //
@@ -57,7 +58,7 @@ func sameErr(a, b error) (same bool) {
 // path (including the autopipeliner's batch dispatcher, before the batch's
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
-func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed *executedCmds, res imultidb.Reservation, detectorGen uint64) int {
+func (c *multidbCore) recordBatchOutcomes(ctx context.Context, db *multidbDatabase, cmds []Cmder, batchErr error, executed *executedCmds, res imultidb.Reservation, detectorGen uint64) int {
 	// `executed` is the per-command execution marker, not inferred from command
 	// state: an executed all-success batch whose error was injected by a
 	// post-exec hook looks identical on the commands, and stamping it would turn
@@ -123,8 +124,15 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			neutralPropagated = append(neutralPropagated, err)
 		}
 	}
+	// After the caller's ctx ended, each command is checked on its own: on a
+	// cluster fan-out one node's dial can be cut by ctx while another node's
+	// read times out, and the batch error carries only one of them.
+	ctxTimeouts := db.ctxTimeouts()
 	classify := func(cmd Cmder) outcomeKind {
 		err := cmd.rawErr()
+		if callerEnded(ctx, err, ctxTimeouts) {
+			return outcomeNeutral
+		}
 		for _, origin := range neutralPropagated {
 			if sameErr(err, origin) {
 				return outcomeNeutral
@@ -140,6 +148,25 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 	// updated — it is member-scoped. Mirrors the single-command path (process).
 	transportFailures := 0
 	recorded := 0
+	// charged holds the failure errors already counted on the breaker in this
+	// batch attempt. The reader stamps one transport error on every unread
+	// command (per node on a cluster fan-out), so the breaker counts each
+	// distinct error once: one connection drop is one member failure, and N
+	// failed nodes are N. Matched by identity (sameErr), like the propagation
+	// scan above. Identity also merges a bare singleton sentinel: two nodes
+	// each failing with a bare io.EOF count once. The detector still sees
+	// every command: it is rate-based and weighs failures against per-command
+	// successes.
+	var charged []error
+	chargeBreaker := func(err error) bool {
+		for _, c := range charged {
+			if sameErr(err, c) {
+				return false
+			}
+		}
+		charged = append(charged, err)
+		return true
+	}
 	recordOne := func(cmd Cmder) {
 		switch classify(cmd) {
 		case outcomeSuccess:
@@ -180,10 +207,12 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			// Settled through the reservation like successes: a held admission
 			// records only while its half-open episode is still current — a
 			// batch that outlived a failed recovery must not re-open the NEW
-			// episode it was never admitted to — one failure per command, as
-			// the single-command path does; a closed admission always counts
-			// toward opening.
-			db.cb.RecordFailureFor(res)
+			// episode it was never admitted to; a closed admission always
+			// counts toward opening. One breaker failure per distinct error
+			// (see charged).
+			if chargeBreaker(cmd.rawErr()) {
+				db.cb.RecordFailureFor(res)
+			}
 			if cur, _ := c.activeSnapshot(); cur == db {
 				c.recordDetectorFailure(detectorGen, cmd.rawErr())
 			}
@@ -432,12 +461,22 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 		err := db.processPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
 		if err != nil && ctx.Err() != nil {
 			// The caller's own context ended (deadline/cancel) while the batch
-			// ran — typically a dial cut short, surfacing as a net timeout the
-			// classifier would otherwise score as a member failure. That is a
+			// ran. A context error or a dial cut short (callerEnded) is a
 			// client-side signal, not a health verdict: release any half-open
-			// reservation and return WITHOUT recording.
-			db.cb.ReleaseFor(res)
+			// reservation and return WITHOUT recording. Any other error (a
+			// member read timeout, a reset) is recorded: member socket I/O
+			// does not watch ctx unless ContextTimeoutEnabled is set.
+			// recordBatchOutcomes re-checks each command the same way: on a
+			// cluster fan-out another node's dial may have been cut too.
+			if callerEnded(ctx, err, db.ctxTimeouts()) {
+				db.cb.ReleaseFor(res)
+			} else {
+				c.recordBatchOutcomes(ctx, db, cmds, err, executed, res, dg)
+				db.cb.ReleaseFor(res)
+			}
 			pendingDB = nil
+			// No retry either way: the caller's ctx is done.
+			//
 			// Do NOT reset or overwrite the commands. The deadline may have
 			// interrupted reading a LATER reply while earlier commands already
 			// received definitive results, and those are the caller's only
@@ -450,7 +489,7 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 			// return without touching command state on caller cancellation.
 			return exitErr(ctx.Err())
 		}
-		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed, res, dg)
+		transportFailures := c.recordBatchOutcomes(ctx, db, cmds, err, executed, res, dg)
 		// recordBatchOutcomes settled the reservation (recorded or released).
 		// ReleaseFor here is what the defer would do on return: it settles at
 		// most once and, after a recorded half-open failure, is state- and
@@ -602,16 +641,20 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	err := db.processTxPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
 	if err != nil && ctx.Err() != nil {
 		// Caller's context ended mid-transaction (see processPipeline): a
-		// client-side signal, not a health verdict. Release any half-open
-		// reservation and return without recording. Do NOT reset the commands
+		// context error, a cut-short dial, or (ContextTimeoutEnabled) a socket
+		// timeout is a client-side signal and is not recorded; any other member
+		// error is, per command (see callerEnded). Do NOT reset the commands
 		// here — EXEC may have committed, and their state is the caller's only
 		// evidence of that. Return the cancellation as the aggregate error (like
 		// processPipeline) rather than the stale transport error, so a caller
 		// does not mistake a deliberate cancel for a retryable disconnect.
+		if !callerEnded(ctx, err, db.ctxTimeouts()) {
+			c.recordBatchOutcomes(ctx, db, user, err, executed, res, dg)
+		}
 		db.cb.ReleaseFor(res)
 		return ctx.Err()
 	}
-	c.recordBatchOutcomes(db, user, err, executed, res, dg)
+	c.recordBatchOutcomes(ctx, db, user, err, executed, res, dg)
 	if errors.Is(err, ErrClosed) && db.removed.Load() && !c.closed.Load() {
 		// A concurrent control op removed the snapshotted member (closing its
 		// client) between the gate and execution, so its pool returned the

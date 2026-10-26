@@ -722,7 +722,7 @@ type fdEngine struct {
 	// outcome, when set by the engine's owner (AutoPipelineOptions.fdOutcome),
 	// receives every command's final outcome the engine itself settles (see
 	// finish). Set once in newFDEngine.
-	outcome func(ctx context.Context, cmd Cmder, err error)
+	outcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup)
 	// ownerRetries / ownerRetryBudget: the owner's retry policy
 	// (AutoPipelineOptions.fdOwnerRetries / fdRetryBudget). When set,
 	// retryBudget returns ownerRetryBudget and a failed lease reroutes at once.
@@ -883,21 +883,65 @@ func fdSpareFits(poolSize, maxIdle, engines int) bool {
 // command's report is left to its host (hostHook), which makes it after the
 // hook chain returns: a hook may still rewrite or suppress the result.
 func (fd *fdEngine) finish(r fdReq) {
+	fd.finishGrouped(r, nil)
+}
+
+// finishGrouped is finish with the report's failure group (see
+// AutoPipelineOptions.fdOutcome).
+func (fd *fdEngine) finishGrouped(r fdReq, grp *fdFailGroup) {
 	if fd.outcome != nil {
 		if r.hookDone != nil && r.batch != nil {
-			r.batch.fdOutcomeOwed = true // published by complete's close(hookDone)
+			// Both published by complete's close(hookDone).
+			r.batch.fdOutcomeOwed = true
+			r.batch.fdOutcomeGroup = grp
 		} else {
-			fd.reportOutcome(r.ctx, r.cmd, nil)
+			fd.reportOutcome(r.ctx, r.cmd, nil, grp)
 		}
 	}
 	r.complete()
+}
+
+// fdFailGroup groups the outcome reports of one settle call that carry the
+// same failure: the owner charges per-event state once per group. One drop
+// can settle through up to three calls (failPipelines for the exhausted set,
+// failPipelines for the NoRetry tail, rerouteReqs), so it is charged once per
+// settle call (bounded per drop), not strictly once.
+type fdFailGroup struct{ charged atomic.Bool }
+
+// take reports whether the caller is the first to charge the group. A nil
+// group is never shared, so it always charges.
+func (g *fdFailGroup) take() bool {
+	return g == nil || g.charged.CompareAndSwap(false, true)
+}
+
+// fdGroupsByErr returns the failure group for each error of one settle: the
+// same group for the same error value (by identity), a new one otherwise.
+func fdGroupsByErr() func(err error) *fdFailGroup {
+	type entry struct {
+		err error
+		grp *fdFailGroup
+	}
+	var seen []entry
+	return func(err error) *fdFailGroup {
+		if err == nil {
+			return nil
+		}
+		for _, e := range seen {
+			if sameErr(err, e.err) {
+				return e.grp
+			}
+		}
+		g := &fdFailGroup{}
+		seen = append(seen, entry{err, g})
+		return g
+	}
 }
 
 // reportOutcome hands cmd's outcome to the owner: err, or cmd.Err() when err is
 // nil. The owner's callback and a custom Cmder's Err are user code running on
 // the reader or engine goroutine, so a panic is contained here (logged) and the
 // command still completes.
-func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error) {
+func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup) {
 	defer func() {
 		if r := recover(); r != nil {
 			internal.Logger.Printf(context.Background(), "autopipeline: recovered full-duplex outcome panic: %v", r)
@@ -909,7 +953,7 @@ func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error) {
 		// itself.
 		err = cmd.rawErr()
 	}
-	fd.outcome(ctx, cmd, err)
+	fd.outcome(ctx, cmd, err, grp)
 }
 
 // submit enqueues a command onto the ordered stream and returns its batch.
@@ -1079,7 +1123,7 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 			}
 			internal.Logger.Printf(ctx, "autopipeline: recovered full-duplex hook panic: %v\n%s", r, debug.Stack())
 			if b.fdOutcomeOwed {
-				fd.reportOutcome(ctx, cmd, nil)
+				fd.reportOutcome(ctx, cmd, nil, b.fdOutcomeGroup)
 			}
 			b.close()
 		}
@@ -1104,7 +1148,7 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	fdSetErrSafe(cmd, err) // honor a hook that rewrote / short-circuited the result
 	if b.fdOutcomeOwed {
 		// The owner's report, on the chain's final result (see finish).
-		fd.reportOutcome(ctx, cmd, err)
+		fd.reportOutcome(ctx, cmd, err, b.fdOutcomeGroup)
 	}
 	b.close() // now wake the waiter
 }
@@ -1377,7 +1421,7 @@ func (fd *fdEngine) runReplyReroutes(done chan struct{}) {
 			// Each reply is a failed attempt on this member: report it first,
 			// as rerouteReqs does; the owner's path settles the rerouted one.
 			if fd.outcome != nil {
-				fd.reportOutcome(r.req.ctx, r.req.cmd, r.cause)
+				fd.reportOutcome(r.req.ctx, r.req.cmd, r.cause, nil)
 			}
 			reqs = append(reqs, r.req)
 		}
@@ -3172,6 +3216,11 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 	if errorCallback != nil && len(reqs) > 0 {
 		errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 	}
+	// One settle: reqs failing with the same error share a failure group.
+	var groupOf func(error) *fdFailGroup
+	if account && fd.outcome != nil {
+		groupOf = fdGroupsByErr()
+	}
 	for i := range reqs {
 		// rawErr(), not Err(): this runs on the engine goroutine, and Err()
 		// awaits batch.done — the very channel complete() closes just below — so
@@ -3200,7 +3249,11 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 			})
 		}
 		if account {
-			fd.finish(reqs[i])
+			var grp *fdFailGroup
+			if groupOf != nil {
+				grp = groupOf(reqs[i].cmd.rawErr())
+			}
+			fd.finishGrouped(reqs[i], grp)
 		} else {
 			reqs[i].complete()
 		}
@@ -3401,11 +3454,13 @@ func (fd *fdEngine) rerouteReqs(bg context.Context, reqs []fdReq, cause error) {
 	// attempt there: report that to the owner first. A never-sent command (the
 	// refunded unwritten suffix, a queue drained on lease failure) made no
 	// attempt on this member and reports nothing; the owner's path settles
-	// the rerouted attempt of every command.
+	// the rerouted attempt of every command. They all failed on the same
+	// cause, so they share one failure group (one per settle call).
 	if fd.outcome != nil {
+		grp := &fdFailGroup{}
 		for i := range reqs {
 			if reqs[i].sent {
-				fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause)
+				fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause, grp)
 			}
 		}
 	}
