@@ -3574,9 +3574,7 @@ var _ = Describe("Commands", func() {
 				"value1",
 				"ARGS",
 				"arg1",
-				"ARGS",
 				"arg2",
-				"ARGS",
 				3,
 			}
 
