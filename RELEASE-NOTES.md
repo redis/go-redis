@@ -1,5 +1,61 @@
 # Release Notes
 
+## Unreleased
+
+- **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
+- Cluster routing shares command metadata with client-side caching for key
+  extraction and read-only status. Existing default routing and cluster-wide
+  `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers are preserved.
+  Install `NewCommandMetadataResolver()` or `client.NewDynamicResolver()` with
+  `SetCommandInfoResolver` to enable metadata-based fan-out and aggregation.
+  `CommandMetadata` configuration alone does not enable them. Cross-slot
+  fan-out is not atomic.
+- With metadata routing enabled, cross-slot `MGET` follows redirects for each
+  affected slot during resharding instead of returning a missing value for a
+  key that moved. Successful slot groups are not replayed.
+- Explicit pipelines and transactions retain node-local command execution;
+  ordered `AsyncAutoPipeline` rejects fan-out before dispatch. Same-slot
+  metadata commands remain batchable. Automatic fan-out is available through
+  the blocking face or unordered half-duplex mode. Existing direct helpers
+  and special routing retain their separate execution path.
+  `SCAN`, `INFO`, and
+  known diagnostics remain node-local. Single-slot raw commands and binary
+  marshaler values are accepted when no fan-out is needed.
+- Numeric sum/min/max fan-out preserves integer replies as exact `int64`
+  results, including raw `Do` results; integer overflow returns an error.
+  Aggregates containing floating-point replies return `float64`.
+- Resolved command key specifications take precedence over `SetFirstKeyPos`.
+  Missing snapshot commands retain the legacy key-position fallback; configure
+  `CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` for full
+  metadata. The default `CommandMetadataStatic` mode performs no network lookup
+  unless resolution reaches an explicitly installed `NewDynamicResolver`.
+  After activation, reconnects, topology changes and a configured refresh
+  interval also verify server identity in Static mode.
+- Embedded command wrappers retain raw-reply safety checks and receive typed
+  aggregate results through their promoted `SetVal` methods.
+- Metadata identity probes have bounded internal deadlines, including when
+  application socket timeouts are disabled. Waiting callers can cancel
+  independently of an ongoing refresh. Dynamic resolution waits for one initial
+  attempt; after failure or invalidation, commands use conservative metadata
+  immediately while background verification retries with backoff.
+- Cluster routing decisions are stored on commands without using commands as
+  map keys, and concurrent topology reloads share one in-flight load.
+- Topology loading prefers `CLUSTER SHARDS` and falls back to `CLUSTER SLOTS`
+  for unsupported commands or unusable replies, including missing or unknown
+  node health. Connection failures try another node without repeating `SLOTS`
+  on the failed connection.
+- Keyless routing prefers healthy nodes, but temporary local failure/loading
+  markers no longer exclude every candidate. Nodes explicitly marked offline
+  by topology remain excluded. `ErrClusterTopologyUnhealthy` supports
+  `errors.Is` checks. Unknown response policies return an error.
+- Fan-out responses containing `MOVED` or `ASK` refresh topology for later
+  commands without replaying already successful operations.
+- `FT.CURSOR READ` is no longer automatically retried after a lost reply, on
+  standalone and cluster clients, because the server may already have advanced
+  the cursor. Cursor ownership and reply-parsing changes are deferred to a
+  separate PR.
+- **Per-node TLS verification for cluster URLs:** `ParseClusterURL` accepts `tls_verify_node_host=true` on `rediss://` URLs. The parameter clears `TLSConfig.ServerName`, so each node is verified against the host it is dialed at and not against the host of the first URL. Use it when each node has a certificate for its own host. The default is unchanged: every node is verified against the host of the first URL, so clusters that use one certificate and announce their nodes by IP continue to work. `rediss://` cluster URLs now also set `MinVersion: tls.VersionTLS12`, as `ParseURL` and `ParseFailoverURL` do ([#4145](https://github.com/redis/go-redis/pull/4145)).
+
 # 9.23.0 (2026-10-05)
 
 This is a minor release. It contains everything from 9.23.0-beta.1, so these notes cover the full 9.22.0 → 9.23.0 upgrade. The release adds:

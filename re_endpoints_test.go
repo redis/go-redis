@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -8,12 +9,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/hashtag"
 )
 
 // reDatabaseEndpoint mirrors a raw_endpoints entry from the env0 endpoints config.
@@ -221,4 +224,140 @@ func reNewClient(protocol int, unstableResp3 bool) *redis.Client {
 	}
 	applyREConnection(opt)
 	return redis.NewClient(opt)
+}
+
+// TestEnterpriseClusterRouting exercises the supplied Enterprise endpoints,
+// including their proxy topology. It owns only its uniquely prefixed test keys.
+func TestEnterpriseClusterRouting(t *testing.T) {
+	if os.Getenv("REDIS_ENDPOINTS_CONFIG_PATH") == "" {
+		t.Skip("requires a dedicated Redis Enterprise database")
+	}
+	conn, err := loadREConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, protocol := range []int{2, 3} {
+		for _, mode := range []string{"default", "metadata", "dynamic-static", "prefer-live", "disabled"} {
+			t.Run(fmt.Sprintf("RESP%d/%s", protocol, mode), func(t *testing.T) {
+				opt := &redis.ClusterOptions{
+					Addrs: []string{conn.Addr}, Username: conn.Username, Password: conn.Password,
+					Protocol: protocol, DialTimeout: reDialTimeout, ReadTimeout: reReadTimeout,
+					WriteTimeout: reWriteTimeout, ContextTimeoutEnabled: true,
+					DisableRoutingPolicies: mode == "disabled",
+				}
+				if conn.TLS {
+					opt.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+				}
+				if mode == "prefer-live" {
+					opt.CommandMetadata = &redis.CommandMetadataConfig{Mode: redis.CommandMetadataPreferLive}
+				}
+				client := redis.NewClusterClient(opt)
+				t.Cleanup(func() { _ = client.Close() })
+				switch mode {
+				case "metadata", "prefer-live":
+					client.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+				case "dynamic-static":
+					client.SetCommandInfoResolver(client.NewDynamicResolver())
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				if err := client.Ping(ctx).Err(); err != nil {
+					t.Fatal(err)
+				}
+				shards, err := client.ClusterShards(ctx).Result()
+				if err != nil || len(shards) < 3 {
+					t.Fatalf("need three Enterprise shards: count=%d error=%v", len(shards), err)
+				}
+				prefix := fmt.Sprintf("go-redis:pr4093:%d:", time.Now().UnixNano())
+				keys := []string{prefix + "{a}", prefix + "{b}", prefix + "{c}"}
+				owners := make(map[int]bool)
+				for _, key := range keys {
+					slot := int64(hashtag.Slot(key))
+					for i, shard := range shards {
+						for _, slots := range shard.Slots {
+							if slots.Start <= slot && slot <= slots.End {
+								owners[i] = true
+							}
+						}
+					}
+				}
+				if len(owners) != len(keys) {
+					t.Fatalf("test keys must cover three shard owners, got %d", len(owners))
+				}
+				t.Cleanup(func() {
+					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cleanupCancel()
+					for _, key := range keys {
+						if err := client.Del(cleanupCtx, key).Err(); err != nil {
+							t.Errorf("clean test key: %v", err)
+						}
+					}
+				})
+				_, err = client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+					for i, key := range keys {
+						pipe.Set(ctx, key, i, 2*time.Minute)
+					}
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				values, err := client.MGet(ctx, keys...).Result()
+				if mode == "default" || mode == "disabled" {
+					if !redis.HasErrorPrefix(err, "CROSSSLOT") {
+						t.Fatalf("routing without opt-in must preserve CROSSSLOT: %v", err)
+					}
+				} else if err != nil || !reflect.DeepEqual(values, []interface{}{"0", "1", "2"}) {
+					t.Fatalf("cross-shard values=%v error=%v", values, err)
+				}
+				var read *redis.StringCmd
+				_, err = client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Incr(ctx, keys[0])
+					read = pipe.Get(ctx, keys[0])
+					pipe.Ping(ctx)
+					return nil
+				})
+				if err != nil || read.Val() != "1" {
+					t.Fatalf("transaction value=%q error=%v", read.Val(), err)
+				}
+				if mode != "metadata" {
+					return
+				}
+				for _, fullDuplex := range []bool{false, true} {
+					for _, async := range []bool{false, true} {
+						t.Run(fmt.Sprintf("AutoPipeline/fullDuplex=%v/async=%v", fullDuplex, async), func(t *testing.T) {
+							apOpt := *opt
+							apClient := redis.NewClusterClient(&apOpt)
+							defer apClient.Close()
+							apClient.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+							cfg := &redis.AutoPipelineOptions{FullDuplex: fullDuplex, MaxBatchSize: 32}
+							var ap *redis.AutoPipeliner
+							var err error
+							if async {
+								ap, err = apClient.AsyncAutoPipelineWithOptions(cfg)
+							} else {
+								ap, err = apClient.AutoPipelineWithOptions(cfg)
+							}
+							if err != nil {
+								t.Fatal(err)
+							}
+							defer ap.Close()
+							commands := make([]*redis.StringCmd, 0, 12)
+							for range 4 {
+								for _, key := range keys {
+									commands = append(commands, ap.Get(ctx, key))
+								}
+							}
+							for i, cmd := range commands {
+								want := []string{"1", "1", "2"}[i%len(keys)]
+								if value, err := cmd.Result(); err != nil || value != want {
+									t.Fatalf("command %d value=%q error=%v", i, value, err)
+								}
+							}
+						})
+					}
+				}
+			})
+		}
+	}
 }

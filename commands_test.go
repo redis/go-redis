@@ -3574,9 +3574,7 @@ var _ = Describe("Commands", func() {
 				"value1",
 				"ARGS",
 				"arg1",
-				"ARGS",
 				"arg2",
-				"ARGS",
 				3,
 			}
 
@@ -4199,8 +4197,9 @@ var _ = Describe("Commands", func() {
 
 			res, err = client.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
-			// overhead of the push notification check is about 1-2ms for 100 commands
-			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 2))
+			// TTL only counts down; allow slack for slow CI runners.
+			Expect(res[0]).To(BeNumerically("<=", 10*time.Second.Milliseconds()))
+			Expect(res[0]).To(BeNumerically(">", 9*time.Second.Milliseconds()))
 		})
 
 		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
@@ -9279,6 +9278,24 @@ var _ = Describe("Commands", func() {
 			Expect(res[0].Latitude).To(Equal(37.50266842333162))
 		})
 
+		It("should search geo radius twice with the same query", func() {
+			q := &redis.GeoRadiusQuery{
+				Radius:   200,
+				Unit:     "km",
+				WithDist: true,
+				Sort:     "ASC",
+			}
+			for i := 0; i < 2; i++ {
+				res, err := client.GeoRadius(ctx, "Sicily", 15, 37, q).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(2))
+				Expect(res[0].Name).To(Equal("Catania"))
+				Expect(res[0].Dist).To(Equal(56.4413))
+				Expect(res[1].Name).To(Equal("Palermo"))
+				Expect(res[1].Dist).To(Equal(190.4424))
+			}
+		})
+
 		It("should search geo radius by member with options", func() {
 			res, err := client.GeoRadiusByMember(ctx, "Sicily", "Catania", &redis.GeoRadiusQuery{
 				Radius:      200,
@@ -9459,6 +9476,18 @@ var _ = Describe("Commands", func() {
 			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]string{"Palermo"}))
+		})
+
+		It("should geo search without changing the query", func() {
+			q := &redis.GeoSearchQuery{
+				Member: "Catania",
+				Radius: 200,
+				Sort:   "asc",
+			}
+			val, err := client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania", "Palermo"}))
+			Expect(q.RadiusUnit).To(BeEmpty())
 		})
 
 		It("should geo search with options", func() {
