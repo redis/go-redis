@@ -1899,6 +1899,9 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // or more underlying connections. It's safe for concurrent use by
 // multiple goroutines.
 type ClusterClient struct {
+	// fastRoute memoizes the shared routing template per command name (see
+	// osscluster_fastroute.go).
+	fastRoute       atomic.Pointer[fastRouteMemo]
 	opt             *ClusterOptions
 	nodes           *clusterNodes
 	state           *clusterStateHolder
@@ -2638,8 +2641,12 @@ func (c *ClusterClient) autoPipelineRoutingDecision(
 	if decision := c.peekAutoPipelineRoutingDecision(cmd); decision != nil {
 		return decision
 	}
+	if t := c.fastRouteLookup(cmd); t != nil {
+		return t // the slot is cached on cmd; the shared template is not stored on it
+	}
 	decision := c.resolveCommandRoutingDecision(ctx, cmd)
 	if template := sharedRoutingDecision(cmd, &decision); template != nil {
+		c.fastRouteRemember(cmd, template)
 		cmd.setClusterRoutingDecision(template)
 		return template
 	}

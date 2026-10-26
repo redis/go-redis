@@ -514,6 +514,9 @@ func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
 }
 
 func (cmd *baseCmd) setClusterRoutingDecision(decision *clusterRoutingDecision) {
+	if decision == nil && cmd.routing.Load() == nil {
+		return // nothing to clear: a load instead of an atomic exchange
+	}
 	cmd.routing.Store(decision)
 }
 
