@@ -13,16 +13,20 @@ import (
 //
 // ScanIterator re-sends the same *ScanCmd for every page, so the walk is kept on
 // the command. The first page (cursor 0) takes a snapshot of the masters, or only
-// the master of the slot when MATCH has a hash tag. Pages go to one master until
-// it returns cursor 0; the next page starts the next master from cursor 0. Until
-// the last master is done the command reports a non-zero cursor, so the iterator
-// keeps fetching. Each page is one ClusterClient.Process call, so process hooks
-// run once per page.
+// the master of the one slot that a hash-tag MATCH can select
+// (hashtag.PatternSlot). The walk starts on the node a SCAN without a walk goes
+// to, so a loop that passes the cursor back by hand stays on one node. Pages
+// go to one master until it returns cursor 0; the next page starts the next
+// master from cursor 0. Val and Result report the server cursor; the iterator
+// also asks the walk (ScanCmd.more) so it keeps fetching after a master ends.
+// Each page is one ClusterClient.Process call, so process hooks run once per
+// page.
 //
-// A SCAN that carries no walk keeps the routed node: a raw command (Do) and a
-// loop that passes a cursor back by hand, which cannot say which node the cursor
-// belongs to. Keys added, deleted or moved during the walk can be returned twice
-// or missed, as SCAN allows on one node.
+// A SCAN that carries no walk goes to the routed node, or the node the
+// ShardPicker selects: a raw command (Do) and a loop that passes a cursor back
+// by hand, which cannot say which node the cursor belongs to. Keys added,
+// deleted or moved during the walk can be returned twice or missed, as SCAN
+// allows on one node.
 type clusterScanState struct {
 	masters []*clusterNode
 	idx     int
@@ -37,12 +41,12 @@ func (c *ClusterClient) executeScanCommand(
 ) error {
 	sc, ok := cmd.(*ScanCmd)
 	if !ok || (sc.clusterScan == nil && !scanCursorIsZero(sc)) {
-		return c.scanRoutedNode(ctx, cmd, node)
+		return c.scanRoutedNode(ctx, cmd, node, &decision)
 	}
 	st := sc.clusterScan
 	if st == nil {
 		var err error
-		if st, err = c.newClusterScan(ctx, sc); err != nil {
+		if st, err = c.newClusterScan(ctx, sc, &decision); err != nil {
 			return err
 		}
 		sc.clusterScan = st
@@ -57,41 +61,87 @@ func (c *ClusterClient) executeScanCommand(
 	if sc.cursor == 0 && st.idx+1 < len(st.masters) {
 		st.idx++
 		st.restart = true
-		sc.cursor = 1 // placeholder: more masters to scan
 	}
 	return nil
 }
 
-func (c *ClusterClient) newClusterScan(ctx context.Context, sc *ScanCmd) (*clusterScanState, error) {
+// pending reports whether more masters are left to scan.
+func (st *clusterScanState) pending() bool {
+	return st != nil && st.restart
+}
+
+func (c *ClusterClient) newClusterScan(
+	ctx context.Context,
+	sc *ScanCmd,
+	decision *clusterRoutingDecision,
+) (*clusterScanState, error) {
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// Scan sets the routing key to MATCH only when it has a hash tag; require it
+	// here too, so a hand-written cursor loop routes every page to this slot.
 	if match, ok := scanMatch(sc); ok && hashtag.Present(match) {
-		node, err := state.slotMasterNode(hashtag.Slot(match))
-		if err != nil {
-			return nil, err
+		if slot := hashtag.PatternSlot(match); slot >= 0 {
+			node, err := state.slotMasterNode(slot)
+			if err != nil {
+				return nil, c.noteTopologySelectionError(err)
+			}
+			return &clusterScanState{masters: []*clusterNode{node}}, nil
 		}
-		return &clusterScanState{masters: []*clusterNode{node}}, nil
+	}
+	// state.Masters holds only online masters: a walk over it would skip a shard.
+	if err := state.requireOnline(state.declaredMasters()); err != nil {
+		return nil, c.noteTopologySelectionError(err)
 	}
 	if len(state.Masters) == 0 {
 		return nil, errClusterNoNodes
 	}
-	return &clusterScanState{masters: append([]*clusterNode(nil), state.Masters...)}, nil
+	first, err := c.scanPageNode(ctx, decision)
+	if err != nil {
+		return nil, err
+	}
+	// Start on first; a replica is not in the snapshot, so keep the order then.
+	start := 0
+	for i, node := range state.Masters {
+		if node == first {
+			start = i
+			break
+		}
+	}
+	masters := make([]*clusterNode, 0, len(state.Masters))
+	masters = append(masters, state.Masters[start:]...)
+	masters = append(masters, state.Masters[:start]...)
+	return &clusterScanState{masters: masters}, nil
 }
 
-// scanRoutedNode runs one SCAN page on the node the router picked.
-func (c *ClusterClient) scanRoutedNode(ctx context.Context, cmd Cmder, node *clusterNode) error {
+// scanRoutedNode runs one SCAN page on the redirected node, or the node that
+// ordinary keyless routing selects.
+func (c *ClusterClient) scanRoutedNode(
+	ctx context.Context,
+	cmd Cmder,
+	node *clusterNode,
+	decision *clusterRoutingDecision,
+) error {
 	if node == nil {
-		state, err := c.state.Get(ctx)
-		if err != nil {
-			return err
-		}
-		if node, err = state.slotMasterNode(hashtag.RandomSlot()); err != nil {
+		var err error
+		if node, err = c.scanPageNode(ctx, decision); err != nil {
 			return err
 		}
 	}
 	return node.Client.Process(ctx, cmd)
+}
+
+// scanPageNode is the node that ordinary keyless routing selects for a page.
+func (c *ClusterClient) scanPageNode(ctx context.Context, decision *clusterRoutingDecision) (*clusterNode, error) {
+	if c.opt.ShardPicker != nil {
+		return c.cmdNodeWithShardPickerAndDecision(ctx, decision.naturalSlot, c.opt.ShardPicker, decision)
+	}
+	slot := decision.naturalSlot
+	if slot < 0 {
+		slot = hashtag.RandomSlot()
+	}
+	return c.cmdNodeWithDecision(ctx, slot, decision)
 }
 
 func scanCursorIsZero(sc *ScanCmd) bool {

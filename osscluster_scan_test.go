@@ -2,11 +2,14 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 const clusterScanKeys = 600
@@ -205,4 +208,153 @@ func TestClusterScanHashTagMatch(t *testing.T) {
 		}
 		clusterScanExpectEvery(t, clusterScanCollect(t, cc.Scan(ctx, 0, tag+":*", 10).Iterator()), want)
 	})
+}
+
+// Val and Result report the server cursor, not a value made up for the walk:
+// with a large COUNT the first master ends in one page and returns cursor 0.
+// The iterator on the same command still goes on to the other masters.
+func TestClusterScanResultReportsServerCursor(t *testing.T) {
+	forEachScanResolver(t, func(t *testing.T, cc *ClusterClient) {
+		prefix, want := clusterScanFill(t, cc, "cursor")
+		cmd := cc.Scan(context.Background(), 0, prefix+":*", 100000)
+		if _, cursor, err := cmd.Result(); err != nil || cursor != 0 {
+			t.Fatalf("first page: cursor=%d err=%v, want the server cursor 0", cursor, err)
+		}
+		clusterScanExpectEvery(t, clusterScanCollect(t, cmd.Iterator()), want)
+	})
+}
+
+// A wildcard inside the hash tag matches keys of many tags, so the walk covers
+// every master.
+func TestClusterScanWildcardHashTagCoversEveryMaster(t *testing.T) {
+	forEachScanResolver(t, func(t *testing.T, cc *ClusterClient) {
+		ctx := context.Background()
+		tag := fmt.Sprintf("scanwild-%d", time.Now().UnixNano())
+		want := map[string]bool{}
+		owners := map[string]bool{}
+		for i := 0; i < 200; i++ {
+			k := fmt.Sprintf("{%s-%d}:x", tag, i)
+			if err := cc.Set(ctx, k, i, time.Minute).Err(); err != nil {
+				t.Fatal(err)
+			}
+			want[k] = true
+			owners[cc.cmdNode(ctx, k)] = true
+		}
+		t.Cleanup(func() {
+			for k := range want {
+				cc.Del(ctx, k)
+			}
+		})
+		if len(owners) < 2 {
+			t.Fatalf("keys on %d master(s), want several", len(owners))
+		}
+		clusterScanExpectEvery(t, clusterScanCollect(t, cc.Scan(ctx, 0, "{"+tag+"-*}:*", 20).Iterator()), want)
+	})
+}
+
+// A loop that passes the cursor back by hand carries no walk after page 1:
+// those pages go to the node the ShardPicker selects. Page 1 starts the walk
+// on that node too, so a fixed picker keeps the whole loop on one master.
+func TestClusterScanManualLoopUsesShardPicker(t *testing.T) {
+	raw := func(ctx context.Context, cc *ClusterClient, cursor uint64, match string) ([]string, uint64, error) {
+		reply, err := cc.Do(ctx, "scan", cursor, "match", match, "count", 50).Slice()
+		if err != nil {
+			return nil, 0, err
+		}
+		next, err := strconv.ParseUint(reply[0].(string), 10, 64)
+		var keys []string
+		for _, k := range reply[1].([]interface{}) {
+			keys = append(keys, k.(string))
+		}
+		return keys, next, err
+	}
+	typed := func(ctx context.Context, cc *ClusterClient, cursor uint64, match string) ([]string, uint64, error) {
+		return cc.Scan(ctx, cursor, match, 50).Result()
+	}
+	for _, mode := range []string{"default", "metadata"} {
+		for name, scan := range map[string]func(context.Context, *ClusterClient, uint64, string) ([]string, uint64, error){"raw": raw, "typed": typed} {
+			t.Run(mode+"/"+name, func(t *testing.T) {
+				ctx := context.Background()
+				cc := NewClusterClient(&ClusterOptions{
+					Addrs:       clusterFDTestAddrs,
+					ShardPicker: routing.NewStaticShardPicker(1),
+				})
+				t.Cleanup(func() { _ = cc.Close() })
+				if err := cc.Ping(ctx).Err(); err != nil {
+					t.Skipf("local cluster not reachable at %v: %v", clusterFDTestAddrs, err)
+				}
+				if mode == "metadata" {
+					cc.SetCommandInfoResolver(NewCommandMetadataResolver())
+				}
+				prefix, all := clusterScanFill(t, cc, "raw")
+				state, err := cc.state.Get(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				picked := state.Masters[1].Client.opt.Addr
+				want := map[string]bool{}
+				for k := range all {
+					if cc.cmdNode(ctx, k) == picked {
+						want[k] = true
+					}
+				}
+				got := map[string]int{}
+				var cursor uint64
+				for page := 0; ; page++ {
+					if page > 2*clusterScanKeys {
+						t.Fatal("the scan does not end")
+					}
+					keys, next, err := scan(ctx, cc, cursor, prefix+":*")
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, k := range keys {
+						got[k]++
+					}
+					if cursor = next; cursor == 0 {
+						break
+					}
+				}
+				clusterScanExpectEvery(t, got, want)
+			})
+		}
+	}
+}
+
+// state.Masters holds only online masters. A walk must fail when a declared
+// master is unhealthy instead of returning the other shards only.
+func TestClusterScanFailsForUnhealthyMaster(t *testing.T) {
+	shards := []ClusterShard{
+		{
+			Slots: []SlotRange{{Start: 0, End: 8191}},
+			Nodes: []Node{{ID: "failed", Endpoint: "127.0.0.1", Port: 7301, Role: "master", Health: "fail"}},
+		},
+		{
+			Slots: []SlotRange{{Start: 8192, End: 16383}},
+			Nodes: []Node{{ID: "online", Endpoint: "127.0.0.1", Port: 7302, Role: "master", Health: "online"}},
+		},
+	}
+	c := newMetadataTestCluster(t, nil)
+	state, err := newClusterStateFromShards(c.nodes, shards, "127.0.0.1:7301", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.state.state.Store(state)
+	c.state.load = func(context.Context) (*clusterState, error) { return state, nil }
+	var calls atomic.Int32
+	for _, node := range state.declaredMasters() {
+		node.Client.AddHook(clusterMetadataNodeHook{process: func(context.Context, Cmder) error {
+			calls.Add(1)
+			return nil
+		}})
+	}
+	ctx := context.Background()
+	cmd := NewScanCmd(ctx, c.Process, "scan", uint64(0))
+	decision := c.commandRoutingDecision(ctx, cmd)
+	if err := c.executeScanCommand(ctx, cmd, nil, decision); !errors.Is(err, ErrClusterTopologyUnhealthy) {
+		t.Fatalf("scan error=%v, want unhealthy topology", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("unhealthy scan dispatched %d commands", calls.Load())
+	}
 }

@@ -4807,6 +4807,11 @@ func (cmd *ScanCmd) SetVal(page []string, cursor uint64) {
 	cmd.cursor = cursor
 }
 
+// more reports whether the iterator has more pages to fetch.
+func (cmd *ScanCmd) more() bool {
+	return cmd.cursor != 0 || cmd.clusterScan.pending()
+}
+
 func (cmd *ScanCmd) Val() (keys []string, cursor uint64) {
 	cmd.await()
 	return cmd.page, cmd.cursor
