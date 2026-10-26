@@ -3398,7 +3398,18 @@ func TestCSCPolicyOrderedAutoPipeline(t *testing.T) {
 						err   error
 					}
 					done := make(chan result, 1)
-					go func() { v, err := ap.WithCache(mark).Get(ctx, "k").Result(); done <- result{v, err} }()
+					submitted := make(chan struct{})
+					go func() {
+						cmd := ap.Get(cscTestContext(ctx, mark), "k")
+						close(submitted)
+						v, err := cmd.Result()
+						done <- result{v, err}
+					}()
+					select {
+					case <-submitted:
+					case <-time.After(3 * time.Second):
+						t.Fatal("context mark made async submission block")
+					}
 					var got result
 					early := false
 					select {
@@ -3420,7 +3431,7 @@ func TestCSCPolicyOrderedAutoPipeline(t *testing.T) {
 					if early || got.err != nil || got.value != "new" {
 						t.Fatalf("marked GET overtook SET or used cache: early=%t result=%+v", early, got)
 					}
-					if err := ap.WithCache(mark).Get(ctx, "k").Err(); err != nil {
+					if err := ap.Get(cscTestContext(ctx, mark), "k").Err(); err != nil {
 						t.Fatal(err)
 					}
 					if s.count("get") != 3 {
@@ -3463,14 +3474,17 @@ func TestCSCPolicyOrderedAutoPipelineStrict(t *testing.T) {
 				defer ap.Close()
 				ctx := context.Background()
 				cmd := NewStringCmd(ctx, "get", "k")
-				if err := ap.WithCache(true).Process(ctx, cmd); err == nil || s.count("get") != 0 {
+				if err := ap.Process(WithCache(ctx), cmd); err == nil || s.count("get") != 0 {
 					t.Fatal("strict mark dispatched", err, s.snapshot())
 				}
-				if err := ap.WithCache(false).Process(ctx, cmd); err != nil || s.count("get") != 1 {
+				if err := ap.Process(WithoutCache(ctx), cmd); err != nil {
+					t.Fatal(err)
+				}
+				if err := cmd.Err(); err != nil || s.count("get") != 1 {
 					t.Fatal("rejected command could not be reused", err)
 				}
 				if *cmd.cacheState() != (cscCommandState{}) || cmd.clusterRoutingDecision() != nil {
-					t.Fatal("completed view retained invocation state")
+					t.Fatal("completed command retained invocation state")
 				}
 			})
 		}
@@ -3508,7 +3522,7 @@ func TestCSCPolicyOrderedAutoPipelineRetry(t *testing.T) {
 			}
 			defer ap.Close()
 			cmd := NewStringCmd(ctx, "get", "k")
-			if err := ap.WithCache(mark).Process(ctx, cmd); err != nil || cmd.Val() != "new" {
+			if err := ap.Process(cscTestContext(ctx, mark), cmd); err != nil || cmd.Val() != "new" {
 				t.Fatal("retry lost bypass intent", cmd.Val(), err)
 			}
 			if reads.Load() != 3 || s.prefixes() != 1 || c.CSCStats().Entries != 1 || c.CSCStats().Hits != 0 {
@@ -3521,7 +3535,7 @@ func TestCSCPolicyOrderedAutoPipelineRetry(t *testing.T) {
 	}
 }
 
-func TestCSCPolicyViewReuseAndAutoPipeline(t *testing.T) {
+func TestCSCPolicyContextReuseAndAutoPipeline(t *testing.T) {
 	s := newCSCPolicyServer(t, nil)
 	c := policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
 	ctx := context.Background()
@@ -3531,7 +3545,7 @@ func TestCSCPolicyViewReuseAndAutoPipeline(t *testing.T) {
 	if clone.cacheState().mark != cacheRequested {
 		t.Fatal("clone lost mark")
 	}
-	if err := c.WithCache(true).Process(ctx, cmd); err != nil {
+	if err := c.Process(WithCache(ctx), cmd); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Process(ctx, cmd); err != nil {
@@ -3546,18 +3560,42 @@ func TestCSCPolicyViewReuseAndAutoPipeline(t *testing.T) {
 	}
 	defer ap.Close()
 	for i := 0; i < 2; i++ {
-		if err := ap.WithCache(true).Get(ctx, "ap").Err(); err != nil {
+		if err := ap.Get(WithCache(ctx), "ap").Err(); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if s.count("get") != 3 {
 		t.Fatal("marked AP did not use normal cache path")
 	}
-	viewType := reflect.TypeOf(c.WithCache(true))
-	for _, name := range []string{"Close", "Pipeline", "TxPipeline", "AutoPipeline", "AsyncAutoPipeline"} {
-		if _, ok := viewType.MethodByName(name); ok {
-			t.Fatal("view exposes", name)
+}
+
+func TestCSCPolicyContextAutoPipelineRaw(t *testing.T) {
+	s := newCSCPolicyServer(t, nil)
+	opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
+	opt.ClientSideCacheConfig.Strict = true
+	c := policyClient(t, opt)
+	ap, err := c.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	ctx := context.Background()
+	// Raw Do keeps its native escape-hatch execution on a normal connection,
+	// including support for caching, even on the ordered deferred face.
+	for i := 0; i < 2; i++ {
+		cmd := ap.Do(WithCache(ctx), "get", "raw")
+		if got, err := cmd.Text(); got != "v" || err != nil {
+			t.Fatal(got, err)
 		}
+		if *cmd.cacheState() != (cscCommandState{}) {
+			t.Fatal("raw completion leaked intent")
+		}
+	}
+	if err := ap.Do(WithoutCache(ctx), "get", "raw").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if s.count("get") != 2 || s.prefixes() != 1 || c.CSCStats().Hits != 1 {
+		t.Fatal("raw context changed caching or bypass", s.snapshot(), c.CSCStats())
 	}
 }
 
@@ -3587,11 +3625,11 @@ func TestCSCPolicyContextReplacementAndHookRejection(t *testing.T) {
 	c.AddHook(hook)
 	ctx := context.Background()
 	cmd := NewStringCmd(ctx, "get", "rejected")
-	if err := c.WithCache(true).Process(ctx, cmd); err == nil {
+	if err := c.Process(WithCache(ctx), cmd); err == nil {
 		t.Fatal("hook did not reject")
 	}
 	if *cmd.cacheState() != (cscCommandState{}) {
-		t.Fatal("rejected view leaked invocation state")
+		t.Fatal("rejected call leaked invocation state")
 	}
 	hook.reject = false
 	if err := c.Process(ctx, cmd); err != nil {
@@ -3606,63 +3644,43 @@ func TestCSCPolicyContextReplacementAndHookRejection(t *testing.T) {
 	}
 	defer ap.Close()
 	for i := 0; i < 2; i++ {
-		if err := ap.WithCache(true).Get(ctx, "replaced-context").Err(); err != nil {
+		if err := ap.Get(WithCache(ctx), "replaced-context").Err(); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if s.count("get") != 2 || s.prefixes() != 1 {
 		t.Fatal("context replacement lost intent")
 	}
-	if err := ap.WithCache(true).Touch(ctx, "k").Err(); err == nil || s.count("touch") != 0 {
+	if err := ap.Touch(WithCache(ctx), "k").Err(); err == nil || s.count("touch") != 0 {
 		t.Fatal("AutoPipeline did not reject an ineligible strict mark before dispatch")
 	}
 }
 
+// Context marks preserve native helper delegation: these direct helpers do not
+// use the AutoPipeline queue, and closing the AutoPipeliner leaves its client open.
 func TestCSCPolicyHelperAutoPipelineLifecycle(t *testing.T) {
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	s := newCSCPolicyServer(t, func(args []string) string {
-		if strings.EqualFold(args[0], "dbsize") {
-			close(entered)
-			<-release
-			return ":1\r\n"
-		}
-		return ""
-	})
+	s := newCSCPolicyServer(t, nil)
 	c := policyClient(t, cscPolicyOptions(s.addr, TrackingModePlain))
 	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{MaxQueuedCommands: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ap.Close()
-	defer once.Do(func() { close(release) })
 	ctx := context.Background()
-	done := make(chan error, 1)
-	go func() { done <- ap.WithCache(false).DBSize(ctx).Err() }()
-	select {
-	case <-entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("helper did not run")
+	for _, closed := range []bool{false, true} {
+		if closed {
+			if err := ap.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, callCtx := range []context.Context{ctx, WithCache(ctx), WithoutCache(ctx)} {
+			if err := ap.ScriptFlush(callCtx).Err(); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	if err := ap.WithCache(false).ScriptFlush(ctx).Err(); !errors.Is(err, ErrAutoPipelineQueueFull) {
-		t.Fatal("helper bypassed queue limit", err)
-	}
-	closed := make(chan error, 1)
-	go func() { closed <- ap.Close() }()
-	select {
-	case err := <-closed:
-		t.Fatal("Close did not wait for helper", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	once.Do(func() { close(release) })
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-closed; err != nil {
-		t.Fatal(err)
-	}
-	if err := ap.WithCache(false).ScriptFlush(ctx).Err(); !errors.Is(err, ErrClosed) || s.count("script") != 0 {
-		t.Fatal("closed view dispatched helper", err)
+	if s.count("script") != 6 {
+		t.Fatal("context changed native helper dispatch")
 	}
 }
 
@@ -3689,7 +3707,10 @@ func TestCSCPolicyAutoPipelineRoutingLifecycle(t *testing.T) {
 			ctx := context.Background()
 			cmd := NewSliceCmd(ctx, "mget", "{bar}:a", "{foo}:b")
 			for i := 0; i < 2; i++ {
-				err = ap.WithCache(true).Process(ctx, cmd)
+				err = ap.Process(WithCache(ctx), cmd)
+				if err == nil {
+					err = cmd.Err()
+				}
 				if (face == "ordered") != (err != nil) {
 					t.Fatal(err)
 				}
@@ -3706,7 +3727,7 @@ func TestCSCPolicyAutoPipelineRoutingLifecycle(t *testing.T) {
 			}
 			// Same-slot admission remains supported on the ordered face too.
 			for i := 0; i < 2; i++ {
-				if err := ap.WithCache(true).Get(ctx, "{bar}:solo").Err(); err != nil {
+				if err := ap.Get(WithCache(ctx), "{bar}:solo").Err(); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -3722,7 +3743,7 @@ func TestCSCPolicyAutoPipelineRoutingLifecycle(t *testing.T) {
 			}
 			closed := NewStringCmd(ctx, "get", "closed")
 			closed.setClusterRoutingDecision(c.metadataView().routingTable["get"].template)
-			if err := ap.WithCache(true).Process(ctx, closed); !errors.Is(err, ErrClosed) || closed.clusterRoutingDecision() != nil || *closed.cacheState() != (cscCommandState{}) {
+			if err := ap.Process(WithCache(ctx), closed); !errors.Is(err, ErrClosed) || closed.clusterRoutingDecision() != nil || *closed.cacheState() != (cscCommandState{}) {
 				t.Fatal("closed admission leaked state", err)
 			}
 		})
@@ -3747,10 +3768,10 @@ func TestCSCPolicyAutoPipelineQueueFull(t *testing.T) {
 	}
 	defer ap.Close()
 	first := make(chan error, 1)
-	go func() { first <- ap.WithCache(true).Get(context.Background(), "{bar}:first").Err() }()
+	go func() { first <- ap.Get(WithCache(context.Background()), "{bar}:first").Err() }()
 	<-entered
 	cmd := NewStringCmd(context.Background(), "get", "{bar}:second")
-	if err := ap.WithCache(true).Process(context.Background(), cmd); !errors.Is(err, ErrAutoPipelineQueueFull) {
+	if err := ap.Process(WithCache(context.Background()), cmd); !errors.Is(err, ErrAutoPipelineQueueFull) {
 		t.Fatal(err)
 	}
 	if cmd.clusterRoutingDecision() != nil || *cmd.cacheState() != (cscCommandState{}) {

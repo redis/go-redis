@@ -16,6 +16,13 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
+func cscTestContext(ctx context.Context, cache bool) context.Context {
+	if cache {
+		return WithCache(ctx)
+	}
+	return WithoutCache(ctx)
+}
+
 type cscPolicyEvent struct {
 	conn int
 	args []string
@@ -197,7 +204,7 @@ func TestCSCPolicyIntent(t *testing.T) {
 						if mark < 0 {
 							cmd = c.Get(context.Background(), "user:42")
 						} else {
-							cmd = c.WithCache(mark == 1).Get(context.Background(), "user:42")
+							cmd = c.Get(cscTestContext(context.Background(), mark == 1), "user:42")
 						}
 						if v, e := cmd.Result(); e != nil || v != "v" {
 							t.Fatalf("%q %v", v, e)
@@ -283,7 +290,7 @@ func TestCSCPolicyFrozenAndInvalidConfig(t *testing.T) {
 	c := policyClient(t, opt)
 	opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptOut
 	opt.ClientSideCacheConfig.Cacheable = func(string, []string) bool { t.Error("mutated callback used"); return true }
-	if err := c.WithCache(true).Get(context.Background(), "k").Err(); err != nil {
+	if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
 		t.Fatal(err)
 	}
 	if s.prefixes() != 1 {
@@ -297,6 +304,164 @@ func TestCSCPolicyFrozenAndInvalidConfig(t *testing.T) {
 	}
 	if len(s.snapshot()) != before {
 		t.Fatal("invalid mode used network")
+	}
+}
+
+// A mark belongs to the submitted call, not the command's construction context
+// or an earlier execution. Nested marks override without modifying their parent.
+func TestCSCPolicyContextScope(t *testing.T) {
+	s := newCSCPolicyServer(t, nil)
+	c := policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
+	type contextKey struct{}
+	deadline := time.Now().Add(time.Minute)
+	parent, cancel := context.WithDeadline(context.WithValue(context.Background(), contextKey{}, "value"), deadline)
+	defer cancel()
+	cached := WithCache(parent)
+	bypassed := WithoutCache(cached)
+	contexts := []context.Context{cached, bypassed, WithCache(bypassed), parent}
+	for _, ctx := range contexts {
+		if d, ok := ctx.Deadline(); !ok || !d.Equal(deadline) || ctx.Value(contextKey{}) != "value" || ctx.Done() != parent.Done() {
+			t.Fatal("cache context did not inherit its parent")
+		}
+	}
+	cmd := NewStringCmd(cached, "get", "k")
+	for i, ctx := range []context.Context{cached, cached, bypassed, WithCache(bypassed), parent} {
+		if err := c.Process(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+		if *cmd.cacheState() != (cscCommandState{}) {
+			t.Fatal("invocation state survived completion", i)
+		}
+	}
+	if s.count("get") != 3 || s.prefixes() != 1 || c.CSCStats().Hits != 2 {
+		t.Fatal("context scope or command reuse changed intent", s.snapshot(), c.CSCStats())
+	}
+	// Sharing a context does not share mutable command state.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Go(func() {
+			if err := c.Get(cached, "k").Err(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if s.count("get") != 3 || c.CSCStats().Hits != 10 {
+		t.Fatal("concurrent context reuse lost its mark", c.CSCStats())
+	}
+	cancel()
+	for _, ctx := range contexts {
+		if ctx.Err() != context.Canceled {
+			t.Fatal("cache context lost cancellation")
+		}
+	}
+}
+
+type cscCloneHook struct {
+	clone Cmder
+	after bool
+}
+
+func (*cscCloneHook) DialHook(next DialHook) DialHook { return next }
+
+func (*cscCloneHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+func (h *cscCloneHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		capture := h.clone == nil && cmd.Name() == "get"
+		if capture && !h.after {
+			h.clone = cmd.Clone()
+		}
+		err := next(ctx, cmd)
+		if capture && h.after {
+			h.clone = cmd.Clone()
+		}
+		return err
+	}
+}
+
+func TestCSCPolicyContextOverridesClone(t *testing.T) {
+	for _, originalCache := range []bool{false, true} {
+		for _, after := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cache=%t/after=%t", originalCache, after), func(t *testing.T) {
+				var reads atomic.Int32
+				s := newCSCPolicyServer(t, func(args []string) string {
+					if args[0] == "get" {
+						return fmt.Sprintf("$1\r\n%d\r\n", reads.Add(1))
+					}
+					return ""
+				})
+				c := policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
+				hook := &cscCloneHook{after: after}
+				c.AddHook(hook)
+				ctx := context.Background()
+				if got, err := c.Get(cscTestContext(ctx, originalCache), "k").Result(); err != nil || got != "1" {
+					t.Fatal(got, err)
+				}
+				// The clone is now owned by a new invocation. Its explicit mark
+				// must override both the copied mark and any resolved intent.
+				if err := c.Process(cscTestContext(ctx, !originalCache), hook.clone); err != nil {
+					t.Fatal(err)
+				}
+				if got := hook.clone.(*StringCmd).Val(); got != "2" {
+					t.Fatalf("new invocation reused the clone's cache decision: %q", got)
+				}
+				wantCached := "2"
+				if originalCache {
+					wantCached = "1" // Bypass must leave the original entry intact.
+				}
+				if got, err := c.Get(WithCache(ctx), "k").Result(); err != nil || got != wantCached {
+					t.Fatal("new invocation did not apply its cache policy", got, err)
+				}
+				if reads.Load() != 2 || s.prefixes() != 1 {
+					t.Fatal("unexpected fetch or tracking count", s.snapshot())
+				}
+			})
+		}
+	}
+}
+
+func TestCSCPolicyContextPublicPipeline(t *testing.T) {
+	for _, cluster := range []bool{false, true} {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cluster=%t/strict=%t", cluster, strict), func(t *testing.T) {
+				s := newCSCPolicyServer(t, nil)
+				var c UniversalClient
+				if cluster {
+					cc := cscPolicyCluster(t, s.addr, s.addr, TrackingModeOptIn, false)
+					cc.opt.ClientSideCacheConfig.Strict = strict
+					c = cc
+				} else {
+					opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
+					opt.ClientSideCacheConfig.Strict = strict
+					c = policyClient(t, opt)
+				}
+				ctx := context.Background()
+				pipe := c.Pipeline()
+				marked := pipe.Get(WithCache(ctx), "{one}:marked")
+				if (marked.Err() != nil) != strict {
+					t.Fatal("strict was not decided at submission", marked.Err())
+				}
+				bypass := pipe.Get(WithoutCache(ctx), "{one}:bypass")
+				normal := pipe.Get(ctx, "{one}:normal")
+				want := 3
+				if strict {
+					want = 2
+				}
+				if pipe.Len() != want {
+					t.Fatal("rejection affected other queued commands", pipe.Len())
+				}
+				cmds, err := pipe.Exec(WithCache(ctx))
+				if err != nil || len(cmds) != want || bypass.Val() != "v" || normal.Val() != "v" {
+					t.Fatal("context changed pipeline execution", err, len(cmds))
+				}
+				if s.count("get") != want || s.prefixes() != 0 {
+					t.Fatal("pipeline cached or dispatched a rejected command", s.snapshot())
+				}
+			})
+		}
 	}
 }
 
@@ -371,7 +536,7 @@ func TestCSCPolicyBorrowedConnectionMode(t *testing.T) {
 					}
 				}
 				for i := 0; i < 2; i++ {
-					if got, err := c.WithCache(true).Get(ctx, "k").Result(); got != "v" || err != nil {
+					if got, err := c.Get(WithCache(ctx), "k").Result(); got != "v" || err != nil {
 						t.Fatal(got, err)
 					}
 				}
@@ -404,7 +569,7 @@ func TestCSCPolicyOptOutDoesNotProbeMarshaler(t *testing.T) {
 	s := newCSCPolicyServer(t, nil)
 	c := policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptOut))
 	key := &cscPolicyMarshaledKey{}
-	if got, err := c.WithCache(false).Do(context.Background(), "get", key).Text(); got != "v" || err != nil {
+	if got, err := c.Do(WithoutCache(context.Background()), "get", key).Text(); got != "v" || err != nil {
 		t.Fatal(got, err)
 	}
 	if key.calls.Load() != 1 || s.prefixes() != 0 {
@@ -424,12 +589,12 @@ func TestCSCPolicyOptOutWireKeys(t *testing.T) {
 				c = policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptOut))
 			}
 			ctx := context.Background()
-			if err := WithCache(c, true).Get(ctx, key).Err(); err != nil {
+			if err := c.Get(WithCache(ctx), key).Err(); err != nil {
 				t.Fatal(err)
 			}
 			for _, arg := range []interface{}{key, []byte(key), &key} {
 				before := s.prefixes()
-				if got, err := WithCache(c, false).Do(ctx, "get", arg).Text(); got != "v" || err != nil {
+				if got, err := c.Do(WithoutCache(ctx), "get", arg).Text(); got != "v" || err != nil {
 					t.Fatal(got, err)
 				}
 				if s.prefixes() != before+1 {
@@ -437,7 +602,7 @@ func TestCSCPolicyOptOutWireKeys(t *testing.T) {
 				}
 			}
 			before := s.count("get")
-			if err := WithCache(c, true).Get(ctx, key).Err(); err != nil {
+			if err := c.Get(WithCache(ctx), key).Err(); err != nil {
 				t.Fatal(err)
 			}
 			if s.count("get") != before {
@@ -500,18 +665,18 @@ func TestCSCPolicyBypassPreservesCachedEntry(t *testing.T) {
 			})
 			c := policyClient(t, cscPolicyOptions(s.addr, mode))
 			ctx := context.Background()
-			if v, _ := c.WithCache(true).Get(ctx, "k").Result(); v != "1" {
+			if v, _ := c.Get(WithCache(ctx), "k").Result(); v != "1" {
 				t.Fatal(v)
 			}
 			before := c.CSCStats()
-			if v, _ := c.WithCache(false).Get(ctx, "k").Result(); v != "2" {
+			if v, _ := c.Get(WithoutCache(ctx), "k").Result(); v != "2" {
 				t.Fatal(v)
 			}
 			after := c.CSCStats()
 			if before.Entries != after.Entries || before.Hits != after.Hits {
 				t.Fatal("bypass touched cache")
 			}
-			if v, _ := c.WithCache(true).Get(ctx, "k").Result(); v != "1" {
+			if v, _ := c.Get(WithCache(ctx), "k").Result(); v != "1" {
 				t.Fatal("entry was refreshed", v)
 			}
 			if n.Load() != 2 {
@@ -534,7 +699,7 @@ func TestCSCPolicyStrictHandshake(t *testing.T) {
 			opt.ClientSideCacheConfig.Strict = true
 			opt.ClientSideCacheCoalesceMisses = coalesce
 			c := policyClient(t, opt)
-			if err := c.WithCache(true).Get(context.Background(), "k").Err(); err == nil || !strings.Contains(err.Error(), "cannot cache") {
+			if err := c.Get(WithCache(context.Background()), "k").Err(); err == nil || !strings.Contains(err.Error(), "cannot cache") {
 				t.Fatal(err)
 			}
 			if s.count("get") != 0 {
@@ -552,7 +717,7 @@ func TestCSCPolicyEligibilityAndGuards(t *testing.T) {
 	opt.ClientSideCacheConfig.Strict = true
 	c := policyClient(t, opt)
 	ctx := context.Background()
-	if err := c.WithCache(true).Touch(ctx, "k").Err(); err == nil {
+	if err := c.Touch(WithCache(ctx), "k").Err(); err == nil {
 		t.Fatal("strict TOUCH")
 	}
 	if s.count("touch") != 0 || calls.Load() != 0 {
@@ -585,7 +750,7 @@ func TestCSCPolicyControlFailures(t *testing.T) {
 				opt.ClientSideCacheCoalesceMisses = coalesce
 				c := policyClient(t, opt)
 				for i := 0; i < 2; i++ {
-					v, err := c.WithCache(true).Get(context.Background(), "k").Result()
+					v, err := c.Get(WithCache(context.Background()), "k").Result()
 					if strings.HasPrefix(response, "-NOPERM") {
 						if err != nil || v != "v" {
 							t.Fatalf("%q %v", v, err)
@@ -619,7 +784,7 @@ func TestCSCPolicyPushesBetweenReplies(t *testing.T) {
 			opt.ClientSideCacheCoalesceMisses = coalesce
 			c := policyClient(t, opt)
 			for i := 0; i < 2; i++ {
-				if v, e := c.WithCache(true).Get(context.Background(), "k").Result(); v != "v" || e != nil {
+				if v, e := c.Get(WithCache(context.Background()), "k").Result(); v != "v" || e != nil {
 					t.Fatalf("%q %v", v, e)
 				}
 			}
@@ -650,10 +815,10 @@ func TestCSCPolicyBypassDoesNotJoinFetch(t *testing.T) {
 	c := policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
 	ctx := context.Background()
 	first := make(chan error, 1)
-	go func() { first <- c.WithCache(true).Get(ctx, "k").Err() }()
+	go func() { first <- c.Get(WithCache(ctx), "k").Err() }()
 	<-started
 	done := make(chan string, 1)
-	go func() { done <- c.WithCache(false).Get(ctx, "k").Val() }()
+	go func() { done <- c.Get(WithoutCache(ctx), "k").Val() }()
 	select {
 	case v := <-done:
 		if v != "2" {
@@ -690,7 +855,7 @@ func TestCSCPolicyCancelledPair(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 			defer cancel()
 			done := make(chan error, 1)
-			go func() { done <- c.WithCache(true).Get(ctx, "k").Err() }()
+			go func() { done <- c.Get(WithCache(ctx), "k").Err() }()
 			select {
 			case <-entered:
 			case <-time.After(time.Second):
@@ -724,7 +889,7 @@ func TestCSCPolicyCustomCacheZeroToken(t *testing.T) {
 	opt.ClientSideCache = &cscZeroTokenCache{Cache: NewLocalCache(CacheConfig{MaxEntries: 32})}
 	c := policyClient(t, opt)
 	for i := 0; i < 2; i++ {
-		if err := c.WithCache(true).Get(context.Background(), "k").Err(); err != nil {
+		if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -741,7 +906,7 @@ func TestCSCPolicyAdmissionDeclined(t *testing.T) {
 			opt.ClientSideCacheConfig.MaxMemoryBytes = 1
 			opt.ClientSideCacheConfig.Strict = true
 			c := policyClient(t, opt)
-			if got, err := c.WithCache(true).Get(context.Background(), "k").Result(); got != "v" || err != nil {
+			if got, err := c.Get(WithCache(context.Background()), "k").Result(); got != "v" || err != nil {
 				t.Fatalf("admission became misuse %q %v", got, err)
 			}
 			want := 0
@@ -773,7 +938,7 @@ func TestCSCPolicyRetryPreservesReadError(t *testing.T) {
 			opt.MinRetryBackoff = -1
 			opt.MaxRetryBackoff = -1
 			c := policyClient(t, opt)
-			if got, err := c.WithCache(true).Get(context.Background(), "k").Result(); got != "v" || err != nil {
+			if got, err := c.Get(WithCache(context.Background()), "k").Result(); got != "v" || err != nil {
 				t.Fatalf("read error masked %q %v", got, err)
 			}
 			if reads.Load() != 2 || s.prefixes() != 2 {
@@ -798,7 +963,7 @@ func TestCSCPolicyEncodingFailureRetiresPair(t *testing.T) {
 	opt.PoolSize = 1
 	c := policyClient(t, opt)
 	ctx := context.Background()
-	if err := c.WithCache(false).Do(ctx, "hget", "k", cscPolicyEncoderFailure{}).Err(); err == nil {
+	if err := c.Do(WithoutCache(ctx), "hget", "k", cscPolicyEncoderFailure{}).Err(); err == nil {
 		t.Fatal("encoder error lost")
 	}
 	for i := 0; i < 2; i++ {

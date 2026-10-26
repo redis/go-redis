@@ -114,7 +114,13 @@ func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 // processClusterHelper resolves the helper policy only after process hooks
 // continue. Legacy helper fan-out and policy routing share the same hook call.
 func (c *ClusterClient) processClusterHelper(ctx context.Context, cmd Cmder, legacy ProcessHook) {
-	err := c.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
+	var err error
+	ctx, err = cscUncacheable(ctx, cmd, cachePolicy(c.opt.ClientSideCacheConfig))
+	if err != nil {
+		cmd.SetErr(err)
+		return
+	}
+	err = c.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
 		if c.usesLegacyClusterHelpers(ctx, cmd) {
 			return legacy(ctx, cmd)
 		}

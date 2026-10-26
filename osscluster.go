@@ -2410,6 +2410,9 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 }
 
 func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
+	// Helpers such as ForEachMaster can load topology before submitting a
+	// command. Discovery must not inherit their caller's cache intent.
+	ctx = cscUnmarkedContext(ctx)
 	if c.opt.ClusterSlots != nil {
 		slots, err := c.opt.ClusterSlots(ctx)
 		if err != nil {
@@ -2517,7 +2520,8 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 
 func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: pipelineExecer(c.processPipelineHook),
+		cscPolicy: cachePolicy(c.opt.ClientSideCacheConfig),
+		exec:      pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -3247,6 +3251,7 @@ func (c *ClusterClient) checkMovedErr(
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
+		cscPolicy: cachePolicy(c.opt.ClientSideCacheConfig),
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
 			return c.processTxPipelineHook(ctx, cmds)

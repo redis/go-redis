@@ -258,6 +258,10 @@ func (hs *hooksMixin) hookCount() int {
 }
 
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
+	ctx, active := cscBegin(ctx, cmd)
+	if active {
+		defer cscLeave(cmd)
+	}
 	return hs.state.Load().current.process(ctx, cmd)
 }
 
@@ -2924,7 +2928,8 @@ func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 
 func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: pipelineExecer(c.processPipelineHook),
+		cscPolicy: c.cscPolicy,
+		exec:      pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -3016,6 +3021,7 @@ func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]C
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Client) TxPipeline() Pipeliner {
 	pipe := Pipeline{
+		cscPolicy: c.cscPolicy,
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
 			return c.processTxPipelineHook(ctx, cmds)
@@ -3178,7 +3184,8 @@ func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processPipelineHook,
+		cscPolicy: c.cscPolicy,
+		exec:      c.processPipelineHook,
 	}
 	pipe.init()
 	return &pipe
@@ -3191,6 +3198,7 @@ func (c *Conn) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Conn) TxPipeline() Pipeliner {
 	pipe := Pipeline{
+		cscPolicy: c.cscPolicy,
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
 			return c.processTxPipelineHook(ctx, cmds)

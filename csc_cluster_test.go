@@ -2599,7 +2599,7 @@ func TestCSCPolicyClusterRedirect(t *testing.T) {
 			opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
 			c := NewClusterClient(opt)
 			defer c.Close()
-			if v, e := c.WithCache(true).Get(context.Background(), "k").Result(); v != "v" || e != nil {
+			if v, e := c.Get(WithCache(context.Background()), "k").Result(); v != "v" || e != nil {
 				t.Fatalf("%q %v", v, e)
 			}
 			if kind == "ASK" {
@@ -2642,7 +2642,7 @@ func TestCSCPolicyClusterIneligibleFanout(t *testing.T) {
 				}
 				return nil
 			}))
-			err := c.WithCache(true).MGet(context.Background(), "{bar}:a", "{foo}:b").Err()
+			err := c.MGet(WithCache(context.Background()), "{bar}:a", "{foo}:b").Err()
 			if strict {
 				if err == nil || a.count("mget")+b.count("mget") != 0 {
 					t.Fatalf("strict fanout %v", err)
@@ -2668,13 +2668,13 @@ func TestCSCPolicyStrictClusterCapability(t *testing.T) {
 	opt.ClientSideCacheConfig.Strict = true
 	c := NewClusterClient(opt)
 	defer c.Close()
-	if err := c.WithCache(true).SUnion(context.Background(), "{a}:1", "{a}:2").Err(); err == nil {
+	if err := c.SUnion(WithCache(context.Background()), "{a}:1", "{a}:2").Err(); err == nil {
 		t.Fatal("strict permanent bypass")
 	}
 	if s.count("sunion") != 0 {
 		t.Fatal("unsupported command sent")
 	}
-	if err := c.WithCache(true).Get(context.Background(), "k").Err(); err != nil {
+	if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -2695,7 +2695,7 @@ func TestCSCPolicyClusterSingleSlotPlan(t *testing.T) {
 		return nil
 	}))
 	for i := 0; i < 2; i++ {
-		if err := c.WithCache(true).MGet(context.Background(), "{one}:a", "{one}:b").Err(); err != nil {
+		if err := c.MGet(WithCache(context.Background()), "{one}:a", "{one}:b").Err(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2745,7 +2745,7 @@ func TestCSCPolicySingleSlotRedirectKeepsIntent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := node.Client.WithCache(true).MGet(ctx, "{one}:a", "{one}:b").Err(); err != nil {
+			if err := node.Client.MGet(WithCache(ctx), "{one}:a", "{one}:b").Err(); err != nil {
 				t.Fatal(err)
 			}
 			got, err := c.MGet(ctx, "{one}:a", "{one}:b").Result()
@@ -2756,7 +2756,7 @@ func TestCSCPolicySingleSlotRedirectKeepsIntent(t *testing.T) {
 			if kind == "ASK" {
 				want, flags = "1", 1
 			}
-			cached, err := node.Client.WithCache(true).MGet(ctx, "{one}:a", "{one}:b").Result()
+			cached, err := node.Client.MGet(WithCache(ctx), "{one}:a", "{one}:b").Result()
 			if err != nil || !reflect.DeepEqual(cached, []interface{}{want, want}) || target.prefixes() != flags || fetches.Load() != 2 {
 				t.Fatalf("destination cache %v %v; flags %d fetches %d", cached, err, target.prefixes(), fetches.Load())
 			}
@@ -2783,7 +2783,7 @@ func TestCSCPolicyCustomFactoryStrict(t *testing.T) {
 			}
 			c := NewClusterClient(opt)
 			defer c.Close()
-			if err := c.WithCache(true).Get(context.Background(), "k").Err(); err == nil {
+			if err := c.Get(WithCache(context.Background()), "k").Err(); err == nil {
 				t.Fatal("factory silently lost strict or mode")
 			}
 			if s.count("get") != 0 {
@@ -2815,16 +2815,19 @@ func TestCSCPolicyReroutedFactoryStrict(t *testing.T) {
 			}
 			// The legacy router can select a different node after the outer
 			// process loop's check. Validate at these actual dispatch seams too.
-			view := newCacheView(c, func(ctx context.Context, cmd Cmder) error {
-				if path == "slot-child" {
-					decision := c.commandRoutingDecision(ctx, cmd)
-					return c.executeMultiSlotCommand(ctx, cmd, 0, &decision)
-				}
-				return c.executeParallelTarget(ctx, node, -1, cmd)
-			}, true)
-			if err := view.MGet(ctx, "k").Err(); err == nil {
+			cmd := NewSliceCmd(ctx, "mget", "k")
+			ctx, _ = cscBegin(WithCache(ctx), cmd)
+			defer cscLeave(cmd)
+			if path == "slot-child" {
+				decision := c.commandRoutingDecision(ctx, cmd)
+				err = c.executeMultiSlotCommand(ctx, cmd, 0, &decision)
+			} else {
+				err = c.executeParallelTarget(ctx, node, -1, cmd)
+			}
+			if err == nil {
 				t.Fatal("rerouted node lost strict mode validation")
 			}
+
 			if s.count("mget") != 0 {
 				t.Fatal("strict sent a child read")
 			}
@@ -2856,10 +2859,10 @@ func TestCSCPolicyMOVEDSkipsDestinationHit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := node.Client.WithCache(true).Get(context.Background(), "k").Val(); got != "1" {
+	if got := node.Client.Get(WithCache(context.Background()), "k").Val(); got != "1" {
 		t.Fatal(got)
 	}
-	if got, err := c.WithCache(true).Get(context.Background(), "k").Result(); got != "2" || err != nil {
+	if got, err := c.Get(WithCache(context.Background()), "k").Result(); got != "2" || err != nil {
 		t.Fatalf("destination hit used: %q %v", got, err)
 	}
 	if target.prefixes() != 2 {
@@ -2888,7 +2891,7 @@ func TestCSCPolicyASKWithoutTargetCSC(t *testing.T) {
 	}
 	c := NewClusterClient(opt)
 	defer c.Close()
-	if got, err := c.WithCache(true).Get(context.Background(), "k").Result(); got != "v" || err != nil {
+	if got, err := c.Get(WithCache(context.Background()), "k").Result(); got != "v" || err != nil {
 		t.Fatalf("runtime ASK became misuse: %q %v", got, err)
 	}
 	if target.prefixes() != 0 {
@@ -2910,7 +2913,7 @@ func TestCSCPolicyStrictClusterAbsentReply(t *testing.T) {
 	opt.ClientSideCacheConfig.Strict = true
 	c := NewClusterClient(opt)
 	defer c.Close()
-	if err := c.WithCache(true).Get(context.Background(), "k").Err(); err != Nil {
+	if err := c.Get(WithCache(context.Background()), "k").Err(); err != Nil {
 		t.Fatal(err)
 	}
 	if c.CSCStats().Entries != 0 {
@@ -2973,8 +2976,11 @@ func TestCSCPolicyClusterHelpers(t *testing.T) {
 					}
 					defer ap.Close()
 					nativeCounts := make(map[string][2]int)
-					for surface, v := range []cscHelperCommands{c, WithCache(c, mark), WithCache(ap, mark)} {
+					for surface, v := range []cscHelperCommands{c, c, ap} {
 						ctx := context.Background()
+						if surface != 0 {
+							ctx = cscTestContext(ctx, mark)
+						}
 						for _, call := range []struct {
 							name string
 							run  func() Cmder
@@ -3126,7 +3132,7 @@ func TestCSCPolicyFanoutLive(t *testing.T) {
 					t.Fatal(err)
 				}
 				clusterCSCLiveEventually(t, func() bool { return r.CSCStats().Entries == 2 })
-				if got, err := r.WithCache(true).MGet(ctx, keys...).Result(); err != nil || !reflect.DeepEqual(got, []interface{}{"before", "after", "before"}) {
+				if got, err := r.MGet(WithCache(ctx), keys...).Result(); err != nil || !reflect.DeepEqual(got, []interface{}{"before", "after", "before"}) {
 					t.Fatal(got, err)
 				}
 				if r.CSCStats().Entries != 3 || predicates.Load() != 19 {
@@ -3146,7 +3152,7 @@ func TestCSCPolicyFanoutLive(t *testing.T) {
 			r := NewClusterClient(opt)
 			defer r.Close()
 			r.SetCommandInfoResolver(NewCommandMetadataResolver())
-			if got, err := r.WithCache(true).MGet(ctx, keys...).Result(); err != nil || !reflect.DeepEqual(got, []interface{}{"before", "after", "before"}) {
+			if got, err := r.MGet(WithCache(ctx), keys...).Result(); err != nil || !reflect.DeepEqual(got, []interface{}{"before", "after", "before"}) {
 				t.Fatal(got, err)
 			}
 			if r.CSCStats().Entries != 3 {
@@ -3203,7 +3209,7 @@ func TestCSCPolicyFanoutLive(t *testing.T) {
 			defer r.Close()
 			r.SetCommandInfoResolver(NewCommandMetadataResolver())
 			for i := 0; i < 2; i++ {
-				if got, err := r.WithCache(true).MGet(ctx, keys...).Result(); err != nil || !reflect.DeepEqual(got, []interface{}{"imported", "after", "before"}) {
+				if got, err := r.MGet(WithCache(ctx), keys...).Result(); err != nil || !reflect.DeepEqual(got, []interface{}{"imported", "after", "before"}) {
 					t.Fatal(got, err)
 				}
 				if r.CSCStats().Entries != 2 {
@@ -3252,7 +3258,7 @@ func TestCSCPolicyLive(t *testing.T) {
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
-						if got, err := r.WithCache(true).Get(ctx, key).Result(); got != "after" || err != nil {
+						if got, err := r.Get(WithCache(ctx), key).Result(); got != "after" || err != nil {
 							t.Errorf("parallel %q %v", got, err)
 						}
 					}()
@@ -3291,7 +3297,7 @@ func TestCSCPolicyLive(t *testing.T) {
 			r := NewClusterClient(opt)
 			defer r.Close()
 			r.SetCommandInfoResolver(NewCommandInfoResolver(cscPolicyLiveMGetPolicy))
-			if got, err := r.WithCache(true).Get(ctx, key).Result(); got != "moved" || err != nil {
+			if got, err := r.Get(WithCache(ctx), key).Result(); got != "moved" || err != nil {
 				t.Fatalf("MOVED %q %v", got, err)
 			}
 			if r.CSCStats().Entries != 1 {
@@ -3356,13 +3362,13 @@ func TestCSCPolicyLive(t *testing.T) {
 			r := NewClusterClient(opt)
 			defer r.Close()
 			r.SetCommandInfoResolver(NewCommandInfoResolver(cscPolicyLiveMGetPolicy))
-			if got, err := r.WithCache(true).Get(ctx, key).Result(); got != "imported" || err != nil {
+			if got, err := r.Get(WithCache(ctx), key).Result(); got != "imported" || err != nil {
 				t.Fatalf("ASK %q %v", got, err)
 			}
 			if r.CSCStats().Entries != 0 {
 				t.Fatal("ASK published")
 			}
-			got, err := r.WithCache(true).MGet(ctx, key, key).Result()
+			got, err := r.MGet(WithCache(ctx), key, key).Result()
 			if err != nil || len(got) != 2 || got[0] != "imported" || got[1] != "imported" || r.CSCStats().Entries != 0 {
 				t.Fatalf("one-slot ASK %v %v", got, err)
 			}
@@ -3387,6 +3393,98 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("context-watch-cleanup", func(t *testing.T) {
+		opt := cscPolicyOptions(owner.Options().Addr, TrackingModeOptIn)
+		opt.PoolSize = 1
+		opt.ClientSideCacheConfig.Strict = true
+		c := policyClient(t, opt)
+		if err := writer.Set(ctx, key, "before", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+		marked := WithCache(ctx)
+		var connectionID int64
+		// Watch permits selecting keys inside the callback. Returning without
+		// EXEC must still UNWATCH, even if the outer context requests caching.
+		if err := c.Watch(marked, func(tx *Tx) error {
+			var err error
+			connectionID, err = tx.ClientID(WithoutCache(marked)).Result()
+			if err != nil {
+				return err
+			}
+			return tx.Watch(WithoutCache(marked), key).Err()
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Set(ctx, key, "after", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+		// This unrelated transaction borrows the same main-pool connection.
+		// A leaked WATCH would make its EXEC fail after the external write.
+		if err := c.Watch(ctx, func(tx *Tx) error {
+			id, err := tx.ClientID(ctx).Result()
+			if err != nil {
+				return err
+			}
+			if id != connectionID {
+				return fmt.Errorf("expected pooled connection %d, got %d", connectionID, id)
+			}
+			_, err = tx.TxPipelined(ctx, func(p Pipeliner) error {
+				p.Set(ctx, key+":unrelated", "value", 0)
+				return nil
+			})
+			return err
+		}, key+":unrelated"); err != nil {
+			t.Fatal("marked context prevented transaction cleanup", err)
+		}
+	})
+	for _, helper := range []string{"MasterForKey", "ForEachMaster"} {
+		for _, warm := range []bool{false, true} {
+			t.Run(fmt.Sprintf("context-topology/%s/warm=%t", helper, warm), func(t *testing.T) {
+				if err := writer.Set(ctx, key, "value", 0).Err(); err != nil {
+					t.Fatal(err)
+				}
+				opt := *writer.Options()
+				opt.Protocol = 3
+				opt.ClientSideCacheConfig = &ClientSideCacheConfig{MaxEntries: 32, TrackingMode: TrackingModeOptIn, Strict: true}
+				c := NewClusterClient(&opt)
+				defer c.Close()
+				if warm {
+					if err := c.Ping(ctx).Err(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				marked := WithCache(ctx)
+				read := func(ctx context.Context, node *Client) error {
+					if node.Options().Addr != owner.Options().Addr {
+						return nil
+					}
+					for i := 0; i < 2; i++ {
+						if got, err := node.Get(ctx, key).Result(); err != nil || got != "value" {
+							return fmt.Errorf("marked callback read: %q, %v", got, err)
+						}
+					}
+					if node.CSCStats().Hits != 1 {
+						return fmt.Errorf("callback lost cache intent: %+v", node.CSCStats())
+					}
+					return nil
+				}
+				if helper == "MasterForKey" {
+					node, err := c.MasterForKey(marked, key)
+					if err != nil {
+						t.Fatal("cache mark reached topology discovery", err)
+					}
+					if err := read(marked, node); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := c.ForEachMaster(marked, read); err != nil {
+					t.Fatal("cache mark reached topology discovery or was lost by callback", err)
+				}
+				if c.CSCStats().Hits != 1 {
+					t.Fatal("helper did not visit the key's owner", c.CSCStats())
+				}
+			})
+		}
+	}
 	for _, mode := range []TrackingMode{TrackingModeOptIn, TrackingModeOptOut} {
 		for _, path := range []string{"Conn", "Watch"} {
 			t.Run(string(mode)+"/"+path, func(t *testing.T) {
@@ -3409,7 +3507,7 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 					t.Fatal(err)
 				}
 				for i := 0; i < 2; i++ {
-					if got, err := c.WithCache(true).Get(ctx, key).Result(); got != "value" || err != nil {
+					if got, err := c.Get(WithCache(ctx), key).Result(); got != "value" || err != nil {
 						t.Fatal(got, err)
 					}
 				}
@@ -3419,6 +3517,50 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 			})
 		}
 	}
+	for _, path := range []string{"Client", "Conn", "Watch", "Cluster"} {
+		t.Run("context-transaction/"+path, func(t *testing.T) {
+			if err := writer.Set(ctx, key, "unchanged", 0).Err(); err != nil {
+				t.Fatal(err)
+			}
+			opt := cscPolicyOptions(owner.Options().Addr, TrackingModeOptIn)
+			opt.ClientSideCacheConfig.Strict = true
+			c := policyClient(t, opt)
+			check := func(p Pipeliner) error {
+				// Reject the marked write before queueing, without discarding
+				// an unrelated read or changing transaction execution.
+				rejected := p.Set(WithCache(ctx), key, "unexpected", 0)
+				if err := rejected.Err(); err == nil {
+					t.Fatal("strict transaction mark was not rejected at submission")
+				}
+				read := p.Get(WithoutCache(ctx), key)
+				cmds, err := p.Exec(WithCache(ctx))
+				if err != nil || len(cmds) != 1 || read.Val() != "unchanged" {
+					t.Fatal("context changed native transaction behavior", err, len(cmds), read.Val())
+				}
+				return err
+			}
+			switch path {
+			case "Client":
+				_ = check(c.TxPipeline())
+			case "Conn":
+				cn := c.Conn()
+				defer cn.Close()
+				_ = check(cn.TxPipeline())
+			case "Watch":
+				if err := c.Watch(ctx, func(tx *Tx) error { return check(tx.TxPipeline()) }, key); err != nil {
+					t.Fatal(err)
+				}
+			case "Cluster":
+				clusterOpt := *writer.Options()
+				clusterOpt.Protocol = 3
+				clusterOpt.ClientSideCacheConfig = opt.ClientSideCacheConfig
+				cc := NewClusterClient(&clusterOpt)
+				defer cc.Close()
+				_ = check(cc.TxPipeline())
+			}
+		})
+	}
+
 	for _, fd := range []bool{false, true} {
 		for _, mark := range []bool{false, true} {
 			t.Run(fmt.Sprintf("ordered/fd=%t/mark=%t", fd, mark), func(t *testing.T) {
@@ -3451,7 +3593,11 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 					t.Fatal("SET was not submitted")
 				}
 				done := make(chan *StringCmd, 1)
-				go func() { done <- ap.WithCache(mark).Get(ctx, key) }()
+				go func() {
+					cmd := ap.Get(cscTestContext(ctx, mark), key)
+					_ = cmd.Err()
+					done <- cmd
+				}()
 				select {
 				case cmd := <-done:
 					t.Fatalf("marked read overtook blocked SET: %v", cmd)
@@ -3597,7 +3743,7 @@ func TestCSCPolicyFactoryMetadataOmission(t *testing.T) {
 			}
 			c := NewClusterClient(opt)
 			defer c.Close()
-			err := c.WithCache(true).Get(context.Background(), "k").Err()
+			err := c.Get(WithCache(context.Background()), "k").Err()
 			want := 1
 			if strict {
 				want = 0
@@ -3679,7 +3825,7 @@ func TestCSCPolicyFanoutFragments(t *testing.T) {
 				if predicates.Load() != 2 || a.count("mget") != 1 || b.count("mget") != 1 || c.CSCStats().Entries != 2 {
 					t.Fatalf("predicates %d reads %d/%d stats %+v", predicates.Load(), a.count("mget"), b.count("mget"), c.CSCStats())
 				}
-				if err := c.WithCache(false).MGet(ctx, "{bar}:a", "{foo}:b").Err(); err != nil {
+				if err := c.MGet(WithoutCache(ctx), "{bar}:a", "{foo}:b").Err(); err != nil {
 					t.Fatal(err)
 				}
 				if a.count("mget") != 2 || b.count("mget") != 2 || predicates.Load() != 2 || c.CSCStats().Entries != 2 {
@@ -3712,7 +3858,7 @@ func TestCSCPolicyFanoutPartialPublication(t *testing.T) {
 			c := cscPolicyCluster(t, a.addr, b.addr, TrackingModeOptIn, false)
 			c.opt.ClientSideCacheConfig.Strict = true
 			for i := 0; i < 2; i++ {
-				err := c.WithCache(true).MGet(context.Background(), "{bar}:a", "{foo}:b").Err()
+				err := c.MGet(WithCache(context.Background()), "{bar}:a", "{foo}:b").Err()
 				if strings.HasPrefix(reply, "-") != (err != nil) {
 					t.Fatal(err)
 				}
@@ -3737,7 +3883,7 @@ func TestCSCPolicyFanoutRedirect(t *testing.T) {
 				})
 				b := newCSCPolicyServer(t, nil)
 				c := cscPolicyCluster(t, a.addr, b.addr, mode, true)
-				if got, err := c.WithCache(true).MGet(context.Background(), "{bar}:a", "{foo}:b").Result(); err != nil || !reflect.DeepEqual(got, []interface{}{"v", "v"}) {
+				if got, err := c.MGet(WithCache(context.Background()), "{bar}:a", "{foo}:b").Result(); err != nil || !reflect.DeepEqual(got, []interface{}{"v", "v"}) {
 					t.Fatalf("redirect %v %v", got, err)
 				}
 				entries := uint64(2)

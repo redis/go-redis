@@ -528,7 +528,7 @@ func TestCSCPolicyRefreshDeniedTracking(t *testing.T) {
 	})
 	c := policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
 	ctx := context.Background()
-	if err := c.WithCache(true).Get(ctx, "k").Err(); err != nil {
+	if err := c.Get(WithCache(ctx), "k").Err(); err != nil {
 		t.Fatal(err)
 	}
 	view := c.metadataView()

@@ -638,7 +638,7 @@ func TestCSCPolicyConcurrentCoalescing(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			key := strconv.Itoa(i % 8)
-			if v, e := c.WithCache(true).Get(context.Background(), key).Result(); v != "v" || e != nil {
+			if v, e := c.Get(WithCache(context.Background()), key).Result(); v != "v" || e != nil {
 				t.Errorf("%q %v", v, e)
 			}
 		}(i)
@@ -661,11 +661,11 @@ func TestCSCPolicyCoalescerBudgetFallback(t *testing.T) {
 		t.Fatal("no coalescer")
 	}
 	mc.wireBytes.Store(cscMissWireBudgetBytes)
-	if err := c.WithCache(true).Get(context.Background(), "k").Err(); err != nil {
+	if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
 		t.Fatal(err)
 	}
 	mc.wireBytes.Store(0)
-	if err := c.WithCache(true).Get(context.Background(), "k").Err(); err != nil {
+	if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
 		t.Fatal(err)
 	}
 	if s.count("get") != 1 || s.prefixes() != 1 {

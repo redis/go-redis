@@ -405,18 +405,20 @@ locks, on eligible unmarked calls, and receives actual Redis keys. Its owned
 key slice may be retained but must not be modified. Mode/policy are fixed at
 client construction. These policy fields also apply with an explicit custom Cache.
 
-Use reusable, non-owning command views to override intent for a call:
+Use a context mark to override intent for a call, with any client type:
 
 ```go
-cached := rdb.WithCache(true)
-fresh := rdb.WithCache(false)
-value, err := cached.Get(ctx, "user:42").Result()
-value, err = fresh.Get(ctx, "user:42").Result()
-// For a UniversalClient: redis.WithCache(rdb, true).Get(ctx, "user:42")
+value, err := rdb.Get(redis.WithCache(ctx), "user:42").Result()
+value, err = rdb.Get(redis.WithoutCache(ctx), "user:42").Result()
 ```
 
-Views expose typed commands and Do/Process without Close, pipeline or transaction
-constructors. A bypass reads the server without using, refreshing or removing
+The returned context inherits cancellation, deadlines and other values from
+`ctx`. It can be reused; every command submitted with it receives the mark.
+The last mark wins when contexts are nested, and the original context is
+unchanged. Intent is captured at submission and survives internal context
+replacement, asynchronous dispatch and retries.
+
+A bypass reads the server without using, refreshing or removing
 an existing entry. Positive marks never override eligibility. Unsupported marks
 warn and execute uncached; `Strict` rejects before the data write, including
 when connection initialization discovers tracking is unavailable. Strict does
@@ -425,15 +427,20 @@ error from CLIENT CACHING returns successful data uncached; protocol/transport
 failures retire the connection. Hits send no commands.
 
 All three fetch paths (foreground, miss coalescer, background refresh) support
-the modes. `AutoPipeliner.WithCache` waits for completion and respects its
-admission/close lifecycle. Blocking and explicitly unordered faces use the normal
-cache path. On ordered `AsyncAutoPipeline`, marked reads remain in the ordered
+the modes. Context marks preserve AutoPipeline's normal call semantics:
+blocking calls wait; `AsyncAutoPipeline` returns immediately and result accessors
+wait for completion. Blocking and explicitly unordered faces use the normal
+cache path. On ordered `AsyncAutoPipeline`, marked typed reads remain in the ordered
 stream and execute uncached: positive marks warn, or fail at submission with
 `Strict`. Bypass marks also retain ordering. This does not change the existing
-ordering exceptions for blocking commands and direct administrative helpers.
-Public batches, pipelines, transactions and scripts remain uncached. Views
-preserve typed helpers such as Cluster `DBSize` and script/fieldset management;
-these helpers cannot cache and retain their underlying client's shard coverage.
+ordering exceptions for raw `Do` calls, blocking commands and direct administrative
+helpers.
+Public batches, pipelines, transactions and scripts remain uncached. A positive
+mark on a public pipeline command warns and queues it uncached, or rejects that
+command at submission with `Strict`; other queued commands are unaffected.
+Apply marks to command submission, not `Exec`. Typed helpers such as Cluster
+`DBSize` and script/fieldset management keep their normal shard coverage;
+they cannot cache, so positive marks warn or fail before dispatch with `Strict`.
 
 Cluster CSC supports single-target execution and eligible metadata-based
 fan-out. Enable metadata routing explicitly as described above. The predicate
@@ -442,7 +449,7 @@ is cached independently; failed, absent or redirected fragments do not roll
 back successful siblings. MOVED permits a fresh tracked destination fetch;
 ASK executes without cache lookup or publication.
 
-Marked `AutoPipeline` views pass through normal routing admission. Ordered async
+Marked `AutoPipeline` calls pass through normal routing admission. Ordered async
 mode rejects cross-slot fan-out before dispatch; blocking and unordered
 half-duplex modes support it. Custom node factories must preserve the supplied
 Options, including cache policy and command metadata configuration.

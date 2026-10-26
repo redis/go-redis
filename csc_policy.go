@@ -59,7 +59,7 @@ const (
 	cacheBypassed
 )
 
-// Invocation state is carried by the command, not a shared node or a context.
+// After capturing the context mark, execution state is carried by the command.
 // Like command arguments/results it is owned by one execution at a time.
 type cscIntent uint8
 
@@ -93,52 +93,63 @@ func cscLeave(cmd Cmder) {
 	}
 }
 
-// CacheView is a synchronous, non-owning command view. It exposes typed
-// commands and Do/Process, but no pools, Close, pipelines or transactions.
-// Its immutable mark overrides the configured predicate for each invocation.
-type CacheView struct {
-	cmdable
-	client UniversalClient // borrowed, for typed helpers with client-specific semantics
-	mark   cacheMark
+type cacheContextKey struct{}
+
+// WithCache returns a context that requests caching for Redis commands using it.
+// The mark overrides the cache predicate and tracking-mode default, but cannot
+// make an ineligible command cacheable. The client must have CSC enabled.
+// Deadlines, cancellation and other values are inherited from ctx. The context
+// may be reused; each submitted command gets the mark. The most recent mark wins
+// when WithCache and WithoutCache are nested, without changing their parent.
+func WithCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cacheContextKey{}, cacheRequested)
 }
 
-func newCacheView(client UniversalClient, process func(context.Context, Cmder) error, cache bool) *CacheView {
-	mark := cacheBypassed
-	if cache {
-		mark = cacheRequested
+// WithoutCache returns a context that bypasses caching for Redis commands using
+// it. Reads go to the server without using or changing existing cache entries.
+// The most recently applied cache mark wins; ctx itself is unchanged.
+func WithoutCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cacheContextKey{}, cacheBypassed)
+}
+
+// Internal operations inherit cancellation and values, but not cache intent.
+// Preserve the original context without allocating when it is already unmarked.
+func cscUnmarkedContext(ctx context.Context) context.Context {
+	if mark, _ := ctx.Value(cacheContextKey{}).(cacheMark); mark != cacheUnmarked {
+		return context.WithValue(ctx, cacheContextKey{}, cacheUnmarked)
 	}
-	return &CacheView{client: client, mark: mark, cmdable: func(ctx context.Context, cmd Cmder) error {
-		cmd.cacheState().mark = mark
-		// Keep admission decisions alive across nested execution and retries;
-		// this synchronous view owns the state until completion is joined.
-		cscEnter(cmd)
-		defer func() { *cmd.cacheState() = cscCommandState{} }()
-		err := process(ctx, cmd)
-		cmd.SetErr(err)
-		return err
-	}}
+	return ctx
 }
 
-// WithCache returns a reusable view carrying an explicit cache or bypass mark.
-// The client retains all resource ownership.
-func (c *Client) WithCache(cache bool) *CacheView { return newCacheView(c, c.Process, cache) }
-
-// WithCache returns a marked, non-owning view of this cluster client.
-func (c *ClusterClient) WithCache(cache bool) *CacheView { return newCacheView(c, c.Process, cache) }
-
-// WithCache waits for marked calls to complete. Blocking and unordered faces
-// use the normal cache path. Ordered async calls stay in the ordered stream
-// uncached: positive marks warn, or fail at submission when Strict is enabled.
-func (ap *AutoPipeliner) WithCache(cache bool) *CacheView {
-	return newCacheView(ap, func(ctx context.Context, cmd Cmder) error {
-		if ap.isClosed() {
-			cmd.setClusterRoutingDecision(nil)
-			return ErrClosed
+// Capture intent before hooks or asynchronous dispatch can replace the context.
+// Consume the context mark so internal handshake/helper commands do not inherit
+// it. Children and retries carry the captured command state instead.
+func cscBegin(ctx context.Context, cmd Cmder) (context.Context, bool) {
+	s := cmd.cacheState()
+	mark, _ := ctx.Value(cacheContextKey{}).(cacheMark)
+	if mark != cacheUnmarked {
+		if s.depth == 0 {
+			// A new explicit invocation overrides any decision copied by Clone.
+			// Internal children/retries receive an unmarked context instead.
+			*s = cscCommandState{mark: mark}
 		}
-		future := ap.submit(ctx, cmd)
-		<-future.batch.done
-		return cmd.rawErr()
-	}, cache)
+		ctx = context.WithValue(ctx, cacheContextKey{}, cacheUnmarked)
+	}
+	if s.depth != 0 || s.mark != cacheUnmarked || s.forceBypass {
+		cscEnter(cmd)
+		return ctx, true
+	}
+	return ctx, false
+}
+
+// Native helpers and public pipelines remain uncached. Validate a positive
+// mark before any helper fan-out, registry mutation or pipeline submission.
+func cscUncacheable(ctx context.Context, cmd Cmder, policy cscPolicy) (context.Context, error) {
+	ctx, active := cscBegin(ctx, cmd)
+	if active {
+		defer cscLeave(cmd)
+	}
+	return ctx, cscUnsupported(ctx, cmd, policy, "command or execution path is unsupported")
 }
 
 // cscAdmitMarked fixes capability at submission, not at batch-size-dependent
@@ -154,21 +165,6 @@ func (ap *AutoPipeliner) cscAdmitMarked(ctx context.Context, cmd Cmder) (bool, e
 	s.forceBypass = true
 	s.intent = cscIntentBypass
 	return false, nil
-}
-
-// Process executes a command with this view's mark. A command must not be
-// executed concurrently; sequential reuse starts a new intent decision.
-func (v *CacheView) Process(ctx context.Context, cmd Cmder) error { return v.cmdable(ctx, cmd) }
-
-// Do executes a raw command with this view's mark and normal CSC validation.
-func (v *CacheView) Do(ctx context.Context, args ...interface{}) *Cmd {
-	cmd := NewCmd(ctx, args...)
-	if len(args) == 0 {
-		cmd.SetErr(errDoNoArgs)
-		return cmd
-	}
-	_ = v.Process(ctx, cmd)
-	return cmd
 }
 
 func (c *baseClient) cscUnsupported(ctx context.Context, cmd Cmder, reason string) error {
@@ -296,15 +292,6 @@ func (c *baseClient) cscTrackable(cmd Cmder) bool {
 		}
 	}
 	return true
-}
-
-// WithCache creates a command view for a UniversalClient without widening its
-// lifecycle interface. AutoPipeline views execute marked calls synchronously.
-func WithCache(client UniversalClient, cache bool) *CacheView {
-	if c, ok := client.(interface{ WithCache(bool) *CacheView }); ok {
-		return c.WithCache(cache)
-	}
-	return newCacheView(client, client.Process, cache)
 }
 
 func clientCachePolicy(client UniversalClient) cscPolicy {
