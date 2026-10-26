@@ -336,9 +336,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			}
 		}
 
-		if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
-			return err
-		}
+		c.cscCheckNode(cmd, node.Client)
 		if ask {
 			ask = false
 			pipe := node.Client.Pipeline()
@@ -470,9 +468,7 @@ func (c *ClusterClient) executeCursorCommand(
 		}
 	}
 
-	if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
-		return err
-	}
+	c.cscCheckNode(cmd, node.Client)
 	return node.Client.Process(ctx, cmd)
 }
 
@@ -580,9 +576,7 @@ func (c *ClusterClient) executeParallelTarget(
 				return err
 			}
 		}
-		if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
-			return err
-		}
+		c.cscCheckNode(cmd, node.Client)
 		lastErr = node.Client.Process(ctx, cmd)
 		if lastErr == nil {
 			return nil

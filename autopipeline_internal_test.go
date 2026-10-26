@@ -3446,24 +3446,28 @@ func TestCSCPolicyOrderedAutoPipeline(t *testing.T) {
 	}
 }
 
-func TestCSCPolicyOrderedAutoPipelineStrict(t *testing.T) {
+func TestCSCPolicyOrderedAutoPipelineUncached(t *testing.T) {
+	logs := captureCSCPolicyLogs(t)
 	for _, cluster := range []bool{false, true} {
 		for _, fd := range []bool{false, true} {
 			t.Run(fmt.Sprintf("cluster=%t/fd=%t", cluster, fd), func(t *testing.T) {
 				s := newCSCPolicyServer(t, nil)
-				var c UniversalClient
+				var c interface {
+					UniversalClient
+					CSCStats() CSCStats
+				}
 				if cluster {
 					opt := clusterCSCTestOptions(func() []ClusterSlot {
 						return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
 					})
-					opt.ClientSideCacheConfig.Strict = true
+
 					opt.PipelinePoolSize = 2
 					cc := NewClusterClient(opt)
 					t.Cleanup(func() { _ = cc.Close() })
 					c = cc
 				} else {
 					opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
-					opt.ClientSideCacheConfig.Strict = true
+
 					opt.PipelinePoolSize = 2
 					c = policyClient(t, opt)
 				}
@@ -3474,20 +3478,26 @@ func TestCSCPolicyOrderedAutoPipelineStrict(t *testing.T) {
 				defer ap.Close()
 				ctx := context.Background()
 				cmd := NewStringCmd(ctx, "get", "k")
-				if err := ap.Process(WithCache(ctx), cmd); err == nil || s.count("get") != 0 {
-					t.Fatal("strict mark dispatched", err, s.snapshot())
+				if err := ap.Process(WithCache(ctx), cmd); err != nil {
+					t.Fatal(err)
+				}
+				if got, err := cmd.Result(); err != nil || got != "v" || s.count("get") != 1 {
+					t.Fatal("marked read did not execute normally", got, err, s.snapshot())
 				}
 				if err := ap.Process(WithoutCache(ctx), cmd); err != nil {
 					t.Fatal(err)
 				}
-				if err := cmd.Err(); err != nil || s.count("get") != 1 {
-					t.Fatal("rejected command could not be reused", err)
+				if err := cmd.Err(); err != nil || s.count("get") != 2 || c.CSCStats().Entries != 0 {
+					t.Fatal("uncached command could not be reused", err)
 				}
 				if *cmd.cacheState() != (cscCommandState{}) || cmd.clusterRoutingDecision() != nil {
 					t.Fatal("completed command retained invocation state")
 				}
 			})
 		}
+	}
+	if logs.contains("cannot cache") {
+		t.Fatal("unsupported mark produced a misuse warning")
 	}
 }
 
@@ -3572,7 +3582,7 @@ func TestCSCPolicyContextReuseAndAutoPipeline(t *testing.T) {
 func TestCSCPolicyContextAutoPipelineRaw(t *testing.T) {
 	s := newCSCPolicyServer(t, nil)
 	opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
-	opt.ClientSideCacheConfig.Strict = true
+
 	c := policyClient(t, opt)
 	ap, err := c.AsyncAutoPipeline()
 	if err != nil {
@@ -3619,7 +3629,7 @@ func (h *cscPolicyContextHook) ProcessHook(next ProcessHook) ProcessHook {
 func TestCSCPolicyContextReplacementAndHookRejection(t *testing.T) {
 	s := newCSCPolicyServer(t, nil)
 	opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
-	opt.ClientSideCacheConfig.Strict = true
+
 	c := policyClient(t, opt)
 	hook := &cscPolicyContextHook{reject: true}
 	c.AddHook(hook)
@@ -3651,8 +3661,8 @@ func TestCSCPolicyContextReplacementAndHookRejection(t *testing.T) {
 	if s.count("get") != 2 || s.prefixes() != 1 {
 		t.Fatal("context replacement lost intent")
 	}
-	if err := ap.Touch(WithCache(ctx), "k").Err(); err == nil || s.count("touch") != 0 {
-		t.Fatal("AutoPipeline did not reject an ineligible strict mark before dispatch")
+	if got, err := ap.Touch(WithCache(ctx), "k").Result(); err != nil || got != 1 || s.count("touch") != 1 {
+		t.Fatal("AutoPipeline did not execute an ineligible marked call normally", got, err)
 	}
 }
 

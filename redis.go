@@ -1841,11 +1841,6 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		// Borrowed Conn/Tx wrappers do not serve cache hits, but can still hold
 		// a tracked connection and need NO for an ordinary uncached OPTOUT read.
 		tracked := c.cscTrackingRequested() && c.cscConnInitGen(cn.GetID()) != 0
-		if !tracked && cmd.cacheState().mark == cacheRequested {
-			if err := c.cscUnsupported(ctx, cmd, "connection tracking is unavailable"); err != nil {
-				return err
-			}
-		}
 		if capture != nil && !tracked {
 			capture.noStore = true
 		}
@@ -2928,8 +2923,7 @@ func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 
 func (c *Client) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		cscPolicy: c.cscPolicy,
-		exec:      pipelineExecer(c.processPipelineHook),
+		exec: pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -3021,7 +3015,6 @@ func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]C
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Client) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		cscPolicy: c.cscPolicy,
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
 			return c.processTxPipelineHook(ctx, cmds)
@@ -3184,8 +3177,7 @@ func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		cscPolicy: c.cscPolicy,
-		exec:      c.processPipelineHook,
+		exec: c.processPipelineHook,
 	}
 	pipe.init()
 	return &pipe
@@ -3198,7 +3190,6 @@ func (c *Conn) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *Conn) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		cscPolicy: c.cscPolicy,
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
 			return c.processTxPipelineHook(ctx, cmds)

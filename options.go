@@ -515,7 +515,7 @@ type Options struct {
 
 	// ClientSideCache is an explicit Cache implementation used for client-side
 	// caching. When set, it overrides the storage settings of ClientSideCacheConfig;
-	// its TrackingMode, Cacheable and Strict policy settings still apply. Intended for
+	// its TrackingMode and Cacheable policy settings still apply. Intended for
 	// advanced users that want to share a cache across clients or supply a
 	// custom implementation.
 	//

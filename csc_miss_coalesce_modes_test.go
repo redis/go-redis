@@ -654,7 +654,7 @@ func TestCSCPolicyCoalescerBudgetFallback(t *testing.T) {
 	s := newCSCPolicyServer(t, nil)
 	opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
 	opt.ClientSideCacheCoalesceMisses = true
-	opt.ClientSideCacheConfig.Strict = true
+
 	c := policyClient(t, opt)
 	mc := c.cscMissCoalescer.Load()
 	if mc == nil {

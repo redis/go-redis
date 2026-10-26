@@ -55,9 +55,8 @@ type Pipeline struct {
 	cmdable
 	statefulCmdable
 
-	exec      pipelineExecer
-	cmds      []Cmder
-	cscPolicy cscPolicy
+	exec pipelineExecer
+	cmds []Cmder
 }
 
 func (c *Pipeline) init() {
@@ -88,28 +87,17 @@ func (c *Pipeline) Process(ctx context.Context, cmd Cmder) error {
 
 // BatchProcess queues multiple cmds for later execution.
 func (c *Pipeline) BatchProcess(ctx context.Context, cmd ...Cmder) error {
-	// Pipelines already bypass caching. Only an explicit positive mark needs
-	// capability validation; keep ordinary batch submission a single append.
-	if mark, _ := ctx.Value(cacheContextKey{}).(cacheMark); mark != cacheRequested {
-		c.cmds = append(c.cmds, cmd...)
-		return nil
-	}
-	var firstErr error
+	// Public pipelines are uncached. Consume a clone's earlier cache intent
+	// at submission, including when the caller later discards the pipeline.
+	// Internal pipelines (for example ASKING + a redirected command) retain
+	// the state owned by their active invocation.
 	for _, command := range cmd {
-		// Internal pipelines (for example ASKING + a redirected command)
-		// already own the command's intent and validate their execution path.
-		if command.cacheState().depth == 0 {
-			if _, err := cscUncacheable(ctx, command, c.cscPolicy); err != nil {
-				command.SetErr(err)
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
+		if state := command.cacheState(); state.depth == 0 {
+			*state = cscCommandState{}
 		}
-		c.cmds = append(c.cmds, command)
 	}
-	return firstErr
+	c.cmds = append(c.cmds, cmd...)
+	return nil
 }
 
 // Discard resets the pipeline and discards queued commands.
@@ -130,8 +118,8 @@ func (c *Pipeline) Exec(ctx context.Context) ([]Cmder, error) {
 	cmds := c.cmds
 	c.cmds = nil
 
-	// Intent is decided when each command is submitted. Do not pass an Exec
-	// mark to internal connection initialization or Cluster topology queries.
+	// Public pipeline commands are uncached. Do not pass an Exec mark to
+	// internal connection initialization or Cluster topology queries.
 	return cmds, c.exec(cscUnmarkedContext(ctx), cmds)
 }
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
@@ -21,6 +22,57 @@ func cscTestContext(ctx context.Context, cache bool) context.Context {
 		return WithCache(ctx)
 	}
 	return WithoutCache(ctx)
+}
+
+type cscPolicyLogs struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func captureCSCPolicyLogs(t *testing.T) *cscPolicyLogs {
+	t.Helper()
+	old := internal.Logger.Load()
+	logs := new(cscPolicyLogs)
+	SetLogger(logs)
+	t.Cleanup(func() { SetLogger(old) })
+	return logs
+}
+
+func (l *cscPolicyLogs) Printf(_ context.Context, format string, args ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.messages = append(l.messages, fmt.Sprintf(format, args...))
+}
+
+func (l *cscPolicyLogs) contains(text string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, message := range l.messages {
+		if strings.Contains(message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// Observe internal command intent at the public hook boundary. These commands
+// must stay unmarked even though unsupported marks no longer produce errors.
+type cscInternalIntentHook struct {
+	leaked atomic.Bool
+}
+
+func (*cscInternalIntentHook) DialHook(next DialHook) DialHook { return next }
+func (*cscInternalIntentHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+func (h *cscInternalIntentHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		if (cmd.Name() == "unwatch" || cmd.Name() == "cluster") && cmd.cacheState().mark != cacheUnmarked {
+			h.leaked.Store(true)
+		}
+		return next(ctx, cmd)
+	}
 }
 
 type cscPolicyEvent struct {
@@ -299,7 +351,7 @@ func TestCSCPolicyFrozenAndInvalidConfig(t *testing.T) {
 	bad := cscPolicyOptions(s.addr, TrackingMode("invalid"))
 	invalid := policyClient(t, bad)
 	before := len(s.snapshot())
-	if err := invalid.Get(context.Background(), "invalid").Err(); err == nil {
+	if err := invalid.Get(WithCache(context.Background()), "invalid").Err(); err == nil {
 		t.Fatal("invalid mode accepted")
 	}
 	if len(s.snapshot()) != before {
@@ -423,45 +475,96 @@ func TestCSCPolicyContextOverridesClone(t *testing.T) {
 	}
 }
 
-func TestCSCPolicyContextPublicPipeline(t *testing.T) {
+func TestCSCPolicyPipelineCloneIntent(t *testing.T) {
 	for _, cluster := range []bool{false, true} {
-		for _, strict := range []bool{false, true} {
-			t.Run(fmt.Sprintf("cluster=%t/strict=%t", cluster, strict), func(t *testing.T) {
-				s := newCSCPolicyServer(t, nil)
-				var c UniversalClient
-				if cluster {
-					cc := cscPolicyCluster(t, s.addr, s.addr, TrackingModeOptIn, false)
-					cc.opt.ClientSideCacheConfig.Strict = strict
-					c = cc
-				} else {
-					opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
-					opt.ClientSideCacheConfig.Strict = strict
-					c = policyClient(t, opt)
-				}
-				ctx := context.Background()
-				pipe := c.Pipeline()
-				marked := pipe.Get(WithCache(ctx), "{one}:marked")
-				if (marked.Err() != nil) != strict {
-					t.Fatal("strict was not decided at submission", marked.Err())
-				}
-				bypass := pipe.Get(WithoutCache(ctx), "{one}:bypass")
-				normal := pipe.Get(ctx, "{one}:normal")
-				want := 3
-				if strict {
-					want = 2
-				}
-				if pipe.Len() != want {
-					t.Fatal("rejection affected other queued commands", pipe.Len())
-				}
-				cmds, err := pipe.Exec(WithCache(ctx))
-				if err != nil || len(cmds) != want || bypass.Val() != "v" || normal.Val() != "v" {
-					t.Fatal("context changed pipeline execution", err, len(cmds))
-				}
-				if s.count("get") != want || s.prefixes() != 0 {
-					t.Fatal("pipeline cached or dispatched a rejected command", s.snapshot())
-				}
-			})
+		for _, mark := range []string{"unmarked", "cache", "bypass"} {
+			for _, discard := range []bool{false, true} {
+				t.Run(fmt.Sprintf("cluster=%t/mark=%s/discard=%t", cluster, mark, discard), func(t *testing.T) {
+					s := newCSCPolicyServer(t, nil)
+					var c interface {
+						UniversalClient
+						CSCStats() CSCStats
+					}
+					if cluster {
+						c = cscPolicyCluster(t, s.addr, s.addr, TrackingModeOptIn, false)
+					} else {
+						c = policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
+					}
+					hook := &cscCloneHook{after: true}
+					c.AddHook(hook)
+					ctx := context.Background()
+					if err := c.Get(WithCache(ctx), "{one}:key").Err(); err != nil {
+						t.Fatal(err)
+					}
+					submitCtx := ctx
+					switch mark {
+					case "cache":
+						submitCtx = WithCache(ctx)
+					case "bypass":
+						submitCtx = WithoutCache(ctx)
+					}
+					clones := []Cmder{hook.clone, hook.clone.Clone()}
+					pipe := c.Pipeline()
+					if err := pipe.BatchProcess(submitCtx, clones...); err != nil {
+						t.Fatal(err)
+					}
+					wantReads := 5 // Initial fill, two pipeline reads, two unmarked reads.
+					if discard {
+						pipe.Discard()
+						wantReads = 3
+					} else if _, err := pipe.Exec(ctx); err != nil {
+						t.Fatal(err)
+					}
+					// The public pipeline owns a new invocation, even when it is
+					// discarded. Its clones must not carry earlier cache intent
+					// into a later unmarked OPTIN call.
+					for _, clone := range clones {
+						if err := c.Process(ctx, clone); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if s.count("get") != wantReads || s.prefixes() != 1 || c.CSCStats().Hits != 0 || c.CSCStats().Entries != 1 {
+						t.Fatal("pipeline retained clone intent or changed the cached entry", s.snapshot(), c.CSCStats())
+					}
+				})
+			}
 		}
+	}
+}
+
+func TestCSCPolicyContextPublicPipeline(t *testing.T) {
+	logs := captureCSCPolicyLogs(t)
+	for _, cluster := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cluster=%t", cluster), func(t *testing.T) {
+			s := newCSCPolicyServer(t, nil)
+			var c interface {
+				UniversalClient
+				CSCStats() CSCStats
+			}
+			if cluster {
+				c = cscPolicyCluster(t, s.addr, s.addr, TrackingModeOptIn, false)
+			} else {
+				c = policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
+			}
+			ctx := context.Background()
+			pipe := c.Pipeline()
+			marked := pipe.Get(WithCache(ctx), "{one}:marked")
+			bypass := pipe.Get(WithoutCache(ctx), "{one}:bypass")
+			normal := pipe.Get(ctx, "{one}:normal")
+			if marked.Err() != nil || pipe.Len() != 3 {
+				t.Fatal("mark changed pipeline submission", marked.Err(), pipe.Len())
+			}
+			cmds, err := pipe.Exec(WithCache(ctx))
+			if err != nil || len(cmds) != 3 || marked.Val() != "v" || bypass.Val() != "v" || normal.Val() != "v" {
+				t.Fatal("context changed pipeline execution", err, len(cmds))
+			}
+			if s.count("get") != 3 || s.prefixes() != 0 || c.CSCStats().Entries != 0 {
+				t.Fatal("pipeline cached or failed to dispatch a command", s.snapshot())
+			}
+		})
+	}
+	if logs.contains("cannot cache") {
+		t.Fatal("pipeline mark produced a misuse warning")
 	}
 }
 
@@ -497,11 +600,11 @@ func mustCSCWire(t testing.TB, args ...interface{}) []byte {
 // CSC tracking modes: OPTIN/OPTOUT policy and integration.
 
 func TestCSCPolicyConstructorForwarding(t *testing.T) {
-	cfg := &ClientSideCacheConfig{TrackingMode: TrackingModeOptOut, Strict: true, Cacheable: func(string, []string) bool { return false }}
+	cfg := &ClientSideCacheConfig{TrackingMode: TrackingModeOptOut, Cacheable: func(string, []string) bool { return false }}
 	u := &UniversalOptions{Addrs: []string{"localhost:1"}, ClientSideCacheConfig: cfg}
 	for name, opt := range map[string]*Options{"simple": u.Simple(), "cluster": u.Cluster().clientOptions(), "failoverCluster": u.Failover().clusterOptions().clientOptions()} {
 		p := cachePolicy(opt.ClientSideCacheConfig)
-		if p.mode != TrackingModeOptOut || !p.strict || p.cacheable == nil {
+		if p.mode != TrackingModeOptOut || p.cacheable == nil {
 			t.Fatal(name)
 		}
 	}
@@ -686,9 +789,10 @@ func TestCSCPolicyBypassPreservesCachedEntry(t *testing.T) {
 	}
 }
 
-func TestCSCPolicyStrictHandshake(t *testing.T) {
+func TestCSCPolicyUnavailableTracking(t *testing.T) {
 	for _, coalesce := range []bool{false, true} {
 		t.Run(strconv.FormatBool(coalesce), func(t *testing.T) {
+			logs := captureCSCPolicyLogs(t)
 			s := newCSCPolicyServer(t, func(a []string) string {
 				if len(a) > 1 && strings.EqualFold(a[1], "tracking") {
 					return "-NOPERM tracking\r\n"
@@ -696,41 +800,55 @@ func TestCSCPolicyStrictHandshake(t *testing.T) {
 				return ""
 			})
 			opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
-			opt.ClientSideCacheConfig.Strict = true
 			opt.ClientSideCacheCoalesceMisses = coalesce
 			c := policyClient(t, opt)
-			if err := c.Get(WithCache(context.Background()), "k").Err(); err == nil || !strings.Contains(err.Error(), "cannot cache") {
-				t.Fatal(err)
+			for i := 0; i < 2; i++ {
+				if got, err := c.Get(WithCache(context.Background()), "k").Result(); err != nil || got != "v" {
+					t.Fatal("unavailable tracking changed the read", got, err)
+				}
 			}
-			if s.count("get") != 0 {
-				t.Fatal("strict sent GET")
+			if s.count("get") != 2 || s.prefixes() != 0 || c.CSCStats().Entries != 0 {
+				t.Fatal("untracked response was cached", s.snapshot())
+			}
+			if !logs.contains("NOPERM tracking") || logs.contains("cannot cache") {
+				t.Fatal("tracking diagnostic lost or replaced by misuse warning")
 			}
 		})
 	}
 }
 
 func TestCSCPolicyEligibilityAndGuards(t *testing.T) {
-	s := newCSCPolicyServer(t, nil)
+	logs := captureCSCPolicyLogs(t)
+	s := newCSCPolicyServer(t, func(args []string) string {
+		if args[0] == "touch" && args[1] == "denied" {
+			return "-NOPERM touch\r\n"
+		}
+		return ""
+	})
 	opt := cscPolicyOptions(s.addr, TrackingModeOptOut)
 	var calls atomic.Int32
 	opt.ClientSideCacheConfig.Cacheable = func(string, []string) bool { calls.Add(1); return true }
-	opt.ClientSideCacheConfig.Strict = true
 	c := policyClient(t, opt)
 	ctx := context.Background()
-	if err := c.Touch(WithCache(ctx), "k").Err(); err == nil {
-		t.Fatal("strict TOUCH")
+	for i := 0; i < 2; i++ {
+		if got, err := c.Touch(WithCache(ctx), "k").Result(); err != nil || got != 1 {
+			t.Fatal("ineligible mark changed the result", got, err)
+		}
 	}
-	if s.count("touch") != 0 || calls.Load() != 0 {
-		t.Fatal("ineligible call escaped")
+	if s.count("touch") != 2 || calls.Load() != 0 || c.CSCStats().Entries != 0 || logs.contains("cannot cache") {
+		t.Fatal("ineligible mark cached, ran predicate or warned", s.snapshot())
 	}
 	if err := c.Touch(ctx, "k").Err(); err != nil {
 		t.Fatal(err)
 	}
-	if s.prefixes() != 1 {
+	if s.prefixes() != 3 {
 		t.Fatal("trackable ineligible command did not receive NO")
 	}
+	if err := c.Touch(WithCache(ctx), "denied").Err(); err == nil || err.Error() != "NOPERM touch" {
+		t.Fatal("real command error was suppressed", err)
+	}
 	for _, sub := range []string{"TRACKING", "CACHING"} {
-		if err := c.Do(ctx, []byte("CLIENT"), []byte(sub), "YES").Err(); err == nil {
+		if err := c.Do(WithCache(ctx), []byte("CLIENT"), []byte(sub), "YES").Err(); err == nil {
 			t.Fatal(sub)
 		}
 	}
@@ -740,6 +858,7 @@ func TestCSCPolicyControlFailures(t *testing.T) {
 	for _, coalesce := range []bool{false, true} {
 		for _, response := range []string{"-NOPERM caching\r\n", "+BAD\r\n", ":1\r\n", "*1\r\n-ERR nested\r\n", "DROP"} {
 			t.Run(fmt.Sprintf("%t/%q", coalesce, response), func(t *testing.T) {
+				logs := captureCSCPolicyLogs(t)
 				s := newCSCPolicyServer(t, func(a []string) string {
 					if len(a) > 1 && strings.EqualFold(a[1], "caching") {
 						return response
@@ -761,6 +880,9 @@ func TestCSCPolicyControlFailures(t *testing.T) {
 				}
 				if c.CSCStats().Entries != 0 {
 					t.Fatal("published untracked data")
+				}
+				if strings.HasPrefix(response, "-NOPERM") && !logs.contains("CLIENT CACHING rejected") {
+					t.Fatal("CACHING rejection lost its operational diagnostic")
 				}
 			})
 		}
@@ -904,7 +1026,7 @@ func TestCSCPolicyAdmissionDeclined(t *testing.T) {
 			s := newCSCPolicyServer(t, nil)
 			opt := cscPolicyOptions(s.addr, mode)
 			opt.ClientSideCacheConfig.MaxMemoryBytes = 1
-			opt.ClientSideCacheConfig.Strict = true
+
 			c := policyClient(t, opt)
 			if got, err := c.Get(WithCache(context.Background()), "k").Result(); got != "v" || err != nil {
 				t.Fatalf("admission became misuse %q %v", got, err)

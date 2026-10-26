@@ -394,7 +394,6 @@ ClientSideCacheConfig: &redis.ClientSideCacheConfig{
     Cacheable: func(command string, keys []string) bool {
         return command == "get" && len(keys) == 1 && strings.HasPrefix(keys[0], "user:")
     },
-    Strict: true,
 },
 ```
 
@@ -419,28 +418,26 @@ unchanged. Intent is captured at submission and survives internal context
 replacement, asynchronous dispatch and retries.
 
 A bypass reads the server without using, refreshing or removing
-an existing entry. Positive marks never override eligibility. Unsupported marks
-warn and execute uncached; `Strict` rejects before the data write, including
-when connection initialization discovers tracking is unavailable. Strict does
-not guarantee cache admission or publication of every reply. A fully read Redis
-error from CLIENT CACHING returns successful data uncached; protocol/transport
-failures retire the connection. Hits send no commands.
+an existing entry. `WithCache` requests caching when the command and execution
+path support it; it never overrides eligibility or guarantees that every reply
+will be stored. Otherwise the command executes normally without caching, with
+no error or warning caused by the mark. Operational errors and diagnostics are
+unchanged. A fully read Redis error from CLIENT CACHING returns successful data
+uncached; protocol/transport failures retire the connection. Hits send no commands.
 
 All three fetch paths (foreground, miss coalescer, background refresh) support
 the modes. Context marks preserve AutoPipeline's normal call semantics:
 blocking calls wait; `AsyncAutoPipeline` returns immediately and result accessors
 wait for completion. Blocking and explicitly unordered faces use the normal
 cache path. On ordered `AsyncAutoPipeline`, marked typed reads remain in the ordered
-stream and execute uncached: positive marks warn, or fail at submission with
-`Strict`. Bypass marks also retain ordering. This does not change the existing
-ordering exceptions for raw `Do` calls, blocking commands and direct administrative
-helpers.
-Public batches, pipelines, transactions and scripts remain uncached. A positive
-mark on a public pipeline command warns and queues it uncached, or rejects that
-command at submission with `Strict`; other queued commands are unaffected.
-Apply marks to command submission, not `Exec`. Typed helpers such as Cluster
-`DBSize` and script/fieldset management keep their normal shard coverage;
-they cannot cache, so positive marks warn or fail before dispatch with `Strict`.
+stream and execute uncached. Bypass marks also retain ordering. This does not
+change the existing ordering exceptions for raw `Do` calls, blocking commands
+and direct administrative helpers.
+Public batches, pipelines, transactions and scripts remain uncached, even with
+`WithCache`. Marked commands retain their normal execution and do not prevent
+other queued commands from running. Apply marks to command submission, not
+`Exec`. Typed helpers such as Cluster `DBSize` and script/fieldset management
+keep their normal shard coverage and execute uncached.
 
 Cluster CSC supports single-target execution and eligible metadata-based
 fan-out. Enable metadata routing explicitly as described above. The predicate

@@ -2586,9 +2586,11 @@ func TestCSCPolicyClusterConstructorSnapshot(t *testing.T) {
 func TestCSCPolicyClusterRedirect(t *testing.T) {
 	for _, kind := range []string{"MOVED", "ASK"} {
 		t.Run(kind, func(t *testing.T) {
+			var redirect atomic.Bool
+			redirect.Store(true)
 			target := newCSCPolicyServer(t, nil)
 			source := newCSCPolicyServer(t, func(a []string) string {
-				if strings.EqualFold(a[0], "get") {
+				if strings.EqualFold(a[0], "get") && redirect.Load() {
 					return "-" + kind + " 0 " + target.addr + "\r\n"
 				}
 				return ""
@@ -2599,7 +2601,9 @@ func TestCSCPolicyClusterRedirect(t *testing.T) {
 			opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
 			c := NewClusterClient(opt)
 			defer c.Close()
-			if v, e := c.Get(WithCache(context.Background()), "k").Result(); v != "v" || e != nil {
+			ctx := context.Background()
+			cmd := c.Get(WithCache(ctx), "k")
+			if v, e := cmd.Result(); v != "v" || e != nil {
 				t.Fatalf("%q %v", v, e)
 			}
 			if kind == "ASK" {
@@ -2617,65 +2621,76 @@ func TestCSCPolicyClusterRedirect(t *testing.T) {
 			} else if target.prefixes() != 1 || c.CSCStats().Entries != 1 {
 				t.Fatal("MOVED did not track/publish")
 			}
-		})
-	}
-}
-
-func TestCSCPolicyClusterIneligibleFanout(t *testing.T) {
-	for _, strict := range []bool{false, true} {
-		t.Run(strconv.FormatBool(strict), func(t *testing.T) {
-			a, b := newCSCPolicyServer(t, nil), newCSCPolicyServer(t, nil)
-			opt := clusterCSCTestOptions(func() []ClusterSlot {
-				return []ClusterSlot{{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: a.addr}}}, {Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: b.addr}}}}
-			})
-			opt.DisableRoutingPolicies = false
-			info := cloneCommandInfo(defaultCommandMetadataView().records["mget"])
-			info.Tips = append(info.Tips, "dont_cache")
-			opt.CommandMetadata = &CommandMetadataConfig{Overrides: map[string]*CommandInfo{"mget": info}}
-			opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptOut
-			opt.ClientSideCacheConfig.Strict = strict
-			c := NewClusterClient(opt)
-			defer c.Close()
-			c.SetCommandInfoResolver(NewCommandInfoResolver(func(_ context.Context, cmd Cmder) *routing.CommandPolicy {
-				if cmd.Name() == "mget" {
-					return &routing.CommandPolicy{Request: routing.ReqMultiShard, Response: routing.RespDefaultHashSlot}
-				}
-				return nil
-			}))
-			err := c.MGet(WithCache(context.Background()), "{bar}:a", "{foo}:b").Err()
-			if strict {
-				if err == nil || a.count("mget")+b.count("mget") != 0 {
-					t.Fatalf("strict fanout %v", err)
-				}
-			} else {
-				if err != nil {
+			// The internal ASK pipeline must preserve the active invocation's
+			// depth so completion releases its state and later marks take effect.
+			redirect.Store(false)
+			before := source.count("get")
+			for i := 0; i < 2; i++ {
+				if err := c.Process(WithCache(ctx), cmd); err != nil {
 					t.Fatal(err)
 				}
-				if a.count("mget") != 1 || b.count("mget") != 1 || a.prefixes() != 1 || b.prefixes() != 1 || c.CSCStats().Entries != 0 {
-					t.Fatalf("fanout counts %d %d prefixes %d %d", a.count("mget"), b.count("mget"), a.prefixes(), b.prefixes())
-				}
+			}
+			if source.count("get") != before+1 || c.CSCStats().Hits != 1 {
+				t.Fatal("redirected command could not start a fresh cached invocation", source.snapshot(), c.CSCStats())
 			}
 		})
 	}
 }
 
-func TestCSCPolicyStrictClusterCapability(t *testing.T) {
-	s := newCSCPolicyServer(t, nil)
+func TestCSCPolicyClusterIneligibleFanout(t *testing.T) {
+	logs := captureCSCPolicyLogs(t)
+	a, b := newCSCPolicyServer(t, nil), newCSCPolicyServer(t, nil)
+	opt := clusterCSCTestOptions(func() []ClusterSlot {
+		return []ClusterSlot{{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: a.addr}}}, {Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: b.addr}}}}
+	})
+	opt.DisableRoutingPolicies = false
+	info := cloneCommandInfo(defaultCommandMetadataView().records["mget"])
+	info.Tips = append(info.Tips, "dont_cache")
+	opt.CommandMetadata = &CommandMetadataConfig{Overrides: map[string]*CommandInfo{"mget": info}}
+	opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptOut
+	c := NewClusterClient(opt)
+	defer c.Close()
+	c.SetCommandInfoResolver(NewCommandInfoResolver(func(_ context.Context, cmd Cmder) *routing.CommandPolicy {
+		if cmd.Name() == "mget" {
+			return &routing.CommandPolicy{Request: routing.ReqMultiShard, Response: routing.RespDefaultHashSlot}
+		}
+		return nil
+	}))
+	got, err := c.MGet(WithCache(context.Background()), "{bar}:a", "{foo}:b").Result()
+	if err != nil || !reflect.DeepEqual(got, []interface{}{"v", "v"}) {
+		t.Fatal(got, err)
+	}
+	if a.count("mget") != 1 || b.count("mget") != 1 || a.prefixes() != 1 || b.prefixes() != 1 || c.CSCStats().Entries != 0 || logs.contains("cannot cache") {
+		t.Fatalf("fanout counts %d %d prefixes %d %d", a.count("mget"), b.count("mget"), a.prefixes(), b.prefixes())
+	}
+}
+
+func TestCSCPolicyClusterCapability(t *testing.T) {
+	s := newCSCPolicyServer(t, func(args []string) string {
+		if args[0] == "sunion" {
+			return "*1\r\n$1\r\nv\r\n"
+		}
+		return ""
+	})
 	opt := clusterCSCTestOptions(func() []ClusterSlot {
 		return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
 	})
 	opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
-	opt.ClientSideCacheConfig.Strict = true
 	c := NewClusterClient(opt)
 	defer c.Close()
-	if err := c.SUnion(WithCache(context.Background()), "{a}:1", "{a}:2").Err(); err == nil {
-		t.Fatal("strict permanent bypass")
+	if got, err := c.SUnion(WithCache(context.Background()), "{a}:1", "{a}:2").Result(); err != nil || !reflect.DeepEqual(got, []string{"v"}) {
+		t.Fatal("unsupported cache path changed command semantics", got, err)
 	}
-	if s.count("sunion") != 0 {
-		t.Fatal("unsupported command sent")
+	if s.count("sunion") != 1 || s.prefixes() != 0 || c.CSCStats().Entries != 0 {
+		t.Fatal("unsupported cache path stored a response")
 	}
-	if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 2; i++ {
+		if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.count("get") != 1 || c.CSCStats().Entries != 1 {
+		t.Fatal("eligible read no longer cached")
 	}
 }
 
@@ -2764,7 +2779,7 @@ func TestCSCPolicySingleSlotRedirectKeepsIntent(t *testing.T) {
 	}
 }
 
-func TestCSCPolicyCustomFactoryStrict(t *testing.T) {
+func TestCSCPolicyCustomFactoryUncached(t *testing.T) {
 	for _, dropAll := range []bool{false, true} {
 		t.Run(strconv.FormatBool(dropAll), func(t *testing.T) {
 			s := newCSCPolicyServer(t, nil)
@@ -2772,7 +2787,7 @@ func TestCSCPolicyCustomFactoryStrict(t *testing.T) {
 				return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
 			})
 			opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
-			opt.ClientSideCacheConfig.Strict = true
+
 			opt.NewClient = func(o *Options) *Client {
 				if dropAll {
 					o.ClientSideCacheConfig = nil
@@ -2783,17 +2798,19 @@ func TestCSCPolicyCustomFactoryStrict(t *testing.T) {
 			}
 			c := NewClusterClient(opt)
 			defer c.Close()
-			if err := c.Get(WithCache(context.Background()), "k").Err(); err == nil {
-				t.Fatal("factory silently lost strict or mode")
+			for i := 0; i < 2; i++ {
+				if got, err := c.Get(WithCache(context.Background()), "k").Result(); err != nil || got != "v" {
+					t.Fatal(got, err)
+				}
 			}
-			if s.count("get") != 0 {
-				t.Fatal("strict sent data")
+			if s.count("get") != 2 || s.prefixes() != 0 || c.CSCStats().Entries != 0 {
+				t.Fatal("factory policy mismatch did not execute uncached", s.snapshot())
 			}
 		})
 	}
 }
 
-func TestCSCPolicyReroutedFactoryStrict(t *testing.T) {
+func TestCSCPolicyReroutedFactoryUncached(t *testing.T) {
 	for _, path := range []string{"slot-child", "single-node-plan"} {
 		t.Run(path, func(t *testing.T) {
 			s := newCSCPolicyServer(t, nil)
@@ -2801,7 +2818,7 @@ func TestCSCPolicyReroutedFactoryStrict(t *testing.T) {
 				return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
 			})
 			opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
-			opt.ClientSideCacheConfig.Strict = true
+
 			opt.NewClient = func(o *Options) *Client {
 				o.ClientSideCacheConfig = &ClientSideCacheConfig{MaxEntries: 16}
 				return NewClient(o)
@@ -2824,12 +2841,11 @@ func TestCSCPolicyReroutedFactoryStrict(t *testing.T) {
 			} else {
 				err = c.executeParallelTarget(ctx, node, -1, cmd)
 			}
-			if err == nil {
-				t.Fatal("rerouted node lost strict mode validation")
+			if err != nil || !reflect.DeepEqual(cmd.Val(), []interface{}{"v"}) {
+				t.Fatal("rerouted node failed the uncached read", cmd.Val(), err)
 			}
-
-			if s.count("mget") != 0 {
-				t.Fatal("strict sent a child read")
+			if s.count("mget") != 1 || s.prefixes() != 0 || c.CSCStats().Entries != 0 {
+				t.Fatal("factory policy mismatch allowed child caching", s.snapshot())
 			}
 		})
 	}
@@ -2882,7 +2898,7 @@ func TestCSCPolicyASKWithoutTargetCSC(t *testing.T) {
 		return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: source.addr}}}}
 	})
 	opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
-	opt.ClientSideCacheConfig.Strict = true
+
 	opt.NewClient = func(o *Options) *Client {
 		if o.Addr == target.addr {
 			o.ClientSideCacheConfig = nil
@@ -2899,7 +2915,7 @@ func TestCSCPolicyASKWithoutTargetCSC(t *testing.T) {
 	}
 }
 
-func TestCSCPolicyStrictClusterAbsentReply(t *testing.T) {
+func TestCSCPolicyClusterAbsentReply(t *testing.T) {
 	s := newCSCPolicyServer(t, func(a []string) string {
 		if strings.EqualFold(a[0], "get") {
 			return "_\r\n"
@@ -2910,7 +2926,7 @@ func TestCSCPolicyStrictClusterAbsentReply(t *testing.T) {
 		return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
 	})
 	opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
-	opt.ClientSideCacheConfig.Strict = true
+
 	c := NewClusterClient(opt)
 	defer c.Close()
 	if err := c.Get(WithCache(context.Background()), "k").Err(); err != Nil {
@@ -2932,116 +2948,112 @@ type cscHelperCommands interface {
 }
 
 func TestCSCPolicyClusterHelpers(t *testing.T) {
+	logs := captureCSCPolicyLogs(t)
 	for _, disabled := range []bool{false, true} {
 		for _, mark := range []bool{false, true} {
-			for _, strict := range []bool{false, true} {
-				t.Run(fmt.Sprintf("routingDisabled=%t/cache=%t/strict=%t", disabled, mark, strict), func(t *testing.T) {
-					server := func(size int, exists bool) *cscPolicyServer {
-						return newCSCPolicyServer(t, func(args []string) string {
-							switch strings.ToLower(args[0]) {
-							case "dbsize":
-								return fmt.Sprintf(":%d\r\n", size)
-							case "script":
-								switch strings.ToLower(args[1]) {
-								case "load":
-									return "$3\r\nsha\r\n"
-								case "exists":
-									if exists {
-										return "*1\r\n:1\r\n"
-									}
-									return "*1\r\n:0\r\n"
+			t.Run(fmt.Sprintf("routingDisabled=%t/cache=%t", disabled, mark), func(t *testing.T) {
+				server := func(size int, exists bool) *cscPolicyServer {
+					return newCSCPolicyServer(t, func(args []string) string {
+						switch strings.ToLower(args[0]) {
+						case "dbsize":
+							return fmt.Sprintf(":%d\r\n", size)
+						case "script":
+							switch strings.ToLower(args[1]) {
+							case "load":
+								return "$3\r\nsha\r\n"
+							case "exists":
+								if exists {
+									return "*1\r\n:1\r\n"
 								}
-							case "himport":
-								if strings.ToLower(args[1]) != "prepare" {
-									return ":1\r\n"
-								}
+								return "*1\r\n:0\r\n"
 							}
-							return ""
-						})
-					}
-					a, b := server(2, true), server(3, false)
-					opt := clusterCSCTestOptions(func() []ClusterSlot {
-						return []ClusterSlot{
-							{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: a.addr}}},
-							{Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: b.addr}}},
+						case "himport":
+							if strings.ToLower(args[1]) != "prepare" {
+								return ":1\r\n"
+							}
 						}
+						return ""
 					})
-					opt.DisableRoutingPolicies = disabled
-					opt.ClientSideCacheConfig.Strict = strict
-					c := NewClusterClient(opt)
-					defer c.Close()
-					ap, err := c.AsyncAutoPipeline()
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer ap.Close()
-					nativeCounts := make(map[string][2]int)
-					for surface, v := range []cscHelperCommands{c, c, ap} {
-						ctx := context.Background()
-						if surface != 0 {
-							ctx = cscTestContext(ctx, mark)
-						}
-						for _, call := range []struct {
-							name string
-							run  func() Cmder
-							want interface{}
-						}{
-							{"dbsize", func() Cmder { return v.DBSize(ctx) }, int64(5)},
-							{"script load", func() Cmder { return v.ScriptLoad(ctx, "return 1") }, "sha"},
-							{"script exists", func() Cmder { return v.ScriptExists(ctx, "sha") }, []bool{false}},
-							{"script flush", func() Cmder { return v.ScriptFlush(ctx) }, nil},
-							{"himport prepare", func() Cmder { return v.HImportPrepare(ctx, "fields", "f") }, "OK"},
-							{"himport discard", func() Cmder { return v.HImportDiscard(ctx, "fields") }, int64(1)},
-							{"himport discardall", func() Cmder { return v.HImportDiscardAll(ctx) }, int64(0)},
-						} {
-							count := func(s *cscPolicyServer) int {
-								n := 0
-								for _, e := range s.snapshot() {
-									if strings.HasPrefix(strings.ToLower(strings.Join(e.args, " ")), call.name) {
-										n++
-									}
-								}
-								return n
-							}
-							beforeA, beforeB := count(a), count(b)
-							cmd := call.run()
-							if surface != 0 && mark && strict {
-								if cmd.Err() == nil || count(a) != beforeA || count(b) != beforeB {
-									t.Fatalf("%s strict dispatched: %v", call.name, cmd.Err())
-								}
-								continue
-							}
-							if cmd.Err() != nil {
-								t.Fatalf("%s: %v", call.name, cmd.Err())
-							}
-							counts := [2]int{count(a) - beforeA, count(b) - beforeB}
-							if surface == 0 {
-								if counts[0] == 0 || counts[1] == 0 {
-									t.Fatal("native helper missed a shard", call.name)
-								}
-								nativeCounts[call.name] = counts
-							} else if counts != nativeCounts[call.name] {
-								t.Fatalf("%s shard calls %v, native %v", call.name, counts, nativeCounts[call.name])
-							}
-							var got interface{}
-							switch cmd := cmd.(type) {
-							case *IntCmd:
-								got = cmd.Val()
-							case *StringCmd:
-								got = cmd.Val()
-							case *BoolSliceCmd:
-								got = cmd.Val()
-							case *StatusCmd:
-								got = cmd.Val()
-							}
-							if call.want != nil && !reflect.DeepEqual(got, call.want) {
-								t.Fatalf("%s = %v, want %v", call.name, got, call.want)
-							}
-						}
+				}
+				a, b := server(2, true), server(3, false)
+				opt := clusterCSCTestOptions(func() []ClusterSlot {
+					return []ClusterSlot{
+						{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: a.addr}}},
+						{Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: b.addr}}},
 					}
 				})
-			}
+				opt.DisableRoutingPolicies = disabled
+
+				c := NewClusterClient(opt)
+				defer c.Close()
+				ap, err := c.AsyncAutoPipeline()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ap.Close()
+				nativeCounts := make(map[string][2]int)
+				for surface, v := range []cscHelperCommands{c, c, ap} {
+					ctx := context.Background()
+					if surface != 0 {
+						ctx = cscTestContext(ctx, mark)
+					}
+					for _, call := range []struct {
+						name string
+						run  func() Cmder
+						want interface{}
+					}{
+						{"dbsize", func() Cmder { return v.DBSize(ctx) }, int64(5)},
+						{"script load", func() Cmder { return v.ScriptLoad(ctx, "return 1") }, "sha"},
+						{"script exists", func() Cmder { return v.ScriptExists(ctx, "sha") }, []bool{false}},
+						{"script flush", func() Cmder { return v.ScriptFlush(ctx) }, nil},
+						{"himport prepare", func() Cmder { return v.HImportPrepare(ctx, "fields", "f") }, "OK"},
+						{"himport discard", func() Cmder { return v.HImportDiscard(ctx, "fields") }, int64(1)},
+						{"himport discardall", func() Cmder { return v.HImportDiscardAll(ctx) }, int64(0)},
+					} {
+						count := func(s *cscPolicyServer) int {
+							n := 0
+							for _, e := range s.snapshot() {
+								if strings.HasPrefix(strings.ToLower(strings.Join(e.args, " ")), call.name) {
+									n++
+								}
+							}
+							return n
+						}
+						beforeA, beforeB := count(a), count(b)
+						cmd := call.run()
+						if cmd.Err() != nil {
+							t.Fatalf("%s: %v", call.name, cmd.Err())
+						}
+						counts := [2]int{count(a) - beforeA, count(b) - beforeB}
+						if surface == 0 {
+							if counts[0] == 0 || counts[1] == 0 {
+								t.Fatal("native helper missed a shard", call.name)
+							}
+							nativeCounts[call.name] = counts
+						} else if counts != nativeCounts[call.name] {
+							t.Fatalf("%s shard calls %v, native %v", call.name, counts, nativeCounts[call.name])
+						}
+						var got interface{}
+						switch cmd := cmd.(type) {
+						case *IntCmd:
+							got = cmd.Val()
+						case *StringCmd:
+							got = cmd.Val()
+						case *BoolSliceCmd:
+							got = cmd.Val()
+						case *StatusCmd:
+							got = cmd.Val()
+						}
+						if call.want != nil && !reflect.DeepEqual(got, call.want) {
+							t.Fatalf("%s = %v, want %v", call.name, got, call.want)
+						}
+					}
+				}
+			})
 		}
+	}
+	if logs.contains("cannot cache") {
+		t.Fatal("unsupported mark produced a misuse warning")
 	}
 }
 
@@ -3148,7 +3160,7 @@ func TestCSCPolicyFanoutLive(t *testing.T) {
 			})
 			opt.DisableRoutingPolicies = false
 			opt.ClientSideCacheConfig.TrackingMode = mode
-			opt.ClientSideCacheConfig.Strict = true
+
 			r := NewClusterClient(opt)
 			defer r.Close()
 			r.SetCommandInfoResolver(NewCommandMetadataResolver())
@@ -3202,7 +3214,7 @@ func TestCSCPolicyFanoutLive(t *testing.T) {
 			}()
 			r := NewClusterClient(&ClusterOptions{
 				Addrs: []string{nodes[0].opt.Addr}, Protocol: 3, DisableIdentity: true,
-				ClientSideCacheConfig:         &ClientSideCacheConfig{MaxEntries: 128, TrackingMode: mode, Strict: true},
+				ClientSideCacheConfig:         &ClientSideCacheConfig{MaxEntries: 128, TrackingMode: mode},
 				ClientSideCacheCoalesceMisses: true,
 				MaintNotificationsConfig:      &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 			})
@@ -3357,7 +3369,7 @@ func TestCSCPolicyLive(t *testing.T) {
 				return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: source.opt.Addr}}}}
 			})
 			opt.ClientSideCacheConfig.TrackingMode = mode
-			opt.ClientSideCacheConfig.Strict = true
+
 			opt.DisableRoutingPolicies = false
 			r := NewClusterClient(opt)
 			defer r.Close()
@@ -3393,11 +3405,59 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, cluster := range []bool{false, true} {
+		for _, transaction := range []bool{false, true} {
+			t.Run(fmt.Sprintf("pipeline-clone/cluster=%t/transaction=%t", cluster, transaction), func(t *testing.T) {
+				if err := writer.Set(ctx, key, "value", 0).Err(); err != nil {
+					t.Fatal(err)
+				}
+				var c interface {
+					UniversalClient
+					CSCStats() CSCStats
+				}
+				if cluster {
+					opt := *writer.Options()
+					opt.Protocol = 3
+					opt.ClientSideCacheConfig = &ClientSideCacheConfig{MaxEntries: 32, TrackingMode: TrackingModeOptIn}
+					c = NewClusterClient(&opt)
+					t.Cleanup(func() { _ = c.Close() })
+				} else {
+					c = policyClient(t, cscPolicyOptions(owner.Options().Addr, TrackingModeOptIn))
+				}
+				hook := &cscCloneHook{after: true}
+				c.AddHook(hook)
+				if err := c.Get(WithCache(ctx), key).Err(); err != nil {
+					t.Fatal(err)
+				}
+				if c.CSCStats().Entries != 1 {
+					t.Fatal("initial cache fill failed", c.CSCStats())
+				}
+				pipe := c.Pipeline()
+				if transaction {
+					pipe = c.TxPipeline()
+				}
+				if err := pipe.Process(WithCache(ctx), hook.clone); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pipe.Exec(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.Process(ctx, hook.clone); err != nil || hook.clone.(*StringCmd).Val() != "value" {
+					t.Fatal("unmarked read failed", hook.clone, err)
+				}
+				if c.CSCStats().Hits != 0 || c.CSCStats().Entries != 1 {
+					t.Fatal("unmarked OPTIN read inherited pipeline clone intent", c.CSCStats())
+				}
+			})
+		}
+	}
 	t.Run("context-watch-cleanup", func(t *testing.T) {
 		opt := cscPolicyOptions(owner.Options().Addr, TrackingModeOptIn)
 		opt.PoolSize = 1
-		opt.ClientSideCacheConfig.Strict = true
+
 		c := policyClient(t, opt)
+		intentHook := new(cscInternalIntentHook)
+		c.AddHook(intentHook)
 		if err := writer.Set(ctx, key, "before", 0).Err(); err != nil {
 			t.Fatal(err)
 		}
@@ -3436,6 +3496,9 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 		}, key+":unrelated"); err != nil {
 			t.Fatal("marked context prevented transaction cleanup", err)
 		}
+		if intentHook.leaked.Load() {
+			t.Fatal("cache intent reached internal UNWATCH")
+		}
 	})
 	for _, helper := range []string{"MasterForKey", "ForEachMaster"} {
 		for _, warm := range []bool{false, true} {
@@ -3445,7 +3508,13 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 				}
 				opt := *writer.Options()
 				opt.Protocol = 3
-				opt.ClientSideCacheConfig = &ClientSideCacheConfig{MaxEntries: 32, TrackingMode: TrackingModeOptIn, Strict: true}
+				opt.ClientSideCacheConfig = &ClientSideCacheConfig{MaxEntries: 32, TrackingMode: TrackingModeOptIn}
+				intentHook := new(cscInternalIntentHook)
+				opt.NewClient = func(o *Options) *Client {
+					node := NewClient(o)
+					node.AddHook(intentHook)
+					return node
+				}
 				c := NewClusterClient(&opt)
 				defer c.Close()
 				if warm {
@@ -3478,6 +3547,9 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 					}
 				} else if err := c.ForEachMaster(marked, read); err != nil {
 					t.Fatal("cache mark reached topology discovery or was lost by callback", err)
+				}
+				if intentHook.leaked.Load() {
+					t.Fatal("cache intent reached topology discovery")
 				}
 				if c.CSCStats().Hits != 1 {
 					t.Fatal("helper did not visit the key's owner", c.CSCStats())
@@ -3523,18 +3595,18 @@ func TestCSCPolicyLiveConnectionModesAndOrdering(t *testing.T) {
 				t.Fatal(err)
 			}
 			opt := cscPolicyOptions(owner.Options().Addr, TrackingModeOptIn)
-			opt.ClientSideCacheConfig.Strict = true
+
 			c := policyClient(t, opt)
 			check := func(p Pipeliner) error {
-				// Reject the marked write before queueing, without discarding
-				// an unrelated read or changing transaction execution.
-				rejected := p.Set(WithCache(ctx), key, "unexpected", 0)
-				if err := rejected.Err(); err == nil {
-					t.Fatal("strict transaction mark was not rejected at submission")
+				// An unsupported cache mark must not reject a write or affect
+				// the following read within the same transaction.
+				marked := p.Set(WithCache(ctx), key, "updated", 0)
+				if err := marked.Err(); err != nil {
+					t.Fatal(err)
 				}
 				read := p.Get(WithoutCache(ctx), key)
 				cmds, err := p.Exec(WithCache(ctx))
-				if err != nil || len(cmds) != 1 || read.Val() != "unchanged" {
+				if err != nil || len(cmds) != 2 || marked.Val() != "OK" || read.Val() != "updated" {
 					t.Fatal("context changed native transaction behavior", err, len(cmds), read.Val())
 				}
 				return err
@@ -3727,31 +3799,26 @@ func TestCSCPolicyMetadataOwnership(t *testing.T) {
 }
 
 func TestCSCPolicyFactoryMetadataOmission(t *testing.T) {
-	for _, strict := range []bool{false, true} {
-		t.Run(fmt.Sprint(strict), func(t *testing.T) {
-			s := newCSCPolicyServer(t, nil)
-			opt := clusterCSCTestOptions(func() []ClusterSlot {
-				return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
-			})
-			opt.DisableRoutingPolicies = false
-			opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
-			opt.ClientSideCacheConfig.Strict = strict
-			opt.NewClient = func(opt *Options) *Client {
-				copy := *opt
-				copy.cscMetadataSource = nil
-				return NewClient(&copy)
-			}
-			c := NewClusterClient(opt)
-			defer c.Close()
-			err := c.Get(WithCache(context.Background()), "k").Err()
-			want := 1
-			if strict {
-				want = 0
-			}
-			if (err != nil) != strict || s.count("get") != want || s.prefixes() != 0 || c.CSCStats().Entries != 0 {
-				t.Fatal("factory omission did not fail closed", err)
-			}
-		})
+	s := newCSCPolicyServer(t, nil)
+	opt := clusterCSCTestOptions(func() []ClusterSlot {
+		return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
+	})
+	opt.DisableRoutingPolicies = false
+	opt.ClientSideCacheConfig.TrackingMode = TrackingModeOptIn
+	opt.NewClient = func(opt *Options) *Client {
+		copy := *opt
+		copy.cscMetadataSource = nil
+		return NewClient(&copy)
+	}
+	c := NewClusterClient(opt)
+	defer c.Close()
+	for i := 0; i < 2; i++ {
+		if got, err := c.Get(WithCache(context.Background()), "k").Result(); err != nil || got != "v" {
+			t.Fatal(got, err)
+		}
+	}
+	if s.count("get") != 2 || s.prefixes() != 0 || c.CSCStats().Entries != 0 {
+		t.Fatal("factory metadata omission allowed caching", s.snapshot())
 	}
 }
 
@@ -3856,7 +3923,7 @@ func TestCSCPolicyFanoutPartialPublication(t *testing.T) {
 			})
 			b := newCSCPolicyServer(t, nil)
 			c := cscPolicyCluster(t, a.addr, b.addr, TrackingModeOptIn, false)
-			c.opt.ClientSideCacheConfig.Strict = true
+
 			for i := 0; i < 2; i++ {
 				err := c.MGet(WithCache(context.Background()), "{bar}:a", "{foo}:b").Err()
 				if strings.HasPrefix(reply, "-") != (err != nil) {

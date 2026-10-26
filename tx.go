@@ -108,7 +108,7 @@ func (c *Tx) Close(ctx context.Context) error {
 	// WATCH/.../EXEC paths leave nothing to release and avoid the extra round
 	// trip.
 	if c.watchArmed {
-		// Cleanup must not be rejected by a cache mark on the caller's context.
+		// Cleanup must not inherit the caller's cache intent.
 		_ = c.Unwatch(cscUnmarkedContext(ctx)).Err()
 	}
 	return c.baseClient.Close()
@@ -151,7 +151,6 @@ func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
 // Pipeline creates a pipeline. Usually it is more convenient to use Pipelined.
 func (c *Tx) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		cscPolicy: c.cscPolicy,
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			return c.processPipelineHook(ctx, cmds)
 		},
@@ -181,7 +180,6 @@ func (c *Tx) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 // TxPipeline creates a pipeline. Usually it is more convenient to use TxPipelined.
 func (c *Tx) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		cscPolicy: c.cscPolicy,
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
 			err := c.processTxPipelineHook(ctx, cmds)

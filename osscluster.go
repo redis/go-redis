@@ -2078,9 +2078,6 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	}
 	newPolicy := policy.configured() || cmd.cacheState().mark != cacheUnmarked
 	if newPolicy || c.opt.ClientSideCacheConfig != nil || c.opt.cscCustomFactory {
-		if policy.strict && cmd.cacheState().mark == cacheRequested {
-			cmd.cacheState().strict = true
-		}
 		cscEnter(cmd)
 		defer cscLeave(cmd)
 	}
@@ -2095,9 +2092,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			cmd.cacheState().view = c.metadataView()
 		}
 		if newPolicy {
-			if err := c.cscPrepareInvocation(ctx, cmd); err != nil {
-				return err
-			}
+			c.cscPrepareInvocation(cmd)
 		}
 	}
 	slot := decision.naturalSlot
@@ -2143,9 +2138,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if (newPolicy || c.opt.cscCustomFactory) && node != nil {
-			if err := c.cscCheckNode(ctx, cmd, node.Client); err != nil {
-				return err
-			}
+			c.cscCheckNode(cmd, node.Client)
 		}
 		if ask {
 			ask = false
@@ -2520,8 +2513,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 
 func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		cscPolicy: cachePolicy(c.opt.ClientSideCacheConfig),
-		exec:      pipelineExecer(c.processPipelineHook),
+		exec: pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -3251,7 +3243,6 @@ func (c *ClusterClient) checkMovedErr(
 // TxPipeline acts like Pipeline, but wraps queued commands with MULTI/EXEC.
 func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		cscPolicy: cachePolicy(c.opt.ClientSideCacheConfig),
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
 			return c.processTxPipelineHook(ctx, cmds)

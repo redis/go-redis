@@ -2090,12 +2090,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		}
 	}
 	if cmd.cacheState().mark != cacheUnmarked {
-		cacheDivert, err := ap.cscAdmitMarked(ctx, cmd)
-		if err != nil {
-			cmd.SetErr(err)
-			resetAutoPipelineCommand(cmd)
-			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
-		}
+		cacheDivert := ap.cscAdmitMarked(cmd)
 		diverted = diverted || cacheDivert
 	}
 	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
