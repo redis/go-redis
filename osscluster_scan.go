@@ -98,10 +98,12 @@ func (c *ClusterClient) newClusterScan(
 	if err != nil {
 		return nil, err
 	}
-	// Start on first; a replica is not in the snapshot, so keep the order then.
+	// Start on first. With ReadOnly it can be a replica: scan it in place of its
+	// master, so later pages of a hand-written loop reach the node of the cursor.
+	shard := state.shardMaster(first)
 	start := 0
 	for i, node := range state.Masters {
-		if node == first {
+		if node == shard {
 			start = i
 			break
 		}
@@ -109,7 +111,23 @@ func (c *ClusterClient) newClusterScan(
 	masters := make([]*clusterNode, 0, len(state.Masters))
 	masters = append(masters, state.Masters[start:]...)
 	masters = append(masters, state.Masters[:start]...)
+	if masters[0] == shard {
+		masters[0] = first
+	}
 	return &clusterScanState{masters: masters}, nil
+}
+
+// shardMaster returns the master that node serves: node itself for a master,
+// or the master of the slots a replica copies.
+func (c *clusterState) shardMaster(node *clusterNode) *clusterNode {
+	for _, slot := range c.slots {
+		for _, n := range slot.nodes {
+			if n == node {
+				return slot.nodes[0]
+			}
+		}
+	}
+	return node
 }
 
 // scanRoutedNode runs one SCAN page on the redirected node, or the node that

@@ -457,3 +457,65 @@ func TestClusterScanWireEncodedArgs(t *testing.T) {
 		clusterScanExpectEvery(t, clusterScanCollect(t, cmd.Iterator()), want)
 	})
 }
+
+// With ReadOnly the ShardPicker can select a replica. A hand-written cursor loop
+// then sends pages 2+ to that replica, so the walk must start there too.
+func TestClusterScanManualLoopOnReplica(t *testing.T) {
+	ctx := context.Background()
+	cc := NewClusterClient(&ClusterOptions{
+		Addrs:       clusterFDTestAddrs,
+		ReadOnly:    true,
+		ShardPicker: routing.NewStaticShardPicker(3), // Masters[0..2], then Slaves[0]
+	})
+	t.Cleanup(func() { _ = cc.Close() })
+	if err := cc.Ping(ctx).Err(); err != nil {
+		t.Skipf("local cluster not reachable at %v: %v", clusterFDTestAddrs, err)
+	}
+	cc.SetCommandInfoResolver(NewCommandMetadataResolver())
+	state, err := cc.state.ReloadOrGet(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Masters) != 3 || len(state.Slaves) == 0 {
+		t.Skipf("want 3 masters with replicas, have %d/%d", len(state.Masters), len(state.Slaves))
+	}
+	replica := state.Slaves[0]
+	var shardMaster string
+	for _, slot := range state.slots {
+		for _, n := range slot.nodes[1:] {
+			if n == replica {
+				shardMaster = slot.nodes[0].Client.opt.Addr
+			}
+		}
+	}
+	prefix, all := clusterScanFill(t, cc, "replica")
+	if err := cc.ForEachMaster(ctx, func(ctx context.Context, m *Client) error {
+		return m.Wait(ctx, 1, 2*time.Second).Err()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for k := range all {
+		if cc.cmdNode(ctx, k) == shardMaster {
+			want[k] = true
+		}
+	}
+	got := map[string]int{}
+	var cursor uint64
+	for page := 0; ; page++ {
+		if page > 2*clusterScanKeys {
+			t.Fatal("the scan does not end")
+		}
+		keys, next, err := cc.Scan(ctx, cursor, prefix+":*", 50).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range keys {
+			got[k]++
+		}
+		if cursor = next; cursor == 0 {
+			break
+		}
+	}
+	clusterScanExpectEvery(t, got, want)
+}
