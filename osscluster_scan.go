@@ -79,16 +79,14 @@ func (c *ClusterClient) newClusterScan(
 	if err != nil {
 		return nil, err
 	}
-	// Scan sets the routing key to MATCH only when it has a hash tag; require it
-	// here too, so a hand-written cursor loop routes every page to this slot.
-	if match, ok := scanMatch(sc); ok && hashtag.Present(match) {
-		if slot := hashtag.PatternSlot(match); slot >= 0 {
-			node, err := state.slotMasterNode(slot)
-			if err != nil {
-				return nil, c.noteTopologySelectionError(err)
-			}
-			return &clusterScanState{masters: []*clusterNode{node}}, nil
+	// A MATCH that selects one slot scans only that slot's master. A SCAN without a
+	// walk uses the same node (scanRoutedNode), so a hand-written cursor loop sends
+	// every page there.
+	if node, ok, err := c.scanTagMaster(state, sc.args); ok || err != nil {
+		if err != nil {
+			return nil, err
 		}
+		return &clusterScanState{masters: []*clusterNode{node}}, nil
 	}
 	// state.Masters holds only online masters: a walk over it would skip a shard.
 	if err := state.requireOnline(state.declaredMasters()); err != nil {
@@ -124,12 +122,43 @@ func (c *ClusterClient) scanRoutedNode(
 	decision *clusterRoutingDecision,
 ) error {
 	if node == nil {
-		var err error
-		if node, err = c.scanPageNode(ctx, decision); err != nil {
+		// A MATCH that selects one slot: that slot's master, as for the walk, so every
+		// page of a hand-written cursor loop reaches the node that issued the cursor.
+		state, err := c.state.Get(ctx)
+		if err != nil {
 			return err
+		}
+		tagNode, ok, err := c.scanTagMaster(state, cmd.Args())
+		switch {
+		case err != nil:
+			return err
+		case ok:
+			node = tagNode
+		default:
+			if node, err = c.scanPageNode(ctx, decision); err != nil {
+				return err
+			}
 		}
 	}
 	return node.Client.Process(ctx, cmd)
+}
+
+// scanTagMaster returns the master of the one slot a SCAN's MATCH pattern can
+// select (hashtag.PatternSlot), or ok=false when the pattern can match any slot.
+func (c *ClusterClient) scanTagMaster(state *clusterState, args []interface{}) (*clusterNode, bool, error) {
+	match, ok := scanMatch(args)
+	if !ok || !hashtag.Present(match) {
+		return nil, false, nil
+	}
+	slot := hashtag.PatternSlot(match)
+	if slot < 0 {
+		return nil, false, nil
+	}
+	node, err := state.slotMasterNode(slot)
+	if err != nil {
+		return nil, false, c.noteTopologySelectionError(err)
+	}
+	return node, true, nil
 }
 
 // scanPageNode is the node that ordinary keyless routing selects for a page.
@@ -151,10 +180,10 @@ func scanCursorIsZero(sc *ScanCmd) bool {
 	return fmt.Sprint(sc.args[1]) == "0"
 }
 
-func scanMatch(sc *ScanCmd) (string, bool) {
-	for i := 2; i+1 < len(sc.args); i++ {
-		if name, ok := sc.args[i].(string); ok && strings.EqualFold(name, "match") {
-			pattern, ok := sc.args[i+1].(string)
+func scanMatch(args []interface{}) (string, bool) {
+	for i := 2; i+1 < len(args); i++ {
+		if name, ok := args[i].(string); ok && strings.EqualFold(name, "match") {
+			pattern, ok := args[i+1].(string)
 			return pattern, ok
 		}
 	}

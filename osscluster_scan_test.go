@@ -210,6 +210,64 @@ func TestClusterScanHashTagMatch(t *testing.T) {
 	})
 }
 
+// A hand-written cursor loop with a hash-tag MATCH sends every page to the slot's
+// master, as v9.23.0 did: the cursor of page 1 is only valid on that node. Typed Scan
+// and a raw Do("scan", ...) both. COUNT 5 makes the loop span many pages.
+func TestClusterScanManualLoopHashTag(t *testing.T) {
+	forEachScanResolver(t, func(t *testing.T, cc *ClusterClient) {
+		ctx := context.Background()
+		clusterScanFill(t, cc, "loopother")
+		tag := fmt.Sprintf("{scanloop-%d}", time.Now().UnixNano())
+		want := map[string]bool{}
+		for i := 0; i < 50; i++ {
+			k := fmt.Sprintf("%s:%d", tag, i)
+			if err := cc.Set(ctx, k, i, time.Minute).Err(); err != nil {
+				t.Fatal(err)
+			}
+			want[k] = true
+		}
+		t.Cleanup(func() {
+			for k := range want {
+				cc.Del(ctx, k)
+			}
+		})
+		pages := map[string]func(cursor uint64) ([]string, uint64, error){
+			"typed": func(cursor uint64) ([]string, uint64, error) {
+				return cc.Scan(ctx, cursor, tag+":*", 5).Result()
+			},
+			"raw": func(cursor uint64) ([]string, uint64, error) {
+				cmd := NewScanCmd(ctx, nil, "scan", cursor, "match", tag+":*", "count", 5)
+				_ = cc.Process(ctx, cmd)
+				return cmd.Result()
+			},
+		}
+		for name, page := range pages {
+			got := map[string]int{}
+			var cursor uint64
+			for n := 0; ; n++ {
+				keys, next, err := page(cursor)
+				if err != nil {
+					t.Fatalf("%s page %d: %v", name, n, err)
+				}
+				for _, k := range keys {
+					got[k]++
+				}
+				if next == 0 {
+					break
+				}
+				if n > 1000 {
+					t.Fatalf("%s: the loop does not end", name)
+				}
+				cursor = next
+			}
+			if len(got) != len(want) {
+				t.Fatalf("%s loop returned %d of %d keys", name, len(got), len(want))
+			}
+			clusterScanExpectEvery(t, got, want)
+		}
+	})
+}
+
 // Val and Result report the server cursor, not a value made up for the walk:
 // with a large COUNT the first master ends in one page and returns cursor 0.
 // The iterator on the same command still goes on to the other masters.
