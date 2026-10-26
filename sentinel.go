@@ -708,6 +708,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		rdb.pipelinePool = ref
 	}
 
+	rdb.initStreamingCredentials()
+
 	// Register pools for OTel async gauge metrics, matching NewClient (the
 	// failover client previously registered none, so pool gauges were silent
 	// for the identical standalone setup). The pipeline pool is nil when not
