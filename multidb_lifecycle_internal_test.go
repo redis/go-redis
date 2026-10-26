@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/hashtag"
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
 
@@ -1896,5 +1897,79 @@ func TestMultiDBPipelineDropChargesBreakerOnce(t *testing.T) {
 	}
 	if st := a.cb.State(); st != imultidb.CircuitClosed {
 		t.Errorf("breaker = %v, want closed", st)
+	}
+}
+
+// A batch retry resends only the commands without a definitive result. On a
+// two-node cluster member, the node that answered keeps its INCR result; only
+// the dropped node's INCR is sent again, so the answered INCR runs once.
+func TestMultiDBPipelineRetryResendsOnlyUnsettled(t *testing.T) {
+	keyFor := func(lo, hi int) string {
+		for i := 0; ; i++ {
+			k := fmt.Sprintf("k%d", i)
+			if s := hashtag.Slot(k); s >= lo && s <= hi {
+				return k
+			}
+		}
+	}
+	k1, k2 := keyFor(0, 8191), keyFor(8192, 16383)
+	const slots = "*2\r\n" +
+		"*3\r\n:0\r\n:8191\r\n*2\r\n$2\r\nn1\r\n:1\r\n" +
+		"*3\r\n:8192\r\n:16383\r\n*2\r\n$2\r\nn2\r\n:1\r\n"
+	var incrs sync.Map // "addr key" -> *atomic.Int64
+	count := func(addr, key string) *atomic.Int64 {
+		v, _ := incrs.LoadOrStore(addr+" "+key, new(atomic.Int64))
+		return v.(*atomic.Int64)
+	}
+	d := &scriptedDialer{handle: func(addr string, _ int, args []string) (string, fakeAction) {
+		switch {
+		case strings.EqualFold(args[0], "cluster") && len(args) > 1 && strings.EqualFold(args[1], "slots"):
+			return slots, fakeReply
+		case strings.EqualFold(args[0], "incr"):
+			n := count(addr, args[1]).Add(1)
+			if addr == "n2:1" && n == 1 {
+				return "", fakeClose // first INCR on n2: the node drops
+			}
+			return fmt.Sprintf(":%d\r\n", n), fakeReply
+		}
+		return "+OK\r\n", fakeReply
+	}}
+	mdb := newLifecycleTestClient(t, func(o *MultiDBOptions) {
+		o.CommandRetries = 1
+		o.FailureDetector = &countingDetector{}
+	}, MultiDBClientConfig{
+		ClusterOptions: &ClusterOptions{
+			Addrs:           []string{"n1:1"},
+			Dialer:          d.dial,
+			DisableIdentity: true,
+			MaxRetries:      -1,
+			// No internal pipeline retry: the drop surfaces to MultiDB,
+			// whose retry is under test.
+			MaxRedirects: -1,
+		},
+		Weight:       1,
+		HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}},
+	})
+	ctx := context.Background()
+	var c1, c2 *IntCmd
+	_, err := mdb.Pipelined(ctx, func(p Pipeliner) error {
+		c1 = p.Incr(ctx, k1)
+		c2 = p.Incr(ctx, k2)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if v, err := c1.Result(); err != nil || v != 1 {
+		t.Errorf("INCR %s = %d, %v; want 1 from the first attempt", k1, v, err)
+	}
+	if v, err := c2.Result(); err != nil || v != 2 {
+		t.Errorf("INCR %s = %d, %v; want 2 (the retry)", k2, v, err)
+	}
+	if got := count("n1:1", k1).Load(); got != 1 {
+		t.Errorf("INCR %s ran %d times on n1, want 1: the retry resent an answered command", k1, got)
+	}
+	if got := count("n2:1", k2).Load(); got != 2 {
+		t.Errorf("INCR %s ran %d times on n2, want 2 (drop + retry)", k2, got)
 	}
 }

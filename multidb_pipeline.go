@@ -279,9 +279,11 @@ func clearRoutingDecisions(cmds []Cmder) {
 // processPipeline is the batch analogue of process: an attempt loop bounded
 // by CommandRetries that snapshots the active database, executes the whole
 // batch through the member's hook-wrapped pipeline path, records per-command
-// outcomes, and retries the batch against the newly selected database after
-// a failover. Delivery is at-least-once when retries are enabled: a
-// connection that broke mid-pipeline may have executed a prefix server-side.
+// outcomes, and retries against the newly selected database after a
+// failover. A retry resends only the commands without a definitive result
+// (see unsettledCmds), so member pipeline hooks may see a partial batch on a
+// retry. Delivery is at-least-once when retries are enabled: a connection
+// that broke mid-pipeline may have executed a prefix server-side.
 func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	return c.processPipelineRetries(ctx, cmds, c.opts.CommandRetries)
 }
@@ -526,7 +528,18 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 			}
 			// Only server replies (or clean success) — done, whatever the
 			// user-level outcome is.
+			if attempt > 1 {
+				// A retry ran a subset: report the positionally first error
+				// over the whole batch, as Pipeline.Exec does.
+				if ferr := cmdsFirstErr(orig); ferr != nil {
+					err = ferr
+				}
+			}
 			return exitErr(err)
+		}
+		// Retry only the commands without a definitive result.
+		if cmds = unsettledCmds(cmds, executed); len(cmds) == 0 {
+			return cmdsFirstErr(orig)
 		}
 	}
 	return cmdsFirstErr(orig)
@@ -1083,4 +1096,22 @@ func (c *MultiDBClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
 			return c.trackAutopipelinerLocked(c.newMultiDBAutoPipeliner(cfg, false))
 		})
+}
+
+// unsettledCmds returns, in order, the commands of a failed batch attempt that
+// a retry must send again: those that never executed, and those whose outcome
+// is a member failure (a transport error, or a retryable reply such as LOADING
+// or READONLY, which the server did not apply). A command with a reply (nil
+// error or any other Redis error reply) keeps its result and is not resent, so
+// a cluster member's healthy-node writes do not run twice. A standalone member
+// stamps a mid-pipeline drop on every command of the batch, replied or not, so
+// there the whole batch is resent, as before.
+func unsettledCmds(cmds []Cmder, executed *executedCmds) []Cmder {
+	out := make([]Cmder, 0, len(cmds))
+	for _, cmd := range cmds {
+		if !executed.has(cmd) || classifyOutcome(cmd.rawErr(), cmd.readTimeout() == nil) == outcomeFailure {
+			out = append(out, cmd)
+		}
+	}
+	return out
 }
