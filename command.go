@@ -4983,7 +4983,9 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 			}
 
 			ip, err := rd.ReadString()
-			if err != nil {
+			// A null host (cluster-preferred-endpoint-type unknown-endpoint)
+			// means "reuse the origin host"; newClusterState fills it in.
+			if err != nil && err != Nil {
 				return err
 			}
 

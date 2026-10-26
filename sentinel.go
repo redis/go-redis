@@ -396,15 +396,16 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MaxConcurrentDials: opt.MaxConcurrentDials,
-		PoolTimeout:        opt.PoolTimeout,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxIdleConns:       opt.MaxIdleConns,
-		MaxActiveConns:     opt.MaxActiveConns,
-		ConnMaxIdleTime:    opt.ConnMaxIdleTime,
-		ConnMaxLifetime:    opt.ConnMaxLifetime,
+		PoolFIFO:              opt.PoolFIFO,
+		PoolSize:              opt.PoolSize,
+		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		PoolTimeout:           opt.PoolTimeout,
+		MinIdleConns:          opt.MinIdleConns,
+		MaxIdleConns:          opt.MaxIdleConns,
+		MaxActiveConns:        opt.MaxActiveConns,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 
 		TLSConfig: opt.TLSConfig,
 
@@ -706,6 +707,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		}
 		rdb.pipelinePool = ref
 	}
+
+	rdb.initStreamingCredentials()
 
 	// Register pools for OTel async gauge metrics, matching NewClient (the
 	// failover client previously registered none, so pool gauges were silent

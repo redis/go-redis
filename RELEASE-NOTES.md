@@ -80,6 +80,7 @@
   the cursor. Cursor ownership and reply-parsing changes are deferred to a
   separate PR.
 - **Per-node TLS verification for cluster URLs:** `ParseClusterURL` accepts `tls_verify_node_host=true` on `rediss://` URLs. The parameter clears `TLSConfig.ServerName`, so each node is verified against the host it is dialed at and not against the host of the first URL. Use it when each node has a certificate for its own host. The default is unchanged: every node is verified against the host of the first URL, so clusters that use one certificate and announce their nodes by IP continue to work. `rediss://` cluster URLs now also set `MinVersion: tls.VersionTLS12`, as `ParseURL` and `ParseFailoverURL` do ([#4145](https://github.com/redis/go-redis/pull/4145)).
+- **Failover client with `StreamingCredentialsProvider`:** `NewFailoverClient` now creates the streaming credentials manager, so new connections no longer panic in `initConn` ([#4182](https://github.com/redis/go-redis/pull/4182)).
 
 # 9.23.0 (2026-10-05)
 

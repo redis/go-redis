@@ -384,6 +384,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
 		AutoPipelineOptions:       o.AutoPipelineOptions,
+		FailingTimeoutSeconds:     o.FailingTimeoutSeconds,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		CommandMetadata:           o.CommandMetadata,
