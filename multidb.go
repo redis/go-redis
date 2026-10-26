@@ -912,11 +912,19 @@ func (c *MultiDBClient) AddHook(hook Hook) {
 //
 // A member hook's outcome is the member's outcome. MultiDB records what
 // comes back from the member's hook chain on the member's circuit breaker
-// and on the failure detector, so a hook that answers without calling next
-// (a cache serving reads locally, an error synthesized before the wire) is
-// counted as if the database had answered. A hook that answers locally
-// belongs on the MultiDBClient (AddHook): it then runs before the gate and
-// records nothing.
+// and on the failure detector:
+//   - A single command answered by the hook without calling next (a cache
+//     serving reads locally, an error synthesized before the wire) counts as
+//     if the database had answered: the single-command path cannot tell the
+//     two apart.
+//   - A batch (pipeline or transaction) that the hook answers with a nil
+//     error without calling next records nothing: the batch path sees that
+//     no command reached the wire, and a local answer is no proof the
+//     database is healthy. An error returned without calling next still
+//     counts as a failure: it looks the same as a failed dial.
+//
+// A hook that answers locally belongs on the MultiDBClient (AddHook): it
+// then runs before the gate and records nothing.
 //
 // A member hook must pass the context it receives — or one derived from it —
 // to next. MultiDB carries per-batch execution tracking in context values:
