@@ -4783,6 +4783,10 @@ type ScanCmd struct {
 	cursor uint64
 
 	process cmdable
+
+	// clusterScan is the walk over the masters of a cluster SCAN, kept on the
+	// command because ScanIterator re-sends the same command for every page.
+	clusterScan *clusterScanState
 }
 
 var _ Cmder = (*ScanCmd)(nil)
@@ -4854,6 +4858,7 @@ func (cmd *ScanCmd) Clone() Cmder {
 		page:    page,
 		cursor:  cmd.cursor,
 		process: cmd.process,
+		// clusterScan is not copied: a clone is a new command, not the same walk.
 	}
 }
 
