@@ -396,15 +396,16 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MaxConcurrentDials: opt.MaxConcurrentDials,
-		PoolTimeout:        opt.PoolTimeout,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxIdleConns:       opt.MaxIdleConns,
-		MaxActiveConns:     opt.MaxActiveConns,
-		ConnMaxIdleTime:    opt.ConnMaxIdleTime,
-		ConnMaxLifetime:    opt.ConnMaxLifetime,
+		PoolFIFO:              opt.PoolFIFO,
+		PoolSize:              opt.PoolSize,
+		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		PoolTimeout:           opt.PoolTimeout,
+		MinIdleConns:          opt.MinIdleConns,
+		MaxIdleConns:          opt.MaxIdleConns,
+		MaxActiveConns:        opt.MaxActiveConns,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 
 		TLSConfig: opt.TLSConfig,
 
