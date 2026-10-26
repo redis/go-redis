@@ -875,15 +875,17 @@ type ModuleLoadexConfig struct {
 }
 
 func (c *ModuleLoadexConfig) toArgs() []interface{} {
-	args := make([]interface{}, 3, 3+len(c.Conf)*3+len(c.Args)*2)
+	args := make([]interface{}, 3, 4+len(c.Conf)*3+len(c.Args))
 	args[0] = "MODULE"
 	args[1] = "LOADEX"
 	args[2] = c.Path
 	for k, v := range c.Conf {
 		args = append(args, "CONFIG", k, v)
 	}
-	for _, arg := range c.Args {
-		args = append(args, "ARGS", arg)
+	// ARGS comes once, and every argument after it goes to the module.
+	if len(c.Args) > 0 {
+		args = append(args, "ARGS")
+		args = append(args, c.Args...)
 	}
 	return args
 }

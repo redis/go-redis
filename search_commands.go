@@ -1656,15 +1656,6 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		if schema.NoStem {
 			args = append(args, "NOSTEM")
 		}
-		if schema.Sortable {
-			args = append(args, "SORTABLE")
-		}
-		if schema.UNF {
-			args = append(args, "UNF")
-		}
-		if schema.NoIndex {
-			args = append(args, "NOINDEX")
-		}
 		if schema.PhoneticMatcher != "" {
 			args = append(args, "PHONETIC", schema.PhoneticMatcher)
 		}
@@ -1685,6 +1676,17 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 		if schema.IndexMissing {
 			args = append(args, "INDEXMISSING")
+		}
+		// FT.CREATE stops reading type-specific options at SORTABLE, UNF and
+		// NOINDEX, so they must come last.
+		if schema.Sortable {
+			args = append(args, "SORTABLE")
+		}
+		if schema.UNF {
+			args = append(args, "UNF")
+		}
+		if schema.NoIndex {
+			args = append(args, "NOINDEX")
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
