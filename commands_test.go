@@ -421,11 +421,10 @@ var _ = Describe("Commands", func() {
 				pipe.ClientSetInfo(ctx, libInfo)
 			}).To(Panic())
 			// Test setting the default options for libName, libName suffix and libVer.
-			// CLIENT SETINFO is per-connection state, so read CLIENT INFO through the
-			// same pipeline path that issued the SETINFOs above: when the client has a
-			// dedicated pipeline pool (the autopipeline subject faces create one
-			// lazily), those ran on a pipeline-pool connection and rawClient.ClientInfo
-			// would inspect a different, main-pool connection.
+			// CLIENT SETINFO is per-connection state. Set the libName and read
+			// CLIENT INFO in the same Exec, so both run on one connection; separate
+			// Execs are not guaranteed to share one.
+			pipe.ClientSetInfo(ctx, redis.WithLibraryName(libName))
 			infoCmd := pipe.ClientInfo(ctx)
 			_, err = pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
