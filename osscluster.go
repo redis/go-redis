@@ -1381,6 +1381,18 @@ func replaceEmptyHost(nodeAddr, originHost string) string {
 	return net.JoinHostPort(originHost, nodePort)
 }
 
+// redirectFromNodeError carries the node that returned a MOVED or ASK error on
+// a route that picks its own node, such as FT.CURSOR. process unwraps it right
+// away, so the error a caller sees is unchanged.
+type redirectFromNodeError struct {
+	node *clusterNode
+	err  error
+}
+
+func (e *redirectFromNodeError) Error() string { return e.err.Error() }
+
+func (e *redirectFromNodeError) Unwrap() error { return e.err }
+
 // redirectAddr returns the address a MOVED or ASK redirect sent by node points
 // to. With cluster-preferred-endpoint-type unknown-endpoint the server omits
 // the host, and the client is expected to reuse the host of the node that sent
@@ -2144,6 +2156,11 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
+		redirectFrom := node
+		if e, ok := lastErr.(*redirectFromNodeError); ok {
+			redirectFrom, lastErr = e.node, e.err
+		}
+
 		// If there is no error - we are done.
 		if lastErr == nil || lastErr == Nil {
 			return lastErr
@@ -2184,7 +2201,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			recordClusterRedirectMetric(ctx, ask)
 
 			var err error
-			node, err = c.nodes.GetOrCreate(redirectAddr(addr, node))
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, redirectFrom))
 			if err != nil {
 				return err
 			}

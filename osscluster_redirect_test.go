@@ -26,10 +26,10 @@ func TestClusterRedirectEmptyHost(t *testing.T) {
 	}
 
 	for _, redirect := range []string{"MOVED", "ASK"} {
-		for _, pipelined := range []bool{false, true} {
+		for _, mode := range []string{"", "pipeline", "cursor"} {
 			name := redirect
-			if pipelined {
-				name += "/pipeline"
+			if mode != "" {
+				name += "/" + mode
 			}
 			t.Run(name, func(t *testing.T) {
 				var targetGets atomic.Int32
@@ -38,6 +38,9 @@ func TestClusterRedirectEmptyHost(t *testing.T) {
 					case "get":
 						targetGets.Add(1)
 						return "$2\r\nok\r\n"
+					case "ft.cursor":
+						targetGets.Add(1)
+						return "%0\r\n"
 					case "hello":
 						return "%0\r\n"
 					}
@@ -48,7 +51,7 @@ func TestClusterRedirectEmptyHost(t *testing.T) {
 				var source string
 				source = newRedirectTestServer(t, func(args []string) string {
 					switch {
-					case args[0] == "get":
+					case args[0] == "get" || args[0] == "ft.cursor":
 						return "-" + redirect + " 0 :" + targetPort + "\r\n"
 					case args[0] == "hello":
 						return "%0\r\n"
@@ -71,20 +74,28 @@ func TestClusterRedirectEmptyHost(t *testing.T) {
 				t.Cleanup(func() { _ = client.Close() })
 
 				ctx := context.Background()
-				var get *StringCmd
-				if pipelined {
+				switch mode {
+				case "cursor":
+					// FT.CURSOR picks its node itself rather than in process.
+					if err := client.FTCursorRead(ctx, "idx", 1, 0).Err(); err != nil {
+						t.Fatalf("FTCursorRead() = %v; want nil", err)
+					}
+				case "pipeline":
+					var get *StringCmd
 					_, _ = client.Pipelined(ctx, func(pipe Pipeliner) error {
 						get = pipe.Get(ctx, "key")
 						return nil
 					})
-				} else {
-					get = client.Get(ctx, "key")
-				}
-				if val, err := get.Result(); err != nil || val != "ok" {
-					t.Fatalf("Get() = %q, %v; want %q, nil", val, err, "ok")
+					if val, err := get.Result(); err != nil || val != "ok" {
+						t.Fatalf("Get() = %q, %v; want %q, nil", val, err, "ok")
+					}
+				default:
+					if val, err := client.Get(ctx, "key").Result(); err != nil || val != "ok" {
+						t.Fatalf("Get() = %q, %v; want %q, nil", val, err, "ok")
+					}
 				}
 				if n := targetGets.Load(); n != 1 {
-					t.Fatalf("target served %d GETs, want 1", n)
+					t.Fatalf("target served %d commands, want 1", n)
 				}
 			})
 		}
