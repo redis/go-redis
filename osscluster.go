@@ -1381,6 +1381,21 @@ func replaceEmptyHost(nodeAddr, originHost string) string {
 	return net.JoinHostPort(originHost, nodePort)
 }
 
+// redirectAddr returns the address a MOVED or ASK redirect sent by node points
+// to. With cluster-preferred-endpoint-type unknown-endpoint the server omits
+// the host, and the client is expected to reuse the host of the node that sent
+// the redirect.
+func redirectAddr(addr string, node *clusterNode) string {
+	if node == nil {
+		return addr
+	}
+	originHost, _, err := net.SplitHostPort(node.Client.getAddr())
+	if err != nil {
+		return addr
+	}
+	return replaceEmptyHost(addr, originHost)
+}
+
 // isLoopback returns true if the host is a loopback address.
 // For IP addresses, it uses net.IP.IsLoopback().
 // For hostnames, it recognizes well-known loopback hostnames like "localhost"
@@ -2169,7 +2184,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			recordClusterRedirectMetric(ctx, ask)
 
 			var err error
-			node, err = c.nodes.GetOrCreate(addr)
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, node))
 			if err != nil {
 				return err
 			}
@@ -3159,7 +3174,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 			continue
 		}
 
-		if c.checkMovedErr(ctx, cmd, err, failedCmds) {
+		if c.checkMovedErr(ctx, node, cmd, err, failedCmds) {
 			continue
 		}
 
@@ -3186,14 +3201,14 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 }
 
 func (c *ClusterClient) checkMovedErr(
-	ctx context.Context, cmd Cmder, err error, failedCmds *cmdsMap,
+	ctx context.Context, from *clusterNode, cmd Cmder, err error, failedCmds *cmdsMap,
 ) bool {
 	moved, ask, addr := isMovedError(err)
 	if !moved && !ask {
 		return false
 	}
 
-	node, err := c.nodes.GetOrCreate(addr)
+	node, err := c.nodes.GetOrCreate(redirectAddr(addr, from))
 	if err != nil {
 		return false
 	}
@@ -3397,14 +3412,14 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 			redirected = true
 			asking = false
 			c.state.LazyReload()
-			if node, err = c.nodes.GetOrCreate(outcome.addr); err != nil {
+			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node)); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
 		case txRetryAsk:
 			redirected = true
 			asking = true
-			if node, err = c.nodes.GetOrCreate(outcome.addr); err != nil {
+			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node)); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
@@ -3834,7 +3849,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		moved, ask, addr := isMovedError(err)
 		if moved || ask {
-			node, err = c.nodes.GetOrCreate(addr)
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, node))
 			if err != nil {
 				return err
 			}

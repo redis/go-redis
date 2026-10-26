@@ -357,7 +357,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		if moved || ask {
 			c.state.LazyReload()
 			recordClusterRedirectMetric(ctx, ask)
-			redirected, err := c.nodes.GetOrCreate(addr)
+			redirected, err := c.nodes.GetOrCreate(redirectAddr(addr, node))
 			if err != nil {
 				return err
 			}
