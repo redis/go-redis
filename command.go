@@ -5603,12 +5603,42 @@ func (cmd *CommandsInfoCmd) SetVal(val map[string]*CommandInfo) {
 
 func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
 	cmd.await()
-	return cmd.val
+	return withoutCommandInfoTombstones(cmd.val)
 }
 
 func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
 	cmd.await()
-	return cmd.val, cmd.err
+	return withoutCommandInfoTombstones(cmd.val), cmd.err
+}
+
+// valWithTombstones returns the reply as parsed, including the nil entries.
+// The command-metadata builder needs them to block snapshot and correction
+// fallback for a name the server reported malformed or conflicting; the public
+// accessors hide them because ranging over the reply and dereferencing a value
+// is the natural way to read it.
+func (cmd *CommandsInfoCmd) valWithTombstones() map[string]*CommandInfo {
+	cmd.await()
+	return cmd.val
+}
+
+func withoutCommandInfoTombstones(val map[string]*CommandInfo) map[string]*CommandInfo {
+	tombstones := 0
+	for _, info := range val {
+		if info == nil {
+			tombstones++
+		}
+	}
+	if tombstones == 0 {
+		return val
+	}
+
+	valid := make(map[string]*CommandInfo, len(val)-tombstones)
+	for name, info := range val {
+		if info != nil {
+			valid[name] = info
+		}
+	}
+	return valid
 }
 
 func (cmd *CommandsInfoCmd) String() string {

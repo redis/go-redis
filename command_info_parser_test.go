@@ -618,3 +618,60 @@ func TestCommandsInfoClonePreservesMalformedTombstone(t *testing.T) {
 		t.Fatal("clone shares its legacy provenance map with the original")
 	}
 }
+
+func TestCommandsInfoPublicReplyDropsTombstones(t *testing.T) {
+	// firstkey 257 does not fit int8, so the record is malformed and tombstoned.
+	raw := commandInfoTestArray(
+		commandInfoTestArray(
+			commandInfoTestBulk("get"),
+			commandInfoTestInt(2),
+			commandInfoTestArray(commandInfoTestBulk("readonly")),
+			commandInfoTestInt(257),
+			commandInfoTestInt(1),
+			commandInfoTestInt(1),
+		),
+		commandInfoTestEntry6("after"),
+	)
+	cmd := commandInfoTestReadReply(t, raw)
+
+	if _, exists := cmd.val["get"]; !exists {
+		t.Fatal("a malformed record must stay in the parsed reply as a tombstone")
+	}
+
+	val, err := cmd.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		val  map[string]*CommandInfo
+	}{{"Val", cmd.Val()}, {"Result", val}} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, info := range tc.val {
+				// Callers range over the reply and read fields off each value.
+				if info == nil || info.Name == "" {
+					t.Fatalf("public accessor exposed a tombstone: %+v", tc.val)
+				}
+			}
+			if tc.val["get"] != nil || tc.val["after"] == nil {
+				t.Fatalf("public accessor changed the valid records: got %+v", tc.val)
+			}
+		})
+	}
+
+	// The metadata builder reads the tombstones back: a name the server reported
+	// malformed must not fall through to the built-in snapshot.
+	view := buildCommandMetadataViewForServer(cmd.valWithTombstones(), nil, "redis", "8.10.0")
+	if _, ok := view.tombstones["get"]; !ok {
+		t.Fatal("valWithTombstones hid a tombstone from the metadata builder")
+	}
+	if rec := view.records["get"]; rec != nil {
+		t.Fatalf("a malformed live record fell back to the snapshot: %+v", rec)
+	}
+
+	// With only the public reply the snapshot would silently win.
+	filtered := buildCommandMetadataViewForServer(cmd.Val(), nil, "redis", "8.10.0")
+	if rec := filtered.records["get"]; rec == nil || rec.FirstKeyPos != 1 {
+		t.Fatalf("expected the snapshot record when the tombstone is hidden, got %+v", rec)
+	}
+}
