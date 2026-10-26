@@ -83,17 +83,17 @@ func clusterScanCollect(t *testing.T, it *ScanIterator) map[string]int {
 	return got
 }
 
+// clusterScanExpectEvery checks that got holds every key of want and no other.
+// SCAN can return a key more than once while the server resizes its table, so
+// duplicates are allowed.
 func clusterScanExpectEvery(t *testing.T, got map[string]int, want map[string]bool) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("scan returned %d keys, want %d", len(got), len(want))
 	}
-	for k, n := range got {
+	for k := range got {
 		if !want[k] {
 			t.Fatalf("scan returned unknown key %q", k)
-		}
-		if n != 1 {
-			t.Fatalf("scan returned %q %d times", k, n)
 		}
 	}
 }
@@ -415,4 +415,45 @@ func TestClusterScanFailsForUnhealthyMaster(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatalf("unhealthy scan dispatched %d commands", calls.Load())
 	}
+}
+
+// SCAN stays node-local in explicit pipelines and transactions, as before the
+// SCAN policy: a transaction runs it on the node of its hash-tag slot.
+func TestClusterScanInPipelineAndTransaction(t *testing.T) {
+	forEachScanResolver(t, func(t *testing.T, cc *ClusterClient) {
+		ctx := context.Background()
+		tag := fmt.Sprintf("{scantx-%d}", time.Now().UnixNano())
+		t.Cleanup(func() { cc.Del(ctx, tag+":a") })
+		var scan *ScanCmd
+		if _, err := cc.TxPipelined(ctx, func(pipe Pipeliner) error {
+			pipe.Set(ctx, tag+":a", 1, time.Minute)
+			scan = pipe.Scan(ctx, 0, tag+":*", 100)
+			return nil
+		}); err != nil {
+			t.Fatalf("TxPipelined with SCAN: %v", err)
+		}
+		if keys, _ := scan.Val(); len(keys) != 1 || keys[0] != tag+":a" {
+			t.Fatalf("SCAN in a transaction returned %v, want [%s:a]", keys, tag)
+		}
+		if _, err := cc.Pipelined(ctx, func(pipe Pipeliner) error {
+			pipe.Scan(ctx, 0, tag+":*", 100)
+			return nil
+		}); err != nil {
+			t.Fatalf("Pipelined with SCAN: %v", err)
+		}
+	})
+}
+
+// The walk reads the cursor and MATCH as they are sent: a []byte cursor "0"
+// starts a walk over every master.
+func TestClusterScanWireEncodedArgs(t *testing.T) {
+	forEachScanResolver(t, func(t *testing.T, cc *ClusterClient) {
+		ctx := context.Background()
+		prefix, want := clusterScanFill(t, cc, "wire")
+		cmd := NewScanCmd(ctx, cc.Process, "scan", []byte("0"), []byte("match"), []byte(prefix+":*"), "count", 50)
+		if err := cc.Process(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+		clusterScanExpectEvery(t, clusterScanCollect(t, cmd.Iterator()), want)
+	})
 }

@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
@@ -82,7 +81,7 @@ func (c *ClusterClient) newClusterScan(
 	// A MATCH that selects one slot scans only that slot's master. A SCAN without a
 	// walk uses the same node (scanRoutedNode), so a hand-written cursor loop sends
 	// every page there.
-	if node, ok, err := c.scanTagMaster(state, sc.args); ok || err != nil {
+	if node, ok, err := c.scanTagMaster(state, sc); ok || err != nil {
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +127,7 @@ func (c *ClusterClient) scanRoutedNode(
 		if err != nil {
 			return err
 		}
-		tagNode, ok, err := c.scanTagMaster(state, cmd.Args())
+		tagNode, ok, err := c.scanTagMaster(state, cmd)
 		switch {
 		case err != nil:
 			return err
@@ -145,8 +144,8 @@ func (c *ClusterClient) scanRoutedNode(
 
 // scanTagMaster returns the master of the one slot a SCAN's MATCH pattern can
 // select (hashtag.PatternSlot), or ok=false when the pattern can match any slot.
-func (c *ClusterClient) scanTagMaster(state *clusterState, args []interface{}) (*clusterNode, bool, error) {
-	match, ok := scanMatch(args)
+func (c *ClusterClient) scanTagMaster(state *clusterState, cmd Cmder) (*clusterNode, bool, error) {
+	match, ok := scanMatch(cmd)
 	if !ok || !hashtag.Present(match) {
 		return nil, false, nil
 	}
@@ -173,18 +172,16 @@ func (c *ClusterClient) scanPageNode(ctx context.Context, decision *clusterRouti
 	return c.cmdNodeWithDecision(ctx, slot, decision)
 }
 
+// scanCursorIsZero and scanMatch read arguments as they are sent on the wire.
 func scanCursorIsZero(sc *ScanCmd) bool {
-	if len(sc.args) < 2 {
-		return false
-	}
-	return fmt.Sprint(sc.args[1]) == "0"
+	cursor, ok := routingArgText(sc, 1)
+	return ok && cursor == "0"
 }
 
-func scanMatch(args []interface{}) (string, bool) {
-	for i := 2; i+1 < len(args); i++ {
-		if name, ok := args[i].(string); ok && strings.EqualFold(name, "match") {
-			pattern, ok := args[i+1].(string)
-			return pattern, ok
+func scanMatch(cmd Cmder) (string, bool) {
+	for i := 2; i+1 < len(cmd.Args()); i++ {
+		if name, ok := routingArgText(cmd, i); ok && strings.EqualFold(name, "match") {
+			return routingArgText(cmd, i+1)
 		}
 	}
 	return "", false
