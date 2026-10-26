@@ -3703,6 +3703,13 @@ func (c *ClusterClient) readTxPipelineReplies(
 		// A non-array aggregate reply may carry an unread payload.
 		return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
 	}
+	// A reply count that differs from the queued commands would read replies
+	// into the wrong commands or leave some on the wire (see txPipelineReadQueued).
+	if n, err := strconv.Atoi(string(line[1:])); err != nil || n != len(cmds) {
+		err := fmt.Errorf("redis: EXEC returned %q for %d commands", line, len(cmds))
+		setCmdsErr(cmds, err)
+		return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
+	}
 
 	// Success: read the N command results.
 	if err := node.Client.pipelineReadCmds(ctx, cn, rd, cmds); err != nil && !isRedisError(err) {
