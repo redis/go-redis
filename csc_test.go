@@ -490,6 +490,66 @@ func TestCSCDeriveMeta(t *testing.T) {
 	}
 }
 
+// Redis invalidates the positions getKeysFromCommand() reports (module getkeys
+// API, getkeys_proc, then the legacy range), never a key spec, so a module
+// command with movable keys and no getkeys callback tracks only its legacy
+// positions. Its spec cannot be trusted to match, and a command whose keys
+// cannot be listed is never cached.
+func TestCSCDeriveMetaModuleMovableKeysFailClosed(t *testing.T) {
+	numkeysSpec := KeySpec{
+		Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1,
+		FindKeys: "keynum", FirstKey: 1, KeyStep: 1,
+	}
+	rangeSpec := KeySpec{
+		Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1,
+		FindKeys: "range", KeyStep: 1,
+	}
+
+	variants := []struct {
+		name string
+		info *CommandInfo
+	}{
+		{"keynum", &CommandInfo{
+			Name: "ext.nmrange", Flags: []string{"readonly", "module", "movablekeys"},
+			KeySpecs: []KeySpec{numkeysSpec},
+		}},
+		{"range", &CommandInfo{
+			Name: "ext.nmrange2", Flags: []string{"readonly", "module", "movablekeys"},
+			KeySpecs: []KeySpec{rangeSpec},
+		}},
+	}
+	for _, tc := range variants {
+		t.Run(tc.name, func(t *testing.T) {
+			if m := cscDeriveMeta(tc.info); m.extract != cscKeyExtractNone {
+				t.Errorf("module movablekeys must derive no extraction, got %+v", m)
+			}
+			// The live-record path is the one PreferLive exposes to modules.
+			view := buildCommandMetadataView(map[string]*CommandInfo{tc.info.Name: tc.info}, nil)
+			cmd := makeCmd(tc.info.Name, 1, "s1", "-", "+")
+			if keys := extractRedisKeysInView(view, cmd); len(keys) != 0 {
+				t.Errorf("module movablekeys extracted keys the server cannot invalidate: %v", keys)
+			}
+		})
+	}
+
+	// Controls: the gate is the movable keys flag, not module-ness and not a
+	// runtime key count.
+	fixed := &CommandInfo{
+		Name: "ext.card", Flags: []string{"readonly", "module"},
+		FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1, KeySpecs: []KeySpec{rangeSpec},
+	}
+	if m := cscDeriveMeta(fixed); m.extract != cscKeyExtractRange {
+		t.Errorf("module command with fixed key positions lost extraction: %+v", m)
+	}
+	builtIn := &CommandInfo{
+		Name: "zdiffish", Flags: []string{"readonly", "movablekeys"},
+		KeySpecs: []KeySpec{numkeysSpec},
+	}
+	if m := cscDeriveMeta(builtIn); m.extract != cscKeyExtractKeynum || m.numkeysAt != 1 || m.firstKey != 2 {
+		t.Errorf("built-in movablekeys command lost keynum extraction: %+v", m)
+	}
+}
+
 func TestCommandMetadataViewWithApplicationOverrides(t *testing.T) {
 	// An application override record replaces every lower layer: it can
 	// exclude a cacheable command...
@@ -5560,8 +5620,7 @@ func TestCSCPerformanceCompatibility(t *testing.T) {
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("eligible commands changed: removed %v, added %v", removed, added)
 	}
-
-	if view.cscFingerprint != "0255d4ea837ce42f4814b7b4b9ff820c" {
+	if view.cscFingerprint != "789bd9d45282d1f83111e8ef96eaac1a" {
 		t.Fatalf("default CSC fingerprint changed: %s", view.cscFingerprint)
 	}
 	if path := os.Getenv("CSC_COMPATIBILITY_DUMP"); path != "" {
