@@ -2050,7 +2050,6 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 	ctx := context.Background()
 
 	p.connsMu.Lock()
-	defer p.connsMu.Unlock()
 
 	idleConnSet := make(map[*Conn]struct{}, len(p.idleConns))
 	for _, ic := range p.idleConns {
@@ -2058,24 +2057,38 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 	}
 
 	var firstErr error
+	var toClose []*Conn
 	for _, cn := range p.conns {
 		if fn(cn) {
-			var err error
 			if _, isIdle := idleConnSet[cn]; isIdle {
-				// Idle connection - remove from pool and close.
+				// Idle connection - remove from pool, close it below.
 				p.removeConn(cn)
-				p.recordConnectionMetrics(ctx, cn, CloseReasonFailover, MetricStateIdle, getMetricConnectionCountCallback())
-				err = p.closeConn(cn)
+				toClose = append(toClose, cn)
 			} else {
 				// Used connection - set closeReason and close the connection.
 				// The connection remains in p.conns. When putConn() is called later,
 				// it will close the connection instead of pooling it.
 				cn.closeReason.Store(CloseReasonFailover)
-				err = cn.Close()
+				if err := cn.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
 			}
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
+		}
+	}
+	countCb := getMetricConnectionCountCallback()
+	p.connsMu.Unlock()
+
+	// Run OnRemove so hooks drop per-connection state (e.g. streaming
+	// credentials listeners) for the idle conns removed here.
+	if hookManager := p.hookManager.Load(); hookManager != nil {
+		for _, cn := range toClose {
+			hookManager.ProcessOnRemove(ctx, cn, errors.New(CloseReasonFailover))
+		}
+	}
+	for _, cn := range toClose {
+		p.recordConnectionMetrics(ctx, cn, CloseReasonFailover, MetricStateIdle, countCb)
+		if err := p.closeConn(cn); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	return firstErr
