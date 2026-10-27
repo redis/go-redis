@@ -265,12 +265,16 @@ type Reservation struct {
 // Reservation lets RecordSuccessFor / ReleaseFor settle the half-open slot
 // exactly once and only within the episode the slot was reserved in.
 func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
+	// Load the generation before the state: a Reset between the two loads
+	// then leaves the admission with the old generation, so its outcome is
+	// dropped as stale instead of counting in the fresh episode.
+	gen := cb.generation.Load()
 	state := State(cb.state.Load())
 	if state == StateClosed {
 		// Stamp the generation even on a closed (slot-less) admission: the
 		// !held settle paths use it to drop an outcome that outlived a
 		// reselect/recovery cycle (see RecordSuccessFor/RecordFailureFor).
-		return true, Reservation{gen: cb.generation.Load()}
+		return true, Reservation{gen: gen}
 	}
 	// A plain Open whose grace period has not elapsed is the common rejected
 	// case — keep it lock-free. Only the half-open lifecycle takes the lock.
@@ -289,7 +293,7 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 	cb.maybeHalfOpenLocked()
 	if State(cb.state.Load()) != StateHalfOpen {
 		st := State(cb.state.Load())
-		gen := cb.generation.Load()
+		gen = cb.generation.Load()
 		cb.transitionMu.Unlock()
 		// Closed admission (slot-less) carries the generation like the lock-free
 		// path above; a non-Closed st means rejected, and its reservation is
@@ -301,7 +305,7 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 		cb.transitionMu.Unlock()
 		return false, Reservation{}
 	}
-	gen := cb.generation.Load()
+	gen = cb.generation.Load()
 	cb.transitionMu.Unlock()
 	return true, Reservation{gen: gen, held: true, settled: new(atomic.Bool)}
 }
