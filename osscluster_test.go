@@ -2085,6 +2085,7 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 	var saved map[string]string
 
 	BeforeEach(func() {
+		client, saved = nil, nil
 		// Redis 8.0 and 8.2 cluster nodes segfault in a module timer
 		// shortly after this setting is applied, which takes down the
 		// shared test cluster for every later spec.
@@ -2100,12 +2101,17 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 	})
 
 	AfterEach(func() {
-		_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-			return master.FlushDB(ctx).Err()
-		})
+		// Restore the setting even if BeforeEach failed before the client
+		// was built; AfterEach also runs after the version skip.
 		for port, value := range saved {
 			Expect(cluster.clients[port].ConfigSet(ctx, param, value).Err()).NotTo(HaveOccurred())
 		}
+		if client == nil {
+			return
+		}
+		_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			return master.FlushDB(ctx).Err()
+		})
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
