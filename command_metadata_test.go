@@ -18,6 +18,27 @@ import (
 	"github.com/redis/go-redis/v9/internal/routing"
 )
 
+func (s *commandMetadataStore) refreshOnce(ctx context.Context) error {
+	return s.refreshMetadata(ctx, commandMetadataVerify)
+}
+
+func waitForCommandMetadataRefresh(t *testing.T, s *commandMetadataStore) {
+	t.Helper()
+	s.mu.Lock()
+	done := s.refreshDone
+	s.mu.Unlock()
+	if done == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("metadata refresh did not finish")
+	}
+}
+
 func testReadOnlyCommandInfo(name string) *CommandInfo {
 	return &CommandInfo{
 		Name: name, Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
@@ -68,6 +89,8 @@ func TestCommandMetadataStaticStoreNeverStartsWorker(t *testing.T) {
 	s.onConnInit()
 	s.requestRefresh()
 	s.requestVerification()
+	s.onClusterServerHelloReply(map[string]interface{}{"version": "8.10.0"})
+	s.onClusterServerHelloReply(nil)
 	s.mu.Lock()
 	started := s.started
 	s.mu.Unlock()
@@ -75,6 +98,47 @@ func TestCommandMetadataStaticStoreNeverStartsWorker(t *testing.T) {
 		t.Error("static store must not start a worker")
 	}
 	s.stopAndJoin() // must not hang on a never-started worker
+}
+
+func TestCommandMetadataDynamicResolverActivatesTrackingLazily(t *testing.T) {
+	var fetches atomic.Int32
+	s := newCommandMetadataStoreForLive(&CommandMetadataConfig{
+		RefreshInterval: 5 * time.Millisecond,
+	}, func(context.Context) (commandMetadataFetchResult, error) {
+		fetches.Add(1)
+		return testCommandMetadataFetchResult(nil), nil
+	})
+	defer s.stopAndJoin()
+	dynamic := newCommandMetadataPolicyResolverWithEnsure(s.view, s.ensureLive)
+	custom := NewCommandInfoResolver(func(context.Context, Cmder) *routing.CommandPolicy {
+		return &routing.CommandPolicy{Request: routing.ReqDefault}
+	})
+	custom.SetFallbackResolver(dynamic)
+	ctx := context.Background()
+	cmd := NewStringCmd(ctx, "get", "key")
+	if policy := custom.GetCommandPolicy(ctx, cmd); policy == nil {
+		t.Fatal("custom resolver did not supply its policy")
+	}
+	s.onClusterServerHelloReply(map[string]interface{}{"version": "8.10.0"})
+	s.onClusterServerHelloReply(nil)
+	s.onConnInit()
+	s.mu.Lock()
+	started := s.started
+	s.mu.Unlock()
+	if started || s.wantsServerHello() || fetches.Load() != 0 {
+		t.Fatal("unused dynamic fallback activated metadata tracking")
+	}
+
+	if policy := dynamic.GetCommandPolicy(ctx, cmd); policy == nil || !s.view().live {
+		t.Fatal("dynamic lookup did not synchronously load metadata")
+	}
+	if !s.wantsServerHello() {
+		t.Fatal("dynamic lookup did not enable identity tracking")
+	}
+	before := fetches.Load()
+	if !waitForCondition(t, time.Second, func() bool { return fetches.Load() > before }) {
+		t.Fatal("dynamic lookup did not activate the configured periodic refresh")
+	}
 }
 
 func TestCommandMetadataFetchErrorRetries(t *testing.T) {
@@ -165,7 +229,7 @@ func TestCommandMetadataRefreshReusesUnchangedView(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
-			s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, func(context.Context) (commandMetadataFetchResult, error) {
+			s := newCommandMetadataStoreForLive(nil, func(context.Context) (commandMetadataFetchResult, error) {
 				// Each fetch owns distinct records, as separately parsed replies do.
 				m := testCommandMetadataFetchResult(map[string]*CommandInfo{
 					"get":    testReadOnlyCommandInfo("get"),
@@ -178,7 +242,7 @@ func TestCommandMetadataRefreshReusesUnchangedView(t *testing.T) {
 				return m, nil
 			})
 			defer s.stopAndJoin()
-			if err := s.refreshOnce(context.Background()); err != nil {
+			if err := s.ensureLive(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			first := s.view()
@@ -214,16 +278,12 @@ func TestCommandMetadataUnchangedRefreshValidatesIdentity(t *testing.T) {
 			m.serverFingerprint = "other-server"
 		}},
 		{"invalidated during fetch", func(s *commandMetadataStore, _ *commandMetadataFetchResult) {
-			// Simulate an identity epoch change while the fetch is in progress.
-			s.mu.Lock()
-			s.serverEpoch++
-			s.current.Store(s.static)
-			s.mu.Unlock()
+			s.invalidateLive()
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var duringFetch func(*commandMetadataFetchResult)
-			s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, func(context.Context) (commandMetadataFetchResult, error) {
+			s := newCommandMetadataStoreForLive(nil, func(context.Context) (commandMetadataFetchResult, error) {
 				m := testCommandMetadataFetchResult(map[string]*CommandInfo{"get": testReadOnlyCommandInfo("get")})
 				if duringFetch != nil {
 					duringFetch(&m)
@@ -231,7 +291,7 @@ func TestCommandMetadataUnchangedRefreshValidatesIdentity(t *testing.T) {
 				return m, nil
 			})
 			defer s.stopAndJoin()
-			if err := s.refreshOnce(context.Background()); err != nil {
+			if err := s.ensureLive(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			duringFetch = func(m *commandMetadataFetchResult) { tc.change(s, m) }
@@ -300,9 +360,17 @@ func TestCommandMetadataNormalizesEffectiveRecords(t *testing.T) {
 		record.KeySpecs[0].Flags[3] != "Future_Key_Flag" {
 		t.Fatalf("unknown extensions were not preserved verbatim: %+v", record)
 	}
+	upperRouting := upperView.routingTable["module.get"]
+	lowerRouting := lowerView.routingTable["module.get"]
+	if !upperRouting.valid || !lowerRouting.valid ||
+		upperRouting.policy.Request != lowerRouting.policy.Request ||
+		upperRouting.policy.Response != lowerRouting.policy.Response ||
+		upperRouting.keyState != lowerRouting.keyState {
+		t.Fatalf("equivalent normalized records produced different routing metadata: upper=%+v lower=%+v", upperRouting, lowerRouting)
+	}
 }
 
-func TestCommandMetadataLegacyShapedUnknownIsNotCacheable(t *testing.T) {
+func TestCommandMetadataLegacyShapedUnknownIsRoutingOnly(t *testing.T) {
 	legacy := &CommandInfo{
 		Name: "legacy.get", Flags: []string{"readonly"},
 		FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
@@ -319,6 +387,13 @@ func TestCommandMetadataLegacyShapedUnknownIsNotCacheable(t *testing.T) {
 	}
 	if !commandRecordHas(view.records["legacy.get"], "dont_cache", true) {
 		t.Fatal("legacy-shaped live-only record must carry a shared dont_cache correction")
+	}
+	meta, ok := routingLookupMeta(view, cmd)
+	if !ok {
+		t.Fatal("legacy-shaped record was not retained for routing")
+	}
+	if pos, ok := routingFirstKeyPos(meta, cmd); !ok || pos != 1 {
+		t.Fatalf("legacy routing key = (%d, %v), want (1, true)", pos, ok)
 	}
 }
 
@@ -366,6 +441,55 @@ func TestCommandMetadataLegacyShapeUsesServerVersionCompatibility(t *testing.T) 
 	}
 	if !commandRecordHas(redis810.records["get"], "dont_cache", true) {
 		t.Error("8.10+ legacy inconsistency was not represented in the shared record")
+	}
+}
+
+func TestCommandMetadataLegacyRoutingPolicies(t *testing.T) {
+	for _, fields := range []int{6, 7, 10} {
+		t.Run(fmt.Sprint(fields), func(t *testing.T) {
+			var entries []string
+			for _, name := range []string{"dbsize", "flushall", "mget"} {
+				info := commandInfoSnapshotByName()[name]
+				first, last, step := info.FirstKeyPos, info.LastKeyPos, info.StepCount
+				if name == "mget" {
+					first = 2 // Live positions must win over the snapshot's position 1.
+				}
+				entry := []string{
+					commandInfoTestBulk(name), commandInfoTestInt(int64(info.Arity)),
+					commandInfoTestArray(commandInfoTestBulk(info.Flags[0])),
+					commandInfoTestInt(int64(first)), commandInfoTestInt(int64(last)), commandInfoTestInt(int64(step)),
+				}
+				for len(entry) < fields {
+					entry = append(entry, commandInfoTestArray())
+				}
+				entries = append(entries, commandInfoTestArray(entry...))
+			}
+			parsed := commandInfoTestReadReply(t, commandInfoTestArray(entries...))
+			view := buildCommandMetadataViewForServerWithLegacy(parsed.Val(), nil, "redis", "6.2.0", parsed.legacyRecords)
+			for _, tc := range []struct {
+				name     string
+				request  routing.RequestPolicy
+				response routing.ResponsePolicy
+			}{
+				{"dbsize", routing.ReqAllShards, routing.RespAggSum},
+				{"flushall", routing.ReqAllShards, routing.RespAllSucceeded},
+				{"mget", routing.ReqMultiShard, routing.RespDefaultHashSlot},
+			} {
+				policy := view.routingTable[tc.name].policy
+				if fields == 10 {
+					// Modern records explicitly supply tips, even when empty.
+					if policy != nil && policy.Request != routing.ReqDefault {
+						t.Errorf("%s: snapshot policy replaced modern live tips: %+v", tc.name, policy)
+					}
+				} else if policy == nil || policy.Request != tc.request || policy.Response != tc.response {
+					t.Errorf("%s: policy=%+v, want %v/%v", tc.name, policy, tc.request, tc.response)
+				}
+			}
+			plan, ok := routingResolveKeyPlan(view.routingTable["mget"], makeCmd("mget", "prefix", "{a}k", "{b}k"))
+			if !ok || len(plan.positions) != 2 || plan.positions[0] != 2 || plan.positions[1] != 3 {
+				t.Fatalf("live key plan=%+v, ok=%v", plan, ok)
+			}
+		})
 	}
 }
 
@@ -450,6 +574,9 @@ func TestCommandMetadataTombstonedChildKeepsParentShadowed(t *testing.T) {
 	if _, ok := cscLookupMeta(view, cmd); ok {
 		t.Fatal("tombstoned child fell back to the bare parent for CSC")
 	}
+	if _, ok := routingLookupMeta(view, cmd); ok {
+		t.Fatal("tombstoned child fell back to the bare parent for routing")
+	}
 	if _, ok := view.shadowedParents["container"]; !ok {
 		t.Fatal("container parent was not kept explicitly shadowed")
 	}
@@ -479,6 +606,9 @@ func TestCommandMetadataNormalizedCollisionsFailClosed(t *testing.T) {
 			}
 			if isCacheableInView(view, makeCmd("get", "key")) {
 				t.Fatal("ambiguous or tombstoned command enabled CSC")
+			}
+			if _, ok := routingLookupMeta(view, makeCmd("get", "key")); ok {
+				t.Fatal("ambiguous or tombstoned command enabled routing")
 			}
 		})
 	}
@@ -548,6 +678,300 @@ func TestCommandMetadataStopCancelsInflightFetch(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("stopAndJoin blocked on an in-flight fetch")
+	}
+}
+
+func TestCommandMetadataWaitingCallerCanCancel(t *testing.T) {
+	for _, stopStore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stop=%v", stopStore), func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			releaseFetch := sync.OnceFunc(func() { close(release) })
+			defer releaseFetch()
+			var fetches atomic.Int32
+			store := newCommandMetadataStoreForLive(nil, func(context.Context) (commandMetadataFetchResult, error) {
+				fetches.Add(1)
+				close(started)
+				<-release // Deliberately ignore cancellation, as a user hook might.
+				return testCommandMetadataFetchResult(nil), nil
+			})
+			defer store.stopAndJoin()
+			owner := make(chan error, 1)
+			go func() { owner <- store.ensureLive(context.Background()) }()
+			<-started
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			if stopStore {
+				ctx = context.Background()
+			}
+			waiter := make(chan error, 1)
+			go func() { waiter <- store.ensureLive(ctx) }()
+			if stopStore {
+				store.stopAndJoin()
+			}
+			select {
+			case err := <-waiter:
+				want := context.DeadlineExceeded
+				if stopStore {
+					want = context.Canceled
+				}
+				if !errors.Is(err, want) {
+					t.Fatalf("waiting caller returned %v, want %v", err, want)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("waiting caller could not cancel independently")
+			}
+			if !stopStore {
+				select {
+				case err := <-owner:
+					t.Fatalf("waiting caller canceled the shared attempt: %v", err)
+				default:
+				}
+				releaseFetch()
+			}
+			select {
+			case err := <-owner:
+				if stopStore && !errors.Is(err, context.Canceled) || !stopStore && err != nil {
+					t.Fatalf("owning caller returned %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("owning attempt did not finish")
+			}
+			if fetches.Load() != 1 || store.view().live == stopStore {
+				t.Fatalf("fetches=%d live=%v", fetches.Load(), store.view().live)
+			}
+		})
+	}
+}
+
+func TestCommandMetadataWaitingCallerFallsBackAfterFailedAttempt(t *testing.T) {
+	oldMin := cmdMetaBackoffMin
+	cmdMetaBackoffMin = time.Millisecond
+	defer func() { cmdMetaBackoffMin = oldMin }()
+	for _, cancelOwner := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel=%v", cancelOwner), func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			retrying, recoverNode := make(chan struct{}), make(chan struct{})
+			var fetches atomic.Int32
+			store := newCommandMetadataStoreForLive(nil, func(ctx context.Context) (commandMetadataFetchResult, error) {
+				if fetches.Add(1) == 1 {
+					close(started)
+					select {
+					case <-ctx.Done():
+						return commandMetadataFetchResult{}, ctx.Err()
+					case <-release:
+						return commandMetadataFetchResult{}, errors.New("temporary failure")
+					}
+				}
+				close(retrying)
+				select {
+				case <-ctx.Done():
+					return commandMetadataFetchResult{}, ctx.Err()
+				case <-recoverNode:
+					return testCommandMetadataFetchResult(nil), nil
+				}
+			})
+			defer store.stopAndJoin()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			owner, waiter := make(chan error, 1), make(chan error, 1)
+			go func() { owner <- store.ensureLive(ctx) }()
+			<-started
+			go func() { waiter <- store.ensureLive(context.Background()) }()
+			if cancelOwner {
+				cancel()
+			} else {
+				close(release)
+			}
+			if err := <-owner; err == nil {
+				t.Fatal("owning caller did not report its failure")
+			}
+			select {
+			case err := <-waiter:
+				if !errors.Is(err, errCommandMetadataNotReady) || store.view().live {
+					t.Fatalf("waiting caller did not use conservative fallback: err=%v live=%v", err, store.view().live)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("waiting caller started another blocking probe")
+			}
+			select {
+			case <-retrying:
+			case <-time.After(time.Second):
+				t.Fatal("background verification did not start")
+			}
+			for range 100 {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				err := store.ensureLive(ctx)
+				cancel()
+				if !errors.Is(err, errCommandMetadataNotReady) {
+					t.Fatalf("command waited for background verification: %v", err)
+				}
+			}
+			if store.view().live || fetches.Load() != 2 {
+				t.Fatal("commands started extra probes or exposed unverified metadata")
+			}
+			close(recoverNode)
+			if !waitForCondition(t, time.Second, func() bool { return store.view().live }) {
+				t.Fatal("background recovery did not publish verified metadata")
+			}
+		})
+	}
+}
+
+func TestCommandMetadataBackgroundRetryHonorsCooldown(t *testing.T) {
+	oldMin, oldMax, oldCap := cmdMetaBackoffMin, cmdMetaBackoffMax, cmdMetaRetryCap
+	cmdMetaBackoffMin, cmdMetaBackoffMax, cmdMetaRetryCap = 50*time.Millisecond, 100*time.Millisecond, 1
+	defer func() { cmdMetaBackoffMin, cmdMetaBackoffMax, cmdMetaRetryCap = oldMin, oldMax, oldCap }()
+	var mu sync.Mutex
+	var attempts []time.Time
+	var recovered atomic.Bool
+	store := newCommandMetadataStoreForLive(nil, func(context.Context) (commandMetadataFetchResult, error) {
+		mu.Lock()
+		attempts = append(attempts, time.Now())
+		mu.Unlock()
+		if !recovered.Load() {
+			return commandMetadataFetchResult{}, errors.New("replica verification failed")
+		}
+		return testCommandMetadataFetchResult(nil), nil
+	})
+	defer store.stopAndJoin()
+	if err := store.ensureLive(context.Background()); err == nil {
+		t.Fatal("initial verification unexpectedly succeeded")
+	}
+	if !waitForCondition(t, 2*time.Second, func() bool {
+		// Command traffic must permit recovery after the retry cap, but cannot
+		// bypass the cooldown between actual network attempts.
+		_ = store.ensureLive(context.Background())
+		mu.Lock()
+		if len(attempts) >= 2 {
+			recovered.Store(true)
+		}
+		mu.Unlock()
+		return store.view().live
+	}) {
+		t.Fatal("commands did not trigger background recovery after the retry cap")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i := 1; i < len(attempts); i++ {
+		if attempts[i].Sub(attempts[i-1]) < cmdMetaBackoffMin {
+			t.Fatalf("command traffic bypassed cooldown: %v", attempts)
+		}
+	}
+}
+
+func TestCommandMetadataInvalidationDoesNotReopenForegroundWait(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var fetches atomic.Int32
+	store := newCommandMetadataStoreForLive(nil, func(ctx context.Context) (commandMetadataFetchResult, error) {
+		if fetches.Add(1) > 1 {
+			close(started)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return commandMetadataFetchResult{}, ctx.Err()
+			}
+		}
+		return testCommandMetadataFetchResult(nil), nil
+	})
+	defer store.stopAndJoin()
+	if err := store.ensureLive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store.invalidateLiveAndRequestRefresh()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("invalidation did not start background verification")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := store.ensureLive(ctx); !errors.Is(err, errCommandMetadataNotReady) || store.view().live {
+		t.Fatalf("invalidated view blocked a command or remained live: %v", err)
+	}
+	close(release)
+	if !waitForCondition(t, time.Second, func() bool { return store.view().live }) {
+		t.Fatal("verified replacement was not published")
+	}
+}
+
+func TestCommandMetadataSilentNodeRespectsTimeoutAndCancellation(t *testing.T) {
+	for _, command := range []string{"hello", "command"} {
+		for _, cancelParent := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cancel=%v", command, cancelParent), func(t *testing.T) {
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = listener.Close() })
+				stalled, release := make(chan struct{}), make(chan struct{})
+				t.Cleanup(func() { close(release) })
+				go func() {
+					conn, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					hellos := 0
+					serveTestRESPConn(conn, func(name string) string {
+						if name == "hello" {
+							hellos++
+						}
+						// Allow connection initialization, then stop answering the probe.
+						if name == command && (name != "hello" || hellos > 1) {
+							close(stalled)
+							<-release
+						}
+						switch name {
+						case "hello":
+							return "*2\r\n+version\r\n+8.10.0\r\n"
+						case "command":
+							return "*0\r\n"
+						case "ping":
+							return "+PONG\r\n"
+						default:
+							return "+OK\r\n"
+						}
+					})
+				}()
+				client := NewClient(&Options{
+					Addr: listener.Addr().String(), Protocol: 2, DisableIdentity: true,
+					MaxRetries: -1, PoolSize: 1, ReadTimeout: 50 * time.Millisecond,
+				})
+				t.Cleanup(func() { _ = client.Close() })
+				if err := client.Ping(context.Background()).Err(); err != nil {
+					t.Fatal(err)
+				}
+				store := newCommandMetadataStoreForLive(nil, client.baseClient.fetchCommandMetadata)
+				t.Cleanup(store.stopAndJoin)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				started := time.Now()
+				result := make(chan error, 1)
+				go func() { result <- store.ensureLive(ctx) }()
+				select {
+				case <-stalled:
+				case <-ctx.Done():
+					t.Fatal("metadata probe never reached the server")
+				}
+				if cancelParent {
+					cancel()
+				}
+				select {
+				case err := <-result:
+					if err == nil || store.view().live {
+						t.Fatal("silent node published live metadata")
+					}
+					if cancelParent && !errors.Is(err, context.Canceled) {
+						t.Fatalf("canceled fetch returned %v", err)
+					}
+					if time.Since(started) > 500*time.Millisecond {
+						t.Fatal("one probe consumed the overall refresh budget")
+					}
+				case <-time.After(500 * time.Millisecond):
+					t.Fatal("metadata probe ignored its timeout or cancellation")
+				}
+			})
+		}
 	}
 }
 
@@ -740,8 +1164,8 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 				t.Fatalf("metadata came from mismatched connections: %+v", metadata)
 			}
 			view := buildCommandMetadataViewForServerWithLegacy(metadata.records, nil, metadata.serverName, metadata.serverVersion, metadata.legacyRecords)
-			if isCacheableInView(view, makeCmd("custom.read2", "key")) {
-				t.Fatal("module metadata without server identification must remain uncached")
+			if !view.routingTable["custom.read2"].valid || isCacheableInView(view, makeCmd("custom.read2", "key")) {
+				t.Fatal("module metadata without server identification must enable routing but remain uncached")
 			}
 		})
 	}
@@ -803,9 +1227,8 @@ func TestCommandMetadataReconnectWithoutHello(t *testing.T) {
 		}) {
 			t.Fatal("reconnect did not verify the server identity")
 		}
-		client.cmdMeta.refreshMu.Lock()
+		waitForCommandMetadataRefresh(t, client.cmdMeta)
 		view := client.metadataView()
-		client.cmdMeta.refreshMu.Unlock()
 		if moduleVersion == 0 && view != previous {
 			t.Fatal("unchanged identity rebuilt the metadata view")
 		}
@@ -885,6 +1308,10 @@ func TestCommandMetadataServerUpgradeEnablesLiveOnlyCSC(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if calls.Load() != settled {
 		t.Errorf("live store refetched without a server change: %d -> %d", settled, calls.Load())
+	}
+	meta, ok := routingLookupMeta(s.view(), makeCmd("myext.get", "k"))
+	if !ok || !meta.readOnly {
+		t.Fatal("pre-8.10 record was lost to the routing consumer")
 	}
 	// An upgrade can enable a live-only command after refresh.
 	upgraded.Store(true)
@@ -1132,7 +1559,7 @@ func TestCommandMetadataViewChangeCancelsFulfill(t *testing.T) {
 	for _, coalesced := range []bool{false, true} {
 		t.Run(fmt.Sprintf("coalesced=%v", coalesced), func(t *testing.T) {
 			cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-			s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, nil)
+			s := newCommandMetadataStoreForLive(nil, nil)
 			c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cmdMeta: s}
 			view := c.metadataView()
 			for _, changed := range []bool{true, false} {
