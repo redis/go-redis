@@ -1733,14 +1733,15 @@ func TestClusterCSCLiveReplicaInvalidation(t *testing.T) {
 	t.Cleanup(func() { _ = reader.Close() })
 	key := "{csc-replica}:key"
 	// Do not accidentally exercise ReadOnly's primary fallback while the new
-	// replica is still completing its initial synchronization.
+	// replica is still completing its initial synchronization. CLUSTER SHARDS
+	// includes replicas while their health is still loading.
 	clusterCSCLiveEventually(t, func() bool {
 		state, err := reader.state.Reload(ctx)
 		if err != nil {
 			return false
 		}
 		entry := state.slotEntry(hashtag.Slot(key))
-		return entry != nil && len(entry.nodes) > 1
+		return entry != nil && len(entry.nodes) > 1 && state.nodeOnline(entry.nodes[1])
 	})
 	for _, value := range []string{"before", "after"} {
 		if err := writer.Set(ctx, key, value, 0).Err(); err != nil {

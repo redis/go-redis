@@ -100,7 +100,7 @@ var _ = Describe("newClusterState", func() {
 			Expect(slotAddr(state.slots[0])).To(Equal("10.10.10.10:7001"))
 			Expect(slotAddr(state.slots[1])).To(Equal("10.10.10.10:7002"))
 			Expect(slotAddr(state.slots[2])).To(Equal("1.2.3.4:1234"))
-			Expect(slotAddr(state.slots[3])).To(Equal(":1234"))
+			Expect(slotAddr(state.slots[3])).To(Equal("10.10.10.10:1234"))
 		})
 	})
 
@@ -481,6 +481,37 @@ func TestNewClusterState_PortZero(t *testing.T) {
 				"be replaced from the origin)", got, "172.30.0.10:6379")
 		}
 	})
+}
+
+// With `cluster-preferred-endpoint-type unknown-endpoint` the server sends a
+// null host in CLUSTER SLOTS, and the client is expected to reuse the host it
+// connected to.
+func TestNewClusterState_NullHost(t *testing.T) {
+	for _, null := range []string{"_\r\n", "$-1\r\n"} {
+		cmd := NewClusterSlotsCmd(context.Background())
+		reply := "*1\r\n*3\r\n:0\r\n:5460\r\n*2\r\n" + null + ":6380\r\n"
+		if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err != nil {
+			t.Fatalf("reply %q: readReply() = %v", null, err)
+		}
+
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		state, err := newClusterState(nodes, cmd.Val(), "172.30.0.10:6379")
+		if err != nil {
+			t.Fatalf("newClusterState failed: %v", err)
+		}
+
+		client := state.slots[0].nodes[0].Client
+		if got := client.Options().Addr; got != "172.30.0.10:6380" {
+			t.Errorf("reply %q: Addr = %q, want %q", null, got, "172.30.0.10:6380")
+		}
+		if got := client.NodeAddress(); got != ":6380" {
+			t.Errorf("reply %q: NodeAddress = %q, want %q", null, got, ":6380")
+		}
+	}
 }
 
 type fixedHash string
@@ -1439,6 +1470,191 @@ func TestPubSubConn_PassesPersistedChannelsToNewConn(t *testing.T) {
 				if !found {
 					t.Errorf("missing %q in channels passed to newConn (got %v); see #3806",
 						want, captured)
+				}
+			}
+		})
+	}
+}
+
+// These benchmarks measure cluster routing without a Redis server. A custom
+// topology prevents discovery I/O, and each iteration creates fresh commands.
+func newClusterRoutingBenchmarkClient(b *testing.B) (*ClusterClient, []string) {
+	b.Helper()
+	slots := []ClusterSlot{
+		{Start: 0, End: 5460, Nodes: []ClusterNode{{Addr: "127.0.0.1:1"}, {Addr: "127.0.0.1:4"}}},
+		{Start: 5461, End: 10922, Nodes: []ClusterNode{{Addr: "127.0.0.1:2"}, {Addr: "127.0.0.1:5"}}},
+		{Start: 10923, End: 16383, Nodes: []ClusterNode{{Addr: "127.0.0.1:3"}, {Addr: "127.0.0.1:6"}}},
+	}
+	c := NewClusterClient(&ClusterOptions{
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) { return slots, nil },
+	})
+	b.Cleanup(func() { _ = c.Close() })
+	if _, err := c.state.Get(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+	keys := make([]string, 1024)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("routing:key:%d", i)
+	}
+	return c, keys
+}
+
+func BenchmarkClusterRoutingGet(b *testing.B) {
+	c, keys := newClusterRoutingBenchmarkClient(b)
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd := NewStringCmd(ctx, "get", keys[i%len(keys)])
+		decision := c.commandRoutingDecision(ctx, cmd)
+		if decision.policyErr != nil {
+			b.Fatal(decision.policyErr)
+		}
+		slot := c.cmdSlotWithDecision(cmd, &decision, -1)
+		if _, err := c.cmdNodeWithDecision(ctx, slot, &decision); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkClusterRoutingProcessGet(b *testing.B) {
+	c, keys := newClusterRoutingBenchmarkClient(b)
+	ctx := context.Background()
+	state, err := c.state.Get(ctx)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, node := range state.Masters {
+		node.Client.AddHook(clusterRoutingShortCircuitHook{})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd := NewStringCmd(ctx, "get", keys[i%len(keys)])
+		if err := c.process(ctx, cmd); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkClusterRoutingPipeline100(b *testing.B) {
+	c, keys := newClusterRoutingBenchmarkClient(b)
+	ctx := context.Background()
+	cmds := make([]Cmder, 100)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for j := range cmds {
+			cmds[j] = NewStringCmd(ctx, "get", keys[(i*len(cmds)+j)%len(keys)])
+		}
+		if err := c.mapCmdsByNode(ctx, newCmdsMap(), cmds); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkClusterRoutingAutoPipelineAdmission(b *testing.B) {
+	c, keys := newClusterRoutingBenchmarkClient(b)
+	ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{
+		MaxBatchSize: 512, MaxConcurrentBatches: 200, Unordered: true,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = ap.Close() })
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd := NewStringCmd(ctx, "get", keys[i%len(keys)])
+		if divert, err := ap.routeCommand(ctx, cmd); divert || err != nil {
+			b.Fatalf("GET routing: divert=%v, err=%v", divert, err)
+		}
+		_ = ap.shardFn(cmd)
+		cmd.setClusterRoutingDecision(nil)
+	}
+}
+
+func BenchmarkRoutingKeyPlan(b *testing.B) {
+	for _, n := range []int{2, 16, 100} {
+		b.Run(fmt.Sprintf("Range%d", n), func(b *testing.B) {
+			args := make([]interface{}, n+1)
+			args[0] = "mget"
+			for i := 1; i < len(args); i++ {
+				args[i] = fmt.Sprintf("{k}%d", i)
+			}
+			cmd := NewCmd(context.Background(), args...)
+			meta := defaultCommandMetadataView().routingTable["mget"]
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				plan, ok := routingResolveKeyPlan(meta, cmd)
+				if !ok || len(plan.positions) != n {
+					b.Fatal(plan, ok)
+				}
+			}
+		})
+	}
+	b.Run("Overlapping", func(b *testing.B) {
+		meta := deriveRoutingCommandMeta("overlap", &CommandInfo{KeySpecs: []KeySpec{
+			{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1, FindKeys: "range", LastKey: 1, KeyStep: 1},
+			{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 2, FindKeys: "range", LastKey: 1, KeyStep: 1},
+		}})
+		cmd := NewCmd(context.Background(), "overlap", "a", "b", "c")
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			plan, ok := routingResolveKeyPlan(meta, cmd)
+			if !ok || len(plan.positions) != 3 {
+				b.Fatal(plan, ok)
+			}
+		}
+	})
+}
+
+func BenchmarkClusterRoutingAutoPipelineMap100(b *testing.B) {
+	c, keys := newClusterRoutingBenchmarkClient(b)
+	ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{MaxBatchSize: 512, MaxConcurrentBatches: 200, Unordered: true})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = ap.Close() })
+	ctx := context.Background()
+	cmds := make([]Cmder, 100)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for j := range cmds {
+			cmd := NewStringCmd(ctx, "get", keys[(i*len(cmds)+j)%len(keys)])
+			if divert, err := ap.routeCommand(ctx, cmd); divert || err != nil {
+				b.Fatalf("GET routing: divert=%v, err=%v", divert, err)
+			}
+			_ = ap.shardFn(cmd)
+			cmds[j] = cmd
+		}
+		if err := c.mapCmdsByNode(ctx, newCmdsMap(), cmds); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRoutingFirstKey(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		key  interface{}
+	}{
+		{"String", "0123456789abcdef"}, {"Bytes", []byte("0123456789abcdef")}, {"Int", 1234567890},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			c := &ClusterClient{}
+			view := defaultCommandMetadataView()
+			cmd := NewCmd(context.Background(), "get", tc.key)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				d := c.routingDecisionInView(context.Background(), cmd, view, nil)
+				if d.policyErr != nil {
+					b.Fatal(d.policyErr)
 				}
 			}
 		})
