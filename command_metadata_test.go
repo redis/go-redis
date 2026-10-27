@@ -1610,17 +1610,29 @@ func TestCommandMetadataRefreshSkipsRetiredEntries(t *testing.T) {
 	}
 }
 
+// commandMetadataE2EAddr resolves the server the way the other plain go tests
+// in this package do (internalTestRedisAddr, gateTestAddr): REDIS_ADDR, then
+// REDIS_PORT, then the redis-stack default ":6379" that main_test.go's
+// BeforeSuite settles on. The package-level redisAddr starts at ":6380" and
+// only BeforeSuite corrects it, which plain TestXxx funcs may run without.
+// explicit reports whether an env var named the server; when it did and nothing
+// answers, the test must fail rather than skip a requested configuration.
+func commandMetadataE2EAddr() (addr string, explicit bool) {
+	if v := os.Getenv("REDIS_ADDR"); v != "" {
+		return v, true
+	}
+	if p := os.Getenv("REDIS_PORT"); p != "" {
+		return ":" + p, true
+	}
+	return ":6379", false
+}
+
 // TestCommandMetadataPreferLiveE2E runs the dynamic path against Redis.
 func TestCommandMetadataPreferLiveE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires a running Redis server")
 	}
-	addr := "localhost:6379"
-	if v := os.Getenv("REDIS_ADDR"); v != "" {
-		addr = v
-	} else if p := os.Getenv("REDIS_PORT"); p != "" {
-		addr = "localhost:" + p
-	}
+	addr, explicit := commandMetadataE2EAddr()
 
 	cache := NewLocalCache(CacheConfig{MaxEntries: 32})
 	client := NewClient(&Options{
@@ -1634,6 +1646,9 @@ func TestCommandMetadataPreferLiveE2E(t *testing.T) {
 	defer client.Close()
 	ctx := context.Background()
 	if err := client.Ping(ctx).Err(); err != nil {
+		if explicit {
+			t.Fatalf("no server at %s: %v", addr, err)
+		}
 		t.Skipf("no server at %s: %v", addr, err)
 	}
 	identity, err := client.baseClient.fetchMetadataIdentity(ctx, nil)
