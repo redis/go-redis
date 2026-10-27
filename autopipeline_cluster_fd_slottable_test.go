@@ -160,3 +160,59 @@ func TestClusterFDSlotTableSkipsUncoveredSlot(t *testing.T) {
 		t.Fatal("the uncovered slot was stored with a fixed fallback master")
 	}
 }
+
+// A reused command keeps the slot cached by an earlier admission. If the next
+// admission caches none (here: legacy routing with DisableRoutingPolicies), the
+// slot table must route by the command's own key, not the stale slot, and must not
+// store the owner's child under the stale slot.
+func TestClusterFDSlotTableIgnoresStaleCachedSlot(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	t.Cleanup(func() { _ = cc.Close() })
+	cc.opt.DisableRoutingPolicies = true
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ap.Close() })
+	r := ap.clusterFD
+	if r == nil {
+		t.Fatal("cluster full duplex did not engage")
+	}
+	ctx := context.Background()
+	// Two keys on different masters.
+	key := "slottable:stale:key"
+	owner, err := cc.MasterForKey(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var other string
+	for i := 0; other == ""; i++ {
+		k := fmt.Sprintf("slottable:stale:other:%d", i)
+		n, err := cc.MasterForKey(ctx, k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != owner {
+			other = k
+		}
+	}
+	if err := cc.Set(ctx, key, "v", time.Minute).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewStringCmd(ctx, "get", key)
+	cmd.setCachedSlot(clusterKeySlot(other)) // left over from an earlier admission
+	if err := ap.Submit(ctx, cmd).Wait(); err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if v := cmd.Val(); v != "v" {
+		t.Fatalf("GET = %q, want v", v)
+	}
+	r.mu.RLock()
+	ownerChild := r.children[owner]
+	r.mu.RUnlock()
+	if table := r.slots.Load(); table != nil && ownerChild != nil &&
+		table.child[clusterKeySlot(other)].Load() == ownerChild {
+		t.Fatal("the key owner's child was stored under the stale cached slot")
+	}
+}
