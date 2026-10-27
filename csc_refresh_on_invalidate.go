@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -617,7 +618,7 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			// progress. Boundary logic extracted pure (cscRefreshChunkEnd) and
 			// unit-tested.
 			writeBudget := cscMissWriteBatchBytes(c.opt)
-			prefixLen := len(c.cscKeyPrefix)
+			prefixLen := cscEntryKeyPrefixLen(c.cscKeyPrefix, c.metadataView().cscFingerprint)
 			for start := 0; start < len(targets); {
 				// Abort this (always non-stopping — see the stopping check above) flush
 				// if Close begins while it's still running: continuing to give each
@@ -748,7 +749,8 @@ func (c *baseClient) stopCSCRefresher() {
 // RespAttr ('|'), so a first-byte error check would treat an attributed error as
 // cacheable and publish it as a false success (bumping Refreshed; the next reader
 // would then have to evict and refetch). A nil reply IS cacheable (a negative
-// lookup, or a since-deleted key caching as missing); an empty reply never is.
+// lookup, or a since-deleted key caching as missing) for standalone; Cluster's
+// publication filter rejects it. An empty wire reply never is cacheable.
 // Extracted pure so the classification is unit-tested (like cscRefreshChunkEnd).
 func cscRefreshReplyCacheable(raw []byte) bool {
 	return len(raw) > 0 && isCacheableReplyResult(classifyCachedReply(raw))
@@ -764,13 +766,15 @@ func cscRefreshReplyCacheable(raw []byte) bool {
 // StaleTimeout. (Measured elsewhere in this work: that mistake cost 30x and 8500x
 // throughput in the intra-batch rewrites.)
 func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscRefreshTarget) (int, error) {
-	prefix := c.cscKeyPrefix
-	if prefix == "" {
+	if c.cscKeyPrefix == "" {
 		return 0, nil
 	}
 	if a := c.cscActive; a != nil && !a.Load() {
 		return 0, nil
 	}
+
+	view := c.metadataView()
+	prefix := cscEntryKey(c.cscKeyPrefix, view.cscFingerprint, "")
 
 	// Reserve before touching the network, so only keys this batch owns are sent.
 	// A declined reservation means a reader is already fetching it — leave it to
@@ -790,6 +794,11 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 		}
 	}()
 	for _, t := range targets {
+		// A refresh may outlive the metadata that made this command eligible.
+		// Shared caches may also contain entries from another client's view.
+		if !strings.HasPrefix(t.cacheKey, prefix) {
+			continue
+		}
 		token, shouldFetch := c.csc.Reserve(t.cacheKey, t.redisKeys)
 		// token==0 with shouldFetch==true is Reserve's "fetch uncached" signal
 		// (oversized entry / over-capacity / lost race), not an owned reservation.
@@ -840,7 +849,8 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 		if err := cn.WithWriter(ctx, writeTimeout, func(wr *proto.Writer) error {
 			for i := range kept {
 				// The cache key is the namespaced RESP encoding of the command that
-				// produced the entry; strip the namespace and it is already wire form.
+				// produced the entry; strip the namespace and metadata fingerprint
+				// to recover the wire form.
 				if _, err := wr.Write([]byte(kept[i].cacheKey[len(prefix):])); err != nil {
 					return err
 				}
@@ -897,9 +907,10 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					return err
 				}
 				if !cscRefreshReplyCacheable(raw) {
+					c.cscEvictOnRedirect(kept[i].redisKeys, classifyCachedReply(raw))
 					// Not cacheable (WRONGTYPE after a type change, NOPERM, ...). A nil
-					// reply is NOT an error: a negative lookup is cacheable, and a key
-					// that has since been deleted should cache as missing. See
+					// reply is NOT an error: standalone can cache negative lookups;
+					// Cluster filters these later in fulfillCached. See
 					// cscRefreshReplyCacheable: it classifies the FULL frame, so a RESP3
 					// attribute-prefixed error is not mis-read as cacheable.
 					c.csc.Cancel(kept[i].cacheKey, kept[i].token)
@@ -921,7 +932,7 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 				if lc, ok := c.csc.(*LocalCache); ok {
 					lc.stageRefreshAccess(kept[i].cacheKey, kept[i].token, kept[i].accessNs, kept[i].read)
 				}
-				if c.fulfillCached(kept[i].cacheKey, kept[i].token, fc) {
+				if c.fulfillCached(kept[i].cacheKey, kept[i].token, fc, view) {
 					published++
 				}
 				// fulfillCached cancels on its own failure paths, so the token is
