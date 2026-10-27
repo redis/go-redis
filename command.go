@@ -6913,10 +6913,11 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 	if v, ok := data["collection-duration-ms"].(int64); ok {
 		result.CollectionDuration = time.Duration(v) * time.Millisecond
 	}
-	if v, ok := data["used-cpu-sys-ms"].(int64); ok {
+	// The server names these total-cpu-time-*-ms, not after the fields below.
+	if v, ok := data["total-cpu-time-sys-ms"].(int64); ok {
 		result.UsedCPUSys = time.Duration(v) * time.Millisecond
 	}
-	if v, ok := data["used-cpu-user-ms"].(int64); ok {
+	if v, ok := data["total-cpu-time-user-ms"].(int64); ok {
 		result.UsedCPUUser = time.Duration(v) * time.Millisecond
 	}
 	if v, ok := data["total-net-bytes"].(int64); ok {
