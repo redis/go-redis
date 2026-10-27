@@ -2085,6 +2085,10 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 	var saved map[string]string
 
 	BeforeEach(func() {
+		// Redis 8.0 and 8.2 cluster nodes segfault in a module timer
+		// shortly after this setting is applied, which takes down the
+		// shared test cluster for every later spec.
+		SkipBeforeRedisVersion("8.4", "cluster nodes crash with unknown-endpoint")
 		saved = map[string]string{}
 		for port, node := range cluster.clients {
 			old, err := node.ConfigGet(ctx, param).Result()
