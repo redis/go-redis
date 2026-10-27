@@ -703,7 +703,12 @@ func (r *Reader) ReadSlice() ([]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	return r.readSlice(line)
+	switch line[0] {
+	case RespArray, RespSet, RespPush:
+		return r.readSlice(line)
+	default:
+		return nil, fmt.Errorf("redis: can't parse array/set/push reply: %.100q", line)
+	}
 }
 
 // ReadFixedArrayLen read fixed array length.
