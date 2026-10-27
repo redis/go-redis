@@ -806,6 +806,8 @@ func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interfac
 
 // CMSIncrBy increments the count of one or more items in a Count-Min Sketch filter.
 // Returns an array of integers representing the updated count of each item.
+// On a per-item error, Err() returns the first error and the failed items are 0
+// in Val(); use Do() to get per-item errors.
 // For more information - https://redis.io/commands/cms.incrby/
 func (c cmdable) CMSIncrBy(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
 	args := make([]interface{}, 2, 2+len(elements))
@@ -969,8 +971,8 @@ func isValidCMSCellSize(cellSize int64) bool {
 }
 
 // CMSMerge merges multiple Count-Min Sketch filters into a single filter.
-// The destination filter must not exist and will be created with the dimensions of the first source filter.
-// The number of items in each source filter must be equal.
+// The destination filter must already be initialized and all filters must have
+// the same width and depth. The filters do not need to contain the same number of items.
 // Returns OK on success or an error if the filters could not be merged.
 // For more information - https://redis.io/commands/cms.merge/
 func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd {
@@ -984,8 +986,8 @@ func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...str
 }
 
 // CMSMergeWithWeight merges multiple Count-Min Sketch filters into a single filter with weights for each source filter.
-// The destination filter must not exist and will be created with the dimensions of the first source filter.
-// The number of items in each source filter must be equal.
+// The destination filter must already be initialized and all filters must have
+// the same width and depth. The filters do not need to contain the same number of items.
 // Returns OK on success or an error if the filters could not be merged.
 // For more information - https://redis.io/commands/cms.merge/
 func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd {
