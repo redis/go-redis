@@ -4964,7 +4964,9 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 			}
 
 			ip, err := rd.ReadString()
-			if err != nil {
+			// A null host (cluster-preferred-endpoint-type unknown-endpoint)
+			// means "reuse the origin host"; newClusterState fills it in.
+			if err != nil && err != Nil {
 				return err
 			}
 
@@ -5692,7 +5694,13 @@ func peekCommandInfoReplyType(rd *proto.Reader, depth int) (byte, int, error) {
 			return b[0], depth, nil
 		}
 		n, err := rd.ReadAttributeLen()
-		if err != nil {
+		if err == Nil {
+			// A null attribute (|-1) is not valid RESP3, but the header is
+			// already consumed and carries no pairs, so unwrap it like an empty
+			// attribute. Returning Nil here would make the scalar readers treat
+			// the wrapped value as consumed and leave it on the wire.
+			n = 0
+		} else if err != nil {
 			return 0, depth, err
 		}
 		for range n {
@@ -6911,10 +6919,11 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 	if v, ok := data["collection-duration-ms"].(int64); ok {
 		result.CollectionDuration = time.Duration(v) * time.Millisecond
 	}
-	if v, ok := data["used-cpu-sys-ms"].(int64); ok {
+	// The server names these total-cpu-time-*-ms, not after the fields below.
+	if v, ok := data["total-cpu-time-sys-ms"].(int64); ok {
 		result.UsedCPUSys = time.Duration(v) * time.Millisecond
 	}
-	if v, ok := data["used-cpu-user-ms"].(int64); ok {
+	if v, ok := data["total-cpu-time-user-ms"].(int64); ok {
 		result.UsedCPUUser = time.Duration(v) * time.Millisecond
 	}
 	if v, ok := data["total-net-bytes"].(int64); ok {

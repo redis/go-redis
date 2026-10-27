@@ -131,6 +131,9 @@ type ClusterOptions struct {
 	CredentialsProviderContext   func(ctx context.Context) (username string, password string, err error)
 	StreamingCredentialsProvider auth.StreamingCredentialsProvider
 
+	// AuthEmptyPassword: see Options.AuthEmptyPassword.
+	AuthEmptyPassword bool
+
 	// MaxRetries is the maximum number of retries before giving up.
 	// For ClusterClient, retries are disabled by default (set to -1),
 	// because the cluster client handles all kinds of retries internally.
@@ -445,6 +448,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 
 	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
+	o.AuthEmptyPassword = q.bool("auth_empty_password")
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
 	o.RouteByLatency = q.bool("route_by_latency")
@@ -543,6 +547,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
 		Password:                     opt.Password,
+		AuthEmptyPassword:            opt.AuthEmptyPassword,
 		CredentialsProvider:          opt.CredentialsProvider,
 		CredentialsProviderContext:   opt.CredentialsProviderContext,
 		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
@@ -1075,6 +1080,9 @@ func newClusterState(
 			// reachable, since it is the port that returned this slot map.
 			// See https://github.com/redis/go-redis/issues/3726.
 			addr = replaceZeroPort(addr, originPort)
+			// With cluster-preferred-endpoint-type unknown-endpoint the server
+			// sends no host and expects the client to reuse the origin host.
+			addr = replaceEmptyHost(addr, originHost)
 
 			node, err := c.nodes.GetOrCreateWithNodeAddress(addr, nodeAddress)
 			if err != nil {
@@ -1368,6 +1376,14 @@ func replaceZeroPort(nodeAddr, originPort string) string {
 		return nodeAddr
 	}
 	return net.JoinHostPort(nodeHost, originPort)
+}
+
+func replaceEmptyHost(nodeAddr, originHost string) string {
+	nodeHost, nodePort, err := net.SplitHostPort(nodeAddr)
+	if err != nil || nodeHost != "" {
+		return nodeAddr
+	}
+	return net.JoinHostPort(originHost, nodePort)
 }
 
 // isLoopback returns true if the host is a loopback address.
@@ -3712,6 +3728,13 @@ func (c *ClusterClient) readTxPipelineReplies(
 		err := fmt.Errorf("redis: unexpected EXEC reply %q", line)
 		setCmdsErr(cmds, err)
 		// A non-array aggregate reply may carry an unread payload.
+		return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
+	}
+	// A reply count that differs from the queued commands would read replies
+	// into the wrong commands or leave some on the wire (see txPipelineReadQueued).
+	if n, err := strconv.Atoi(string(line[1:])); err != nil || n != len(cmds) {
+		err := fmt.Errorf("redis: EXEC returned %q for %d commands", line, len(cmds))
+		setCmdsErr(cmds, err)
 		return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
 	}
 
