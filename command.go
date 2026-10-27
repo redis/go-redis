@@ -1385,6 +1385,7 @@ func (cmd *SliceCmd) String() string {
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
+// Matched non-byte slice fields require a custom decoder; otherwise Scan returns an error.
 func (cmd *SliceCmd) Scan(dst interface{}) error {
 	cmd.await()
 	if cmd.err != nil {
@@ -2640,6 +2641,7 @@ func (cmd *MapStringStringCmd) String() string {
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
+// Matched non-byte slice fields require a custom decoder; otherwise Scan returns an error.
 func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 	cmd.await()
 	if cmd.err != nil {
