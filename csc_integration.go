@@ -687,7 +687,16 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 			"redis: client-side caching is disabled with credential providers")
 		return
 	}
-	c.cscKeyPrefix = cscNamespacePrefix(c.opt.DB, c.opt.Username)
+	// Namespace by ACL identity. A Username that sends no AUTH (empty
+	// Password, AuthEmptyPassword unset) runs as the default user, or as a
+	// TLS-certificate user, so it gets its own namespace per Username: apart
+	// from the AUTH-ed user and from other certificates. ACL usernames cannot
+	// contain spaces, so "noauth <name>" never matches a real user.
+	username := c.opt.Username
+	if username != "" && !c.opt.sendAuth(c.opt.Username, c.opt.Password) {
+		username = "noauth " + username
+	}
+	c.cscKeyPrefix = cscNamespacePrefix(c.opt.DB, username)
 	switch c.opt.ClientSideCacheStrategy {
 	case CSCStrategySharedTracking:
 		c.attachSharedTrackingCSC(ctx, cache)
