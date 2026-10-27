@@ -497,6 +497,16 @@ type baseClient struct {
 	// never set on user-visible clients.
 	allowClientTracking bool
 
+	// limiterExempt exempts a client from Options.Limiter. Set only on
+	// initConn's internal conn wrapper: the handshake it runs (HELLO, AUTH,
+	// SELECT, CLIENT SETINFO, CLIENT MAINT_NOTIFICATIONS) belongs to the
+	// command that dials the connection, which the caller already admitted and
+	// reports as one operation. Admitting each handshake command again double
+	// counts against a rate limiter and, with a circuit breaker in half-open,
+	// lets a handshake exhaust the probe budget and report the breaker's own
+	// rejection back as a failure, so the breaker never closes.
+	limiterExempt bool
+
 	// The following are OWNER-ONLY and NOT copied by clone(): derived clients
 	// (Conn/WithTimeout) share the cache but must not stop the owner's
 	// goroutines or flush its cache on their own Close.
@@ -617,6 +627,15 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
 
+// limiter returns Options.Limiter, or nil for the handshake conn wrapper that
+// initConn builds (see limiterExempt).
+func (c *baseClient) limiter() Limiter {
+	if c.limiterExempt {
+		return nil
+	}
+	return c.opt.Limiter
+}
+
 func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 	cn, _, err := c.getConnLimited(ctx)
 	return cn, err
@@ -629,16 +648,17 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 // other caller unchanged. Allow is reported (ReportResult) only for dial results,
 // never for admission denials — matching the original getConn.
 func (c *baseClient) getConnLimited(ctx context.Context) (cn *pool.Conn, limited bool, err error) {
-	if c.opt.Limiter != nil {
-		if err := c.opt.Limiter.Allow(); err != nil {
+	limiter := c.limiter()
+	if limiter != nil {
+		if err := limiter.Allow(); err != nil {
 			return nil, true, err
 		}
 	}
 
 	cn, err = c._getConn(ctx)
 	if err != nil {
-		if c.opt.Limiter != nil {
-			c.opt.Limiter.ReportResult(err)
+		if limiter != nil {
+			limiter.ReportResult(err)
 		}
 		return nil, false, err
 	}
@@ -1021,6 +1041,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// method value on the addressable baseClient, so the guard reads the
 	// updated field.
 	conn.baseClient.allowClientTracking = true
+	conn.baseClient.limiterExempt = true
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
@@ -1352,8 +1373,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 var errConnUnusable = errors.New("redis: connection unusable (reply stream desynchronized)")
 
 func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) {
-	if c.opt.Limiter != nil {
-		c.opt.Limiter.ReportResult(err)
+	if limiter := c.limiter(); limiter != nil {
+		limiter.ReportResult(err)
 	}
 	c.releaseConnToPool(ctx, c.connPool, cn, err)
 }
@@ -1449,8 +1470,9 @@ func (c *baseClient) withPipelineConn(
 	// exit (including the early init/re-acquire failures below). Without this,
 	// enabling the pipeline pool would silently bypass throttling and failure
 	// reporting for callers that set a Limiter.
-	if c.opt.Limiter != nil {
-		if err := c.opt.Limiter.Allow(); err != nil {
+	limiter := c.limiter()
+	if limiter != nil {
+		if err := limiter.Allow(); err != nil {
 			return err
 		}
 	}
@@ -1484,8 +1506,8 @@ func (c *baseClient) withPipelineConn(
 			fnErr = fmt.Errorf("%w: panic: %v", errConnUnusable, r)
 			retErr = fnErr
 		}
-		if c.opt.Limiter != nil {
-			c.opt.Limiter.ReportResult(retErr)
+		if limiter != nil {
+			limiter.ReportResult(retErr)
 		}
 		if cn != nil {
 			c.releaseConnToPool(ctx, connPool, cn, fnErr)
