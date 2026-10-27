@@ -33,6 +33,8 @@ type UniversalOptions struct {
 	Protocol int
 	Username string
 	Password string
+	// AuthEmptyPassword: see Options.AuthEmptyPassword.
+	AuthEmptyPassword bool
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -53,6 +55,8 @@ type UniversalOptions struct {
 
 	SentinelUsername string
 	SentinelPassword string
+	// SentinelAuthEmptyPassword: see FailoverOptions.SentinelAuthEmptyPassword.
+	SentinelAuthEmptyPassword bool
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -256,6 +260,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
@@ -334,12 +339,14 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
 
-		SentinelUsername: o.SentinelUsername,
-		SentinelPassword: o.SentinelPassword,
+		SentinelUsername:          o.SentinelUsername,
+		SentinelPassword:          o.SentinelPassword,
+		SentinelAuthEmptyPassword: o.SentinelAuthEmptyPassword,
 
 		RouteByLatency:          o.RouteByLatency,
 		RouteByLatencyTolerance: o.RouteByLatencyTolerance,
@@ -384,6 +391,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
 		AutoPipelineOptions:       o.AutoPipelineOptions,
+		FailingTimeoutSeconds:     o.FailingTimeoutSeconds,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		CommandMetadata:           o.CommandMetadata,
@@ -408,6 +416,7 @@ func (o *UniversalOptions) Simple() *Options {
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
