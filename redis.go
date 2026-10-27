@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -826,6 +827,31 @@ func (c *baseClient) buildPipelinePool(poolName string) (*pipelinePoolRef, error
 	return &pipelinePoolRef{pool: p, name: poolName}, nil
 }
 
+// initStreamingCredentials creates the streaming credentials manager and
+// registers its pool hook on the main and pipeline pools. Shared by the
+// NewClient and NewFailoverClient creation paths so they cannot drift; must
+// run after the pipeline pool is built.
+func (c *baseClient) initStreamingCredentials() {
+	if c.opt.StreamingCredentialsProvider == nil {
+		return
+	}
+	// Size the re-auth worker semaphore for the COMBINED ceiling of every pool
+	// the hook is registered on: the same hook drives the main pool AND the
+	// (possibly larger) dedicated pipeline pool, so a credential rotation must
+	// be able to re-AUTH connections from both concurrently. Sizing to only the
+	// main PoolSize would serialize pipeline re-auths behind PoolSize workers,
+	// leaving pipeline capacity unavailable well past reAuthTimeout.
+	workers := c.connPool.Size()
+	if pp := c.getPipelinePool(); pp != nil {
+		workers += pp.Size()
+	}
+	c.streamingCredentialsManager = streaming.NewManagerWithWorkers(c.connPool, c.opt.PoolTimeout, workers)
+	c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+	if pp := c.getPipelinePool(); pp != nil {
+		pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+	}
+}
+
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
 	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
 		var err error
@@ -892,6 +918,13 @@ func (opt *Options) resolveCredentials(ctx context.Context) (username, password 
 		username, password = opt.Username, opt.Password
 	}
 	return username, password, nil
+}
+
+// sendAuth reports whether initConn authenticates with the given credentials:
+// always with a password, and with a username alone only when
+// AuthEmptyPassword is set.
+func (opt *Options) sendAuth(username, password string) bool {
+	return password != "" || (username != "" && opt.AuthEmptyPassword)
 }
 
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
@@ -1045,7 +1078,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// be used. Remember that negotiated fallback: configured Protocol remains 3,
 	// but CSC must not serve without RESP3 invalidations.
 	helloFallbackToRESP2 := false
-	helloCmd := conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName)
+	sendAuth := c.opt.sendAuth(username, password)
+	helloCmd := conn.hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName, sendAuth)
 	if initErr = helloCmd.Err(); initErr == nil {
 		// Authentication successful with HELLO command
 		helloOK = true
@@ -1061,7 +1095,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return initErr
 	} else {
 		helloFallbackToRESP2 = c.opt.Protocol == 3
-		if username != "" || password != "" {
+		if sendAuth {
 			// Try legacy AUTH command if HELLO failed.
 			if username != "" {
 				initErr = conn.AuthACL(ctx, username, password).Err()
@@ -2416,6 +2450,10 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 	// Parse +OK.
 	if err := statusCmd.readReply(rd); err != nil {
+		// A rejected MULTI (e.g. NOPERM) does not stop the server from
+		// replying to the commands that follow it and to EXEC, so those
+		// replies are still owed on this connection.
+		cn.MarkCloseOnPut("tx: MULTI rejected")
 		return err
 	}
 
@@ -2448,6 +2486,13 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 
 	if line[0] != proto.RespArray {
 		return fmt.Errorf("redis: expected '*', but got line %q", line)
+	}
+	// EXEC replies once per queued command. A command the server rejects
+	// without queuing (WATCH or MULTI inside MULTI) shortens the array, so the
+	// replies would be read into the wrong commands; a longer array would leave
+	// replies unread on the connection.
+	if n, err := strconv.Atoi(string(line[1:])); err != nil || n != len(cmds) {
+		return fmt.Errorf("redis: EXEC returned %q for %d commands", line, len(cmds))
 	}
 
 	return nil
@@ -2555,23 +2600,7 @@ func NewClient(opt *Options) *Client {
 		c.pipelinePool = ref
 	}
 
-	if opt.StreamingCredentialsProvider != nil {
-		// Size the re-auth worker semaphore for the COMBINED ceiling of every pool
-		// the hook is registered on: the same hook drives the main pool AND the
-		// (possibly larger) dedicated pipeline pool, so a credential rotation must
-		// be able to re-AUTH connections from both concurrently. Sizing to only the
-		// main PoolSize would serialize pipeline re-auths behind PoolSize workers,
-		// leaving pipeline capacity unavailable well past reAuthTimeout.
-		workers := c.connPool.Size()
-		if pp := c.getPipelinePool(); pp != nil {
-			workers += pp.Size()
-		}
-		c.streamingCredentialsManager = streaming.NewManagerWithWorkers(c.connPool, c.opt.PoolTimeout, workers)
-		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
-		if pp := c.getPipelinePool(); pp != nil {
-			pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())
-		}
-	}
+	c.initStreamingCredentials()
 
 	// Create metadata independently of CSC. The zero config reuses the package
 	// default without allocating a store.
