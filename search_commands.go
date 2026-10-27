@@ -1242,9 +1242,6 @@ func (cmd *AggregateCmd) Clone() Cmder {
 // FTAggregateWithArgs - Performs a search query on an index and applies a series of aggregate transformations to the result.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // This function also allows for specifying additional options such as: Verbatim, LoadAll, Timeout, Steps, WithCursor, Params, and DialectVersion.
-// On ClusterClient, FT.CURSOR READ/DEL and FT.AGGREGATE with WithCursor route
-// by the slot of the index name and go to the slot master, so use the same
-// index name for the aggregate and its cursor calls.
 // For more information, please refer to the Redis documentation:
 // [FT.AGGREGATE]: (https://redis.io/commands/ft.aggregate/)
 func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd {
@@ -1733,9 +1730,6 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 
 // FTCursorDel - Deletes a cursor from an existing index.
 // The 'index' parameter specifies the index from which to delete the cursor, and the 'cursorId' parameter specifies the ID of the cursor to delete.
-// On ClusterClient, FT.CURSOR READ/DEL and FT.AGGREGATE with WithCursor route
-// by the slot of the index name and go to the slot master, so use the same
-// index name for the aggregate and its cursor calls.
 // For more information, please refer to the Redis documentation:
 // [FT.CURSOR DEL]: (https://redis.io/commands/ft.cursor-del/)
 func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *StatusCmd {
@@ -1751,10 +1745,6 @@ func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *S
 //   - "total_results" (int): see FTAggregateResult.Total.
 //   - "results" ([]map[string]interface{}): one map of fields per row.
 //   - "warning" ([]string): server warnings (RESP3 only; nil on RESP2).
-//
-// On ClusterClient, FT.CURSOR READ/DEL and FT.AGGREGATE with WithCursor route
-// by the slot of the index name and go to the slot master, so use the same
-// index name for the aggregate and its cursor calls.
 //
 // For more information, please refer to the Redis documentation:
 // [FT.CURSOR READ]: (https://redis.io/commands/ft.cursor-read/)

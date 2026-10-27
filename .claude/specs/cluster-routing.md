@@ -44,7 +44,7 @@ When `MOVED` points at the same address we just used, that's a stale DNS cache, 
 | `ReqAllNodes` | Broadcast to all masters **and** replicas. (`DEBUG OBJECT`, etc.) |
 | `ReqAllShards` | Broadcast to all masters only. (`DBSIZE`, `KEYS`, `SCAN` orchestration.) |
 | `ReqMultiShard` | Group keys by slot, fan out per slot. (`MGET`, `MSET`, `DEL` with cross-shard keys.) |
-| `ReqSpecial` | Custom resolver; e.g. `FT.CURSOR` runs on the node `process` picked by the index slot (see below). |
+| `ReqSpecial` | Custom resolver; e.g. `FT.CURSOR` is sticky-routed by cursor ID. |
 
 ### Response policies
 
@@ -129,7 +129,7 @@ The `IsClusterMode` option (#3255) flips routing behaviour for ElastiCache clust
 - **`Watch`/`MULTI`/`EXEC` (TxPipeline)**: all keys must hash to the same slot. Cross-slot returns `ErrCrossSlot` immediately and sets the error on every queued command. This is a Redis Cluster protocol limit, not a client choice.
 - **`Pipeline`**: no restriction. Commands are grouped by slot and dispatched in parallel; each shard sees only the commands targeting it. This is why `Pipeline` can succeed where `TxPipeline` would fail.
 - **`Eval`/`EvalSha`**: routed by the **first key in `KEYS`**. Scripts that read multiple keys must declare them all in `KEYS` and all of them must hash to the same slot. If your script touches a key it didn't declare, you'll get cluster-routing errors at runtime.
-- **RediSearch cursors**: a cursor lives on the node that ran `FT.AGGREGATE`. `FT.AGGREGATE ... WITHCURSOR` and `FT.CURSOR READ/DEL` route by the slot of the index name (`ftCursorIndexPos`, applied in `cmdSlotWithPos`) and always go to the slot master, also with `ReadOnly`. `FT.AGGREGATE` without `WITHCURSOR` stays keyless. A `{hashtag}` in the index name picks the master (#4098).
+- **`FT.CURSOR` and similar paginated commands**: sticky routing by cursor ID via `ReqSpecial`, so pagination stays on the node that owns the cursor.
 
 ---
 
@@ -137,7 +137,7 @@ The `IsClusterMode` option (#3255) flips routing behaviour for ElastiCache clust
 
 Recurring shape of cluster bugs:
 
-- **Wrong slot computation**: byte-slice keys (#3049), commands with non-key first arg (`COUNTKEYSINSLOT` #3327), missing keyless markers (`WAIT` #3615, `TIME` #3722), FT cursors routed by cursor id instead of the node that holds the cursor (#4098).
+- **Wrong slot computation**: byte-slice keys (#3049), commands with non-key first arg (`COUNTKEYSINSLOT` #3327), missing keyless markers (`WAIT` #3615, `TIME` #3722).
 - **Race in node accounting**: `clusterNodes.Addrs()` returning a shared slice (#3219).
 - **Replica routing fallbacks**: `slotClosestNode` not handling all-failing case (#3043).
 - **Treating recoverable failures as fatal**: `MASTERDOWN` (#3164), `dial tcp` errors during failover (#3786).
