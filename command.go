@@ -5686,7 +5686,13 @@ func peekCommandInfoReplyType(rd *proto.Reader, depth int) (byte, int, error) {
 			return b[0], depth, nil
 		}
 		n, err := rd.ReadAttributeLen()
-		if err != nil {
+		if err == Nil {
+			// A null attribute (|-1) is not valid RESP3, but the header is
+			// already consumed and carries no pairs, so unwrap it like an empty
+			// attribute. Returning Nil here would make the scalar readers treat
+			// the wrapped value as consumed and leave it on the wire.
+			n = 0
+		} else if err != nil {
 			return 0, depth, err
 		}
 		for range n {
