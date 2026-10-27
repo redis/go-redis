@@ -216,3 +216,51 @@ func TestClusterFDSlotTableIgnoresStaleCachedSlot(t *testing.T) {
 		t.Fatal("the key owner's child was stored under the stale cached slot")
 	}
 }
+
+// Legacy routing hashes an empty key to a random slot on every call. The child
+// stored for a slot must still be the child of that slot's master.
+func TestClusterFDSlotTableEmptyKeyStoresSlotOwner(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	t.Cleanup(func() { _ = cc.Close() })
+	cc.opt.DisableRoutingPolicies = true
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ap.Close() })
+	r := ap.clusterFD
+	if r == nil {
+		t.Fatal("cluster full duplex did not engage")
+	}
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		if ch, closed := r.childFor(ctx, NewStringCmd(ctx, "get", "")); ch == nil || closed {
+			t.Fatalf("no FD child (closed=%v)", closed)
+		}
+	}
+	table := r.slots.Load()
+	if table == nil {
+		t.Fatal("no slot table")
+	}
+	stored := 0
+	for slot := range table.child {
+		ch := table.child[slot].Load()
+		if ch == nil {
+			continue
+		}
+		stored++
+		node, err := table.state.slotMasterNode(slot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.mu.RLock()
+		want := r.children[node.Client]
+		r.mu.RUnlock()
+		if ch != want {
+			t.Fatalf("slot %d: child %p, want the slot owner's child %p", slot, ch, want)
+		}
+	}
+	if stored == 0 {
+		t.Fatal("no slot was stored")
+	}
+}

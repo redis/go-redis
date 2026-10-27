@@ -274,7 +274,15 @@ func (r *clusterFDRouter) childFor(ctx context.Context, cmd Cmder) (*AutoPipelin
 		if ch, slot, st := r.slotTableLookup(ctx, cmd); ch != nil {
 			return ch, false
 		} else if slot >= 0 && st != nil {
-			ch, closed := r.childForSlow(ctx, cmd)
+			// Resolve the node for this slot in this state. Recomputing the slot
+			// can give another one: legacy routing hashes an empty key to a random
+			// slot per call, which would store one master's child under another
+			// master's slot.
+			node, err := st.slotMasterNode(slot)
+			if err = r.cc.noteTopologySelectionError(err); err != nil || node == nil {
+				return nil, false
+			}
+			ch, closed := r.getOrCreateChild(node.Client)
 			// Only a slot with an owner in this state: for an uncovered slot
 			// slotMasterNode picks a master per call, skipping failing or loading
 			// nodes, which a fixed entry would not.
