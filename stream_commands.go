@@ -92,7 +92,7 @@ type StreamCmdable interface {
 //   - IdempotentID: A unique identifier for the message (used with IDMP)
 //   - IdempotentAuto: If true, Redis will auto-generate an idempotent ID based on message content (IDMPAUTO)
 //
-// ProducerID and IdempotentID are mutually exclusive with IdempotentAuto.
+// IdempotentID is mutually exclusive with IdempotentAuto.
 // When using idempotent production, ID must be "*" or empty.
 type XAddArgs struct {
 	Stream     string

@@ -72,6 +72,7 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	child.Unordered = false
 	child.MaxConcurrentBatches = 1
 	child.NumShards = 1
+	child.FullDuplexPipes = 1 // one pipe per master; a parent's count must not multiply per node
 	child.contentSharded = false
 	// Redirect handling: each child's FD engine re-runs a MOVED/ASK (or retryable)
 	// reply through the redirect-aware ClusterClient instead of its own node-local
@@ -81,7 +82,7 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	// the reply, not the source node. startAttempt/writtenAt are unused here —
 	// cc.process owns its own MaxRedirects budget.
 	child.clusterReprocess = func(ctx context.Context, cmd Cmder, _ int, _ time.Time) error {
-		return cc.process(ctx, cmd)
+		return cc.process(cscBypass(ctx), cmd)
 	}
 	// Connection-failure recovery budget for each child engine. A node.Client
 	// normalizes MaxRetries to -1 (cluster retries live in MaxRedirects), which the
@@ -89,6 +90,13 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	// command on the first socket error. Give the child the cluster's MaxRedirects
 	// so a transient node blip replays the unacked tail on a fresh connection.
 	child.clusterRetryBudget = cc.opt.MaxRedirects
+	// Connection-error and lease-failure recovery: re-issue the child's
+	// replayable work through the ClusterClient pipeline, which routes each
+	// command by its slot against live topology, instead of only on a fresh
+	// connection to this node. A node removed or replaced by topology change
+	// would otherwise exhaust the budget and fail every accepted command on it.
+	// The engine passes each group's remaining budget as the redirect bound.
+	child.fdReroute = cc.processPipelineRetries
 	return &clusterFDRouter{
 		parent:   parent,
 		cc:       cc,
@@ -99,7 +107,7 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 }
 
 // submit routes cmd to the FD child that owns its slot. It is called from
-// AutoPipeliner.submit AFTER diversion and preflight have been decided, so cmd
+// AutoPipeliner.submit AFTER routing and diversion have been decided, so cmd
 // is a batchable single-node command. On any routing miss (keyless command,
 // unresolved slot, topology not loaded, or a node whose client turns out not to
 // be FD-capable) it falls back to the normal cluster Process path — correct,
@@ -125,8 +133,8 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// Submit straight to the child's FD engine, skipping child.submit
 	// (AutoPipeliner.submit). The parent already decided this command is
 	// pipelineable — diversion (readTimeout/runsOutsidePipeline/isBlockingCmd/
-	// HIMPORT/mustDivert) and preflight ran above — so the child's submit would only
-	// re-run that same classification, hit its nil preflight, and build a finish
+	// HIMPORT/routeCommand) and validation ran above — so the child's submit would only
+	// re-run that same classification, hit its nil routing callback, and build a finish
 	// closure: pure per-command CPU on the hot path (measured ~1/3 of submit cost is
 	// this second pass). child.fd is non-nil (getOrCreateChild screened it).
 	b := child.fd.submit(ctx, cmd)
@@ -169,6 +177,9 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		cmd.SetErr(nil)
 		b = child.fd.submit(ctx, cmd)
 	}
+	if b == completedBatch {
+		cmd.setClusterRoutingDecision(nil)
+	}
 	if !r.blocking {
 		cmd.setReady(b)
 	}
@@ -180,6 +191,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 // completedBatch sentinel immediately (no host goroutine, nothing to wait on).
 func (r *clusterFDRouter) rejectClosed(cmd Cmder) AutoFuture {
 	cmd.SetErr(ErrClosed)
+	cmd.setClusterRoutingDecision(nil)
 	if !r.blocking {
 		cmd.setReady(completedBatch)
 	}
@@ -199,17 +211,15 @@ func (r *clusterFDRouter) divertToProcess(ctx context.Context, cmd Cmder) AutoFu
 // slot, topology not loaded, or a non-FD node), and (nil, true) when the router
 // is closing (submit must then reject with ErrClosed rather than divert).
 func (r *clusterFDRouter) childFor(ctx context.Context, cmd Cmder) (*AutoPipeliner, bool) {
-	slot := r.cc.cmdSlot(cmd, -1)
+	// Reuse admission metadata through node selection and redirect retries.
+	decision := r.cc.autoPipelineRoutingDecision(ctx, cmd)
+	slot := r.cc.cmdSlotWithDecision(cmd, decision, -1)
 	if slot < 0 {
 		// Keyless command: no single owning node. Let it run through Process, which
 		// applies the configured ShardPicker.
 		return nil, false
 	}
-	state, err := r.cc.state.Get(ctx)
-	if err != nil {
-		return nil, false
-	}
-	node, err := state.slotMasterNode(slot)
+	node, err := r.cc.cmdNodeWithDecision(ctx, slot, decision)
 	if err != nil || node == nil {
 		return nil, false
 	}

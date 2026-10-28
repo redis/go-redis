@@ -554,7 +554,8 @@ func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacit
 }
 
 // CFReserveWithArgs creates an empty Cuckoo filter with the specified options.
-// This function allows for specifying additional options such as bucket size and maximum number of iterations.
+// This function allows for specifying additional options such as bucket size,
+// maximum number of iterations and expansion rate.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
 	args := []interface{}{"CF.RESERVE", key, options.Capacity}
@@ -746,7 +747,8 @@ func (c cmdable) CFInfo(ctx context.Context, key string) *CFInfoCmd {
 }
 
 // CFInsert inserts elements into a Cuckoo filter.
-// This function also allows for specifying additional options such as capacity, error rate, expansion rate, and non-scaling behavior.
+// This function also allows for specifying additional options such as capacity
+// and whether the filter must not be created when it does not exist.
 // Returns an array of booleans indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/cf.insert/
 func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *BoolSliceCmd {
@@ -760,7 +762,7 @@ func (c cmdable) CFInsert(ctx context.Context, key string, options *CFInsertOpti
 
 // CFInsertNX inserts elements into a Cuckoo filter only if they do not already exist in the filter.
 // This function also allows for specifying additional options such as:
-// capacity, error rate, expansion rate, and non-scaling behavior.
+// capacity and whether the filter must not be created when it does not exist.
 // Returns an array of integers indicating whether each element was added to the filter or not.
 // For more information - https://redis.io/commands/cf.insertnx/
 func (c cmdable) CFInsertNX(ctx context.Context, key string, options *CFInsertOptions, elements ...interface{}) *IntSliceCmd {
@@ -804,6 +806,8 @@ func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interfac
 
 // CMSIncrBy increments the count of one or more items in a Count-Min Sketch filter.
 // Returns an array of integers representing the updated count of each item.
+// On a per-item error, Err() returns the first error and the failed items are 0
+// in Val(); use Do() to get per-item errors.
 // For more information - https://redis.io/commands/cms.incrby/
 func (c cmdable) CMSIncrBy(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
 	args := make([]interface{}, 2, 2+len(elements))
@@ -967,8 +971,8 @@ func isValidCMSCellSize(cellSize int64) bool {
 }
 
 // CMSMerge merges multiple Count-Min Sketch filters into a single filter.
-// The destination filter must not exist and will be created with the dimensions of the first source filter.
-// The number of items in each source filter must be equal.
+// The destination filter must already be initialized and all filters must have
+// the same width and depth. The filters do not need to contain the same number of items.
 // Returns OK on success or an error if the filters could not be merged.
 // For more information - https://redis.io/commands/cms.merge/
 func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd {
@@ -982,8 +986,8 @@ func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...str
 }
 
 // CMSMergeWithWeight merges multiple Count-Min Sketch filters into a single filter with weights for each source filter.
-// The destination filter must not exist and will be created with the dimensions of the first source filter.
-// The number of items in each source filter must be equal.
+// The destination filter must already be initialized and all filters must have
+// the same width and depth. The filters do not need to contain the same number of items.
 // Returns OK on success or an error if the filters could not be merged.
 // For more information - https://redis.io/commands/cms.merge/
 func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd {

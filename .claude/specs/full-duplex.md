@@ -55,7 +55,8 @@ aggregating correctly; only single-node commands route through a child.
 
 - **Child config**: derived once from the parent's `AutoPipelineOptions`,
   forcing the ordered single-shard FD combo (`FullDuplex/!Unordered/
-  MaxConcurrentBatches<=1/NumShards<=1`) the engine requires, and stripping the
+  MaxConcurrentBatches<=1/NumShards<=1/FullDuplexPipes<=1`) the engine requires
+  (one pipe per master: a parent's `FullDuplexPipes` must not multiply per node), and stripping the
   cluster-only `contentSharded` bit so it cannot leak onto a node child.
 - **Redirects**: each child's `fdEngine.reprocess` is wired to
   `clusterReprocess`, which re-runs a MOVED/ASK (or otherwise retryable) reply
@@ -69,6 +70,27 @@ aggregating correctly; only single-node commands route through a child.
   tail on the first socket error. The router injects `cc.opt.MaxRedirects` as
   `clusterRetryBudget`, which `fdEngine.retryBudget()` substitutes in when
   `redirectAware`.
+- **Connection-error and lease-failure recovery (`fdReroute`)**: the router sets
+  each child's `AutoPipelineOptions.fdReroute` to `cc.processPipelineRetries`. When a
+  child's session drops, the replayable tail (after the budget partition and the
+  sent-`NoRetry` split, same set and order as the same-connection replay) runs
+  through the ClusterClient pipeline instead, which routes each command by its slot
+  against live topology. When lease retries are spent, the carry and then the queue
+  go the same way instead of failing. So a node that topology GC closed or replaced
+  does not strand its accepted commands. The Close-time flush (`flushReqs`) also
+  goes through the owner, so a child closed by topology GC does not flush through
+  its dropped node. `fdEngine.rerouteReqs` reuses `flushCarryBudgeted`: each group
+  passes its remaining budget (`fdCarryRemainingRetries`) as the owner's retry
+  bound, so a command never runs more than budget+1 times in total. `runReroute`
+  returns a per-command transport error even when the owner returns an earlier
+  Redis error (`redis.Nil`), so the abort-on-transport-failure rule still holds.
+  `flushReqsVia` reports per-command metrics before it completes a command, as the
+  reader does. Standalone FD (no owner) keeps the same-connection replay and
+  fail-fast paths.
+- **Hooks on recovery**: recovery attempts (the reroute and the MOVED/ASK
+  reprocess) run nested inside the command's `hostHook`, so node pipeline/process
+  hooks see them as nested spans. Making internal recovery hookless is a separate
+  hook-semantics change.
 - **Fallback to `Process`**: routing (`childFor`/`getOrCreateChild`) resolves the
   owning node from live cluster state on every submit. A keyless command, an
   unresolved slot, a not-yet-loaded topology, or a node whose client turns out
@@ -178,13 +200,3 @@ These are documented gaps, tracked as follow-ups, not fixed in the current PR.
   it introduced deadlocked against the off-pipe retry's executor guard (codex P1 on
   #4002). Composing the parent chain into the node engine's single host is the follow-up.
 
-- **Cluster FD connection-error carries stay on the origin node.** When a node child's
-  FD session hits a CONNECTION error, `fd.run` replays the unacked tail on a fresh
-  connection from that same node client's fixed-address pool (bounded by the cluster's
-  `MaxRedirects`). A reply-level redirect (MOVED/ASK) already re-resolves through
-  `cc.process`, but a connection error does not: if topology GC has closed or replaced
-  that master, the accepted commands exhaust their budget with `ErrClosed`/a dial error
-  instead of routing to the replacement. Re-resolving recovered connection-error carries
-  through the parent cluster path (preserving the sent/`NoRetry` guard) needs the
-  `fdConnErr` branch of the recovery loop restructured, so it is a follow-up (codex P2
-  on #4002).

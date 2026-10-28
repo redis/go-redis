@@ -45,7 +45,8 @@ Here's how to get started with your code contribution:
 5.  If you like the change and think the project could use it, send a
     pull request
 
-To see what else is part of the automation, run `invoke -l`
+To see what else is part of the automation, read the target definitions and
+recipes in the [Makefile](Makefile).
 
 
 ## Testing
