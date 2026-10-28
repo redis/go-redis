@@ -1246,6 +1246,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 		sentinelReachable = true
 		addrs := parseReplicaAddrs(replicas, useDisconnected)
 		if len(addrs) == 0 {
+			_ = sentinel.Close()
 			continue
 		}
 		// Push working sentinel to the top.
