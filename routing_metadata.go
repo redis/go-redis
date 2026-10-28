@@ -97,7 +97,10 @@ type routingCommandMeta struct {
 	keySpecs []routingKeySpec
 	// template holds the ordinary keyed decision shared by this immutable view.
 	// Its invocation-specific slot is stored on the admitted command.
-	template        *clusterRoutingDecision
+	template *clusterRoutingDecision
+	// defaultTemplate is set (atomically, 1) once the default resolver produced
+	// exactly template for this command; the fast path then uses it directly.
+	defaultTemplate uint32
 	readOnly        bool
 	keyState        routingKeyState
 	keyPlanComplete bool

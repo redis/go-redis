@@ -2564,6 +2564,13 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 			return false, c.legacyRoutingDecision(cmd).policyErr
 		}
 		decision := c.autoPipelineRoutingDecision(ctx, cmd)
+		// A fast-route hit is not stored on the command. The half-duplex face routes
+		// again at flush, so pin it here: a metadata refresh while the command is
+		// queued must not move it. The full-duplex router routes inside this submit
+		// and needs no pin.
+		if ap.clusterFD == nil && cmd.clusterRoutingDecision() == nil {
+			cmd.setClusterRoutingDecision(decision)
+		}
 		if decision.policyErr != nil || decision.policy == nil {
 			return false, decision.policyErr
 		}
@@ -2659,8 +2666,12 @@ func (c *ClusterClient) autoPipelineRoutingDecision(
 	if decision := c.peekAutoPipelineRoutingDecision(cmd); decision != nil {
 		return decision
 	}
+	if t := c.fastRouteLookup(cmd); t != nil {
+		return t // the slot is cached on cmd; the shared template is not stored on it
+	}
 	decision := c.resolveCommandRoutingDecision(ctx, cmd)
 	if template := sharedRoutingDecision(cmd, &decision); template != nil {
+		c.fastRouteRemember(cmd, template)
 		cmd.setClusterRoutingDecision(template)
 		return template
 	}
