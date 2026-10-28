@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Username without a password:** a `Username` with an empty `Password` again sends no `AUTH`, as before [#4161](https://github.com/redis/go-redis/pull/4161). Redis Enterprise and Redis Cloud databases with unauthenticated access can reject an empty password, so #4161 could break configs that set a username (e.g. `default`) without a password. Redis OSS accepts it. To authenticate an ACL user created with `nopass`, set `AuthEmptyPassword: true` (or `auth_empty_password=true` in the URL); for sentinel connections use `SentinelAuthEmptyPassword` (`sentinel_auth_empty_password=true`). The rule also applies to credentials from `CredentialsProvider`, `CredentialsProviderContext` and `StreamingCredentialsProvider` used when a connection is set up; re-authentication on a credentials refresh is unchanged. The client-side cache keeps a separate namespace for a username that sends no `AUTH`.
 - **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
 - Cluster routing shares command metadata with client-side caching for key
   extraction and read-only status. Existing default routing and cluster-wide
@@ -55,6 +56,7 @@
   the cursor. Cursor ownership and reply-parsing changes are deferred to a
   separate PR.
 - **Per-node TLS verification for cluster URLs:** `ParseClusterURL` accepts `tls_verify_node_host=true` on `rediss://` URLs. The parameter clears `TLSConfig.ServerName`, so each node is verified against the host it is dialed at and not against the host of the first URL. Use it when each node has a certificate for its own host. The default is unchanged: every node is verified against the host of the first URL, so clusters that use one certificate and announce their nodes by IP continue to work. `rediss://` cluster URLs now also set `MinVersion: tls.VersionTLS12`, as `ParseURL` and `ParseFailoverURL` do ([#4145](https://github.com/redis/go-redis/pull/4145)).
+- **Failover client with `StreamingCredentialsProvider`:** `NewFailoverClient` now creates the streaming credentials manager, so new connections no longer panic in `initConn` ([#4182](https://github.com/redis/go-redis/pull/4182)).
 
 # 9.23.0 (2026-10-05)
 

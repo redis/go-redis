@@ -677,7 +677,7 @@ func (p *ConnPool) refreshStaleSpare(ctx context.Context, nowNs int64) {
 		p.connsMu.Unlock()
 		return
 	}
-	removed := p.removeConn(oldest)
+	removed, _ := p.removeConn(oldest)
 	countCb := getMetricConnectionCountCallback()
 	p.connsMu.Unlock()
 
@@ -1067,16 +1067,18 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	// Record pending request increment (UpDownCounter)
 	// Pass pool name explicitly since we don't have a connection yet
 	poolName := p.cfg.Name
-	if cb := getMetricPendingRequestsCallback(); cb != nil {
-		cb(ctx, 1, nil, poolName)
+	// Read once so the -1 goes to the same callback as the +1, even if the recorder changes while waiting.
+	pendingCb := getMetricPendingRequestsCallback()
+	if pendingCb != nil {
+		pendingCb(ctx, 1, nil, poolName)
 	}
 	defer func() {
 		if err != nil {
 			// Failed to get connection, decrement pending requests
 			atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 			// Record pending request decrement on failure
-			if cb := getMetricPendingRequestsCallback(); cb != nil {
-				cb(ctx, -1, nil, poolName)
+			if pendingCb != nil {
+				pendingCb(ctx, -1, nil, poolName)
 			}
 		}
 		if err == ErrPoolTimeout {
@@ -1178,8 +1180,8 @@ retryIdle:
 		// Decrement pending requests (connection acquired successfully)
 		atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 		// Record pending request decrement (UpDownCounter)
-		if cb := getMetricPendingRequestsCallback(); cb != nil {
-			cb(ctx, -1, cn, poolName)
+		if pendingCb != nil {
+			pendingCb(ctx, -1, cn, poolName)
 		}
 
 		// Only now, with this lease's connection taken and checked.
@@ -1254,8 +1256,8 @@ retryIdle:
 	// Decrement pending requests (connection acquired successfully)
 	atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 	// Record pending request decrement (UpDownCounter)
-	if cb := getMetricPendingRequestsCallback(); cb != nil {
-		cb(ctx, -1, newcn, poolName)
+	if pendingCb != nil {
+		pendingCb(ctx, -1, newcn, poolName)
 	}
 
 	return newcn, nil
@@ -1788,7 +1790,7 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	}
 
 	p.connsMu.Lock()
-	removed, wasIdle := p.removeConnState(cn)
+	removed, wasIdle := p.removeConn(cn)
 	countCb := getMetricConnectionCountCallback()
 	p.connsMu.Unlock()
 
@@ -1799,17 +1801,16 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	// Only emit metric decrements if we actually removed the connection from the map.
 	// If removed is false, Close() already removed it and emitted the -1 delta.
 	if removed {
-		// A connection still in idleConns is counted idle (e.g. one a
-		// handoff claimed straight from the idle list); any other is used.
-		fromState := MetricStateUsed
+		// A connection parked in idleConns (e.g. waiting for a handoff) was counted as idle.
+		state := MetricStateUsed
 		if wasIdle {
-			fromState = MetricStateIdle
+			state = MetricStateIdle
 		}
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, fromState, "")
+			cb(ctx, cn, state, "")
 		}
 		if countCb != nil {
-			countCb(ctx, -1, cn, fromState, false)
+			countCb(ctx, -1, cn, state, false)
 		}
 	}
 
@@ -1880,19 +1881,14 @@ func (p *ConnPool) recordConnectionMetrics(ctx context.Context, cn *Conn, reason
 func (p *ConnPool) removeConnWithLock(cn *Conn) (bool, connectionCountCallback) {
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
-	return p.removeConn(cn), getMetricConnectionCountCallback()
+	removed, _ := p.removeConn(cn)
+	return removed, getMetricConnectionCountCallback()
 }
 
 // removeConn removes a connection from the pool's internal data structures.
-// Returns true if the connection was present and removed, false otherwise.
-func (p *ConnPool) removeConn(cn *Conn) bool {
-	removed, _ := p.removeConnState(cn)
-	return removed
-}
-
-// removeConnState is removeConn that also reports whether the connection was
-// in idleConns, i.e. counted in the idle metric state. Caller holds connsMu.
-func (p *ConnPool) removeConnState(cn *Conn) (removed, wasIdle bool) {
+// Returns whether the connection was present and removed, and whether it was
+// taken out of idleConns.
+func (p *ConnPool) removeConn(cn *Conn) (removed, wasIdle bool) {
 	cid := cn.GetID()
 	if _, exists := p.conns[cid]; !exists {
 		return false, false
@@ -2049,7 +2045,7 @@ func (p *ConnPool) RetireConns(ctx context.Context, conns []*Conn, reason string
 			continue
 		}
 		if _, isIdle := idleConnSet[cn]; isIdle {
-			if p.removeConn(cn) {
+			if removed, _ := p.removeConn(cn); removed {
 				toClose = append(toClose, cn)
 			}
 			continue
@@ -2075,7 +2071,6 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 	ctx := context.Background()
 
 	p.connsMu.Lock()
-	defer p.connsMu.Unlock()
 
 	idleConnSet := make(map[*Conn]struct{}, len(p.idleConns))
 	for _, ic := range p.idleConns {
@@ -2083,24 +2078,38 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 	}
 
 	var firstErr error
+	var toClose []*Conn
 	for _, cn := range p.conns {
 		if fn(cn) {
-			var err error
 			if _, isIdle := idleConnSet[cn]; isIdle {
-				// Idle connection - remove from pool and close.
+				// Idle connection - remove from pool, close it below.
 				p.removeConn(cn)
-				p.recordConnectionMetrics(ctx, cn, CloseReasonFailover, MetricStateIdle, getMetricConnectionCountCallback())
-				err = p.closeConn(cn)
+				toClose = append(toClose, cn)
 			} else {
 				// Used connection - set closeReason and close the connection.
 				// The connection remains in p.conns. When putConn() is called later,
 				// it will close the connection instead of pooling it.
 				cn.closeReason.Store(CloseReasonFailover)
-				err = cn.Close()
+				if err := cn.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
 			}
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
+		}
+	}
+	countCb := getMetricConnectionCountCallback()
+	p.connsMu.Unlock()
+
+	// Run OnRemove so hooks drop per-connection state (e.g. streaming
+	// credentials listeners) for the idle conns removed here.
+	if hookManager := p.hookManager.Load(); hookManager != nil {
+		for _, cn := range toClose {
+			hookManager.ProcessOnRemove(ctx, cn, errors.New(CloseReasonFailover))
+		}
+	}
+	for _, cn := range toClose {
+		p.recordConnectionMetrics(ctx, cn, CloseReasonFailover, MetricStateIdle, countCb)
+		if err := p.closeConn(cn); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	return firstErr
