@@ -4197,7 +4197,7 @@ type XInfoStreamGroup struct {
 	Name            string
 	LastDeliveredID string
 	EntriesRead     int64
-	Lag             int64
+	Lag             int64 // -1 when the lag cannot be determined, as in XInfoGroup
 	PelCount        int64
 	NackedCount     uint64 // redis version 8.8, number of NACK'd messages in the group
 	Pending         []XInfoStreamGroupPending
@@ -4395,9 +4395,12 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 			case "lag":
 				// lag: the number of entries in the stream that are still waiting to be delivered
 				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
+				// In that case, we return -1.
 				group.Lag, err = rd.ReadInt()
 				if err != nil && err != Nil {
 					return nil, err
+				} else if err == Nil {
+					group.Lag = -1
 				}
 			case "pel-count":
 				group.PelCount, err = rd.ReadInt()
@@ -5684,7 +5687,13 @@ func peekCommandInfoReplyType(rd *proto.Reader, depth int) (byte, int, error) {
 			return b[0], depth, nil
 		}
 		n, err := rd.ReadAttributeLen()
-		if err != nil {
+		if err == Nil {
+			// A null attribute (|-1) is not valid RESP3, but the header is
+			// already consumed and carries no pairs, so unwrap it like an empty
+			// attribute. Returning Nil here would make the scalar readers treat
+			// the wrapped value as consumed and leave it on the wire.
+			n = 0
+		} else if err != nil {
 			return 0, depth, err
 		}
 		for range n {

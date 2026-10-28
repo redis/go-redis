@@ -195,6 +195,7 @@ func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
 
 	// The readonly FLAG is the normative source; the ReadOnly convenience
 	// bool is deliberately ignored.
+	var moduleCmd, movableKeys bool
 	for _, f := range info.Flags {
 		switch f {
 		case "readonly":
@@ -203,6 +204,10 @@ func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
 			meta.bits |= cscFlagScriptRunner
 		case "blocking":
 			meta.bits |= cscFlagBlocking
+		case "module":
+			moduleCmd = true
+		case "movablekeys":
+			movableKeys = true
 		}
 	}
 	for _, t := range info.Tips {
@@ -235,8 +240,19 @@ func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
 		meta.step = int16(info.StepCount)
 	}
 
-	canExtract := (other == 0 && complete <= 1) || override.extraKeySpecs.permits(info, complete, other)
+	hasOverride := override.extraKeySpecs.permits(info, complete, other)
+	canExtract := (other == 0 && complete <= 1) || hasOverride
 	if !canExtract {
+		return meta
+	}
+
+	// Invalidation follows the positions getKeysFromCommand() reports: the
+	// module getkeys API, then getkeys_proc, then the legacy range; never a key
+	// spec. A module command that declares movable keys may register no getkeys
+	// callback and is then tracked by its legacy positions alone, usually none.
+	// Its spec positions cannot be checked against what the server tracks, so
+	// without an override vouching for the shape it must not be cached.
+	if moduleCmd && movableKeys && !hasOverride {
 		return meta
 	}
 

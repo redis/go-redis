@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -2020,6 +2021,13 @@ func ftInfoNumInt(val interface{}) int {
 		return int(v)
 	case float32:
 		return int(v)
+	case string:
+		// RESP2 answers the REPLY_KVNUM fields with bulk strings, which are
+		// doubles such as "4.539999961853027" and not always integers.
+		if f, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return int(f)
+		}
+		return internal.ToInteger(v)
 	default:
 		return internal.ToInteger(v)
 	}
@@ -2213,15 +2221,15 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 		ftInfo.GCStats = GCStats{}
 		for i := 0; i < len(gcStats); i += 2 {
 			if internal.ToLower(internal.ToString(gcStats[i])) == "bytes_collected" {
-				ftInfo.GCStats.BytesCollected = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.BytesCollected = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "total_ms_run" {
-				ftInfo.GCStats.TotalMsRun = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.TotalMsRun = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "total_cycles" {
-				ftInfo.GCStats.TotalCycles = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.TotalCycles = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "average_cycle_time_ms" {
@@ -2229,15 +2237,15 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "last_run_time_ms" {
-				ftInfo.GCStats.LastRunTimeMs = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.LastRunTimeMs = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "gc_numeric_trees_missed" {
-				ftInfo.GCStats.GCNumericTreesMissed = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.GCNumericTreesMissed = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "gc_blocks_denied" {
-				ftInfo.GCStats.GCBlocksDenied = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.GCBlocksDenied = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 		}
