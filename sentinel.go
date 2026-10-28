@@ -870,7 +870,9 @@ func (c *SentinelClient) pubSub() *PubSub {
 				return nil, err
 			}
 			// Track connection in PubSubPool
-			c.pubSubPool.TrackConn(cn)
+			if err := c.pubSubPool.TrackConn(cn); err != nil {
+				return nil, err
+			}
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
