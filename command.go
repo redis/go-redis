@@ -234,6 +234,7 @@ type Cmder interface {
 	// (in the autopipeline shard router) and reused at pipeline-flush routing.
 	cachedSlot() (int, bool)
 	setCachedSlot(int)
+	resetCachedSlot()
 	clusterRoutingDecision() *clusterRoutingDecision
 	setClusterRoutingDecision(*clusterRoutingDecision)
 	takeClusterRoutingDecision() *clusterRoutingDecision
@@ -514,6 +515,9 @@ func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
 }
 
 func (cmd *baseCmd) setClusterRoutingDecision(decision *clusterRoutingDecision) {
+	if decision == nil && cmd.routing.Load() == nil {
+		return // nothing to clear: a load instead of an atomic exchange
+	}
 	cmd.routing.Store(decision)
 }
 
@@ -656,6 +660,12 @@ func (cmd *baseCmd) setCachedSlot(slot int) {
 	if slot >= 0 && slot < 16384 {
 		cmd.slotCache = uint16(slot + 1)
 	}
+}
+
+// resetCachedSlot drops the cached slot, so a reused command gets one from its
+// new admission.
+func (cmd *baseCmd) resetCachedSlot() {
+	cmd.slotCache = 0
 }
 
 func (cmd *baseCmd) stepCount() int8 {
@@ -2639,7 +2649,10 @@ func (cmd *MapStringStringCmd) String() string {
 }
 
 // Scan scans the results from the map into a destination struct. The map keys
-// are matched in the Redis struct fields by the `redis:"field"` tag.
+// are matched in the Redis struct fields by the `redis:"field"` tag. If a field
+// fails to decode, Scan still sets every other field it can. One failing field
+// returns its error as is; several return them joined with errors.Join in key
+// order, so errors.Is and errors.As match any of them.
 func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 	cmd.await()
 	if cmd.err != nil {
@@ -2651,13 +2664,28 @@ func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 		return err
 	}
 
+	// cmd.val is a map, so order the field errors by key to return the same
+	// error on every call.
+	var errKeys []string
+	var keyErrs map[string]error
 	for k, v := range cmd.val {
 		if err := strct.Scan(k, v); err != nil {
-			return err
+			if keyErrs == nil {
+				keyErrs = make(map[string]error)
+			}
+			keyErrs[k] = err
+			errKeys = append(errKeys, k)
 		}
 	}
-
-	return nil
+	if len(errKeys) == 0 {
+		return nil
+	}
+	slices.Sort(errKeys)
+	errs := make([]error, len(errKeys))
+	for i, k := range errKeys {
+		errs[i] = keyErrs[k]
+	}
+	return hscan.JoinErrors(errs)
 }
 
 func (cmd *MapStringStringCmd) readReply(rd *proto.Reader) error {
