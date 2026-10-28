@@ -98,14 +98,6 @@ func (p *Processor) processPendingNotifications(
 		// Check if there's data available to read
 		var replyType byte
 		if bufferedContinuation {
-			// At a frame boundary with nothing of the next frame consumed: leave a
-			// partly buffered push frame for the next drain rather than read the
-			// rest under a deadline the handlers may have used up.
-			if processed {
-				if b, err := rd.Peek(1); err == nil && b[0] == proto.RespPush && !rd.HasBufferedFrame() {
-					return nil
-				}
-			}
 			for {
 				b, err := rd.Peek(1)
 				if err != nil {
@@ -123,6 +115,12 @@ func (p *Processor) processPendingNotifications(
 				if err := rd.DiscardNext(); err != nil {
 					return err
 				}
+			}
+			// At a push frame with nothing of it consumed (any attributes before it
+			// are gone): leave it for the next drain unless it is fully buffered,
+			// rather than read the rest under a deadline the handlers may have used up.
+			if processed && replyType == proto.RespPush && !rd.HasBufferedFrame() {
+				return nil
 			}
 		} else {
 			var err error

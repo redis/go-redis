@@ -134,3 +134,28 @@ func TestProcessor_BufferedDrainDoesNotLeavePartialAttribute(t *testing.T) {
 		t.Fatalf("handled %d frames, want 1", h.handled)
 	}
 }
+
+// A fully buffered attribute in front of a partly buffered push frame does not
+// get the push frame started: the attribute is discarded from the buffer (no
+// read), and the whole-frame check then applies to the push frame itself.
+func TestProcessor_BufferedDrainChecksPushAfterAttribute(t *testing.T) {
+	attr := "|1\r\n+meta\r\n+v\r\n"
+	first := append(append(append([]byte{}, invalidateFrame...), attr...), invalidateFrame[:21]...)
+	rd := &deadlineReader{first: first, rest: invalidateFrame[21:], cap: time.Millisecond}
+	r := proto.NewReaderSize(rd, 256)
+	p := NewProcessor()
+	h := &slowHandler{d: 3 * time.Millisecond} // the deadline passes during the first handler
+	if err := p.RegisterHandler("invalidate", h, false); err != nil {
+		t.Fatal(err)
+	}
+	rd.reset()
+	if err := p.ProcessPendingNotificationsBuffered(context.Background(), NotificationHandlerContext{}, r); err != nil {
+		t.Fatalf("drain failed after handling %d frames: %v", h.handled, err)
+	}
+	if h.handled != 1 {
+		t.Fatalf("handled %d frames, want 1", h.handled)
+	}
+	if b, _ := r.Peek(1); r.Buffered() != 21 || len(b) == 0 || b[0] != proto.RespPush {
+		t.Fatalf("%d bytes buffered, want the 21-byte prefix of the push frame", r.Buffered())
+	}
+}
