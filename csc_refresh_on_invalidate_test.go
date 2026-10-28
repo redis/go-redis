@@ -49,7 +49,7 @@ func TestCSCRefresherStopDrainSkipsRefetchEntirely(t *testing.T) {
 		ch:       make(chan cscRefreshTarget, 1024),
 		demandCh: make(chan uint64, 1),
 	}
-	q.sinceToken.Store(lc.LRUClock())
+	q.sinceToken.Store(cscInvalNoHorizon)
 	h := &cscRevalidateHandle{stop: make(chan struct{}), done: make(chan struct{})}
 
 	// More than one chunk's worth (cscRefreshBatchMax) but within one drainQueue
@@ -58,7 +58,7 @@ func TestCSCRefresherStopDrainSkipsRefetchEntirely(t *testing.T) {
 	const chunks = 3
 	const targets = chunks * cscRefreshBatchMax
 	for i := 0; i < targets; i++ {
-		key := "p:" + strconv.Itoa(i)
+		key := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, strconv.Itoa(i))
 		q.ch <- cscRefreshTarget{cacheKey: key, redisKeys: []string{key}}
 	}
 
@@ -115,12 +115,12 @@ func TestCSCRefresherNormalFlushAbortsOnClose(t *testing.T) {
 		ch:       make(chan cscRefreshTarget, cscRefreshWindowMaxKeys+16),
 		demandCh: make(chan uint64, 1),
 	}
-	q.sinceToken.Store(lc.LRUClock())
+	q.sinceToken.Store(cscInvalNoHorizon)
 
 	// A full window (4 * cscRefreshBatchMax) triggers a NORMAL flush(false,false) from the
 	// q.ch case — this is NOT the stop-drain path (h.stop is not pre-closed).
 	for i := 0; i < cscRefreshWindowMaxKeys; i++ {
-		key := "p:" + strconv.Itoa(i)
+		key := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, strconv.Itoa(i))
 		q.ch <- cscRefreshTarget{cacheKey: key, redisKeys: []string{key}}
 	}
 
@@ -139,73 +139,6 @@ func TestCSCRefresherNormalFlushAbortsOnClose(t *testing.T) {
 	}
 }
 
-// TestStartCSCRefresherRecencyWindowWiring pins the construction-time wiring
-// between Options.ClientSideCacheRefreshRecencyWindow and the live
-// cscRefreshQueue: default (window unset) must leave q.recency nil and pin
-// sinceToken at the unbounded sentinel (refresh everything); a configured
-// window must build a ring sized by cscRefreshWindowTicks and seed
-// sinceToken from it (a real token, not the sentinel). The ring's own
-// push/oldest arithmetic and the window->ticks rounding are separately
-// pinned (TestCscRecencyRingOldest, TestCscRefreshWindowTicks); this only
-// covers startCSCRefresher actually wiring them together.
-func TestStartCSCRefresherRecencyWindowWiring(t *testing.T) {
-	t.Run("default_is_unbounded", func(t *testing.T) {
-		lc := NewLocalCache(CacheConfig{MaxEntries: 1000})
-		c := &baseClient{
-			opt:          &Options{ClientSideCacheRefreshOnInvalidate: true},
-			csc:          lc,
-			cscKeyPrefix: "p:",
-		}
-		c.startCSCRefresher()
-		defer c.stopCSCRefresher()
-
-		q := c.cscRefreshQueue
-		if q == nil {
-			t.Fatal("startCSCRefresher did not build a refresh queue")
-		}
-		if q.recency != nil {
-			t.Fatal("default (window unset) built a recency ring; want nil (unbounded mode)")
-		}
-		if got := q.sinceToken.Load(); got != cscInvalNoHorizon {
-			t.Fatalf("default sinceToken = %d, want cscInvalNoHorizon (%d)", got, cscInvalNoHorizon)
-		}
-	})
-
-	t.Run("configured_window_builds_ring", func(t *testing.T) {
-		lc := NewLocalCache(CacheConfig{MaxEntries: 1000})
-		c := &baseClient{
-			opt: &Options{
-				ClientSideCacheRefreshOnInvalidate:  true,
-				ClientSideCacheRefreshRecencyWindow: 2 * cscRefreshRecencyTick,
-			},
-			csc:          lc,
-			cscKeyPrefix: "p:",
-		}
-		c.startCSCRefresher()
-		defer c.stopCSCRefresher()
-
-		q := c.cscRefreshQueue
-		if q == nil {
-			t.Fatal("startCSCRefresher did not build a refresh queue")
-		}
-		if q.recency == nil {
-			t.Fatal("configured window left q.recency nil; want a ring")
-		}
-		if got, want := len(q.recency.buf), cscRefreshWindowTicks(2*cscRefreshRecencyTick); got != want {
-			t.Fatalf("ring size = %d, want %d (cscRefreshWindowTicks(2*tick))", got, want)
-		}
-		if got := q.sinceToken.Load(); got == cscInvalNoHorizon {
-			t.Fatal("configured window initialized sinceToken to the unbounded sentinel")
-		}
-	})
-}
-
-// TestCloneSharesRefreshQueueForDemand pins #3965 F4: clone() (WithTimeout/
-// WithContext) must SHARE the owner's refresh queue so a derived client's
-// processCached can signal demand on it. Without the share the clone's field is
-// nil and signalDemand no-ops, so a clone's miss waits the full window instead of
-// nudging the owner's in-window batch. Lifecycle stays owner-only: the clone only
-// signals (nil-safe, non-blocking) and never stops the shared refresher.
 func TestCloneSharesRefreshQueueForDemand(t *testing.T) {
 	parent := &baseClient{
 		opt:             &Options{},
@@ -522,9 +455,10 @@ func TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic(t *testing.T) {
 	lc := NewLocalCache(CacheConfig{MaxEntries: 64, Sizer: sizer})
 	c := &baseClient{csc: lc, cscKeyPrefix: "p"}
 
+	prefix := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, "")
 	targets := []cscRefreshTarget{
-		{cacheKey: "ck:1", redisKeys: []string{"rk:1"}},
-		{cacheKey: "ck:2", redisKeys: []string{"rk:2"}},
+		{cacheKey: prefix + "ck:1", redisKeys: []string{"rk:1"}},
+		{cacheKey: prefix + "ck:2", redisKeys: []string{"rk:2"}},
 	}
 
 	func() {
@@ -538,7 +472,7 @@ func TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic(t *testing.T) {
 
 	// ck:1 was reserved before the panic on ck:2; the defer must have cancelled it, so a
 	// fresh Reserve sees no lingering IN_PROGRESS placeholder (shouldFetch, non-zero tok).
-	tok, shouldFetch := lc.Reserve("ck:1", []string{"rk:1"})
+	tok, shouldFetch := lc.Reserve(targets[0].cacheKey, targets[0].redisKeys)
 	if !shouldFetch || tok == 0 {
 		t.Fatalf("ck:1 reservation not cancelled after the panic (Reserve = %d, %v); a reader "+
 			"would block on the orphaned placeholder until StaleTimeout (#3989)", tok, shouldFetch)

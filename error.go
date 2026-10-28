@@ -22,6 +22,11 @@ var ErrPoolExhausted = pool.ErrPoolExhausted
 // ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 var ErrPoolTimeout = pool.ErrPoolTimeout
 
+// ErrClusterTopologyUnhealthy indicates that a node required by an operation
+// is reported as unavailable by the cluster topology. Use errors.Is to match
+// this error, which may include details about the node or slot.
+var ErrClusterTopologyUnhealthy = errors.New("redis: cluster topology contains a node that is not online")
+
 // ErrCrossSlot is returned when keys are used in the same Redis command and
 // the keys are not in the same hash slot. This error is returned by Redis
 // Cluster and will be returned by the client when TxPipeline or TxPipelined
