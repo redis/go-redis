@@ -26,6 +26,11 @@ Physics of the model, not bugs:
 
 - A frame, once begun, must be completed (may block under the cap); a mid-frame
   timeout is a real desync and retires the conn.
+- The cap covers the whole drain call, handler time included. A buffered drain
+  therefore stops starting new frames after `bufferedDrainBudget` (10ms) and
+  leaves the rest buffered for the next drain; otherwise a long batch of
+  invalidations with slow handlers (refresh-on-invalidate) used up the cap and
+  the next frame's completing read timed out mid-frame on a healthy conn.
 - Kernel readability over TLS can mean zero RESP bytes (control records), so
   bare readability is handled only by the built-in processor, which treats a
   boundary timeout as benign.

@@ -3,6 +3,7 @@ package push
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -36,6 +37,14 @@ func isTimeoutError(err error) bool {
 	return errors.As(err, &timeoutErr) && timeoutErr.Timeout()
 }
 
+// bufferedDrainBudget bounds how long a buffered drain keeps starting new frames.
+// Callers run it under one hard read deadline for the whole call (the CSC idle
+// drainer: 50ms). Handler time counts against that deadline, so a long buffered
+// batch could use it up and leave the next frame's completing read to time out
+// mid-frame, which retires a healthy connection. Past this budget the drain stops
+// at a frame boundary; the frames left buffered go to the next drain.
+const bufferedDrainBudget = 10 * time.Millisecond
+
 // NewProcessor creates a new push notification processor
 func NewProcessor() *Processor {
 	return &Processor{
@@ -68,7 +77,8 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 // ProcessPendingNotificationsBuffered processes one pending push notification
 // and then continues only through frames already buffered by that read. It is
 // used by callers that have already established socket readiness and must not
-// wait for another frame after draining the current batch.
+// wait for another frame after draining the current batch. It stops starting
+// new frames after bufferedDrainBudget and leaves the rest buffered.
 func (p *Processor) ProcessPendingNotificationsBuffered(
 	ctx context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader,
 ) error {
@@ -86,10 +96,19 @@ func (p *Processor) processPendingNotifications(
 	}
 
 	processed := false
+	var start time.Time
+	if bufferedContinuation {
+		start = time.Now()
+	}
 	for !bufferedContinuation || !processed || rd.Buffered() > 0 {
 		// Check if there's data available to read
 		var replyType byte
 		if bufferedContinuation {
+			// At a frame boundary: nothing of the next frame is consumed yet, so
+			// stopping here leaves the reader in sync.
+			if processed && time.Since(start) >= bufferedDrainBudget {
+				return nil
+			}
 			for {
 				b, err := rd.Peek(1)
 				if err != nil {
