@@ -338,7 +338,7 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		PoolSize:              opt.PoolSize,
 		MaxConcurrentDials:    opt.MaxConcurrentDials,
 		PoolTimeout:           opt.PoolTimeout,
-		MinIdleConns:          opt.MinIdleConns,
+		MinIdleConns:          0, // sentinels are lookup-only; do not inherit data-node idle (#4146)
 		MaxIdleConns:          opt.MaxIdleConns,
 		MaxActiveConns:        opt.MaxActiveConns,
 		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
@@ -1021,6 +1021,11 @@ type sentinelFailover struct {
 	masterAddr string
 	sentinel   *SentinelClient
 	pubsub     *PubSub
+	// masterAddrFlight / replicaAddrsFlight coalesce concurrent lookups so a
+	// burst of dials shares one SENTINEL query (#4146). Waiters keep their own
+	// context: a cancelled waiter returns early without aborting the shared call.
+	masterAddrFlight   singleflightGroup
+	replicaAddrsFlight singleflightGroup
 	// closed is set by Close (under mu). Once set, MasterAddr and replicaAddrs
 	// refuse to create a new SentinelClient/pubsub and return pool.ErrClosed.
 	// Close runs as an onClose hook, which fires BEFORE a pool-sharing wrapper's
@@ -1078,6 +1083,16 @@ func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error
 }
 
 func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
+	v, err, _ := c.masterAddrFlight.Do(ctx, "master", func(shared context.Context) (interface{}, error) {
+		return c.masterAddrOnce(shared)
+	})
+	if err != nil {
+		return "", err
+	}
+	return v.(string), nil
+}
+
+func (c *sentinelFailover) masterAddrOnce(ctx context.Context) (string, error) {
 	c.mu.RLock()
 	sentinel := c.sentinel
 	c.mu.RUnlock()
@@ -1176,6 +1191,20 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 }
 
 func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
+	key := "replicas"
+	if useDisconnected {
+		key = "replicas-disconnected"
+	}
+	v, err, _ := c.replicaAddrsFlight.Do(ctx, key, func(shared context.Context) (interface{}, error) {
+		return c.replicaAddrsOnce(shared, useDisconnected)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]string), nil
+}
+
+func (c *sentinelFailover) replicaAddrsOnce(ctx context.Context, useDisconnected bool) ([]string, error) {
 	c.mu.RLock()
 	sentinel := c.sentinel
 	c.mu.RUnlock()
