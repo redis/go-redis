@@ -360,3 +360,50 @@ func TestPubSubDialRetryBackoffFollowsOptions(t *testing.T) {
 		}
 	})
 }
+
+// TestClusterSubscribeInitialErrorReachesReceive is
+// TestSubscribeInitialDialErrorReachesReceive for the cluster client:
+// with no node reachable, the broadcast dial (Subscribe, PSubscribe) or
+// the slot-owner resolve (SSubscribe) fails, and that failure — which
+// the client's Subscribe cannot return — is delivered to the PubSub so
+// the first Receive reports it; Close then tears everything down
+// without hanging on the never-connected managers.
+func TestClusterSubscribeInitialErrorReachesReceive(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	client := NewClusterClient(&ClusterOptions{
+		Addrs:         []string{addr},
+		DialerRetries: 1,
+		DialTimeout:   200 * time.Millisecond,
+		MaxRedirects:  -1,
+	})
+	defer client.Close()
+
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		subscribe func() *PubSub
+	}{
+		{"Subscribe", func() *PubSub { return client.Subscribe(ctx, "ch") }},
+		{"PSubscribe", func() *PubSub { return client.PSubscribe(ctx, "p*") }},
+		{"SSubscribe", func() *PubSub { return client.SSubscribe(ctx, "sch") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ps := tc.subscribe()
+			defer ps.Close()
+
+			msg, err := ps.ReceiveTimeout(ctx, 10*time.Second)
+			if err == nil {
+				t.Fatalf("Receive = %T, want the initial error", msg)
+			}
+			if strings.Contains(err.Error(), "receive timeout") {
+				t.Fatal("Receive blocked until its timeout: the initial error was not delivered")
+			}
+		})
+	}
+}

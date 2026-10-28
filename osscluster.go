@@ -225,6 +225,19 @@ type ClusterOptions struct {
 	// only bounds how stale a topology can get without traffic errors.
 	// Default is 60 seconds.
 	ClusterStateReloadInterval time.Duration
+
+	// The PubSub* fields configure the cluster's pub/sub engine — the
+	// shared broadcast connection regular and pattern subscriptions
+	// multiplex over, and the per-node connections sharded subscriptions
+	// are routed over — and are copied to every node client. See the
+	// same-named fields on Options for details and defaults.
+	PubSubChanSize               int
+	PubSubHealthCheckInterval    time.Duration
+	PubSubSubscribeRetryInterval time.Duration
+	PubSubPingTimeout            time.Duration
+	PubSubReconnectTimeout       time.Duration
+	PubSubReconnectMaxBackoff    time.Duration
+	PubSubLogInterval            time.Duration
 }
 
 func (opt *ClusterOptions) init() {
@@ -515,6 +528,14 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		UnstableResp3:             opt.UnstableResp3,
 		MaintNotificationsConfig:  maintNotificationsConfig,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
+
+		PubSubChanSize:               opt.PubSubChanSize,
+		PubSubHealthCheckInterval:    opt.PubSubHealthCheckInterval,
+		PubSubSubscribeRetryInterval: opt.PubSubSubscribeRetryInterval,
+		PubSubPingTimeout:            opt.PubSubPingTimeout,
+		PubSubReconnectTimeout:       opt.PubSubReconnectTimeout,
+		PubSubReconnectMaxBackoff:    opt.PubSubReconnectMaxBackoff,
+		PubSubLogInterval:            opt.PubSubLogInterval,
 	}
 }
 
@@ -1295,6 +1316,14 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 type clusterStateHolder struct {
 	load func(ctx context.Context) (*clusterState, error)
 
+	// onReload, when set, runs after every freshly loaded state is
+	// stored — every reload path (LazyReload, and therefore SMIGRATED
+	// notifications and MOVED redirects, interval reloads, ReloadOrGet)
+	// funnels through Reload. Assigned once at client construction,
+	// before any reload can run; must be cheap and must not block (the
+	// pub/sub re-route hook snapshots a counter and spawns a goroutine).
+	onReload func()
+
 	reloadInterval time.Duration
 	state          atomic.Value
 	reloading      atomic.Uint32
@@ -1314,6 +1343,9 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 		return nil, err
 	}
 	c.state.Store(state)
+	if c.onReload != nil {
+		c.onReload()
+	}
 	return state, nil
 }
 
@@ -1384,8 +1416,10 @@ type ClusterClient struct {
 	state           *clusterStateHolder
 	cmdsInfoCache   *cmdsInfoCache
 	cmdInfoResolver *commandInfoResolver
-	// pubSubManager is the cluster pub/sub stub (pubsub.ClusterManager)
-	// until the cluster manager is ported onto the new engine.
+	// pubSubManager is the cluster pub/sub manager (pubsub.ClusterManager):
+	// one broadcast connection for regular and pattern subscriptions, one
+	// connection per node for sharded ones, re-routed on every state
+	// reload (see newPubSubManager).
 	pubSubManager pubsub.PubSubManagerer
 	cmdable
 	hooksMixin
@@ -1429,11 +1463,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 	c.state = newClusterStateHolder(c.loadState, opt.ClusterStateReloadInterval)
 
-	// The cluster pub/sub stub: every PubSub of a ClusterClient reports
-	// pubsub.ErrClusterNotImplemented until the cluster manager — a
-	// broadcast connection plus slot-routed per-node shard-channel
-	// connections — is ported onto the new engine.
-	c.pubSubManager = pubsub.NewClusterManager()
+	// Connects lazily on the first Subscribe; hooks the state holder's
+	// reload notification for shard re-routing.
+	c.pubSubManager = c.newPubSubManager()
 
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 
@@ -2940,8 +2972,13 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 // Subscribe subscribes the client to the specified channels.
 // Channels can be omitted to create empty subscription.
 //
-// Not implemented on the new pub/sub engine yet: the returned PubSub
-// reports pubsub.ErrClusterNotImplemented.
+// Regular and pattern subscriptions of every PubSub of the client
+// multiplex over one shared connection to a healthy node (the broadcast
+// connection: Redis delivers them cluster-wide); it reconnects to
+// another node when its node goes down. Sharded subscriptions
+// (SSubscribe) are routed to the node owning each channel's slot and
+// follow slot migrations. See PubSub for the shared-connection
+// consequences.
 func (c *ClusterClient) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
@@ -2951,9 +2988,7 @@ func (c *ClusterClient) Subscribe(ctx context.Context, channels ...string) *PubS
 }
 
 // PSubscribe subscribes the client to the given patterns.
-// Patterns can be omitted to create empty subscription.
-//
-// Not implemented on the new pub/sub engine yet (see Subscribe).
+// Patterns can be omitted to create empty subscription (see Subscribe).
 func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
@@ -2963,9 +2998,9 @@ func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *Pub
 }
 
 // SSubscribe Subscribes the client to the specified shard channels.
-// Channels can be omitted to create empty subscription.
-//
-// Not implemented on the new pub/sub engine yet (see Subscribe).
+// Channels can be omitted to create empty subscription. Each channel is
+// subscribed on the node owning its slot — one connection per node — and
+// moves with the slot when the topology changes (see Subscribe).
 func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
@@ -2974,23 +3009,223 @@ func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *Pub
 	return pubsub
 }
 
-// Unsubscribe removes channel subscriptions across all PubSubs of the
-// client. Not implemented on the new pub/sub engine yet (see Subscribe).
-func (c *ClusterClient) Unsubscribe(ctx context.Context, channels ...string) error {
-	return c.pubSubManager.Unsubscribe(ctx, channels...)
+// newPubSubManager returns the cluster pub/sub manager. It owns its
+// connections and touches the cluster only through the hooks below,
+// which dial and initialize through the node clients (auth, OnConnect,
+// push processing, maintenance handoffs all apply) without capturing
+// one: a node is looked up per dial, so a client the topology GC
+// replaced is never dialed. LazyReload is its topology-refresh hook —
+// a MOVED reply, a server-initiated unsubscribe (slot migrated away) or
+// a dead node all request one — and the state holder's reload
+// notification runs the re-route sweep that moves shard subscriptions
+// to their current owners. Both sides throttle (the engine's reconnect
+// backoff, LazyReload's single-flight and cooldown).
+func (c *ClusterClient) newPubSubManager() pubsub.PubSubManagerer {
+	// The engine's Config wants defaulted Options: the node clients run
+	// init() on clientOptions() output themselves, so do the same here,
+	// including the no-timeout mapping newClusterNodeWithNodeAddress
+	// applies (ClusterOptions.init turned -1 into 0, which Options.init
+	// would turn into its default).
+	psOpt := c.opt.clientOptions()
+	if psOpt.WriteTimeout == 0 {
+		psOpt.WriteTimeout = -1
+	}
+	psOpt.init()
+
+	m := pubsub.NewClusterManager(pubSubConfigFromOptions(psOpt), clusterPubSubHooks{c})
+	c.state.onReload = m.ScheduleReroute
+	return m
 }
 
-// PUnsubscribe removes pattern subscriptions across all PubSubs of the
-// client. Not implemented on the new pub/sub engine yet (see Subscribe).
-func (c *ClusterClient) PUnsubscribe(ctx context.Context, patterns ...string) error {
-	return c.pubSubManager.PUnsubscribe(ctx, patterns...)
+// clusterPubSubClienter is the hook family a cluster pub/sub manager is
+// built from: the standalone pubSubClienter's shape with the node addr
+// added where the answer depends on it, plus slot ownership and the
+// topology refresh. ClusterClient implements it; clusterPubSubHooks
+// adapts it to pubsub.ClusterHooks.
+type clusterPubSubClienter interface {
+	pubsubConnect(ctx context.Context, addr string) (*pool.Conn, error)
+	pubsubDisconnect(cn *pool.Conn) error
+	pubsubProcessPush(ctx context.Context, addr string, cn *pool.Conn, rd *proto.Reader) error
+	pubsubResolveSlotOwners(ctx context.Context, channels []string, current map[string]string) (map[string]map[string]struct{}, error)
+	pubsubRequestReload()
+	pubsubShouldReplaceConn(cn *pool.Conn) bool
+	pubsubResolveAddress(prev *pool.Conn, current string) string
 }
 
-// SUnsubscribe removes shard-channel subscriptions across all PubSubs of
-// the client. Not implemented on the new pub/sub engine yet (see
-// Subscribe).
-func (c *ClusterClient) SUnsubscribe(ctx context.Context, channels ...string) error {
-	return c.pubSubManager.SUnsubscribe(ctx, channels...)
+var _ clusterPubSubClienter = (*ClusterClient)(nil)
+
+// clusterPubSubHooks adapts a clusterPubSubClienter to
+// pubsub.ClusterHooks (see ClusterClient.newPubSubManager). A type of its
+// own, like pubSubClientHooks, so the exported method set stays off
+// ClusterClient.
+type clusterPubSubHooks struct {
+	clusterPubSubClienter
+}
+
+var _ pubsub.ClusterHooks = clusterPubSubHooks{}
+
+func (h clusterPubSubHooks) NewConn(ctx context.Context, addr string) (*pool.Conn, error) {
+	return h.pubsubConnect(ctx, addr)
+}
+
+func (h clusterPubSubHooks) CloseConn(cn *pool.Conn) error {
+	return h.pubsubDisconnect(cn)
+}
+
+func (h clusterPubSubHooks) ProcessPush(ctx context.Context, addr string, cn *pool.Conn, rd *proto.Reader) error {
+	return h.pubsubProcessPush(ctx, addr, cn, rd)
+}
+
+func (clusterPubSubHooks) IsBadConn(err error, allowTimeout bool, addr string) bool {
+	return isBadConn(err, allowTimeout, addr)
+}
+
+func (h clusterPubSubHooks) ResolveOwners(ctx context.Context, channels []string, current map[string]string) (map[string]map[string]struct{}, error) {
+	return h.pubsubResolveSlotOwners(ctx, channels, current)
+}
+
+func (h clusterPubSubHooks) RequestReload() {
+	h.pubsubRequestReload()
+}
+
+func (h clusterPubSubHooks) ShouldReplaceConn(cn *pool.Conn) bool {
+	return h.pubsubShouldReplaceConn(cn)
+}
+
+func (h clusterPubSubHooks) ResolveAddress(prev *pool.Conn, current string) string {
+	return h.pubsubResolveAddress(prev, current)
+}
+
+// pubsubRequestReload is the manager's topology-refresh hook: a lazy,
+// single-flight state reload, whose completion runs the re-route sweep
+// (see newPubSubManager).
+func (c *ClusterClient) pubsubRequestReload() {
+	c.state.LazyReload()
+}
+
+// pubsubShouldReplaceConn and pubsubResolveAddress follow
+// maintenance-notification handoffs, like baseClient's pub/sub hooks do
+// for standalone clients.
+func (c *ClusterClient) pubsubShouldReplaceConn(cn *pool.Conn) bool {
+	return cn.ShouldHandoff()
+}
+
+func (c *ClusterClient) pubsubResolveAddress(prev *pool.Conn, current string) string {
+	if prev == nil {
+		return current
+	}
+	return prev.ResolveAddress(current)
+}
+
+// pubsubConnect dials a pub/sub connection to addr — or to any healthy
+// node when addr is empty (the broadcast connection) — through that
+// node client's pub/sub dial (see baseClient.pubsubConnect).
+func (c *ClusterClient) pubsubConnect(ctx context.Context, addr string) (*pool.Conn, error) {
+	nc, err := c.pubsubNodeClient(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	return nc.pubsubConnect(ctx, nc.opt.Addr)
+}
+
+// pubsubDisconnect tears a pub/sub connection down; it is unpooled, so
+// closing it directly (and uncounting it) is the whole job.
+func (c *ClusterClient) pubsubDisconnect(cn *pool.Conn) error {
+	pool.UntrackPubSubConn(cn)
+	return cn.Close()
+}
+
+// pubsubProcessPush drains buffered push notifications of a pub/sub
+// connection to addr through that node's client. The push-processor
+// configuration is cluster-wide, so for the broadcast connection (empty
+// addr) any node client serves; with no node to serve it there is
+// nothing to process.
+func (c *ClusterClient) pubsubProcessPush(ctx context.Context, addr string, cn *pool.Conn, rd *proto.Reader) error {
+	nc, err := c.pubsubNodeClient(ctx, addr)
+	if err != nil {
+		return nil
+	}
+	return nc.pubsubProcessPush(ctx, cn, rd)
+}
+
+// pubsubNodeClient returns the node client serving addr: the node's
+// own, or for the broadcast connection (empty addr) a random master of
+// the current topology. The seed Addrs are the fallback when no state
+// is loaded only: with a ClusterSlots-style config the seeds may lie
+// outside the routed topology entirely.
+func (c *ClusterClient) pubsubNodeClient(ctx context.Context, addr string) (*Client, error) {
+	if addr != "" {
+		node, err := c.nodes.GetOrCreate(addr)
+		if err != nil {
+			return nil, err
+		}
+		return node.Client, nil
+	}
+	if state, err := c.state.Get(ctx); err == nil && len(state.Masters) > 0 {
+		return state.Masters[rand.Intn(len(state.Masters))].Client, nil
+	}
+	node, err := c.nodes.Random()
+	if err != nil {
+		return nil, err
+	}
+	return node.Client, nil
+}
+
+// pubsubResolveSlotOwners groups shard channels by the addr of the node
+// owning their slot in the current topology (a replica when ReadOnly,
+// like command routing). current maps channels to the addr their
+// subscription lives on now (nil for fresh subscriptions): a channel
+// stays there as long as that node still serves its slot, so re-route
+// sweeps are driven by topology changes only — the ReadOnly node
+// pickers (RouteRandomly, RouteByLatency, the random-replica default)
+// are non-deterministic, and re-resolving through them on every state
+// reload would shuffle subscriptions between replicas.
+func (c *ClusterClient) pubsubResolveSlotOwners(ctx context.Context, channels []string, current map[string]string) (map[string]map[string]struct{}, error) {
+	state, err := c.state.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	groups := make(map[string]map[string]struct{})
+	for _, ch := range channels {
+		slot := hashtag.Slot(ch)
+
+		addr, ok := current[ch]
+		if !ok || !c.pubsubNodeServesSlot(state, slot, addr) {
+			var node *clusterNode
+			if c.opt.ReadOnly {
+				node, err = c.slotReadOnlyNode(state, slot)
+			} else {
+				node, err = state.slotMasterNode(slot)
+			}
+			if err != nil {
+				return nil, err
+			}
+			addr = node.Client.opt.Addr
+		}
+
+		if groups[addr] == nil {
+			groups[addr] = make(map[string]struct{})
+		}
+		groups[addr][ch] = struct{}{}
+	}
+	return groups, nil
+}
+
+// pubsubNodeServesSlot reports whether addr is a node a shard channel of
+// slot may be subscribed on in state: the master, or any node of the
+// slot when ReadOnly.
+func (c *ClusterClient) pubsubNodeServesSlot(state *clusterState, slot int, addr string) bool {
+	nodes := state.slotNodes(slot)
+	if !c.opt.ReadOnly && len(nodes) > 1 {
+		nodes = nodes[:1]
+	}
+	for _, n := range nodes {
+		if n.Client.opt.Addr == addr {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ClusterClient) retryBackoff(attempt int) time.Duration {

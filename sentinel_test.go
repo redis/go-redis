@@ -295,11 +295,8 @@ var _ = Describe("NewFailoverClusterClient", func() {
 	})
 
 	// Split out of "should facilitate failover", which still covers the
-	// command path. Pending until the cluster pub/sub manager is ported
-	// onto the new engine: NewFailoverClusterClient is a ClusterClient,
-	// which runs the stub (pubsub.ClusterManager) and reports
-	// pubsub.ErrClusterNotImplemented.
-	PIt("should renew the subscription after failover", func() {
+	// command path.
+	It("should renew the subscription after failover", func() {
 		sub := client.Subscribe(ctx, "foo")
 		ch := sub.Channel()
 

@@ -381,6 +381,74 @@ func testIsBadConn(err error, _ bool) bool {
 	return !errors.As(err, &redisErr)
 }
 
+// funcHooks is a Hooks assembled from functions, for tests. A nil
+// function takes the test default: closeConn closes the connection,
+// processPush consumes nothing, isBadConn is testIsBadConn, and the
+// optional hooks answer their no-op (nothing, false, "").
+type funcHooks struct {
+	newConn                func(ctx context.Context, addr string) (*pool.Conn, error)
+	closeConn              func(cn *pool.Conn) error
+	processPush            func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error
+	isBadConn              func(err error, allowTimeout bool) bool
+	requestTopologyRefresh func()
+	shouldReplaceConn      func(cn *pool.Conn) bool
+	resolveAddress         func(prev *pool.Conn, current string) string
+}
+
+var _ Hooks = funcHooks{}
+
+func (h funcHooks) NewConn(ctx context.Context, addr string) (*pool.Conn, error) {
+	return h.newConn(ctx, addr)
+}
+
+func (h funcHooks) CloseConn(cn *pool.Conn) error {
+	if h.closeConn == nil {
+		return cn.Close()
+	}
+	return h.closeConn(cn)
+}
+
+func (h funcHooks) ProcessPush(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	if h.processPush == nil {
+		return nil
+	}
+	return h.processPush(ctx, cn, rd)
+}
+
+func (h funcHooks) IsBadConn(err error, allowTimeout bool) bool {
+	if h.isBadConn == nil {
+		return testIsBadConn(err, allowTimeout)
+	}
+	return h.isBadConn(err, allowTimeout)
+}
+
+func (h funcHooks) RequestTopologyRefresh() {
+	if h.requestTopologyRefresh != nil {
+		h.requestTopologyRefresh()
+	}
+}
+
+func (h funcHooks) ShouldReplaceConn(cn *pool.Conn) bool {
+	return h.shouldReplaceConn != nil && h.shouldReplaceConn(cn)
+}
+
+func (h funcHooks) ResolveAddress(prev *pool.Conn, current string) string {
+	if h.resolveAddress == nil {
+		return ""
+	}
+	return h.resolveAddress(prev, current)
+}
+
+// testHooks are the funcHooks most tests run with: dialing srv, with
+// the maintenance-handoff test hooks installed.
+func testHooks(srv *fakeServer) funcHooks {
+	return funcHooks{
+		newConn:           srv.dial,
+		shouldReplaceConn: testShouldHandoff,
+		resolveAddress:    testResolveHandoff,
+	}
+}
+
 func newTestManager(t *testing.T, srv *fakeServer, cfg Config) *Manager {
 	t.Helper()
 	return newTestManagerReload(t, srv, cfg, nil)
@@ -390,16 +458,9 @@ func newTestManager(t *testing.T, srv *fakeServer, cfg Config) *Manager {
 // onReconnectFailure hook.
 func newTestManagerReload(t *testing.T, srv *fakeServer, cfg Config, onReconnectFailure func()) *Manager {
 	t.Helper()
-	m := NewManager(
-		cfg,
-		srv.dial,
-		func(cn *pool.Conn) error { return cn.Close() },
-		func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error { return nil },
-		testIsBadConn,
-		onReconnectFailure,
-		testShouldHandoff,
-		testResolveHandoff,
-	)
+	hooks := testHooks(srv)
+	hooks.requestTopologyRefresh = onReconnectFailure
+	m := NewManager(cfg, hooks)
 	t.Cleanup(func() { _ = m.Close() })
 	return m
 }

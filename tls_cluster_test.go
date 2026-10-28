@@ -137,10 +137,7 @@ var _ = Describe("TLS Cluster", Label("NonRedisEnterprise"), func() {
 			Expect(len(slots)).To(BeNumerically(">", 0))
 		})
 
-		// Pending until the cluster pub/sub manager is ported onto the new
-		// engine: ClusterClient runs the stub (pubsub.ClusterManager),
-		// which reports pubsub.ErrClusterNotImplemented.
-		PIt("should support pub/sub over TLS cluster", func() {
+		It("should support pub/sub over TLS cluster", func() {
 			ctx := context.Background()
 			client := redis.NewClusterClient(&redis.ClusterOptions{
 				Addrs:     clusterAddrs,

@@ -304,11 +304,7 @@ var _ = Describe("cluster races", Label("NonRedisEnterprise"), func() {
 		Expect(val).To(Equal(int64(C * N)))
 	})
 
-	// Pending until the cluster pub/sub manager is ported onto the new
-	// engine: ClusterClient runs the stub (pubsub.ClusterManager), whose
-	// operations all report pubsub.ErrClusterNotImplemented, so this
-	// would pass without exercising anything.
-	PIt("write cmd data-race", func() {
+	It("write cmd data-race", func() {
 		pubsub := client.Subscribe(ctx)
 		defer pubsub.Close()
 

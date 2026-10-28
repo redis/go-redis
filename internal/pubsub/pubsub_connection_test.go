@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // subscribeResult is what an asynchronous Manager.Subscribe returned.
@@ -144,9 +143,7 @@ func TestDialFinishingAfterCloseIsClosed(t *testing.T) {
 		<-gate // deaf to ctx
 		return srv.dial(context.Background(), addr)
 	}
-	m := NewManager(testConfig("node:6379"), newConn, func(cn *pool.Conn) error { return cn.Close() },
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn, nil, nil, nil)
+	m := NewManager(testConfig("node:6379"), funcHooks{newConn: newConn})
 	t.Cleanup(func() { _ = m.Close() })
 
 	res := subscribeAsync(m, "a")
@@ -340,9 +337,7 @@ func TestDialRetriesWithBackoff(t *testing.T) {
 		}
 		return current
 	}
-	m := NewManager(cfg, newConn, func(cn *pool.Conn) error { return cn.Close() },
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn, nil, nil, resolve)
+	m := NewManager(cfg, funcHooks{newConn: newConn, resolveAddress: resolve})
 	t.Cleanup(func() { _ = m.Close() })
 
 	if _, err := m.Subscribe(context.Background(), "a"); err != nil {
@@ -390,9 +385,7 @@ func TestDialRetryBackoffPolicy(t *testing.T) {
 		}
 		return srv.dial(ctx, addr)
 	}
-	m := NewManager(cfg, newConn, func(cn *pool.Conn) error { return cn.Close() },
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn, nil, nil, nil)
+	m := NewManager(cfg, funcHooks{newConn: newConn})
 	t.Cleanup(func() { _ = m.Close() })
 
 	if _, err := m.Subscribe(context.Background(), "a"); err != nil {
@@ -433,9 +426,7 @@ func TestDialCarriesCallerContextValues(t *testing.T) {
 		dials <- seen{tenant: ctx.Value(tenantKey{}), ctxErr: ctx.Err()}
 		return srv.dial(ctx, addr)
 	}
-	m := NewManager(testConfig("node:6379"), newConn, func(cn *pool.Conn) error { return cn.Close() },
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn, nil, nil, nil)
+	m := NewManager(testConfig("node:6379"), funcHooks{newConn: newConn})
 	t.Cleanup(func() { _ = m.Close() })
 
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), tenantKey{}, "acme"))
@@ -794,16 +785,11 @@ func newResolverTestManager(
 	resolveAddress func(prev *pool.Conn, current string) string,
 ) *Manager {
 	t.Helper()
-	m := NewManager(
-		cfg,
-		srv.dial,
-		func(cn *pool.Conn) error { return cn.Close() },
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn,
-		nil,
-		shouldReplaceConn,
-		resolveAddress,
-	)
+	m := NewManager(cfg, funcHooks{
+		newConn:           srv.dial,
+		shouldReplaceConn: shouldReplaceConn,
+		resolveAddress:    resolveAddress,
+	})
 	t.Cleanup(func() { _ = m.Close() })
 	return m
 }
@@ -1203,9 +1189,11 @@ func TestFailedFirstDialResolvesLaterDials(t *testing.T) {
 		return srv.dial(ctx, addr)
 	}
 	r := &rotatingResolver{target: "node-b:6379"}
-	m := NewManager(testConfig("dead:6379"), newConn, func(cn *pool.Conn) error { return cn.Close() },
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn, nil, r.ShouldReplace, r.Resolve)
+	m := NewManager(testConfig("dead:6379"), funcHooks{
+		newConn:           newConn,
+		shouldReplaceConn: r.ShouldReplace,
+		resolveAddress:    r.Resolve,
+	})
 	t.Cleanup(func() { _ = m.Close() })
 
 	// The first dial goes to the configured address, unresolved, and
@@ -1454,9 +1442,11 @@ func TestReplacementRetriesBackOff(t *testing.T) {
 		return srv.dial(ctx, addr)
 	}
 	r := stickyResolver{target: "dead:6379"}
-	m := NewManager(cfg, newConn, func(cn *pool.Conn) error { return cn.Close() },
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn, nil, r.ShouldReplace, r.Resolve)
+	m := NewManager(cfg, funcHooks{
+		newConn:           newConn,
+		shouldReplaceConn: r.ShouldReplace,
+		resolveAddress:    r.Resolve,
+	})
 	t.Cleanup(func() { _ = m.Close() })
 
 	h, err := m.Subscribe(ctx, "ch")
@@ -1510,9 +1500,11 @@ func TestFailedReplacementRetriedWithoutTraffic(t *testing.T) {
 		return srv.dial(ctx, addr)
 	}
 	r := stickyResolver{target: "next:6379"}
-	m := NewManager(cfg, newConn, func(cn *pool.Conn) error { return cn.Close() },
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn, nil, r.ShouldReplace, r.Resolve)
+	m := NewManager(cfg, funcHooks{
+		newConn:           newConn,
+		shouldReplaceConn: r.ShouldReplace,
+		resolveAddress:    r.Resolve,
+	})
 	t.Cleanup(func() { _ = m.Close() })
 
 	h, err := m.Subscribe(ctx, "ch")

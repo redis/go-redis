@@ -57,44 +57,10 @@ type Manager struct {
 	// resolveAddress may rewrite (see resolveAddrLocked) — in the
 	// background with mu released, single-flight, and installs the
 	// outcome under mu (see installLocked).
-	dialer      *dialer
-	closeConn   func(*pool.Conn) error
-	processPush func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error
-	// isBadConn: true means broken-and-replace, false means an error
-	// reply on a healthy connection.
-	isBadConn func(err error, allowTimeout bool) bool
-
-	// shouldReplaceConn and resolveAddress are the owner's say over when
-	// the shared connection has to go and where it goes, keeping the
-	// manager unaware of the mechanism behind either (in the client:
-	// maintenance-notification handoffs). Both are optional and must not
-	// block.
-	//
-	// shouldReplaceConn is consulted after every frame read: true
-	// retires cn now, with a reconnect through resolveAddress. When nil,
-	// only connections the pool marked unusable are retired. It runs
-	// WITHOUT mu — on the hot path, so the common no-retire answer costs
-	// no lock — and may overlap resolveAddress, so it must be lock-free
-	// (safe against concurrent state changes of its own) and idempotent:
-	// it is asked again on later frames, and a true answered while a
-	// replacement is in flight or backing off is dropped, not remembered.
-	//
-	// resolveAddress runs under mu, so its calls serialize with each
-	// other but not with shouldReplaceConn.
-	shouldReplaceConn func(cn *pool.Conn) bool
-	// resolveAddress runs before every dial but the first — a
-	// reconnect, the restoration of a connection lost to a failed write,
-	// or a retry after a dial that failed — with the connection being
-	// replaced (the one lost, for a restoration; nil when there is none,
-	// as after a first dial that never connected) and the address dialed
-	// last; the manager dials what it returns ("" keeps current) and
-	// remembers it for later reconnects. When nil, the configured
-	// address is kept.
-	resolveAddress func(prev *pool.Conn, current string) string
-
-	// requestTopologyRefresh (optional, must not block) asks the owner
-	// for a topology refresh; the cluster client wires it to LazyReload.
-	requestTopologyRefresh func()
+	dialer *dialer
+	// hooks are the owner's touchpoints (see Hooks): the manager keeps
+	// no reference to its owner beyond them.
+	hooks Hooks
 
 	// mu guards all of the manager's state and is held across socket
 	// writes too: appending a command's ledger entry and writing it is
@@ -266,28 +232,12 @@ func (w replyWaiter) unsubKind() string {
 }
 
 // NewManager creates a manager that multiplexes all subscriptions over
-// one shared connection, dialed lazily on the first Subscribe. cfg must
-// arrive with defaults already applied; requestTopologyRefresh,
-// shouldReplaceConn and resolveAddress may be nil.
-func NewManager(
-	cfg Config,
-	newConn func(ctx context.Context, addr string) (*pool.Conn, error),
-	closeConn func(*pool.Conn) error,
-	processPush func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error,
-	isBadConn func(err error, allowTimeout bool) bool,
-	requestTopologyRefresh func(),
-	shouldReplaceConn func(cn *pool.Conn) bool,
-	resolveAddress func(prev *pool.Conn, current string) string,
-) *Manager {
+// one shared connection, dialed lazily on the first Subscribe through
+// hooks. cfg must arrive with defaults already applied.
+func NewManager(cfg Config, hooks Hooks) *Manager {
 	m := &Manager{
-		cfg: cfg,
-
-		closeConn:              closeConn,
-		processPush:            processPush,
-		isBadConn:              isBadConn,
-		requestTopologyRefresh: requestTopologyRefresh,
-		shouldReplaceConn:      shouldReplaceConn,
-		resolveAddress:         resolveAddress,
+		cfg:   cfg,
+		hooks: hooks,
 
 		reconnectLog: internal.NewThrottledLogger(cfg.LogInterval, nil),
 		errorLog:     internal.NewThrottledLogger(cfg.LogInterval, nil),
@@ -309,7 +259,7 @@ func NewManager(
 		wakeResync: make(chan struct{}, 1),
 		done:       make(chan struct{}),
 	}
-	m.dialer = newDialer(&m.mu, newConn, cfg.DialRetries, cfg.DialRetryBackoff, cfg.MinRetryBackoff, cfg.ReconnectMaxBackoff)
+	m.dialer = newDialer(&m.mu, hooks.NewConn, cfg.DialRetries, cfg.DialRetryBackoff, cfg.MinRetryBackoff, cfg.ReconnectMaxBackoff)
 	return m
 }
 
@@ -696,7 +646,7 @@ func (m *Manager) Close() error {
 	early := m.conn.Load()
 	var earlyErr error
 	if early != nil {
-		earlyErr = m.closeConn(early)
+		earlyErr = m.hooks.CloseConn(early)
 	}
 
 	m.mu.Lock()
@@ -748,7 +698,7 @@ func (m *Manager) closeNowLocked(closed *pool.Conn, closedErr error) error {
 			// Unblocks listen's pending read with an error. A connection
 			// installed after Close's early close is closed here, its
 			// error joined with that one.
-			err = errors.Join(err, m.closeConn(cn))
+			err = errors.Join(err, m.hooks.CloseConn(cn))
 		}
 		m.conn.Store(nil)
 	}
@@ -1058,8 +1008,8 @@ func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 		m.releaseIfIdleLocked()
 		return
 	}
-	if entry != nil && len(entry.handles) > 0 && m.requestTopologyRefresh != nil {
-		m.requestTopologyRefresh()
+	if entry != nil && len(entry.handles) > 0 {
+		m.hooks.RequestTopologyRefresh()
 	}
 }
 
@@ -1583,10 +1533,7 @@ func (m *Manager) dialLocked(prev *pool.Conn, reason error) *dialCall {
 // when a restoration dials; nil when there is none. Callers must hold
 // m.mu.
 func (m *Manager) resolveAddrLocked(prev *pool.Conn) {
-	if m.resolveAddress == nil {
-		return
-	}
-	if next := m.resolveAddress(prev, m.cfg.Addr); next != "" {
+	if next := m.hooks.ResolveAddress(prev, m.cfg.Addr); next != "" {
 		m.cfg.Addr = next
 	}
 }
@@ -1615,11 +1562,11 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 	// subscribed and no foreground caller awaiting it, nothing needs the
 	// connection.
 	if m.closedLocked() {
-		_ = m.closeConn(cn)
+		_ = m.hooks.CloseConn(cn)
 		return pool.ErrClosed
 	}
 	if !demand && m.noSubscribersLocked() {
-		_ = m.closeConn(cn)
+		_ = m.hooks.CloseConn(cn)
 		m.dropConnLocked(errPubSubNoConn)
 		return errPubSubNoConn
 	}
@@ -1634,7 +1581,7 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 
 	err = m.writeLocked(socketCtx, cn, m.replayLocked())
 	if oldConn != nil {
-		_ = m.closeConn(oldConn)
+		_ = m.hooks.CloseConn(oldConn)
 	}
 	if err != nil {
 		m.dialFailedLocked("resubscribe failed", reason, err)
@@ -1680,9 +1627,7 @@ func (m *Manager) dialFailedLocked(what string, reason, err error) {
 		}
 		m.retireRetry = time.AfterFunc(backoff, func() { m.retireIfWanted(cn) })
 	}
-	if m.requestTopologyRefresh != nil {
-		m.requestTopologyRefresh()
-	}
+	m.hooks.RequestTopologyRefresh()
 	m.reconnectLog.Printf(context.TODO(),
 		"pubsub: %s (attempt %d, reconnecting due to: %v): %v",
 		what, m.reconnectAttempts, reason, err)
@@ -2111,7 +2056,7 @@ func (m *Manager) failReplyWaitersLocked(err error) {
 func (m *Manager) dropConnLocked(err error) {
 	m.failReplyWaitersLocked(err)
 	if cn := m.conn.Load(); cn != nil {
-		_ = m.closeConn(cn)
+		_ = m.hooks.CloseConn(cn)
 		m.dropped, m.dropErr = cn, err
 		m.conn.Store(nil)
 	}
@@ -2165,7 +2110,7 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 				break
 			}
 			buffered := rd.Buffered()
-			if err := m.processPush(ctx, cn, rd); err != nil {
+			if err := m.hooks.ProcessPush(ctx, cn, rd); err != nil {
 				internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
 				break
 			}
@@ -2186,7 +2131,7 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 		m.flushBatch()
 		// allowTimeout is false: the read has no deadline, so a timeout
 		// means the conn is broken.
-		if m.isBadConn(err, false) {
+		if m.hooks.IsBadConn(err, false) {
 			// Drop it, unless it was already replaced (a retired
 			// connection fails its pending read when closed); the next
 			// receive restores it.
@@ -2212,8 +2157,8 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 		// moves the registered channels to the right owner. (ASK is a
 		// transient one-shot redirect, not a stale view: see
 		// isMovedError.)
-		if isMovedError(err) && m.requestTopologyRefresh != nil {
-			m.requestTopologyRefresh()
+		if isMovedError(err) {
+			m.hooks.RequestTopologyRefresh()
 		}
 		m.mu.Lock()
 		if m.conn.Load() != cn {
@@ -2297,7 +2242,7 @@ func (m *Manager) retireIfWanted(cn *pool.Conn) {
 	if m.conn.Load() != cn {
 		return
 	}
-	if cn.IsUsable() && (m.shouldReplaceConn == nil || !m.shouldReplaceConn(cn)) {
+	if cn.IsUsable() && !m.hooks.ShouldReplaceConn(cn) {
 		return // common case: no lock
 	}
 	m.mu.Lock()
