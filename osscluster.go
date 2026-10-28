@@ -2962,7 +2962,9 @@ func (c *ClusterClient) pipelineRoutingDecision(
 	decision *clusterRoutingDecision,
 	scratch *clusterRoutingDecision,
 ) *clusterRoutingDecision {
-	if !decision.policyFromMetadata {
+	// The built-in SCAN policy is derived from the server's tips like metadata
+	// policies: SCAN stays node-local in pipelines and transactions.
+	if !decision.policyFromMetadata && decision.policy != scanPolicy {
 		return decision
 	}
 	// Preserve the immutable admission decision when suppressing fan-out.
