@@ -234,6 +234,7 @@ type Cmder interface {
 	// (in the autopipeline shard router) and reused at pipeline-flush routing.
 	cachedSlot() (int, bool)
 	setCachedSlot(int)
+	resetCachedSlot()
 	clusterRoutingDecision() *clusterRoutingDecision
 	setClusterRoutingDecision(*clusterRoutingDecision)
 	takeClusterRoutingDecision() *clusterRoutingDecision
@@ -514,6 +515,9 @@ func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
 }
 
 func (cmd *baseCmd) setClusterRoutingDecision(decision *clusterRoutingDecision) {
+	if decision == nil && cmd.routing.Load() == nil {
+		return // nothing to clear: a load instead of an atomic exchange
+	}
 	cmd.routing.Store(decision)
 }
 
@@ -656,6 +660,12 @@ func (cmd *baseCmd) setCachedSlot(slot int) {
 	if slot >= 0 && slot < 16384 {
 		cmd.slotCache = uint16(slot + 1)
 	}
+}
+
+// resetCachedSlot drops the cached slot, so a reused command gets one from its
+// new admission.
+func (cmd *baseCmd) resetCachedSlot() {
+	cmd.slotCache = 0
 }
 
 func (cmd *baseCmd) stepCount() int8 {
