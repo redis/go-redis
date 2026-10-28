@@ -1639,7 +1639,7 @@ func (c *baseClient) processCached(
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
-	noLookup := cmd.cacheState().noLookup
+	noLookup := cmd.cacheState().has(cscNoLookup)
 	if noLookup {
 		// A redirected attempt must reach the destination. Retire an old target
 		// reservation/value so this network fetch can reserve and publish anew.

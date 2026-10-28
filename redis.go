@@ -67,6 +67,9 @@ type (
 )
 
 type hooksMixin struct {
+	// Fixed at construction, including custom factories that may enable CSC.
+	// Ordinary clients do not traverse request contexts for cache marks.
+	captureCacheIntent bool
 	// hooksMu serializes writers (AddHook); readers never take it.
 	hooksMu *sync.Mutex
 	// state holds the immutable hook snapshot. Readers Load it lock-free;
@@ -218,8 +221,9 @@ func (hs *hooksMixin) clone() hooksMixin {
 	}
 
 	clone := hooksMixin{
-		hooksMu: new(sync.Mutex),
-		state:   new(atomic.Pointer[hooksState]),
+		captureCacheIntent: hs.captureCacheIntent,
+		hooksMu:            new(sync.Mutex),
+		state:              new(atomic.Pointer[hooksState]),
 	}
 	clone.state.Store(state)
 	return clone
@@ -259,8 +263,7 @@ func (hs *hooksMixin) hookCount() int {
 }
 
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
-	ctx, active := cscBegin(ctx, cmd)
-	if active {
+	if hs.captureCacheIntent && cscBegin(ctx, cmd) {
 		defer cscLeave(cmd)
 	}
 	return hs.state.Load().current.process(ctx, cmd)
@@ -937,6 +940,9 @@ func (opt *Options) sendAuth(username, password string) bool {
 }
 
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
+	// Dial paths such as PubSub do not pass through command submission.
+	// Handshake commands and OnConnect must not inherit application cache intent.
+	ctx = cscUnmarkedContext(ctx)
 	// This function is called in two scenarios:
 	// 1. First-time init: Connection is in CREATED state (from pool.Get())
 	//    - We need to transition CREATED → INITIALIZING and do the initialization
@@ -1632,7 +1638,7 @@ type processState struct {
 
 func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
 	cs := cmd.cacheState()
-	policyCall := c.cscPolicy.configured() || cs.mark != cacheUnmarked || cs.forceBypass || cs.ask
+	policyCall := c.cscPolicy.configured() || cs.mark() != cacheUnmarked || cs.has(cscForceBypass) || cs.has(cscAsk)
 	if policyCall {
 		cscEnter(cmd)
 		defer cscLeave(cmd)
@@ -1651,12 +1657,9 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 		}
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
-	if c.csc != nil || cmd.cacheState().mark != cacheUnmarked || c.cscPolicy.configured() {
+	if c.csc != nil || cmd.cacheState().mark() != cacheUnmarked || c.cscPolicy.configured() {
 		view := c.cscInvocationView(cmd)
-		meta, use, err := c.cscDecide(ctx, cmd, view)
-		if err != nil {
-			return err
-		}
+		meta, use := c.cscDecide(ctx, cmd, view)
 		if use {
 			return c.processCached(ctx, cmd, state, view, meta, startAttempt)
 		}
@@ -1874,13 +1877,15 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		}
 		// Borrowed Conn/Tx wrappers do not serve cache hits, but can still hold
 		// a tracked connection and need NO for an ordinary uncached OPTOUT read.
-		tracked := c.cscTrackingRequested() && c.cscConnInitGen(cn.GetID()) != 0
-		if capture != nil && !tracked {
-			capture.noStore = true
-		}
 		flag := byte(0)
-		if tracked {
-			flag = c.cscFlag(cmd, capture != nil)
+		if c.cscPolicy.mode != TrackingModePlain {
+			tracked := c.cscTrackingRequested() && c.cscConnInitGen(cn.GetID()) != 0
+			if capture != nil && !tracked {
+				capture.noStore = true
+			}
+			if tracked {
+				flag = c.cscFlag(cmd, capture != nil)
+			}
 		}
 
 		// HIMPORT bookkeeping: pending discards for this session and the
@@ -2355,6 +2360,7 @@ func (c *baseClient) pipelineProcessCmds(
 	// for registered fieldsets the batch references get written ahead of
 	// the batch.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
+	flags := c.cscPipelineFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -2362,8 +2368,11 @@ func (c *baseClient) pipelineProcessCmds(
 				return err
 			}
 		}
-		return writeCmds(wr, cmds)
+		return writeCSCPipelineCmds(wr, cmds, flags)
 	}); err != nil {
+		if flags != nil {
+			_ = cn.Close()
+		}
 		setCmdsErr(cmds, err)
 		return true, err
 	}
@@ -2380,7 +2389,7 @@ func (c *baseClient) pipelineProcessCmds(
 			return err
 		}
 		// read all replies
-		readErr = c.pipelineReadCmds(ctx, cn, rd, cmds)
+		readErr = c.pipelineReadCmdsWithFlags(ctx, cn, rd, cmds, flags)
 		if readErr != nil && !isRedisError(readErr) {
 			return readErr
 		}
@@ -2417,7 +2426,17 @@ func (c *baseClient) pipelineProcessCmds(
 }
 
 func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder) error {
+	return c.pipelineReadCmdsWithFlags(ctx, cn, rd, cmds, nil)
+}
+
+func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder, flags []byte) error {
 	for i, cmd := range cmds {
+		if flags != nil && flags[i] != 0 {
+			if err := c.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
+				setCmdsErr(cmds[i:], err)
+				return err
+			}
+		}
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
@@ -2452,6 +2471,7 @@ func (c *baseClient) txPipelineProcessCmds(
 	// for registered fieldsets the transaction references get written ahead
 	// of MULTI; the session state is visible inside the transaction.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
+	flags := c.cscPipelineFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -2459,8 +2479,11 @@ func (c *baseClient) txPipelineProcessCmds(
 				return err
 			}
 		}
-		return writeCmds(wr, cmds)
+		return writeCSCPipelineCmds(wr, cmds, flags)
 	}); err != nil {
+		if flags != nil {
+			_ = cn.Close()
+		}
 		setCmdsErr(cmds, err)
 		return true, err
 	}
@@ -2473,6 +2496,12 @@ func (c *baseClient) txPipelineProcessCmds(
 			return err
 		}
 
+		if flags != nil && flags[0] != 0 {
+			if err := c.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
+				setCmdsErr(cmds, err)
+				return err
+			}
+		}
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
 		trimmedCmds := cmds[1 : len(cmds)-1]
@@ -2589,7 +2618,7 @@ func NewClient(opt *Options) *Client {
 		baseClient: &baseClient{
 			apClosed:  &atomic.Bool{},
 			opt:       opt,
-			cscPolicy: cachePolicy(opt.ClientSideCacheConfig),
+			cscPolicy: opt.cachePolicy(),
 			onClose:   &onCloseHooks{},
 			himport:   newHImportRegistry(),
 		},
@@ -2735,6 +2764,7 @@ func (c *Client) init() {
 	c.autopipeliner = nil
 	c.asyncAutopipeliner = nil
 	c.cmdable = c.Process
+	c.captureCacheIntent = c.opt.ClientSideCacheConfig != nil || c.opt.ClientSideCache != nil
 	c.initHooks(hooks{
 		dial:       c.baseClient.dial,
 		process:    c.baseClient.process,

@@ -118,12 +118,6 @@ type CacheSizer func(cacheKey string, redisKeys []string, value []byte) int64
 //
 // Experimental: this API may change in a minor release.
 type CacheConfig struct {
-	// TrackingMode selects plain (the zero/default), optin or optout tracking.
-	// This and the Cacheable policy apply even with an explicit custom Cache.
-	TrackingMode TrackingMode
-	// Cacheable selects eligible unmarked calls, including in plain mode.
-	Cacheable CacheablePredicate
-
 	// MaxEntries limits the number of entries. Zero or negative means unlimited.
 	MaxEntries int
 	// MaxMemoryBytes limits estimated memory usage in bytes. Zero or negative means unlimited.

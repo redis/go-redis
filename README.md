@@ -385,15 +385,13 @@ reused after the client's ACL identity changes. Only deterministic read
 commands supported by the cache are stored; writes and streaming responses
 bypass it.
 
-Tracking modes and application intent are configured in the same cache config:
+Tracking modes and application intent are configured on the client options:
 
 ```go
-ClientSideCacheConfig: &redis.ClientSideCacheConfig{
-    MaxEntries:   10_000,
-    TrackingMode: redis.TrackingModeOptIn,
-    Cacheable: func(command string, keys []string) bool {
-        return command == "get" && len(keys) == 1 && strings.HasPrefix(keys[0], "user:")
-    },
+ClientSideCacheConfig: &redis.ClientSideCacheConfig{MaxEntries: 10_000},
+ClientSideCacheTrackingMode: redis.TrackingModeOptIn,
+ClientSideCacheable: func(command string, keys []string) bool {
+    return command == "get" && len(keys) == 1 && strings.HasPrefix(keys[0], "user:")
 },
 ```
 
@@ -402,7 +400,14 @@ bypasses by default; `optout` caches by default. The predicate has the same
 meaning in every mode, including plain. It runs concurrently, outside cache
 locks, on eligible unmarked calls, and receives actual Redis keys. Its owned
 key slice may be retained but must not be modified. Mode/policy are fixed at
-client construction. These policy fields also apply with an explicit custom Cache.
+client construction. These options also apply with an explicit custom Cache;
+setting them alone does not enable caching. An invalid tracking mode logs a
+warning once at construction and disables caching without failing commands.
+
+In plain mode, the predicate and context marks control only local cache use;
+Redis still tracks reads on tracked connections. `OPTIN` and `OPTOUT` also limit
+server tracking according to the caching decision. `NewLocalCache` configures
+storage only and does not select a tracking mode or predicate.
 
 Use a context mark to override intent for a call, with any client type:
 

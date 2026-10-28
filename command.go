@@ -205,6 +205,8 @@ type (
 
 type Cmder interface {
 	cacheState() *cscCommandState
+	cacheView() *commandMetadataView
+	setCacheView(*commandMetadataView)
 	// command name.
 	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster".
 	Name() string
@@ -478,19 +480,8 @@ type baseCmd struct {
 	ctx          context.Context
 	args         []interface{}
 	err          error
-	keyPos       int8
-	_stepCount   int8
 	rawVal       interface{}
 	_readTimeout *time.Duration
-	cmdType      CmdType
-	// slotCache memoizes the cluster slot once computed, so the cluster
-	// autopipeline shard router and the pipeline flush router don't each
-	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
-	// distinguishable from unset. A plain field is safe by construction: it
-	// is written during admission or explicit pipeline resolution, before the
-	// command is dispatched to any worker. Workers only read it until the
-	// command completes. A shared routing template carries no slot of its own.
-	slotCache uint16
 
 	// ready, when non-nil, is the batch whose done channel closes once the
 	// command has executed. It is set only by the deferred (async)
@@ -508,8 +499,22 @@ type baseCmd struct {
 	// routing pins admission metadata until cluster dispatch completes. Keeping
 	// it on the command avoids retaining commands in a client-wide lookup table.
 	routing atomic.Pointer[clusterRoutingDecision]
-	// CSC invocation state is independent of the consumed routing decision.
-	csc cscCommandState
+	// The pinned CSC view is independent of the consumed routing decision.
+	cscView *commandMetadataView
+
+	// slotCache memoizes the cluster slot once computed, so the cluster
+	// autopipeline shard router and the pipeline flush router don't each
+	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
+	// distinguishable from unset. A plain field is safe by construction: it
+	// is written during admission or explicit pipeline resolution, before the
+	// command is dispatched to any worker. Workers only read it until the
+	// command completes. A shared routing template carries no slot of its own.
+	slotCache uint16
+
+	keyPos     int8
+	_stepCount int8
+	cmdType    CmdType
+	csc        cscCommandState
 }
 
 func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
@@ -588,7 +593,9 @@ func (cmd *baseCmd) resultReady() bool {
 
 var _ Cmder = (*Cmd)(nil)
 
-func (cmd *baseCmd) cacheState() *cscCommandState { return &cmd.csc }
+func (cmd *baseCmd) cacheState() *cscCommandState           { return &cmd.csc }
+func (cmd *baseCmd) cacheView() *commandMetadataView        { return cmd.cscView }
+func (cmd *baseCmd) setCacheView(view *commandMetadataView) { cmd.cscView = view }
 
 func (cmd *baseCmd) Name() string {
 	if len(cmd.args) == 0 {
@@ -716,9 +723,11 @@ func (cmd *baseCmd) setArgs(args []interface{}) {
 }
 
 func (cmd *baseCmd) cloneBaseCmd() baseCmd {
-	mark := cmd.csc.mark
-	if cmd.csc.forceBypass {
-		mark = cacheBypassed
+	state := cmd.csc
+	state.depth = 0
+	state.set(cscNoLookup, false)
+	if state.has(cscForceBypass) {
+		state.setMark(cacheBypassed)
 	}
 	var readTimeout *time.Duration
 	if cmd._readTimeout != nil {
@@ -731,10 +740,8 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 	copy(args, cmd.args)
 
 	return baseCmd{
-		csc: cscCommandState{
-			view: cmd.csc.view, mark: mark, intent: cmd.csc.intent,
-			forceBypass: cmd.csc.forceBypass, ask: cmd.csc.ask,
-		},
+		csc:          state,
+		cscView:      cmd.cscView,
 		ctx:          cmd.ctx,
 		args:         args,
 		err:          cmd.err,

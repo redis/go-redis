@@ -8,12 +8,12 @@ import (
 
 // TrackingMode selects the server-assisted cache tracking mode. It is fixed
 // when a client is constructed and applied during each connection handshake.
-type TrackingMode string
+type TrackingMode uint8
 
 const (
-	TrackingModePlain  TrackingMode = "plain"
-	TrackingModeOptIn  TrackingMode = "optin"
-	TrackingModeOptOut TrackingMode = "optout"
+	TrackingModePlain TrackingMode = iota
+	TrackingModeOptIn
+	TrackingModeOptOut
 )
 
 // CacheablePredicate selects among eligible, unmarked calls in every mode.
@@ -28,24 +28,30 @@ type cscPolicy struct {
 	cacheable CacheablePredicate
 }
 
-func cachePolicy(cfg *ClientSideCacheConfig) cscPolicy {
-	if cfg == nil {
-		return cscPolicy{}
+// String returns the Redis tracking-mode name.
+func (m TrackingMode) String() string {
+	switch m {
+	case TrackingModePlain:
+		return "plain"
+	case TrackingModeOptIn:
+		return "optin"
+	case TrackingModeOptOut:
+		return "optout"
+	default:
+		return fmt.Sprintf("TrackingMode(%d)", uint8(m))
 	}
-	return cscPolicy{cfg.TrackingMode, cfg.Cacheable}
 }
 
-func (p cscPolicy) validate() error {
-	switch p.mode {
-	case "", TrackingModePlain, TrackingModeOptIn, TrackingModeOptOut:
-		return nil
-	default:
-		return fmt.Errorf("redis: invalid CSC tracking mode %q", p.mode)
-	}
+func (opt *Options) cachePolicy() cscPolicy {
+	return cscPolicy{opt.ClientSideCacheTrackingMode, opt.ClientSideCacheable}
+}
+
+func (opt *ClusterOptions) cachePolicy() cscPolicy {
+	return cscPolicy{opt.ClientSideCacheTrackingMode, opt.ClientSideCacheable}
 }
 
 func (p cscPolicy) configured() bool {
-	return (p.mode != "" && p.mode != TrackingModePlain) || p.cacheable != nil
+	return p.mode != TrackingModePlain || p.cacheable != nil
 }
 
 type cacheMark uint8
@@ -66,16 +72,41 @@ const (
 	cscIntentBypass
 )
 
+// Keep small state separate from the pinned metadata pointer so baseCmd can
+// pack it alongside its other small fields.
 type cscCommandState struct {
-	// view pins the same immutable metadata used by the Cluster router. It is
-	// separate from routing decisions, which may be shared or consumed at dispatch.
-	view        *commandMetadataView
-	mark        cacheMark
-	depth       uint8
-	intent      cscIntent
-	forceBypass bool
-	noLookup    bool
-	ask         bool
+	flags uint8
+	depth uint8
+}
+
+const (
+	cscMarkMask    uint8 = 3
+	cscIntentMask  uint8 = 3 << 2
+	cscForceBypass uint8 = 1 << 4
+	cscNoLookup    uint8 = 1 << 5
+	cscAsk         uint8 = 1 << 6
+)
+
+func (s *cscCommandState) mark() cacheMark { return cacheMark(s.flags & cscMarkMask) }
+func (s *cscCommandState) setMark(mark cacheMark) {
+	s.flags = s.flags&^cscMarkMask | uint8(mark)
+}
+func (s *cscCommandState) intent() cscIntent { return cscIntent((s.flags & cscIntentMask) >> 2) }
+func (s *cscCommandState) setIntent(intent cscIntent) {
+	s.flags = s.flags&^cscIntentMask | uint8(intent)<<2
+}
+func (s *cscCommandState) has(flag uint8) bool { return s.flags&flag != 0 }
+func (s *cscCommandState) set(flag uint8, value bool) {
+	if value {
+		s.flags |= flag
+	} else {
+		s.flags &^= flag
+	}
+}
+
+func resetCSCCommand(cmd Cmder) {
+	*cmd.cacheState() = cscCommandState{}
+	cmd.setCacheView(nil)
 }
 
 func cscEnter(cmd Cmder) { cmd.cacheState().depth++ }
@@ -84,7 +115,7 @@ func cscLeave(cmd Cmder) {
 	s := cmd.cacheState()
 	s.depth--
 	if s.depth == 0 {
-		*s = cscCommandState{}
+		resetCSCCommand(cmd)
 	}
 }
 
@@ -119,24 +150,23 @@ func cscUnmarkedContext(ctx context.Context) context.Context {
 }
 
 // Capture intent before hooks or asynchronous dispatch can replace the context.
-// Consume the context mark so internal handshake/helper commands do not inherit
-// it. Children and retries carry the captured command state instead.
-func cscBegin(ctx context.Context, cmd Cmder) (context.Context, bool) {
+// Internal operation boundaries mask the context; children and retries keep
+// the captured command state when hooks or batching replace their context.
+func cscBegin(ctx context.Context, cmd Cmder) bool {
 	s := cmd.cacheState()
 	mark, _ := ctx.Value(cacheContextKey{}).(cacheMark)
-	if mark != cacheUnmarked {
-		if s.depth == 0 {
-			// A new explicit invocation overrides any decision copied by Clone.
-			// Internal children/retries receive an unmarked context instead.
-			*s = cscCommandState{mark: mark}
-		}
-		ctx = context.WithValue(ctx, cacheContextKey{}, cacheUnmarked)
+	if s.depth == 0 {
+		// Every new invocation overrides decisions copied by Clone, including
+		// an unmarked call that selects the predicate or tracking-mode default.
+		// Internal children/retries keep their active invocation.
+		resetCSCCommand(cmd)
+		s.setMark(mark)
 	}
-	if s.depth != 0 || s.mark != cacheUnmarked || s.forceBypass {
+	if s.depth != 0 || s.mark() != cacheUnmarked || s.has(cscForceBypass) {
 		cscEnter(cmd)
-		return ctx, true
+		return true
 	}
-	return ctx, false
+	return false
 }
 
 // cscAdmitMarked fixes capability at submission, not at batch-size-dependent
@@ -146,26 +176,23 @@ func (ap *AutoPipeliner) cscAdmitMarked(cmd Cmder) bool {
 		return true
 	}
 	s := cmd.cacheState()
-	s.forceBypass = true
-	s.intent = cscIntentBypass
+	s.set(cscForceBypass, true)
+	s.setIntent(cscIntentBypass)
 	return false
 }
 
-func (c *baseClient) cscDecide(ctx context.Context, cmd Cmder, view *commandMetadataView) (cscCommandMeta, bool, error) {
-	if err := c.cscPolicy.validate(); err != nil {
-		return cscCommandMeta{}, false, err
-	}
+func (c *baseClient) cscDecide(ctx context.Context, cmd Cmder, view *commandMetadataView) (cscCommandMeta, bool) {
 	s := cmd.cacheState()
 	meta, eligible := cscInvocationMeta(view, cmd)
-	capable := eligible && c.csc != nil && c.autopipelineCSCActive() && !s.forceBypass && !s.ask && !cscIsBypassed(ctx)
+	capable := eligible && c.csc != nil && c.autopipelineCSCActive() && !s.has(cscForceBypass) && !s.has(cscAsk) && !cscIsBypassed(ctx)
 	if c.opt.cscPresenceOnly && clusterCSCCommandPolicy(cmd.Name()) == clusterCSCReplyBypass {
 		capable = false
 	}
 	if !capable {
-		return meta, false, nil
+		return meta, false
 	}
 	cscResolveIntent(cmd, view, meta, c.cscPolicy)
-	return meta, s.intent == cscIntentCache, nil
+	return meta, s.intent() == cscIntentCache
 }
 
 func cscInvocationMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bool) {
@@ -184,9 +211,9 @@ func cscInvocationMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bo
 
 func cscResolveIntent(cmd Cmder, view *commandMetadataView, meta cscCommandMeta, policy cscPolicy) {
 	s := cmd.cacheState()
-	if s.intent == cscIntentUnresolved {
-		wantCache := s.mark == cacheRequested || (s.mark == cacheUnmarked && policy.mode != TrackingModeOptIn)
-		if s.mark == cacheUnmarked && policy.cacheable != nil {
+	if s.intent() == cscIntentUnresolved {
+		wantCache := s.mark() == cacheRequested || (s.mark() == cacheUnmarked && policy.mode != TrackingModeOptIn)
+		if s.mark() == cacheUnmarked && policy.cacheable != nil {
 			first, step, count := cscRedisKeyLayout(meta, cmd)
 			keys := make([]string, count)
 			for i, pos := 0, first; i < count; i, pos = i+1, pos+step {
@@ -200,15 +227,15 @@ func cscResolveIntent(cmd Cmder, view *commandMetadataView, meta cscCommandMeta,
 			}
 			wantCache = policy.cacheable(name, keys)
 		}
-		s.intent = cscIntentBypass
+		s.setIntent(cscIntentBypass)
 		if wantCache {
-			s.intent = cscIntentCache
+			s.setIntent(cscIntentCache)
 		}
 	}
 }
 
 func (c *baseClient) cscInvocationView(cmd Cmder) *commandMetadataView {
-	if view := cmd.cacheState().view; view != nil {
+	if view := cmd.cacheView(); view != nil {
 		return view
 	}
 	return c.metadataView()
@@ -218,16 +245,16 @@ func (c *baseClient) cscInvocationView(cmd Cmder) *commandMetadataView {
 // change its arguments. Each target still validates eligibility and coverage.
 func (c *ClusterClient) cscPrepareInvocation(cmd Cmder) {
 	s := cmd.cacheState()
-	meta, eligible := cscInvocationMeta(s.view, cmd)
+	meta, eligible := cscInvocationMeta(cmd.cacheView(), cmd)
 	capable := eligible && c.opt.Protocol == 3 &&
 		(c.opt.ClientSideCacheConfig != nil || c.opt.cscCustomFactory) &&
 		c.opt.StreamingCredentialsProvider == nil && c.opt.CredentialsProvider == nil && c.opt.CredentialsProviderContext == nil &&
 		clusterCSCCommandPolicy(cmd.Name()) != clusterCSCReplyBypass
 	if !capable {
-		s.forceBypass = true
+		s.set(cscForceBypass, true)
 		return
 	}
-	cscResolveIntent(cmd, s.view, meta, cachePolicy(c.opt.ClientSideCacheConfig))
+	cscResolveIntent(cmd, cmd.cacheView(), meta, c.opt.cachePolicy())
 }
 
 func (c *baseClient) cscTrackable(cmd Cmder) bool {
@@ -255,22 +282,19 @@ func (c *baseClient) cscTrackable(cmd Cmder) bool {
 // A custom factory must honor the requested policy. Fail closed for observable
 // omissions instead of storing through an unexpectedly configured node cache.
 func (c *ClusterClient) cscCheckNode(cmd Cmder, node *Client) {
-	if cmd.cacheState().ask {
+	if cmd.cacheState().has(cscAsk) {
 		return
 	}
-	p := cachePolicy(c.opt.ClientSideCacheConfig)
+	p := c.opt.cachePolicy()
 	s := cmd.cacheState()
 	if !p.configured() && !c.opt.cscCustomFactory {
 		return
 	}
-	mode := func(m TrackingMode) TrackingMode {
-		if m == "" {
-			return TrackingModePlain
-		}
-		return m
-	}
-	if mode(p.mode) == mode(node.cscPolicy.mode) && (p.cacheable == nil) == (node.cscPolicy.cacheable == nil) && node.metadataSource == c.cmdMeta {
+
+	if p.mode == node.cscPolicy.mode && (p.cacheable == nil) == (node.cscPolicy.cacheable == nil) && node.metadataSource == c.cmdMeta {
 		return
 	}
-	s.forceBypass = true
+	s.set(cscForceBypass, true)
 }
+
+func (hs *hooksMixin) cscCapturesIntent() bool { return hs.captureCacheIntent }

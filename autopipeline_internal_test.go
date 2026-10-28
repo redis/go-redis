@@ -556,7 +556,7 @@ func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
 	cmd2 := NewStringCmd(ctx, "get", "k2")
 	cmds := []Cmder{cmd1, cmd2}
 	failed := newCmdsMap()
-	if err := cc.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failed, cc.resolvePipelineRouting(ctx, cmds)); err != nil {
+	if err := cc.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failed, cc.resolvePipelineRouting(ctx, cmds), nil); err != nil {
 		t.Fatalf("pipelineReadCmds: %v", err)
 	}
 	if cmd1.Val() != "v1" || cmd2.Val() != "v2" {
@@ -3490,7 +3490,7 @@ func TestCSCPolicyOrderedAutoPipelineUncached(t *testing.T) {
 				if err := cmd.Err(); err != nil || s.count("get") != 2 || c.CSCStats().Entries != 0 {
 					t.Fatal("uncached command could not be reused", err)
 				}
-				if *cmd.cacheState() != (cscCommandState{}) || cmd.clusterRoutingDecision() != nil {
+				if (*cmd.cacheState() != (cscCommandState{}) || cmd.cacheView() != nil) || cmd.clusterRoutingDecision() != nil {
 					t.Fatal("completed command retained invocation state")
 				}
 			})
@@ -3538,7 +3538,7 @@ func TestCSCPolicyOrderedAutoPipelineRetry(t *testing.T) {
 			if reads.Load() != 3 || s.prefixes() != 1 || c.CSCStats().Entries != 1 || c.CSCStats().Hits != 0 {
 				t.Fatal("retry changed budget/cache/pairing", reads.Load(), s.snapshot(), c.CSCStats())
 			}
-			if *cmd.cacheState() != (cscCommandState{}) {
+			if *cmd.cacheState() != (cscCommandState{}) || cmd.cacheView() != nil {
 				t.Fatal("retry leaked intent")
 			}
 		})
@@ -3550,9 +3550,9 @@ func TestCSCPolicyContextReuseAndAutoPipeline(t *testing.T) {
 	c := policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
 	ctx := context.Background()
 	cmd := NewStringCmd(ctx, "get", "k")
-	cmd.cacheState().mark = cacheRequested
+	cmd.cacheState().setMark(cacheRequested)
 	clone := cmd.Clone()
-	if clone.cacheState().mark != cacheRequested {
+	if clone.cacheState().mark() != cacheRequested {
 		t.Fatal("clone lost mark")
 	}
 	if err := c.Process(WithCache(ctx), cmd); err != nil {
@@ -3597,7 +3597,7 @@ func TestCSCPolicyContextAutoPipelineRaw(t *testing.T) {
 		if got, err := cmd.Text(); got != "v" || err != nil {
 			t.Fatal(got, err)
 		}
-		if *cmd.cacheState() != (cscCommandState{}) {
+		if *cmd.cacheState() != (cscCommandState{}) || cmd.cacheView() != nil {
 			t.Fatal("raw completion leaked intent")
 		}
 	}
@@ -3638,7 +3638,7 @@ func TestCSCPolicyContextReplacementAndHookRejection(t *testing.T) {
 	if err := c.Process(WithCache(ctx), cmd); err == nil {
 		t.Fatal("hook did not reject")
 	}
-	if *cmd.cacheState() != (cscCommandState{}) {
+	if *cmd.cacheState() != (cscCommandState{}) || cmd.cacheView() != nil {
 		t.Fatal("rejected call leaked invocation state")
 	}
 	hook.reject = false
@@ -3724,7 +3724,7 @@ func TestCSCPolicyAutoPipelineRoutingLifecycle(t *testing.T) {
 				if (face == "ordered") != (err != nil) {
 					t.Fatal(err)
 				}
-				if cmd.clusterRoutingDecision() != nil || *cmd.cacheState() != (cscCommandState{}) {
+				if cmd.clusterRoutingDecision() != nil || *cmd.cacheState() != (cscCommandState{}) || cmd.cacheView() != nil {
 					t.Fatal("admission/completion leaked invocation state")
 				}
 			}
@@ -3753,7 +3753,7 @@ func TestCSCPolicyAutoPipelineRoutingLifecycle(t *testing.T) {
 			}
 			closed := NewStringCmd(ctx, "get", "closed")
 			closed.setClusterRoutingDecision(c.metadataView().routingTable["get"].template)
-			if err := ap.Process(WithCache(ctx), closed); !errors.Is(err, ErrClosed) || closed.clusterRoutingDecision() != nil || *closed.cacheState() != (cscCommandState{}) {
+			if err := ap.Process(WithCache(ctx), closed); !errors.Is(err, ErrClosed) || closed.clusterRoutingDecision() != nil || *closed.cacheState() != (cscCommandState{}) || closed.cacheView() != nil {
 				t.Fatal("closed admission leaked state", err)
 			}
 		})
@@ -3784,11 +3784,69 @@ func TestCSCPolicyAutoPipelineQueueFull(t *testing.T) {
 	if err := ap.Process(WithCache(context.Background()), cmd); !errors.Is(err, ErrAutoPipelineQueueFull) {
 		t.Fatal(err)
 	}
-	if cmd.clusterRoutingDecision() != nil || *cmd.cacheState() != (cscCommandState{}) {
+	if cmd.clusterRoutingDecision() != nil || *cmd.cacheState() != (cscCommandState{}) || cmd.cacheView() != nil {
 		t.Fatal("queue-full admission leaked state")
 	}
 	once.Do(func() { close(release) })
 	if err := <-first; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A command accepted by the FD batching path stays uncached during recovery.
+// Marked blocking calls are diverted before entering this path.
+func TestCSCPolicyFullDuplexRedirectRemainsUncached(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		t.Run(fmt.Sprint(marked), func(t *testing.T) {
+			var fresh atomic.Bool
+			target := newCSCPolicyServer(t, func(a []string) string {
+				if strings.EqualFold(a[0], "get") && fresh.Load() {
+					return "$3\r\nnew\r\n"
+				}
+				return ""
+			})
+			source := newCSCPolicyServer(t, func(a []string) string {
+				if strings.EqualFold(a[0], "get") {
+					return "-MOVED 0 " + target.addr + "\r\n"
+				}
+				return ""
+			})
+			opt := clusterCSCTestOptions(func() []ClusterSlot {
+				return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: source.addr}}}}
+			})
+			opt.ClientSideCacheTrackingMode = TrackingModeOptOut
+			c := NewClusterClient(opt)
+			defer c.Close()
+			ctx := context.Background()
+			node, err := c.nodes.GetOrCreate(target.addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := node.Client.Get(ctx, "key").Err(); err != nil {
+				t.Fatal(err)
+			}
+			fresh.Store(true)
+			ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ap.Close()
+			if ap.clusterFD == nil {
+				t.Fatal("test did not select full duplex")
+			}
+			callCtx := ctx
+			if marked {
+				callCtx = WithCache(ctx)
+			}
+			if got, err := ap.Get(callCtx, "key").Result(); err != nil || got != "new" {
+				t.Fatal(got, err)
+			}
+			if got, err := node.Client.Get(ctx, "key").Result(); err != nil || got != "v" {
+				t.Fatal("batch recovery changed cache", got, err)
+			}
+			if target.count("get") != 2 || target.prefixes() != 1 {
+				t.Fatal("expected uncached NO+GET recovery", target.snapshot())
+			}
+		})
 	}
 }

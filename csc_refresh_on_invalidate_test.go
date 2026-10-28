@@ -484,11 +484,11 @@ func TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic(t *testing.T) {
 
 func TestCSCPolicyRefresh(t *testing.T) {
 	for _, mode := range []TrackingMode{TrackingModePlain, TrackingModeOptIn, TrackingModeOptOut} {
-		t.Run(string(mode), func(t *testing.T) {
+		t.Run(mode.String(), func(t *testing.T) {
 			s := newCSCPolicyServer(t, nil)
 			opt := cscPolicyOptions(s.addr, mode)
 			var calls atomic.Int32
-			opt.ClientSideCacheConfig.Cacheable = func(string, []string) bool { calls.Add(1); return true }
+			opt.ClientSideCacheable = func(string, []string) bool { calls.Add(1); return true }
 			c := policyClient(t, opt)
 			ctx := context.Background()
 			if err := c.Get(ctx, "k").Err(); err != nil {

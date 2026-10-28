@@ -93,7 +93,7 @@ func (c *Pipeline) BatchProcess(ctx context.Context, cmd ...Cmder) error {
 	// the state owned by their active invocation.
 	for _, command := range cmd {
 		if state := command.cacheState(); state.depth == 0 {
-			*state = cscCommandState{}
+			resetCSCCommand(command)
 		}
 	}
 	c.cmds = append(c.cmds, cmd...)

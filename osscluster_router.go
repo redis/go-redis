@@ -300,19 +300,27 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	slot int,
 	decision *clusterRoutingDecision,
 ) error {
-	newPolicy := cachePolicy(c.opt.ClientSideCacheConfig).configured() || cmd.cacheState().mark != cacheUnmarked || cmd.cacheState().forceBypass
-	if newPolicy {
+	newPolicy := c.opt.cachePolicy().configured() || cmd.cacheState().mark() != cacheUnmarked || cmd.cacheState().has(cscForceBypass)
+	if newPolicy || c.captureCacheIntent {
+		// A fragment belongs to the parent invocation, even in plain mode.
+		// Preserve its pinned metadata when entering the node client.
 		cscEnter(cmd)
 		defer cscLeave(cmd)
 	}
+	callerCtx := ctx
 	var node *clusterNode
 	var moved, ask bool
 	var redirected bool
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
-		if newPolicy && redirected {
-			cmd.cacheState().noLookup = true
-			cmd.cacheState().ask = ask
+		ctx = callerCtx
+		if redirected {
+			if newPolicy {
+				cmd.cacheState().set(cscNoLookup, true)
+				cmd.cacheState().set(cscAsk, ask)
+			} else {
+				ctx = cscBypass(ctx)
+			}
 		}
 		if attempt > 0 && !moved && !ask {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {

@@ -964,7 +964,8 @@ type AutoPipeliner struct {
 	pipelinePool pool.Pooler
 	// cscActiveFn checks the client's current CSC state before solo dispatch:
 	// CSC can disable itself after AutoPipeliner construction.
-	cscActiveFn func() bool
+	cscActiveFn        func() bool
+	captureCacheIntent bool
 	// cscEligibleFn checks eligibility under the client's current metadata view
 	// so live refreshes and application overrides take effect at dispatch.
 	cscEligibleFn func(Cmder) bool
@@ -1328,6 +1329,12 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	if pp, ok := pipeliner.(interface{ getPipelinePool() pool.Pooler }); ok {
 		ap.pipelinePool = pp.getPipelinePool()
 	}
+	// Unknown wrappers may delegate to a CSC client; built-in clients can skip
+	// context lookup entirely when their construction cannot enable caching.
+	ap.captureCacheIntent = true
+	if cc, ok := pipeliner.(interface{ cscCapturesIntent() bool }); ok {
+		ap.captureCacheIntent = cc.cscCapturesIntent()
+	}
 	// CSC probes for standalone and cluster clients.
 	if cc, ok := pipeliner.(interface {
 		autopipelineCSCActive() bool
@@ -1579,8 +1586,8 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 // so Close waits for accepted diverted work (bounded — see Close) instead of
 // returning while it still holds a pooled connection.
 func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apBatch {
-	if cmd.cacheState().depth == 0 {
-		ctx, _ = cscBegin(ctx, cmd)
+	if ap.captureCacheIntent && cmd.cacheState().depth == 0 {
+		cscBegin(ctx, cmd)
 	}
 	if ap.blocking {
 		defer resetAutoPipelineCommand(cmd)
@@ -2056,12 +2063,14 @@ func blockingArgString(arg interface{}) string {
 // resetAutoPipelineCommand releases request state before completion is published.
 func resetAutoPipelineCommand(cmd Cmder) {
 	cmd.setClusterRoutingDecision(nil)
-	*cmd.cacheState() = cscCommandState{}
+	resetCSCCommand(cmd)
 }
 
 // submit queues a command without blocking and returns its completion future.
 func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
-	ctx, _ = cscBegin(ctx, cmd)
+	if ap.captureCacheIntent {
+		cscBegin(ctx, cmd)
+	}
 	// Sequential command reuse must capture a fresh admission decision.
 	cmd.setClusterRoutingDecision(nil)
 	// finish marks the command ready on the deferred face so its result
@@ -2089,7 +2098,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 	}
-	if cmd.cacheState().mark != cacheUnmarked {
+	if cmd.cacheState().mark() != cacheUnmarked {
 		cacheDivert := ap.cscAdmitMarked(cmd)
 		diverted = diverted || cacheDivert
 	}
@@ -3429,7 +3438,7 @@ func (s *apShard) flushBatchSlice() {
 				// is honored (processPipeline bypasses processCached). Gated on
 				// the LIVE CSC state: without active CSC, Process would just run on
 				// the MAIN pool, ignoring the pipeline pool the straggler gate probed.
-				if !cmd.cacheState().forceBypass && ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
+				if !cmd.cacheState().has(cscForceBypass) && ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
 					return ap.pipeliner.process(ctx, cmd)
 				}
 				// One-command pipeline on the PIPELINE pool (falls back to the main

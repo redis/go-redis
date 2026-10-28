@@ -47,6 +47,9 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
+	// cscDisabled preserves a construction-time rejection through node factories.
+	// It prevents a factory-supplied Cache from re-enabling rejected CSC options.
+	cscDisabled bool
 	// cscPresenceOnly enables node-local presence filtering and redirect eviction.
 	// It owns no Cluster state and leaves standalone defaults unchanged.
 	cscPresenceOnly bool
@@ -525,9 +528,20 @@ type Options struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
+	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
+	// The zero value is TrackingModePlain. An invalid value logs a warning and
+	// disables CSC at construction. Requires an enabled client-side cache.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheTrackingMode TrackingMode
+
+	// ClientSideCacheable selects eligible unmarked calls for caching. It also
+	// applies with a custom Cache. See CacheablePredicate for its callback contract.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheable CacheablePredicate
+
 	// ClientSideCache is an explicit Cache implementation used for client-side
 	// caching. When set, it overrides the storage settings of ClientSideCacheConfig;
-	// its TrackingMode and Cacheable policy settings still apply. Intended for
+	// ClientSideCacheTrackingMode and ClientSideCacheable still apply. Intended for
 	// advanced users that want to share a cache across clients or supply a
 	// custom implementation.
 	//
@@ -846,6 +860,17 @@ func (opt *Options) init() {
 
 	if opt.FailingTimeoutSeconds == 0 {
 		opt.FailingTimeoutSeconds = 15
+	}
+
+	if opt.ClientSideCacheTrackingMode > TrackingModeOptOut {
+		internal.Logger.Printf(context.Background(), "redis: invalid CSC tracking mode %s; caching is disabled", opt.ClientSideCacheTrackingMode)
+		opt.cscDisabled = true
+	}
+	if opt.cscDisabled {
+		opt.ClientSideCacheConfig = nil
+		opt.ClientSideCache = nil
+		opt.ClientSideCacheTrackingMode = TrackingModePlain
+		opt.ClientSideCacheable = nil
 	}
 
 	if opt.Protocol == 2 && (opt.ClientSideCache != nil || opt.ClientSideCacheConfig != nil) {
