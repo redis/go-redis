@@ -259,7 +259,7 @@ var _ = Describe("Scan", func() {
 			String: "foobar",
 			Int:    123,
 		}))
-  })
+	})
 
 	It("Implements Scanner", func() {
 		var td TimeData

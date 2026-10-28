@@ -73,7 +73,7 @@ func Struct(dst interface{}) (StructValue, error) {
 
 // Scan scans the results from a key-value Redis map result set to a destination struct.
 // The Redis keys are matched to the struct's field with the `redis` tag.
-// This method will attempt to unmarshal each field and will return an error if any of the 
+// This method will attempt to unmarshal each field and will return an error if any of the
 // fields cannot be unmarshalled. The destination struct will have the failed fields set to
 // their zero value.
 func Scan(dst interface{}, keys []interface{}, vals []interface{}) error {
