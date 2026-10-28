@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -1656,15 +1657,6 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		if schema.NoStem {
 			args = append(args, "NOSTEM")
 		}
-		if schema.Sortable {
-			args = append(args, "SORTABLE")
-		}
-		if schema.UNF {
-			args = append(args, "UNF")
-		}
-		if schema.NoIndex {
-			args = append(args, "NOINDEX")
-		}
 		if schema.PhoneticMatcher != "" {
 			args = append(args, "PHONETIC", schema.PhoneticMatcher)
 		}
@@ -1685,6 +1677,17 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 		if schema.IndexMissing {
 			args = append(args, "INDEXMISSING")
+		}
+		// FT.CREATE stops reading type-specific options at SORTABLE, UNF and
+		// NOINDEX, so they must come last.
+		if schema.Sortable {
+			args = append(args, "SORTABLE")
+		}
+		if schema.UNF {
+			args = append(args, "UNF")
+		}
+		if schema.NoIndex {
+			args = append(args, "NOINDEX")
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -1975,6 +1978,13 @@ func ftInfoNumInt(val interface{}) int {
 		return int(v)
 	case float32:
 		return int(v)
+	case string:
+		// RESP2 answers the REPLY_KVNUM fields with bulk strings, which are
+		// doubles such as "4.539999961853027" and not always integers.
+		if f, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return int(f)
+		}
+		return internal.ToInteger(v)
 	default:
 		return internal.ToInteger(v)
 	}
@@ -2168,15 +2178,15 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 		ftInfo.GCStats = GCStats{}
 		for i := 0; i < len(gcStats); i += 2 {
 			if internal.ToLower(internal.ToString(gcStats[i])) == "bytes_collected" {
-				ftInfo.GCStats.BytesCollected = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.BytesCollected = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "total_ms_run" {
-				ftInfo.GCStats.TotalMsRun = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.TotalMsRun = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "total_cycles" {
-				ftInfo.GCStats.TotalCycles = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.TotalCycles = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "average_cycle_time_ms" {
@@ -2184,15 +2194,15 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "last_run_time_ms" {
-				ftInfo.GCStats.LastRunTimeMs = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.LastRunTimeMs = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "gc_numeric_trees_missed" {
-				ftInfo.GCStats.GCNumericTreesMissed = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.GCNumericTreesMissed = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 			if internal.ToLower(internal.ToString(gcStats[i])) == "gc_blocks_denied" {
-				ftInfo.GCStats.GCBlocksDenied = internal.ToInteger(gcStats[i+1])
+				ftInfo.GCStats.GCBlocksDenied = ftInfoNumInt(gcStats[i+1])
 				continue
 			}
 		}
@@ -2708,34 +2718,38 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 		}
 		i++
 
-		if noContent {
-			results = append(results, doc)
-			continue
-		}
-
 		if withScores && i < len(data) {
-			if scoreStr, ok := data[i].(string); ok {
+			scoreVal := data[i]
+			if arr, ok := scoreVal.([]interface{}); ok && len(arr) > 0 {
+				scoreVal = arr[0]
+			}
+			if scoreStr, ok := scoreVal.(string); ok {
 				score, err := strconv.ParseFloat(scoreStr, 64)
 				if err != nil {
 					return FTSearchResult{}, fmt.Errorf("invalid score format")
 				}
 				doc.Score = &score
-				i++
 			}
+			i++
 		}
 
 		if withPayloads && i < len(data) {
 			if payload, ok := data[i].(string); ok {
 				doc.Payload = &payload
-				i++
 			}
+			i++
 		}
 
 		if withSortKeys && i < len(data) {
 			if sortKey, ok := data[i].(string); ok {
 				doc.SortKey = &sortKey
-				i++
 			}
+			i++
+		}
+
+		if noContent {
+			results = append(results, doc)
+			continue
 		}
 
 		if i < len(data) {
@@ -2846,7 +2860,13 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 	if dataSlice, ok := data.([]interface{}); ok {
-		cmd.val, err = parseFTSearch(dataSlice, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
+		opts := cmd.options
+		if opts == nil {
+			opts = &FTSearchOptions{}
+		}
+		// An empty non-nil Return sends RETURN 0: no field list, like NOCONTENT.
+		noContent := opts.NoContent || (opts.Return != nil && len(opts.Return) == 0)
+		cmd.val, err = parseFTSearch(dataSlice, noContent, opts.WithScores, opts.WithPayloads, opts.WithSortKeys)
 		return err
 	}
 	return fmt.Errorf("unexpected response type: %T", data)
@@ -2932,6 +2952,9 @@ func parseFTSearchDocumentMapRESP3(itemMap map[interface{}]interface{}) (Documen
 				doc.ID = id
 			}
 		case "score":
+			if arr, ok := v.([]interface{}); ok && len(arr) > 0 {
+				v = arr[0]
+			}
 			if score, ok := v.(float64); ok {
 				doc.Score = &score
 			}
