@@ -922,7 +922,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 		if opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return tls.DialWithDialer(netDialer, network, addr, opt.TLSConfig)
+		return (&tls.Dialer{NetDialer: netDialer, Config: opt.TLSConfig}).DialContext(ctx, network, addr)
 	}
 }
 
