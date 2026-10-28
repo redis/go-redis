@@ -251,6 +251,7 @@ type Cmdable interface {
 	TimeseriesCmdable
 	JSONCmdable
 	VectorSetCmdable
+	BlessCmdable
 }
 
 type StatefulCmdable interface {
@@ -357,17 +358,24 @@ func (info LibraryInfo) Validate() error {
 }
 
 // Hello sets the resp protocol used.
+// It sends AUTH only when password is not empty.
 func (c statefulCmdable) Hello(ctx context.Context,
 	ver int, username, password, clientName string,
 ) *MapStringInterfaceCmd {
+	return c.hello(ctx, ver, username, password, clientName, password != "")
+}
+
+// hello sends HELLO with AUTH when auth is true.
+func (c statefulCmdable) hello(ctx context.Context,
+	ver int, username, password, clientName string, auth bool,
+) *MapStringInterfaceCmd {
 	args := make([]interface{}, 0, 7)
 	args = append(args, "hello", ver)
-	if password != "" {
-		if username != "" {
-			args = append(args, "auth", username, password)
-		} else {
-			args = append(args, "auth", "default", password)
+	if auth {
+		if username == "" {
+			username = "default"
 		}
+		args = append(args, "auth", username, password)
 	}
 	if clientName != "" {
 		args = append(args, "setname", clientName)
@@ -875,15 +883,17 @@ type ModuleLoadexConfig struct {
 }
 
 func (c *ModuleLoadexConfig) toArgs() []interface{} {
-	args := make([]interface{}, 3, 3+len(c.Conf)*3+len(c.Args)*2)
+	args := make([]interface{}, 3, 4+len(c.Conf)*3+len(c.Args))
 	args[0] = "MODULE"
 	args[1] = "LOADEX"
 	args[2] = c.Path
 	for k, v := range c.Conf {
 		args = append(args, "CONFIG", k, v)
 	}
-	for _, arg := range c.Args {
-		args = append(args, "ARGS", arg)
+	// ARGS comes once, and every argument after it goes to the module.
+	if len(c.Args) > 0 {
+		args = append(args, "ARGS")
+		args = append(args, c.Args...)
 	}
 	return args
 }

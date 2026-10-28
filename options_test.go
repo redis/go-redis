@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,105 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
+
+func TestParseURLConnectionValidation(t *testing.T) {
+	parsers := []struct {
+		name  string
+		parse func(string) (*Options, error)
+	}{
+		{"standalone", func(query string) (*Options, error) {
+			return ParseURL("redis://localhost:6379?" + query)
+		}},
+		{"cluster", func(query string) (*Options, error) {
+			o, err := ParseClusterURL("redis://localhost:6379?" + query)
+			if err != nil {
+				return nil, err
+			}
+			o.init()
+			return o.clientOptions(), nil
+		}},
+		{"failover", func(query string) (*Options, error) {
+			o, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + query)
+			if err != nil {
+				return nil, err
+			}
+			return o.clientOptions(), nil
+		}},
+	}
+	for _, parser := range parsers {
+		t.Run(parser.name, func(t *testing.T) {
+			t.Run("omitted retry delay", func(t *testing.T) {
+				o, err := parser.parse("")
+				if err != nil {
+					t.Fatal(err)
+				}
+				o.init()
+				if o.DialerRetryTimeout != 100*time.Millisecond || o.DialerRetryBackoff != nil {
+					t.Fatal("omitted retry delay must retain the default backoff")
+				}
+			})
+			for _, value := range []string{"", "0", "0s", "1", "250ms", "-1", "-1s", "-1ns", "-0.1ns", "bad", "9223372036854775807"} {
+				t.Run("retry/"+value, func(t *testing.T) {
+					o, err := parser.parse("dialer_retry_timeout=" + value)
+					if strings.HasPrefix(value, "-") || value == "bad" || value == "9223372036854775807" {
+						if err == nil || !strings.Contains(err.Error(), "dialer_retry_timeout") {
+							t.Fatalf("expected dialer_retry_timeout error, got %v", err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					o.init()
+					want := 100 * time.Millisecond
+					switch value {
+					case "0", "0s":
+						want = 0
+					case "1":
+						want = time.Second
+					case "250ms":
+						want = 250 * time.Millisecond
+					}
+					got := o.DialerRetryTimeout
+					if o.DialerRetryBackoff != nil {
+						got = o.DialerRetryBackoff(0)
+					}
+					if got != want {
+						t.Fatalf("retry delay = %v, want %v", got, want)
+					}
+				})
+			}
+			for _, field := range []string{"read_buffer_size", "write_buffer_size"} {
+				for _, value := range []string{"-1", "bad", "0", "65536"} {
+					t.Run(field+"/"+value, func(t *testing.T) {
+						o, err := parser.parse(field + "=" + value)
+						if value == "-1" || value == "bad" {
+							if err == nil || !strings.Contains(err.Error(), field) {
+								t.Fatalf("expected %s error, got %v", field, err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						o.init()
+						want := 32768
+						if value == "65536" {
+							want = 65536
+						}
+						got := o.ReadBufferSize
+						if field == "write_buffer_size" {
+							got = o.WriteBufferSize
+						}
+						if got != want {
+							t.Fatalf("%s = %d, want %d", field, got, want)
+						}
+					})
+				}
+			}
+		})
+	}
+}
 
 func TestParseURL(t *testing.T) {
 	cases := []struct {
@@ -128,6 +228,10 @@ func TestParseURL(t *testing.T) {
 			// invalid bool value
 			url: "redis://localhost/?pool_fifo=yes",
 			err: errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
+		}, {
+			// invalid skip_verify value
+			url: "rediss://localhost/?skip_verify=yes",
+			err: errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
 		}, {
 			// it returns first error
 			url: "redis://localhost/?db=foo&pool_size=five",
@@ -737,5 +841,119 @@ func TestParseURLPipelinePoolOptions(t *testing.T) {
 	}
 	if fo.PipelinePoolSize != -1 || fo.PipelineReadBufferSize != 131072 || fo.PipelineWriteBufferSize != 65536 {
 		t.Fatalf("ParseFailoverURL pipeline opts: size=%d rbuf=%d wbuf=%d", fo.PipelinePoolSize, fo.PipelineReadBufferSize, fo.PipelineWriteBufferSize)
+	}
+
+	const mi = "pipeline_min_idle_conns=2"
+	if o, err := ParseURL("redis://localhost:6379?" + mi); err != nil || o.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseURL pipeline_min_idle_conns: %v, %+v", err, o)
+	}
+	if co, err := ParseClusterURL("redis://localhost:6379?" + mi); err != nil || co.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseClusterURL pipeline_min_idle_conns: %v, %+v", err, co)
+	}
+	if fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + mi); err != nil || fo.PipelineMinIdleConns != 2 {
+		t.Fatalf("ParseFailoverURL pipeline_min_idle_conns: %v, %+v", err, fo)
+	}
+}
+
+func TestParseClusterURLSkipVerify(t *testing.T) {
+	opt, err := ParseClusterURL("rediss://localhost:6379?skip_verify=true")
+	if err != nil {
+		t.Fatalf("ParseClusterURL(skip_verify=true): unexpected error: %v", err)
+	}
+	if opt.TLSConfig == nil || !opt.TLSConfig.InsecureSkipVerify {
+		t.Fatalf("expected TLSConfig.InsecureSkipVerify=true, got %+v", opt.TLSConfig)
+	}
+
+	optFalse, err := ParseClusterURL("rediss://localhost:6379?skip_verify=false")
+	if err != nil {
+		t.Fatalf("ParseClusterURL(skip_verify=false): unexpected error: %v", err)
+	}
+	if optFalse.TLSConfig == nil || optFalse.TLSConfig.InsecureSkipVerify {
+		t.Fatalf("expected TLSConfig.InsecureSkipVerify=false, got %+v", optFalse.TLSConfig)
+	}
+
+	_, err = ParseClusterURL("rediss://localhost:6379?skip_verify=yes")
+	if err == nil {
+		t.Fatal("expected error for invalid skip_verify value, got nil")
+	}
+	wantErr := `redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`
+	if err.Error() != wantErr {
+		t.Fatalf("got error %q, want %q", err.Error(), wantErr)
+	}
+
+	_, err = ParseClusterURL("redis://localhost?skip_verify=true")
+	if err == nil {
+		t.Fatal("expected error for skip_verify without TLS, got nil")
+	}
+	wantErr = "redis: unexpected option: skip_verify"
+	if err.Error() != wantErr {
+		t.Fatalf("got error %q, want %q", err.Error(), wantErr)
+	}
+}
+
+// TestParseURLConnectionOptions verifies that the URL parsers accept the
+// connection settings that ParseURL, ParseClusterURL and ParseFailoverURL
+// previously rejected as unexpected options, and that omitting them keeps the
+// zero values.
+func TestParseURLConnectionOptions(t *testing.T) {
+	const q = "dialer_retries=3&dialer_retry_timeout=2s&context_timeout_enabled=true" +
+		"&read_buffer_size=65536&write_buffer_size=32768&disable_identity=true&identity_suffix=app"
+
+	o, err := ParseURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	if o.DialerRetries != 3 || o.DialerRetryTimeout != 2*time.Second || !o.ContextTimeoutEnabled ||
+		o.ReadBufferSize != 65536 || o.WriteBufferSize != 32768 || !o.DisableIdentity || o.IdentitySuffix != "app" {
+		t.Fatalf("ParseURL connection opts: %+v", o)
+	}
+
+	co, err := ParseClusterURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseClusterURL: %v", err)
+	}
+	if co.DialerRetries != 3 || co.DialerRetryTimeout != 2*time.Second || !co.ContextTimeoutEnabled ||
+		co.ReadBufferSize != 65536 || co.WriteBufferSize != 32768 || !co.DisableIdentity || co.IdentitySuffix != "app" {
+		t.Fatalf("ParseClusterURL connection opts: %+v", co)
+	}
+
+	fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + q)
+	if err != nil {
+		t.Fatalf("ParseFailoverURL: %v", err)
+	}
+	if fo.DialerRetries != 3 || fo.DialerRetryTimeout != 2*time.Second || !fo.ContextTimeoutEnabled ||
+		fo.ReadBufferSize != 65536 || fo.WriteBufferSize != 32768 || !fo.DisableIdentity || fo.IdentitySuffix != "app" {
+		t.Fatalf("ParseFailoverURL connection opts: %+v", fo)
+	}
+
+	// ParseFailoverURL keeps accepting the original camelCase spellings.
+	fo, err = ParseFailoverURL("redis://localhost:6379?master_name=mymaster&disableIdentity=true&identitySuffix=legacy")
+	if err != nil {
+		t.Fatalf("ParseFailoverURL camelCase: %v", err)
+	}
+	if !fo.DisableIdentity || fo.IdentitySuffix != "legacy" {
+		t.Fatalf("ParseFailoverURL camelCase opts: disable=%v suffix=%q", fo.DisableIdentity, fo.IdentitySuffix)
+	}
+	// Both spellings of one option are rejected, like idle_timeout + conn_max_idle_time.
+	if _, err = ParseFailoverURL("redis://localhost:6379?master_name=mymaster&disable_identity=true&disableIdentity=true"); err == nil {
+		t.Fatal("ParseFailoverURL accepted both disable_identity and disableIdentity")
+	}
+
+	// Without the parameters every field keeps its zero value.
+	o, err = ParseURL("redis://localhost:6379")
+	if err != nil {
+		t.Fatalf("ParseURL defaults: %v", err)
+	}
+	if o.DialerRetries != 0 || o.DialerRetryTimeout != 0 || o.ContextTimeoutEnabled ||
+		o.ReadBufferSize != 0 || o.WriteBufferSize != 0 || o.DisableIdentity || o.IdentitySuffix != "" {
+		t.Fatalf("ParseURL defaults changed: %+v", o)
+	}
+
+	// Invalid values are reported, not ignored.
+	if _, err = ParseURL("redis://localhost:6379?context_timeout_enabled=maybe"); err == nil {
+		t.Fatal("ParseURL accepted an invalid context_timeout_enabled")
+	}
+	if _, err = ParseClusterURL("redis://localhost:6379?read_buffer_size=big"); err == nil {
+		t.Fatal("ParseClusterURL accepted an invalid read_buffer_size")
 	}
 }

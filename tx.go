@@ -57,6 +57,10 @@ func (c *Client) newTx() *Tx {
 			// evict from the parent cache.
 			cscPoolHook: c.cscPoolHook,
 			cscActive:   c.cscActive,
+			// Carry the parent's streaming-credentials manager so initConn can
+			// create a credentials listener when Watch initializes a fresh
+			// connection (issue #4154).
+			streamingCredentialsManager: c.streamingCredentialsManager,
 		},
 	}
 	tx.init()

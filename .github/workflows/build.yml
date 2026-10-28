@@ -38,6 +38,27 @@ jobs:
           echo "min=$min oldstable=$old matrix=$matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
+  test-386:
+    name: test-386
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Vet and test on 386
+        env:
+          GOOS: linux
+          GOARCH: "386"
+        run: |
+          go vet .
+          go test ./internal/...
+          go test -run 'TestNew(Failover)?ClientPanic|TestSlotNodeWithinLatencyRotationPastIntMax' .
+
   benchmark:
     name: benchmark
     needs: go-versions
@@ -46,6 +67,7 @@ jobs:
       fail-fast: false
       matrix:
         redis-version:
+          - "8.12.x" # Redis CE 8.12 (pre-release)
           - "8.10.x" # Redis CE 8.10
           - "8.6.x" # Redis CE 8.6
           - "8.4.x" # Redis CE 8.4
@@ -72,6 +94,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
+            ["8.12.x"]="8.12-m02-int"
             ["8.10.x"]="8.10.0"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
@@ -105,6 +128,7 @@ jobs:
         fail-fast: false
         matrix:
           redis-version:
+            - "8.12.x" # Redis CE 8.12 (pre-release)
             - "8.10.x" # Redis CE 8.10
             - "8.6.x" # Redis CE 8.6
             - "8.4.x" # Redis CE 8.4

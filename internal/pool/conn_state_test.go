@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -123,6 +124,96 @@ func TestConnStateMachine_AwaitAndTransition_Timeout(t *testing.T) {
 	}
 	if err != context.DeadlineExceeded {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+// A background worker (re-auth, handoff) parks in AwaitAndTransition until the
+// connection is IDLE. Put hands connections back through the Release() hot
+// path, so that path must wake the parked waiter.
+func TestConnStateMachine_AwaitAndTransition_WokenByRelease(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	cn := NewConn(client)
+	sm := cn.GetStateMachine()
+	sm.Transition(StateInUse) // checked out by a command
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := sm.AwaitAndTransition(ctx, ValidFromIdle(), StateUnusable)
+		done <- err
+	}()
+
+	// Wait until the worker is parked in the queue.
+	deadline := time.Now().Add(2 * time.Second)
+	for sm.waiterCount.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("waiter was never enqueued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// The command finishes: Put's IN_USE -> IDLE.
+	if !cn.Release() {
+		t.Fatal("expected Release to transition IN_USE -> IDLE")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiter was not woken by Release: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiter still parked after Release")
+	}
+	if state := sm.GetState(); state != StateUnusable {
+		t.Errorf("expected state UNUSABLE, got %s", state)
+	}
+}
+
+// Release landing between the waiter's failed fast path and its enqueue: at
+// that moment there is no waiter to notify, so AwaitAndTransition must re-check
+// once the waiter is queued. Holding sm.mu keeps the worker in that window.
+func TestConnStateMachine_AwaitAndTransition_ReleaseBeforeEnqueue(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	cn := NewConn(client)
+	sm := cn.GetStateMachine()
+	sm.Transition(StateInUse) // checked out by a command
+
+	// The enqueue takes sm.mu: the worker fails its fast path and blocks here.
+	sm.mu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := sm.AwaitAndTransition(ctx, ValidFromIdle(), StateUnusable)
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // let the worker reach the enqueue
+
+	// The command finishes while no waiter is visible yet.
+	released := cn.Release()
+	sm.mu.Unlock() // the worker enqueues now, after the transition it waits for
+	if !released {
+		t.Fatal("expected Release to transition IN_USE -> IDLE")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiter enqueued after Release was never served: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiter still parked")
+	}
+	if state := sm.GetState(); state != StateUnusable {
+		t.Errorf("expected state UNUSABLE, got %s", state)
 	}
 }
 
@@ -731,5 +822,107 @@ func TestConn_UsableUnusable(t *testing.T) {
 	cn.SetUsable(true)
 	if state := cn.stateMachine.GetState(); state != StateIdle {
 		t.Errorf("expected state IDLE after SetUsable(true), got %s", state)
+	}
+}
+
+// checkWaiterQueueEmpty fails the test if the waiter list or waiterCount is
+// not empty, or if they disagree.
+func checkWaiterQueueEmpty(t *testing.T, sm *ConnStateMachine, iteration int) {
+	t.Helper()
+	sm.mu.Lock()
+	listLen := sm.waiters.Len()
+	count := sm.waiterCount.Load()
+	sm.mu.Unlock()
+	if listLen != 0 || count != 0 {
+		t.Fatalf("iteration %d: waiter queue not empty: list=%d waiterCount=%d", iteration, listLen, count)
+	}
+}
+
+func waitForWaiter(t *testing.T, sm *ConnStateMachine, iteration int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for sm.waiterCount.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("iteration %d: waiter never enqueued", iteration)
+		}
+		time.Sleep(10 * time.Microsecond)
+	}
+}
+
+// A failed CAS in notifyWaiters (the conn was acquired concurrently) must keep
+// the waiter removable by its own timeout path. Otherwise a dead waiter stays
+// queued and a later notify moves the conn to its target state for nobody.
+func TestConnStateMachine_NotifyFailedCASKeepsWaiterRemovable(t *testing.T) {
+	sm := NewConnStateMachine()
+
+	for i := 0; i < 2000; i++ {
+		sm.Transition(StateInUse)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errc := make(chan error, 1)
+		go func() {
+			_, err := sm.AwaitAndTransition(ctx, ValidFromIdle(), StateUnusable)
+			errc <- err
+		}()
+		waitForWaiter(t, sm, i)
+
+		// Get: spin on the raw IDLE -> IN_USE CAS (like Conn.TryAcquire), racing
+		// the waiter for the conn that Put is about to release.
+		spinning := make(chan struct{})
+		acquired := make(chan struct{})
+		go func() {
+			defer close(acquired)
+			close(spinning)
+			for !sm.state.CompareAndSwap(uint32(StateIdle), uint32(StateInUse)) {
+				if sm.GetState() == StateUnusable {
+					return // the waiter won
+				}
+			}
+		}()
+		<-spinning
+
+		// Put: IN_USE -> IDLE, notifies the waiter.
+		_, _ = sm.TryTransition([]ConnState{StateInUse}, StateIdle)
+
+		<-acquired
+		cancel() // the waiter gives up if Get won the conn
+		<-errc
+
+		checkWaiterQueueEmpty(t, sm, i)
+	}
+}
+
+// If the context is canceled while the waiter is being served, the caller
+// must see the transition that happened, and waiterCount must be decremented
+// once.
+func TestConnStateMachine_AwaitAndTransition_CancelWhileServed(t *testing.T) {
+	sm := NewConnStateMachine()
+
+	for i := 0; i < 2000; i++ {
+		sm.Transition(StateInUse)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errc := make(chan error, 1)
+		go func() {
+			_, err := sm.AwaitAndTransition(ctx, ValidFromIdle(), StateUnusable)
+			errc <- err
+		}()
+
+		waitForWaiter(t, sm, i)
+
+		cancel()
+		_, _ = sm.TryTransition([]ConnState{StateInUse}, StateIdle) // serves the waiter
+
+		err := <-errc
+		cancel()
+
+		checkWaiterQueueEmpty(t, sm, i)
+		served := sm.GetState() == StateUnusable
+		if served && err != nil {
+			t.Fatalf("iteration %d: waiter was served (state %s) but got error %v", i, sm.GetState(), err)
+		}
+		if !served && err == nil {
+			t.Fatalf("iteration %d: waiter got nil error but state is %s", i, sm.GetState())
+		}
 	}
 }

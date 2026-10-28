@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -423,8 +424,9 @@ type baseClient struct {
 	// operations (Pipeline, TxPipeline and autopipeline batches), created
 	// unconditionally at NewClient/NewFailoverClient — like pubSubPool — with
 	// pipeline-appropriate options (see pipelinePoolOptions): larger buffers,
-	// no pre-dialing, a small connection cap. It is pure burst capacity: an
-	// unused pipeline pool holds zero connections. PipelinePoolSize < 0 opts
+	// no pre-dialing by default (PipelineMinIdleConns), a small connection cap.
+	// It is pure burst capacity: an unused pipeline pool holds zero connections
+	// (a full-duplex engine keeps one idle spare). PipelinePoolSize < 0 opts
 	// out; nil means pipelines use connPool (opt-out, and the internal
 	// Conn/Tx/Sentinel wrappers which never create one). The field is set
 	// before the client is visible to any goroutine and never mutated after,
@@ -462,6 +464,14 @@ type baseClient struct {
 	// cscKeyPrefix namespaces a shared cache by DB and fixed authentication
 	// identity. It is computed once during attachment and copied with the cache.
 	cscKeyPrefix string
+
+	// cmdMeta publishes the client's command-metadata views (see
+	// command_metadata.go); nil when the client uses the shared static
+	// default. Shared with clones; only the owner's Close stops its worker.
+	cmdMeta *commandMetadataStore
+	// staticCmdMeta caches the lazy default when CSC attaches without a store,
+	// so serving a cached command does not need to call sync.OnceValue.
+	staticCmdMeta *commandMetadataView
 
 	// Refresh-on-invalidate + reader-miss coalescing (nil unless enabled).
 	// cscRefreshQueue IS copied by clone() (a clone signals demand on the owner's
@@ -540,6 +550,10 @@ func (c *baseClient) clone() *baseClient {
 		cscPoolHook:  c.cscPoolHook,
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
+		// Derived clients share the owner's immutable metadata view.
+		cmdMeta:       c.cmdMeta,
+		staticCmdMeta: c.staticCmdMeta,
+
 		// cscRefreshQueue is SHARED (pointer copy), like cscPoolHook: processCached
 		// calls signalDemand on it so a miss for a key still in the refresher's
 		// window flushes that window early. Without the share a clone's field is
@@ -551,6 +565,11 @@ func (c *baseClient) clone() *baseClient {
 		// the owner's Close just sends into a buffered channel whose worker has
 		// exited, which is harmless.
 		cscRefreshQueue: c.cscRefreshQueue,
+	}
+	// A baseClient built without NewClient (e.g. internal CSC tests) has no
+	// hook state; keep the zero mixin instead of nil-dereferencing in clone.
+	if c.hooksMixin.state != nil {
+		clone.hooksMixin = c.hooksMixin.clone()
 	}
 	// The miss coalescer travels with the cache (an atomic.Pointer cannot appear
 	// in the literal above); a clone shares the OWNER's coalescer, whose
@@ -725,11 +744,12 @@ func (c *baseClient) poolForConn(cn *pool.Conn) pool.Pooler {
 //     plateaus around 64 KiB and very large buffers can regress it). The
 //     RESP3 minimum clamp applies as on the main pool.
 //   - PoolSize: PipelinePoolSize when set, DefaultPipelinePoolSize otherwise.
-//   - MinIdleConns: always 0. The pipeline pool is burst capacity — its
-//     connections dial on demand and there is nothing to keep warm before
-//     the first pipeline runs. Without this the clone would inherit the
-//     main pool's MinIdleConns and pre-dial that many pipeline connections
-//     at creation, silently doubling a client's idle footprint.
+//   - MinIdleConns: PipelineMinIdleConns (negative means 0), never the main
+//     pool's MinIdleConns. The pipeline pool is burst capacity — by default its
+//     connections dial on demand. Inheriting MinIdleConns would pre-dial that
+//     many pipeline connections at creation, silently doubling a client's idle
+//     footprint. A full-duplex engine raises the floor at runtime
+//     (RaiseMinIdleConns) to keep a warm spare.
 func pipelinePoolOptions(opt *Options) *Options {
 	pipelineOpt := opt.clone()
 	if opt.PipelineReadBufferSize > 0 {
@@ -753,7 +773,9 @@ func pipelinePoolOptions(opt *Options) *Options {
 	} else {
 		pipelineOpt.PoolSize = DefaultPipelinePoolSize
 	}
-	pipelineOpt.MinIdleConns = 0
+	// No pre-dial by default (an unused pipeline pool holds nothing); a negative
+	// value means 0 here and also turns off the full-duplex spare.
+	pipelineOpt.MinIdleConns = max(opt.PipelineMinIdleConns, 0)
 	// Re-resolve MaxConcurrentDials for the pipeline pool. Options.init capped it to
 	// the MAIN pool size, so a pipeline pool larger than the main pool (e.g.
 	// PoolSize:1 with the default 10-slot pipeline pool) would otherwise dial one
@@ -803,6 +825,31 @@ func (c *baseClient) buildPipelinePool(poolName string) (*pipelinePoolRef, error
 		return nil, err
 	}
 	return &pipelinePoolRef{pool: p, name: poolName}, nil
+}
+
+// initStreamingCredentials creates the streaming credentials manager and
+// registers its pool hook on the main and pipeline pools. Shared by the
+// NewClient and NewFailoverClient creation paths so they cannot drift; must
+// run after the pipeline pool is built.
+func (c *baseClient) initStreamingCredentials() {
+	if c.opt.StreamingCredentialsProvider == nil {
+		return
+	}
+	// Size the re-auth worker semaphore for the COMBINED ceiling of every pool
+	// the hook is registered on: the same hook drives the main pool AND the
+	// (possibly larger) dedicated pipeline pool, so a credential rotation must
+	// be able to re-AUTH connections from both concurrently. Sizing to only the
+	// main PoolSize would serialize pipeline re-auths behind PoolSize workers,
+	// leaving pipeline capacity unavailable well past reAuthTimeout.
+	workers := c.connPool.Size()
+	if pp := c.getPipelinePool(); pp != nil {
+		workers += pp.Size()
+	}
+	c.streamingCredentialsManager = streaming.NewManagerWithWorkers(c.connPool, c.opt.PoolTimeout, workers)
+	c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+	if pp := c.getPipelinePool(); pp != nil {
+		pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+	}
 }
 
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
@@ -871,6 +918,13 @@ func (opt *Options) resolveCredentials(ctx context.Context) (username, password 
 		username, password = opt.Username, opt.Password
 	}
 	return username, password, nil
+}
+
+// sendAuth reports whether initConn authenticates with the given credentials:
+// always with a password, and with a username alone only when
+// AuthEmptyPassword is set.
+func (opt *Options) sendAuth(username, password string) bool {
+	return password != "" || (username != "" && opt.AuthEmptyPassword)
 }
 
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
@@ -1024,7 +1078,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// be used. Remember that negotiated fallback: configured Protocol remains 3,
 	// but CSC must not serve without RESP3 invalidations.
 	helloFallbackToRESP2 := false
-	if initErr = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); initErr == nil {
+	sendAuth := c.opt.sendAuth(username, password)
+	helloCmd := conn.hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName, sendAuth)
+	if initErr = helloCmd.Err(); initErr == nil {
 		// Authentication successful with HELLO command
 		helloOK = true
 	} else if !isRedisError(initErr) {
@@ -1039,7 +1095,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return initErr
 	} else {
 		helloFallbackToRESP2 = c.opt.Protocol == 3
-		if password != "" {
+		if sendAuth {
 			// Try legacy AUTH command if HELLO failed.
 			if username != "" {
 				initErr = conn.AuthACL(ctx, username, password).Err()
@@ -1266,6 +1322,23 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			// OnConnect failed - transition to closed
 			cn.GetStateMachine().Transition(pool.StateClosed)
 			return initErr
+		}
+	}
+
+	if c.cmdMeta.wantsServerHello() {
+		// Without HELLO, a reconnect must verify the old identity in the
+		// background.
+		if helloOK {
+			c.cmdMeta.onServerHello(helloServerFingerprint(helloCmd.Val()))
+		} else {
+			c.cmdMeta.requestVerification()
+		}
+	}
+	if c.opt.onServerHello != nil {
+		if helloOK {
+			c.opt.onServerHello(helloCmd.Val())
+		} else {
+			c.opt.onServerHello(nil)
 		}
 	}
 
@@ -1497,11 +1570,20 @@ func (c *baseClient) cscTrackingRequested() bool {
 	return c.opt.DB == 0
 }
 
-// autopipelineCSCActive reports whether client-side caching can serve this
-// client; the autopipeliner captures it at construction to gate cacheable-solo
-// routing through the cache-honoring Process path.
+// autopipelineCSCActive reports whether client-side caching can currently serve
+// this client. AutoPipeline checks it before command eligibility at dispatch
+// time because CSC can disable itself after client construction.
 func (c *baseClient) autopipelineCSCActive() bool {
 	return c.csc != nil && c.cscActive != nil && c.cscActive.Load()
+}
+
+// autopipelineCSCEligible reports whether cmd must take AutoPipeliner's
+// cache-honoring Process path under the client's current metadata view. The
+// view is resolved per dispatch so live metadata upgrades and application
+// overrides take effect without rebuilding the AutoPipeliner.
+func (c *baseClient) autopipelineCSCEligible(cmd Cmder) bool {
+	meta, ok := cscEligibleMeta(c.metadataView(), cmd)
+	return ok && commandArgsRepeatable(cmd) && cscCanExtractRedisKeys(meta, cmd)
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
@@ -1545,13 +1627,13 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
-	if c.csc != nil && isCacheable(cmd) {
-		// A cacheable command can still reach the cached path on the full-duplex
-		// divert (retryOnNormalConn). The command spent its first attempt on the FD
-		// socket. So startAttempt must go into processCached. On a cache miss
-		// processCached runs the MaxRetries loop. If startAttempt is lost, the
-		// diverted command runs one attempt more than MaxRetries+1.
-		return c.processCached(ctx, cmd, state, startAttempt)
+	if c.csc != nil {
+		// One view per invocation: eligibility, key extraction, and the cache
+		// key all come from the same metadata generation.
+		view := c.metadataView()
+		if meta, ok := cscEligibleMeta(view, cmd); ok {
+			return c.processCached(ctx, cmd, state, view, meta, startAttempt)
+		}
 	}
 	return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 }
@@ -1974,9 +2056,9 @@ func (c *baseClient) Close() error {
 func (c *baseClient) closeResources() error {
 	var firstErr error
 
-	// CSC teardown (no-op when CSC is not active): stop the background
-	// invalidation drainer before the pool it walks is torn down.
+	// Stop metadata and CSC workers before closing their pools.
 	c.stopBackgroundDrainer()
+	c.cmdMeta.stopAndJoin()
 
 	// Close maintnotifications manager first
 	if err := c.disableMaintNotificationsUpgrades(); err != nil {
@@ -2356,6 +2438,10 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 	// Parse +OK.
 	if err := statusCmd.readReply(rd); err != nil {
+		// A rejected MULTI (e.g. NOPERM) does not stop the server from
+		// replying to the commands that follow it and to EXEC, so those
+		// replies are still owed on this connection.
+		cn.MarkCloseOnPut("tx: MULTI rejected")
 		return err
 	}
 
@@ -2389,6 +2475,13 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	if line[0] != proto.RespArray {
 		return fmt.Errorf("redis: expected '*', but got line %q", line)
 	}
+	// EXEC replies once per queued command. A command the server rejects
+	// without queuing (WATCH or MULTI inside MULTI) shortens the array, so the
+	// replies would be read into the wrong commands; a longer array would leave
+	// replies unread on the connection.
+	if n, err := strconv.Atoi(string(line[1:])); err != nil || n != len(cmds) {
+		return fmt.Errorf("redis: EXEC returned %q for %d commands", line, len(cmds))
+	}
 
 	return nil
 }
@@ -2404,10 +2497,9 @@ type Client struct {
 	*baseClient
 	cmdable
 
-	// cscLifecycleOwner keeps the canonical Client wrapper (the one whose GC
-	// cleanup owns the drainer) reachable while a WithTimeout clone can still
-	// serve from its cache. Nil on the canonical wrapper and on non-CSC clones.
-	cscLifecycleOwner *Client
+	// lifecycleOwner keeps the client that owns shared CSC/metadata workers
+	// reachable from WithTimeout clones.
+	lifecycleOwner *Client
 
 	autopipelinerMu     *sync.Mutex    // guards the autopipeliner fields against concurrent first-call creation
 	autopipeliner       *AutoPipeliner // blocking face (Client.AutoPipeline)
@@ -2483,7 +2575,7 @@ func NewClient(opt *Options) *Client {
 	c.pubSubPool = pubSubPool
 
 	// Create the dedicated pipeline pool unconditionally, like pubSubPool: it
-	// is pure burst capacity (no pre-dialing, small cap, larger buffers — see
+	// is pure burst capacity (no pre-dialing by default, small cap, larger buffers — see
 	// pipelinePoolOptions), so an unused pipeline pool holds zero connections
 	// and costs nothing. Pipelines stop competing with regular commands for
 	// main-pool connections; a burst wider than the pool's cap spills back to
@@ -2496,23 +2588,11 @@ func NewClient(opt *Options) *Client {
 		c.pipelinePool = ref
 	}
 
-	if opt.StreamingCredentialsProvider != nil {
-		// Size the re-auth worker semaphore for the COMBINED ceiling of every pool
-		// the hook is registered on: the same hook drives the main pool AND the
-		// (possibly larger) dedicated pipeline pool, so a credential rotation must
-		// be able to re-AUTH connections from both concurrently. Sizing to only the
-		// main PoolSize would serialize pipeline re-auths behind PoolSize workers,
-		// leaving pipeline capacity unavailable well past reAuthTimeout.
-		workers := c.connPool.Size()
-		if pp := c.getPipelinePool(); pp != nil {
-			workers += pp.Size()
-		}
-		c.streamingCredentialsManager = streaming.NewManagerWithWorkers(c.connPool, c.opt.PoolTimeout, workers)
-		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
-		if pp := c.getPipelinePool(); pp != nil {
-			pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())
-		}
-	}
+	c.initStreamingCredentials()
+
+	// Create metadata independently of CSC. The zero config reuses the package
+	// default without allocating a store.
+	c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
 
 	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
 	// background drainer. attachCSC is the strategy dispatch entry.
@@ -2545,12 +2625,9 @@ func NewClient(opt *Options) *Client {
 			c.baseClient.cscClientWeak = weak.Make(&c)
 		}
 		c.baseClient.attachCSC(context.Background(), cache)
-
-		// Safety net for a client dropped without Close: the goroutines hold
-		// *baseClient (never *Client), so dropping *Client (returned as &c)
-		// triggers these cleanups, which stop them. See cscRegisterCleanups.
-		cscRegisterCleanups(&c)
 	}
+	// Stop metadata and CSC workers if the client is collected without Close.
+	cscRegisterCleanups(&c)
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
@@ -2612,10 +2689,10 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	c.autopipelinerMu.Lock()
 	clone := *c
 	c.autopipelinerMu.Unlock()
-	if c.cscLifecycleOwner != nil {
-		clone.cscLifecycleOwner = c.cscLifecycleOwner
-	} else if c.baseClient.cscDrainHandle != nil {
-		clone.cscLifecycleOwner = c
+	if c.lifecycleOwner != nil {
+		clone.lifecycleOwner = c.lifecycleOwner
+	} else if c.baseClient.cscDrainHandle != nil || c.baseClient.cmdMeta != nil {
+		clone.lifecycleOwner = c
 	}
 	clone.baseClient = c.baseClient.withTimeout(timeout)
 	// Route the clone's CSC push-handler Close through the OWNER wrapper.
@@ -2623,11 +2700,11 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	// custom push handler calling Close() on the cscHandlerClient installed for a
 	// held-conn drain on this clone would fall through to baseClient.Close —
 	// closing the SHARED pools while the owner's drainer and cached autopipeliners
-	// keep running against them. cscLifecycleOwner is the canonical wrapper and is
+	// keep running against them. lifecycleOwner is the canonical wrapper and is
 	// kept alive by this clone's strong ref, so closeCanonical resolves it and
 	// calls owner.Close() (the full CSC + autopipeliner teardown).
-	if clone.cscLifecycleOwner != nil {
-		clone.baseClient.cscClientWeak = weak.Make(clone.cscLifecycleOwner)
+	if clone.lifecycleOwner != nil {
+		clone.baseClient.cscClientWeak = weak.Make(clone.lifecycleOwner)
 	}
 	clone.init()
 	return &clone
@@ -2638,8 +2715,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 // before releasing the underlying resources, so their background flusher
 // goroutines don't outlive the client. AutoPipeliner.Close is idempotent and
 // safe to call here even if autopipelining was never used.
-// A WithTimeout clone delegates CSC teardown to the canonical wrapper that
-// owns the background drainer.
+// WithTimeout clones delegate shared-resource teardown to their owner.
 func (c *Client) Close() error {
 	c.autopipelinerMu.Lock()
 	ap, async := c.autopipeliner, c.asyncAutopipeliner
@@ -2657,7 +2733,7 @@ func (c *Client) Close() error {
 			}
 		}
 	}
-	if c.cscLifecycleOwner != nil {
+	if c.lifecycleOwner != nil {
 		// Delegate through the OWNER's *Client.Close, not its baseClient:
 		// the owner may hold cached autopipeliners of its own whose flusher
 		// goroutines must stop with the shared pools, and its
@@ -2665,7 +2741,7 @@ func (c *Client) Close() error {
 		// resurrect a pipeliner against closed pools. Client.Close is
 		// idempotent through baseClient.Close, so an owner also closed
 		// directly is fine.
-		if err := c.cscLifecycleOwner.Close(); err != nil && firstErr == nil {
+		if err := c.lifecycleOwner.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		return firstErr
@@ -2676,11 +2752,34 @@ func (c *Client) Close() error {
 	return firstErr
 }
 
+// Conn returns a Conn that runs every command on a single connection borrowed
+// from this client's pool. Close returns that connection to the pool, so any
+// session state left on it (AUTH, SELECT, CLIENT SETNAME, CLIENT TRACKING, ...)
+// is still there for the next pooled caller. Use EphemeralConn when the Conn
+// changes session state.
 func (c *Client) Conn() *Conn {
+	return c.conn(false)
+}
+
+// EphemeralConn is Conn, except Close discards the underlying connection
+// instead of returning it to the pool. Session state a Conn sets (AUTH,
+// SELECT, CLIENT SETNAME, CLIENT TRACKING, RESET, ...) cannot be undone
+// generically on release, so a connection that carried it must not go on to
+// serve unrelated callers. The cost is one dial per EphemeralConn lifetime;
+// Get still reuses an idle pooled connection.
+func (c *Client) EphemeralConn() *Conn {
+	return c.conn(true)
+}
+
+func (c *Client) conn(discardOnClose bool) *Conn {
+	sticky := c.baseClient.newStickyConnPool()
+	if discardOnClose {
+		sticky.DiscardOnClose()
+	}
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
-	conn := newConn(c.opt, c.baseClient.newStickyConnPool(), &c.hooksMixin, c.himport)
+	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
 	// A sticky client does not serve cache hits, but a new pool connection first
 	// initialized through it may later be reused by the parent. Share the
 	// successful-attachment signal so that connection is tracked exactly when
@@ -2694,6 +2793,10 @@ func (c *Client) Conn() *Conn {
 	// initializes a pool conn, the close hook it installs still evicts from the
 	// parent cache (its own csc is nil).
 	conn.baseClient.cscPoolHook = c.baseClient.cscPoolHook
+	// Carry the parent's streaming-credentials manager so initConn can create a
+	// credentials listener when a cold Conn/EphemeralConn initializes a fresh
+	// pool connection (issue #4154).
+	conn.baseClient.streamingCredentialsManager = c.streamingCredentialsManager
 	return conn
 }
 

@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -8,7 +9,9 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -323,23 +326,27 @@ func TestFullDuplexIdleReturnsConn(t *testing.T) {
 		t.Fatalf("initial set: %v", err)
 	}
 	// Immediately after the command the engine still holds the conn (idle gap not
-	// yet elapsed) — it is checked out of the pool, so IdleLen is 0. This is the
-	// baseline that makes the return below meaningful (the assertion would not
-	// hold if lease/return were removed — the conn would stay held, never idle).
-	if got := pp.IdleLen(); got != 0 {
-		t.Fatalf("expected the FD conn held (IdleLen=0) right after a command, got %d", got)
+	// yet elapsed). This is the baseline that makes the return below meaningful
+	// (it would not hold if lease/return were removed — the conn would stay held).
+	// Checked on the engine, not the pool: the pool also keeps the engine's warm
+	// spare idle, and its refill dial is asynchronous.
+	if ap.fd.curConn.Load() == nil {
+		t.Fatal("expected the FD conn held right after a command")
 	}
 
+	// Returned: the engine holds nothing and the pool has the returned conn plus
+	// the warm spare idle.
 	returned := false
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		if pp.IdleLen() >= 1 {
+		if ap.fd.curConn.Load() == nil && pp.IdleLen() >= 2 {
 			returned = true
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !returned {
-		t.Fatalf("pipeline conn not returned to the pool after idle (IdleLen=%d)", pp.IdleLen())
+		t.Fatalf("pipeline conn not returned to the pool after idle (held=%v, IdleLen=%d)",
+			ap.fd.curConn.Load() != nil, pp.IdleLen())
 	}
 
 	if v, err := ap.Get(ctx, "fd:idle:k").Result(); err != nil || v != "v" {
@@ -4911,5 +4918,2656 @@ func TestFullDuplexMaxFlushDelayCorrectUnderLoad(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Fatalf("%v", err)
+	}
+}
+
+// ===== from autopipeline_cluster_fd_internal_test.go =====
+
+// clusterFDTestAddrs is the local 3-master cluster the functional test targets.
+// Override with GOREDIS_CLUSTER_FD_ADDRS (comma-separated) to point at another
+// cluster (e.g. a real RE endpoint). The test self-skips when the cluster is not
+// reachable, so it is safe to run in any environment.
+var clusterFDTestAddrs = clusterFDTestAddrsFromEnv()
+
+func clusterFDTestAddrsFromEnv() []string {
+	if v := os.Getenv("GOREDIS_CLUSTER_FD_ADDRS"); v != "" {
+		return strings.Split(v, ",")
+	}
+	return []string{"127.0.0.1:16600", "127.0.0.1:16601", "127.0.0.1:16602"}
+}
+
+func dialClusterFDTest(t *testing.T) *ClusterClient {
+	t.Helper()
+	cc := NewClusterClient(&ClusterOptions{Addrs: clusterFDTestAddrs})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := cc.Ping(ctx).Err(); err != nil {
+		cc.Close()
+		t.Skipf("local cluster not reachable at %v: %v", clusterFDTestAddrs, err)
+	}
+	// Force a topology load so state.Masters is populated for the assertions.
+	if _, err := cc.state.ReloadOrGet(ctx); err != nil {
+		cc.Close()
+		t.Skipf("cluster state not loadable: %v", err)
+	}
+	return cc
+}
+
+// TestClusterFullDuplexEngagesPerNode is the correctness demo for native
+// full-duplex on a ClusterClient: FD is reported active, one FD child engine
+// runs per master, a mixed workload across all slots executes with zero errors,
+// diverted commands (fan-out, blocking) still work, and Close returns cleanly.
+func TestClusterFullDuplexEngagesPerNode(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	// (a) Config() reports FD active — the exact bit that was always false on a
+	// ClusterClient before this change.
+	if !ap.Config().FullDuplex {
+		t.Fatalf("Config().FullDuplex = false, want true (cluster FD should be active)")
+	}
+	if ap.clusterFD == nil {
+		t.Fatalf("ap.clusterFD is nil, want a router")
+	}
+	if got := ap.Config().NumShards; got != 1 {
+		t.Fatalf("Config().NumShards = %d, want 1 (cluster FD forces a single flusherless shard)", got)
+	}
+
+	// (c) Mixed GET/SET across many keys → keys spread over all three masters'
+	// slot ranges. Fire concurrently so the FD engines actually batch. Zero errors
+	// and correct read-back proves per-node routing lands each key on its owner.
+	const nKeys = 300
+	var wg sync.WaitGroup
+	errCh := make(chan error, nKeys)
+	for i := 0; i < nKeys; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("cfd:{%d}:k", i)
+			val := fmt.Sprintf("v%d", i)
+			if err := ap.Set(ctx, key, val, 0).Err(); err != nil {
+				errCh <- fmt.Errorf("SET %s: %w", key, err)
+				return
+			}
+			got, err := ap.Get(ctx, key).Result()
+			if err != nil {
+				errCh <- fmt.Errorf("GET %s: %w", key, err)
+				return
+			}
+			if got != val {
+				errCh <- fmt.Errorf("GET %s = %q, want %q", key, got, val)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("workload error: %v", err)
+	}
+
+	// (b) One FD child engine per master, and every child actually engaged FD.
+	state, err := cc.state.Get(ctx)
+	if err != nil {
+		t.Fatalf("state.Get: %v", err)
+	}
+	nMasters := len(state.Masters)
+	ap.clusterFD.mu.RLock()
+	nChildren := len(ap.clusterFD.children)
+	var notFD, badBudget int
+	for _, ch := range ap.clusterFD.children {
+		if ch.fd == nil {
+			notFD++
+			continue
+		}
+		// Recovery budget must be the cluster's MaxRedirects, not the node client's
+		// MaxRetries (-1) — otherwise carry-replay is disabled on this master.
+		if ch.fd.retryBudget() != cc.opt.MaxRedirects {
+			badBudget++
+		}
+	}
+	ap.clusterFD.mu.RUnlock()
+	if nChildren != nMasters {
+		t.Errorf("clusterFD has %d children, want %d (one per master)", nChildren, nMasters)
+	}
+	if notFD != 0 {
+		t.Errorf("%d/%d children did not engage FD (child.fd == nil)", notFD, nChildren)
+	}
+	if badBudget != 0 {
+		t.Errorf("%d/%d children have retryBudget != cc.MaxRedirects (%d) — carry-replay would be misbudgeted",
+			badBudget, nChildren, cc.opt.MaxRedirects)
+	}
+	t.Logf("cluster FD: %d masters, %d FD children engaged", nMasters, nChildren-notFD)
+
+	// (d) Diversion still works: a fan-out command (DBSIZE) and a blocking command
+	// (BLPOP with a short timeout) must not ride the FD pipe.
+	if err := cc.DBSize(ctx).Err(); err != nil {
+		t.Errorf("DBSize (fan-out) failed: %v", err)
+	}
+	blKey := "cfd:{bl}:list"
+	if _, err := ap.BLPop(ctx, 100*time.Millisecond, blKey).Result(); err != nil && err != Nil {
+		t.Errorf("BLPop (diverted) unexpected error: %v", err)
+	}
+
+	// (e) Close returns without hanging.
+	done := make(chan error, 1)
+	go func() { done <- ap.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("ap.Close returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("ap.Close did not return within 10s")
+	}
+}
+
+// TestClusterFullDuplexReuseAfterClose covers the lifecycle the single-AP test
+// cannot: closing the cluster autopipeliner closes the per-node FD children,
+// which stay cached on each node.Client. A fresh autopipeliner on the SAME
+// (still-open) ClusterClient must NOT hand back a closed child and fail every
+// command with ErrClosed — the node getter rebuilds a live child and the router
+// re-engages FD.
+func TestClusterFullDuplexReuseAfterClose(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap1, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("first AsyncAutoPipelineWithOptions: %v", err)
+	}
+	if err := ap1.Set(ctx, "cfd:{reuse}:k", "1", 0).Err(); err != nil {
+		t.Fatalf("first SET: %v", err)
+	}
+	if err := ap1.Close(); err != nil {
+		t.Fatalf("ap1.Close: %v", err)
+	}
+
+	// getOrCreateAutoPipeliner rebuilds on a closed cached instance, so this
+	// returns a NEW parent (the ClusterClient itself was never closed).
+	ap2, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("second AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap2.Close()
+	if ap2 == ap1 {
+		t.Fatalf("expected a fresh autopipeliner after Close, got the closed one")
+	}
+	if !ap2.Config().FullDuplex {
+		t.Fatalf("reused AP Config().FullDuplex = false, want true")
+	}
+
+	// The command that would have failed ErrClosed if a closed child were cached.
+	got, err := func() (string, error) {
+		if err := ap2.Set(ctx, "cfd:{reuse}:k", "2", 0).Err(); err != nil {
+			return "", err
+		}
+		return ap2.Get(ctx, "cfd:{reuse}:k").Result()
+	}()
+	if err != nil {
+		t.Fatalf("SET/GET on reused AP: %v", err)
+	}
+	if got != "2" {
+		t.Fatalf("GET after reuse = %q, want %q", got, "2")
+	}
+
+	// FD re-engaged: a fresh live child, not the closed one.
+	ap2.clusterFD.mu.RLock()
+	var closedChildren int
+	for _, ch := range ap2.clusterFD.children {
+		if ch.fd == nil || ch.IsClosed() {
+			closedChildren++
+		}
+	}
+	nChildren := len(ap2.clusterFD.children)
+	ap2.clusterFD.mu.RUnlock()
+	if nChildren == 0 {
+		t.Fatalf("reused AP has no FD children after traffic")
+	}
+	if closedChildren != 0 {
+		t.Errorf("reused AP cached %d closed/non-FD children, want 0", closedChildren)
+	}
+}
+
+// TestClusterFullDuplexChildCloseSelfHeals covers the case ReuseAfterClose does
+// not: the ROUTER's parent AutoPipeliner stays open, but ONE node child gets
+// closed underneath it — the shape of a cluster topology GC closing a node's
+// client (and its cached FD child) while the rest of the cluster, and this
+// router, are still very much in use. A command on that node must self-heal
+// (rebuild the child, or divert to Process for a node that is truly gone)
+// rather than surface the closed child's ErrClosed to the caller.
+//
+// This pins the observable CONTRACT, not the specific race a bot review
+// flagged. Closing the child here happens strictly BEFORE the next submit, so
+// getOrCreateChild's own pre-existing cached-but-closed rebuild
+// (autopipeline_cluster_fd.go childFor) already satisfies this test on its
+// own — the harder case (a submit that is already parked inside
+// fdEngine.submit's backpressure select when the child closes, per
+// autopipeline_fullduplex.go) is a true TOCTOU race with no deterministic
+// repro; clusterFDRouter.submit's post-dispatch retry (same file) narrows
+// that window but is not exercised as a distinct case here.
+func TestClusterFullDuplexChildCloseSelfHeals(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	const key = "cfd:{childclose}:k"
+	if err := ap.Set(ctx, key, "1", 0).Err(); err != nil {
+		t.Fatalf("initial SET: %v", err)
+	}
+
+	// Grab the child that owns key's slot and close it DIRECTLY — simulating
+	// topology GC tearing down a node child without touching the ClusterClient
+	// or the router (unlike ReuseAfterClose, which closes the whole parent).
+	ap.clusterFD.mu.RLock()
+	var closedChild *AutoPipeliner
+	for _, ch := range ap.clusterFD.children {
+		closedChild = ch
+		break
+	}
+	ap.clusterFD.mu.RUnlock()
+	if closedChild == nil {
+		t.Fatalf("no FD child cached after initial SET")
+	}
+	if err := closedChild.Close(); err != nil {
+		t.Fatalf("closedChild.Close: %v", err)
+	}
+
+	// A command on the SAME key must still succeed — self-healed, not ErrClosed.
+	if err := ap.Set(ctx, key, "2", 0).Err(); err != nil {
+		t.Fatalf("SET after child close: %v (want self-heal, not ErrClosed)", err)
+	}
+	got, err := ap.Get(ctx, key).Result()
+	if err != nil {
+		t.Fatalf("GET after child close: %v", err)
+	}
+	if got != "2" {
+		t.Fatalf("GET after child close = %q, want %q", got, "2")
+	}
+
+	// The router now caches a fresh, live child for that node — not the closed one.
+	ap.clusterFD.mu.RLock()
+	var sawFresh bool
+	for _, ch := range ap.clusterFD.children {
+		if ch != closedChild && !ch.IsClosed() {
+			sawFresh = true
+		}
+	}
+	ap.clusterFD.mu.RUnlock()
+	if !sawFresh {
+		t.Errorf("router did not rebuild a fresh child after the cached one closed")
+	}
+}
+
+// nodeClientFor reports the *Client that owns key's slot in the current
+// topology, without creating or touching any FD child (unlike childFor).
+// Used by eviction tests to find a key that routes to a node different from
+// one already cached.
+func nodeClientFor(t *testing.T, ctx context.Context, r *clusterFDRouter, key string) (*Client, bool) {
+	t.Helper()
+	slot := r.cc.cmdSlot(NewStatusCmd(ctx, "get", key), -1)
+	if slot < 0 {
+		return nil, false
+	}
+	state, err := r.cc.state.Get(ctx)
+	if err != nil {
+		return nil, false
+	}
+	node, err := state.slotMasterNode(slot)
+	if err != nil || node == nil {
+		return nil, false
+	}
+	return node.Client, true
+}
+
+// TestClusterFullDuplexEvictsStaleChildOnRebuild pins that a closed node
+// child for a DIFFERENT node than the one currently being (re)built gets
+// swept out of clusterFDRouter.children. Topology GC can close a node client
+// (and its cached child) while the router stays up; once the cluster stops
+// routing to that *Client, getOrCreateChild is never called with it again, so
+// nothing else would notice it went stale — without the sweep it (and its FD
+// engine, submit channel, held connection) would sit retained in the map for
+// the router's whole life (cursor bugbot on #4002).
+func TestClusterFullDuplexEvictsStaleChildOnRebuild(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	// Seed one key to populate its node's child, then hunt for a second tag
+	// that lands on a DIFFERENT node — a first-time build for that second
+	// node is what forces getOrCreateChild's write-lock (sweep) path without
+	// needing to touch the second node's own cache state.
+	const seedKey = "cfd:{evictseed}:k"
+	if err := ap.Set(ctx, seedKey, "1", 0).Err(); err != nil {
+		t.Fatalf("seed SET: %v", err)
+	}
+	ap.clusterFD.mu.RLock()
+	var staleClient *Client
+	var staleChild *AutoPipeliner
+	for c, ch := range ap.clusterFD.children {
+		staleClient, staleChild = c, ch
+	}
+	ap.clusterFD.mu.RUnlock()
+	if staleClient == nil {
+		t.Fatal("no FD child cached after seed SET")
+	}
+
+	var secondKey string
+	for i := 0; i < 50; i++ {
+		k := fmt.Sprintf("cfd:{evicttarget%d}:k", i)
+		nc, ok := nodeClientFor(t, ctx, ap.clusterFD, k)
+		if ok && nc != staleClient {
+			secondKey = k
+			break
+		}
+	}
+	if secondKey == "" {
+		t.Skip("could not find a tag routing to a different master after 50 tries")
+	}
+
+	// Simulate topology GC: close the seed node's child directly, but leave
+	// its (now stale) entry in the map exactly as a real close hook would.
+	if err := staleChild.Close(); err != nil {
+		t.Fatalf("staleChild.Close: %v", err)
+	}
+
+	// First-time build for the second node: write-lock path, sweep runs.
+	if err := ap.Set(ctx, secondKey, "1", 0).Err(); err != nil {
+		t.Fatalf("SET on second node: %v", err)
+	}
+
+	ap.clusterFD.mu.RLock()
+	_, stillPresent := ap.clusterFD.children[staleClient]
+	n := len(ap.clusterFD.children)
+	ap.clusterFD.mu.RUnlock()
+	if stillPresent {
+		t.Error("stale closed child was not evicted from clusterFDRouter.children")
+	}
+	if n != 1 {
+		t.Errorf("clusterFDRouter.children has %d entries, want 1 (only the second node's fresh child)", n)
+	}
+}
+
+// TestClusterFullDuplexEvictsChildOnNodeClose pins that a node's entry is
+// pruned from clusterFDRouter.children the moment the node's OWN *Client
+// closes — with NO further submit or rebuild needed. The sweep in
+// getOrCreateChild only runs when some OTHER node's cache miss takes the
+// write-lock path; a cluster whose live traffic only ever hits
+// already-cached nodes would never trigger it, so a node removed by
+// topology GC would sit retained forever (cursor bugbot on #4002, a gap in
+// the sweep-only fix).
+func TestClusterFullDuplexEvictsChildOnNodeClose(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	if err := ap.Set(ctx, "cfd:{nodeclose}:k", "1", 0).Err(); err != nil {
+		t.Fatalf("seed SET: %v", err)
+	}
+
+	ap.clusterFD.mu.RLock()
+	var nc *Client
+	for c := range ap.clusterFD.children {
+		nc = c
+	}
+	ap.clusterFD.mu.RUnlock()
+	if nc == nil {
+		t.Fatal("no FD child cached after seed SET")
+	}
+
+	// Close the NODE CLIENT itself (not its cached child) — this is exactly
+	// what clusterNodes.GC does to a removed node (osscluster.go).
+	if err := nc.Close(); err != nil {
+		t.Fatalf("nc.Close: %v", err)
+	}
+
+	ap.clusterFD.mu.RLock()
+	_, stillPresent := ap.clusterFD.children[nc]
+	ap.clusterFD.mu.RUnlock()
+	if stillPresent {
+		t.Error("node client's entry was not evicted immediately on its own Close")
+	}
+}
+
+// TestClusterFullDuplexGatedOffForReplicaRouting asserts the construction gate:
+// a ClusterClient configured for replica routing (ReadOnly / RouteByLatency /
+// RouteRandomly) must NOT engage cluster FD, because the router only routes to
+// the slot master (slotMasterNode) and would silently ignore those options,
+// pinning reads to masters. It must fall back to the half-duplex flushers (which
+// honor the ShardPicker) and report Config().FullDuplex == false — the honest
+// effective state. Pure construction check: no live cluster required (the gate
+// reads cc.opt synchronously, and the half-duplex AP dials nothing until a
+// command is submitted).
+// TestClusterFDRouterCloseUnregistersEvictHooks pins that closing a cluster FD
+// router detaches the per-node evict hooks getOrCreateChild registered on each
+// node client's onClose registry — for every node it ever registered on, not
+// only those still in children (the stale-child sweep and the hook itself drop
+// children entries while the registration stays live). Left registered, each
+// hook kept the closed router, and through parent the AutoPipeliner and its
+// clusterReprocess closure, reachable until the node client itself closed,
+// accumulating one per autopipeliner create/close cycle per node (codex +
+// cursor bugbot on #4002). No server: the registry and router state are driven
+// directly, the way getOrCreateChild's publish step leaves them.
+func TestClusterFDRouterCloseUnregistersEvictHooks(t *testing.T) {
+	nodeA := NewClient(&Options{Addr: "localhost:1"}) // never dialed
+	nodeB := NewClient(&Options{Addr: "localhost:1"})
+	t.Cleanup(func() { _ = nodeA.Close(); _ = nodeB.Close() })
+
+	r := &clusterFDRouter{children: make(map[*Client]*AutoPipeliner)}
+	for _, nc := range []*Client{nodeA, nodeB} {
+		nc := nc
+		if !nc.onClose.register(clusterFDRouterEvictID(r, nc), func() error {
+			r.mu.Lock()
+			delete(r.children, nc)
+			delete(r.evictHooks, nc)
+			r.mu.Unlock()
+			return nil
+		}) {
+			t.Fatal("register on a live node client must succeed")
+		}
+		if r.evictHooks == nil {
+			r.evictHooks = make(map[*Client]struct{})
+		}
+		r.evictHooks[nc] = struct{}{}
+	}
+	// Neither node has a children entry (as after the sweep dropped them); the
+	// registrations must be detached regardless.
+	hasHook := func(nc *Client) bool {
+		nc.onClose.mu.Lock()
+		defer nc.onClose.mu.Unlock()
+		_, ok := nc.onClose.hooks[clusterFDRouterEvictID(r, nc)]
+		return ok
+	}
+	if !hasHook(nodeA) || !hasHook(nodeB) {
+		t.Fatal("precondition: both node clients must hold this router's evict hook")
+	}
+
+	if err := r.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if hasHook(nodeA) || hasHook(nodeB) {
+		t.Fatal("close must unregister the router's evict hook from every node client it registered on")
+	}
+	r.mu.Lock()
+	tracked := len(r.evictHooks)
+	r.mu.Unlock()
+	if tracked != 0 {
+		t.Fatalf("evictHooks still tracks %d node clients after close", tracked)
+	}
+}
+
+func TestClusterFullDuplexGatedOffForReplicaRouting(t *testing.T) {
+	addrs := []string{"127.0.0.1:16600"}
+	cases := []struct {
+		name string
+		opt  *ClusterOptions
+	}{
+		{"ReadOnly", &ClusterOptions{Addrs: addrs, ReadOnly: true}},
+		{"RouteByLatency", &ClusterOptions{Addrs: addrs, RouteByLatency: true}},
+		{"RouteRandomly", &ClusterOptions{Addrs: addrs, RouteRandomly: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cc := NewClusterClient(tc.opt)
+			defer cc.Close()
+			ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+			if err != nil {
+				t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+			}
+			defer ap.Close()
+			if ap.Config().FullDuplex {
+				t.Errorf("Config().FullDuplex = true, want false (replica routing must disable cluster FD)")
+			}
+			if ap.clusterFD != nil {
+				t.Errorf("ap.clusterFD is non-nil, want nil (cluster FD must not engage under replica routing)")
+			}
+		})
+	}
+}
+
+// TestClusterFullDuplexResolvesDefaultsOnParent asserts the effective-defaults
+// contract: a default-constructed cluster-FD autopipeliner must report the
+// resolved FD tuning defaults from Config(), not the raw zeros the user passed —
+// the same guarantee the standalone FD path gives. The per-node children resolve
+// these in newFDEngine; the parent must resolve them too so Config() is honest.
+// Pure construction check: cluster FD engages on PipelinePoolSize>=0 (the default)
+// without loading topology, so no live cluster is required.
+func TestClusterFullDuplexResolvesDefaultsOnParent(t *testing.T) {
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:16600"}})
+	defer cc.Close()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+
+	cfg := ap.Config()
+	if !cfg.FullDuplex || ap.clusterFD == nil {
+		t.Fatalf("cluster FD did not engage (FullDuplex=%v, clusterFD==nil:%v); cannot check defaults",
+			cfg.FullDuplex, ap.clusterFD == nil)
+	}
+	if cfg.FullDuplexWindow != fdDefaultWindow {
+		t.Errorf("Config().FullDuplexWindow = %d, want %d (effective default)", cfg.FullDuplexWindow, fdDefaultWindow)
+	}
+	if cfg.FullDuplexIdleTimeout != fdDefaultIdle {
+		t.Errorf("Config().FullDuplexIdleTimeout = %v, want %v (effective default)", cfg.FullDuplexIdleTimeout, fdDefaultIdle)
+	}
+	if cfg.FullDuplexMaxHold != fdDefaultMaxHold {
+		t.Errorf("Config().FullDuplexMaxHold = %v, want %v (effective default)", cfg.FullDuplexMaxHold, fdDefaultMaxHold)
+	}
+}
+
+// TestClusterFullDuplexRecoveryBudgetFromMaxRedirects asserts the connection-
+// failure recovery budget wiring: a cluster node.Client normalizes MaxRetries to
+// -1 (cluster retries live in MaxRedirects), which the FD carry-replay would read
+// as "budget already spent" and fail every in-flight command on the first socket
+// error. The router must seed each child with the ClusterClient's MaxRedirects
+// instead. Pure construction check: the router is built at construction, so no
+// live cluster is needed to verify the plumbed budget.
+func TestClusterFullDuplexRecoveryBudgetFromMaxRedirects(t *testing.T) {
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:16600"}, MaxRedirects: 5})
+	defer cc.Close()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+	if ap.clusterFD == nil {
+		t.Fatalf("cluster FD did not engage; cannot check the recovery budget")
+	}
+	if got := ap.clusterFD.childCfg.clusterRetryBudget; got != 5 {
+		t.Errorf("child clusterRetryBudget = %d, want 5 (cc.opt.MaxRedirects); the node client's MaxRetries=-1 would disable carry-replay", got)
+	}
+}
+
+// ===== from autopipeline_fd_accum_reader_exit_test.go =====
+
+// A batch taken off the queue while the writer waits in the MaxFlushDelay
+// accumulation must not be written once the reader has exited. Writing it put
+// a command the reader could never acknowledge on a connection the server
+// still reads (a read timeout leaves the socket open), so the server ran it,
+// and recovery then replayed it as unacknowledged: one SET, two executions.
+// The batch is now kept unsent and recovered as never sent, so it runs once.
+func TestFullDuplexAccumulationDoesNotWriteAfterReaderExit(t *testing.T) {
+	const held = 70 // above the accumulation gate (64 at this window)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	var conns, sets atomic.Int64
+	// heldAt / setAt: when the first connection received the last held GET
+	// and the SET (unix nanos, 0 = never).
+	var heldAt, setAt atomic.Int64
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			first := conns.Add(1) == 1
+			go func(c net.Conn) {
+				defer c.Close()
+				rd := bufio.NewReader(c)
+				gets := 0
+				for {
+					args, err := readRESPCommand(rd)
+					if err != nil {
+						return
+					}
+					name := ""
+					if len(args) > 0 {
+						name = strings.ToLower(args[0])
+					}
+					switch {
+					case name == "hello":
+						_, _ = io.WriteString(c, "*4\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:2\r\n")
+					case name == "set":
+						sets.Add(1)
+						if first {
+							setAt.Store(time.Now().UnixNano())
+						}
+						if !first {
+							_, _ = io.WriteString(c, "+OK\r\n")
+						}
+					case name == "get":
+						if !first {
+							_, _ = io.WriteString(c, "$-1\r\n")
+							continue
+						}
+						// Hold every GET on the first connection: the reader times
+						// out while the writer is parked in its accumulation wait.
+						// The connection stays open and read, so a late write
+						// would still run.
+						if gets++; gets == held {
+							heldAt.Store(time.Now().UnixNano())
+						}
+					default:
+						_, _ = io.WriteString(c, "+OK\r\n")
+					}
+				}
+			}(c)
+		}
+	}()
+
+	c := NewClient(&Options{
+		Addr:             ln.Addr().String(),
+		Protocol:         2,
+		DisableIdentity:  true,
+		PipelinePoolSize: 2,
+		PoolSize:         2,
+		ReadTimeout:      300 * time.Millisecond,
+		MaxRetries:       3,
+	})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:       true,
+		FullDuplexWindow: 4096,            // accumulation gate at its 64 floor
+		MaxFlushDelay:    2 * time.Second, // far longer than the test: the reader dies mid-wait
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	ctx := context.Background()
+	gets := make([]*StringCmd, held)
+	for i := range gets {
+		gets[i] = ap.Get(ctx, "g")
+	}
+	time.Sleep(50 * time.Millisecond) // the GETs are written and held
+	set := ap.Set(ctx, "x", "v", 0)
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	// The case under test is a SET the writer was HOLDING in its wait when the
+	// reader timed out. A writer whose wait ended earlier (a short grace with
+	// nothing else arriving) sent the SET before the timeout, and replaying a
+	// sent command after a timeout is ordinary at-least-once recovery.
+	if at := setAt.Load(); at != 0 && time.Duration(at-heldAt.Load()) < 200*time.Millisecond {
+		t.Skip("the writer sent the SET before the reader timed out; it was not held in a wait")
+	}
+	if n := sets.Load(); n != 1 {
+		t.Fatalf("SET executed %d times, want 1 (written after the reader exited, then replayed?)", n)
+	}
+	if conns.Load() < 2 {
+		t.Fatal("the session never recovered on a new connection; the test did not exercise the reader exit")
+	}
+}
+
+// ===== from autopipeline_fd_batch_backpressure_test.go =====
+
+// fdBackpressureEngine is an engine with no writer and a submit queue of
+// capacity 10 holding 9 commands, so a 5-command batch cannot be admitted.
+func fdBackpressureEngine(t *testing.T) *fdEngine {
+	t.Helper()
+	apCtx, apCancel := context.WithCancel(context.Background())
+	t.Cleanup(apCancel)
+	fd := &fdEngine{
+		ap:     &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: apCtx},
+		client: &Client{baseClient: &baseClient{opt: &Options{}}},
+		q:      newFDQueue(10),
+	}
+	for i := 0; i < 9; i++ {
+		fd.q.push(fdReq{cmd: NewStatusCmd(context.Background(), "set", "k", "v"), batch: newAPBatch()})
+	}
+	return fd
+}
+
+// startBlockedBatch submits a 5-command batch that must wait for room and
+// returns a func that cancels it and waits for it to return.
+func startBlockedBatch(t *testing.T, fd *fdEngine) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cmds := make([]Cmder, 5)
+	for i := range cmds {
+		cmds[i] = NewStatusCmd(ctx, "set", "k", "v")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if b, err := fd.submitBatch(ctx, cmds); b != nil || err != nil {
+			t.Errorf("submitBatch = (%v, %v); want a ctx rejection", b, err)
+		}
+	}()
+	time.Sleep(50 * time.Millisecond) // let it park on the room signal
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// submitBatchParked reports whether the goroutine running submitBatch is
+// parked in its select. A spinning loop never parks: it finds the room signal
+// it just put back and runs on.
+func submitBatchParked(t *testing.T) bool {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "(*fdEngine).submitBatch(") {
+			header, _, _ := strings.Cut(g, "\n")
+			return strings.Contains(header, "[select")
+		}
+	}
+	t.Fatal("no goroutine is running submitBatch")
+	return false
+}
+
+// TestFDSubmitBatchDoesNotSpinWhileBlocked pins that a batch waiting for more
+// room than one wake frees does not spin. It used to put the room signal back
+// whenever any slot was free, take it straight back, fail to fit, and loop,
+// burning a core for as long as the writer was blocked.
+func TestFDSubmitBatchDoesNotSpinWhileBlocked(t *testing.T) {
+	fd := fdBackpressureEngine(t)
+	stop := startBlockedBatch(t, fd)
+	defer stop()
+
+	wakeHead(t, fd.q) // one slot free, the batch needs five
+	time.Sleep(20 * time.Millisecond)
+	running := 0
+	const samples = 20
+	for i := 0; i < samples; i++ {
+		if !submitBatchParked(t) {
+			running++
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if running > 1 {
+		t.Fatalf("the waiting batch was running in %d of %d samples: it is spinning", running, samples)
+	}
+}
+
+// wakeHead signals the head of the holder line the way a take would.
+func wakeHead(t *testing.T, q *fdQueue) {
+	t.Helper()
+	q.mu.Lock()
+	head := q.headWakeLocked()
+	q.mu.Unlock()
+	if head == nil {
+		t.Fatal("no holder is waiting")
+	}
+	signalHolder(head)
+}
+
+// holderCount reports how many batches are waiting with a reservation.
+func holderCount(q *fdQueue) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.holders)
+}
+
+// waitHolders blocks until n batches hold a reservation.
+func waitHolders(t *testing.T, q *fdQueue, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for holderCount(q) != n {
+		if time.Now().After(deadline) {
+			t.Fatalf("holders = %d, want %d", holderCount(q), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestFDSubmitBatchWakesOnlyTheHead pins the direct wake: a take signals the
+// head of the holder line on its own channel, and a holder behind it is not
+// woken at all, so no wake is shared or passed between holders.
+func TestFDSubmitBatchWakesOnlyTheHead(t *testing.T) {
+	fd := fdBackpressureEngine(t)
+	headID, headWake := fd.q.hold(1) // an earlier holder, standing in for a head
+	stop := startBlockedBatch(t, fd) // the batch lines up behind it
+	defer stop()
+	waitHolders(t, fd.q, 2)
+
+	fd.q.takeInto(nil, 1)
+	select {
+	case <-headWake:
+	case <-time.After(time.Second):
+		t.Fatal("a take did not wake the head of the line")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if !submitBatchParked(t) {
+		t.Fatal("the batch behind the head was woken by a take meant for the head")
+	}
+
+	// The head leaves: the batch becomes the head and is woken to try.
+	fd.q.unhold(headID)
+	time.Sleep(20 * time.Millisecond)
+	if n := holderCount(fd.q); n != 1 {
+		t.Fatalf("holders after unhold = %d, want 1", n)
+	}
+}
+
+// TestFDSubmitBatchHoldersAreFIFO pins that holders are admitted in arrival
+// order: small batches that arrive behind a large one cannot take the room
+// the writer frees for the large one, even though each alone would fit, and
+// each is admitted in turn once it reaches the head of the line.
+func TestFDSubmitBatchHoldersAreFIFO(t *testing.T) {
+	apCtx, apCancel := context.WithCancel(context.Background())
+	defer apCancel()
+	fd := &fdEngine{
+		ap:     &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: apCtx},
+		client: &Client{baseClient: &baseClient{opt: &Options{}}},
+		q:      newFDQueue(10),
+	}
+	for i := 0; i < 10; i++ {
+		fd.q.push(fdReq{cmd: NewStatusCmd(context.Background(), "set", "k", "v"), batch: newAPBatch()})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mk := func(n int) []Cmder {
+		cmds := make([]Cmder, n)
+		for i := range cmds {
+			cmds[i] = NewStatusCmd(ctx, "set", "k", "v")
+		}
+		return cmds
+	}
+	order := make(chan string, 3)
+	submit := func(name string, cmds []Cmder) {
+		b, err := fd.submitBatch(ctx, cmds)
+		if err != nil || len(b) != len(cmds) {
+			t.Errorf("%s: submitBatch = (%d, %v)", name, len(b), err)
+		}
+		order <- name
+	}
+	go submit("big", mk(10))
+	waitHolders(t, fd.q, 1)
+	go submit("small1", mk(1))
+	waitHolders(t, fd.q, 2)
+	go submit("small2", mk(1))
+	waitHolders(t, fd.q, 3)
+
+	// Drain one at a time, as a writer with a one-command wave would. After
+	// each take a small batch alone would fit; neither may be admitted.
+	for i := 0; i < 10; i++ {
+		fd.q.takeInto(nil, 1)
+		time.Sleep(5 * time.Millisecond)
+		if i < 9 {
+			select {
+			case name := <-order:
+				t.Fatalf("%q admitted after %d takes, ahead of the head of the line", name, i+1)
+			default:
+			}
+		}
+	}
+	next := func(want string) {
+		t.Helper()
+		select {
+		case got := <-order:
+			if got != want {
+				t.Fatalf("admitted %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%q was not admitted", want)
+		}
+	}
+	next("big") // 10 live again
+	fd.q.takeInto(nil, 1)
+	next("small1")
+	fd.q.takeInto(nil, 1)
+	next("small2")
+}
+
+// TestFDSubmitBatchCloseReleasesAllHolders pins that closing the queue wakes
+// every holder, not just the head: a holder behind the head has no other
+// room signal, and Close must not leave it waiting for its ctx.
+func TestFDSubmitBatchCloseReleasesAllHolders(t *testing.T) {
+	fd := fdBackpressureEngine(t)
+	ctx := context.Background()
+	done := make(chan error, 2)
+	for _, n := range []int{5, 5} {
+		cmds := make([]Cmder, n)
+		for i := range cmds {
+			cmds[i] = NewStatusCmd(ctx, "set", "k", "v")
+		}
+		go func() {
+			b, err := fd.submitBatch(ctx, cmds)
+			if b != nil || err != nil {
+				t.Errorf("submitBatch = (%v, %v); want a submit-time rejection", b, err)
+			}
+			done <- cmds[0].Err()
+		}()
+	}
+	waitHolders(t, fd.q, 2)
+
+	fd.q.closeQueue()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != ErrClosed {
+				t.Fatalf("holder error = %v, want ErrClosed", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("a holder was not released by closeQueue")
+		}
+	}
+}
+
+// TestFDSubmitBatchReservesRoom pins that a refused batch holds its slots: the
+// room the writer frees accumulates for it instead of going to single
+// submitters, and the singles resume once the batch is in.
+func TestFDSubmitBatchReservesRoom(t *testing.T) {
+	fd := fdBackpressureEngine(t) // capacity 10, 9 queued
+	ctx := context.Background()
+	cmds := make([]Cmder, 5)
+	for i := range cmds {
+		cmds[i] = NewStatusCmd(ctx, "set", "k", "v")
+	}
+	type result struct {
+		batches []*apBatch
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		b, err := fd.submitBatch(ctx, cmds)
+		done <- result{b, err}
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// One slot is free, but the batch has reserved five: a single is refused.
+	single := fdReq{cmd: NewStatusCmd(ctx, "set", "k", "v"), batch: newAPBatch()}
+	if res := fd.q.push(single); res != fdPushFull {
+		t.Fatalf("push with a batch waiting = %v; want fdPushFull (slots reserved)", res)
+	}
+
+	// The writer takes four. The batch now fits (5 live + 5), and the take
+	// wakes it through batchRoom.
+	if got := len(fd.q.takeInto(nil, 4)); got != 4 {
+		t.Fatalf("takeInto = %d, want 4", got)
+	}
+	select {
+	case r := <-done:
+		if r.err != nil || len(r.batches) != 5 {
+			t.Fatalf("submitBatch = (%d batches, %v); want 5 batches, nil", len(r.batches), r.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the batch was not admitted after the writer freed its room")
+	}
+	if d := fd.q.depth(); d != 10 {
+		t.Fatalf("depth after admission = %d, want 10", d)
+	}
+	if fd.q.roomFor(1) {
+		t.Fatal("roomFor(1) with a full queue and no reservation = true")
+	}
+
+	// The reservation is consumed: once the writer frees a slot, a single fits.
+	fd.q.takeInto(nil, 1)
+	if res := fd.q.push(single); res != fdPushOK {
+		t.Fatalf("push after admission = %v; want fdPushOK (reservation released)", res)
+	}
+}
+
+// TestFDSubmitBatchReleasesReservationOnCancel pins that a batch that gives up
+// gives its slots back and wakes a single its reservation was holding back.
+func TestFDSubmitBatchReleasesReservationOnCancel(t *testing.T) {
+	fd := fdBackpressureEngine(t)
+	stop := startBlockedBatch(t, fd)
+
+	single := fdReq{cmd: NewStatusCmd(context.Background(), "set", "k", "v"), batch: newAPBatch()}
+	if res := fd.q.push(single); res != fdPushFull {
+		t.Fatalf("push with a batch waiting = %v; want fdPushFull", res)
+	}
+	stop() // ctx cancelled: the batch is rejected and must unhold
+
+	select {
+	case <-fd.q.roomCh():
+	case <-time.After(time.Second):
+		t.Fatal("unhold did not wake the single the reservation held back")
+	}
+	if res := fd.q.push(single); res != fdPushOK {
+		t.Fatalf("push after the batch gave up = %v; want fdPushOK", res)
+	}
+}
+
+// TestFDSubmitBatchNotStarvedBySingles is the end-to-end shape of the fix: a
+// writer that frees two slots per take, singles that refill every free slot
+// as fast as they can, and a batch longer than a take. Without a reservation
+// the batch never sees its whole length free at once and waits until its ctx
+// expires.
+func TestFDSubmitBatchNotStarvedBySingles(t *testing.T) {
+	apCtx, apCancel := context.WithCancel(context.Background())
+	defer apCancel()
+	fd := &fdEngine{
+		ap:     &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: apCtx},
+		client: &Client{baseClient: &baseClient{opt: &Options{}}},
+		q:      newFDQueue(10),
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// The writer: two slots per take, continuously.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			fd.q.takeInto(nil, 2)
+			time.Sleep(200 * time.Microsecond)
+		}
+	}()
+	// The singles: refill as submit() does, waiting on room when refused.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := fdReq{cmd: NewStatusCmd(context.Background(), "set", "k", "v"), batch: newAPBatch()}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if fd.q.push(req) == fdPushOK {
+					continue
+				}
+				select {
+				case <-fd.q.roomCh():
+					if fd.q.roomFor(1) {
+						fd.q.signalRoom()
+					}
+				case <-stop:
+					return
+				}
+			}
+		}()
+	}
+	time.Sleep(20 * time.Millisecond) // let the singles saturate the queue
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmds := make([]Cmder, 8) // four times a take
+	for i := range cmds {
+		cmds[i] = NewStatusCmd(ctx, "set", "k", "v")
+	}
+	batches, err := fd.submitBatch(ctx, cmds)
+	close(stop)
+	wg.Wait()
+	if err != nil || len(batches) != 8 {
+		t.Fatalf("submitBatch under single-command load = (%d batches, %v, cmd err %v); want admission",
+			len(batches), err, cmds[0].Err())
+	}
+}
+
+// ===== from autopipeline_fd_failqueue_metrics_test.go =====
+
+// TestFDFailQueueSkipsPipelinedErrorMetric pins that failQueue, like
+// failReqs, reports no per-command error for a pipelined command.
+// fdPipelineExec reports the batch once, as an ordinary pipeline does, so a
+// per-command report here would count the same failure twice. A plain
+// command in the same backlog is still reported.
+func TestFDFailQueueSkipsPipelinedErrorMetric(t *testing.T) {
+	var calls atomic.Int64
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
+			calls.Add(1)
+		},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	ctx := context.Background()
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}, q: newFDQueue(4)}
+	group := newAPBatch()
+	group.fdGroup = group
+	var batches []*apBatch
+	for i := 0; i < 3; i++ {
+		b := group
+		if i > 0 {
+			b = newAPBatch()
+			b.fdGroup = group
+		}
+		batches = append(batches, b)
+		fd.q.push(fdReq{cmd: NewStatusCmd(ctx, "set", "k", "v"), batch: b, ctx: ctx, attempts: 1, pipelined: true})
+	}
+	plain := newAPBatch()
+	batches = append(batches, plain)
+	fd.q.push(fdReq{cmd: NewStatusCmd(ctx, "set", "k", "v"), batch: plain, ctx: ctx, attempts: 1})
+
+	fd.failQueue(ErrClosed)
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("error callback invoked %d times, want 1 (the plain command only)", got)
+	}
+	for i, b := range batches {
+		select {
+		case <-b.done:
+		default:
+			t.Fatalf("req %d not completed", i)
+		}
+	}
+}
+
+// ===== from autopipeline_fd_fatal_read_test.go =====
+
+// fdPoisonServer is a minimal RESP2 server for the batched-reader tests. GET
+// replies with its own key, HELLO with a minimal map, anything else with +OK. The FIRST connection that
+// sends a GET is poisoned: its replies are held until `hold` GETs arrived, then
+// written in ONE write with reply number `bad` replaced by an unparseable
+// line. Holding the replies puts the fault in the middle of a reader snapshot
+// with more replies already buffered behind it. Later connections (the replay
+// after the session fails) answer each command at once.
+type fdPoisonServer struct {
+	ln       net.Listener
+	hold     int
+	bad      int
+	poisoned atomic.Bool
+	wg       sync.WaitGroup
+	mu       sync.Mutex
+	conns    []net.Conn
+}
+
+func newFDPoisonServer(t *testing.T, hold, bad int) *fdPoisonServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &fdPoisonServer{ln: ln, hold: hold, bad: bad}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s.mu.Lock()
+			s.conns = append(s.conns, c)
+			s.mu.Unlock()
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.serve(c)
+			}()
+		}
+	}()
+	return s
+}
+
+func (s *fdPoisonServer) addr() string { return s.ln.Addr().String() }
+
+func (s *fdPoisonServer) close() {
+	_ = s.ln.Close()
+	s.mu.Lock()
+	for _, c := range s.conns {
+		_ = c.Close()
+	}
+	s.mu.Unlock()
+	s.wg.Wait()
+}
+
+func (s *fdPoisonServer) serve(c net.Conn) {
+	defer c.Close()
+	rd := bufio.NewReader(c)
+	poison := false
+	var held []byte
+	gets := 0
+	for {
+		args, err := readRESPCommand(rd)
+		if err != nil {
+			return
+		}
+		if len(args) == 2 && (args[0] == "get" || args[0] == "GET") {
+			if gets == 0 && !s.poisoned.Load() {
+				poison = s.poisoned.CompareAndSwap(false, true)
+			}
+			gets++
+			reply := fmt.Sprintf("$%d\r\n%s\r\n", len(args[1]), args[1])
+			if !poison {
+				if _, err := io.WriteString(c, reply); err != nil {
+					return
+				}
+				continue
+			}
+			if gets == s.bad {
+				reply = "?not-resp\r\n" // unknown type byte: a protocol fault
+			}
+			held = append(held, reply...)
+			if gets == s.hold {
+				if _, err := c.Write(held); err != nil {
+					return
+				}
+				held = nil
+			}
+			continue
+		}
+		if len(args) > 0 && (args[0] == "hello" || args[0] == "HELLO") {
+			// RESP2 HELLO reply: a flat key/value array.
+			if _, err := io.WriteString(c, "*4\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:2\r\n"); err != nil {
+				return
+			}
+			continue
+		}
+		if _, err := io.WriteString(c, "+OK\r\n"); err != nil {
+			return
+		}
+	}
+}
+
+// TestFullDuplexFatalReplyStopsTheSnapshot covers a protocol fault in the
+// middle of a reader snapshot. The reader must stop at the fault: the failed
+// command and everything after it stay in the deque and are replayed on a new
+// connection. Before the fix the reader kept reading the rest of the snapshot
+// from the desynced stream, then advanced past the failed command without
+// completing it, so that caller never returned.
+func TestFullDuplexFatalReplyStopsTheSnapshot(t *testing.T) {
+	const n, bad = 20, 10
+	srv := newFDPoisonServer(t, n, bad)
+	defer srv.close()
+
+	c := NewClient(&Options{
+		Addr:             srv.addr(),
+		Protocol:         2,
+		DisableIdentity:  true,
+		PipelinePoolSize: 2,
+		PoolSize:         2,
+		MaxRetries:       3,
+	})
+	defer c.Close()
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	ctx := context.Background()
+	cmds := make([]*StringCmd, n)
+	for i := range cmds {
+		cmds[i] = ap.Get(ctx, "k"+strconv.Itoa(i))
+	}
+
+	for i, cmd := range cmds {
+		done := make(chan struct{})
+		var v string
+		var gerr error
+		go func() {
+			v, gerr = cmd.Result()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("command %d never completed: the reader advanced past it without completing it", i)
+		}
+		// Replies before the fault are correct. The faulted command and the
+		// unread tail settle with the protocol error: a protocol fault is not
+		// retried, since those commands may already have run. None of them may
+		// receive a value read from the desynced stream.
+		if i < bad-1 {
+			if want := "k" + strconv.Itoa(i); gerr != nil || v != want {
+				t.Fatalf("command %d: v=%q err=%v, want %q", i, v, gerr, want)
+			}
+		} else if gerr == nil || v != "" {
+			t.Fatalf("command %d at/after the fault: v=%q err=%v, want the protocol error and no value", i, v, gerr)
+		}
+	}
+	if !srv.poisoned.Load() {
+		t.Fatal("the poisoned connection was never used; the test did not exercise the fault")
+	}
+}
+
+// TestFullDuplexGroupedReadRearmsDeadline covers a reply that is only partly
+// buffered when the group reaches it. k1 and k2 share one read group. k1
+// arrives slowly, using most of the read timeout, and its last write also
+// carries the first bytes of k2, so k2 needs another socket read. Before the
+// fix that read ran under the deadline armed for k1 and timed out, although k2
+// arrived well within its own ReadTimeout.
+func TestFullDuplexGroupedReadRearmsDeadline(t *testing.T) {
+	const timeout = time.Second
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	var once atomic.Bool
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				rd := bufio.NewReader(c)
+				slow := false
+				gets := 0
+				for {
+					args, err := readRESPCommand(rd)
+					if err != nil {
+						return
+					}
+					switch {
+					case len(args) > 0 && (args[0] == "hello" || args[0] == "HELLO"):
+						_, _ = io.WriteString(c, "*4\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:2\r\n")
+					case len(args) == 2 && (args[0] == "get" || args[0] == "GET"):
+						if gets == 0 {
+							slow = once.CompareAndSwap(false, true)
+						}
+						gets++
+						if !slow {
+							_, _ = io.WriteString(c, "$2\r\n"+args[1]+"\r\n")
+							continue
+						}
+						switch gets {
+						case 1:
+							// Delay k0 so k1 and k2 are both in flight when the
+							// reader takes its next snapshot: they must share a group.
+							time.Sleep(100 * time.Millisecond)
+							_, _ = io.WriteString(c, "$2\r\nk0\r\n")
+						case 3:
+							// k1 finishes at 0.6*timeout together with the first
+							// bytes of k2, which finishes at 1.2*timeout.
+							_, _ = io.WriteString(c, "$2\r\nk")
+							time.Sleep(timeout * 6 / 10)
+							_, _ = io.WriteString(c, "1\r\n$2\r\nk")
+							time.Sleep(timeout * 6 / 10)
+							_, _ = io.WriteString(c, "2\r\n")
+						}
+					default:
+						_, _ = io.WriteString(c, "+OK\r\n")
+					}
+				}
+			}(c)
+		}
+	}()
+
+	c := NewClient(&Options{
+		Addr:             ln.Addr().String(),
+		Protocol:         2,
+		DisableIdentity:  true,
+		PipelinePoolSize: 2,
+		PoolSize:         2,
+		ReadTimeout:      timeout,
+		MaxRetries:       -1, // a replay would hide the spurious timeout
+	})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	ctx := context.Background()
+	cmds := []*StringCmd{ap.Get(ctx, "k0"), ap.Get(ctx, "k1"), ap.Get(ctx, "k2")}
+	for i, cmd := range cmds {
+		if v, err := cmd.Result(); err != nil || v != "k"+strconv.Itoa(i) {
+			t.Fatalf("reply %d: v=%q err=%v (k2 read under k1's deadline?)", i, v, err)
+		}
+	}
+	if !once.Load() {
+		t.Fatal("the slow connection was never used; the test did not exercise the partial frame")
+	}
+}
+
+// ===== from autopipeline_fd_flush_budget_test.go =====
+
+// fdBudgetProbe is a stub engine whose Close flush records the retry bound of
+// each pipeline it runs.
+func fdBudgetProbe() (*fdEngine, *[]int) {
+	var bounds []int
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{MaxRetries: 3}}},
+		maxBatch: 8,
+		runPipeline: func(_ context.Context, _ []Cmder, maxRetries int) error {
+			bounds = append(bounds, maxRetries)
+			return nil
+		},
+	}
+	return fd, &bounds
+}
+
+// One FD pipeline flushed on Close can carry commands with different attempt
+// counts. It runs as one pipeline, so it gets the smallest remaining budget
+// of its commands: the budget of its first command let a later command with
+// more attempts run past its MaxRetries+1 executions.
+func TestFDCloseFlushUsesSmallestBudgetOfAPipeline(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdBudgetProbe()
+	carry := fdPipeGroupReqs(ctx, 1, 3) // budgets 3 and 1 with MaxRetries 3
+	if err := fd.flushCarryBudgeted(ctx, carry); err != nil {
+		t.Fatalf("flushCarryBudgeted: %v", err)
+	}
+	if got := *bounds; len(got) != 1 || got[0] != 1 {
+		t.Fatalf("pipeline retry bounds %v, want [1] (the smallest budget)", got)
+	}
+}
+
+// When any command of the pipeline has spent its budget, the pipeline does not
+// run: running it would execute that command again.
+func TestFDCloseFlushFailsPipelineWithSpentBudget(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdBudgetProbe()
+	carry := fdPipeGroupReqs(ctx, 1, 5) // the second has run past MaxRetries+1
+	if err := fd.flushCarryBudgeted(ctx, carry); err != nil {
+		t.Fatalf("flushCarryBudgeted: %v", err)
+	}
+	if got := *bounds; len(got) != 0 {
+		t.Fatalf("the pipeline ran with bounds %v; a command in it had spent its budget", got)
+	}
+	for i, r := range carry {
+		if !errors.Is(r.cmd.Err(), errFDRetryBudgetExhausted) {
+			t.Fatalf("command %d err=%v, want errFDRetryBudgetExhausted", i, r.cmd.Err())
+		}
+	}
+}
+
+// A command in front of an FD pipeline is not part of that pipeline's budget
+// group. With the same attempt count as the pipeline's first command it used
+// to join the group, so a later pipeline command that had spent its budget
+// failed the unrelated command too.
+func TestFDCloseFlushKeepsOtherCommandsOutOfAPipelineBudget(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdBudgetProbe()
+	other := fdReq{cmd: NewStatusCmd(ctx, "set", "o", "v"), batch: newAPBatch(), attempts: 2}
+	carry := append([]fdReq{other}, fdPipeGroupReqs(ctx, 2, 5)...) // the pipeline's 2nd command has no budget left
+	if err := fd.flushCarryBudgeted(ctx, carry); err != nil {
+		t.Fatalf("flushCarryBudgeted: %v", err)
+	}
+	if got := *bounds; len(got) != 1 || got[0] != 2 {
+		t.Fatalf("retry bounds %v, want [2]: the other command runs alone with its own budget", got)
+	}
+	if err := carry[0].cmd.Err(); err != nil {
+		t.Fatalf("other command err=%v, want nil", err)
+	}
+	for i, r := range carry[1:] {
+		if !errors.Is(r.cmd.Err(), errFDRetryBudgetExhausted) {
+			t.Fatalf("pipeline command %d err=%v, want errFDRetryBudgetExhausted", i, r.cmd.Err())
+		}
+	}
+}
+
+// ===== from autopipeline_fd_group_deadline_test.go =====
+
+// TestFullDuplexGroupedReadFullDeadlinePerSocketRead covers a partly buffered
+// reply reached EARLY in a read group: k1 completes less than half the
+// timeout after the group armed its deadline, together with the first bytes
+// of k2, and k2 needs another 0.9*timeout. Stopping the group only after half
+// the timeout still read k2 under that deadline, which expired before k2
+// arrived, although k2 arrived within its own ReadTimeout. A reply that needs
+// socket data must start a new group with a full deadline.
+func TestFullDuplexGroupedReadFullDeadlinePerSocketRead(t *testing.T) {
+	const timeout = time.Second
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	var once atomic.Bool
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				rd := bufio.NewReader(c)
+				slow := false
+				gets := 0
+				for {
+					args, err := readRESPCommand(rd)
+					if err != nil {
+						return
+					}
+					switch {
+					case len(args) > 0 && (args[0] == "hello" || args[0] == "HELLO"):
+						_, _ = io.WriteString(c, "*4\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:2\r\n")
+					case len(args) == 2 && (args[0] == "get" || args[0] == "GET"):
+						if gets == 0 {
+							slow = once.CompareAndSwap(false, true)
+						}
+						gets++
+						if !slow {
+							_, _ = io.WriteString(c, "$2\r\n"+args[1]+"\r\n")
+							continue
+						}
+						switch gets {
+						case 1:
+							// Delay k0 so k1 and k2 are in flight and read in the
+							// same group as the reply before them.
+							time.Sleep(100 * time.Millisecond)
+							_, _ = io.WriteString(c, "$2\r\nk0\r\n")
+						case 3:
+							_, _ = io.WriteString(c, "$2\r\nk")
+							time.Sleep(timeout * 3 / 10)
+							_, _ = io.WriteString(c, "1\r\n$2\r\nk")
+							time.Sleep(timeout * 9 / 10)
+							_, _ = io.WriteString(c, "2\r\n")
+						}
+					default:
+						_, _ = io.WriteString(c, "+OK\r\n")
+					}
+				}
+			}(c)
+		}
+	}()
+
+	c := NewClient(&Options{
+		Addr:             ln.Addr().String(),
+		Protocol:         2,
+		DisableIdentity:  true,
+		PipelinePoolSize: 2,
+		PoolSize:         2,
+		ReadTimeout:      timeout,
+		MaxRetries:       -1, // a replay would hide the spurious timeout
+	})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	ctx := context.Background()
+	cmds := []*StringCmd{ap.Get(ctx, "k0"), ap.Get(ctx, "k1"), ap.Get(ctx, "k2")}
+	for i, cmd := range cmds {
+		if v, err := cmd.Result(); err != nil || v != "k"+strconv.Itoa(i) {
+			t.Fatalf("reply %d: v=%q err=%v (k2 read under k1's deadline?)", i, v, err)
+		}
+	}
+	if !once.Load() {
+		t.Fatal("the slow connection was never used; the test did not exercise the partial frame")
+	}
+}
+
+// ===== from autopipeline_fd_group_panic_test.go =====
+
+// fdPanicReplyCmd is a GET whose reply decoder panics, like a RawWriteToCmd
+// whose user io.Writer panics while the reply streams into it.
+type fdPanicReplyCmd struct{ *StringCmd }
+
+func (fdPanicReplyCmd) readReply(*proto.Reader) error { panic("boom: reply decoder") }
+
+// A decoder panic in the middle of a read group must not replay the replies
+// already read in that group. The first reply is delayed so SET a, GET b and
+// the panicking command share one group. Before the fix the panic escaped to
+// the reader's recover, which never counted the group's completed replies, so
+// recovery replayed SET a and GET b on a new connection.
+func TestFullDuplexGroupPanicDoesNotReplayReadReplies(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	var sets atomic.Int64
+	var first atomic.Bool
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				rd := bufio.NewReader(c)
+				scripted := false
+				var held []string
+				n := 0
+				for {
+					args, err := readRESPCommand(rd)
+					if err != nil {
+						return
+					}
+					name := strings.ToLower(args[0])
+					var reply string
+					switch {
+					case name == "hello":
+						reply = "*4\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:2\r\n"
+					case name == "set":
+						sets.Add(1)
+						reply = "+OK\r\n"
+					case name == "get":
+						reply = "$" + itoa(len(args[1])) + "\r\n" + args[1] + "\r\n"
+					default:
+						reply = "+OK\r\n"
+					}
+					if name != "get" && name != "set" {
+						_, _ = io.WriteString(c, reply)
+						continue
+					}
+					if n == 0 {
+						scripted = first.CompareAndSwap(false, true)
+					}
+					n++
+					if !scripted {
+						_, _ = io.WriteString(c, reply)
+						continue
+					}
+					if n == 1 {
+						time.Sleep(100 * time.Millisecond) // let the next three queue up
+						_, _ = io.WriteString(c, reply)
+						continue
+					}
+					held = append(held, reply)
+					if len(held) == 3 {
+						_, _ = io.WriteString(c, strings.Join(held, "")) // one group
+						held = nil
+					}
+				}
+			}(c)
+		}
+	}()
+
+	cl := NewClient(&Options{Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
+		PipelinePoolSize: 2, MaxRetries: 1,
+		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond})
+	defer cl.Close()
+	ap, err := cl.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	ctx := context.Background()
+	g0 := ap.Get(ctx, "k0")
+	set := ap.Set(ctx, "a", "v", 0)
+	getB := ap.Get(ctx, "b")
+	boom := ap.Submit(ctx, fdPanicReplyCmd{NewStringCmd(ctx, "get", "c")})
+
+	if v, err := g0.Result(); err != nil || v != "k0" {
+		t.Fatalf("g0: v=%q err=%v", v, err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET a: %v", err)
+	}
+	if v, err := getB.Result(); err != nil || v != "b" {
+		t.Fatalf("GET b: v=%q err=%v", v, err)
+	}
+	if err := boom.Wait(); err == nil {
+		t.Fatal("the panicking command succeeded")
+	}
+	if n := sets.Load(); n != 1 {
+		t.Fatalf("SET a executed %d times: replies already read in the group were replayed", n)
+	}
+}
+
+// Once a burst has drained, the queue must not keep the burst's backing array;
+// a queue that stays small keeps its buffer, so ordinary traffic does not pay a
+// reallocation per wave.
+func TestFDQueueReleasesBurstBuffer(t *testing.T) {
+	q := newFDQueue(1 << 16)
+	for i := 0; i < 10000; i++ {
+		q.push(fdQueueTag(i))
+	}
+	for q.depth() > 0 {
+		q.takeInto(nil, 200)
+	}
+	if c := cap(q.buf); c > fdQueueRetainCap {
+		t.Fatalf("drained queue kept a %d-slot buffer, want <= %d", c, fdQueueRetainCap)
+	}
+
+	small := newFDQueue(1 << 16)
+	for i := 0; i < 1000; i++ {
+		small.push(fdQueueTag(i))
+	}
+	before := cap(small.buf)
+	small.takeInto(nil, 1000)
+	if cap(small.buf) != before {
+		t.Fatalf("a small queue dropped its buffer (%d -> %d); it should reuse it", before, cap(small.buf))
+	}
+}
+
+// ===== from autopipeline_fd_push_panic_test.go =====
+
+type fdPanickingPushHandler struct{}
+
+func (fdPanickingPushHandler) HandlePushNotification(context.Context, push.NotificationHandlerContext, []interface{}) error {
+	panic("boom from a push handler")
+}
+
+// A push handler that panics while the grouped reader drains a push between
+// two replies must not make the session replay the replies the group already
+// read. The panic escaped the group's WithReader (only the reply decoder was
+// guarded), so the read SET reply was never completed and recovery ran the
+// SET again: one write, two executions. The drain now turns the panic into a
+// fatal drain error at that position, like a decoder panic.
+func TestFullDuplexPushHandlerPanicDoesNotReplayReadReplies(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	var sets atomic.Int64
+	var first atomic.Bool
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			poisoned := first.CompareAndSwap(false, true)
+			go func(c net.Conn) {
+				defer c.Close()
+				rd := bufio.NewReader(c)
+				for {
+					args, err := readRESPCommand(rd)
+					if err != nil {
+						return
+					}
+					name := ""
+					if len(args) > 0 {
+						name = strings.ToLower(args[0])
+					}
+					switch {
+					case name == "hello":
+						_, _ = io.WriteString(c, "%1\r\n$5\r\nproto\r\n:3\r\n")
+					case name == "set":
+						sets.Add(1)
+						if !poisoned {
+							_, _ = io.WriteString(c, "+OK\r\n")
+							continue
+						}
+						// Answer SET and the GET behind it in ONE write, with a
+						// push between the replies, so both are in one read group.
+						if _, err := readRESPCommand(rd); err != nil {
+							return
+						}
+						_, _ = io.WriteString(c, "+OK\r\n>2\r\n$4\r\nboom\r\n$1\r\nx\r\n$1\r\nv\r\n")
+					case name == "get" && len(args) == 2 && args[1] == "slow":
+						// Keep the reader busy so SET and the GET behind it are
+						// both in flight when it takes its next snapshot.
+						time.Sleep(100 * time.Millisecond)
+						_, _ = io.WriteString(c, "$-1\r\n")
+					case name == "get":
+						_, _ = io.WriteString(c, "$1\r\nv\r\n")
+					default:
+						_, _ = io.WriteString(c, "+OK\r\n")
+					}
+				}
+			}(c)
+		}
+	}()
+
+	c := NewClient(&Options{
+		Addr:             ln.Addr().String(),
+		Protocol:         3,
+		DisableIdentity:  true,
+		PipelinePoolSize: 2,
+		PoolSize:         2,
+		ReadTimeout:      2 * time.Second,
+		MaxRetries:       3,
+	})
+	defer c.Close()
+	if err := c.RegisterPushNotificationHandler("boom", fdPanickingPushHandler{}, false); err != nil {
+		t.Fatalf("RegisterPushNotificationHandler: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	ctx := context.Background()
+	slow := ap.Get(ctx, "slow")
+	time.Sleep(20 * time.Millisecond) // slow is on the wire, the reader waits on it
+	set := ap.Set(ctx, "k", "v", 0)
+	get := ap.Get(ctx, "x")
+	_ = get.Err()
+	_ = slow.Err()
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if !first.Load() {
+		t.Fatal("the poisoned connection was never used")
+	}
+	if n := sets.Load(); n != 1 {
+		t.Fatalf("SET executed %d times, want 1 (its read reply was replayed after the push panic)", n)
+	}
+}
+
+// ===== from autopipeline_fd_shards_internal_test.go =====
+
+// The same key must pick the same engine whatever Go type carries it. A key
+// given as []byte or *string used to look keyless and round-robin, so a
+// same-key write and read could land on two engines with no order between
+// them. An empty-string key used to collide with the keyless sentinel.
+func TestFDForRoutesKeyFormsTogether(t *testing.T) {
+	ctx := context.Background()
+	cl := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer cl.Close()
+	if err := cl.Ping(ctx).Err(); err != nil {
+		t.Skipf("no local redis: %v", err)
+	}
+	ap, err := cl.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:           true,
+		NumShards:            8,
+		MaxConcurrentBatches: 1,
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	defer ap.Close()
+	if len(ap.fds) != 8 {
+		t.Fatalf("want 8 engines, got %d", len(ap.fds))
+	}
+
+	for i := 0; i < 200; i++ {
+		k := "fdkey:" + itoa(i)
+		s := k
+		want := ap.fdFor(NewCmd(ctx, "get", k))
+		for _, arg := range []interface{}{[]byte(k), &s} {
+			if got := ap.fdFor(NewCmd(ctx, "get", arg)); got != want {
+				t.Fatalf("key %q as %T picked a different engine than as string", k, arg)
+			}
+		}
+	}
+
+	// A raw FCALL routes by its declared key, not by the function name, so it
+	// shares an engine with a plain read of that key.
+	for i := 0; i < 200; i++ {
+		k := "fdfcall:" + itoa(i)
+		if ap.fdFor(NewCmd(ctx, "fcall", "myfn", "1", k)) != ap.fdFor(NewCmd(ctx, "get", k)) {
+			t.Fatalf("raw FCALL on %q picked a different engine than GET %q", k, k)
+		}
+	}
+
+	first := ap.fdFor(NewCmd(ctx, "get", ""))
+	for i := 0; i < 16; i++ {
+		if ap.fdFor(NewCmd(ctx, "set", "", "v")) != first {
+			t.Fatal("empty-string key round-robined instead of routing by hash")
+		}
+	}
+}
+
+// ===== from autopipeline_fdqueue_test.go =====
+
+// fdQueueTag builds a request whose attempts field carries a sequence number,
+// so FIFO order can be checked without a real command.
+func fdQueueTag(n int) fdReq { return fdReq{attempts: n} }
+
+// TestFDQueueFIFOModel drives the queue with random pushes, batch pushes,
+// partial takes and give-backs (pushFront), and checks every take against a
+// plain slice model. It pins the queue's order contract across the head
+// offset, the reset-on-empty and the compaction.
+func TestFDQueueFIFOModel(t *testing.T) {
+	for seed := int64(1); seed <= 20; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		q := newFDQueue(512)
+		var model []int
+		next := 0
+		for op := 0; op < 5000; op++ {
+			switch r := rng.Intn(10); {
+			case r < 4: // push
+				if q.push(fdQueueTag(next)) == fdPushOK {
+					model = append(model, next)
+					next++
+				} else if len(model) < 512 {
+					t.Fatalf("seed %d: push refused at depth %d", seed, len(model))
+				}
+			case r < 6: // pushBatch
+				k := 1 + rng.Intn(40)
+				batch := make([]fdReq, k)
+				for i := range batch {
+					batch[i] = fdQueueTag(next + i)
+				}
+				if q.pushBatch(batch) == fdPushOK {
+					for i := 0; i < k; i++ {
+						model = append(model, next+i)
+					}
+					next += k
+				} else if len(model)+k <= 512 {
+					t.Fatalf("seed %d: pushBatch(%d) refused at depth %d", seed, k, len(model))
+				}
+			default: // take, maybe give some back
+				got := q.takeInto(nil, 1+rng.Intn(64))
+				for i, r := range got {
+					if r.attempts != model[i] {
+						t.Fatalf("seed %d op %d: took %d at %d, want %d", seed, op, r.attempts, i, model[i])
+					}
+				}
+				model = model[len(got):]
+				if g := rng.Intn(len(got) + 1); g > 0 && rng.Intn(3) == 0 {
+					back := got[len(got)-g:]
+					q.pushFront(back)
+					head := make([]int, 0, g+len(model))
+					for _, r := range back {
+						head = append(head, r.attempts)
+					}
+					model = append(head, model...)
+				}
+			}
+			if d := q.depth(); d != len(model) {
+				t.Fatalf("seed %d op %d: depth %d, model %d", seed, op, d, len(model))
+			}
+		}
+		got := q.drainAll(nil)
+		if len(got) != len(model) {
+			t.Fatalf("seed %d: drained %d, model %d", seed, len(got), len(model))
+		}
+		for i, r := range got {
+			if r.attempts != model[i] {
+				t.Fatalf("seed %d: drained %d at %d, want %d", seed, r.attempts, i, model[i])
+			}
+		}
+	}
+}
+
+// BenchmarkFDQueueDeepDrain is the writer draining a full default-size queue
+// in 200-command waves while submitters refill it. Before the head offset,
+// every take shifted the whole remaining queue under the lock.
+func BenchmarkFDQueueDeepDrain(b *testing.B) {
+	const depth, wave = 65536, 200
+	q := newFDQueue(depth)
+	for i := 0; i < depth; i++ {
+		q.push(fdQueueTag(i))
+	}
+	refill := make([]fdReq, wave)
+	dst := make([]fdReq, 0, wave)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dst = q.takeInto(dst[:0], wave)
+		q.pushBatch(refill)
+	}
+}
+
+// rerouteTo returns an fdReroute that runs the commands on target and counts
+// them.
+func rerouteTo(target *Client, n *atomic.Int64) func(context.Context, []Cmder, int) error {
+	return func(ctx context.Context, cmds []Cmder, maxRetries int) error {
+		n.Add(int64(len(cmds)))
+		return target.processPipelineRetries(ctx, cmds, maxRetries)
+	}
+}
+
+// fdRerouteTestEngine is an engine with only what the flush paths need, and
+// a reroute that records each call's retry bound and serves the commands with
+// serve.
+func fdRerouteTestEngine(budget int, serve func(cmds []Cmder) error) (*fdEngine, *[]int) {
+	var bounds []int
+	fd := &fdEngine{
+		ap:                 &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:             &Client{baseClient: &baseClient{opt: &Options{}}},
+		epoch:              time.Now(),
+		maxBatch:           8,
+		q:                  newFDQueue(8),
+		redirectAware:      true,
+		clusterRetryBudget: budget,
+	}
+	fd.reroute = func(_ context.Context, cmds []Cmder, maxRetries int) error {
+		bounds = append(bounds, maxRetries)
+		return serve(cmds)
+	}
+	return fd, &bounds
+}
+
+func fdServeOK(cmds []Cmder) error {
+	for _, c := range cmds {
+		c.SetErr(nil)
+	}
+	return nil
+}
+
+// A rerouted command keeps its remaining retry budget: the owner gets the
+// budget left after the attempts already made on the FD connection, not a
+// fresh one (codex P1 on #4111). Red before: the bound was dropped, and the
+// cluster owner ran its full MaxRedirects loop.
+func TestFDRerouteKeepsRemainingRetryBudget(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdRerouteTestEngine(3, fdServeOK)
+	// POST-BUMP carry: attempts=2 is one execution done on the FD connection.
+	// attempts=1 is a queued command never sent.
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "a", "1"), batch: newAPBatch(), attempts: 2},
+		{cmd: NewStatusCmd(ctx, "set", "b", "1"), batch: newAPBatch(), attempts: 2},
+		{cmd: NewStatusCmd(ctx, "set", "c", "1"), batch: newAPBatch(), attempts: 1},
+	}
+	fd.rerouteReqs(ctx, reqs)
+	if got, want := fmt.Sprint(*bounds), "[2 3]"; got != want {
+		t.Fatalf("reroute retry bounds = %s, want %s (budget 3 minus executions done)", got, want)
+	}
+}
+
+// The Close-time flush of an engine with an owner goes through the owner, not
+// through the engine's own client (codex P2 on #4111: a child closed by
+// topology GC flushed through its dropped node).
+func TestFDShutdownFlushReroutes(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdRerouteTestEngine(3, fdServeOK)
+	// Nothing listens here: a flush through the engine's own client fails.
+	fd.client = NewClient(&Options{Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond})
+	defer fd.client.Close()
+
+	carry := NewStatusCmd(ctx, "set", "a", "1")
+	queued := NewStatusCmd(ctx, "set", "b", "1")
+	if fd.q.push(fdReq{cmd: queued, batch: newAPBatch(), attempts: 1}) != fdPushOK {
+		t.Fatal("queue push failed")
+	}
+	fd.shutdownFlush(ctx, []fdReq{{cmd: carry, batch: newAPBatch(), attempts: 2}})
+	if got, want := fmt.Sprint(*bounds), "[2 3]"; got != want {
+		t.Fatalf("reroute retry bounds = %s, want %s", got, want)
+	}
+	for _, c := range []*StatusCmd{carry, queued} {
+		if err := c.rawErr(); err != nil {
+			t.Fatalf("%v: err = %v, want it served through the reroute", c.Args(), err)
+		}
+	}
+}
+
+// An owner pipeline that returns an earlier Redis error (redis.Nil) while a
+// later command failed in transport still aborts the rest of the flush
+// (codex P2 on #4111).
+func TestFDRerouteDetectsMaskedTransportError(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	fd, _ := fdRerouteTestEngine(3, func(cmds []Cmder) error {
+		calls++
+		cmds[0].SetErr(Nil)
+		for _, c := range cmds[1:] {
+			c.SetErr(io.EOF)
+		}
+		return Nil // first command error, as ClusterClient.processPipeline returns
+	})
+	fd.maxBatch = 2 // two chunks
+	reqs := make([]fdReq, 4)
+	for i := range reqs {
+		reqs[i] = fdReq{cmd: NewStringCmd(ctx, "get", "k"+itoa(i)), batch: newAPBatch(), attempts: 1}
+	}
+	fd.rerouteReqs(ctx, reqs)
+	if calls != 1 {
+		t.Fatalf("owner ran %d chunks, want 1: the second ran after a transport failure", calls)
+	}
+	for i := 2; i < len(reqs); i++ {
+		if err := reqs[i].cmd.rawErr(); !errors.Is(err, io.EOF) {
+			t.Fatalf("reqs[%d] err = %v, want io.EOF (failed by the abort)", i, err)
+		}
+	}
+}
+
+// Rerouted commands report the per-command duration metric the reader would
+// have reported (codex P2 on #4111).
+func TestFDRerouteRecordsCommandMetrics(t *testing.T) {
+	rec := &fdOtelRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	ctx := context.Background()
+	fd, _ := fdRerouteTestEngine(3, fdServeOK)
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "a", "1"), batch: newAPBatch(), attempts: 2},
+		{cmd: NewStatusCmd(ctx, "set", "b", "1"), batch: newAPBatch(), attempts: 1},
+	}
+	fd.rerouteReqs(ctx, reqs)
+	if n := rec.opDurations.Load(); n != int64(len(reqs)) {
+		t.Fatalf("operation durations recorded = %d, want %d", n, len(reqs))
+	}
+}
+
+// With an owner reroute, a persistent lease failure runs the accepted commands
+// through the owner instead of failing them.
+func TestFDLeaseFailureReroutesBacklog(t *testing.T) {
+	ctx := context.Background()
+	target := NewClient(&Options{Addr: ":6379"})
+	defer target.Close()
+	if err := target.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	c := NewClient(&Options{
+		Addr:             "127.0.0.1:1", // nothing listening: every lease fails
+		Protocol:         3,
+		PipelinePoolSize: 2,
+		PoolSize:         2,
+		MaxRetries:       2,
+		DialTimeout:      150 * time.Millisecond,
+		MinRetryBackoff:  time.Millisecond,
+		MaxRetryBackoff:  5 * time.Millisecond,
+	})
+	defer c.Close()
+	var rerouted atomic.Int64
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		fdReroute:  rerouteTo(target, &rerouted),
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil || ap.fd.reroute == nil {
+		t.Fatal("full-duplex engine with a reroute not active")
+	}
+
+	key := "fd:reroute:lease"
+	done := make(chan error, 1)
+	go func() { done <- ap.Set(ctx, key, "v", 0).Err() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Set = %v, want it served through the reroute", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("command hung on a persistent lease failure")
+	}
+	if rerouted.Load() == 0 {
+		t.Fatal("reroute not used")
+	}
+	if got, err := target.Get(ctx, key).Result(); err != nil || got != "v" {
+		t.Fatalf("GET on the reroute target = %q, %v", got, err)
+	}
+}
+
+// With an owner reroute, the replayable tail after a connection error runs
+// through the owner, in order: no worker sees a failed or misaligned reply.
+func TestFDConnErrReroutesTail(t *testing.T) {
+	ctx := context.Background()
+	target := NewClient(&Options{Addr: ":6379"})
+	defer target.Close()
+	if err := target.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	c := fdTestClient(":6379")
+	defer c.Close()
+	var rerouted atomic.Int64
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		fdReroute:  rerouteTo(target, &rerouted),
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	killer := NewClient(&Options{Addr: ":6379"})
+	defer killer.Close()
+
+	const workers = 16
+	var stop atomic.Bool
+	done := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			key := "fd:reroute:kill:" + itoa(w)
+			for n := 0; !stop.Load(); n++ {
+				val := itoa(w) + ":" + itoa(n)
+				if err := ap.Set(ctx, key, val, 0).Err(); err != nil {
+					done <- fmt.Errorf("worker %d set #%d: %w", w, n, err)
+					return
+				}
+				got, err := ap.Get(ctx, key).Result()
+				if err != nil {
+					done <- fmt.Errorf("worker %d get #%d: %w", w, n, err)
+					return
+				}
+				if got != val {
+					done <- fmt.Errorf("worker %d get #%d: got %q want %q", w, n, got, val)
+					return
+				}
+			}
+			done <- nil
+		}(w)
+	}
+
+	time.Sleep(120 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		_ = killer.Do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes").Err()
+		time.Sleep(90 * time.Millisecond)
+	}
+	time.Sleep(120 * time.Millisecond)
+	stop.Store(true)
+
+	deadline := time.After(15 * time.Second)
+	for w := 0; w < workers; w++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("timeout: a worker hung after a connection kill")
+		}
+	}
+	if rerouted.Load() == 0 {
+		t.Fatal("no command went through the reroute across 5 connection kills")
+	}
+}
+
+// The cluster full-duplex router gives its node children a reroute through
+// the ClusterClient, and Config never hands it back.
+func TestClusterFDRouterChildReroutes(t *testing.T) {
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:1"}})
+	defer cc.Close()
+	r := newClusterFDRouter(nil, cc, &AutoPipelineOptions{FullDuplex: true}, true)
+	if r.childCfg.fdReroute == nil {
+		t.Fatal("cluster FD child config has no reroute")
+	}
+
+	ap := &AutoPipeliner{config: r.childCfg}
+	if ap.Config().fdReroute != nil {
+		t.Fatal("Config() exposes the internal reroute")
+	}
+}
+
+// Cluster full-duplex under connection kills on every master: each node child's
+// replayable tail reroutes through the ClusterClient, in order, so no worker
+// sees a failed or misaligned reply.
+func TestClusterFDConnKillReroutesTail(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+	if ap.clusterFD == nil {
+		t.Fatal("cluster full-duplex router not active")
+	}
+
+	const workers = 24
+	var stop atomic.Bool
+	done := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			key := fmt.Sprintf("cfd:reroute:{%d}", w) // spread over all masters
+			for n := 0; !stop.Load(); n++ {
+				val := itoa(w) + ":" + itoa(n)
+				if err := ap.Set(ctx, key, val, 0).Err(); err != nil {
+					done <- fmt.Errorf("worker %d set #%d: %w", w, n, err)
+					return
+				}
+				got, err := ap.Get(ctx, key).Result()
+				if err != nil {
+					done <- fmt.Errorf("worker %d get #%d: %w", w, n, err)
+					return
+				}
+				if got != val {
+					done <- fmt.Errorf("worker %d get #%d: got %q want %q", w, n, got, val)
+					return
+				}
+			}
+			done <- nil
+		}(w)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	for i := 0; i < 4; i++ {
+		_ = cc.ForEachMaster(ctx, func(ctx context.Context, m *Client) error {
+			return m.Do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes").Err()
+		})
+		time.Sleep(100 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	stop.Store(true)
+
+	deadline := time.After(20 * time.Second)
+	for w := 0; w < workers; w++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("timeout: a worker hung after a connection kill")
+		}
+	}
+}
+
+// FullDuplexPipes chooses the number of full-duplex pipes (engines). NumShards>1
+// is still honored as the 9.23.0 spelling when FullDuplexPipes is 0, and
+// Config() reports the effective pipe count either way. Construction only:
+// engines lease their connection lazily, so no server is needed.
+func TestFullDuplexPipesEngineCount(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  AutoPipelineOptions
+		want int
+	}{
+		{"default", AutoPipelineOptions{FullDuplex: true}, 1},
+		{"pipes", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 3}, 3},
+		{"numshards fallback", AutoPipelineOptions{FullDuplex: true, NumShards: 3}, 3},
+		{"both equal", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 3, NumShards: 3}, 3},
+		{"pipes with numshards 1", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 2, NumShards: 1}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewClient(&Options{Addr: internalTestRedisAddr()})
+			defer c.Close()
+			cfg := tc.cfg
+			ap, err := c.AsyncAutoPipelineWithOptions(&cfg)
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			defer ap.Close()
+			if got := len(ap.fds); got != tc.want {
+				t.Fatalf("engines = %d, want %d", got, tc.want)
+			}
+			got := ap.Config()
+			if !got.FullDuplex {
+				t.Fatal("Config().FullDuplex = false, want true")
+			}
+			if got.FullDuplexPipes != tc.want {
+				t.Fatalf("Config().FullDuplexPipes = %d, want %d", got.FullDuplexPipes, tc.want)
+			}
+		})
+	}
+}
+
+func TestFullDuplexPipesValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     AutoPipelineOptions
+		wantErr string
+	}{
+		{"negative", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: -1}, "FullDuplexPipes=-1"},
+		{"disagrees with numshards", AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 4, NumShards: 2}, "disagree"},
+		// Like the other full-duplex fields, it is ignored without FullDuplex.
+		{"ignored without full duplex", AutoPipelineOptions{FullDuplexPipes: -1}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate: %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate: got %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// The pool-size error names the field the caller set.
+func TestFullDuplexPipesNeedsPipelinePool(t *testing.T) {
+	c := NewClient(&Options{Addr: internalTestRedisAddr(), PipelinePoolSize: 2})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 4})
+	if err == nil {
+		ap.Close()
+		t.Fatal("FullDuplexPipes=4 on a pipeline pool of 2 was accepted")
+	}
+	if !strings.Contains(err.Error(), "FullDuplexPipes=4") || !strings.Contains(err.Error(), "PipelinePoolSize gives 2") {
+		t.Fatalf("error should name FullDuplexPipes and the pool size, got: %v", err)
+	}
+}
+
+// When full duplex cannot engage (no pipeline pool), FullDuplexPipes has no
+// effect. Unlike NumShards>1, it must not turn into round-robin half-duplex
+// shards that then demand Unordered on the ordered async face.
+func TestFullDuplexPipesNoEffectWithoutPipelinePool(t *testing.T) {
+	c := NewClient(&Options{Addr: internalTestRedisAddr(), PipelinePoolSize: -1})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 4})
+	if err != nil {
+		t.Fatalf("construct: %v (FullDuplexPipes must not require Unordered when full duplex is off)", err)
+	}
+	defer ap.Close()
+	if ap.Config().FullDuplex {
+		t.Fatal("Config().FullDuplex = true without a pipeline pool")
+	}
+	if got := len(ap.shards); got != 1 {
+		t.Fatalf("half-duplex shards = %d, want 1 (FullDuplexPipes must not shard the half-duplex queue)", got)
+	}
+}
+
+// Cluster full duplex runs one pipe per master. The per-node child config is a
+// copy of the parent's, so a parent FullDuplexPipes must be forced to 1 there;
+// otherwise every master would get that many engines.
+func TestFullDuplexPipesClusterChildForcedToOne(t *testing.T) {
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{internalTestRedisAddr()}})
+	defer cc.Close()
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true, FullDuplexPipes: 4})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	defer ap.Close()
+	if ap.clusterFD == nil {
+		t.Fatal("cluster full duplex did not engage")
+	}
+	if got := ap.clusterFD.childCfg.FullDuplexPipes; got != 1 {
+		t.Fatalf("child FullDuplexPipes = %d, want 1", got)
+	}
+	if got := ap.Config().FullDuplexPipes; got != 1 {
+		t.Fatalf("Config().FullDuplexPipes = %d, want 1 (one pipe per master)", got)
+	}
+}
+
+// warmSpareClient returns a client whose dialer counts dials and, once slow is
+// set, takes slowDial per dial.
+func warmSpareClient(t *testing.T, minIdle int, slow *atomic.Bool) *Client {
+	t.Helper()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	client := NewClient(&Options{
+		Addr:                 internalTestRedisAddr(),
+		PipelineMinIdleConns: minIdle,
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if slow.Load() {
+				time.Sleep(slowDial)
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	return client
+}
+
+const slowDial = 500 * time.Millisecond
+
+// waitFDSession waits until the engine holds a session connection and the
+// pipeline pool has want idle connections whose dials have finished. IdleLen
+// counts a min-idle connection as soon as its dial starts; Len only once it is
+// in the pool, so Len must also reach the held connection plus the idle ones.
+func waitFDSession(t *testing.T, ap *AutoPipeliner, client *Client, want int) {
+	t.Helper()
+	pp := client.loadPipelinePool().pool
+	deadline := time.Now().Add(5 * time.Second)
+	for ap.fd.curConn.Load() == nil || pp.IdleLen() != want || pp.Len() != want+1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("session held=%v, pipeline Len=%d IdleLen=%d, want held with %d idle",
+				ap.fd.curConn.Load() != nil, pp.Len(), pp.IdleLen(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestFDWarmSpareReplacesWithoutDial checks the full-duplex engine keeps an
+// idle spare in the pipeline pool, so after its connection fails the
+// replacement does not wait for a dial.
+func TestFDWarmSpareReplacesWithoutDial(t *testing.T) {
+	ctx := context.Background()
+	var slow atomic.Bool
+	client := warmSpareClient(t, 0, &slow)
+
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{FullDuplex: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Skip("full-duplex engine not enabled for this client")
+	}
+	if err := ap.Set(ctx, "fdspare:k", "1", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	waitFDSession(t, ap, client, 1)
+
+	// From now on a dial is slow. Break the held connection: the next command
+	// fails its write and is replayed on the replacement.
+	slow.Store(true)
+	_ = ap.fd.curConn.Load().Close()
+
+	start := time.Now()
+	if err := ap.Set(ctx, "fdspare:k", "2", 0).Err(); err != nil {
+		t.Fatalf("command after connection failure: %v", err)
+	}
+	if d := time.Since(start); d >= slowDial/2 {
+		t.Fatalf("recovery took %v; the replacement dialed instead of leasing the warm spare", d)
+	}
+	if v, err := client.Get(ctx, "fdspare:k").Result(); err != nil || v != "2" {
+		t.Fatalf("get = %q, %v; want \"2\"", v, err)
+	}
+}
+
+// TestFDWarmSpareOptOut checks a negative PipelineMinIdleConns keeps the
+// pipeline pool at zero idle connections under full-duplex.
+func TestFDWarmSpareOptOut(t *testing.T) {
+	ctx := context.Background()
+	var slow atomic.Bool
+	client := warmSpareClient(t, -1, &slow)
+
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{FullDuplex: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Skip("full-duplex engine not enabled for this client")
+	}
+	if err := ap.Set(ctx, "fdspare:o", "1", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	waitFDSession(t, ap, client, 0)
+	time.Sleep(50 * time.Millisecond)
+	if n := client.loadPipelinePool().pool.IdleLen(); n != 0 {
+		t.Fatalf("pipeline IdleLen = %d with PipelineMinIdleConns -1, want 0", n)
+	}
+}
+
+// TestFDSpareFits checks the spare is only added when it does not take a slot
+// an engine needs and the idle limit can hold it next to a returned session
+// connection (Codex on #4101).
+func TestFDSpareFits(t *testing.T) {
+	for _, tc := range []struct {
+		poolSize, maxIdle, engines int
+		want                       bool
+	}{
+		{10, 0, 1, true},  // defaults
+		{1, 0, 1, false},  // the only slot belongs to the engine
+		{2, 0, 2, false},  // NumShards == PipelinePoolSize
+		{3, 0, 2, true},   // room for two engines and a spare
+		{10, 1, 1, false}, // spare would fill the only idle slot
+		{10, 2, 1, true},  // spare + returned session conn
+		{10, 2, 2, false}, // two engines need both idle slots
+	} {
+		if got := fdSpareFits(tc.poolSize, tc.maxIdle, tc.engines); got != tc.want {
+			t.Errorf("fdSpareFits(pool=%d, maxIdle=%d, engines=%d) = %v, want %v",
+				tc.poolSize, tc.maxIdle, tc.engines, got, tc.want)
+		}
+	}
+}
+
+// TestFDNoSpareWhenItDoesNotFit checks a client whose pipeline pool cannot fit
+// a spare gets none, and that the full-duplex session then stays on the
+// pipeline pool instead of spilling to the main pool.
+func TestFDNoSpareWhenItDoesNotFit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opt  func(*Options)
+	}{
+		{"PipelinePoolSize 1", func(o *Options) { o.PipelinePoolSize = 1 }},
+		{"MaxIdleConns 1", func(o *Options) { o.MaxIdleConns = 1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if err := probeRedis(internalTestRedisAddr()); err != nil {
+				t.Skipf("no redis: %v", err)
+			}
+			opt := &Options{Addr: internalTestRedisAddr()}
+			tc.opt(opt)
+			client := NewClient(opt)
+			defer client.Close()
+			if err := client.Ping(ctx).Err(); err != nil {
+				t.Skipf("no redis: %v", err)
+			}
+			ap, err := newAutoPipeliner(client, &AutoPipelineOptions{FullDuplex: true}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ap.Close()
+			if ap.fd == nil {
+				t.Skip("full-duplex engine not enabled for this client")
+			}
+			if err := ap.Set(ctx, "fdspare:fit", "1", 0).Err(); err != nil {
+				t.Fatal(err)
+			}
+			waitFDSession(t, ap, client, 0)
+			time.Sleep(50 * time.Millisecond)
+			pp := client.loadPipelinePool().pool
+			if n := pp.IdleLen(); n != 0 {
+				t.Fatalf("pipeline IdleLen = %d, want 0 (no spare)", n)
+			}
+			if ap.fd.curConnSpilled.Load() {
+				t.Fatal("full-duplex session spilled to the main pool")
+			}
+		})
+	}
+}
+
+// TestPipelineMinIdleConnsWithoutFD checks PipelineMinIdleConns alone keeps
+// idle connections in the pipeline pool, and the default keeps none.
+func TestPipelineMinIdleConnsWithoutFD(t *testing.T) {
+	var slow atomic.Bool
+	client := warmSpareClient(t, 2, &slow)
+	pp := client.loadPipelinePool().pool
+	deadline := time.Now().Add(5 * time.Second)
+	for pp.IdleLen() != 2 || pp.Len() != 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("pipeline Len=%d IdleLen=%d, want 2/2", pp.Len(), pp.IdleLen())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	def := warmSpareClient(t, 0, &slow)
+	time.Sleep(50 * time.Millisecond)
+	if n := def.loadPipelinePool().pool.IdleLen(); n != 0 {
+		t.Fatalf("default pipeline IdleLen = %d, want 0", n)
 	}
 }
