@@ -549,6 +549,9 @@ type HGetEXOptions struct {
 }
 
 func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd {
+	if options == nil {
+		options = &HGetEXOptions{}
+	}
 	args := []interface{}{"HGETEX", key}
 	if options.ExpirationType != "" {
 		args = append(args, string(options.ExpirationType))
@@ -602,6 +605,9 @@ func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...stri
 }
 
 func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetEXOptions, fieldsAndValues ...string) *IntCmd {
+	if options == nil {
+		options = &HSetEXOptions{}
+	}
 	args := []interface{}{"HSETEX", key}
 	if options.Condition != "" {
 		args = append(args, string(options.Condition))

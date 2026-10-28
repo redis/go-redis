@@ -69,6 +69,15 @@ type FailoverOptions struct {
 	Username string
 	Password string
 
+	// AuthEmptyPassword: see Options.AuthEmptyPassword. It applies to the
+	// master/replica connections (Username without Password).
+	AuthEmptyPassword bool
+
+	// SentinelAuthEmptyPassword is AuthEmptyPassword for the sentinel
+	// connections (SentinelUsername without SentinelPassword). The two are
+	// independent, like the sentinel and data-node credentials.
+	SentinelAuthEmptyPassword bool
+
 	// Push notifications are always enabled for RESP3 connections
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
@@ -214,6 +223,11 @@ type FailoverOptions struct {
 	// If nil, a default processor will be created for RESP3 connections.
 	PushNotificationProcessor push.NotificationProcessor
 
+	// CommandMetadata configures shared metadata for failover clients.
+	//
+	// Experimental: this API may change in a minor release.
+	CommandMetadata *CommandMetadataConfig
+
 	// MaintNotificationsConfig is not supported for FailoverClients at the moment
 	// MaintNotificationsConfig provides custom configuration for maintnotifications upgrades.
 	// When MaintNotificationsConfig.Mode is not "disabled", the client will handle
@@ -236,6 +250,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
 		Password:                     opt.Password,
+		AuthEmptyPassword:            opt.AuthEmptyPassword,
 		CredentialsProvider:          opt.CredentialsProvider,
 		CredentialsProviderContext:   opt.CredentialsProviderContext,
 		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
@@ -281,6 +296,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		IdentitySuffix:            opt.IdentitySuffix,
 		UnstableResp3:             opt.UnstableResp3,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
+		CommandMetadata:           opt.CommandMetadata,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
@@ -296,9 +312,10 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
-		DB:       0,
-		Username: opt.SentinelUsername,
-		Password: opt.SentinelPassword,
+		DB:                0,
+		Username:          opt.SentinelUsername,
+		Password:          opt.SentinelPassword,
+		AuthEmptyPassword: opt.SentinelAuthEmptyPassword,
 
 		MaxRetries:      opt.MaxRetries,
 		MinRetryBackoff: opt.MinRetryBackoff,
@@ -358,6 +375,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
 		Password:                     opt.Password,
+		AuthEmptyPassword:            opt.AuthEmptyPassword,
 		CredentialsProvider:          opt.CredentialsProvider,
 		CredentialsProviderContext:   opt.CredentialsProviderContext,
 		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
@@ -390,15 +408,16 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MaxConcurrentDials: opt.MaxConcurrentDials,
-		PoolTimeout:        opt.PoolTimeout,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxIdleConns:       opt.MaxIdleConns,
-		MaxActiveConns:     opt.MaxActiveConns,
-		ConnMaxIdleTime:    opt.ConnMaxIdleTime,
-		ConnMaxLifetime:    opt.ConnMaxLifetime,
+		PoolFIFO:              opt.PoolFIFO,
+		PoolSize:              opt.PoolSize,
+		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		PoolTimeout:           opt.PoolTimeout,
+		MinIdleConns:          opt.MinIdleConns,
+		MaxIdleConns:          opt.MaxIdleConns,
+		MaxActiveConns:        opt.MaxActiveConns,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 
 		TLSConfig: opt.TLSConfig,
 
@@ -407,6 +426,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		IdentitySuffix:            opt.IdentitySuffix,
 		FailingTimeoutSeconds:     opt.FailingTimeoutSeconds,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
+		CommandMetadata:           opt.CommandMetadata,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
@@ -509,6 +529,8 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.Protocol = q.int("protocol")
 	o.Username = q.string("username")
 	o.Password = q.string("password")
+	o.AuthEmptyPassword = q.bool("auth_empty_password")
+	o.SentinelAuthEmptyPassword = q.bool("sentinel_auth_empty_password")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
@@ -700,6 +722,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		rdb.pipelinePool = ref
 	}
 
+	rdb.initStreamingCredentials()
+
 	// Register pools for OTel async gauge metrics, matching NewClient (the
 	// failover client previously registered none, so pool gauges were silent
 	// for the identical standalone setup). The pipeline pool is nil when not
@@ -759,7 +783,7 @@ func masterReplicaDialer(
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return tls.DialWithDialer(netDialer, network, addr, failover.opt.TLSConfig)
+		return (&tls.Dialer{NetDialer: netDialer, Config: failover.opt.TLSConfig}).DialContext(ctx, network, addr)
 	}
 }
 
