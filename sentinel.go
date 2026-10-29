@@ -850,6 +850,11 @@ func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName st
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
+	if isMonitorCmd(ctx, cmd) {
+		err := errors.New("redis: MONITOR is not supported on SentinelClient; use a dedicated client")
+		cmd.SetErr(err)
+		return err
+	}
 	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
