@@ -1455,12 +1455,15 @@ func TestCommandsInfoMalformedKeyPositionsFailClosed(t *testing.T) {
 	if err := cmd.readReply(proto.NewReader(strings.NewReader(raw))); err != nil {
 		t.Fatal(err)
 	}
-	bad, exists := cmd.Val()["bad"]
+	bad, exists := cmd.val["bad"]
 	if !exists || bad != nil {
 		t.Errorf("out-of-range key positions must tombstone the record, got %+v (exists=%v)", bad, exists)
 	}
 	if good := cmd.Val()["good"]; good == nil || good.FirstKeyPos != 1 || good.StepCount != 1 {
 		t.Errorf("in-range key positions must parse, got %+v", good)
+	}
+	if _, exposed := cmd.Val()["bad"]; exposed {
+		t.Error("tombstones must not be exposed through the public accessor")
 	}
 
 	badArity := "*2\r\n" +
@@ -1470,7 +1473,7 @@ func TestCommandsInfoMalformedKeyPositionsFailClosed(t *testing.T) {
 	if err := cmd.readReply(proto.NewReader(strings.NewReader(badArity))); err != nil {
 		t.Fatalf("out-of-range command arity aborted the reply: %v", err)
 	}
-	if bad, exists := cmd.Val()["bad"]; !exists || bad != nil {
+	if bad, exists := cmd.val["bad"]; !exists || bad != nil {
 		t.Fatalf("out-of-range command arity must tombstone the record, got %+v (exists=%v)", bad, exists)
 	}
 	if cmd.Val()["good"] == nil {
