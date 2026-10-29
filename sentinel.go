@@ -783,7 +783,7 @@ func masterReplicaDialer(
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return tls.DialWithDialer(netDialer, network, addr, failover.opt.TLSConfig)
+		return (&tls.Dialer{NetDialer: netDialer, Config: failover.opt.TLSConfig}).DialContext(ctx, network, addr)
 	}
 }
 
@@ -870,7 +870,9 @@ func (c *SentinelClient) pubSub() *PubSub {
 				return nil, err
 			}
 			// Track connection in PubSubPool
-			c.pubSubPool.TrackConn(cn)
+			if err := c.pubSubPool.TrackConn(cn); err != nil {
+				return nil, err
+			}
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
@@ -1246,6 +1248,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 		sentinelReachable = true
 		addrs := parseReplicaAddrs(replicas, useDisconnected)
 		if len(addrs) == 0 {
+			_ = sentinel.Close()
 			continue
 		}
 		// Push working sentinel to the top.

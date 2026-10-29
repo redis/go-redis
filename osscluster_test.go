@@ -2085,6 +2085,11 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 	var saved map[string]string
 
 	BeforeEach(func() {
+		client, saved = nil, nil
+		// Redis 8.0 and 8.2 cluster nodes segfault in a module timer
+		// shortly after this setting is applied, which takes down the
+		// shared test cluster for every later spec.
+		SkipBeforeRedisVersion("8.4", "cluster nodes crash with unknown-endpoint")
 		saved = map[string]string{}
 		for port, node := range cluster.clients {
 			old, err := node.ConfigGet(ctx, param).Result()
@@ -2096,12 +2101,17 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 	})
 
 	AfterEach(func() {
-		_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
-			return master.FlushDB(ctx).Err()
-		})
+		// Restore the setting even if BeforeEach failed before the client
+		// was built; AfterEach also runs after the version skip.
 		for port, value := range saved {
 			Expect(cluster.clients[port].ConfigSet(ctx, param, value).Err()).NotTo(HaveOccurred())
 		}
+		if client == nil {
+			return
+		}
+		_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			return master.FlushDB(ctx).Err()
+		})
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
@@ -3399,6 +3409,23 @@ var _ = Describe("Command Tips tests", func() {
 					val := client.Get(ctx, key)
 					Expect(val.Err()).To(Equal(redis.Nil))
 				}
+			})
+
+			It("should count keys in the same slot once with multi-slot routing", func() {
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
+
+				keys := []string{"{sameslot}a", "{sameslot}b", "{sameslot}c", "sameslot_1111", "sameslot_2222"}
+				for _, key := range keys {
+					Expect(client.Set(ctx, key, "value", 0).Err()).NotTo(HaveOccurred())
+				}
+
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b", "{sameslot}missing").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, keys...).Result()).To(Equal(int64(5)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(3)))
+				Expect(client.Touch(ctx, "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Del(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Unlink(ctx, "{sameslot}c", "sameslot_2222").Result()).To(Equal(int64(2)))
 			})
 
 			It("should test DBSIZE command with agg_sum aggregation across all shards", func() {

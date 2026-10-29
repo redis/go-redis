@@ -560,6 +560,75 @@ func TestCommandsInfoTopLevelRedisErrorIsTypedAndConsumed(t *testing.T) {
 	}
 }
 
+func TestCommandsInfoNullAttributeKeepsTheStreamAligned(t *testing.T) {
+	// A null attribute (|-1) is not valid RESP3, but a proxy can emit one.
+	// ReadAttributeLen consumes the header, so the parser must keep unwrapping:
+	// reporting proto.Nil instead makes the scalar readers treat the wrapped
+	// value as already consumed and leave it on the wire for the next command.
+	decorate := func(value string) string { return "|-1\r\n" + value }
+	cleanEntry := commandInfoTestArray(
+		commandInfoTestBulk("first"), commandInfoTestInt(-2),
+		commandInfoTestArray(commandInfoTestBulk("readonly")),
+		commandInfoTestInt(1), commandInfoTestInt(1), commandInfoTestInt(1),
+	)
+	plain := commandInfoTestArray(cleanEntry, commandInfoTestEntry6("second"))
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "before the reply",
+			raw:  decorate(plain),
+		},
+		{
+			name: "before a record",
+			raw: commandInfoTestArray(
+				decorate(cleanEntry), commandInfoTestEntry6("second"),
+			),
+		},
+		{
+			name: "before a field",
+			raw: commandInfoTestArray(
+				commandInfoTestArray(
+					commandInfoTestBulk("first"),
+					decorate(commandInfoTestInt(-2)),
+					commandInfoTestArray(commandInfoTestBulk("readonly")),
+					commandInfoTestInt(1), commandInfoTestInt(1), commandInfoTestInt(1),
+				),
+				commandInfoTestEntry6("second"),
+			),
+		},
+	}
+
+	want := commandInfoTestReadReply(t, plain)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rd := proto.NewReader(strings.NewReader(tc.raw +
+				commandInfoTestArray(commandInfoTestEntry6("after"))))
+			cmd := NewCommandsInfoCmd(context.Background(), "command")
+			if err := cmd.readReply(rd); err != nil {
+				t.Fatalf("readReply: %v", err)
+			}
+			if len(cmd.val) != 2 || !reflect.DeepEqual(cmd.val["first"], want.val["first"]) ||
+				!reflect.DeepEqual(cmd.val["second"], want.val["second"]) {
+				t.Fatalf("null attribute changed the reply: got=%+v want=%+v", cmd.val, want.val)
+			}
+
+			// The decorated reply must be fully consumed: the next command on the
+			// same connection reads its own reply, not the leftover frames.
+			next := NewCommandsInfoCmd(context.Background(), "command")
+			if err := next.readReply(rd); err != nil {
+				t.Fatalf("next aligned COMMAND reply failed: %v", err)
+			}
+			if next.val["after"] == nil {
+				t.Fatalf("next reply read out of step: got=%+v", next.val)
+			}
+		})
+	}
+}
+
 func TestCommandsInfoNumericKeySpecFields(t *testing.T) {
 	indexRange := commandInfoTestValidRangeKeySpec()
 	keywordKeynum := commandInfoTestMap(
@@ -616,5 +685,62 @@ func TestCommandsInfoClonePreservesMalformedTombstone(t *testing.T) {
 	delete(clone.legacyRecords, "good")
 	if _, ok := cmd.legacyRecords["good"]; !ok {
 		t.Fatal("clone shares its legacy provenance map with the original")
+	}
+}
+
+func TestCommandsInfoPublicReplyDropsTombstones(t *testing.T) {
+	// firstkey 257 does not fit int8, so the record is malformed and tombstoned.
+	raw := commandInfoTestArray(
+		commandInfoTestArray(
+			commandInfoTestBulk("get"),
+			commandInfoTestInt(2),
+			commandInfoTestArray(commandInfoTestBulk("readonly")),
+			commandInfoTestInt(257),
+			commandInfoTestInt(1),
+			commandInfoTestInt(1),
+		),
+		commandInfoTestEntry6("after"),
+	)
+	cmd := commandInfoTestReadReply(t, raw)
+
+	if _, exists := cmd.val["get"]; !exists {
+		t.Fatal("a malformed record must stay in the parsed reply as a tombstone")
+	}
+
+	val, err := cmd.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		val  map[string]*CommandInfo
+	}{{"Val", cmd.Val()}, {"Result", val}} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, info := range tc.val {
+				// Callers range over the reply and read fields off each value.
+				if info == nil || info.Name == "" {
+					t.Fatalf("public accessor exposed a tombstone: %+v", tc.val)
+				}
+			}
+			if tc.val["get"] != nil || tc.val["after"] == nil {
+				t.Fatalf("public accessor changed the valid records: got %+v", tc.val)
+			}
+		})
+	}
+
+	// The metadata builder reads the tombstones back: a name the server reported
+	// malformed must not fall through to the built-in snapshot.
+	view := buildCommandMetadataViewForServer(cmd.valWithTombstones(), nil, "redis", "8.10.0")
+	if _, ok := view.tombstones["get"]; !ok {
+		t.Fatal("valWithTombstones hid a tombstone from the metadata builder")
+	}
+	if rec := view.records["get"]; rec != nil {
+		t.Fatalf("a malformed live record fell back to the snapshot: %+v", rec)
+	}
+
+	// With only the public reply the snapshot would silently win.
+	filtered := buildCommandMetadataViewForServer(cmd.Val(), nil, "redis", "8.10.0")
+	if rec := filtered.records["get"]; rec == nil || rec.FirstKeyPos != 1 {
+		t.Fatalf("expected the snapshot record when the tombstone is hidden, got %+v", rec)
 	}
 }

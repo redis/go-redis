@@ -1455,12 +1455,15 @@ func TestCommandsInfoMalformedKeyPositionsFailClosed(t *testing.T) {
 	if err := cmd.readReply(proto.NewReader(strings.NewReader(raw))); err != nil {
 		t.Fatal(err)
 	}
-	bad, exists := cmd.Val()["bad"]
+	bad, exists := cmd.val["bad"]
 	if !exists || bad != nil {
 		t.Errorf("out-of-range key positions must tombstone the record, got %+v (exists=%v)", bad, exists)
 	}
 	if good := cmd.Val()["good"]; good == nil || good.FirstKeyPos != 1 || good.StepCount != 1 {
 		t.Errorf("in-range key positions must parse, got %+v", good)
+	}
+	if _, exposed := cmd.Val()["bad"]; exposed {
+		t.Error("tombstones must not be exposed through the public accessor")
 	}
 
 	badArity := "*2\r\n" +
@@ -1470,7 +1473,7 @@ func TestCommandsInfoMalformedKeyPositionsFailClosed(t *testing.T) {
 	if err := cmd.readReply(proto.NewReader(strings.NewReader(badArity))); err != nil {
 		t.Fatalf("out-of-range command arity aborted the reply: %v", err)
 	}
-	if bad, exists := cmd.Val()["bad"]; !exists || bad != nil {
+	if bad, exists := cmd.val["bad"]; !exists || bad != nil {
 		t.Fatalf("out-of-range command arity must tombstone the record, got %+v (exists=%v)", bad, exists)
 	}
 	if cmd.Val()["good"] == nil {
@@ -1610,17 +1613,29 @@ func TestCommandMetadataRefreshSkipsRetiredEntries(t *testing.T) {
 	}
 }
 
+// commandMetadataE2EAddr resolves the server the way the other plain go tests
+// in this package do (internalTestRedisAddr, gateTestAddr): REDIS_ADDR, then
+// REDIS_PORT, then the redis-stack default ":6379" that main_test.go's
+// BeforeSuite settles on. The package-level redisAddr starts at ":6380" and
+// only BeforeSuite corrects it, which plain TestXxx funcs may run without.
+// explicit reports whether an env var named the server; when it did and nothing
+// answers, the test must fail rather than skip a requested configuration.
+func commandMetadataE2EAddr() (addr string, explicit bool) {
+	if v := os.Getenv("REDIS_ADDR"); v != "" {
+		return v, true
+	}
+	if p := os.Getenv("REDIS_PORT"); p != "" {
+		return ":" + p, true
+	}
+	return ":6379", false
+}
+
 // TestCommandMetadataPreferLiveE2E runs the dynamic path against Redis.
 func TestCommandMetadataPreferLiveE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires a running Redis server")
 	}
-	addr := "localhost:6379"
-	if v := os.Getenv("REDIS_ADDR"); v != "" {
-		addr = v
-	} else if p := os.Getenv("REDIS_PORT"); p != "" {
-		addr = "localhost:" + p
-	}
+	addr, explicit := commandMetadataE2EAddr()
 
 	cache := NewLocalCache(CacheConfig{MaxEntries: 32})
 	client := NewClient(&Options{
@@ -1634,6 +1649,9 @@ func TestCommandMetadataPreferLiveE2E(t *testing.T) {
 	defer client.Close()
 	ctx := context.Background()
 	if err := client.Ping(ctx).Err(); err != nil {
+		if explicit {
+			t.Fatalf("no server at %s: %v", addr, err)
+		}
 		t.Skipf("no server at %s: %v", addr, err)
 	}
 	identity, err := client.baseClient.fetchMetadataIdentity(ctx, nil)

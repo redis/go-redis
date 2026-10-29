@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +36,8 @@ import (
 // reload; ASK is followed through cc.process's own redirect loop (which issues
 // ASKING). So a slot migration is followed rather than surfaced as an error.
 type clusterFDRouter struct {
+	// slots maps slot -> FD child for the current cluster state (fdSlotTable).
+	slots    atomic.Pointer[fdSlotTable]
 	parent   *AutoPipeliner
 	cc       *ClusterClient
 	blocking bool
@@ -117,6 +120,61 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	}
 }
 
+// fdSlotTable caches slot -> FD child for one cluster state. A hit is one atomic
+// load and an index, instead of state.Get + slotMasterNode + the children map under
+// the router's RWMutex. A new state (reload, MOVED) makes the table stale; the next
+// command builds a fresh one. A closed child is never returned (IsClosed), and the
+// ErrClosed retry in submit drops the slot's entry before it routes again.
+// Not used with ReadOnly: replica reads pick a node per command.
+type fdSlotTable struct {
+	state *clusterState
+	child [16384]atomic.Pointer[AutoPipeliner]
+}
+
+func (r *clusterFDRouter) slotTableLookup(ctx context.Context, cmd Cmder) (*AutoPipeliner, int, *clusterState) {
+	st, err := r.cc.state.Get(ctx)
+	if err != nil || st == nil {
+		return nil, -1, nil
+	}
+	slot, ok := cmd.cachedSlot()
+	if !ok {
+		d := r.cc.autoPipelineRoutingDecision(ctx, cmd)
+		slot = r.cc.cmdSlotWithDecision(cmd, d, -1)
+		if slot < 0 || slot >= 16384 {
+			return nil, -1, nil
+		}
+	}
+	if t := r.slots.Load(); t != nil && t.state == st {
+		if ch := t.child[slot].Load(); ch != nil && !ch.IsClosed() {
+			return ch, slot, st
+		}
+	}
+	return nil, slot, st
+}
+
+func (r *clusterFDRouter) slotTableStore(st *clusterState, slot int, ch *AutoPipeliner) {
+	t := r.slots.Load()
+	if t == nil || t.state != st {
+		nt := &fdSlotTable{state: st}
+		if !r.slots.CompareAndSwap(t, nt) {
+			if t = r.slots.Load(); t == nil || t.state != st {
+				return
+			}
+		} else {
+			t = nt
+		}
+	}
+	t.child[slot].Store(ch)
+}
+
+func (r *clusterFDRouter) slotTableDrop(cmd Cmder, ch *AutoPipeliner) {
+	if slot, ok := cmd.cachedSlot(); ok {
+		if t := r.slots.Load(); t != nil {
+			t.child[slot].CompareAndSwap(ch, nil)
+		}
+	}
+}
+
 // submit routes cmd to the FD child that owns its slot. It is called from
 // AutoPipeliner.submit AFTER routing and diversion have been decided, so cmd
 // is a batchable single-node command. On any routing miss (keyless command,
@@ -170,6 +228,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// case rejectClosed below is the same outcome this rejection would have
 		// been anyway). One retry only, no loop: SetErr on the second attempt
 		// (accept, or fail again) simply overwrites this one.
+		r.slotTableDrop(cmd, child)
 		child, closed = r.childFor(ctx, cmd)
 		if closed {
 			return r.rejectClosed(cmd)
@@ -225,6 +284,32 @@ func (r *clusterFDRouter) divertToProcess(ctx context.Context, cmd Cmder) AutoFu
 // slot, topology not loaded, or a non-FD node), and (nil, true) when the router
 // is closing (submit must then reject with ErrClosed rather than divert).
 func (r *clusterFDRouter) childFor(ctx context.Context, cmd Cmder) (*AutoPipeliner, bool) {
+	if !r.cc.opt.ReadOnly {
+		if ch, slot, st := r.slotTableLookup(ctx, cmd); ch != nil {
+			return ch, false
+		} else if slot >= 0 && st != nil {
+			// Resolve the node for this slot in this state. Recomputing the slot
+			// can give another one: legacy routing hashes an empty key to a random
+			// slot per call, which would store one master's child under another
+			// master's slot.
+			node, err := st.slotMasterNode(slot)
+			if err = r.cc.noteTopologySelectionError(err); err != nil || node == nil {
+				return nil, false
+			}
+			ch, closed := r.getOrCreateChild(node.Client)
+			// Only a slot with an owner in this state: for an uncovered slot
+			// slotMasterNode picks a master per call, skipping failing or loading
+			// nodes, which a fixed entry would not.
+			if ch != nil && !closed && len(st.slotNodes(slot)) > 0 {
+				r.slotTableStore(st, slot, ch)
+			}
+			return ch, closed
+		}
+	}
+	return r.childForSlow(ctx, cmd)
+}
+
+func (r *clusterFDRouter) childForSlow(ctx context.Context, cmd Cmder) (*AutoPipeliner, bool) {
 	// Reuse admission metadata through node selection and redirect retries.
 	decision := r.cc.autoPipelineRoutingDecision(ctx, cmd)
 	slot := r.cc.cmdSlotWithDecision(cmd, decision, -1)
