@@ -668,7 +668,8 @@ hook must never issue a command on the same autopipeliner and wait for it —
 the nested command needs the very dispatch slot the hook is holding, and the
 engine only recovers by failing that flush after its 30s permit backstops.
 `Options.Limiter` is consulted once per batch dispatch (as with a manual
-pipeline), not once per command. An autopipeliner created on a
+pipeline), not once per command, plus once for the handshake of a fresh
+connection, as with a pooled command that dials. An autopipeliner created on a
 `WithTimeout`/`WithReadTimeout` clone is not stopped by the parent's `Close` —
 close it explicitly.
 
