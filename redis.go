@@ -636,29 +636,53 @@ func (c *baseClient) limiter() Limiter {
 	return c.opt.Limiter
 }
 
+var errInitPanic = errors.New("redis: connection init panic")
+
+// admitted runs fn as one admitted operation against limiter: one Allow and
+// one ReportResult, settled from a defer when fn panics so the admission is
+// never left unpaired. denied runs when Allow rejects, before the error
+// returns. A nil limiter runs fn as is.
+func admitted(limiter Limiter, denied func(error), fn func() error) error {
+	if limiter == nil {
+		return fn()
+	}
+	if err := limiter.Allow(); err != nil {
+		if denied != nil {
+			denied(err)
+		}
+		return err
+	}
+	settled := false
+	defer func() {
+		if !settled {
+			limiter.ReportResult(errInitPanic)
+		}
+	}()
+	err := fn()
+	settled = true
+	limiter.ReportResult(err)
+	return err
+}
+
 // newPubSubConn dials, initializes, and tracks a PubSub connection as one
 // admitted operation against Options.Limiter.
 func (c *baseClient) newPubSubConn(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-	limiter := c.limiter()
-	if limiter != nil {
-		if err := limiter.Allow(); err != nil {
-			return nil, err
+	var cn *pool.Conn
+	err := admitted(c.limiter(), nil, func() error {
+		var err error
+		cn, err = c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
+		if err == nil {
+			err = c.initConn(ctx, cn)
 		}
-	}
-	cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
-	if err == nil {
-		err = c.initConn(ctx, cn)
-	}
-	if err == nil {
-		err = c.pubSubPool.TrackConn(cn)
-	}
-	if err != nil && cn != nil {
-		_ = cn.Close()
-		cn = nil
-	}
-	if limiter != nil {
-		limiter.ReportResult(err)
-	}
+		if err == nil {
+			err = c.pubSubPool.TrackConn(cn)
+		}
+		if err != nil && cn != nil {
+			_ = cn.Close()
+			cn = nil
+		}
+		return err
+	})
 	return cn, err
 }
 
@@ -705,35 +729,16 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-var errInitPanic = errors.New("redis: connection init panic")
-
 // initPooledConnLimited runs initPooledConn as one admitted operation against
 // Options.Limiter, for a caller that leases outside getConnLimited. A denial
-// removes the leased conn, the same disposition as a failed init. A panic in
-// the init settles the admission before it unwinds to the caller's recover.
+// removes the leased conn, the same disposition as a failed init.
 func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) error {
 	if cn.IsInited() {
 		return nil
 	}
-	limiter := c.limiter()
-	if limiter != nil {
-		if err := limiter.Allow(); err != nil {
-			p.Remove(ctx, cn, err)
-			return err
-		}
-	}
-	settled := false
-	defer func() {
-		if limiter != nil && !settled {
-			limiter.ReportResult(errInitPanic)
-		}
-	}()
-	err := c.initPooledConn(ctx, p, cn)
-	settled = true
-	if limiter != nil {
-		limiter.ReportResult(err)
-	}
-	return err
+	return admitted(c.limiter(), func(err error) { p.Remove(ctx, cn, err) }, func() error {
+		return c.initPooledConn(ctx, p, cn)
+	})
 }
 
 // initPooledConn brings a conn freshly obtained from p to a usable state: it
@@ -2062,18 +2067,10 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 // so the handshake it runs is admitted once and reported once against Options.Limiter.
 func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
 	return func(ctx context.Context, cn *pool.Conn) error {
-		limiter := c.limiter()
-		if limiter != nil {
-			if err := limiter.Allow(); err != nil {
-				cn.GetStateMachine().Transition(pool.StateClosed)
-				return err
-			}
-		}
-		err := c.initConn(ctx, cn)
-		if limiter != nil {
-			limiter.ReportResult(err)
-		}
-		return err
+		closeConn := func(error) { cn.GetStateMachine().Transition(pool.StateClosed) }
+		return admitted(c.limiter(), closeConn, func() error {
+			return c.initConn(ctx, cn)
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -327,5 +328,100 @@ func TestFullDuplexInitPanicSettlesLimiter(t *testing.T) {
 	}
 	if got := br.errReports.Load(); got != 1 {
 		t.Fatalf("the init panic was reported as %d failures, want 1", got)
+	}
+}
+
+func recoverPanic(fn func()) (recovered any) {
+	defer func() { recovered = recover() }()
+	fn()
+	return nil
+}
+
+// TestReconnectInitPanicSettlesLimiter pins that a panic in the init of a
+// reconnect still pairs its admission with one report.
+func TestReconnectInitPanicSettlesLimiter(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	var panicOnConnect atomic.Bool
+	client := NewClient(&Options{
+		Addr:         internalTestRedisAddr(),
+		Protocol:     3,
+		PoolSize:     1,
+		MinIdleConns: 0,
+		Limiter:      br,
+		OnConnect: func(context.Context, *Conn) error {
+			if panicOnConnect.Load() {
+				panic("test: OnConnect panic on reconnect")
+			}
+			return nil
+		},
+	})
+	defer client.Close()
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	cn, err := client.connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("get conn: %v", err)
+	}
+	client.connPool.Put(ctx, cn)
+	netConn, err := net.Dial("tcp", internalTestRedisAddr())
+	if err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	defer netConn.Close()
+	allows, reports := br.allows.Load(), br.reports.Load()
+	panicOnConnect.Store(true)
+	if recovered := recoverPanic(func() { _ = cn.SetNetConnAndInitConn(ctx, netConn) }); recovered == nil {
+		t.Fatal("the OnConnect panic did not propagate")
+	}
+	if got := br.allows.Load() - allows; got != 1 {
+		t.Fatalf("reconnect: Limiter.Allow called %d times, want 1", got)
+	}
+	if got := br.reports.Load() - reports; got != 1 {
+		t.Fatalf("reconnect: Limiter.ReportResult called %d times, want 1 (the admission must settle on panic)", got)
+	}
+}
+
+// TestPubSubInitPanicSettlesLimiter pins that a panic in the init of a PubSub
+// connection still pairs its admission with one report.
+func TestPubSubInitPanicSettlesLimiter(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:         internalTestRedisAddr(),
+		Protocol:     3,
+		PoolSize:     1,
+		MinIdleConns: 0,
+		Limiter:      br,
+		OnConnect: func(context.Context, *Conn) error {
+			panic("test: OnConnect panic on a PubSub connection")
+		},
+	})
+	defer client.Close()
+
+	var pubsub *PubSub
+	recovered := recoverPanic(func() {
+		pubsub = client.Subscribe(ctx, "limiter-handshake")
+		_, _ = pubsub.Receive(ctx)
+	})
+	if pubsub != nil {
+		defer pubsub.Close()
+	}
+	if recovered == nil {
+		t.Fatal("the OnConnect panic did not propagate")
+	}
+	if got := br.allows.Load(); got != 1 {
+		t.Fatalf("PubSub connection: Limiter.Allow called %d times, want 1", got)
+	}
+	if got := br.reports.Load(); got != 1 {
+		t.Fatalf("PubSub connection: Limiter.ReportResult called %d times, want 1 (the admission must settle on panic)", got)
 	}
 }
