@@ -1965,6 +1965,7 @@ type ClusterClient struct {
 	autopipeliner       *AutoPipeliner // blocking face (ClusterClient.AutoPipeline)
 	asyncAutopipeliner  *AutoPipeliner // deferred face (ClusterClient.AsyncAutoPipeline)
 	autopipelinerClosed bool           // set by Close: refuse to resurrect a pipeliner on a closed client
+	onClose             *onCloseHooks
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1982,6 +1983,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		nodes:           newClusterNodes(opt),
 		himport:         newHImportRegistry(),
 		autopipelinerMu: &sync.Mutex{},
+		onClose:         &onCloseHooks{},
 	}
 
 	// Every node client shares the cluster-wide fieldset registry, replicas
@@ -2098,6 +2100,9 @@ func (c *ClusterClient) Close() error {
 	// Stop metadata before closing the pools it uses.
 	c.cmdMeta.stopAndJoin()
 	if err := c.nodes.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := c.onClose.run(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr
