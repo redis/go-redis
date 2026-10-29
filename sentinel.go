@@ -798,7 +798,7 @@ func masterReplicaDialer(
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
 		}
-		return tls.DialWithDialer(netDialer, network, addr, failover.opt.TLSConfig)
+		return (&tls.Dialer{NetDialer: netDialer, Config: failover.opt.TLSConfig}).DialContext(ctx, network, addr)
 	}
 }
 

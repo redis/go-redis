@@ -4069,14 +4069,18 @@ func TestCSCPolicyLiveOptOutPipelineTracking(t *testing.T) {
 		return 0
 	}
 	for _, cluster := range []bool{false, true} {
-		for _, transaction := range []bool{false, true} {
-			t.Run(fmt.Sprintf("cluster=%t/tx=%t", cluster, transaction), func(t *testing.T) {
+		for _, path := range []string{"pipeline", "transaction", "full-duplex"} {
+			t.Run(fmt.Sprintf("cluster=%t/%s", cluster, path), func(t *testing.T) {
+				poolSize := -1
+				if path == "full-duplex" {
+					poolSize = 1
+				}
 				var c UniversalClient
 				if cluster {
-					c = NewClusterClient(&ClusterOptions{Addrs: []string{owner.Options().Addr}, Protocol: 3, PipelinePoolSize: -1, ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16}, ClientSideCacheTrackingMode: TrackingModeOptOut, MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}})
+					c = NewClusterClient(&ClusterOptions{Addrs: []string{owner.Options().Addr}, Protocol: 3, PipelinePoolSize: poolSize, ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16}, ClientSideCacheTrackingMode: TrackingModeOptOut, MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}})
 				} else {
 					opt := cscPolicyOptions(owner.Options().Addr, TrackingModeOptOut)
-					opt.PipelinePoolSize = -1
+					opt.PipelinePoolSize = poolSize
 					opt.ClientSideCacheConfig.DrainInterval = time.Millisecond
 					c = NewClient(opt)
 				}
@@ -4089,11 +4093,38 @@ func TestCSCPolicyLiveOptOutPipelineTracking(t *testing.T) {
 				}
 				before := trackedKeys()
 				pipe := c.Pipeline()
-				if transaction {
+				if path == "transaction" {
 					pipe = c.TxPipeline()
 				}
+				if path == "full-duplex" {
+					node, ok := c.(*Client)
+					if !ok {
+						node, err = c.(*ClusterClient).MasterForKey(ctx, key)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					pp := node.getPipelinePool()
+					held, err := pp.Get(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer pp.Put(ctx, held)
+					ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ap.Close()
+					if ap.fd == nil && ap.clusterFD == nil {
+						t.Fatal("test did not select full duplex")
+					}
+					if err := ap.Get(WithCache(ctx), "{optout-pipeline}:fd-missing").Err(); err != Nil {
+						t.Fatal("expected missing FD read", err)
+					}
+					pipe = ap.Pipeline()
+				}
 				get := pipe.Get(WithCache(ctx), key)
-				missing := pipe.Get(ctx, fmt.Sprintf("{optout-pipeline}:missing-%t-%t", cluster, transaction))
+				missing := pipe.Get(ctx, fmt.Sprintf("{optout-pipeline}:missing-%t-%s", cluster, path))
 				if _, err := pipe.Exec(ctx); err != Nil {
 					t.Fatal("expected missing read", err)
 				}

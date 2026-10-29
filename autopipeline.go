@@ -2071,8 +2071,10 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	if ap.captureCacheIntent {
 		cscBegin(ctx, cmd)
 	}
-	// Sequential command reuse must capture a fresh admission decision.
+	// Sequential command reuse must capture a fresh admission decision and slot:
+	// the FD slot table trusts a cached slot as this admission's.
 	cmd.setClusterRoutingDecision(nil)
+	cmd.resetCachedSlot()
 	// finish marks the command ready on the deferred face so its result
 	// accessors (Val/Result/Err) self-gate through await() — whether the
 	// caller goes through the typed surface or raw Submit. Reading a

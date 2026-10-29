@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"reflect"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
@@ -22,6 +24,236 @@ func cscTestContext(ctx context.Context, cache bool) context.Context {
 		return WithCache(ctx)
 	}
 	return WithoutCache(ctx)
+}
+
+type cscFDDeadlineConn struct {
+	mockNetConn
+	reads, deadlines int
+}
+
+func (c *cscFDDeadlineConn) SetReadDeadline(time.Time) error {
+	c.deadlines++
+	return nil
+}
+
+func (c *cscFDDeadlineConn) Read(p []byte) (int, error) {
+	c.reads++
+	switch c.reads {
+	case 1:
+		// The next ACK is complete, but its data frame needs another read.
+		return copy(p, "+OK\r\n$1\r\nv\r\n+OK\r\n$"), nil
+	case 2:
+		if c.deadlines < 2 {
+			return 0, fmt.Errorf("data read reused the preceding request's deadline")
+		}
+		return copy(p, "1\r\nv\r\n"), nil
+	default:
+		return 0, io.EOF
+	}
+}
+
+func TestCSCPolicyFullDuplexPairDeadline(t *testing.T) {
+	ctx := context.Background()
+	c := policyClient(t, cscPolicyOptions("unused", TrackingModeOptOut))
+	cn := pool.NewConn(&cscFDDeadlineConn{})
+	c.cscHook().bumpInitGen(cn.GetID())
+	fd := &fdEngine{
+		ap: &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: ctx}, client: c,
+		q: newFDQueue(2), maxBatch: 2, window: 2, idle: time.Millisecond, epoch: time.Now(),
+	}
+	carry := []fdReq{
+		{cmd: NewStringCmd(ctx, "get", "a"), batch: newAPBatch(), attempts: 1},
+		{cmd: NewStringCmd(ctx, "get", "b"), batch: newAPBatch(), attempts: 1},
+	}
+	if tail, result, err := fd.session(ctx, cn, carry); err != nil || len(tail) != 0 || result != fdIdle {
+		t.Fatal("buffered ACK shortened the next data reply's timeout", len(tail), result, err)
+	}
+	for _, req := range carry {
+		if got, err := req.cmd.(*StringCmd).Result(); err != nil || got != "v" {
+			t.Fatal(got, err)
+		}
+	}
+}
+
+func TestCSCPolicyFullDuplexControlReplies(t *testing.T) {
+	for _, reply := range []string{"+OK\r\n", "-NOPERM caching\r\n", ">2\r\n+invalidate\r\n*1\r\n$5\r\nother\r\n+OK\r\n>2\r\n+invalidate\r\n*1\r\n$5\r\nother\r\n|1\r\n+ttl\r\n:1\r\n", ":1\r\n", "DROP"} {
+		t.Run(fmt.Sprintf("%q", reply), func(t *testing.T) {
+			logs := captureCSCPolicyLogs(t)
+			var fail atomic.Bool
+			fail.Store(true)
+			s := newCSCPolicyServer(t, func(a []string) string {
+				if len(a) > 1 && strings.EqualFold(a[0], "client") && strings.EqualFold(a[1], "caching") && fail.Load() {
+					return reply
+				}
+				if strings.EqualFold(a[0], "get") && a[1] == "bad" {
+					return "-WRONGTYPE test\r\n"
+				}
+				return ""
+			})
+			ctx := context.Background()
+			opt := cscPolicyOptions(s.addr, TrackingModeOptOut)
+			opt.PipelinePoolSize = 1
+			c := policyClient(t, opt)
+			pp := c.getPipelinePool()
+			held, err := pp.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pp.Put(ctx, held)
+			ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ap.Close()
+			p := ap.Pipeline()
+			bad, good := p.Get(ctx, "bad"), p.Get(ctx, "good")
+			if _, err := p.Exec(ctx); err == nil {
+				t.Fatal("lost read error")
+			}
+			if reply == ":1\r\n" || reply == "DROP" {
+				if good.Err() == nil {
+					t.Fatal("failed pair reported success")
+				}
+			} else {
+				if bad.Err().Error() != "WRONGTYPE test" || good.Err() != nil || good.Val() != "v" || s.count("get") != 2 {
+					t.Fatal("reply alignment or retry budget changed", bad.Err(), good, s.snapshot())
+				}
+				if strings.HasPrefix(reply, "-NOPERM") && !logs.contains("CLIENT CACHING rejected") {
+					t.Fatal("missing operational warning")
+				}
+			}
+			fail.Store(false)
+			if got, err := ap.Get(ctx, "after").Result(); err != nil || got != "v" {
+				t.Fatal("connection not reusable/replaced", got, err)
+			}
+		})
+	}
+}
+
+func TestCSCPolicyFullDuplexReplayClearsPrefix(t *testing.T) {
+	ctx := context.Background()
+	var first atomic.Bool
+	first.Store(true)
+	var release func()
+	s := newCSCPolicyServer(t, func(a []string) string {
+		if strings.EqualFold(a[0], "get") && first.Swap(false) {
+			// The first lease spills onto the tracked main pool. Free the
+			// dedicated pool before disconnecting so replay uses an untracked
+			// connection and must not wait for the previous attempt's ACK.
+			release()
+			return "DROP"
+		}
+		return ""
+	})
+	opt := cscPolicyOptions(s.addr, TrackingModeOptOut)
+	opt.PipelinePoolSize, opt.MaxRetries = 1, 1
+	c := policyClient(t, opt)
+	pp := c.getPipelinePool()
+	held, err := pp.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release = func() { once.Do(func() { pp.Put(ctx, held) }) }
+	defer release()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	if got, err := ap.Get(ctx, "key").Result(); err != nil || got != "v" {
+		t.Fatal(got, err)
+	}
+	if s.prefixes() != 1 || s.count("get") != 2 {
+		t.Fatal("replay did not change from tracked to untracked connection", s.snapshot())
+	}
+	if err := ap.Ping(ctx).Err(); err != nil {
+		t.Fatal("replay left an unread reply", err)
+	}
+}
+
+func TestCSCPolicyFullDuplexOptOut(t *testing.T) {
+	for _, cluster := range []bool{false, true} {
+		for _, spill := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cluster=%t/spill=%t", cluster, spill), func(t *testing.T) {
+				var fresh atomic.Bool
+				s := newCSCPolicyServer(t, func(a []string) string {
+					if strings.EqualFold(a[0], "get") && fresh.Load() {
+						return "$3\r\nnew\r\n"
+					}
+					return ""
+				})
+				ctx := context.Background()
+				var c UniversalClient
+				var node *Client
+				if cluster {
+					opt := clusterCSCTestOptions(func() []ClusterSlot {
+						return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: s.addr}}}}
+					})
+					opt.ClientSideCacheTrackingMode, opt.PipelinePoolSize = TrackingModeOptOut, 1
+					cc := NewClusterClient(opt)
+					t.Cleanup(func() { _ = cc.Close() })
+					var err error
+					node, err = cc.MasterForKey(ctx, "{fd}:cached")
+					if err != nil {
+						t.Fatal(err)
+					}
+					c = cc
+				} else {
+					opt := cscPolicyOptions(s.addr, TrackingModeOptOut)
+					opt.PipelinePoolSize = 1
+					node = policyClient(t, opt)
+					c = node
+				}
+				if got, err := c.Get(ctx, "{fd}:cached").Result(); err != nil || got != "v" {
+					t.Fatal(got, err)
+				}
+				fresh.Store(true)
+				if spill {
+					pp := node.getPipelinePool()
+					held, err := pp.Get(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer pp.Put(ctx, held)
+				}
+				ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ap.Close()
+				if ap.fd == nil && ap.clusterFD == nil {
+					t.Fatal("test did not select full duplex")
+				}
+				for _, callCtx := range []context.Context{ctx, WithCache(ctx), WithoutCache(ctx)} {
+					if got, err := ap.Get(callCtx, "{fd}:cached").Result(); err != nil || got != "new" {
+						t.Fatal("FD read must bypass existing entry", got, err)
+					}
+				}
+				p := ap.Pipeline()
+				first, second := p.Get(ctx, "{fd}:cached"), p.Get(ctx, "{fd}:other")
+				ping := p.Ping(ctx)
+				if _, err := p.Exec(ctx); err != nil || first.Val() != "new" || second.Val() != "new" || ping.Val() != "OK" {
+					t.Fatal("FD batch reply alignment", err, first, second, ping)
+				}
+				want := 0
+				if spill {
+					want = 5
+				} else if cluster {
+					// Cluster's explicit Pipeline uses the normal pipeline path;
+					// its dedicated connection is already held by the FD session.
+					want = 2
+				}
+				if s.prefixes() != want {
+					t.Fatalf("NO count = %d, want %d: %v", s.prefixes(), want, s.snapshot())
+				}
+				if got, err := c.Get(ctx, "{fd}:cached").Result(); err != nil || got != "v" || s.count("get") != 6 {
+					t.Fatal("FD read changed existing entry", got, err, s.snapshot())
+				}
+				s.assertPairs(t)
+			})
+		}
+	}
 }
 
 type cscPolicyLogs struct {
