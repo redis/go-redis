@@ -1026,6 +1026,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// successful-attachment signal both to issue CLIENT TRACKING during init
 	// and to guard the user-visible OnConnect callback below.
 	conn.baseClient.cscActive = c.cscActive
+	// Share the policy and tracking generations so uncached OnConnect reads
+	// can suppress tracking on an OPTOUT connection.
+	conn.baseClient.cscPolicy = c.cscPolicy
+	conn.baseClient.cscPoolHook = c.cscPoolHook
 	// This internal conn's init pipeline issues CLIENT TRACKING ON itself;
 	// exempt it from the guard that blocks user-issued CLIENT TRACKING. Setting
 	// the field after newConn is safe: initHooks bound the pipeline hook as a

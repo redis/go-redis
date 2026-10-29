@@ -3796,8 +3796,21 @@ func TestCSCPolicyAutoPipelineQueueFull(t *testing.T) {
 // A command accepted by the FD batching path stays uncached during recovery.
 // Marked blocking calls are diverted before entering this path.
 func TestCSCPolicyFullDuplexRedirectRemainsUncached(t *testing.T) {
-	for _, marked := range []bool{false, true} {
-		t.Run(fmt.Sprint(marked), func(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		mode                   TrackingMode
+		marked, replaceContext bool
+		redirect               string
+	}{
+		{name: "unmarked", mode: TrackingModeOptOut, redirect: "MOVED"},
+		{name: "marked", mode: TrackingModeOptOut, marked: true, redirect: "MOVED"},
+		{name: "replaced-context", mode: TrackingModeOptOut, replaceContext: true, redirect: "MOVED"},
+		{name: "replaced-context-marked", mode: TrackingModeOptOut, marked: true, replaceContext: true, redirect: "MOVED"},
+		{name: "replaced-context-plain", mode: TrackingModePlain, replaceContext: true, redirect: "MOVED"},
+		{name: "replaced-context-optin", mode: TrackingModeOptIn, replaceContext: true, redirect: "MOVED"},
+		{name: "replaced-context-ask", mode: TrackingModeOptOut, replaceContext: true, redirect: "ASK"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var fresh atomic.Bool
 			target := newCSCPolicyServer(t, func(a []string) string {
 				if strings.EqualFold(a[0], "get") && fresh.Load() {
@@ -3807,14 +3820,20 @@ func TestCSCPolicyFullDuplexRedirectRemainsUncached(t *testing.T) {
 			})
 			source := newCSCPolicyServer(t, func(a []string) string {
 				if strings.EqualFold(a[0], "get") {
-					return "-MOVED 0 " + target.addr + "\r\n"
+					return "-" + tc.redirect + " 0 " + target.addr + "\r\n"
 				}
 				return ""
 			})
 			opt := clusterCSCTestOptions(func() []ClusterSlot {
 				return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: source.addr}}}}
 			})
-			opt.ClientSideCacheTrackingMode = TrackingModeOptOut
+			opt.ClientSideCacheTrackingMode = tc.mode
+			if tc.replaceContext {
+				opt.DisableRoutingPolicies = false
+			}
+			if tc.mode == TrackingModeOptIn {
+				opt.ClientSideCacheable = func(string, []string) bool { return true }
+			}
 			c := NewClusterClient(opt)
 			defer c.Close()
 			ctx := context.Background()
@@ -3824,6 +3843,9 @@ func TestCSCPolicyFullDuplexRedirectRemainsUncached(t *testing.T) {
 			}
 			if err := node.Client.Get(ctx, "key").Err(); err != nil {
 				t.Fatal(err)
+			}
+			if tc.replaceContext {
+				node.Client.AddHook(&cscPolicyContextHook{})
 			}
 			fresh.Store(true)
 			ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
@@ -3835,17 +3857,32 @@ func TestCSCPolicyFullDuplexRedirectRemainsUncached(t *testing.T) {
 				t.Fatal("test did not select full duplex")
 			}
 			callCtx := ctx
-			if marked {
+			if tc.marked {
 				callCtx = WithCache(ctx)
 			}
-			if got, err := ap.Get(callCtx, "key").Result(); err != nil || got != "new" {
+			cmd := ap.Get(callCtx, "key")
+			if got, err := cmd.Result(); err != nil || got != "new" {
 				t.Fatal(got, err)
+			}
+			if *cmd.cacheState() != (cscCommandState{}) || cmd.cacheView() != nil {
+				t.Fatal("recovery completion leaked cache state")
 			}
 			if got, err := node.Client.Get(ctx, "key").Result(); err != nil || got != "v" {
 				t.Fatal("batch recovery changed cache", got, err)
 			}
-			if target.count("get") != 2 || target.prefixes() != 1 {
-				t.Fatal("expected uncached NO+GET recovery", target.snapshot())
+			wantPrefixes := 0
+			if tc.mode == TrackingModeOptIn || (tc.mode == TrackingModeOptOut && tc.redirect == "MOVED") {
+				wantPrefixes = 1
+			}
+			if target.count("get") != 2 || target.prefixes() != wantPrefixes {
+				t.Fatal("unexpected uncached recovery protocol", target.snapshot())
+			}
+			if tc.redirect == "ASK" && target.count("asking") != 1 {
+				t.Fatal("recovery did not issue ASKING", target.snapshot())
+			}
+			// Reusing the completed command must regain normal cache behavior.
+			if err := node.Client.Process(ctx, cmd); err != nil || cmd.Val() != "v" || target.count("get") != 2 {
+				t.Fatal("reused command retained recovery bypass", cmd.Val(), err, target.snapshot())
 			}
 		})
 	}

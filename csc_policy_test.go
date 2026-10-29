@@ -1153,6 +1153,63 @@ func TestCSCPolicyInitContextIsUnmarked(t *testing.T) {
 	}
 }
 
+func TestCSCPolicyOnConnectReads(t *testing.T) {
+	for _, mode := range []TrackingMode{TrackingModePlain, TrackingModeOptIn, TrackingModeOptOut} {
+		for _, dedicated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/pipeline=%t", mode, dedicated), func(t *testing.T) {
+				s := newCSCPolicyServer(t, nil)
+				opt := cscPolicyOptions(s.addr, mode)
+				var calls atomic.Int32
+				opt.OnConnect = func(ctx context.Context, cn *Conn) error {
+					calls.Add(1)
+					if value, err := cn.Get(ctx, "callback").Result(); err != nil || value != "v" {
+						return fmt.Errorf("callback GET: value=%q err=%v", value, err)
+					}
+					pipe := cn.Pipeline()
+					get := pipe.Get(ctx, "callback-pipeline")
+					if _, err := pipe.Exec(ctx); err != nil {
+						return err
+					}
+					if get.Val() != "v" {
+						return fmt.Errorf("callback pipeline GET: value=%q", get.Val())
+					}
+					return nil
+				}
+				c := policyClient(t, opt)
+				ctx := context.Background()
+				if dedicated {
+					pipe := c.Pipeline()
+					pipe.Ping(ctx)
+					if _, err := pipe.Exec(ctx); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := c.Ping(ctx).Err(); err != nil {
+					t.Fatal(err)
+				}
+				wantPrefixes := 0
+				if mode == TrackingModeOptOut && !dedicated {
+					wantPrefixes = 2
+				}
+				if s.prefixes() != wantPrefixes || s.count("get") != 2 || calls.Load() != 1 {
+					t.Fatalf("callback protocol: prefixes=%d want=%d, calls=%d, events=%v",
+						s.prefixes(), wantPrefixes, calls.Load(), s.snapshot())
+				}
+				if c.CSCStats().Entries != 0 {
+					t.Fatal("OnConnect populated the cache")
+				}
+				for _, e := range s.snapshot() {
+					if len(e.args) > 1 && strings.EqualFold(e.args[0], "client") && strings.EqualFold(e.args[1], "caching") {
+						if !strings.EqualFold(strings.Join(e.args, " "), "CLIENT CACHING NO") {
+							t.Fatal("unexpected callback prelude", e.args)
+						}
+					}
+				}
+				s.assertPairs(t)
+			})
+		}
+	}
+}
+
 func TestCSCPolicyOptOutPipeline(t *testing.T) {
 	for _, cluster := range []bool{false, true} {
 		for _, path := range []string{"main", "dedicated", "spill"} {

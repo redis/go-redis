@@ -95,8 +95,11 @@ aggregating correctly; only single-node commands route through a child.
   fail-fast paths.
 - **Hooks on recovery**: recovery attempts (the reroute and the MOVED/ASK
   reprocess) run nested inside the command's `hostHook`, so node pipeline/process
-  hooks see them as nested spans. Making internal recovery hookless is a separate
-  hook-semantics change.
+  hooks see them as nested spans. MOVED/ASK recovery pins CSC bypass on the command
+  for nested dispatch, so a replacement hook context cannot enable cache lookup
+  or publication. The command's cache state is cleared before completion, allowing
+  later reuse to select its own caching policy. Making internal recovery hookless
+  is a separate hook-semantics change.
 - **Fallback to `Process`**: routing (`childFor`/`getOrCreateChild`) resolves the
   owning node from live cluster state on every submit. A keyless command, an
   unresolved slot, a not-yet-loaded topology, or a node whose client turns out

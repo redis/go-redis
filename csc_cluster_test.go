@@ -3329,6 +3329,28 @@ func TestCSCPolicyLive(t *testing.T) {
 			if err != nil || len(got) != 2 || got[0] != "moved" || got[1] != "other" || predicates.Load() != 1 {
 				t.Fatalf("one-slot MOVED %v %v; predicate calls %d", got, err, predicates.Load())
 			}
+			t.Run("full-duplex-hook-recovery", func(t *testing.T) {
+				fdOpt := *opt
+				fdClient := NewClusterClient(&fdOpt)
+				defer fdClient.Close()
+				fdClient.OnNewNode(func(n *Client) { n.AddHook(&cscPolicyContextHook{}) })
+				ap, err := fdClient.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ap.Close()
+				if ap.clusterFD == nil {
+					t.Fatal("test did not select full duplex")
+				}
+				for i := 0; i < 2; i++ {
+					if got, err := ap.Get(ctx, key).Result(); err != nil || got != "moved" {
+						t.Fatal("full-duplex MOVED recovery failed", got, err)
+					}
+				}
+				if stats := fdClient.CSCStats(); stats.Entries != 0 || stats.Hits != 0 {
+					t.Fatal("full-duplex recovery used the cache", stats)
+				}
+			})
 		})
 	}
 	for _, mode := range []TrackingMode{TrackingModeOptIn, TrackingModeOptOut} {
@@ -4039,6 +4061,54 @@ func TestCSCPolicyPlainFragmentRedirectBypasses(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCSCPolicyLiveOptOutOnConnectTracking(t *testing.T) {
+	writer, _ := newClusterCSCLive(t)
+	ctx := context.Background()
+	key := "{optout-onconnect}:key"
+	if err := writer.Set(ctx, key, "value", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := writer.MasterForKey(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := cscPolicyOptions(owner.Options().Addr, TrackingModeOptOut)
+	opt.PoolSize = 1
+	opt.OnConnect = func(ctx context.Context, cn *Conn) error {
+		if err := cn.Get(ctx, key).Err(); err != nil {
+			return err
+		}
+		pipe := cn.Pipeline()
+		pipe.Get(ctx, key)
+		_, err := pipe.Exec(ctx)
+		return err
+	}
+	c := policyClient(t, opt)
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := owner.Info(ctx, "stats").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(info, "\r\ntracking_total_keys:0\r\n") {
+		t.Fatal("OnConnect reads populated the server tracking table", info)
+	}
+	if c.CSCStats().Entries != 0 {
+		t.Fatal("OnConnect reads populated the local cache")
+	}
+	// The parent must still be able to track, populate and hit the cache on
+	// this same connection after the callback's uncached reads.
+	for i := 0; i < 2; i++ {
+		if got, err := c.Get(ctx, key).Result(); err != nil || got != "value" {
+			t.Fatal(got, err)
+		}
+	}
+	if stats := c.CSCStats(); stats.Entries != 1 || stats.Hits != 1 {
+		t.Fatal("parent cache did not work after OnConnect", stats)
 	}
 }
 
