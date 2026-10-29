@@ -8172,6 +8172,45 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
+		It("should XRead with per-stream IDs", func() {
+			_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "stream2", ID: "1-0", Values: map[string]interface{}{"alpha": "a"}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "stream2", ID: "2-0", Values: map[string]interface{}{"beta": "b"}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// "stream" is read after 2-0 and "stream2" from the start.
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"2-0", "0"},
+				Block:   -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+				{
+					Stream: "stream2",
+					Messages: []redis.XMessage{
+						{ID: "1-0", Values: map[string]interface{}{"alpha": "a"}},
+						{ID: "2-0", Values: map[string]interface{}{"beta": "b"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead fail when IDs and Streams lengths differ", func() {
+			err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"0"},
+				Block:   -1,
+			}).Err()
+			Expect(err).To(MatchError("redis: XRead IDs length must match Streams length"))
+		})
+
 		It("should XRead with MAXCOUNT capping cumulative entries across streams", func() {
 			SkipBeforeRedisVersion("8.10", "XREAD MAXCOUNT requires Redis 8.10+")
 

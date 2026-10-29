@@ -3411,6 +3411,23 @@ var _ = Describe("Command Tips tests", func() {
 				}
 			})
 
+			It("should count keys in the same slot once with multi-slot routing", func() {
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
+
+				keys := []string{"{sameslot}a", "{sameslot}b", "{sameslot}c", "sameslot_1111", "sameslot_2222"}
+				for _, key := range keys {
+					Expect(client.Set(ctx, key, "value", 0).Err()).NotTo(HaveOccurred())
+				}
+
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b", "{sameslot}missing").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, keys...).Result()).To(Equal(int64(5)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(3)))
+				Expect(client.Touch(ctx, "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Del(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Unlink(ctx, "{sameslot}c", "sameslot_2222").Result()).To(Equal(int64(2)))
+			})
+
 			It("should test DBSIZE command with agg_sum aggregation across all shards", func() {
 				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
