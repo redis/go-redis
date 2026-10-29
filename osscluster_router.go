@@ -378,7 +378,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			redirected = true
 			c.state.LazyReload()
 			recordClusterRedirectMetric(ctx, ask)
-			redirected, err := c.nodes.GetOrCreate(addr)
+			redirected, err := c.nodes.GetOrCreate(redirectAddr(addr, node))
 			if err != nil {
 				return err
 			}
@@ -478,7 +478,13 @@ func (c *ClusterClient) executeCursorCommand(
 	}
 
 	c.cscCheckNode(cmd, node.Client)
-	return node.Client.Process(ctx, cmd)
+	err = node.Client.Process(ctx, cmd)
+	if err != nil {
+		if moved, ask, _ := isMovedError(err); moved || ask {
+			return &redirectFromNodeError{node: node, err: err}
+		}
+	}
+	return err
 }
 
 func cursorRoutingKey(cmd Cmder) (string, error) {

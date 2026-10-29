@@ -1264,7 +1264,8 @@ func (c *baseClient) fetchCommandMetadata(ctx context.Context) (commandMetadataF
 	if err != nil {
 		return commandMetadataFetchResult{}, err
 	}
-	metadata.records, err = infoCmd.Result()
+	metadata.records = infoCmd.valWithTombstones()
+	err = infoCmd.Err()
 	metadata.legacyRecords = infoCmd.legacyRecords
 	return metadata, err
 }

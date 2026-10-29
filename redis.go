@@ -2865,21 +2865,51 @@ func (c *Client) Conn() *Conn {
 // instead of returning it to the pool. Session state a Conn sets (AUTH,
 // SELECT, CLIENT SETNAME, CLIENT TRACKING, RESET, ...) cannot be undone
 // generically on release, so a connection that carried it must not go on to
-// serve unrelated callers. The cost is one dial per EphemeralConn lifetime;
-// Get still reuses an idle pooled connection.
+// serve unrelated callers. Without client-side caching, the first command
+// reuses an idle pooled connection if available.
+//
+// With client-side caching active, the first command dials a fresh, untracked
+// connection so session commands cannot disrupt the parent's cache. Reads on
+// this connection always hit the server. It obeys MaxActiveConns and
+// MaxConcurrentDials without acquiring a PoolSize turn, and does not support
+// maintenance handoff.
+// Close must be called to release the connection.
 func (c *Client) EphemeralConn() *Conn {
 	return c.conn(true)
 }
 
 func (c *Client) conn(discardOnClose bool) *Conn {
-	sticky := c.baseClient.newStickyConnPool()
+	isolated := discardOnClose && c.baseClient.cscTrackingRequested()
+	connOpt := c.opt
+	if isolated {
+		// This socket has no maintenance handoff manager. Keep its skipped
+		// maintenance negotiation from downgrading the shared parent config.
+		connOpt = c.baseClient.cloneOpt()
+		if connOpt.MaintNotificationsConfig != nil {
+			connOpt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
+		}
+	}
+	var sticky *pool.StickyConnPool
+	if isolated {
+		sticky = pool.NewStickyConnPool(c.connPool)
+		sticky.NewConnOnGet()
+	} else {
+		sticky = c.baseClient.newStickyConnPool()
+	}
 	if discardOnClose {
 		sticky.DiscardOnClose()
 	}
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
-	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
+	conn := newConn(connOpt, sticky, &c.hooksMixin, c.himport)
+	if isolated {
+		// Never enable tracking or attach the parent's cache to a socket whose
+		// session state the caller may change freely.
+		// Credential providers disable CSC in attachCSC, so isolated sessions
+		// cannot require the streaming-credentials manager copied below.
+		return conn
+	}
 	// A sticky client does not serve cache hits, but a new pool connection first
 	// initialized through it may later be reused by the parent. Share the
 	// successful-attachment signal so that connection is tracked exactly when

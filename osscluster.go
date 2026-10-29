@@ -1403,6 +1403,38 @@ func replaceEmptyHost(nodeAddr, originHost string) string {
 	return net.JoinHostPort(originHost, nodePort)
 }
 
+// redirectFromNodeError carries the node that returned a MOVED or ASK error on
+// a route that picks its own node, such as FT.CURSOR. process unwraps it right
+// away, so the error a caller sees is unchanged.
+type redirectFromNodeError struct {
+	node *clusterNode
+	err  error
+}
+
+func (e *redirectFromNodeError) Error() string { return e.err.Error() }
+
+func (e *redirectFromNodeError) Unwrap() error { return e.err }
+
+// redirectAddr returns the address a MOVED or ASK redirect sent by node points
+// to. With cluster-preferred-endpoint-type unknown-endpoint the server omits
+// the host, and the client is expected to reuse the host of the node that sent
+// the redirect.
+//
+// The host comes from the node's configured address. After a maintenance
+// notification handoff the connection that sent the redirect may serve from
+// another endpoint, so this address can be stale. We may consider recording the
+// current address of the serving connection and using it here instead.
+func redirectAddr(addr string, node *clusterNode) string {
+	if node == nil {
+		return addr
+	}
+	originHost, _, err := net.SplitHostPort(node.Client.getAddr())
+	if err != nil {
+		return addr
+	}
+	return replaceEmptyHost(addr, originHost)
+}
+
 // isLoopback returns true if the host is a loopback address.
 // For IP addresses, it uses net.IP.IsLoopback().
 // For hostnames, it recognizes well-known loopback hostnames like "localhost"
@@ -1950,6 +1982,7 @@ type ClusterClient struct {
 	autopipeliner       *AutoPipeliner // blocking face (ClusterClient.AutoPipeline)
 	asyncAutopipeliner  *AutoPipeliner // deferred face (ClusterClient.AsyncAutoPipeline)
 	autopipelinerClosed bool           // set by Close: refuse to resurrect a pipeliner on a closed client
+	onClose             *onCloseHooks
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1981,6 +2014,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		nodes:           newClusterNodes(opt),
 		himport:         newHImportRegistry(),
 		autopipelinerMu: &sync.Mutex{},
+		onClose:         &onCloseHooks{},
 	}
 
 	// Every node client shares the cluster-wide fieldset registry, replicas
@@ -2101,6 +2135,9 @@ func (c *ClusterClient) Close() error {
 	if err := c.nodes.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	if err := c.onClose.run(); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	return firstErr
 }
 
@@ -2190,6 +2227,11 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
+		redirectFrom := node
+		if e, ok := lastErr.(*redirectFromNodeError); ok {
+			redirectFrom, lastErr = e.node, e.err
+		}
+
 		// If there is no error - we are done.
 		if lastErr == nil || lastErr == Nil {
 			return lastErr
@@ -2230,7 +2272,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			recordClusterRedirectMetric(ctx, ask)
 
 			var err error
-			node, err = c.nodes.GetOrCreate(addr)
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, redirectFrom))
 			if err != nil {
 				return err
 			}
@@ -3247,7 +3289,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 			continue
 		}
 
-		if c.checkMovedErr(ctx, cmd, err, failedCmds) {
+		if c.checkMovedErr(ctx, node, cmd, err, failedCmds) {
 			continue
 		}
 
@@ -3273,15 +3315,21 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	return nil
 }
 
+// checkMovedErr queues cmd for the node a MOVED or ASK redirect points to.
+//
+// Unlike the single-command path (shouldRetry with isMovedSameConnAddr), it does
+// not drop the connection that sent a MOVED pointing back to the same address,
+// with or without a host, so Pipeline and TxPipeline may reuse that connection on
+// the retry. This is not handled yet.
 func (c *ClusterClient) checkMovedErr(
-	ctx context.Context, cmd Cmder, err error, failedCmds *cmdsMap,
+	ctx context.Context, from *clusterNode, cmd Cmder, err error, failedCmds *cmdsMap,
 ) bool {
 	moved, ask, addr := isMovedError(err)
 	if !moved && !ask {
 		return false
 	}
 
-	node, err := c.nodes.GetOrCreate(addr)
+	node, err := c.nodes.GetOrCreate(redirectAddr(addr, from))
 	if err != nil {
 		return false
 	}
@@ -3485,14 +3533,14 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 			redirected = true
 			asking = false
 			c.state.LazyReload()
-			if node, err = c.nodes.GetOrCreate(outcome.addr); err != nil {
+			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node)); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
 		case txRetryAsk:
 			redirected = true
 			asking = true
-			if node, err = c.nodes.GetOrCreate(outcome.addr); err != nil {
+			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node)); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
@@ -3932,7 +3980,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		moved, ask, addr := isMovedError(err)
 		if moved || ask {
-			node, err = c.nodes.GetOrCreate(addr)
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, node))
 			if err != nil {
 				return err
 			}
