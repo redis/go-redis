@@ -2806,6 +2806,8 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	if isolated {
 		// Never enable tracking or attach the parent's cache to a socket whose
 		// session state the caller may change freely.
+		// Credential providers disable CSC in attachCSC, so isolated sessions
+		// cannot require the streaming-credentials manager copied below.
 		return conn
 	}
 	// A sticky client does not serve cache hits, but a new pool connection first
