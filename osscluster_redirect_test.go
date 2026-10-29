@@ -215,3 +215,44 @@ func TestIsMovedSameConnAddr(t *testing.T) {
 		}
 	}
 }
+
+// After a maintenance-notification handoff, Options.Addr stays at the old
+// endpoint while the pooled connection serves from a new one. Hostless
+// redirects must reuse the serving host, not the configured address (#4230).
+func TestRedirectAddrPreferServingAddr(t *testing.T) {
+	opt := &ClusterOptions{}
+	opt.init()
+	nodes := newClusterNodes(opt)
+	defer nodes.Close()
+
+	node, err := nodes.GetOrCreate("10.0.0.5:6379")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Client.servingAddr == nil {
+		t.Fatal("servingAddr not initialized on node client")
+	}
+	node.Client.servingAddr.Store("10.0.0.9:7000")
+
+	if got := redirectAddr(":6380", node); got != "10.0.0.9:6380" {
+		t.Errorf("redirectAddr(%q) = %q, want %q", ":6380", got, "10.0.0.9:6380")
+	}
+	// Absolute redirects are unchanged.
+	if got := redirectAddr("10.0.0.6:6380", node); got != "10.0.0.6:6380" {
+		t.Errorf("redirectAddr absolute = %q, want %q", got, "10.0.0.6:6380")
+	}
+}
+
+func TestRecordServingAddr(t *testing.T) {
+	c := NewClient(&Options{Addr: "10.0.0.5:6379", DisableIdentity: true})
+	t.Cleanup(func() { _ = c.Close() })
+	if got := c.getServingAddr(); got != "" {
+		t.Fatalf("getServingAddr() = %q, want empty before any connection", got)
+	}
+	// Nil-safe on partially-built clients.
+	stub := &baseClient{}
+	stub.recordServingAddr(nil)
+	if got := stub.getServingAddr(); got != "" {
+		t.Fatalf("nil servingAddr getServingAddr() = %q", got)
+	}
+}

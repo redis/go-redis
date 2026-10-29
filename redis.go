@@ -424,6 +424,13 @@ type baseClient struct {
 	// per pool-set, not one per wrapper. See baseClient.Close.
 	apClosed *atomic.Bool
 
+	// servingAddr holds the most recently observed remote address of a pooled
+	// connection for this client (host:port). After a maintenance-notification
+	// handoff the socket may serve from a different endpoint than Options.Addr;
+	// hostless MOVED/ASK redirects must reuse that serving host (see #4230).
+	// Pointer so clones sharing the pool also share the recorded endpoint.
+	servingAddr *atomic.Value // stores string
+
 	opt        *Options
 	optLock    sync.RWMutex
 	connPool   pool.Pooler
@@ -551,9 +558,10 @@ func (c *baseClient) clone() *baseClient {
 	c.maintNotificationsManagerLock.RUnlock()
 
 	clone := &baseClient{
-		apClosed: c.apClosed,
-		opt:      c.opt,
-		connPool: c.connPool,
+		apClosed:    c.apClosed,
+		servingAddr: c.servingAddr,
+		opt:         c.opt,
+		connPool:    c.connPool,
 		// Pointer copy on purpose: the clone shares the parent's already-created
 		// pipeline pool over the one shared pool set, rather than building its own.
 		pipelinePool:                c.pipelinePool,
@@ -1471,6 +1479,31 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	c.releaseConnToPool(ctx, c.connPool, cn, err)
 }
 
+// recordServingAddr remembers cn's current remote address for hostless redirect
+// resolution. Safe with a nil servingAddr (partially-built test clients).
+func (c *baseClient) recordServingAddr(cn *pool.Conn) {
+	if c.servingAddr == nil || cn == nil {
+		return
+	}
+	if ra := cn.RemoteAddr(); ra != nil {
+		c.servingAddr.Store(ra.String())
+	}
+}
+
+// getServingAddr returns the most recently recorded pooled-connection remote
+// address, or empty when none has been observed yet.
+func (c *baseClient) getServingAddr() string {
+	if c.servingAddr == nil {
+		return ""
+	}
+	if v := c.servingAddr.Load(); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // releaseConnToPool returns a conn to p after a command or pipeline ran on
 // it: bad conns are Removed, pending push notifications are drained (a
 // mid-frame drain failure also Removes — the reply stream may be
@@ -1478,6 +1511,7 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 // tracking is on. Limiter accounting stays with the callers, whose shapes
 // differ. Shared by releaseConn and withPipelineConn so the two cannot drift.
 func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *pool.Conn, err error) {
+	c.recordServingAddr(cn)
 	// errConnUnusable is wrapped around errors that leave the connection's reply
 	// stream desynchronized even though they are not transport (bad-conn) errors:
 	// a push-notification drain that consumed part of a RESP3 frame, or a panic
@@ -2720,11 +2754,12 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: &baseClient{
-			apClosed:  &atomic.Bool{},
-			opt:       opt,
-			cscPolicy: opt.cachePolicy(),
-			onClose:   &onCloseHooks{},
-			himport:   newHImportRegistry(),
+			apClosed:    &atomic.Bool{},
+			servingAddr: &atomic.Value{},
+			opt:         opt,
+			cscPolicy:   opt.cachePolicy(),
+			onClose:     &onCloseHooks{},
+			himport:     newHImportRegistry(),
 		},
 	}
 	c.init()
@@ -3320,11 +3355,12 @@ type Conn struct {
 func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin, himport *himportRegistry) *Conn {
 	c := Conn{
 		baseClient: baseClient{
-			apClosed: &atomic.Bool{},
-			opt:      opt,
-			connPool: connPool,
-			onClose:  &onCloseHooks{},
-			himport:  himport,
+			apClosed:    &atomic.Bool{},
+			servingAddr: &atomic.Value{},
+			opt:         opt,
+			connPool:    connPool,
+			onClose:     &onCloseHooks{},
+			himport:     himport,
 		},
 	}
 

@@ -1420,15 +1420,20 @@ func (e *redirectFromNodeError) Unwrap() error { return e.err }
 // the host, and the client is expected to reuse the host of the node that sent
 // the redirect.
 //
-// The host comes from the node's configured address. After a maintenance
-// notification handoff the connection that sent the redirect may serve from
-// another endpoint, so this address can be stale. We may consider recording the
-// current address of the serving connection and using it here instead.
+// Prefer the most recently observed serving connection address (updated when a
+// pooled connection is released). After a maintenance-notification handoff the
+// socket may serve from another endpoint while Options.Addr stays unchanged
+// (#4230). Fall back to the node's configured address when no serving address
+// has been recorded yet.
 func redirectAddr(addr string, node *clusterNode) string {
 	if node == nil {
 		return addr
 	}
-	originHost, _, err := net.SplitHostPort(node.Client.getAddr())
+	origin := node.Client.getServingAddr()
+	if origin == "" {
+		origin = node.Client.getAddr()
+	}
+	originHost, _, err := net.SplitHostPort(origin)
 	if err != nil {
 		return addr
 	}
