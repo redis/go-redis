@@ -51,6 +51,7 @@ type clusterSpecialRequestHandler func(*ClusterClient, context.Context, Cmder, *
 var clusterSpecialRequestHandlers = map[string]clusterSpecialRequestHandler{
 	"ft.cursor|del":  (*ClusterClient).executeCursorCommand,
 	"ft.cursor|read": (*ClusterClient).executeCursorCommand,
+	"scan":           (*ClusterClient).executeScanCommand,
 }
 
 // slotResult represents the result of executing a command on a specific slot
