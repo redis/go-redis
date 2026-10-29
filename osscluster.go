@@ -3021,7 +3021,9 @@ func (c *ClusterClient) pipelineRoutingDecision(
 	decision *clusterRoutingDecision,
 	scratch *clusterRoutingDecision,
 ) *clusterRoutingDecision {
-	if !decision.policyFromMetadata {
+	// The built-in SCAN policy is derived from the server's tips like metadata
+	// policies: SCAN stays node-local in pipelines and transactions.
+	if !decision.policyFromMetadata && decision.policy != scanPolicy {
 		return decision
 	}
 	// Preserve the immutable admission decision when suppressing fan-out.
@@ -4009,7 +4011,10 @@ func (c *ClusterClient) pubSub() *PubSub {
 				node = nil
 				return nil, err
 			}
-			node.Client.pubSubPool.TrackConn(cn)
+			if err := node.Client.pubSubPool.TrackConn(cn); err != nil {
+				node = nil
+				return nil, err
+			}
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {

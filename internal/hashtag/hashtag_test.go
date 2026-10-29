@@ -112,3 +112,32 @@ func TestPresent(t *testing.T) {
 		})
 	}
 }
+
+func TestPatternSlot(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    int
+	}{
+		{"{user1000}:*", Slot("user1000")},
+		{"{user1000}:a?[bc]", Slot("user1000")},
+		{"foo{bar}*", Slot("bar")},
+		{"foo", Slot("foo")},
+		{"{}foo", Slot("{}foo")},
+		{"{}{bar}", Slot("{}{bar}")},
+		// Matching keys can have any tag, or an earlier tag.
+		{"{user*}:*", -1},
+		{"{us?r}:x", -1},
+		{"{u[a-z]}:x", -1},
+		{"*{tag}:x", -1},
+		{"a?{tag}", -1},
+		{"\\{tag}", -1},
+		{"{t\\ag}", -1},
+		{"foo*", -1},
+		{"*", -1},
+	}
+	for _, test := range tests {
+		if got := PatternSlot(test.pattern); got != test.want {
+			t.Errorf("PatternSlot(%q) = %d, want %d", test.pattern, got, test.want)
+		}
+	}
+}
