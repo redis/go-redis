@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // TestHandshakeDoesNotConsumeLimiter pins that the connection handshake
@@ -242,5 +244,50 @@ func TestFullDuplexInitConsumesLimiterOnce(t *testing.T) {
 	}
 	if got := br.errReports.Load(); got != 0 {
 		t.Fatalf("handshake succeeded but %d failures were reported", got)
+	}
+}
+
+// TestReconnectDeniedByLimiter pins that a reconnect an open breaker denies
+// leaves the connection CLOSED, the same state as a failed handshake, so no
+// waiter stalls on an INITIALIZING connection.
+func TestReconnectDeniedByLimiter(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:         internalTestRedisAddr(),
+		Protocol:     3,
+		PoolSize:     1,
+		MinIdleConns: 0,
+		Limiter:      br,
+	})
+	defer client.Close()
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	cn, err := client.connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("get conn: %v", err)
+	}
+	client.connPool.Put(ctx, cn)
+	netConn, err := net.Dial("tcp", internalTestRedisAddr())
+	if err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	defer netConn.Close()
+	reports := br.reports.Load()
+	br.open.Store(true)
+	err = cn.SetNetConnAndInitConn(ctx, netConn)
+	if !errors.Is(err, errBreakerOpen) {
+		t.Fatalf("reconnect error = %v, want %v", err, errBreakerOpen)
+	}
+	if got := cn.GetStateMachine().GetState(); got != pool.StateClosed {
+		t.Fatalf("connection state after a denied reconnect = %s, want %s", got, pool.StateClosed)
+	}
+	if got := br.reports.Load() - reports; got != 0 {
+		t.Fatalf("denied reconnect: Limiter.ReportResult called %d times, want 0", got)
 	}
 }

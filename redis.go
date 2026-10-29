@@ -2055,6 +2055,7 @@ func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) erro
 		limiter := c.limiter()
 		if limiter != nil {
 			if err := limiter.Allow(); err != nil {
+				cn.GetStateMachine().Transition(pool.StateClosed)
 				return err
 			}
 		}
