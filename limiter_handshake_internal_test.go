@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 )
 
 // TestHandshakeDoesNotConsumeLimiter pins that the connection handshake
@@ -190,5 +191,56 @@ func TestReconnectInitConnConsumesLimiterOnce(t *testing.T) {
 	}
 	if got := br.errReports.Load(); got != 0 {
 		t.Fatalf("reconnect succeeded but %d failures were reported", got)
+	}
+}
+
+// TestFullDuplexInitConsumesLimiterOnce pins that the handshake of a fresh
+// full-duplex session is admitted once and reported once, apart from the
+// per-chunk admission.
+func TestFullDuplexInitConsumesLimiterOnce(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:             internalTestRedisAddr(),
+		Protocol:         3,
+		PipelinePoolSize: 1,
+		PoolSize:         1,
+		MinIdleConns:     0,
+		Limiter:          br,
+	})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+	before := br.allows.Load()
+	if err := ap.Set(ctx, "fd:limiter:init", "v", 0).Err(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got := br.allows.Load() - before; got != 2 {
+		t.Fatalf("first full-duplex command: Limiter.Allow called %d times, want 2 (one handshake, one chunk)", got)
+	}
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if a, r := br.allows.Load(), br.reports.Load(); a != r {
+		t.Fatalf("Limiter unpaired: allows=%d reports=%d", a, r)
+	}
+	if got := br.errReports.Load(); got != 0 {
+		t.Fatalf("handshake succeeded but %d failures were reported", got)
 	}
 }

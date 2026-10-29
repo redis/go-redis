@@ -705,6 +705,27 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
+// initPooledConnLimited runs initPooledConn as one admitted operation against
+// Options.Limiter, for a caller that leases outside getConnLimited. A denial
+// removes the leased conn, the same disposition as a failed init.
+func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) error {
+	if cn.IsInited() {
+		return nil
+	}
+	limiter := c.limiter()
+	if limiter != nil {
+		if err := limiter.Allow(); err != nil {
+			p.Remove(ctx, cn, err)
+			return err
+		}
+	}
+	err := c.initPooledConn(ctx, p, cn)
+	if limiter != nil {
+		limiter.ReportResult(err)
+	}
+	return err
+}
+
 // initPooledConn brings a conn freshly obtained from p to a usable state: it
 // runs the connection handshake if needed, records the connection-create-time
 // metric, and re-acquires the conn after initConn parks it IDLE. On failure
