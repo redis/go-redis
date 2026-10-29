@@ -2110,3 +2110,71 @@ func TestFTInfoRESP2AndRESP3Equivalence(t *testing.T) {
 		}
 	}
 }
+
+// RediSearch emits the REPLY_KVNUM fields as bulk strings under RESP2, and
+// they are doubles, not integers: the FT.INFO docs show
+// total_indexing_time as "4.539999961853027". Those strings must still reach
+// the int-typed result fields, and both protocols must agree.
+func TestFTInfoRESP2DoubleFields(t *testing.T) {
+	resp2Data := map[string]interface{}{
+		"index_name":          "test_idx",
+		"total_indexing_time": "4.539999961853027",
+		"gc_stats": []interface{}{
+			"bytes_collected", "1024",
+			"total_ms_run", "12.5",
+			"total_cycles", "3",
+			"average_cycle_time_ms", "nan",
+			"last_run_time_ms", "3.75",
+			"gc_numeric_trees_missed", "0",
+			"gc_blocks_denied", "2",
+		},
+	}
+
+	// The same index, answered with native RESP3 doubles.
+	resp3Data := map[string]interface{}{
+		"index_name":          "test_idx",
+		"total_indexing_time": float64(4.539999961853027),
+		"gc_stats": map[interface{}]interface{}{
+			"bytes_collected":         float64(1024),
+			"total_ms_run":            float64(12.5),
+			"total_cycles":            float64(3),
+			"average_cycle_time_ms":   float64(math.NaN()),
+			"last_run_time_ms":        float64(3.75),
+			"gc_numeric_trees_missed": float64(0),
+			"gc_blocks_denied":        float64(2),
+		},
+	}
+
+	resp2, err := parseFTInfo(resp2Data)
+	if err != nil {
+		t.Fatalf("parseFTInfo (RESP2) returned error: %v", err)
+	}
+	resp3, err := parseFTInfo(resp3Data)
+	if err != nil {
+		t.Fatalf("parseFTInfo (RESP3) returned error: %v", err)
+	}
+
+	if got := resp2.TotalIndexingTime; got != 4 {
+		t.Errorf("RESP2 TotalIndexingTime = %d, want 4", got)
+	}
+	if got := resp2.GCStats; got != (GCStats{BytesCollected: 1024, TotalMsRun: 12, TotalCycles: 3, AverageCycleTimeMs: "nan", LastRunTimeMs: 3, GCBlocksDenied: 2}) {
+		t.Errorf("RESP2 GCStats = %+v, want the doubles truncated to integers", got)
+	}
+
+	// A non-finite string must not be wrapped into an arbitrary integer.
+	for _, val := range []string{"nan", "+Inf", "-Inf"} {
+		if got := ftInfoNumInt(val); got != 0 {
+			t.Errorf("ftInfoNumInt(%q) = %d, want 0", val, got)
+		}
+	}
+
+	if got := resp3.TotalIndexingTime; got != 4 {
+		t.Errorf("RESP3 TotalIndexingTime = %d, want 4", got)
+	}
+	resp3.GCStats.AverageCycleTimeMs = ""
+	parity := resp2.GCStats
+	parity.AverageCycleTimeMs = ""
+	if resp3.GCStats != parity {
+		t.Errorf("GCStats mismatch: RESP2=%+v, RESP3=%+v", parity, resp3.GCStats)
+	}
+}

@@ -233,6 +233,62 @@ var _ = Describe("Scan", func() {
 		}))
 	})
 
+	It("scans the remaining fields after a bad value", func() {
+		var d data
+
+		Expect(Scan(&d, i{"bool", "string", "int"}, i{"-1", "str!", "123"})).To(HaveOccurred())
+		Expect(d).To(Equal(data{
+			String: "str!",
+			Int:    123,
+		}))
+	})
+
+	It("leaves nil pointers nil on bad values", func() {
+		var d data
+		Expect(Scan(&d, i{"boolRef"}, i{"abc"})).To(HaveOccurred())
+		Expect(d.BoolRef).To(BeNil())
+
+		var td TimeData
+		Expect(Scan(&td, i{"login"}, i{"abc"})).To(HaveOccurred())
+		Expect(td.Time).To(BeNil())
+	})
+
+	It("returns the first error when a later field can't be set", func() {
+		type withUintptr struct {
+			A int     `redis:"a"`
+			P uintptr `redis:"p"`
+		}
+		type withUnexported struct {
+			A int    `redis:"a"`
+			b string `redis:"b"`
+		}
+		type withUnexportedPtr struct {
+			A int     `redis:"a"`
+			b *string `redis:"b"`
+		}
+		type withUnexportedBytes struct {
+			A int    `redis:"a"`
+			b []byte `redis:"b"`
+		}
+		type withString struct {
+			A int    `redis:"a"`
+			B string `redis:"b"`
+		}
+
+		for _, dst := range []interface{}{
+			&withUintptr{}, &withUnexported{}, &withUnexportedPtr{},
+			&withUnexportedBytes{}, &withString{},
+		} {
+			err := Scan(dst, i{"a", "b", "p"}, i{"x", "1", "1"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(".A of type int"))
+		}
+
+		var u withUnexported
+		Expect(Scan(&u, i{"b"}, i{"1"})).To(HaveOccurred())
+		Expect(u.b).To(BeEmpty())
+	})
+
 	It("catches bad values", func() {
 		var d data
 
@@ -243,6 +299,22 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&d, i{"bool"}, i{"-1"})).To(HaveOccurred())
 		Expect(Scan(&d, i{"bool"}, i{""})).To(HaveOccurred())
 		Expect(Scan(&d, i{"bool"}, i{"123"})).To(HaveOccurred())
+	})
+
+	It("does not stop scanning on first failure", func() {
+		var d data
+
+		keys := i{"bool", "string", "int"}
+		vals := i{"-1", "foobar", "123"}
+
+		err := Scan(&d, keys, vals)
+		Expect(err).To(HaveOccurred())
+
+		Expect(d).To(Equal(data{
+			Bool:   false,
+			String: "foobar",
+			Int:    123,
+		}))
 	})
 
 	It("Implements Scanner", func() {

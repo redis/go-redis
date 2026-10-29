@@ -102,7 +102,6 @@ func TestClusterDefaultPoliciesRequireFanoutOptIn(t *testing.T) {
 		{"client", "setname", "name"},
 		{"flushdb"},
 		{"info"},
-		{"scan", 0},
 		{"mget", "{a}one", "{b}two"},
 	}
 	for _, args := range commands {
@@ -114,6 +113,12 @@ func TestClusterDefaultPoliciesRequireFanoutOptIn(t *testing.T) {
 		if err := c.pipelineRoutingError(cmd, &d); err != nil {
 			t.Fatalf("default pipeline %v: %v", args, err)
 		}
+	}
+	// SCAN is the exception: the default resolver gives it the server's special
+	// policy, so its iterator walks every master (executeScanCommand).
+	scan := c.commandRoutingDecision(ctx, NewScanCmd(ctx, nil, "scan", 0))
+	if scan.policy != scanPolicy || scan.policyErr != nil || !scan.readOnly {
+		t.Fatalf("default scan: policy=%v error=%v readonly=%v", scan.policy, scan.policyErr, scan.readOnly)
 	}
 	c.SetCommandInfoResolver(NewCommandMetadataResolver())
 	ping := c.commandRoutingDecision(ctx, NewCmd(ctx, "ping"))

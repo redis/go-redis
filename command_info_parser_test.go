@@ -560,6 +560,75 @@ func TestCommandsInfoTopLevelRedisErrorIsTypedAndConsumed(t *testing.T) {
 	}
 }
 
+func TestCommandsInfoNullAttributeKeepsTheStreamAligned(t *testing.T) {
+	// A null attribute (|-1) is not valid RESP3, but a proxy can emit one.
+	// ReadAttributeLen consumes the header, so the parser must keep unwrapping:
+	// reporting proto.Nil instead makes the scalar readers treat the wrapped
+	// value as already consumed and leave it on the wire for the next command.
+	decorate := func(value string) string { return "|-1\r\n" + value }
+	cleanEntry := commandInfoTestArray(
+		commandInfoTestBulk("first"), commandInfoTestInt(-2),
+		commandInfoTestArray(commandInfoTestBulk("readonly")),
+		commandInfoTestInt(1), commandInfoTestInt(1), commandInfoTestInt(1),
+	)
+	plain := commandInfoTestArray(cleanEntry, commandInfoTestEntry6("second"))
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "before the reply",
+			raw:  decorate(plain),
+		},
+		{
+			name: "before a record",
+			raw: commandInfoTestArray(
+				decorate(cleanEntry), commandInfoTestEntry6("second"),
+			),
+		},
+		{
+			name: "before a field",
+			raw: commandInfoTestArray(
+				commandInfoTestArray(
+					commandInfoTestBulk("first"),
+					decorate(commandInfoTestInt(-2)),
+					commandInfoTestArray(commandInfoTestBulk("readonly")),
+					commandInfoTestInt(1), commandInfoTestInt(1), commandInfoTestInt(1),
+				),
+				commandInfoTestEntry6("second"),
+			),
+		},
+	}
+
+	want := commandInfoTestReadReply(t, plain)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rd := proto.NewReader(strings.NewReader(tc.raw +
+				commandInfoTestArray(commandInfoTestEntry6("after"))))
+			cmd := NewCommandsInfoCmd(context.Background(), "command")
+			if err := cmd.readReply(rd); err != nil {
+				t.Fatalf("readReply: %v", err)
+			}
+			if len(cmd.val) != 2 || !reflect.DeepEqual(cmd.val["first"], want.val["first"]) ||
+				!reflect.DeepEqual(cmd.val["second"], want.val["second"]) {
+				t.Fatalf("null attribute changed the reply: got=%+v want=%+v", cmd.val, want.val)
+			}
+
+			// The decorated reply must be fully consumed: the next command on the
+			// same connection reads its own reply, not the leftover frames.
+			next := NewCommandsInfoCmd(context.Background(), "command")
+			if err := next.readReply(rd); err != nil {
+				t.Fatalf("next aligned COMMAND reply failed: %v", err)
+			}
+			if next.val["after"] == nil {
+				t.Fatalf("next reply read out of step: got=%+v", next.val)
+			}
+		})
+	}
+}
+
 func TestCommandsInfoNumericKeySpecFields(t *testing.T) {
 	indexRange := commandInfoTestValidRangeKeySpec()
 	keywordKeynum := commandInfoTestMap(
