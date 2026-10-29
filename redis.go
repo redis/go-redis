@@ -647,21 +647,19 @@ func (c *baseClient) newPubSubConn(ctx context.Context, addr string, channels []
 	}
 	cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
 	if err == nil {
-		if err = c.initConn(ctx, cn); err != nil {
-			_ = cn.Close()
-			cn = nil
-		}
+		err = c.initConn(ctx, cn)
+	}
+	if err == nil {
+		err = c.pubSubPool.TrackConn(cn)
+	}
+	if err != nil && cn != nil {
+		_ = cn.Close()
+		cn = nil
 	}
 	if limiter != nil {
 		limiter.ReportResult(err)
 	}
-	if err != nil {
-		return nil, err
-	}
-	if err := c.pubSubPool.TrackConn(cn); err != nil {
-		return nil, err
-	}
-	return cn, nil
+	return cn, err
 }
 
 func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
