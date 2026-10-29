@@ -1420,11 +1420,11 @@ func (e *redirectFromNodeError) Unwrap() error { return e.err }
 // the host, and the client is expected to reuse the host of the node that sent
 // the redirect.
 //
-// Prefer the most recently observed serving connection address (updated when a
-// pooled connection is released). After a maintenance-notification handoff the
-// socket may serve from another endpoint while Options.Addr stays unchanged
-// (#4230). Fall back to the node's configured address when no serving address
-// has been recorded yet.
+// Prefer the most recently observed serving connection address (updated while a
+// connection is held for pipeline/tx redirects, and again when it is released).
+// After a maintenance-notification handoff the socket may serve from another
+// endpoint while Options.Addr stays unchanged (#4230). Fall back to the node's
+// configured address when no serving address has been recorded yet.
 func redirectAddr(addr string, node *clusterNode) string {
 	if node == nil {
 		return addr
@@ -3294,6 +3294,10 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 			continue
 		}
 
+		// Record the held connection's remote address before resolving a
+		// hostless redirect. releaseConnToPool has not run yet, so the
+		// post-handoff endpoint would otherwise be invisible (#4230).
+		node.Client.recordServingAddr(cn)
 		if c.checkMovedErr(ctx, node, cmd, err, failedCmds) {
 			continue
 		}
@@ -3799,6 +3803,8 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 func (c *ClusterClient) readTxPipelineReplies(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader, cmds []Cmder, asking bool,
 ) *txOutcome {
+	// Keep servingAddr current for hostless redirects while cn is held.
+	node.Client.recordServingAddr(cn)
 	scratch := NewStatusCmd(ctx)
 
 	readStatus := func() error {
@@ -3830,6 +3836,9 @@ func (c *ClusterClient) readTxPipelineReplies(
 			return c.txReadFatal(err) // IO error
 		}
 		if moved, ask, addr := isMovedError(err); moved || ask {
+			// Same as the non-tx pipeline path: capture the held conn's
+			// remote address before redirectAddr runs after release (#4230).
+			node.Client.recordServingAddr(cn)
 			if firstRedirect == nil {
 				firstRedirect = &txRedirect{moved: moved, ask: ask, addr: addr, err: err}
 			}

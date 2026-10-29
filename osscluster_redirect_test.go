@@ -256,3 +256,27 @@ func TestRecordServingAddr(t *testing.T) {
 		t.Fatalf("nil servingAddr getServingAddr() = %q", got)
 	}
 }
+
+// Pipeline and TxPipeline resolve hostless MOVED/ASK while the connection is
+// still held. recordServingAddr must run before redirectAddr in that window,
+// not only in releaseConnToPool (#4230 review).
+func TestRedirectAddrAfterRecordServingAddrWhileHeld(t *testing.T) {
+	opt := &ClusterOptions{}
+	opt.init()
+	nodes := newClusterNodes(opt)
+	defer nodes.Close()
+
+	node, err := nodes.GetOrCreate("10.0.0.5:6379")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate Options.Addr still pointing at the pre-handoff endpoint while
+	// the held connection's remote address has already moved.
+	if got := redirectAddr(":6380", node); got != "10.0.0.5:6380" {
+		t.Fatalf("before record: redirectAddr = %q, want configured host", got)
+	}
+	node.Client.servingAddr.Store("10.0.0.9:7000")
+	if got := redirectAddr(":6380", node); got != "10.0.0.9:6380" {
+		t.Fatalf("after record while held: redirectAddr = %q, want serving host", got)
+	}
+}
