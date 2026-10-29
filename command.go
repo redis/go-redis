@@ -5642,11 +5642,13 @@ func (cmd *CommandsInfoCmd) SetVal(val map[string]*CommandInfo) {
 	cmd.val = val
 }
 
+// Val omits records that the client could not parse.
 func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
 	cmd.await()
 	return withoutCommandInfoTombstones(cmd.val)
 }
 
+// Result omits records that the client could not parse.
 func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
 	cmd.await()
 	return withoutCommandInfoTombstones(cmd.val), cmd.err
