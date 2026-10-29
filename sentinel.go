@@ -859,21 +859,7 @@ func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
-			if err != nil {
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = c.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				return nil, err
-			}
-			// Track connection in PubSubPool
-			if err := c.pubSubPool.TrackConn(cn); err != nil {
-				return nil, err
-			}
-			return cn, nil
+			return c.newPubSubConn(ctx, addr, channels)
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool

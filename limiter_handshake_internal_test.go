@@ -84,3 +84,65 @@ func TestHandshakeFailureReachesLimiter(t *testing.T) {
 		t.Fatalf("the handshake failure was reported %d times, want 1", got)
 	}
 }
+
+// TestPubSubConnConsumesLimiterOnce pins that a PubSub connection, which
+// dials outside getConnLimited, is admitted once and reported once.
+func TestPubSubConnConsumesLimiterOnce(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:         internalTestRedisAddr(),
+		Protocol:     3,
+		PoolSize:     1,
+		MinIdleConns: 0,
+		Limiter:      br,
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(ctx, "limiter-handshake")
+	defer pubsub.Close()
+	if _, err := pubsub.Receive(ctx); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if got := br.allows.Load(); got != 1 {
+		t.Fatalf("PubSub connection: Limiter.Allow called %d times, want 1", got)
+	}
+	if got := br.reports.Load(); got != 1 {
+		t.Fatalf("PubSub connection: Limiter.ReportResult called %d times, want 1", got)
+	}
+	if got := br.errReports.Load(); got != 0 {
+		t.Fatalf("handshake succeeded but %d failures were reported", got)
+	}
+}
+
+// TestPubSubConnDeniedByLimiter pins that an open breaker still blocks a
+// PubSub connection before the dial.
+func TestPubSubConnDeniedByLimiter(t *testing.T) {
+	ctx := context.Background()
+	br := &fakeBreaker{}
+	br.open.Store(true)
+	client := NewClient(&Options{
+		Addr:         "127.0.0.1:1",
+		Protocol:     3,
+		PoolSize:     1,
+		MinIdleConns: 0,
+		Limiter:      br,
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(ctx, "limiter-handshake")
+	defer pubsub.Close()
+	_, err := pubsub.Receive(ctx)
+	if !errors.Is(err, errBreakerOpen) {
+		t.Fatalf("Receive error = %v, want %v", err, errBreakerOpen)
+	}
+	if got := br.allows.Load(); got != 0 {
+		t.Fatalf("open breaker: Limiter.Allow admitted %d times, want 0", got)
+	}
+	if got := br.reports.Load(); got != 0 {
+		t.Fatalf("open breaker: Limiter.ReportResult called %d times, want 0 (a denial is not reported)", got)
+	}
+}

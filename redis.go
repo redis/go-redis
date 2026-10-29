@@ -636,6 +636,34 @@ func (c *baseClient) limiter() Limiter {
 	return c.opt.Limiter
 }
 
+// newPubSubConn dials, initializes, and tracks a PubSub connection as one
+// admitted operation against Options.Limiter.
+func (c *baseClient) newPubSubConn(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+	limiter := c.limiter()
+	if limiter != nil {
+		if err := limiter.Allow(); err != nil {
+			return nil, err
+		}
+	}
+	cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
+	if err == nil {
+		if err = c.initConn(ctx, cn); err != nil {
+			_ = cn.Close()
+			cn = nil
+		}
+	}
+	if limiter != nil {
+		limiter.ReportResult(err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := c.pubSubPool.TrackConn(cn); err != nil {
+		return nil, err
+	}
+	return cn, nil
+}
+
 func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 	cn, _, err := c.getConnLimited(ctx)
 	return cn, err
@@ -3036,21 +3064,7 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
-			if err != nil {
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = c.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				return nil, err
-			}
-			// Track connection in PubSubPool
-			if err := c.pubSubPool.TrackConn(cn); err != nil {
-				return nil, err
-			}
-			return cn, nil
+			return c.newPubSubConn(ctx, addr, channels)
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
