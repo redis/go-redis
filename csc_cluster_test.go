@@ -4097,19 +4097,7 @@ func TestCSCPolicyLiveOptOutPipelineTracking(t *testing.T) {
 					pipe = c.TxPipeline()
 				}
 				if path == "full-duplex" {
-					node, ok := c.(*Client)
-					if !ok {
-						node, err = c.(*ClusterClient).MasterForKey(ctx, key)
-						if err != nil {
-							t.Fatal(err)
-						}
-					}
-					pp := node.getPipelinePool()
-					held, err := pp.Get(ctx)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer pp.Put(ctx, held)
+					// Native FD must stay on this node's untracked pipeline pool.
 					ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 					if err != nil {
 						t.Fatal(err)
@@ -4239,5 +4227,81 @@ func TestCSCPolicyLiveOptOutRawTransactions(t *testing.T) {
 				t.Fatal("normal caching did not resume after raw pipeline")
 			}
 		})
+	}
+}
+
+func TestCSCPolicyLiveOptOutRawAutoPipelineTransactions(t *testing.T) {
+	writer, _ := newClusterCSCLive(t)
+	ctx := context.Background()
+	key := "{optout-ap-raw}:key"
+	if err := writer.Set(ctx, key, "value", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := writer.MasterForKey(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, async := range []bool{false, true} {
+		for _, form := range []string{"string", "bytes", "pointer"} {
+			t.Run(fmt.Sprintf("async=%t/%s", async, form), func(t *testing.T) {
+				token := func(name string) interface{} {
+					switch form {
+					case "bytes":
+						return []byte(name)
+					case "pointer":
+						return &name
+					default:
+						return name
+					}
+				}
+				opt := cscPolicyOptions(owner.Options().Addr, TrackingModeOptOut)
+				opt.PipelinePoolSize = 1
+				opt.PoolSize = 1
+				c := policyClient(t, opt)
+				id, err := c.Do(ctx, "CLIENT", "ID").Int64()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pp := c.getPipelinePool()
+				held, err := pp.Get(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer pp.Put(ctx, held)
+				var ap *AutoPipeliner
+				if async {
+					ap, err = c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+				} else {
+					ap, err = c.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ap.Close()
+				// The native FD admission guard must reject the WHOLE raw transaction.
+				raw := []Cmder{NewCmd(ctx, token("MuLtI")), NewCmd(ctx, "get", key), NewCmd(ctx, token("ExEc"))}
+				if err := ap.FDPipelined(ctx, raw); err != ErrFDPipelineDiverts {
+					t.Fatal("raw transaction entered native FD", err)
+				}
+				// Pipeline falls back to the ordinary executor, which owns MULTI/EXEC handling.
+				p := ap.Pipeline()
+				multi := p.Do(ctx, token("MuLtI"))
+				read := p.Do(ctx, "get", key)
+				exec := p.Do(ctx, token("ExEc"))
+				after := p.Ping(ctx)
+				if _, err := p.Exec(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if multi.Val() != "OK" || read.Val() != "QUEUED" || !reflect.DeepEqual(exec.Val(), []interface{}{"value"}) || after.Val() != "PONG" {
+					t.Fatal(multi, read, exec, after)
+				}
+				if next, err := c.Do(ctx, "CLIENT", "ID").Int64(); err != nil || next != id {
+					t.Fatal("fallback did not preserve the main connection", next, id, err)
+				}
+				if c.CSCStats().Entries != 0 {
+					t.Fatal("raw transaction populated cache")
+				}
+			})
+		}
 	}
 }

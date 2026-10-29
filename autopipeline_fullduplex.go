@@ -54,8 +54,8 @@ var errFDReaderGone = errors.New("redis: autopipeline full-duplex reader exited"
 // error values and fail innocent in-flight commands.
 var errFDPanicRecovered = errors.New("redis: autopipeline: full-duplex panic recovered")
 
-// errFDPushDrainFailed marks a session failure while consuming pushes or a CSC
-// control reply before the data reply. A custom PushNotificationProcessor can consume part of
+// errFDPushDrainFailed marks a session failure from a push-notification drain
+// error on the reply path. A custom PushNotificationProcessor can consume part of
 // a frame and desync the reader. It wraps with %w like errFDPanicRecovered so the
 // retry decision recognizes it: the connection is desynced, so the next read would
 // misalign the FIFO. The engine fails the session and replays the unacked tail on
@@ -106,13 +106,12 @@ func fdReadReplySafe(cmd Cmder, rd *proto.Reader) (err error) {
 	return cmd.readReply(rd)
 }
 
-// fdPushDrainSafe consumes a request's optional CACHING reply and drains pending
-// push notifications before its data reply,
+// fdPushDrainSafe drains pending push notifications before a grouped reply,
 // turning a panic in a push handler (CSC invalidation, a registered or custom
 // processor) into a drain error, as fdReadReplySafe does for the decoder.
 // Escaping the group's WithReader, the panic left the replies the group had
 // already read uncompleted, and session recovery replayed them.
-func (fd *fdEngine) fdPushDrainSafe(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cachingNo bool) (err error) {
+func (fd *fdEngine) fdPushDrainSafe(ctx context.Context, cn *pool.Conn, rd *proto.Reader) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			internal.Logger.Printf(ctx,
@@ -120,9 +119,6 @@ func (fd *fdEngine) fdPushDrainSafe(ctx context.Context, cn *pool.Conn, rd *prot
 			err = fmt.Errorf("%w: push handler: %v", errFDPanicRecovered, r)
 		}
 	}()
-	if cachingNo {
-		return fd.client.readCSCPipelinePrefix(ctx, cn, rd)
-	}
 	return fd.client.processPendingPushNotificationWithReader(ctx, cn, rd)
 }
 
@@ -251,10 +247,6 @@ type fdReq struct {
 	// never-sent NoRetry commands recovered from a dead connection's backlog, returning
 	// an error for a command the server never saw.
 	sent bool
-	// cachingNo records this attempt's wire prefix. The writer resets it on each
-	// lease: recovery can move between tracked main and untracked pipeline pools.
-	// Published with the FIFO entry, so metadata changes cannot shift reply counts.
-	cachingNo bool
 	// pipelined marks a command submitted as part of an FD pipeline batch
 	// (submitBatch). The reader settles its retryable replies inline instead of
 	// diverting them one by one: an individual retry would let later commands
@@ -1587,7 +1579,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 		initCtx = context.WithoutCancel(carry[0].ctx)
 	}
 
-	// Acquire+init from the pipeline pool; SPILL to the main pool when the pipeline
+	// Acquire+init from the pipeline pool; without CSC, SPILL when the pipeline
 	// pool cannot serve the lease, mirroring withPipelineConn — an FD lease must not
 	// fail already-accepted commands while the main pool has idle capacity. Unlike a
 	// per-round-trip pipeline borrow, a spilled FD session holds the main-pool conn for
@@ -1595,7 +1587,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// stranding the backlog. TryGet (non-blocking) so a saturated pipeline pool spills
 	// at once instead of stalling up to PoolTimeout.
 	//
-	// Spill on ANY acquisition failure EXCEPT a hard stop — saturation (ErrPoolTryFull
+	// Without CSC, spill on ANY acquisition failure EXCEPT a hard stop — saturation (ErrPoolTryFull
 	// / ErrPoolExhausted) AND a transient DIAL error while the pipeline pool is growing
 	// a connection (TryGet dials when the pool has no idle conn), plus a pipeline-conn
 	// init failure below. Only a cancelled ap.ctx (Close) or a closed pool surface as
@@ -1607,20 +1599,33 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// out PoolTimeout; init and session I/O stay on bg so accepted commands still
 	// complete during Close.
 	if ref := fd.client.loadPipelinePool(); ref != nil {
+		// Native FD never uses the cache. Keep it on untracked connections,
+		// instead of borrowing a tracked main connection and toggling caching
+		// before every read. The pool bounds this wait and Close cancels it.
+		// Keep this restriction after CSC serving stops: existing main-pool
+		// connections may still have tracking enabled.
+		untracked := fd.client.cscActive != nil
 		spill := false
-		cn, aerr = ref.pool.TryGet(fd.ap.ctx)
+		if untracked {
+			cn, aerr = ref.pool.Get(fd.ap.ctx)
+		} else {
+			cn, aerr = ref.pool.TryGet(fd.ap.ctx)
+		}
 		if aerr != nil {
 			cn = nil
-			if errors.Is(aerr, pool.ErrClosed) ||
+			if untracked || errors.Is(aerr, pool.ErrClosed) ||
 				errors.Is(aerr, context.Canceled) ||
 				errors.Is(aerr, context.DeadlineExceeded) {
-				// Hard stop: the main pool cannot do better (closed pool, or the caller/
-				// Close cancelled the acquire ctx). Surface it rather than spill.
+				// CSC sessions must stay untracked. A closed pool or cancelled
+				// acquire context also stops the attempt without spilling.
 				return carry, fdLeaseErr, aerr
 			}
 			spill = true
 		} else if e := fd.client.initPooledConn(initCtx, ref.pool, cn); e != nil {
 			cn = nil // initPooledConn already Removed it from the pipeline pool
+			if untracked {
+				return carry, fdLeaseErr, e
+			}
 			spill = true
 		}
 		if spill {
@@ -1740,8 +1745,8 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						// desyncs the stream, so it is fatal for the session rather than
 						// logged and skipped. A push handler panic is one too
 						// (fdPushDrainSafe), so the replies read before it complete.
-						if perr := fd.fdPushDrainSafe(bg, cn, rd, buf[i+grp].cachingNo); perr != nil {
-							internal.Logger.Printf(bg, "autopipeline: full-duplex reply prefix: %v", perr)
+						if perr := fd.fdPushDrainSafe(bg, cn, rd); perr != nil {
+							internal.Logger.Printf(bg, "autopipeline: full-duplex push drain: %v", perr)
 							readErrs = append(readErrs, fmt.Errorf("%w: %w", errFDPushDrainFailed, perr))
 							grp++
 							return nil
@@ -1752,12 +1757,6 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						if err != nil {
 							// Stop the group on ANY error: reading further after a
 							// transport or protocol fault would consume shifted bytes.
-							return nil
-						}
-						// A buffered ACK does not imply that its data reply is also
-						// buffered. Give the next pair its own read deadline instead
-						// of waiting for its data under the preceding request's budget.
-						if i+grp < len(buf) && buf[i+grp].cachingNo {
 							return nil
 						}
 						if !rd.HasBufferedReply() {
@@ -1981,7 +1980,6 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		// in-flight ring's min(maxBatch, window) cap.
 		scratch := make([]fdReq, 0, min(fd.maxBatch, fd.window))
 		byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
-		prefixBytes := fd.client.cscUncachedPrefixSize(cn)
 		// Reused across drains so the accumulation wait allocates nothing on
 		// the hot path. Nil until the first wait actually happens.
 		var accumTimer *time.Timer
@@ -2184,7 +2182,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// MaxBatchBytes cap. cmd.Args() is user code running on this
 				// recover-less serve loop, so fdBatchEndSafe wraps each sizing call in a
 				// recover and reports the clean prefix plus the offending index.
-				end, bad, sizeErr := fdBatchEndSafe(batch, 0, limit, byteLimit, prefixBytes)
+				end, bad, sizeErr := fdBatchEndSafe(batch, 0, limit, byteLimit)
 				if sizeErr != nil {
 					// A command's Args() panicked. Fail and DROP just that command, then
 					// flush the clean prefix: letting it reach writeBatch would trip that
@@ -2521,10 +2519,8 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	// NoRetry twice; a WithWriter flush error after N commands serialized leaves those
 	// N sent. Stamped before pushBatch so the deque copies the reader reads carry both.
 	now := time.Now()
-	optOut := fd.client.cscUncachedPrefixSize(cn) != 0
 	err = cn.WithWriter(bg, fd.client.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for i := range reqs {
-			reqs[i].cachingNo = optOut && fd.client.cscFlag(reqs[i].cmd, false) == 'N'
 			if reqs[i].writtenOff == 0 {
 				// First write anchors the duration; replays keep it. Floored at 1
 				// so a command written within a nanosecond of the epoch is not
@@ -2537,11 +2533,6 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 			}
 			reqs[i].sent = true
 			written = i + 1 // reached this command this call (attempt-local; see refund defer)
-			if reqs[i].cachingNo {
-				if e := writeCSCPrefix(wr, 'N'); e != nil {
-					return e
-				}
-			}
 			if e := writeCmd(wr, reqs[i].cmd); e != nil {
 				return e
 			}
@@ -2594,10 +2585,8 @@ func fdBatchEnd(reqs []fdReq, start, maxBatch int, byteLimit int64) int {
 // it returns the clean prefix end (start..end, end>=start) and
 // bad = the index of the offending command, plus the wrapped error; the caller writes
 // [start:end), fails+drops carry[bad], and resumes at bad+1. bad == -1 means the whole
-// chunk sized cleanly. prefixBytes conservatively budgets a possible CACHING NO
-// for each command on a tracked OPTOUT connection, without resolving metadata
-// during sizing. The writer decides which commands actually need it.
-func fdBatchEndSafe(reqs []fdReq, start, maxBatch int, byteLimit, prefixBytes int64) (end, bad int, err error) {
+// chunk sized cleanly.
+func fdBatchEndSafe(reqs []fdReq, start, maxBatch int, byteLimit int64) (end, bad int, err error) {
 	end, bad = start, -1
 	idx := start // the command currently being sized; the recover reports it as bad
 	defer func() {
@@ -2608,14 +2597,14 @@ func fdBatchEndSafe(reqs []fdReq, start, maxBatch int, byteLimit, prefixBytes in
 				"autopipeline: recovered full-duplex carry Args() panic: %v\n%s", r, debug.Stack())
 		}
 	}()
-	bytes := cmdApproxBytes(reqs[start].cmd) + prefixBytes
+	bytes := cmdApproxBytes(reqs[start].cmd)
 	end = start + 1
 	for end < len(reqs) && end-start < maxBatch {
 		if byteLimit > 0 && bytes >= byteLimit {
 			break
 		}
 		idx = end
-		bytes += cmdApproxBytes(reqs[end].cmd) + prefixBytes
+		bytes += cmdApproxBytes(reqs[end].cmd)
 		end++
 	}
 	return end, -1, nil
@@ -2646,7 +2635,6 @@ func fdBatchEndSafe(reqs []fdReq, start, maxBatch int, byteLimit, prefixBytes in
 //     replayed at-least-once (a clean drain is impossible).
 func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, inflight *fdInflight, carry []fdReq, readerDone <-chan struct{}, maxC <-chan time.Time) (unwritten []fdReq, err error) {
 	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
-	prefixBytes := fd.client.cscUncachedPrefixSize(cn)
 	// stuck becomes true if the reader is observed not draining under a full
 	// window; from then on we stop window-gating and just write, so a graceful
 	// Close cannot hang here waiting on a reader that never advances (a quiet peer
@@ -2772,7 +2760,7 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		// The contract (see AddHook / a Cmder's Args) still requires deterministic,
 		// panic-free Args(); this only stops one bad command from stranding a whole
 		// accepted backlog.
-		end, bad, sizeErr := fdBatchEndSafe(carry, i, lim, byteLimit, prefixBytes)
+		end, bad, sizeErr := fdBatchEndSafe(carry, i, lim, byteLimit)
 		if end > i {
 			if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
 				// writeBatch pushed carry[i:end] into inflight before the failed write (it

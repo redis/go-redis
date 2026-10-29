@@ -114,6 +114,13 @@ type AutoPipelineOptions struct {
 	// when PipelinePoolSize<0 removes the node pipeline pools. Validate rejects the
 	// contradictory standalone combos (FullDuplex with Unordered or MaxConcurrentBatches>1).
 	//
+	// With client-side caching, native full-duplex sessions use only the
+	// untracked pipeline pool and never send CLIENT CACHING. Pool saturation
+	// waits up to DefaultPipelinePoolTimeout (or a smaller positive
+	// Options.PoolTimeout), then follows the existing lease retry budget. It does not spill to the main
+	// pool. Commands diverted to Process and ordinary pipeline fallbacks keep
+	// their normal caching and connection-acquisition behavior.
+	//
 	// Ordering caveat: blocking and connection-hostile commands (BLPOP, WAIT,
 	// XREAD BLOCK, SUBSCRIBE, MULTI, ...) are diverted to a separate pooled
 	// connection so they cannot stall the shared pipe. Managed HIMPORT

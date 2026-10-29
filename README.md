@@ -473,9 +473,15 @@ Cluster cache hits still perform slot routing, but do not acquire a connection.
 Primary and replica reads use their selected node's cache. Replica routing and
 its replication-lag trade-off are unchanged.
 Ordinary pipelines, transactions and full-duplex batches remain uncached;
-AutoPipeline's existing ordered solo path can use CSC. Direct node handles
-(`MasterForKey`, `SlaveForKey`, `ForEachShard`) and their clones behave as standalone
-clients, including caching when enabled. `ClusterClient.CSCStats()` and
+AutoPipeline's existing ordered solo path can use CSC. With CSC enabled, native
+full-duplex sessions use pipeline-pool connections with tracking disabled and send no
+`CLIENT CACHING` commands. If that pool is full, acquisition waits up to
+`DefaultPipelinePoolTimeout` (or a smaller positive `PoolTimeout`) before applying
+the existing retry policy; these sessions do not spill to the main pool. Ordinary
+pipeline fallback execution and commands diverted to `Process` retain their
+normal behavior.
+Direct node handles (`MasterForKey`, `SlaveForKey`, `ForEachShard`) and their clones
+behave as standalone clients, including caching when enabled. `ClusterClient.CSCStats()` and
 `CSCRefreshStats()` aggregate currently registered node statistics; counters of
 removed nodes are not retained.
 

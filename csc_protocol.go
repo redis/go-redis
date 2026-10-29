@@ -67,20 +67,11 @@ func (c *baseClient) readCSCAck(ctx context.Context, cn *pool.Conn, rd *proto.Re
 	return true, nil
 }
 
-// cscUncachedPrefixSize bounds the per-command control overhead on a tracked
-// OPTOUT connection. Dedicated pipeline connections do not need a prefix.
-func (c *baseClient) cscUncachedPrefixSize(cn *pool.Conn) int64 {
-	if c.cscPolicy.mode == TrackingModeOptOut && c.cscTrackingRequested() && c.cscConnInitGen(cn.GetID()) != 0 {
-		return int64(len(cscNoWire))
-	}
-	return 0
-}
-
 // cscPipelineFlags disables tracking for uncached reads when a pipeline uses
 // a tracked main-pool connection. Dedicated pipeline connections are untracked.
 // Capture the flags once so metadata refresh cannot change the reply count.
 func (c *baseClient) cscPipelineFlags(cn *pool.Conn, cmds []Cmder) []byte {
-	if c.cscUncachedPrefixSize(cn) == 0 {
+	if c.cscPolicy.mode != TrackingModeOptOut || !c.cscTrackingRequested() || c.cscConnInitGen(cn.GetID()) == 0 {
 		return nil
 	}
 	var flags []byte

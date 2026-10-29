@@ -2693,26 +2693,21 @@ func TestFDBatchEndSafeRecoversArgsPanic(t *testing.T) {
 
 	// Clean chunk: no panic, bad == -1, end == len.
 	clean := []fdReq{good(), good(), good()}
-	if end, b, err := fdBatchEndSafe(clean, 0, 8, 0, 0); end != len(clean) || b != -1 || err != nil {
+	if end, b, err := fdBatchEndSafe(clean, 0, 8, 0); end != len(clean) || b != -1 || err != nil {
 		t.Fatalf("clean: end=%d bad=%d err=%v; want end=%d bad=-1 err=nil", end, b, err, len(clean))
-	}
-	// The soft byte cap includes a possible NO prefix on tracked connections.
-	budget := cmdApproxBytes(clean[0].cmd) + int64(len(cscNoWire))
-	if end, _, err := fdBatchEndSafe(clean, 0, 8, budget, int64(len(cscNoWire))); err != nil || end != 1 {
-		t.Fatalf("prefix budget: end=%d err=%v; want one command", end, err)
 	}
 	// Panic at the chunk start (index 0): empty clean prefix, bad == 0.
 	atStart := []fdReq{bad(), good()}
-	if end, b, err := fdBatchEndSafe(atStart, 0, 8, 0, 0); end != 0 || b != 0 || !errors.Is(err, errFDPanicRecovered) {
+	if end, b, err := fdBatchEndSafe(atStart, 0, 8, 0); end != 0 || b != 0 || !errors.Is(err, errFDPanicRecovered) {
 		t.Fatalf("panic at start: end=%d bad=%d err=%v; want end=0 bad=0 err~errFDPanicRecovered", end, b, err)
 	}
 	// Panic in the middle (index 1): clean prefix [0:1), bad == 1.
 	mid := []fdReq{good(), bad(), good()}
-	if end, b, err := fdBatchEndSafe(mid, 0, 8, 0, 0); end != 1 || b != 1 || !errors.Is(err, errFDPanicRecovered) {
+	if end, b, err := fdBatchEndSafe(mid, 0, 8, 0); end != 1 || b != 1 || !errors.Is(err, errFDPanicRecovered) {
 		t.Fatalf("panic in middle: end=%d bad=%d err=%v; want end=1 bad=1 err~errFDPanicRecovered", end, b, err)
 	}
 	// Resuming past the bad index sizes the rest cleanly.
-	if end, b, err := fdBatchEndSafe(mid, 2, 8, 0, 0); end != 3 || b != -1 || err != nil {
+	if end, b, err := fdBatchEndSafe(mid, 2, 8, 0); end != 3 || b != -1 || err != nil {
 		t.Fatalf("resume after bad: end=%d bad=%d err=%v; want end=3 bad=-1 err=nil", end, b, err)
 	}
 }
