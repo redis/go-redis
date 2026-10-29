@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 )
 
@@ -144,5 +145,50 @@ func TestPubSubConnDeniedByLimiter(t *testing.T) {
 	}
 	if got := br.reports.Load(); got != 0 {
 		t.Fatalf("open breaker: Limiter.ReportResult called %d times, want 0 (a denial is not reported)", got)
+	}
+}
+
+// TestReconnectInitConnConsumesLimiterOnce pins that a reconnect through the
+// stored init function (a maintenance handoff) is admitted once and reported
+// once.
+func TestReconnectInitConnConsumesLimiterOnce(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:         internalTestRedisAddr(),
+		Protocol:     3,
+		PoolSize:     1,
+		MinIdleConns: 0,
+		Limiter:      br,
+	})
+	defer client.Close()
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	cn, err := client.connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("get conn: %v", err)
+	}
+	client.connPool.Put(ctx, cn)
+	netConn, err := net.Dial("tcp", internalTestRedisAddr())
+	if err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	allows, reports := br.allows.Load(), br.reports.Load()
+	if err := cn.SetNetConnAndInitConn(ctx, netConn); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if got := br.allows.Load() - allows; got != 1 {
+		t.Fatalf("reconnect: Limiter.Allow called %d times, want 1", got)
+	}
+	if got := br.reports.Load() - reports; got != 1 {
+		t.Fatalf("reconnect: Limiter.ReportResult called %d times, want 1", got)
+	}
+	if got := br.errReports.Load(); got != 0 {
+		t.Fatalf("reconnect succeeded but %d failures were reported", got)
 	}
 }

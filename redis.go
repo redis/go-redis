@@ -2029,9 +2029,21 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 }
 
 // createInitConnFunc creates a connection initialization function that can be used for reconnections.
+// A reconnect (a maintenance handoff or a re-auth) dials outside getConnLimited,
+// so the handshake it runs is admitted once and reported once against Options.Limiter.
 func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
 	return func(ctx context.Context, cn *pool.Conn) error {
-		return c.initConn(ctx, cn)
+		limiter := c.limiter()
+		if limiter != nil {
+			if err := limiter.Allow(); err != nil {
+				return err
+			}
+		}
+		err := c.initConn(ctx, cn)
+		if limiter != nil {
+			limiter.ReportResult(err)
+		}
+		return err
 	}
 }
 
