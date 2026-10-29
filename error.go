@@ -279,7 +279,14 @@ func isReadOnlyError(err error) bool {
 
 func isMovedSameConnAddr(err error, addr string) bool {
 	if movedErr, ok := proto.IsMovedError(err); ok {
-		return strings.HasSuffix(movedErr.Addr(), addr)
+		movedAddr := movedErr.Addr()
+		// A MOVED without a host (cluster-preferred-endpoint-type
+		// unknown-endpoint) points at the host of the connection that sent
+		// it, so only the port has to match.
+		if strings.HasPrefix(movedAddr, ":") {
+			return strings.HasSuffix(addr, movedAddr)
+		}
+		return strings.HasSuffix(movedAddr, addr)
 	}
 	return false
 }

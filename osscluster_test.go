@@ -2073,11 +2073,10 @@ var _ = Describe("ClusterClient", func() {
 })
 
 // With cluster-preferred-endpoint-type unknown-endpoint the servers send a
-// null host in CLUSTER SLOTS and an empty host in MOVED and ASK.
-// The MOVED check passes only because the test cluster is on loopback: the
-// client dials an empty-host target ":port" on the local machine, so a
-// redirect from a remote host is not covered. Taking the host of the node
-// that sent the redirect is left for a follow-up.
+// null host in CLUSTER SLOTS and an empty host in MOVED and ASK. The client
+// reuses the host it connected to for the topology and the host of the node
+// that sent a redirect for its target. Redirects from a non-loopback host are
+// covered by TestClusterRedirectEmptyHost.
 var _ = Describe("ClusterClient with unknown-endpoint", func() {
 	const param = "cluster-preferred-endpoint-type"
 
@@ -2115,7 +2114,7 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should load the topology and follow a MOVED redirect on loopback", func() {
+	It("should load the topology and follow a MOVED redirect", func() {
 		slots, err := cluster.masters()[0].ClusterSlots(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		for _, slot := range slots {
@@ -2137,7 +2136,7 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 		}
 
 		// Route the slot of A at its replica, which answers with
-		// -MOVED <slot> :<port>; see the note above the Describe.
+		// -MOVED <slot> :<port>.
 		Expect(client.SwapNodes(ctx, "A")).NotTo(HaveOccurred())
 		Expect(client.Set(ctx, "A", "MOVED", 0).Err()).NotTo(HaveOccurred())
 		Expect(client.Get(ctx, "A").Val()).To(Equal("MOVED"))
