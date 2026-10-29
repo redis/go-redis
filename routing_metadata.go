@@ -142,13 +142,16 @@ var routingSpecialPolicies = map[string]routingSpecialSupport{
 	"ft.cursor|del":  routingSpecialRequestDeclared | routingSpecialRequestSupported,
 	"ft.cursor|read": routingSpecialRequestDeclared | routingSpecialRequestSupported,
 	"randomkey":      routingSpecialResponseDeclared | routingSpecialResponseSupported,
+	// SCAN walks every master (or the master of a hash-tag MATCH); see executeScanCommand.
+	"scan": routingSpecialRequestDeclared | routingSpecialRequestSupported |
+		routingSpecialResponseDeclared | routingSpecialResponseSupported,
 }
 
 // These keyless commands retain their node-local replies and cursors. Their
 // special metadata does not define an implemented cluster-wide aggregation.
 func routingLocalSpecialCommand(name string) bool {
 	switch name {
-	case "info", "scan", "bless|scan", "function|stats",
+	case "info", "bless|scan", "function|stats",
 		"hotkeys|get", "hotkeys|reset", "hotkeys|start", "hotkeys|stop",
 		"latency|doctor", "latency|graph", "latency|histogram", "latency|history", "latency|latest",
 		"memory|doctor", "memory|malloc-stats", "memory|stats":
