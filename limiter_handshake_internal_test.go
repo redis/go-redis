@@ -291,3 +291,41 @@ func TestReconnectDeniedByLimiter(t *testing.T) {
 		t.Fatalf("denied reconnect: Limiter.ReportResult called %d times, want 0", got)
 	}
 }
+
+// TestFullDuplexInitPanicSettlesLimiter pins that a panic in the handshake of
+// a fresh full-duplex session still pairs its admission with one report.
+func TestFullDuplexInitPanicSettlesLimiter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	br := &fakeBreaker{}
+	cn := pool.NewConn(&fdPanicInitConn{})
+	p := &fdRecordPool{conn: cn}
+	fd := &fdEngine{
+		ap: &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: ctx},
+		client: &Client{baseClient: &baseClient{opt: &Options{
+			DialTimeout:  time.Second,
+			ReadTimeout:  time.Second,
+			WriteTimeout: time.Second,
+			Limiter:      br,
+		}}},
+		pool:     p,
+		maxBatch: 1,
+		window:   100,
+	}
+	carry := []fdReq{{cmd: NewStatusCmd(ctx, "get", "k"), attempts: 1}}
+
+	_, result, aerr := fd.attempt(context.Background(), carry)
+
+	if result != fdLeaseErr || !errors.Is(aerr, errFDPanicRecovered) {
+		t.Fatalf("result = %v, aerr = %v; want fdLeaseErr from the attempt recover", result, aerr)
+	}
+	if got := br.allows.Load(); got != 1 {
+		t.Fatalf("Limiter.Allow called %d times, want 1", got)
+	}
+	if got := br.reports.Load(); got != 1 {
+		t.Fatalf("Limiter.ReportResult called %d times, want 1 (the admission must settle on panic)", got)
+	}
+	if got := br.errReports.Load(); got != 1 {
+		t.Fatalf("the init panic was reported as %d failures, want 1", got)
+	}
+}

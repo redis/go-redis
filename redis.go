@@ -705,9 +705,12 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
+var errInitPanic = errors.New("redis: connection init panic")
+
 // initPooledConnLimited runs initPooledConn as one admitted operation against
 // Options.Limiter, for a caller that leases outside getConnLimited. A denial
-// removes the leased conn, the same disposition as a failed init.
+// removes the leased conn, the same disposition as a failed init. A panic in
+// the init settles the admission before it unwinds to the caller's recover.
 func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) error {
 	if cn.IsInited() {
 		return nil
@@ -719,7 +722,14 @@ func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, c
 			return err
 		}
 	}
+	settled := false
+	defer func() {
+		if limiter != nil && !settled {
+			limiter.ReportResult(errInitPanic)
+		}
+	}()
 	err := c.initPooledConn(ctx, p, cn)
+	settled = true
 	if limiter != nil {
 		limiter.ReportResult(err)
 	}
