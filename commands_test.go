@@ -421,11 +421,10 @@ var _ = Describe("Commands", func() {
 				pipe.ClientSetInfo(ctx, libInfo)
 			}).To(Panic())
 			// Test setting the default options for libName, libName suffix and libVer.
-			// CLIENT SETINFO is per-connection state, so read CLIENT INFO through the
-			// same pipeline path that issued the SETINFOs above: when the client has a
-			// dedicated pipeline pool (the autopipeline subject faces create one
-			// lazily), those ran on a pipeline-pool connection and rawClient.ClientInfo
-			// would inspect a different, main-pool connection.
+			// CLIENT SETINFO is per-connection state. Set the libName and read
+			// CLIENT INFO in the same Exec, so both run on one connection; separate
+			// Execs are not guaranteed to share one.
+			pipe.ClientSetInfo(ctx, redis.WithLibraryName(libName))
 			infoCmd := pipe.ClientInfo(ctx)
 			_, err = pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -9182,6 +9181,28 @@ var _ = Describe("Commands", func() {
 						Lag:             -1, // nil lag from Redis is reported as -1
 					},
 				}))
+			})
+
+			It("should return -1 for nil lag in XINFO STREAM FULL", func() {
+				for _, id := range []string{"0-1", "0-2", "0-3"} {
+					err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: id, Values: []string{"foo", id}}).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				err := client.XGroupCreate(ctx, "s", "g", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+				err = client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{"s", ">"}, Count: 1, Block: -1}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Deleting an entry the group has not read yet makes Redis reply with a nil lag.
+				err = client.XDel(ctx, "s", "0-2").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				res, err := client.XInfoStreamFull(ctx, "s", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.Groups).To(HaveLen(1))
+				Expect(res.Groups[0].EntriesRead).To(Equal(int64(1)))
+				Expect(res.Groups[0].Lag).To(Equal(int64(-1))) // nil lag from Redis is reported as -1
 			})
 
 			It("should XINFO CONSUMERS", func() {
