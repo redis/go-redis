@@ -2458,18 +2458,14 @@ func (c *multidbCore) newPubSub() *PubSub {
 				}
 				return nil, errPubSubRequiresStandalone
 			}
-			cn, err := db.c.pubSubPool.NewConn(ctx, db.c.opt.Network, db.c.opt.Addr, channels)
+			// newPubSubConn dials, runs the handshake and tracks the conn as one
+			// Limiter admission, and closes the conn on failure. A member
+			// removed meanwhile answers with the pool's ErrClosed, which
+			// pubSubDialErr keeps terminal for the channel loops.
+			cn, err := db.c.newPubSubConn(ctx, db.c.opt.Addr, channels)
 			if err != nil {
 				return nil, pubSubDialErr(db, err, c.closed.Load())
 			}
-			if err := db.c.initConn(ctx, cn); err != nil {
-				_ = cn.Close()
-				// Same translation as the dial above: a member removed while
-				// the handshake ran answers with the pool's ErrClosed, which
-				// the channel loops treat as terminal.
-				return nil, pubSubDialErr(db, err, c.closed.Load())
-			}
-			db.c.pubSubPool.TrackConn(cn)
 			// Removal (and Close) marks the member before closing its PubSub
 			// pool, which checks closed only before dialing: re-check after
 			// tracking, so either the pool close sees this conn or this sees
