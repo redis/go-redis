@@ -5647,6 +5647,188 @@ var _ = Describe("Commands", func() {
 			Expect(sMembers.Err()).NotTo(HaveOccurred())
 			Expect(sMembers.Val()).To(HaveLen(5))
 		})
+
+		It("should SAddEx", Label("set-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.12", "set member expiration is available since Redis 8.12")
+
+			// MNX on a missing key adds all the members.
+			res, err := client.SAddExWithArgs(ctx, "myset", &redis.SAddExArgs{
+				Condition: redis.SAddExMNX, ExpirationType: redis.SAddExExpirationEX, ExpirationVal: 10,
+			}, "key1", "key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+			Expect(client.SMembers(ctx, "myset").Val()).To(ConsistOf("key1", "key2"))
+
+			// MNX applies to the whole command: nothing is added when a member exists.
+			res, err = client.SAddExWithArgs(ctx, "myset", &redis.SAddExArgs{
+				Condition: redis.SAddExMNX, ExpirationType: redis.SAddExExpirationEX, ExpirationVal: 10,
+			}, "key1", "key3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(0)))
+			Expect(client.SIsMember(ctx, "myset", "key3").Val()).To(BeFalse())
+
+			// MXX applies to the whole command: nothing changes unless all members exist.
+			res, err = client.SAddExWithArgs(ctx, "myset", &redis.SAddExArgs{
+				Condition: redis.SAddExMXX, ExpirationType: redis.SAddExExpirationEX, ExpirationVal: 10,
+			}, "key1", "nosuch").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(0)))
+
+			// MXX on all existing members updates their expiration.
+			res, err = client.SAddExWithArgs(ctx, "myset", &redis.SAddExArgs{
+				Condition: redis.SAddExMXX, ExpirationType: redis.SAddExExpirationEX, ExpirationVal: 20,
+			}, "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+			ttl := client.STTL(ctx, "myset", "key1").Val()
+			Expect(ttl[0]).To(BeNumerically(">", 15))
+
+			// An existing member gets the new expiration.
+			res, err = client.SAddExWithArgs(ctx, "myset", &redis.SAddExArgs{
+				ExpirationType: redis.SAddExExpirationEX, ExpirationVal: 50,
+			}, "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+			Expect(client.STTL(ctx, "myset", "key1").Val()).To(Equal([]int64{50}))
+
+			// No expiration option discards the member expiration.
+			res, err = client.SAddEx(ctx, "myset", "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+			Expect(client.STTL(ctx, "myset", "key1").Val()).To(Equal([]int64{-1}))
+
+			// KEEPTTL keeps the expiration of existing members.
+			Expect(client.SExpire(ctx, "myset", 10*time.Second, "key1").Err()).NotTo(HaveOccurred())
+			res, err = client.SAddExWithArgs(ctx, "myset", &redis.SAddExArgs{
+				ExpirationType: redis.SAddExExpirationKEEPTTL,
+			}, "key1", "key3").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+			Expect(client.STTL(ctx, "myset", "key1", "key3").Val()).To(Equal([]int64{10, -1}))
+
+			// An expiration in the past deletes existing members and adds none.
+			res, err = client.SAddExWithArgs(ctx, "myset", &redis.SAddExArgs{
+				ExpirationType: redis.SAddExExpirationEXAT, ExpirationVal: 1,
+			}, "key1", "key4").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal(int64(1)))
+			Expect(client.SMembers(ctx, "myset").Val()).To(ConsistOf("key2", "key3"))
+		})
+
+		It("should SExpire", Label("set-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.12", "set member expiration is available since Redis 8.12")
+			res, err := client.SExpire(ctx, "no_such_key", 10*time.Second, "member1", "member2").Result()
+			Expect(err).To(BeNil())
+			Expect(res).To(BeEquivalentTo([]int64{-2, -2}))
+
+			Expect(client.SAdd(ctx, "myset", "key1", "key2").Err()).NotTo(HaveOccurred())
+			res, err = client.SExpire(ctx, "myset", 10*time.Second, "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 1, -2}))
+
+			// NX only sets the expiration when the member has none.
+			res, err = client.SExpireWithArgs(ctx, "myset", 20*time.Second, redis.SExpireNX, "key1", "key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{0, 0}))
+
+			// GT only sets the expiration when the new one is greater.
+			res, err = client.SExpireWithArgs(ctx, "myset", 20*time.Second, redis.SExpireGT, "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1}))
+			res, err = client.SExpireWithArgs(ctx, "myset", 10*time.Second, redis.SExpireGT, "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{0}))
+			res, err = client.SExpireWithArgs(ctx, "myset", 30*time.Second, redis.SExpireLT, "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{0}))
+
+			// An expiration in the past deletes the member.
+			res, err = client.SExpireAt(ctx, "myset", time.Unix(1, 0), "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{2}))
+			Expect(client.SIsMember(ctx, "myset", "key1").Val()).To(BeFalse())
+		})
+
+		It("should SPExpire and SPExpireWithArgs", Label("set-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.12", "set member expiration is available since Redis 8.12")
+			Expect(client.SAdd(ctx, "myset", "key1", "key2").Err()).NotTo(HaveOccurred())
+
+			res, err := client.SPExpire(ctx, "myset", 10*time.Second, "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+		res, err = client.SPExpireWithArgs(ctx, "myset", 20*time.Second, redis.SExpireXX, "key1", "key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, 0}))
+			Expect(client.SPTTL(ctx, "myset", "key1").Val()[0]).To(BeNumerically("~", 20000, 50))
+		})
+
+		It("should SExpireAt and SPExpireAt", Label("set-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.12", "set member expiration is available since Redis 8.12")
+			Expect(client.SAdd(ctx, "myset", "key1", "key2").Err()).NotTo(HaveOccurred())
+
+			res, err := client.SExpireAt(ctx, "myset", time.Now().Add(10*time.Second), "key1", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -2}))
+
+			key2Deadline := time.Now().Add(20 * time.Second)
+			res, err = client.SPExpireAt(ctx, "myset", key2Deadline, "key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1}))
+
+			deadline := time.Now().Add(30 * time.Second)
+			res, err = client.SExpireAt(ctx, "myset", deadline, "key1").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1}))
+			Expect(client.SPersist(ctx, "myset", "key1").Val()).To(Equal([]int64{1}))
+			Expect(client.SPExpireAtWithArgs(ctx, "myset", deadline, redis.SExpireNX, "key1").Val()).To(Equal([]int64{1}))
+			expireTime := client.SExpireTime(ctx, "myset", "key1", "key2").Val()
+			Expect(expireTime[0]).To(BeNumerically("~", deadline.Unix(), 1))
+			Expect(expireTime[1]).To(BeNumerically("~", key2Deadline.Unix(), 1))
+			expireTimeMs := client.SPExpireTime(ctx, "myset", "key1", "key2").Val()
+			Expect(expireTimeMs[0]).To(BeNumerically("~", deadline.UnixMilli(), 1500))
+			Expect(expireTimeMs[1]).To(BeNumerically("~", key2Deadline.UnixMilli(), 1500))
+		})
+
+		It("should SPersist", Label("set-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.12", "set member expiration is available since Redis 8.12")
+			res, err := client.SPersist(ctx, "no_such_key", "member1", "member2").Result()
+			Expect(err).To(BeNil())
+			Expect(res).To(BeEquivalentTo([]int64{-2, -2}))
+
+			Expect(client.SAdd(ctx, "myset", "key1", "key2").Err()).NotTo(HaveOccurred())
+			res, err = client.SPersist(ctx, "myset", "key1", "key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{-1, -1}))
+
+			Expect(client.SExpire(ctx, "myset", 10*time.Second, "key1").Err()).NotTo(HaveOccurred())
+			res, err = client.SPersist(ctx, "myset", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{1, -1, -2}))
+		})
+
+		It("should STTL and SPTTL", Label("set-expiration", "NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.12", "set member expiration is available since Redis 8.12")
+			res, err := client.STTL(ctx, "no_such_key", "member1", "member2").Result()
+			Expect(err).To(BeNil())
+			Expect(res).To(BeEquivalentTo([]int64{-2, -2}))
+			res, err = client.SPTTL(ctx, "no_such_key", "member1").Result()
+			Expect(err).To(BeNil())
+			Expect(res).To(BeEquivalentTo([]int64{-2}))
+
+			Expect(client.SAdd(ctx, "myset", "key1", "key2").Err()).NotTo(HaveOccurred())
+			Expect(client.SExpire(ctx, "myset", 10*time.Second, "key1").Err()).NotTo(HaveOccurred())
+
+			res, err = client.STTL(ctx, "myset", "key1", "key2", "key200").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]int64{10, -1, -2}))
+
+			res, err = client.SPTTL(ctx, "myset", "key1", "key2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(2))
+			Expect(res[0]).To(BeNumerically("~", 10000, 50))
+			Expect(res[1]).To(Equal(int64(-1)))
+		})
 	})
 
 	Describe("sorted sets", func() {

@@ -1,15 +1,25 @@
 package redis
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // SetCmdable is an interface for Redis set commands.
 // Sets are unordered collections of unique strings.
 type SetCmdable interface {
 	SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd
+	SAddEx(ctx context.Context, key string, members ...interface{}) *IntCmd
+	SAddExWithArgs(ctx context.Context, key string, options *SAddExArgs, members ...interface{}) *IntCmd
 	SCard(ctx context.Context, key string) *IntCmd
 	SDiff(ctx context.Context, keys ...string) *StringSliceCmd
 	SDiffCard(ctx context.Context, opts *SDiffCardOptions, keys ...string) *IntCmd
 	SDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd
+	SExpire(ctx context.Context, key string, expiration time.Duration, members ...string) *IntSliceCmd
+	SExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs SExpireArgs, members ...string) *IntSliceCmd
+	SExpireAt(ctx context.Context, key string, tm time.Time, members ...string) *IntSliceCmd
+	SExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs SExpireArgs, members ...string) *IntSliceCmd
+	SExpireTime(ctx context.Context, key string, members ...string) *IntSliceCmd
 	SInter(ctx context.Context, keys ...string) *StringSliceCmd
 	SInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd
 	SInterStore(ctx context.Context, destination string, keys ...string) *IntCmd
@@ -18,12 +28,20 @@ type SetCmdable interface {
 	SMembers(ctx context.Context, key string) *StringSliceCmd
 	SMembersMap(ctx context.Context, key string) *StringStructMapCmd
 	SMove(ctx context.Context, source, destination string, member interface{}) *BoolCmd
+	SPersist(ctx context.Context, key string, members ...string) *IntSliceCmd
+	SPExpire(ctx context.Context, key string, expiration time.Duration, members ...string) *IntSliceCmd
+	SPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs SExpireArgs, members ...string) *IntSliceCmd
+	SPExpireAt(ctx context.Context, key string, tm time.Time, members ...string) *IntSliceCmd
+	SPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs SExpireArgs, members ...string) *IntSliceCmd
+	SPExpireTime(ctx context.Context, key string, members ...string) *IntSliceCmd
 	SPop(ctx context.Context, key string) *StringCmd
 	SPopN(ctx context.Context, key string, count int64) *StringSliceCmd
 	SRandMember(ctx context.Context, key string) *StringCmd
 	SRandMemberN(ctx context.Context, key string, count int64) *StringSliceCmd
 	SRem(ctx context.Context, key string, members ...interface{}) *IntCmd
 	SScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
+	SPTTL(ctx context.Context, key string, members ...string) *IntSliceCmd
+	STTL(ctx context.Context, key string, members ...string) *IntSliceCmd
 	SUnion(ctx context.Context, keys ...string) *StringSliceCmd
 	SUnionCard(ctx context.Context, opts *SUnionCardOptions, keys ...string) *IntCmd
 	SUnionStore(ctx context.Context, destination string, keys ...string) *IntCmd
@@ -52,6 +70,281 @@ func (c cmdable) SAdd(ctx context.Context, key string, members ...interface{}) *
 	args[1] = key
 	args = appendArgs(args, members)
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type SAddExCondition string
+
+const (
+	// SAddExMNX adds the members only when none of them already exist in the set.
+	SAddExMNX SAddExCondition = "MNX"
+	// SAddExMXX adds the members only when all of them already exist in the set.
+	SAddExMXX SAddExCondition = "MXX"
+)
+
+type SAddExExpirationType string
+
+const (
+	SAddExExpirationEX      SAddExExpirationType = "EX"
+	SAddExExpirationPX      SAddExExpirationType = "PX"
+	SAddExExpirationEXAT    SAddExExpirationType = "EXAT"
+	SAddExExpirationPXAT    SAddExExpirationType = "PXAT"
+	SAddExExpirationKEEPTTL SAddExExpirationType = "KEEPTTL"
+)
+
+type SAddExArgs struct {
+	Condition      SAddExCondition
+	ExpirationType SAddExExpirationType
+	ExpirationVal  int64
+}
+
+func (o SAddExArgs) appendArgs(args []interface{}) []interface{} {
+	if o.Condition != "" {
+		args = append(args, string(o.Condition))
+	}
+	if o.ExpirationType != "" {
+		args = append(args, string(o.ExpirationType))
+		if o.ExpirationType != SAddExExpirationKEEPTTL {
+			args = append(args, o.ExpirationVal)
+		}
+	}
+	return args
+}
+
+// Adds one or more members to the set stored at key, without member
+// expiration. Returns 1 if at least one member was added, updated or deleted,
+// and 0 otherwise.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SAddEx(ctx context.Context, key string, members ...interface{}) *IntCmd {
+	args := make([]interface{}, 4, 4+len(members))
+	args[0] = "saddex"
+	args[1] = key
+	args[2] = "MEMBERS"
+	args[3] = len(members)
+	args = appendArgs(args, members)
+
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SAddExWithArgs adds one or more members to the set stored at key and
+// optionally sets their expiration. Returns 1 if at least one member was
+// added, updated or deleted, and 0 otherwise.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SAddExWithArgs(ctx context.Context, key string, options *SAddExArgs, members ...interface{}) *IntCmd {
+	if options == nil {
+		options = &SAddExArgs{}
+	}
+	args := []interface{}{"saddex", key}
+	args = options.appendArgs(args)
+	args = append(args, "MEMBERS", len(members))
+	args = append(args, members...)
+
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SExpireArgs is the expiration condition for the SExpire family of commands.
+type SExpireArgs string
+
+const (
+	// SExpireNX sets the expiration only when the member has no expiration.
+	SExpireNX SExpireArgs = "NX"
+	// SExpireXX sets the expiration only when the member has an expiration.
+	SExpireXX SExpireArgs = "XX"
+	// SExpireGT sets the expiration only when the new one is greater than the current one.
+	SExpireGT SExpireArgs = "GT"
+	// SExpireLT sets the expiration only when the new one is less than the current one.
+	SExpireLT SExpireArgs = "LT"
+)
+
+func (o SExpireArgs) appendArgs(args []interface{}) []interface{} {
+	if o != "" {
+		args = append(args, string(o))
+	}
+	return args
+}
+
+// SExpire - Sets the expiration time for the specified members of a set in seconds.
+// It requires a key, an expiration duration, and a list of members.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SExpire(ctx context.Context, key string, expiration time.Duration, members ...string) *IntSliceCmd {
+	args := []interface{}{"sexpire", key, formatSec(ctx, expiration)}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SExpireWithArgs - Sets the expiration time for the specified members of a set in seconds.
+// It requires a key, an expiration duration, a condition for
+// conditional expiration settings (NX, XX, GT, LT), and a list of members.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs SExpireArgs, members ...string) *IntSliceCmd {
+	args := expirationArgs.appendArgs([]interface{}{"sexpire", key, formatSec(ctx, expiration)})
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SPExpire - Sets the expiration time for the specified members of a set in milliseconds.
+// It requires a key, an expiration duration, and a list of members.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SPExpire(ctx context.Context, key string, expiration time.Duration, members ...string) *IntSliceCmd {
+	args := []interface{}{"spexpire", key, formatMs(ctx, expiration)}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SPExpireWithArgs - Sets the expiration time for the specified members of a set in milliseconds.
+// It requires a key, an expiration duration, a condition for
+// conditional expiration settings (NX, XX, GT, LT), and a list of members.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs SExpireArgs, members ...string) *IntSliceCmd {
+	args := expirationArgs.appendArgs([]interface{}{"spexpire", key, formatMs(ctx, expiration)})
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SExpireAt - Sets the expiration time for the specified members of a set to a
+// UNIX timestamp in seconds.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SExpireAt(ctx context.Context, key string, tm time.Time, members ...string) *IntSliceCmd {
+	args := []interface{}{"sexpireat", key, tm.Unix()}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SExpireAtWithArgs - Sets the expiration time for the specified members of a set to a
+// UNIX timestamp in seconds, with conditional expiration settings (NX, XX, GT, LT).
+// Requires Redis Server >= 8.12.
+func (c cmdable) SExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs SExpireArgs, members ...string) *IntSliceCmd {
+	args := expirationArgs.appendArgs([]interface{}{"sexpireat", key, tm.Unix()})
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SPExpireAt - Sets the expiration time for the specified members of a set to a
+// UNIX timestamp in milliseconds.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SPExpireAt(ctx context.Context, key string, tm time.Time, members ...string) *IntSliceCmd {
+	args := []interface{}{"spexpireat", key, tm.UnixMilli()}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SPExpireAtWithArgs - Sets the expiration time for the specified members of a set to a
+// UNIX timestamp in milliseconds, with conditional expiration settings (NX, XX, GT, LT).
+// Requires Redis Server >= 8.12.
+func (c cmdable) SPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs SExpireArgs, members ...string) *IntSliceCmd {
+	args := expirationArgs.appendArgs([]interface{}{"spexpireat", key, tm.UnixMilli()})
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SPersist - Removes the expiration time for the specified members of a set.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SPersist(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	args := []interface{}{"spersist", key}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SExpireTime - Returns the expiration time of the specified members of a set
+// as a UNIX timestamp in seconds.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SExpireTime(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	args := []interface{}{"sexpiretime", key}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SPExpireTime - Returns the expiration time of the specified members of a set
+// as a UNIX timestamp in milliseconds.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SPExpireTime(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	args := []interface{}{"spexpiretime", key}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// STTL - Returns the remaining time to live of the specified members of a set in seconds.
+// Requires Redis Server >= 8.12.
+func (c cmdable) STTL(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	args := []interface{}{"sttl", key}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SPTTL - Returns the remaining time to live of the specified members of a set in milliseconds.
+// Requires Redis Server >= 8.12.
+func (c cmdable) SPTTL(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	args := []interface{}{"spttl", key}
+	args = append(args, "MEMBERS", len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
