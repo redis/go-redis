@@ -174,7 +174,10 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 				// it under the holder when its wait for the connection times out. A
 				// failed claim needs nothing more: the handoff mark stays, so OnPut
 				// queues the handoff when the holder returns the connection.
-				if owner != nil && owner.workerManager != nil && poolConn.ClaimIdleForHandoff() {
+				if owner == nil || owner.workerManager == nil {
+					return
+				}
+				if claimed, ok := poolConn.ClaimIdleForHandoff(); ok {
 					if err := owner.workerManager.queueHandoff(poolConn); err != nil {
 						internal.Logger.Printf(context.Background(), "%s", logs.FailedToQueueHandoff(poolConn.GetID(), err))
 						// Claimed but no worker will take it: remove it, as OnPut does
@@ -185,7 +188,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 					} else {
 						// Clear the mark so the connection is not queued again. Metadata
 						// only: the worker may already own the connection's state.
-						poolConn.MarkHandoffQueued()
+						poolConn.MarkHandoffQueued(claimed)
 						internal.Logger.Printf(context.Background(), "%s", logs.MarkedForHandoff(poolConn.GetID()))
 					}
 				}
