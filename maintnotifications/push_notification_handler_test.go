@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/interfaces"
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -232,5 +233,67 @@ func TestHandleSMigrated_InvalidTripletsType(t *testing.T) {
 	err := handler.handleSMigrated(ctx, handlerCtx, notification)
 	if err == nil {
 		t.Error("handleSMigrated should error with invalid triplets type")
+	}
+}
+
+func TestHandleMoving_NullEndpointLeavesPubSubMarkedNotQueued(t *testing.T) {
+	// Regression for #4245: a null-endpoint MOVING used to schedule the handoff
+	// worker for PubSub connections (always IDLE). The worker re-inits the
+	// socket without SUBSCRIBE, MarkHandoffQueued clears ShouldHandoff, and
+	// messages stop arriving while Ping keeps succeeding.
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	psp := pool.NewPubSubPool(&pool.Options{Name: "pubsub-test"}, func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return client, nil
+	})
+	cn, err := psp.NewConn(context.Background(), "tcp", "localhost:6379", nil)
+	if err != nil {
+		t.Fatalf("PubSub NewConn: %v", err)
+	}
+	defer cn.Close()
+	if !cn.IsPubSub() {
+		t.Fatal("expected IsPubSub")
+	}
+	cn.GetStateMachine().Transition(pool.StateInitializing)
+	cn.GetStateMachine().Transition(pool.StateIdle)
+
+	manager := createTestManager("127.0.0.1:6379")
+	hook := NewPoolHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		t.Fatal("handoff worker must not dial for PubSub null-endpoint MOVING")
+		return nil, nil
+	}, "tcp", DefaultConfig(), manager)
+	manager.poolHooksRef = hook
+
+	handler := &NotificationHandler{
+		manager:           manager,
+		operationsManager: manager,
+	}
+
+	notification := []interface{}{
+		"MOVING",
+		int64(42),
+		int64(0), // timeS=0 would fire AfterFunc immediately without the PubSub guard
+		nil,      // null endpoint
+	}
+	if err := handler.handleMoving(context.Background(), push.NotificationHandlerContext{Conn: cn}, notification); err != nil {
+		t.Fatalf("handleMoving: %v", err)
+	}
+
+	// Allow a zero-delay AfterFunc to run if the bug regresses.
+	time.Sleep(50 * time.Millisecond)
+
+	if !cn.ShouldHandoff() {
+		t.Fatal("expected ShouldHandoff so PubSub can reconnect and resubscribe")
+	}
+	if got := cn.GetHandoffEndpoint(); got != manager.options.GetAddr() {
+		t.Fatalf("handoff endpoint=%q, want %q", got, manager.options.GetAddr())
+	}
+	if state := cn.GetStateMachine().GetState(); state != pool.StateIdle {
+		t.Fatalf("state=%v, want Idle (worker must not ClaimIdleForHandoff)", state)
+	}
+	if hook.IsHandoffPending(cn) {
+		t.Fatal("PubSub null-endpoint MOVING must not queue the handoff worker")
 	}
 }

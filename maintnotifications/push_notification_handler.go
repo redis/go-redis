@@ -138,11 +138,18 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	deadline := time.Now().Add(time.Duration(timeS) * time.Second)
 	// If newEndpoint is empty, we should schedule a handoff to the current endpoint in timeS/2 seconds
 	if newEndpoint == "" || newEndpoint == internal.RedisNull {
+		// same as current endpoint
+		newEndpoint = snh.manager.options.GetAddr()
+		// PubSub owns reconnect + resubscribe. The handoff worker only dials and
+		// re-inits the socket, which leaves the subscription silently dead
+		// (Ping still succeeds). Match the non-null MOVING path: mark only.
+		// See #4245.
+		if poolConn.IsPubSub() {
+			return snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline)
+		}
 		if internal.LogLevel.DebugOrAbove() {
 			internal.Logger.Printf(ctx, "%s", logs.SchedulingHandoffToCurrentEndpoint(poolConn.GetID(), float64(timeS)/2))
 		}
-		// same as current endpoint
-		newEndpoint = snh.manager.options.GetAddr()
 		// delay the handoff for timeS/2 seconds to the same endpoint
 		// do this in a goroutine to avoid blocking the notification handler
 		// NOTE: This timer is started while parsing the notification, so the connection is not marked for handoff
