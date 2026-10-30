@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/util"
@@ -104,7 +105,8 @@ func Scan(b []byte, v any) error {
 		*v, err = util.ParseFloat(b, 64)
 		return err
 	case *bool:
-		*v = len(b) == 1 && b[0] == '1'
+		// Preserve v9's false, nil fallback for values ParseBool rejects.
+		*v, _ = strconv.ParseBool(util.BytesToString(b))
 		return nil
 	case *time.Time:
 		var err error
