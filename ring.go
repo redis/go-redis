@@ -78,6 +78,8 @@ type RingOptions struct {
 	Protocol int
 	Username string
 	Password string
+	// AuthEmptyPassword: see Options.AuthEmptyPassword.
+	AuthEmptyPassword bool
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -234,6 +236,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
 		Password:                     opt.Password,
+		AuthEmptyPassword:            opt.AuthEmptyPassword,
 		CredentialsProvider:          opt.CredentialsProvider,
 		CredentialsProviderContext:   opt.CredentialsProviderContext,
 		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
@@ -634,6 +637,7 @@ func NewRing(opt *RingOptions) *Ring {
 	// through them to shard construction, and reusing one caller-owned
 	// RingOptions across several rings must not make the rings share (or
 	// clobber each other's) registry.
+	customFactory := opt.NewClient != nil
 	optCopy := *opt
 	opt = &optCopy
 	opt.init()
@@ -651,6 +655,7 @@ func NewRing(opt *RingOptions) *Ring {
 
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
+	ring.captureCacheIntent = customFactory
 
 	ring.initHooks(hooks{
 		process: ring.process,
@@ -866,6 +871,9 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 	// the warm-cache branch in cmdFirstKeyPosWithInfo is reachable for Ring,
 	// mirroring how ClusterClient.cmdInfo works. For now pass nil
 	pos := cmdFirstKeyPosWithInfo(cmd, nil)
+	if pos < 0 {
+		return nil, fmt.Errorf("redis: cannot determine the routing key for command %s", cmd.Name())
+	}
 	if pos == 0 {
 		return c.sharding.Random()
 	}
@@ -961,7 +969,17 @@ func (c *Ring) generalProcessPipeline(
 	cmdsMap := make(map[string][]Cmder)
 
 	for _, cmd := range cmds {
-		hash := cmd.stringArg(cmdFirstKeyPosWithInfo(cmd, nil))
+		pos := cmdFirstKeyPosWithInfo(cmd, nil)
+		if pos < 0 {
+			err := fmt.Errorf("redis: cannot determine the routing key for command %s", cmd.Name())
+			cmd.SetErr(err)
+			if tx {
+				setCmdsErr(cmds, err)
+				return err
+			}
+			continue
+		}
+		hash := cmd.stringArg(pos)
 		if hash != "" {
 			hash = c.sharding.Hash(hash)
 		}
