@@ -91,6 +91,12 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 		})
 		return nil
 	case *redis.Ring:
+		// NewRing creates the shards before OnNewNode can be called.
+		for _, shard := range rdb.GetShardClients() {
+			if err := registerClient(shard, conf, state); err != nil {
+				return err
+			}
+		}
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			if err := registerClient(rdb, conf, state); err != nil {
 				otel.Handle(err)

@@ -193,6 +193,30 @@ func Test_poolStatsAttrs(t *testing.T) {
 	}
 }
 
+func TestInstrumentMetricsRing(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	rdb := newTestRing("127.0.0.1:6379")
+	defer rdb.Close()
+	if err := InstrumentMetrics(rdb, WithMeterProvider(mp)); err != nil {
+		t.Fatal(err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "db.client.connections.max" {
+				return
+			}
+		}
+	}
+	t.Fatal("db.client.connections.max not reported for the ring shard")
+}
+
 // Test_poolStatsAttrs_race reproduces issue #3880: attribute.NewSet sorts and
 // de-duplicates its input slice in place, so poolStatsAttrs mutates the shared
 // conf.attrs backing array. That array is aliased by every metricsHook.attrs

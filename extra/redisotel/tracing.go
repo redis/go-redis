@@ -38,12 +38,17 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 		})
 		return nil
 	case *redis.Ring:
-		rdb.OnNewNode(func(rdb *redis.Client) {
+		instrument := func(rdb *redis.Client) {
 			opt := rdb.Options()
 			opts = addServerAttributes(opts, opt.Addr)
 			connString := formatDBConnString(opt.Network, opt.Addr)
 			rdb.AddHook(newTracingHook(connString, opts...))
-		})
+		}
+		// NewRing creates the shards before OnNewNode can be called.
+		for _, shard := range rdb.GetShardClients() {
+			instrument(shard)
+		}
+		rdb.OnNewNode(instrument)
 		return nil
 	default:
 		return fmt.Errorf("redisotel: %T not supported", rdb)
