@@ -33,6 +33,7 @@ type ProbabilisticCmdable interface {
 
 	CFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
 	CFAddNX(ctx context.Context, key string, element interface{}) *BoolCmd
+	CFCompact(ctx context.Context, key string) *StatusCmd
 	CFCount(ctx context.Context, key string, element interface{}) *IntCmd
 	CFDel(ctx context.Context, key string, element interface{}) *BoolCmd
 	CFExists(ctx context.Context, key string, element interface{}) *BoolCmd
@@ -598,6 +599,16 @@ func (c cmdable) CFAddNX(ctx context.Context, key string, element interface{}) *
 func (c cmdable) CFCount(ctx context.Context, key string, element interface{}) *IntCmd {
 	args := []interface{}{"CF.COUNT", key, element}
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// CFCompact compacts a Cuckoo filter by moving items into earlier sub-filters
+// and freeing the sub-filters left empty. Useful after many CF.DEL calls.
+// For more information - https://redis.io/commands/cf.compact/
+func (c cmdable) CFCompact(ctx context.Context, key string) *StatusCmd {
+	args := []interface{}{"CF.COMPACT", key}
+	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

@@ -324,6 +324,34 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 					Expect(cnt).To(BeEquivalentTo(int64(2)))
 				})
 
+				It("should CFCompact", Label("cuckoo", "cfcompact"), func() {
+					err := client.CFReserveWithArgs(ctx, "testcf1", &redis.CFReserveOptions{
+						Capacity:   2,
+						BucketSize: 1,
+						Expansion:  1,
+					}).Err()
+					Expect(err).NotTo(HaveOccurred())
+					for i := 0; i < 8; i++ {
+						Expect(client.CFAdd(ctx, "testcf1", fmt.Sprintf("item%d", i)).Err()).NotTo(HaveOccurred())
+					}
+					for i := 0; i < 6; i++ {
+						Expect(client.CFDel(ctx, "testcf1", fmt.Sprintf("item%d", i)).Err()).NotTo(HaveOccurred())
+					}
+
+					res, err := client.CFCompact(ctx, "testcf1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(res).To(Equal("OK"))
+
+					for i := 6; i < 8; i++ {
+						exists, err := client.CFExists(ctx, "testcf1", fmt.Sprintf("item%d", i)).Result()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(exists).To(BeTrue())
+					}
+
+					err = client.CFCompact(ctx, "nosuchcf").Err()
+					Expect(err).To(HaveOccurred())
+				})
+
 				It("should CFDel and CFExists", Label("cuckoo", "cfdel", "cfexists"), func() {
 					err := client.CFAdd(ctx, "testcf1", "item1").Err()
 					Expect(err).NotTo(HaveOccurred())
