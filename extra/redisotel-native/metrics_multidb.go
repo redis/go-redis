@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 )
 
 // MultiDB (Active-Active failover) metrics.
@@ -41,10 +40,10 @@ func (r *metricsRecorder) RecordMultiDBFailover(
 		attribute.String(AttrRedisClientMultiDBFailoverReason, reason),
 	)
 	if r.multiDBFailovers != nil {
-		r.multiDBFailovers.Add(ctx, 1, metric.WithAttributes(attrs...))
+		r.multiDBFailovers.Add(ctx, 1, r.withAttrs(attrs))
 	}
 	if r.multiDBFailoverDuration != nil {
-		r.multiDBFailoverDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+		r.multiDBFailoverDuration.Record(ctx, duration.Seconds(), r.withAttrs(attrs))
 	}
 }
 
@@ -59,7 +58,7 @@ func (r *metricsRecorder) RecordMultiDBActiveDatabaseChange(ctx context.Context,
 		attribute.String(AttrRedisClientMultiDBFromDatabase, fromFQDN),
 		attribute.String(AttrRedisClientMultiDBToDatabase, toFQDN),
 	)
-	r.multiDBActiveDatabaseChanges.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.multiDBActiveDatabaseChanges.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordMultiDBCircuitStateChange records a member circuit breaker state
@@ -74,7 +73,7 @@ func (r *metricsRecorder) RecordMultiDBCircuitStateChange(ctx context.Context, d
 		attribute.String(AttrRedisClientMultiDBCircuitFromState, fromState),
 		attribute.String(AttrRedisClientMultiDBCircuitToState, toState),
 	)
-	r.multiDBCircuitStateChanges.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.multiDBCircuitStateChanges.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordMultiDBHealthCheck records the outcome and wall time of one member
@@ -89,9 +88,9 @@ func (r *metricsRecorder) RecordMultiDBHealthCheck(ctx context.Context, dbFQDN s
 		attribute.Bool(AttrRedisClientMultiDBHealthCheckSuccess, success),
 	)
 	if r.multiDBHealthChecks != nil {
-		r.multiDBHealthChecks.Add(ctx, 1, metric.WithAttributes(attrs...))
+		r.multiDBHealthChecks.Add(ctx, 1, r.withAttrs(attrs))
 	}
 	if r.multiDBHealthCheckDuration != nil {
-		r.multiDBHealthCheckDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+		r.multiDBHealthCheckDuration.Record(ctx, duration.Seconds(), r.withAttrs(attrs))
 	}
 }

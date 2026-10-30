@@ -3,6 +3,7 @@ package redisotel
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -186,6 +187,7 @@ func (o *ObservabilityInstance) configToInternal(cfg *Config) config {
 		bucketsStreamProcessingDuration: cfg.BucketsStreamLag,
 		bucketsConnectionCreateTime:     cfg.BucketsConnectionCreateTime,
 		bucketsConnectionWaitTime:       cfg.BucketsConnectionWaitTime,
+		customAttributes:                slices.Clone(cfg.CustomAttributes),
 	}
 }
 
