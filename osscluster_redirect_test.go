@@ -203,6 +203,13 @@ func TestIsMovedSameConnAddr(t *testing.T) {
 	}{
 		{"MOVED 1 10.0.0.5:6380", "10.0.0.5:6380", true},
 		{"MOVED 1 10.0.0.6:6380", "10.0.0.5:6380", false},
+		// check different casing
+		{"MOVED 1 Redis:6379", "redis:6379", true},
+		// a new node that contains previous connection name
+		{"MOVED 1 new-redis:6379", "redis:6379", false},
+		// check unbracketed IPv6 address.
+		{"MOVED 1 ::1:6379", "[::1]:6379", true},
+		{"MOVED 1 ::2:6379", "[::1]:6379", false},
 		// Without a host the redirect is relative to the sending connection.
 		{"MOVED 1 :6380", "10.0.0.5:6380", true},
 		{"MOVED 1 :6381", "10.0.0.5:6380", false},
