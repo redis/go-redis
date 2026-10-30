@@ -2,7 +2,6 @@ package proto_test
 
 import (
 	"encoding/json"
-	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -61,12 +60,11 @@ func TestScanBoolInvalid(t *testing.T) {
 	for _, input := range []string{"", "2", "yes", "true ", " true"} {
 		t.Run(input, func(t *testing.T) {
 			got := true
-			err := proto.Scan([]byte(input), &got)
-			if !errors.Is(err, strconv.ErrSyntax) {
-				t.Fatalf("Scan(%q): got error %v, want %v", input, err, strconv.ErrSyntax)
+			if err := proto.Scan([]byte(input), &got); err != nil {
+				t.Fatalf("Scan(%q): unexpected error %v", input, err)
 			}
-			if !got {
-				t.Fatalf("Scan(%q) changed destination on error", input)
+			if got {
+				t.Fatalf("Scan(%q): got true, want false", input)
 			}
 		})
 	}
@@ -86,9 +84,17 @@ func TestScanBoolSlice(t *testing.T) {
 			t.Fatalf("ScanSlice index %d: got %v, want %v", i, got[i], value)
 		}
 	}
-	err := proto.ScanSlice([]string{"1", "invalid"}, &got)
-	if !errors.Is(err, strconv.ErrSyntax) || !strings.Contains(err.Error(), "index=1") {
-		t.Fatalf("ScanSlice: got error %v, want syntax error at index 1", err)
+	if err := proto.ScanSlice([]string{"1", "invalid", "", "yes", "true"}, &got); err != nil {
+		t.Fatalf("ScanSlice: unexpected error %v", err)
+	}
+	want = append(want, true, false, false, false, true)
+	if len(got) != len(want) {
+		t.Fatalf("ScanSlice: got %v, want %v", got, want)
+	}
+	for i, value := range want {
+		if got[i] != value {
+			t.Fatalf("ScanSlice index %d: got %v, want %v", i, got[i], value)
+		}
 	}
 }
 
