@@ -617,8 +617,9 @@ func (c cmdable) SAddEX(ctx context.Context, key string, members ...string) *Int
 }
 
 // SAddEXWithArgs adds members with a condition (MNX, MXX) and an expiration
-// (EX, PX, EXAT, PXAT or KEEPTTL). The reply is 0 when the condition failed,
-// 1 otherwise; 1 does not mean the members exist.
+// (EX, PX, EXAT, PXAT or KEEPTTL). The reply is 1 if at least one member was
+// added, updated or deleted, 0 otherwise. A time in the past deletes the
+// members; 1 does not mean the members exist.
 func (c cmdable) SAddEXWithArgs(ctx context.Context, key string, options *SAddEXOptions, members ...string) *IntCmd {
 	args := make([]interface{}, 2, 6+len(members))
 	args[0], args[1] = "saddex", key
