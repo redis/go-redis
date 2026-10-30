@@ -1338,9 +1338,21 @@ func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error)
 }
 
 func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) {
+	return c.reload(ctx, nil)
+}
+
+// reload loads a fresh state, stores it and runs onReload. loaded, when
+// non-nil, runs between the load and the store: LazyReload clears its
+// pending flag there, so the requests the load served are collapsed
+// while a request made against the new state — by onReload itself, or
+// by anyone observing it — stays pending.
+func (c *clusterStateHolder) reload(ctx context.Context, loaded func()) (*clusterState, error) {
 	state, err := c.load(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if loaded != nil {
+		loaded()
 	}
 	c.state.Store(state)
 	if c.onReload != nil {
@@ -1358,16 +1370,18 @@ func (c *clusterStateHolder) LazyReload() {
 
 	go func() {
 		for {
-			_, err := c.Reload(context.Background())
+			// The pending flag is cleared once the load is done, before
+			// the state is stored: the requests that arrived during the
+			// load are served by it, while one made once the new state is
+			// visible — the pub/sub re-route hook runs from onReload and
+			// asks for a reload when a move fails — must survive to the
+			// cooldown check below, or it would be the lost only retry.
+			_, err := c.reload(context.Background(), func() { c.reloadPending.Store(0) })
 			if err != nil {
 				c.reloadPending.Store(0)
 				c.reloading.Store(0)
 				return
 			}
-
-			// Clear pending flag after reload completes, before cooldown
-			// This captures notifications that arrived during the reload
-			c.reloadPending.Store(0)
 
 			// Wait cooldown period
 			time.Sleep(200 * time.Millisecond)
@@ -1421,6 +1435,11 @@ type ClusterClient struct {
 	// connection per node for sharded ones, re-routed on every state
 	// reload (see newPubSubManager).
 	pubSubManager pubsub.PubSubManagerer
+	// pubSubConnOwners maps each live pub/sub connection (*pool.Conn) to
+	// the node *Client that dialed it, so its push notifications are
+	// processed by that client (see pubsubProcessPush). Entries are
+	// added by pubsubConnect and removed by pubsubDisconnect.
+	pubSubConnOwners sync.Map
 	cmdable
 	hooksMixin
 
@@ -3119,28 +3138,42 @@ func (c *ClusterClient) pubsubResolveAddress(prev *pool.Conn, current string) st
 
 // pubsubConnect dials a pub/sub connection to addr — or to any healthy
 // node when addr is empty (the broadcast connection) — through that
-// node client's pub/sub dial (see baseClient.pubsubConnect).
+// node client's pub/sub dial (see baseClient.pubsubConnect), and
+// remembers which node client the connection belongs to.
 func (c *ClusterClient) pubsubConnect(ctx context.Context, addr string) (*pool.Conn, error) {
 	nc, err := c.pubsubNodeClient(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	return nc.pubsubConnect(ctx, nc.opt.Addr)
+	cn, err := nc.pubsubConnect(ctx, nc.opt.Addr)
+	if err != nil {
+		return nil, err
+	}
+	c.pubSubConnOwners.Store(cn, nc)
+	return cn, nil
 }
 
 // pubsubDisconnect tears a pub/sub connection down; it is unpooled, so
 // closing it directly (and uncounting it) is the whole job.
 func (c *ClusterClient) pubsubDisconnect(cn *pool.Conn) error {
+	c.pubSubConnOwners.Delete(cn)
 	pool.UntrackPubSubConn(cn)
 	return cn.Close()
 }
 
 // pubsubProcessPush drains buffered push notifications of a pub/sub
-// connection to addr through that node's client. The push-processor
-// configuration is cluster-wide, so for the broadcast connection (empty
-// addr) any node client serves; with no node to serve it there is
-// nothing to process.
+// connection through the node client that dialed it: the built-in
+// SMIGRATED handler checks the notification's source against that
+// client's addresses, and a custom processor sees it as the
+// notification's Client, so any other node client — in particular a
+// random master for the broadcast connection, whose addr is empty —
+// could drop a valid notification. With no owner on record (never the
+// case for a connection pubsubConnect produced) the node of addr
+// serves; with none at all there is nothing to process.
 func (c *ClusterClient) pubsubProcessPush(ctx context.Context, addr string, cn *pool.Conn, rd *proto.Reader) error {
+	if owner, ok := c.pubSubConnOwners.Load(cn); ok {
+		return owner.(*Client).pubsubProcessPush(ctx, cn, rd)
+	}
 	nc, err := c.pubsubNodeClient(ctx, addr)
 	if err != nil {
 		return nil

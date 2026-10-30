@@ -567,3 +567,162 @@ func TestClusterMovedTriggersReroute(t *testing.T) {
 		t.Fatalf("event after the move = %v, want ssubscribe a (count 1)", sub)
 	}
 }
+
+// TestClusterRerouteReleasesAfterConfirm pins that a moving channel is
+// released on its old node only once the new node confirmed the
+// subscription: the two nodes act on different connections, so an
+// unsubscribe sent earlier could outrun the subscribe and open a
+// delivery gap. The old node keeps delivering until then.
+func TestClusterRerouteReleasesAfterConfirm(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeCluster("n1:6379", "n2:6379")
+	c.own("a", "n1:6379")
+	c.nodes["n2:6379"].autoConfirm = false
+	m := newTestClusterManager(t, c)
+
+	h, err := m.SSubscribe(ctx, "a")
+	if err != nil {
+		t.Fatalf("SSubscribe: %v", err)
+	}
+	events := h.ChannelWithSubscriptions()
+	n1 := c.nodes["n1:6379"].waitDial(t)
+	n1.expectCmd(t, "ssubscribe", "a")
+	recvSubscription(t, events)
+
+	c.own("a", "n2:6379")
+	m.rerouteShards(ctx)
+	n2 := c.nodes["n2:6379"].waitDial(t)
+	n2.expectCmd(t, "ssubscribe", "a")
+
+	// Unconfirmed on n2: n1 keeps the channel and keeps delivering.
+	n1.expectNoCmd(t, 50*time.Millisecond)
+	n1.sendMessage(t, "smessage", "a", "during-move")
+	if msg, ok := recvEvent(t, events).(*Message); !ok || msg.Payload != "during-move" {
+		t.Fatalf("event during the move = %v, want the message from n1", msg)
+	}
+	_, _, schannels := h.Subscriptions()
+	if !slices.Equal(schannels, []string{"a"}) {
+		t.Fatalf("Subscriptions shard channels = %v, want [a]", schannels)
+	}
+
+	// The confirmation lands the channel on n2 and releases n1.
+	n2.sendConfirm(t, "ssubscribe", "a", 1)
+	if sub := recvSubscription(t, events); sub.Channel != "a" || sub.Count != 1 {
+		t.Fatalf("resubscription = %v (count %d), want ssubscribe a with count 1", sub, sub.Count)
+	}
+	n1.expectCmd(t, "sunsubscribe", "a")
+	n1.expectClosed(t)
+	n2.sendMessage(t, "smessage", "a", "after-move")
+	if msg, ok := recvEvent(t, events).(*Message); !ok || msg.Payload != "after-move" {
+		t.Fatalf("event after the move = %v, want the message from n2 (no sunsubscribe)", msg)
+	}
+}
+
+// TestClusterRerouteDialFailureKeepsOldNode pins that a move whose new
+// node cannot be dialed leaves the channel on the old node — still
+// delivering — and completes once the new node comes back and confirms.
+func TestClusterRerouteDialFailureKeepsOldNode(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeCluster("n1:6379", "n2:6379")
+	c.own("a", "n1:6379")
+	m := newTestClusterManager(t, c)
+
+	h, err := m.SSubscribe(ctx, "a")
+	if err != nil {
+		t.Fatalf("SSubscribe: %v", err)
+	}
+	events := h.ChannelWithSubscriptions()
+	n1 := c.nodes["n1:6379"].waitDial(t)
+	n1.expectCmd(t, "ssubscribe", "a")
+	recvSubscription(t, events)
+
+	dialErr := errors.New("node down")
+	c.nodes["n2:6379"].setDialErr(dialErr)
+	c.own("a", "n2:6379")
+	m.rerouteShards(ctx)
+	c.waitReload(t) // the failed move asks for a fresh view
+
+	n1.expectNoCmd(t, 50*time.Millisecond)
+	n1.sendMessage(t, "smessage", "a", "while-down")
+	if msg, ok := recvEvent(t, events).(*Message); !ok || msg.Payload != "while-down" {
+		t.Fatalf("event while n2 is down = %v, want the message from n1", msg)
+	}
+
+	// n2 is back: the engine's reconnect replays the subscribe, its
+	// confirmation completes the move.
+	c.nodes["n2:6379"].setDialErr(nil)
+	n2 := c.nodes["n2:6379"].waitDial(t)
+	n2.expectCmd(t, "ssubscribe", "a")
+	if sub := recvSubscription(t, events); sub.Channel != "a" || sub.Count != 1 {
+		t.Fatalf("resubscription = %v (count %d), want ssubscribe a with count 1", sub, sub.Count)
+	}
+	n1.expectCmd(t, "sunsubscribe", "a")
+	n1.expectClosed(t)
+}
+
+// TestClusterClientSetNamePong pins that a handle's ClientSetName names
+// the broadcast connection and that the +OK reply reaches the handle's
+// Events as a Pong — the documented way the reply is drained — rather
+// than being consumed silently.
+func TestClusterClientSetNamePong(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeCluster("n1:6379")
+	m := newTestClusterManager(t, c)
+
+	h := m.NewHandle()
+	if err := h.ClientSetName(ctx, "worker"); err != nil {
+		t.Fatalf("ClientSetName: %v", err)
+	}
+	bc := c.broadcast.waitDial(t)
+	bc.expectCmd(t, "client", "setname", "worker")
+	bc.write(t, "+OK\r\n")
+	if _, ok := recvEvent(t, h.Events()).(*Pong); !ok {
+		t.Fatal("the +OK reply of ClientSetName did not surface as a Pong on Events")
+	}
+}
+
+// TestClusterEmptyHandlePing pins that a handle with no subscriptions
+// pings through its own broadcast part: the pong reaches its Events (a
+// manager-level ping would consume it silently and leave Receive
+// waiting), and closing the handle releases the connection the ping
+// dialed instead of leaving it to the cluster client's Close.
+func TestClusterEmptyHandlePing(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeCluster("n1:6379")
+	c.broadcast.autoPong = true
+	m := newTestClusterManager(t, c)
+
+	h := m.NewHandle()
+	if err := h.Ping(ctx, "hi"); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	bc := c.broadcast.waitDial(t)
+	bc.expectCmd(t, "ping", "hi")
+	if pong, ok := recvEvent(t, h.Events()).(*Pong); !ok || pong.Payload != "hi" {
+		t.Fatalf("event after Ping = %v, want the pong with payload hi", pong)
+	}
+
+	// A silent ping stays silent, and the second ping reuses the part.
+	if err := h.PingSilent(ctx); err != nil {
+		t.Fatalf("PingSilent: %v", err)
+	}
+	bc.expectCmd(t, "ping")
+	select {
+	case ev := <-h.Events():
+		t.Fatalf("event after PingSilent = %v, want none", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	bc.expectClosed(t)
+	select {
+	case _, ok := <-h.Events():
+		if ok {
+			t.Fatal("Events delivered after Close, want it closed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Events to close")
+	}
+}

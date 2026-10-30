@@ -56,6 +56,13 @@ type clusterShardHandle struct {
 	// the parts; a desired channel on no part could not be placed and is
 	// retried by the re-route sweep until it lands.
 	schannels map[string]struct{}
+	// moving maps a shard channel mid-move to the part it moves to. The
+	// part it leaves keeps the channel — and keeps delivering — until
+	// the new part confirms the subscription (see landedLocked): the
+	// two nodes act on different connections, so an unsubscribe sent
+	// before that confirmation could outrun it and open a delivery gap.
+	// Both parts may deliver a message published in the overlap.
+	moving map[string]*shardPart
 	// broadcast is the broadcast part's handle, created lazily.
 	broadcast PubSuber
 
@@ -98,6 +105,7 @@ func newClusterShardHandle(m *ClusterManager) *clusterShardHandle {
 		m:         m,
 		parts:     make(map[*shardPart]struct{}),
 		schannels: make(map[string]struct{}),
+		moving:    make(map[string]*shardPart),
 		confirmed: make(map[confirmKey]struct{}),
 		events:    make(chan any, size),
 		closing:   make(chan struct{}),
@@ -213,10 +221,13 @@ func (h *clusterShardHandle) pumpStarted() bool {
 	return h.pump != pumpNone
 }
 
-// deliver puts an event on the composite stream, waiting for room; a
-// closing handle drops it (its stream is about to end, and nothing the
-// teardown produces must sit on events for a Receive after Close).
-func (h *clusterShardHandle) deliver(ev any) {
+// deliver puts an event of part p (nil for a DeliverError) on the
+// composite stream, waiting for room; a closing handle drops it (its
+// stream is about to end, and nothing the teardown produces must sit on
+// events for a Receive after Close). A confirmation that lands a moving
+// channel on p releases the channel from the parts it left first, so
+// the old node stops as soon as the new one is known to deliver.
+func (h *clusterShardHandle) deliver(p *shardPart, ev any) {
 	h.deliverMu.Lock()
 	defer h.deliverMu.Unlock()
 
@@ -225,8 +236,11 @@ func (h *clusterShardHandle) deliver(ev any) {
 		h.mu.Unlock()
 		return
 	}
+	release, emptied := h.landedLocked(p, ev)
 	ev, ok := h.stampLocked(ev)
 	h.mu.Unlock()
+
+	h.releaseParts(release, emptied)
 	if !ok {
 		return
 	}
@@ -237,11 +251,62 @@ func (h *clusterShardHandle) deliver(ev any) {
 	}
 }
 
+// landedLocked completes the move of a shard channel when ev is its
+// subscription confirmation from the part the channel moves to: the
+// parts it left stop carrying it and are to be sent its unsubscribe,
+// and those left empty are to be closed. Callers must hold h.mu.
+func (h *clusterShardHandle) landedLocked(p *shardPart, ev any) (release map[*shardPart][]string, emptied []*shardPart) {
+	sub, ok := ev.(*Subscription)
+	if !ok || p == nil || sub.Kind != "ssubscribe" || h.moving[sub.Channel] != p {
+		return nil, nil
+	}
+	delete(h.moving, sub.Channel)
+	for q := range h.parts {
+		if q == p {
+			continue
+		}
+		if _, held := q.schannels[sub.Channel]; !held {
+			continue
+		}
+		delete(q.schannels, sub.Channel)
+		if release == nil {
+			release = make(map[*shardPart][]string)
+		}
+		release[q] = append(release[q], sub.Channel)
+		if len(q.schannels) == 0 {
+			emptied = append(emptied, q)
+		}
+	}
+	return release, emptied
+}
+
+// releaseParts unsubscribes the released channels on the parts that
+// held them and closes the parts left empty: closing the handle ends
+// its stream, and the exiting forwarder detaches the part. The old
+// part's unsubscribe confirmation is then suppressed by stampLocked —
+// the composite stays subscribed. Callers must not hold h.mu.
+func (h *clusterShardHandle) releaseParts(release map[*shardPart][]string, emptied []*shardPart) {
+	if len(release) == 0 {
+		return
+	}
+	ctx := context.Background()
+	for q, chs := range release {
+		slices.Sort(chs)
+		_ = q.handle.SUnsubscribe(ctx, chs...)
+	}
+	for _, q := range emptied {
+		_ = q.handle.Close()
+	}
+	if len(emptied) > 0 {
+		h.m.prune()
+	}
+}
+
 // stampLocked gives a subscription confirmation the composite's own
 // Count, as handle.deliverSubscriptionLocked does for a standalone
 // handle, and reports whether the event is delivered at all: the
 // unsubscribe confirmation a shard channel's old part produces when the
-// channel moved to another part (see detachChannels) is not — the
+// channel moved to another part (see landedLocked) is not — the
 // composite is still subscribed, and a consumer watching
 // ChannelWithSubscriptions sees the resubscription on the new node (a
 // confirmation with an unchanged Count, like a reconnect replay's),
@@ -295,26 +360,11 @@ func (h *clusterShardHandle) placedLocked(ch string) bool {
 	return false
 }
 
-// attachPart adds a freshly subscribed part and starts its forwarder.
-// It reports false — and the caller must close the part — when the
-// handle stopped accepting work concurrently.
-func (h *clusterShardHandle) attachPart(p *shardPart) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.state != shardHandleOpen {
-		return false
-	}
-	h.parts[p] = struct{}{}
-	h.active++
-	go h.forward(p)
-	return true
-}
-
 // forward moves a part's events into the composite stream until the
 // part's stream ends (emptied and closed, pruned, or closing).
 func (h *clusterShardHandle) forward(p *shardPart) {
 	for ev := range p.handle.Events() {
-		h.deliver(ev)
+		h.deliver(p, ev)
 	}
 	h.forwarderExited(p)
 }
@@ -322,11 +372,17 @@ func (h *clusterShardHandle) forward(p *shardPart) {
 // forwarderExited runs the close accounting when a part's delivery
 // stream ends. A part that ends while the handle is open (its node
 // manager was torn down) leaves its channels desired-but-unplaced for
-// the next re-route sweep.
+// the next re-route sweep; a channel that was moving to it stays on
+// the part it was leaving, which the sweep moves again.
 func (h *clusterShardHandle) forwarderExited(p *shardPart) {
 	h.mu.Lock()
 	h.active--
 	delete(h.parts, p)
+	for ch, dest := range h.moving {
+		if dest == p {
+			delete(h.moving, ch)
+		}
+	}
 	shouldClose := h.shouldCloseLocked()
 	h.mu.Unlock()
 
@@ -344,17 +400,22 @@ func (h *clusterShardHandle) shouldCloseLocked() bool {
 
 // placement snapshots where every shard channel lives: the part and
 // addr per placed channel, plus the full list of channels a sweep must
-// resolve (placed ∪ desired). Callers must hold h.mu.
+// resolve (placed ∪ desired). A channel mid-move is placed on the part
+// it moves to; the part it leaves is released once that one confirms.
+// Callers must hold h.mu.
 func (h *clusterShardHandle) placementLocked() (current map[string]*shardPart, currentAddrs map[string]string, all []string) {
 	current = make(map[string]*shardPart)
 	currentAddrs = make(map[string]string)
 	for p := range h.parts {
 		for ch := range p.schannels {
+			if prev, seen := current[ch]; seen && (prev == h.moving[ch] || p != h.moving[ch]) {
+				continue
+			}
 			current[ch] = p
 			currentAddrs[ch] = p.addr
-			all = append(all, ch)
 		}
 	}
+	all = slices.Collect(maps.Keys(current))
 	// Desired-but-unplaced channels ride the sweep with no current
 	// placement and land wherever the resolve picks now.
 	for ch := range h.schannels {
@@ -366,10 +427,11 @@ func (h *clusterShardHandle) placementLocked() (current map[string]*shardPart, c
 }
 
 // reroute moves every shard channel whose slot owner no longer matches
-// the part it lives on to the current owner: subscribe on the new node
-// first — overlap beats a delivery gap — then release the channel on
-// the old part. The events stream is untouched. Serialized by the
-// manager's re-route sweep (callers hold rerouteMu).
+// the part it lives on to the current owner: subscribe on the new node,
+// and release the channel on the old part only once the new node
+// confirmed it — overlap beats a delivery gap. The events stream is
+// untouched. Serialized by the manager's re-route sweep (callers hold
+// rerouteMu).
 func (h *clusterShardHandle) reroute(ctx context.Context) error {
 	h.mu.Lock()
 	if h.state != shardHandleOpen {
@@ -411,14 +473,17 @@ func (h *clusterShardHandle) reroute(ctx context.Context) error {
 
 // handleSSubscribe places one resolved owner-group of shard channels on
 // addr, preferring to join an existing part there (a fresh part per
-// call would leak one emptied part per migration cycle), then releases
-// the relocated channels from the parts they lived on. A failed dial
-// still places the channels — the engine keeps their registration for
-// its reconnect replay — and is reported. Callers hold rerouteMu and
+// call would leak one emptied part per migration cycle). A relocated
+// channel is marked moving before its subscribe is written — the
+// confirmation may arrive before the write returns — and stays on the
+// part it leaves until the new part confirms it (see landedLocked). A
+// failed dial still places the channels — the engine keeps their
+// registration for its reconnect replay, and the old part keeps
+// delivering meanwhile — and is reported. Callers hold rerouteMu and
 // must not hold h.mu.
 func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, channels map[string]struct{}, current map[string]*shardPart) error {
 	// Skip channels already placed on the target node; a channel with no
-	// placement needs subscribing but has no old part to detach from.
+	// placement needs subscribing but has no old part to release.
 	moved := make(map[string]struct{}, len(channels))
 	relocated := make(map[string]struct{}, len(channels))
 	for ch := range channels {
@@ -435,6 +500,29 @@ func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, 
 		return nil
 	}
 
+	// markMoving points the relocated channels at target, if the part
+	// they leave still carries them (one that ended meanwhile left them
+	// unplaced: nothing to release). Callers must hold h.mu.
+	markMoving := func(target *shardPart) {
+		for ch := range relocated {
+			old := current[ch]
+			if _, live := h.parts[old]; !live {
+				continue
+			}
+			if _, held := old.schannels[ch]; held {
+				h.moving[ch] = target
+			}
+		}
+	}
+	// unmarkMoving reverts markMoving(target). Callers must hold h.mu.
+	unmarkMoving := func(target *shardPart) {
+		for ch := range relocated {
+			if h.moving[ch] == target {
+				delete(h.moving, ch)
+			}
+		}
+	}
+
 	h.mu.Lock()
 	var target *shardPart
 	for p := range h.parts {
@@ -442,6 +530,9 @@ func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, 
 			target = p
 			break
 		}
+	}
+	if target != nil {
+		markMoving(target)
 	}
 	h.mu.Unlock()
 
@@ -451,6 +542,9 @@ func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, 
 		if errors.Is(err, pool.ErrClosed) {
 			// The part's node manager was pruned between the lookup and
 			// the subscribe; fall through to a fresh part.
+			h.mu.Lock()
+			unmarkMoving(target)
+			h.mu.Unlock()
 			target = nil
 		}
 	}
@@ -459,67 +553,28 @@ func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, 
 		if part == nil {
 			return perr
 		}
+		// The part's forwarder — and so any confirmation — starts after
+		// the mark, under the same lock.
 		target = &shardPart{addr: addr, handle: part, schannels: make(map[string]struct{}, len(moved))}
-		if !h.attachPart(target) {
+		h.mu.Lock()
+		if h.state != shardHandleOpen {
+			h.mu.Unlock()
 			_ = part.Close()
 			return pool.ErrClosed
 		}
-		err = perr
+		maps.Copy(target.schannels, moved)
+		markMoving(target)
+		h.parts[target] = struct{}{}
+		h.active++
+		go h.forward(target)
+		h.mu.Unlock()
+		return perr
 	}
 
 	h.mu.Lock()
 	maps.Copy(target.schannels, moved)
 	h.mu.Unlock()
-
-	if len(relocated) > 0 {
-		h.detachChannels(ctx, current, relocated, target)
-	}
 	return err
-}
-
-// detachChannels removes the just re-subscribed channels from the parts
-// they previously lived on; parts left empty are closed. A channel
-// already gone from its old part was unsubscribed mid-flight and must
-// not be resurrected: it is stripped from newPart and unsubscribed
-// there.
-func (h *clusterShardHandle) detachChannels(ctx context.Context, current map[string]*shardPart, channels map[string]struct{}, newPart *shardPart) {
-	h.mu.Lock()
-	detach := make(map[*shardPart][]string)
-	var stale []string
-	for ch := range channels {
-		p := current[ch]
-		if p != nil {
-			if _, ok := p.schannels[ch]; ok {
-				delete(p.schannels, ch)
-				detach[p] = append(detach[p], ch)
-				continue
-			}
-		}
-		delete(newPart.schannels, ch)
-		stale = append(stale, ch)
-	}
-	h.mu.Unlock()
-
-	for p, chs := range detach {
-		_ = p.handle.SUnsubscribe(ctx, chs...)
-	}
-	if len(stale) > 0 {
-		_ = newPart.handle.SUnsubscribe(ctx, stale...)
-	}
-
-	// Close the slot parts the moves emptied: closing the handle ends
-	// its stream, and the exiting forwarder detaches the part.
-	h.mu.Lock()
-	var emptied []*shardPart
-	for p := range h.parts {
-		if p.schannels != nil && len(p.schannels) == 0 {
-			emptied = append(emptied, p)
-		}
-	}
-	h.mu.Unlock()
-	for _, p := range emptied {
-		_ = p.handle.Close()
-	}
 }
 
 // endReroute reverses the close-accounting hold taken by reroute and
@@ -729,6 +784,7 @@ func (h *clusterShardHandle) SUnsubscribe(ctx context.Context, channels ...strin
 	targets := make(map[*shardPart][]string)
 	if len(channels) == 0 {
 		clear(h.schannels)
+		clear(h.moving)
 		for p := range h.parts {
 			if len(p.schannels) == 0 {
 				continue
@@ -739,7 +795,9 @@ func (h *clusterShardHandle) SUnsubscribe(ctx context.Context, channels ...strin
 	} else {
 		for _, ch := range channels {
 			delete(h.schannels, ch)
+			delete(h.moving, ch)
 		}
+		// A channel mid-move is released on both parts.
 		for p := range h.parts {
 			var subset []string
 			for _, ch := range channels {
@@ -796,14 +854,12 @@ func (h *clusterShardHandle) openParts() ([]*shardPart, error) {
 // Ping pings every node the handle has a part on, returning the first
 // error. Only one (arbitrary) part's pong surfaces on Events, so a Ping
 // yields at most one pong like the standalone handle's would. A
-// part-less handle pings the broadcast connection (no pong surfaces).
+// part-less handle pings the broadcast connection through its own
+// broadcast part (see pingParts).
 func (h *clusterShardHandle) Ping(ctx context.Context, payload ...string) error {
-	parts, err := h.openParts()
+	parts, err := h.pingParts()
 	if err != nil {
 		return err
-	}
-	if len(parts) == 0 {
-		return h.m.Ping(ctx, payload...)
 	}
 	// All pings but the last are silent: one Ping call, one pong.
 	for _, p := range parts[:len(parts)-1] {
@@ -816,12 +872,9 @@ func (h *clusterShardHandle) Ping(ctx context.Context, payload ...string) error 
 
 // PingSilent pings every part's node with no pong surfacing on Events.
 func (h *clusterShardHandle) PingSilent(ctx context.Context, payload ...string) error {
-	parts, err := h.openParts()
+	parts, err := h.pingParts()
 	if err != nil {
 		return err
-	}
-	if len(parts) == 0 {
-		return h.m.Ping(ctx, payload...)
 	}
 	for _, p := range parts {
 		if err := p.handle.PingSilent(ctx, payload...); err != nil {
@@ -831,17 +884,43 @@ func (h *clusterShardHandle) PingSilent(ctx context.Context, payload ...string) 
 	return nil
 }
 
-// ClientSetName names the broadcast connection.
-func (h *clusterShardHandle) ClientSetName(ctx context.Context, name string) error {
-	if !h.open() {
-		return pool.ErrClosed
+// pingParts returns the parts a ping goes to: the handle's parts, or —
+// for a handle with none — its broadcast part, created for the purpose.
+// Pinging through a part of this handle, never the manager, keeps the
+// pong attributed to it (a manager-level ping consumes the pong
+// silently, and Receive would wait for the next event instead) and the
+// dialed connection owned by it, so Close releases the connection
+// instead of leaving it to the cluster client's own Close.
+func (h *clusterShardHandle) pingParts() ([]*shardPart, error) {
+	parts, err := h.openParts()
+	if err != nil {
+		return nil, err
 	}
-	return h.m.ClientSetName(ctx, name)
+	if len(parts) > 0 {
+		return parts, nil
+	}
+	bh, err := h.broadcastPart()
+	if err != nil {
+		return nil, err
+	}
+	return []*shardPart{{handle: bh}}, nil
+}
+
+// ClientSetName names the broadcast connection through this handle's
+// broadcast part, so the +OK reply surfaces on the composite Events as
+// a Pong like the standalone handle's does (the manager-level call
+// would consume it silently).
+func (h *clusterShardHandle) ClientSetName(ctx context.Context, name string) error {
+	bh, err := h.broadcastPart()
+	if err != nil {
+		return err
+	}
+	return bh.ClientSetName(ctx, name)
 }
 
 // DeliverError puts err on the composite stream (see PubSuber).
 func (h *clusterShardHandle) DeliverError(err error) {
-	h.deliver(err)
+	h.deliver(nil, err)
 }
 
 // Close unsubscribes every part and ends the events stream. Subsequent

@@ -1,16 +1,20 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // TestSubscribeInitialDialErrorReachesReceive pins that the dial error of
@@ -405,5 +409,83 @@ func TestClusterSubscribeInitialErrorReachesReceive(t *testing.T) {
 				t.Fatal("Receive blocked until its timeout: the initial error was not delivered")
 			}
 		})
+	}
+}
+
+// recordingPushHandler records the handler contexts it was invoked with.
+type recordingPushHandler struct {
+	mu    sync.Mutex
+	calls []push.NotificationHandlerContext
+}
+
+func (h *recordingPushHandler) HandlePushNotification(_ context.Context, handlerCtx push.NotificationHandlerContext, _ []any) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, handlerCtx)
+	return nil
+}
+
+func (h *recordingPushHandler) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.calls)
+}
+
+// TestClusterPubSubPushProcessedByOwningNode pins that the push
+// notifications of a cluster pub/sub connection are drained by the node
+// client that dialed it — recorded at dial time — rather than by a
+// node looked up by address: for the broadcast connection the address
+// is empty and that lookup would pick an arbitrary master, whose
+// SMIGRATED handler could ignore a valid notification and whose
+// identity a custom handler would be told.
+func TestClusterPubSubPushProcessedByOwningNode(t *testing.T) {
+	// Nothing is dialed: node clients are created on lookup only.
+	client := NewClusterClient(&ClusterOptions{
+		Addrs:    []string{"10.255.255.1:6379", "10.255.255.2:6379"},
+		Protocol: 3,
+	})
+	defer client.Close()
+
+	owner, err := client.nodes.GetOrCreate("10.255.255.1:6379")
+	if err != nil {
+		t.Fatalf("GetOrCreate owner: %v", err)
+	}
+	other, err := client.nodes.GetOrCreate("10.255.255.2:6379")
+	if err != nil {
+		t.Fatalf("GetOrCreate other: %v", err)
+	}
+	ownerHandler, otherHandler := &recordingPushHandler{}, &recordingPushHandler{}
+	if err := owner.Client.RegisterPushNotificationHandler("TESTPUSH", ownerHandler, false); err != nil {
+		t.Fatalf("register on owner: %v", err)
+	}
+	if err := other.Client.RegisterPushNotificationHandler("TESTPUSH", otherHandler, false); err != nil {
+		t.Fatalf("register on other: %v", err)
+	}
+
+	// A connection the owner "dialed" for the broadcast manager (empty
+	// addr): what pubsubConnect records.
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	cn := pool.NewConn(clientConn)
+	client.pubSubConnOwners.Store(cn, owner.Client)
+
+	rd := proto.NewReader(bytes.NewBufferString(">2\r\n$8\r\nTESTPUSH\r\n$1\r\nx\r\n"))
+	if err := client.pubsubProcessPush(context.Background(), "", cn, rd); err != nil {
+		t.Fatalf("pubsubProcessPush: %v", err)
+	}
+	if n := ownerHandler.count(); n != 1 {
+		t.Fatalf("owner's handler called %d times, want 1", n)
+	}
+	if n := otherHandler.count(); n != 0 {
+		t.Fatalf("other node's handler called %d times, want 0", n)
+	}
+	if got := ownerHandler.calls[0].Client; got != owner.Client.baseClient {
+		t.Fatalf("handler context Client = %T %p, want the owning node client %p", got, got, owner.Client.baseClient)
+	}
+
+	// Disconnecting forgets the owner.
+	_ = client.pubsubDisconnect(cn)
+	if _, ok := client.pubSubConnOwners.Load(cn); ok {
+		t.Fatal("owner entry survived pubsubDisconnect")
 	}
 }
