@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"os"
 	"sync"
 	"testing"
 
@@ -53,7 +52,7 @@ func TestPubSubCloseRemovesStreamingCredentialsState(t *testing.T) {
 		listeners:   map[auth.CredentialsListener]struct{}{},
 	}
 	client := NewClient(&Options{
-		Addr:                         streamingCredentialsTestAddr(),
+		Addr:                         internalTestRedisAddr(),
 		StreamingCredentialsProvider: provider,
 	})
 	defer client.Close()
@@ -96,7 +95,7 @@ func TestClientCloseRemovesStreamingCredentialsStateOfOpenPubSubs(t *testing.T) 
 		listeners:   map[auth.CredentialsListener]struct{}{},
 	}
 	client := NewClient(&Options{
-		Addr:                         streamingCredentialsTestAddr(),
+		Addr:                         internalTestRedisAddr(),
 		StreamingCredentialsProvider: provider,
 	})
 	if err := client.Ping(ctx).Err(); err != nil {
@@ -129,11 +128,4 @@ func TestClientCloseRemovesStreamingCredentialsStateOfOpenPubSubs(t *testing.T) 
 			t.Fatalf("pub/sub connection %d closed by Client.Close still has re-auth state", connID)
 		}
 	}
-}
-
-func streamingCredentialsTestAddr() string {
-	if port := os.Getenv("REDIS_PORT"); port != "" {
-		return ":" + port
-	}
-	return ":6379"
 }
