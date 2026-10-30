@@ -5231,6 +5231,182 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("sets", func() {
+		Describe("member expiration", func() {
+			BeforeEach(func() {
+				SkipBeforeRedisVersion("8.12", "set member expiration needs Redis 8.12")
+			})
+
+			It("sets, reads and removes member expirations", func() {
+				Expect(client.SAddEX(ctx, "sexp", "a", "b", "c").Val()).To(Equal(int64(1)))
+
+				res, err := client.SExpire(ctx, "sexp", 100*time.Second, "a", "nosuch").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated, redis.SMemberNotFound}))
+
+				res, err = client.STTL(ctx, "sexp", "a", "b", "nosuch").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res[0]).To(BeNumerically("~", 100, 2))
+				Expect(res[1:]).To(Equal([]int64{redis.SMemberNoExpiration, redis.SMemberNotFound}))
+
+				res, err = client.SExpireWithArgs(ctx, "sexp", 50*time.Second, redis.SExpireArgs{GT: true}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireConditionFail}))
+
+				res, err = client.SPersist(ctx, "sexp", "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated, redis.SMemberNoExpiration}))
+
+				res, err = client.SPExpireAt(ctx, "sexp", time.UnixMilli(1), "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireDeleted}))
+			})
+
+			It("returns one -2 per member for a missing key", func() {
+				res, err := client.SPTTL(ctx, "sexp-missing", "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SMemberNotFound, redis.SMemberNotFound}))
+			})
+
+			It("honors SADDEX conditions", func() {
+				n, err := client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{Condition: redis.SAddEXMXX}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(0)))
+
+				Expect(client.SAddEX(ctx, "sexp", "a").Val()).To(Equal(int64(1)))
+
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{Condition: redis.SAddEXMNX}, "a", "z").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(0)))
+				Expect(client.SIsMember(ctx, "sexp", "z").Val()).To(BeFalse())
+
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					Condition:      redis.SAddEXMXX,
+					ExpirationType: redis.SAddEXExpirationPX,
+					ExpirationVal:  50000,
+				}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+				ttl, err := client.SPTTL(ctx, "sexp", "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ttl[0]).To(BeNumerically("~", 50000, 5000))
+			})
+
+			It("sets SADDEX expirations", func() {
+				n, err := client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationEX,
+					ExpirationVal:  100,
+				}, "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				ttl, err := client.STTL(ctx, "sexp", "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ttl).To(HaveLen(2))
+				Expect(ttl[0]).To(BeNumerically("~", 100, 2))
+				Expect(ttl[1]).To(BeNumerically("~", 100, 2))
+
+				// SADDEX without an expiration drops it from existing members.
+				Expect(client.SAddEX(ctx, "sexp", "a").Val()).To(Equal(int64(1)))
+				// KEEPTTL keeps b's expiration; c is added without one.
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationKEEPTTL,
+				}, "b", "c").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				ttl, err = client.STTL(ctx, "sexp", "a", "b", "c").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ttl).To(HaveLen(3))
+				Expect(ttl[0]).To(Equal(redis.SMemberNoExpiration))
+				Expect(ttl[1]).To(BeNumerically("~", 100, 2))
+				Expect(ttl[2]).To(Equal(redis.SMemberNoExpiration))
+
+				// Nothing changes: the members exist without an expiration.
+				Expect(client.SAddEX(ctx, "sexp", "a", "c").Val()).To(Equal(int64(0)))
+
+				at := time.Unix(4102444800, 0)
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationEXAT,
+					ExpirationVal:  at.Unix(),
+				}, "d").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationPXAT,
+					ExpirationVal:  at.UnixMilli() + 1000,
+				}, "e").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				res, err := client.SExpireTime(ctx, "sexp", "d", "e", "a", "nosuch").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{at.Unix(), at.Unix() + 1, redis.SMemberNoExpiration, redis.SMemberNotFound}))
+				res, err = client.SPExpireTime(ctx, "sexp", "d", "e").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{at.UnixMilli(), at.UnixMilli() + 1000}))
+			})
+
+			It("deletes members with a SADDEX time in the past", func() {
+				Expect(client.SAdd(ctx, "sexp", "a", "b").Err()).NotTo(HaveOccurred())
+
+				n, err := client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationPX,
+					ExpirationVal:  0,
+				}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+				Expect(client.SIsMember(ctx, "sexp", "a").Val()).To(BeFalse())
+
+				// Past time on a missing member changes nothing.
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationEXAT,
+					ExpirationVal:  1,
+				}, "x").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(0)))
+				Expect(client.SIsMember(ctx, "sexp", "x").Val()).To(BeFalse())
+
+				err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationEX,
+					ExpirationVal:  -1,
+				}, "b").Err()
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("sets member expirations in ms and at absolute times", func() {
+				Expect(client.SAdd(ctx, "sexp", "a", "b").Err()).NotTo(HaveOccurred())
+
+				res, err := client.SPExpire(ctx, "sexp", 20*time.Second, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated}))
+				ttl, err := client.SPTTL(ctx, "sexp", "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ttl[0]).To(BeNumerically("~", 20000, 2000))
+
+				res, err = client.SPExpireWithArgs(ctx, "sexp", 30*time.Second, redis.SExpireArgs{LT: true}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireConditionFail}))
+
+				at := time.Unix(4102444800, 0)
+				res, err = client.SExpireAtWithArgs(ctx, "sexp", at, redis.SExpireArgs{NX: true}, "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireConditionFail, redis.SExpireUpdated}))
+
+				res, err = client.SPExpireAtWithArgs(ctx, "sexp", at.Add(time.Second), redis.SExpireArgs{XX: true}, "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated}))
+
+				res, err = client.SExpireTime(ctx, "sexp", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{at.Unix() + 1}))
+
+				res, err = client.SExpireAt(ctx, "sexp", time.Unix(1, 0), "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireDeleted}))
+				Expect(client.SIsMember(ctx, "sexp", "b").Val()).To(BeFalse())
+			})
+		})
+
 		It("should SAdd", func() {
 			sAdd := client.SAdd(ctx, "set", "Hello")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())

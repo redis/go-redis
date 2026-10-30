@@ -1,6 +1,9 @@
 package redis
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // SetCmdable is an interface for Redis set commands.
 // Sets are unordered collections of unique strings.
@@ -27,6 +30,23 @@ type SetCmdable interface {
 	SUnion(ctx context.Context, keys ...string) *StringSliceCmd
 	SUnionCard(ctx context.Context, opts *SUnionCardOptions, keys ...string) *IntCmd
 	SUnionStore(ctx context.Context, destination string, keys ...string) *IntCmd
+
+	// Member expiration, since Redis 8.12.
+	SExpire(ctx context.Context, key string, expiration time.Duration, members ...string) *IntSliceCmd
+	SExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs SExpireArgs, members ...string) *IntSliceCmd
+	SPExpire(ctx context.Context, key string, expiration time.Duration, members ...string) *IntSliceCmd
+	SPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs SExpireArgs, members ...string) *IntSliceCmd
+	SExpireAt(ctx context.Context, key string, tm time.Time, members ...string) *IntSliceCmd
+	SExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs SExpireArgs, members ...string) *IntSliceCmd
+	SPExpireAt(ctx context.Context, key string, tm time.Time, members ...string) *IntSliceCmd
+	SPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs SExpireArgs, members ...string) *IntSliceCmd
+	STTL(ctx context.Context, key string, members ...string) *IntSliceCmd
+	SPTTL(ctx context.Context, key string, members ...string) *IntSliceCmd
+	SExpireTime(ctx context.Context, key string, members ...string) *IntSliceCmd
+	SPExpireTime(ctx context.Context, key string, members ...string) *IntSliceCmd
+	SPersist(ctx context.Context, key string, members ...string) *IntSliceCmd
+	SAddEX(ctx context.Context, key string, members ...string) *IntCmd
+	SAddEXWithArgs(ctx context.Context, key string, options *SAddEXOptions, members ...string) *IntCmd
 }
 
 // SUnionCardOptions are the options for SUnionCard.
@@ -412,6 +432,209 @@ func (c cmdable) SScan(ctx context.Context, key string, cursor uint64, match str
 		args = append(args, "count", count)
 	}
 	cmd := NewScanCmd(ctx, c, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Result codes in the reply of the member expiration commands.
+const (
+	SMemberNotFound      int64 = -2 // member or key does not exist
+	SMemberNoExpiration  int64 = -1 // member exists without an expiration
+	SExpireConditionFail int64 = 0  // condition flag not met
+	SExpireUpdated       int64 = 1  // expiration set, updated or removed
+	SExpireDeleted       int64 = 2  // expiration in the past, member deleted
+)
+
+// SExpireArgs are the condition flags of SEXPIRE and its variants.
+// At most one may be set; the server rejects more than one.
+type SExpireArgs struct {
+	NX bool
+	XX bool
+	GT bool
+	LT bool
+}
+
+type SAddEXCondition string
+
+const (
+	SAddEXMNX SAddEXCondition = "MNX" // Only add if none of the members exist.
+	SAddEXMXX SAddEXCondition = "MXX" // Only add if all the members exist.
+)
+
+type SAddEXExpirationType string
+
+const (
+	SAddEXExpirationEX      SAddEXExpirationType = "EX"
+	SAddEXExpirationPX      SAddEXExpirationType = "PX"
+	SAddEXExpirationEXAT    SAddEXExpirationType = "EXAT"
+	SAddEXExpirationPXAT    SAddEXExpirationType = "PXAT"
+	SAddEXExpirationKEEPTTL SAddEXExpirationType = "KEEPTTL"
+)
+
+// SAddEXOptions are the options of SAddEXWithArgs.
+// ExpirationVal is in the unit of ExpirationType; unused for KEEPTTL.
+type SAddEXOptions struct {
+	Condition      SAddEXCondition
+	ExpirationType SAddEXExpirationType
+	ExpirationVal  int64
+}
+
+func sMembersArgs(args []interface{}, members []string) []interface{} {
+	args = append(args, "MEMBERS", len(members))
+	for _, m := range members {
+		args = append(args, m)
+	}
+	return args
+}
+
+func (c cmdable) sExpire(ctx context.Context, name, key string, t int64, a SExpireArgs, members []string) *IntSliceCmd {
+	args := make([]interface{}, 3, 6+len(members))
+	args[0], args[1], args[2] = name, key, t
+	// Set one flag only; the server rejects more than one.
+	switch {
+	case a.NX:
+		args = append(args, "NX")
+	case a.XX:
+		args = append(args, "XX")
+	case a.GT:
+		args = append(args, "GT")
+	case a.LT:
+		args = append(args, "LT")
+	}
+	cmd := NewIntSliceCmd(ctx, sMembersArgs(args, members)...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) sMembersCmd(ctx context.Context, name, key string, members []string) *IntSliceCmd {
+	args := make([]interface{}, 2, 4+len(members))
+	args[0], args[1] = name, key
+	cmd := NewIntSliceCmd(ctx, sMembersArgs(args, members)...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SExpire sets the expiration of set members in seconds.
+// Available since Redis 8.12. See [SEXPIRE].
+//
+// [SEXPIRE]: https://redis.io/commands/sexpire/
+func (c cmdable) SExpire(ctx context.Context, key string, expiration time.Duration, members ...string) *IntSliceCmd {
+	return c.sExpire(ctx, "sexpire", key, formatSec(ctx, expiration), SExpireArgs{}, members)
+}
+
+// SExpireWithArgs is SExpire with a condition flag (NX, XX, GT, LT).
+func (c cmdable) SExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs SExpireArgs, members ...string) *IntSliceCmd {
+	return c.sExpire(ctx, "sexpire", key, formatSec(ctx, expiration), expirationArgs, members)
+}
+
+// SPExpire sets the expiration of set members in milliseconds.
+// Available since Redis 8.12. See [SPEXPIRE].
+//
+// [SPEXPIRE]: https://redis.io/commands/spexpire/
+func (c cmdable) SPExpire(ctx context.Context, key string, expiration time.Duration, members ...string) *IntSliceCmd {
+	return c.sExpire(ctx, "spexpire", key, formatMs(ctx, expiration), SExpireArgs{}, members)
+}
+
+// SPExpireWithArgs is SPExpire with a condition flag (NX, XX, GT, LT).
+func (c cmdable) SPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs SExpireArgs, members ...string) *IntSliceCmd {
+	return c.sExpire(ctx, "spexpire", key, formatMs(ctx, expiration), expirationArgs, members)
+}
+
+// SExpireAt sets the expiration of set members to a Unix time in seconds.
+// Available since Redis 8.12. See [SEXPIREAT].
+//
+// [SEXPIREAT]: https://redis.io/commands/sexpireat/
+func (c cmdable) SExpireAt(ctx context.Context, key string, tm time.Time, members ...string) *IntSliceCmd {
+	return c.sExpire(ctx, "sexpireat", key, tm.Unix(), SExpireArgs{}, members)
+}
+
+// SExpireAtWithArgs is SExpireAt with a condition flag (NX, XX, GT, LT).
+func (c cmdable) SExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs SExpireArgs, members ...string) *IntSliceCmd {
+	return c.sExpire(ctx, "sexpireat", key, tm.Unix(), expirationArgs, members)
+}
+
+// SPExpireAt sets the expiration of set members to a Unix time in milliseconds.
+// Available since Redis 8.12. See [SPEXPIREAT].
+//
+// [SPEXPIREAT]: https://redis.io/commands/spexpireat/
+func (c cmdable) SPExpireAt(ctx context.Context, key string, tm time.Time, members ...string) *IntSliceCmd {
+	return c.sExpire(ctx, "spexpireat", key, tm.UnixMilli(), SExpireArgs{}, members)
+}
+
+// SPExpireAtWithArgs is SPExpireAt with a condition flag (NX, XX, GT, LT).
+func (c cmdable) SPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs SExpireArgs, members ...string) *IntSliceCmd {
+	return c.sExpire(ctx, "spexpireat", key, tm.UnixMilli(), expirationArgs, members)
+}
+
+// STTL returns the time to live of set members in seconds, rounded up.
+// One result code per member: -2 missing, -1 no expiration.
+// Available since Redis 8.12. See [STTL].
+//
+// [STTL]: https://redis.io/commands/sttl/
+func (c cmdable) STTL(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	return c.sMembersCmd(ctx, "sttl", key, members)
+}
+
+// SPTTL returns the exact time to live of set members in milliseconds.
+// Available since Redis 8.12. See [SPTTL].
+//
+// [SPTTL]: https://redis.io/commands/spttl/
+func (c cmdable) SPTTL(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	return c.sMembersCmd(ctx, "spttl", key, members)
+}
+
+// SExpireTime returns the expiration of set members as a Unix time in seconds.
+// Available since Redis 8.12. See [SEXPIRETIME].
+//
+// [SEXPIRETIME]: https://redis.io/commands/sexpiretime/
+func (c cmdable) SExpireTime(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	return c.sMembersCmd(ctx, "sexpiretime", key, members)
+}
+
+// SPExpireTime returns the expiration of set members as a Unix time in milliseconds.
+// Available since Redis 8.12. See [SPEXPIRETIME].
+//
+// [SPEXPIRETIME]: https://redis.io/commands/spexpiretime/
+func (c cmdable) SPExpireTime(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	return c.sMembersCmd(ctx, "spexpiretime", key, members)
+}
+
+// SPersist removes the expiration of set members.
+// Available since Redis 8.12. See [SPERSIST].
+//
+// [SPERSIST]: https://redis.io/commands/spersist/
+func (c cmdable) SPersist(ctx context.Context, key string, members ...string) *IntSliceCmd {
+	return c.sMembersCmd(ctx, "spersist", key, members)
+}
+
+// SAddEX adds members without an expiration, as SADD does, and drops the
+// expiration of members that already exist.
+// Available since Redis 8.12. See [SADDEX].
+//
+// [SADDEX]: https://redis.io/commands/saddex/
+func (c cmdable) SAddEX(ctx context.Context, key string, members ...string) *IntCmd {
+	return c.SAddEXWithArgs(ctx, key, &SAddEXOptions{}, members...)
+}
+
+// SAddEXWithArgs adds members with a condition (MNX, MXX) and an expiration
+// (EX, PX, EXAT, PXAT or KEEPTTL). The reply is 1 if at least one member was
+// added, updated or deleted, 0 otherwise. A time in the past deletes the
+// members; 1 does not mean the members exist.
+func (c cmdable) SAddEXWithArgs(ctx context.Context, key string, options *SAddEXOptions, members ...string) *IntCmd {
+	args := make([]interface{}, 2, 6+len(members))
+	args[0], args[1] = "saddex", key
+	if options != nil {
+		if options.Condition != "" {
+			args = append(args, string(options.Condition))
+		}
+		if options.ExpirationType != "" {
+			args = append(args, string(options.ExpirationType))
+			if options.ExpirationType != SAddEXExpirationKEEPTTL {
+				args = append(args, options.ExpirationVal)
+			}
+		}
+	}
+	cmd := NewIntCmd(ctx, sMembersArgs(args, members)...)
 	_ = c(ctx, cmd)
 	return cmd
 }
