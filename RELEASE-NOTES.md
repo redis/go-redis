@@ -27,6 +27,33 @@
   - The default failure detector (1000 failures and 10% within 2s) is set
     with `FailureDetectorConfig`, whose fields are used as given; start from
     `DefaultMultiDBFailureDetectorConfig()`.
+- **Connection handshake and `Options.Limiter`:** the handshake of a new
+  connection (`HELLO`, `AUTH`, `SELECT`, `CLIENT SETINFO`) no longer calls
+  `Limiter.Allow` per command. The command that dials pays one admission and
+  reports the handshake result once. A PubSub connection, a reconnect after a
+  maintenance handoff, and a fresh full-duplex session each pay one admission
+  for their handshake. Before, a circuit breaker in the half-open state spent
+  its probe budget on the handshake and never closed.
+- **Ephemeral connections with client-side caching:** with CSC active,
+  `EphemeralConn` now lazily dials a fresh, untracked connection. Session commands
+  are allowed without disrupting the parent cache, and reads always go to Redis.
+  The connection takes no `PoolSize` turn, does not support maintenance handoff,
+  and must be closed after use. Without CSC, idle-connection reuse is unchanged
+  ([#4174](https://github.com/redis/go-redis/pull/4174)).
+- **Connection-pool limits:** `MaxActiveConns` now counts all connections
+  registered with the pool (pooled, excess, and dedicated `NewConn` connections)
+  plus in-flight dial reservations. Previously, admission checked only the
+  pooled count (`poolSize`). Clients with this limit configured can now receive
+  `ErrPoolExhausted` from `NewConn`/`EphemeralConn` or during bursts that previously
+  exceeded the limit.
+- **Dial concurrency and prewarming:** `NewConn` now waits for the shared
+  `MaxConcurrentDials` limit and honors context cancellation while waiting. Idle
+  prewarming shares this limit without holding a pool turn while waiting for
+  dial capacity. Refill checks resume after foreground dials and successful
+  prewarm dials complete, and concurrent refill requests are preserved. These
+  pool-limit and prewarming changes apply to all clients using the pool, not
+  only CSC-enabled ephemeral sessions.
+
 - **Username without a password:** a `Username` with an empty `Password` again sends no `AUTH`, as before [#4161](https://github.com/redis/go-redis/pull/4161). Redis Enterprise and Redis Cloud databases with unauthenticated access can reject an empty password, so #4161 could break configs that set a username (e.g. `default`) without a password. Redis OSS accepts it. To authenticate an ACL user created with `nopass`, set `AuthEmptyPassword: true` (or `auth_empty_password=true` in the URL); for sentinel connections use `SentinelAuthEmptyPassword` (`sentinel_auth_empty_password=true`). The rule also applies to credentials from `CredentialsProvider`, `CredentialsProviderContext` and `StreamingCredentialsProvider` used when a connection is set up; re-authentication on a credentials refresh is unchanged. The client-side cache keeps a separate namespace for a username that sends no `AUTH`.
 - **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
 - **Struct scan on a bad field:** `Scan` on `HGETALL`/`HMGET` results used to stop at the first field that failed to decode, and with `HGETALL` the set of filled fields was random. It now sets every field it can decode and still returns an error: the one of the failing field with the smallest key for `HGETALL`, and the first failing argument for `HMGET`. A nil pointer field stays nil when its decode fails. Code that reuses the struct after an error will see more fields set ([#4136](https://github.com/redis/go-redis/pull/4136)).

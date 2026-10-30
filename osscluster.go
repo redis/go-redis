@@ -48,6 +48,7 @@ var (
 // passed to NewClusterClient.
 type ClusterOptions struct {
 	cscCustomFactory bool // configuration only; custom factories may supply a cache
+	cscDisabled      bool // construction-time rejection also applies to node factories
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
@@ -67,6 +68,17 @@ type ClusterOptions struct {
 	// See Options.ClientSideCacheConfig.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
+
+	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
+	// The zero value is TrackingModePlain. An invalid value logs a warning and
+	// disables CSC at construction. Requires an enabled client-side cache.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheTrackingMode TrackingMode
+
+	// ClientSideCacheable selects eligible unmarked calls for caching. It also
+	// applies with a custom Cache. See CacheablePredicate for its callback contract.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheable CacheablePredicate
 	// ClientSideCacheStrategy shares tracking across a node's connections, not
 	// across cluster nodes. See Options.ClientSideCacheStrategy.
 	// Experimental: this API may change in a minor release.
@@ -259,7 +271,8 @@ type ClusterOptions struct {
 	// CommandMetadata configures cluster-owned metadata for routing.
 	//
 	// Experimental: this API may change in a minor release.
-	CommandMetadata *CommandMetadataConfig
+	CommandMetadata   *CommandMetadataConfig
+	cscMetadataSource *commandMetadataStore
 
 	// ShardPicker is used to pick a shard when the request_policy is
 	// ReqDefault and the command has no keys.
@@ -535,7 +548,10 @@ func (opt *ClusterOptions) clientOptions() *Options {
 	return &Options{
 		// A custom factory can enable CSC even without ClientSideCacheConfig.
 		cscPresenceOnly:                        true,
+		cscDisabled:                            opt.cscDisabled,
 		ClientSideCacheConfig:                  cacheConfig,
+		ClientSideCacheTrackingMode:            opt.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    opt.ClientSideCacheable,
 		ClientSideCacheStrategy:                opt.ClientSideCacheStrategy,
 		ClientSideCacheRefreshOnInvalidate:     opt.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          opt.ClientSideCacheCoalesceMisses,
@@ -594,6 +610,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// situations in the options below will prevent that from happening.
 		readOnly:                  opt.ReadOnly && opt.ClusterSlots == nil,
 		UnstableResp3:             opt.UnstableResp3,
+		cscMetadataSource:         opt.cscMetadataSource,
 		MaintNotificationsConfig:  maintNotificationsConfig,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
 	}
@@ -1386,6 +1403,38 @@ func replaceEmptyHost(nodeAddr, originHost string) string {
 	return net.JoinHostPort(originHost, nodePort)
 }
 
+// redirectFromNodeError carries the node that returned a MOVED or ASK error on
+// a route that picks its own node, such as FT.CURSOR. process unwraps it right
+// away, so the error a caller sees is unchanged.
+type redirectFromNodeError struct {
+	node *clusterNode
+	err  error
+}
+
+func (e *redirectFromNodeError) Error() string { return e.err.Error() }
+
+func (e *redirectFromNodeError) Unwrap() error { return e.err }
+
+// redirectAddr returns the address a MOVED or ASK redirect sent by node points
+// to. With cluster-preferred-endpoint-type unknown-endpoint the server omits
+// the host, and the client is expected to reuse the host of the node that sent
+// the redirect.
+//
+// The host comes from the node's configured address. After a maintenance
+// notification handoff the connection that sent the redirect may serve from
+// another endpoint, so this address can be stale. We may consider recording the
+// current address of the serving connection and using it here instead.
+func redirectAddr(addr string, node *clusterNode) string {
+	if node == nil {
+		return addr
+	}
+	originHost, _, err := net.SplitHostPort(node.Client.getAddr())
+	if err != nil {
+		return addr
+	}
+	return replaceEmptyHost(addr, originHost)
+}
+
 // isLoopback returns true if the host is a loopback address.
 // For IP addresses, it uses net.IP.IsLoopback().
 // For hostnames, it recognizes well-known loopback hostnames like "localhost"
@@ -1933,6 +1982,7 @@ type ClusterClient struct {
 	autopipeliner       *AutoPipeliner // blocking face (ClusterClient.AutoPipeline)
 	asyncAutopipeliner  *AutoPipeliner // deferred face (ClusterClient.AsyncAutoPipeline)
 	autopipelinerClosed bool           // set by Close: refuse to resurrect a pipeliner on a closed client
+	onClose             *onCloseHooks
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1944,12 +1994,27 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 	opt.cscCustomFactory = opt.NewClient != nil
 	opt.init()
+	// Preserve caller-visible defaults before taking the private CSC snapshot.
+	optCopy := *opt
+	if opt.ClientSideCacheConfig != nil {
+		cfg := *opt.ClientSideCacheConfig
+		optCopy.ClientSideCacheConfig = &cfg
+	}
+	opt = &optCopy
+	if opt.ClientSideCacheTrackingMode > TrackingModeOptOut {
+		internal.Logger.Printf(context.Background(), "redis: invalid CSC tracking mode %s; caching is disabled", opt.ClientSideCacheTrackingMode)
+		opt.cscDisabled = true
+		opt.ClientSideCacheConfig = nil
+		opt.ClientSideCacheTrackingMode = TrackingModePlain
+		opt.ClientSideCacheable = nil
+	}
 
 	c := &ClusterClient{
 		opt:             opt,
 		nodes:           newClusterNodes(opt),
 		himport:         newHImportRegistry(),
 		autopipelinerMu: &sync.Mutex{},
+		onClose:         &onCloseHooks{},
 	}
 
 	// Every node client shares the cluster-wide fieldset registry, replicas
@@ -1978,6 +2043,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		return metadata, err
 	})
 	runtime.AddCleanup(c, func(store *commandMetadataStore) { store.signalStop() }, c.cmdMeta)
+	opt.cscMetadataSource = c.cmdMeta
 	// Node callbacks remain dormant until a dynamic resolver requests live metadata.
 	c.nodes.onServerHello = c.cmdMeta.onClusterServerHelloReply
 	c.state.beforeReload = func(_, _ *clusterState) {
@@ -1995,6 +2061,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 
 	c.cmdable = c.Process
+	c.captureCacheIntent = opt.ClientSideCacheConfig != nil || opt.cscCustomFactory
 	c.initHooks(hooks{
 		dial:       nil,
 		process:    c.process,
@@ -2068,6 +2135,9 @@ func (c *ClusterClient) Close() error {
 	if err := c.nodes.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	if err := c.onClose.run(); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	return firstErr
 }
 
@@ -2078,10 +2148,25 @@ func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
+	policy := c.opt.cachePolicy()
+	newPolicy := policy.configured() || cmd.cacheState().mark() != cacheUnmarked
+	if newPolicy || c.opt.ClientSideCacheConfig != nil || c.opt.cscCustomFactory {
+		cscEnter(cmd)
+		defer cscLeave(cmd)
+	}
 	callerCtx := ctx
 	decision := c.commandRoutingDecision(ctx, cmd)
 	if decision.policyErr != nil {
 		return decision.policyErr
+	}
+	if cmd.cacheState().depth != 0 {
+		cmd.setCacheView(decision.view)
+		if cmd.cacheView() == nil {
+			cmd.setCacheView(c.metadataView())
+		}
+		if newPolicy {
+			c.cscPrepareInvocation(cmd)
+		}
 	}
 	slot := decision.naturalSlot
 	var node *clusterNode
@@ -2094,7 +2179,12 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		ctx = callerCtx
 		if redirected {
-			ctx = cscBypass(ctx)
+			if !newPolicy {
+				ctx = cscBypass(ctx)
+			} else {
+				cmd.cacheState().set(cscNoLookup, true)
+				cmd.cacheState().set(cscAsk, ask)
+			}
 		}
 		// MOVED and ASK responses are not transient errors that require retry delay; they
 		// should be attempted immediately.
@@ -2120,6 +2210,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
+		if (newPolicy || c.opt.cscCustomFactory) && node != nil {
+			c.cscCheckNode(cmd, node.Client)
+		}
 		if ask {
 			ask = false
 			pipe := node.Client.Pipeline()
@@ -2132,6 +2225,11 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			} else {
 				lastErr = node.Client.Process(ctx, cmd)
 			}
+		}
+
+		redirectFrom := node
+		if e, ok := lastErr.(*redirectFromNodeError); ok {
+			redirectFrom, lastErr = e.node, e.err
 		}
 
 		// If there is no error - we are done.
@@ -2174,7 +2272,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			recordClusterRedirectMetric(ctx, ask)
 
 			var err error
-			node, err = c.nodes.GetOrCreate(addr)
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, redirectFrom))
 			if err != nil {
 				return err
 			}
@@ -2383,6 +2481,9 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 }
 
 func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
+	// Helpers such as ForEachMaster can load topology before submitting a
+	// command. Discovery must not inherit their caller's cache intent.
+	ctx = cscUnmarkedContext(ctx)
 	if c.opt.ClusterSlots != nil {
 		slots, err := c.opt.ClusterSlots(ctx)
 		if err != nil {
@@ -3130,6 +3231,7 @@ func (c *ClusterClient) processPipelineNodeConn(
 	// for registered fieldsets the batch references get written ahead of
 	// the batch (see himport.go).
 	injected := node.Client.himportInjectedCmds(ctx, cn, cmds)
+	flags := node.Client.cscPipelineFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -3137,8 +3239,11 @@ func (c *ClusterClient) processPipelineNodeConn(
 				return err
 			}
 		}
-		return writeCmds(wr, cmds)
+		return writeCSCPipelineCmds(wr, cmds, flags)
 	}); err != nil {
+		if flags != nil {
+			_ = cn.Close()
+		}
 		if isBadConn(err, false, node.Client.getAddr()) {
 			node.MarkAsFailing()
 		}
@@ -3163,7 +3268,7 @@ func (c *ClusterClient) processPipelineNodeConn(
 			setCmdsErr(cmds, err)
 			return err
 		}
-		err := c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failedCmds, route)
+		err := c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failedCmds, route, flags)
 		if err == nil || isRedisError(err) {
 			node.Client.himportAfterBatch(cn, injected, cmds)
 			// SETs of registered fieldsets that lost their session state
@@ -3189,8 +3294,15 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 	route *clusterPipelineRouting,
+	flags []byte,
 ) error {
 	for i, cmd := range cmds {
+		if flags != nil && flags[i] != 0 {
+			if err := node.Client.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
+				setCmdsErr(cmds[i:], err)
+				return err
+			}
+		}
 		// Drain any buffered RESP3 push notifications before reading each
 		// reply — otherwise a push frame (e.g. a maintnotifications MOVING
 		// notification) is consumed AS the command's reply and every
@@ -3208,7 +3320,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 			continue
 		}
 
-		if c.checkMovedErr(ctx, cmd, err, failedCmds) {
+		if c.checkMovedErr(ctx, node, cmd, err, failedCmds) {
 			continue
 		}
 
@@ -3234,15 +3346,21 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	return nil
 }
 
+// checkMovedErr queues cmd for the node a MOVED or ASK redirect points to.
+//
+// Unlike the single-command path (shouldRetry with isMovedSameConnAddr), it does
+// not drop the connection that sent a MOVED pointing back to the same address,
+// with or without a host, so Pipeline and TxPipeline may reuse that connection on
+// the retry. This is not handled yet.
 func (c *ClusterClient) checkMovedErr(
-	ctx context.Context, cmd Cmder, err error, failedCmds *cmdsMap,
+	ctx context.Context, from *clusterNode, cmd Cmder, err error, failedCmds *cmdsMap,
 ) bool {
 	moved, ask, addr := isMovedError(err)
 	if !moved && !ask {
 		return false
 	}
 
-	node, err := c.nodes.GetOrCreate(addr)
+	node, err := c.nodes.GetOrCreate(redirectAddr(addr, from))
 	if err != nil {
 		return false
 	}
@@ -3446,14 +3564,14 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 			redirected = true
 			asking = false
 			c.state.LazyReload()
-			if node, err = c.nodes.GetOrCreate(outcome.addr); err != nil {
+			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node)); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
 		case txRetryAsk:
 			redirected = true
 			asking = true
-			if node, err = c.nodes.GetOrCreate(outcome.addr); err != nil {
+			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node)); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
@@ -3650,6 +3768,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 	// fieldsets the transaction references get written ahead of the wire
 	// batch (before ASKING/MULTI; the session state is visible at EXEC).
 	injected := node.Client.himportInjectedCmds(ctx, cn, cmds)
+	flags := node.Client.cscPipelineFlags(cn, wire)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -3657,8 +3776,11 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 				return err
 			}
 		}
-		return writeCmds(wr, wire)
+		return writeCSCPipelineCmds(wr, wire, flags)
 	}); err != nil {
+		if flags != nil {
+			_ = cn.Close()
+		}
 		// Write failure: re-route the whole tx on a fresh connection.
 		if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 			return &txOutcome{kind: txRetryConn, err: err}
@@ -3673,6 +3795,12 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			// written and may have committed — fatal, discard the conn.
 			outcome = c.txReadFatal(err)
 			return nil
+		}
+		if flags != nil && flags[0] != 0 {
+			if err := node.Client.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
+				outcome = c.txReadFatal(err)
+				return nil
+			}
 		}
 		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
 		if outcome != nil && outcome.kind == txSuccess {
@@ -3884,7 +4012,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		moved, ask, addr := isMovedError(err)
 		if moved || ask {
-			node, err = c.nodes.GetOrCreate(addr)
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, node))
 			if err != nil {
 				return err
 			}
@@ -3951,19 +4079,8 @@ func (c *ClusterClient) pubSub() *PubSub {
 					return nil, err
 				}
 			}
-			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
+			cn, err := node.Client.newPubSubConn(ctx, node.Client.opt.Addr, channels)
 			if err != nil {
-				node = nil
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = node.Client.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				node = nil
-				return nil, err
-			}
-			if err := node.Client.pubSubPool.TrackConn(cn); err != nil {
 				node = nil
 				return nil, err
 			}

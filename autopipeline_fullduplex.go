@@ -308,7 +308,7 @@ func (o *fdLimiterReport) settle(err error) {
 // caller directly, or (when hooks are present) hands off to the command's host
 // goroutine, which runs the hook chain and then wakes the caller.
 func (r fdReq) complete() {
-	r.cmd.setClusterRoutingDecision(nil)
+	resetAutoPipelineCommand(r.cmd)
 	if r.hookDone != nil {
 		close(r.hookDone)
 		return
@@ -1714,9 +1714,11 @@ func (fd *fdEngine) run() {
 // first), and releases the connection. Returns the unacked tail + error on
 // connection failure, or graceful=true on Close.
 func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
-	// Options.Limiter is deliberately NOT consulted here: the lease is not the
-	// Limiter's unit. Admission is per written chunk, in writeBatch — see the
-	// comment there for the rationale.
+	// Options.Limiter is deliberately NOT consulted for the lease: the lease is
+	// not the Limiter's unit. Admission is per written chunk, in writeBatch — see
+	// the comment there for the rationale. The handshake of a fresh conn is the
+	// one exception: initPooledConnLimited admits and reports it once, because
+	// no chunk admission covers it.
 	var cn *pool.Conn
 	// connPool records which pool cn was leased from — the pipeline pool normally, or
 	// the main pool on a spill (see the acquire below) — so the deferred remove/release
@@ -1798,7 +1800,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 		initCtx = context.WithoutCancel(carry[0].ctx)
 	}
 
-	// Acquire+init from the pipeline pool; SPILL to the main pool when the pipeline
+	// Acquire+init from the pipeline pool; without CSC, SPILL when the pipeline
 	// pool cannot serve the lease, mirroring withPipelineConn — an FD lease must not
 	// fail already-accepted commands while the main pool has idle capacity. Unlike a
 	// per-round-trip pipeline borrow, a spilled FD session holds the main-pool conn for
@@ -1806,7 +1808,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// stranding the backlog. TryGet (non-blocking) so a saturated pipeline pool spills
 	// at once instead of stalling up to PoolTimeout.
 	//
-	// Spill on ANY acquisition failure EXCEPT a hard stop — saturation (ErrPoolTryFull
+	// Without CSC, spill on ANY acquisition failure EXCEPT a hard stop — saturation (ErrPoolTryFull
 	// / ErrPoolExhausted) AND a transient DIAL error while the pipeline pool is growing
 	// a connection (TryGet dials when the pool has no idle conn), plus a pipeline-conn
 	// init failure below. Only a cancelled ap.ctx (Close) or a closed pool surface as
@@ -1818,20 +1820,33 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// out PoolTimeout; init and session I/O stay on bg so accepted commands still
 	// complete during Close.
 	if ref := fd.client.loadPipelinePool(); ref != nil {
+		// Native FD never uses the cache. Keep it on untracked connections,
+		// instead of borrowing a tracked main connection and toggling caching
+		// before every read. The pool bounds this wait and Close cancels it.
+		// Keep this restriction after CSC serving stops: existing main-pool
+		// connections may still have tracking enabled.
+		untracked := fd.client.cscActive != nil
 		spill := false
-		cn, aerr = ref.pool.TryGet(fd.ap.ctx)
+		if untracked {
+			cn, aerr = ref.pool.Get(fd.ap.ctx)
+		} else {
+			cn, aerr = ref.pool.TryGet(fd.ap.ctx)
+		}
 		if aerr != nil {
 			cn = nil
-			if errors.Is(aerr, pool.ErrClosed) ||
+			if untracked || errors.Is(aerr, pool.ErrClosed) ||
 				errors.Is(aerr, context.Canceled) ||
 				errors.Is(aerr, context.DeadlineExceeded) {
-				// Hard stop: the main pool cannot do better (closed pool, or the caller/
-				// Close cancelled the acquire ctx). Surface it rather than spill.
+				// CSC sessions must stay untracked. A closed pool or cancelled
+				// acquire context also stops the attempt without spilling.
 				return carry, fdLeaseErr, aerr
 			}
 			spill = true
-		} else if e := fd.client.initPooledConn(initCtx, ref.pool, cn); e != nil {
+		} else if e := fd.client.initPooledConnLimited(initCtx, ref.pool, cn); e != nil {
 			cn = nil // initPooledConn already Removed it from the pipeline pool
+			if untracked {
+				return carry, fdLeaseErr, e
+			}
 			spill = true
 		}
 		if spill {
@@ -1841,7 +1856,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 				return carry, fdLeaseErr, aerr
 			}
 			connPool = fd.client.connPool
-			if e := fd.client.initPooledConn(initCtx, fd.client.connPool, cn); e != nil {
+			if e := fd.client.initPooledConnLimited(initCtx, fd.client.connPool, cn); e != nil {
 				cn = nil // initPooledConn already Removed it from the main pool
 				return carry, fdLeaseErr, e
 			}
@@ -1854,7 +1869,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 			cn = nil
 			return carry, fdLeaseErr, aerr
 		}
-		if e := fd.client.initPooledConn(initCtx, fd.pool, cn); e != nil {
+		if e := fd.client.initPooledConnLimited(initCtx, fd.pool, cn); e != nil {
 			cn = nil // initPooledConn already Removed it
 			return carry, fdLeaseErr, e
 		}

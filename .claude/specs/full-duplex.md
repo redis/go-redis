@@ -16,10 +16,16 @@ just a directly-constructed standalone client. See "Cluster support" below.
 
 One background goroutine (`fd.run`) owns the engine. Per session it runs:
 
-- `attempt` — leases and initializes ONE connection (pipeline pool, spilling to the
-  main pool on saturation), then runs `session`. Its deferred release Removes the conn
-  on a connection error (`fdConnErr`) and Puts it on any clean end (idle / recycle /
-  graceful), so a handoff-marked conn is handed off by the pool's OnPut hook.
+- `attempt` — leases and initializes ONE connection from the pipeline pool, then
+  runs `session`. Without CSC, the lease may spill to the main pool when the pipeline
+  pool cannot serve it. With CSC attached, it uses blocking `Get` on the pipeline
+  pool to keep native FD sessions untracked, even after CSC serving stops. The
+  pipeline pool's `PoolTimeout` bounds the wait for a pool turn and a drainer
+  handoff, not dialing or connection initialization. Acquisition is cancelled by
+  `Close`; lease failures follow the existing retry policy. Its deferred release
+  Removes the conn on a connection error (`fdConnErr`) and Puts it on any clean end
+  (idle / recycle / graceful), so a handoff-marked conn is handed off by the pool's
+  OnPut hook.
 - `session` — spawns a READER goroutine (reads replies in FIFO order, completes each
   command as its reply lands) and runs the WRITER on the engine goroutine (re-issues
   the recovered carry, then serves the queue in `MaxBatchSize`/`MaxBatchBytes` chunks).
@@ -90,8 +96,11 @@ aggregating correctly; only single-node commands route through a child.
   first) and fail-fast paths.
 - **Hooks on recovery**: recovery attempts (the reroute and the MOVED/ASK
   reprocess) run nested inside the command's `hostHook`, so node pipeline/process
-  hooks see them as nested spans. Making internal recovery hookless is a separate
-  hook-semantics change.
+  hooks see them as nested spans. MOVED/ASK recovery pins CSC bypass on the command
+  for nested dispatch, so a replacement hook context cannot enable cache lookup
+  or publication. The command's cache state is cleared before completion, allowing
+  later reuse to select its own caching policy. Making internal recovery hookless
+  is a separate hook-semantics change.
 - **Fallback to `Process`**: routing (`childFor`/`getOrCreateChild`) resolves the
   owning node from live cluster state on every submit. A keyless command, an
   unresolved slot, a not-yet-loaded topology, or a node whose client turns out

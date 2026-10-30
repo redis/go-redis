@@ -105,6 +105,18 @@ type FailoverOptions struct {
 	// See ClusterOptions.ClientSideCacheConfig.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
+
+	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
+	// The zero value is TrackingModePlain. An invalid value logs a warning and
+	// disables CSC at construction. Only supported by NewFailoverClusterClient.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheTrackingMode TrackingMode
+
+	// ClientSideCacheable selects eligible unmarked calls for caching. It also
+	// applies with a custom Cache. Only supported by NewFailoverClusterClient.
+	// See CacheablePredicate for its callback contract.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheable CacheablePredicate
 	// ClientSideCacheStrategy selects the node clients' tracking strategy.
 	// Only supported by NewFailoverClusterClient.
 	// Experimental: this API may change in a minor release.
@@ -363,6 +375,8 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 	return &ClusterOptions{
 		ClientSideCacheConfig:                  opt.ClientSideCacheConfig,
+		ClientSideCacheTrackingMode:            opt.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    opt.ClientSideCacheable,
 		ClientSideCacheStrategy:                opt.ClientSideCacheStrategy,
 		ClientSideCacheRefreshOnInvalidate:     opt.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          opt.ClientSideCacheCoalesceMisses,
@@ -645,10 +659,11 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 	rdb := &Client{
 		baseClient: &baseClient{
-			apClosed: &atomic.Bool{},
-			opt:      opt,
-			onClose:  &onCloseHooks{},
-			himport:  newHImportRegistry(),
+			cscPolicy: opt.cachePolicy(),
+			apClosed:  &atomic.Bool{},
+			opt:       opt,
+			onClose:   &onCloseHooks{},
+			himport:   newHImportRegistry(),
 		},
 	}
 	rdb.init()
@@ -859,21 +874,7 @@ func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
-			if err != nil {
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = c.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				return nil, err
-			}
-			// Track connection in PubSubPool
-			if err := c.pubSubPool.TrackConn(cn); err != nil {
-				return nil, err
-			}
-			return cn, nil
+			return c.newPubSubConn(ctx, addr, channels)
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
@@ -1463,6 +1464,8 @@ func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 	}
 
 	c := NewClusterClient(opt)
+
+	c.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 
 	failover.mu.Lock()
 	failover.onUpdate = func(ctx context.Context) {

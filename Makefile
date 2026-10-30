@@ -2,7 +2,7 @@ GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 REDIS_VERSION ?= 8.10
 RE_CLUSTER ?= false
 RCE_DOCKER ?= true
-CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:8.10.0
+CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:8.10.3
 # CI runs private live CSC fixtures inside the matching Redis image first, then
 # excludes only those already-executed tests from the host's race/coverage run.
 TEST_SKIP ?= Example

@@ -503,6 +503,7 @@ type ConnPool struct {
 
 	dialsInProgress chan struct{}
 	dialsQueue      *wantConnQueue
+	closedCh        chan struct{}
 	// Fast semaphore for connection limiting with eventual fairness
 	// Uses fast path optimization to avoid timer allocation when tokens are available
 	semaphore *internal.FastSemaphore
@@ -510,6 +511,10 @@ type ConnPool struct {
 	connsMu   sync.Mutex
 	conns     map[uint64]*Conn
 	idleConns []*Conn
+
+	// pendingConns reserves MaxActiveConns capacity before dialing. Together
+	// with conns it counts both pooled and dedicated connections, under connsMu.
+	pendingConns int
 
 	poolSize            atomic.Int32
 	idleConnsLen        atomic.Int32
@@ -549,6 +554,7 @@ func NewConnPool(opt *Options) *ConnPool {
 		cfg:             opt,
 		semaphore:       internal.NewFastSemaphore(opt.PoolSize),
 		conns:           make(map[uint64]*Conn),
+		closedCh:        make(chan struct{}),
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
 		dialsQueue:      newWantConnQueue(),
 		idleConns:       make([]*Conn, 0, opt.PoolSize),
@@ -705,10 +711,15 @@ func (p *ConnPool) spareAging(cn *Conn, nowNs int64) bool {
 }
 
 func (p *ConnPool) checkMinIdleConns() {
-	// If a check is already in progress, mark that we need another check and return
+	// If a check is already in progress, publish the request before deciding
+	// whether it will handle it or we need to take over.
 	if !p.idleCheckInProgress.CompareAndSwap(false, true) {
 		p.idleCheckNeeded.Store(true)
-		return
+		// The previous checker may have exited before our store. Retry
+		// ownership after publishing so the request always has a consumer.
+		if !p.idleCheckInProgress.CompareAndSwap(false, true) {
+			return
+		}
 	}
 
 	if p.minIdleConns() == 0 {
@@ -734,8 +745,14 @@ func (p *ConnPool) checkMinIdleConns() {
 		// Only create idle connections if we haven't reached the total pool size limit
 		// MinIdleConns should be a subset of PoolSize, not additional connections
 		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < minIdle {
+			// Prewarm is opportunistic: never hold a pool turn while waiting
+			// behind dedicated dials, which do not acquire turns themselves.
+			if !p.tryAcquireDialSlot() {
+				break
+			}
 			// Try to acquire a semaphore token
 			if !p.semaphore.TryAcquire() {
+				p.releaseDialSlot()
 				// Semaphore is full, can't create more connections right now
 				// Break out of inner loop to check if we need to retry
 				break
@@ -744,6 +761,16 @@ func (p *ConnPool) checkMinIdleConns() {
 			p.poolSize.Add(1)
 			p.idleConnsLen.Add(1)
 			go func() {
+				added := false
+				defer func() {
+					// Continue filling a floor larger than the dial limit. Do not
+					// retry failed dials here, which could spin on persistent errors.
+					if added {
+						p.releaseDialSlotAndCheckMinIdleConns()
+					} else {
+						p.releaseDialSlot()
+					}
+				}()
 				defer func() {
 					if err := recover(); err != nil {
 						p.poolSize.Add(-1)
@@ -755,6 +782,7 @@ func (p *ConnPool) checkMinIdleConns() {
 				}()
 
 				err := p.addIdleConn()
+				added = err == nil
 				if err != nil && err != ErrClosed {
 					p.poolSize.Add(-1)
 					p.idleConnsLen.Add(-1)
@@ -766,6 +794,11 @@ func (p *ConnPool) checkMinIdleConns() {
 		// If no one requested another check while we were working, we're done
 		if !p.idleCheckNeeded.Load() {
 			p.idleCheckInProgress.Store(false)
+			// A dial completion may request another pass between the check
+			// above and clearing in-progress. Do not lose that wakeup.
+			if p.idleCheckNeeded.Load() {
+				p.checkMinIdleConns()
+			}
 			return
 		}
 
@@ -773,7 +806,17 @@ func (p *ConnPool) checkMinIdleConns() {
 	}
 }
 
+// addIdleConn is called with a dial slot already held by checkMinIdleConns.
 func (p *ConnPool) addIdleConn() error {
+	if err := p.reserveConn(); err != nil {
+		return err
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			p.cancelConnReservation()
+		}
+	}()
 	// Do not apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
 	cn, err := p.dialConn(context.Background(), true)
 	if err != nil {
@@ -794,6 +837,8 @@ func (p *ConnPool) addIdleConn() error {
 	}
 
 	p.conns[cn.GetID()] = cn
+	p.pendingConns--
+	reserved = false
 	p.idleConns = append(p.idleConns, cn)
 
 	// Record connection count increment (new idle connection from min-idle prewarm)
@@ -804,22 +849,102 @@ func (p *ConnPool) addIdleConn() error {
 	return nil
 }
 
-// NewConn creates a new connection and returns it to the user.
-// This will still obey MaxActiveConns but will not include it in the pool and won't increase the pool size.
+// NewConn creates a dedicated connection outside the idle pool. It counts
+// against MaxActiveConns and shares the MaxConcurrentDials gate with pooled
+// connections, but does not acquire a PoolSize turn. Remove it with
+// RemoveWithoutTurn when its owner is finished.
 //
 // NOTE: If you directly get a connection from the pool, it won't be pooled and won't support maintnotifications upgrades.
 func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := p.acquireDialSlot(ctx); err != nil {
+		return nil, err
+	}
+	defer p.releaseDialSlotAndCheckMinIdleConns()
 	return p.newConn(ctx, false)
 }
 
-func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
+// acquireDialSlot shares queuedNewConn's dial gate without taking a pool turn.
+func (p *ConnPool) acquireDialSlot(ctx context.Context) error {
 	if p.closed() {
-		return nil, ErrClosed
+		return ErrClosed
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if cap(p.dialsInProgress) == 0 {
+		return nil
+	}
+	select {
+	case p.dialsInProgress <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.closedCh:
+		return ErrClosed
+	}
+}
 
-	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() >= p.cfg.MaxActiveConns {
-		return nil, ErrPoolExhausted
+func (p *ConnPool) tryAcquireDialSlot() bool {
+	if p.closed() {
+		return false
 	}
+	if cap(p.dialsInProgress) == 0 {
+		return true
+	}
+	select {
+	case p.dialsInProgress <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *ConnPool) releaseDialSlot() {
+	if cap(p.dialsInProgress) > 0 {
+		<-p.dialsInProgress
+	}
+}
+
+// releaseDialSlotAndCheckMinIdleConns replays any refill skipped while a
+// foreground dial held the last permit. Rechecking unconditionally avoids a
+// race between recording a skipped check and the concurrent permit release.
+func (p *ConnPool) releaseDialSlotAndCheckMinIdleConns() {
+	p.releaseDialSlot()
+	p.checkMinIdleConns()
+}
+
+func (p *ConnPool) reserveConn() error {
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+	if p.closed() {
+		return ErrClosed
+	}
+	if max := p.cfg.MaxActiveConns; max > 0 && len(p.conns)+p.pendingConns >= int(max) {
+		return ErrPoolExhausted
+	}
+	p.pendingConns++
+	return nil
+}
+
+func (p *ConnPool) cancelConnReservation() {
+	p.connsMu.Lock()
+	p.pendingConns--
+	p.connsMu.Unlock()
+}
+
+func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
+	if err := p.reserveConn(); err != nil {
+		return nil, err
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			p.cancelConnReservation()
+		}
+	}()
 
 	// Protect against nil context due to race condition in queuedNewConn
 	// where the context can be set to nil after timeout/cancellation
@@ -838,11 +963,6 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	// when first used. Do NOT transition to IDLE here - that happens after initialization completes.
 	// The state machine flow is: CREATED → INITIALIZING (in initConn) → IDLE (after init success)
 
-	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() > p.cfg.MaxActiveConns {
-		_ = cn.Close()
-		return nil, ErrPoolExhausted
-	}
-
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
 	if p.closed() {
@@ -854,6 +974,8 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		p.conns = make(map[uint64]*Conn)
 	}
 	p.conns[cn.GetID()] = cn
+	p.pendingConns--
+	reserved = false
 
 	if pooled {
 		// If pool is full remove the cn on next Put.
@@ -1308,6 +1430,9 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 
 	go func(w *wantConn) {
 		var freeTurnCalled bool
+		// Run after panic recovery so any abandoned turn is freed before
+		// the refill retries. The caller may keep a delivered conn in use.
+		defer p.releaseDialSlotAndCheckMinIdleConns()
 		defer func() {
 			if err := recover(); err != nil {
 				w.tryDeliver(nil, errPanicInQueuedNewConn)
@@ -1320,7 +1445,6 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 		}()
 
 		defer w.cancelCtx()
-		defer func() { <-p.dialsInProgress }() // Release connection creation permission
 
 		dialCtx := w.getCtxForDial()
 		cn, cnErr := p.newConn(dialCtx, true)
@@ -1601,6 +1725,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
+	// Read before the hooks: the maintnotifications OnPut hook can hand the
+	// connection to a handoff worker, which may start at once (see below).
+	ownerGen := cn.HandoffOwnerGen()
+
 	if hookManager != nil {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
@@ -1628,10 +1756,16 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
 		// Hot path optimization: try fast IN_USE → IDLE transition
 		// Using inline Release() method for better performance (avoids pointer dereference)
-		transitionedToIdle := cn.Release()
+		//
+		// Not when a hook handed the connection to a handoff worker: the worker
+		// owns it now and may already hold it IN_USE for its init commands, so
+		// Release would free the worker's IN_USE and a Get would take the
+		// connection mid-init. Pool it as-is; the worker makes it IDLE when done.
+		handedOff := cn.HandedOffSince(ownerGen)
+		transitionedToIdle := !handedOff && cn.Release()
 
 		// Handle unexpected state changes
-		if !transitionedToIdle {
+		if !transitionedToIdle && !handedOff {
 			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
 			sm := cn.GetStateMachine()
@@ -1981,8 +2115,13 @@ func (p *ConnPool) HasFreeCapacity() bool {
 	if size >= p.cfg.PoolSize {
 		return false
 	}
-	if m := p.cfg.MaxActiveConns; m > 0 && size >= m {
-		return false
+	if m := p.cfg.MaxActiveConns; m > 0 {
+		p.connsMu.Lock()
+		full := len(p.conns)+p.pendingConns >= int(m)
+		p.connsMu.Unlock()
+		if full {
+			return false
+		}
 	}
 	if c := cap(p.dialsInProgress); c > 0 && len(p.dialsInProgress) >= c {
 		return false
@@ -2267,6 +2406,7 @@ func (p *ConnPool) Close() error {
 	if !p._closed.CompareAndSwap(0, 1) {
 		return ErrClosed
 	}
+	close(p.closedCh)
 
 	var firstErr error
 	nowNs := time.Now().UnixNano()

@@ -47,9 +47,14 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
+	// cscDisabled preserves a construction-time rejection through node factories.
+	// It prevents a factory-supplied Cache from re-enabling rejected CSC options.
+	cscDisabled bool
 	// cscPresenceOnly enables node-local presence filtering and redirect eviction.
 	// It owns no Cluster state and leaves standalone defaults unchanged.
 	cscPresenceOnly bool
+	// cscMetadataSource is borrowed from a ClusterClient; it grants no ownership.
+	cscMetadataSource *commandMetadataStore
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.
@@ -523,8 +528,20 @@ type Options struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
+	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
+	// The zero value is TrackingModePlain. An invalid value logs a warning and
+	// disables CSC at construction. Requires an enabled client-side cache.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheTrackingMode TrackingMode
+
+	// ClientSideCacheable selects eligible unmarked calls for caching. It also
+	// applies with a custom Cache. See CacheablePredicate for its callback contract.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheable CacheablePredicate
+
 	// ClientSideCache is an explicit Cache implementation used for client-side
-	// caching. When set, it overrides ClientSideCacheConfig. Intended for
+	// caching. When set, it overrides the storage settings of ClientSideCacheConfig;
+	// ClientSideCacheTrackingMode and ClientSideCacheable still apply. Intended for
 	// advanced users that want to share a cache across clients or supply a
 	// custom implementation.
 	//
@@ -674,25 +691,18 @@ const DefaultPipelinePoolSize = 10
 // holds one connection per engine plus one idle spare, regardless of pool size.
 const DefaultPipelineBufferSize = 128 * 1024
 
-// DefaultPipelinePoolTimeout is the dedicated pipeline pool's PoolTimeout
-// (pipelinePoolOptions caps the pipeline clone's PoolTimeout at this value but honors
-// a caller's SHORTER PoolTimeout). It does NOT gate the spill to the main pool:
-// withPipelineConn acquires with a non-blocking TryGet, so a burst wider than the
-// pipeline pool's cap spills to the main pool IMMEDIATELY (see the pipeline-pool note
-// in Options and withPipelineConn), never waiting this timeout, and the spilled op
-// then uses the MAIN pool's own PoolTimeout, not this one.
+// DefaultPipelinePoolTimeout caps the dedicated pipeline pool's PoolTimeout.
+// A shorter positive Options.PoolTimeout takes precedence.
 //
-// It currently has NO other live effect either. Every acquisition against the
-// dedicated pipeline pool — withPipelineConn's per-round-trip borrow above, and
-// the full-duplex engine's own session lease (autopipeline_fullduplex.go) — uses
-// TryGet, never the blocking Get. TryGet's non-wait branch returns ErrPoolTryFull
-// at once for BOTH a saturated pool turn and an active maintnotifications drainer
-// claim, before waitForDrainer or this deadline is ever consulted (see
-// ConnPool.getConn/waitTurn in internal/pool). A previous version of this doc
-// claimed a residual drainer-handoff budget; that was inaccurate (codex on #4002)
-// — there is no code path that currently waits out this value. It is kept short
-// anyway in case a future acquisition path, or a caller that obtains the pool via
-// getPipelinePool's exported pool.Pooler interface, uses the blocking Get.
+// Ordinary pipelines and native full-duplex sessions without CSC acquire with
+// TryGet. On saturation, they spill to the main pool without waiting for this
+// timeout; that pool uses its own PoolTimeout.
+//
+// Native full-duplex sessions on clients with CSC attached use blocking Get and
+// do not spill to the main pool, whose connections may have tracking enabled.
+// This remains true after CSC serving stops. The timeout bounds the wait for a
+// pool turn and a drainer handoff, not dialing or connection initialization.
+// Lease failures follow the existing retry policy, and Close cancels acquisition.
 const DefaultPipelinePoolTimeout = 100 * time.Millisecond
 
 func (opt *Options) init() {
@@ -845,6 +855,17 @@ func (opt *Options) init() {
 		opt.FailingTimeoutSeconds = 15
 	}
 
+	if opt.ClientSideCacheTrackingMode > TrackingModeOptOut {
+		internal.Logger.Printf(context.Background(), "redis: invalid CSC tracking mode %s; caching is disabled", opt.ClientSideCacheTrackingMode)
+		opt.cscDisabled = true
+	}
+	if opt.cscDisabled {
+		opt.ClientSideCacheConfig = nil
+		opt.ClientSideCache = nil
+		opt.ClientSideCacheTrackingMode = TrackingModePlain
+		opt.ClientSideCacheable = nil
+	}
+
 	if opt.Protocol == 2 && (opt.ClientSideCache != nil || opt.ClientSideCacheConfig != nil) {
 		internal.Logger.Printf(context.Background(),
 			"redis: client-side caching requires Protocol: 3 (RESP3); caching is disabled")
@@ -884,6 +905,10 @@ func (opt *Options) init() {
 
 func (opt *Options) clone() *Options {
 	clone := *opt
+	if opt.ClientSideCacheConfig != nil {
+		cfg := *opt.ClientSideCacheConfig
+		clone.ClientSideCacheConfig = &cfg
+	}
 
 	// Deep clone MaintNotificationsConfig to avoid sharing between clients
 	if opt.MaintNotificationsConfig != nil {
