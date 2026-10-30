@@ -1824,6 +1824,58 @@ var _ = Describe("Commands", func() {
 			Expect(err).Should(MatchError("too many arguments"))
 		})
 
+		It("should BitRangeIntArray", func() {
+			SkipBeforeRedisVersion("8.12", "BITRANGEINTARRAY needs Redis 8.12")
+
+			for _, off := range []int64{1, 7, 9, 30} {
+				Expect(client.SetBit(ctx, "bria", off, 1).Err()).NotTo(HaveOccurred())
+			}
+
+			offs, err := client.BitRangeIntArray(ctx, "bria", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{1, 7, 9, 30}))
+
+			offs, err = client.BitRangeIntArray(ctx, "bria", 1, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{9, 30}))
+
+			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 5, 10, &redis.BitRangeIntArrayArgs{
+				Unit: redis.BitCountIndexBit,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{7, 9}))
+
+			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 24, 31, &redis.BitRangeIntArrayArgs{
+				Unit:  redis.BitCountIndexBit,
+				Zeros: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{24, 25, 26, 27, 28, 29, 31}))
+
+			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 2, -1, &redis.BitRangeIntArrayArgs{
+				Unit:  redis.BitCountIndexBit,
+				Limit: 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{7, 9}))
+
+			// BYTE units complete the byte that holds the last offset.
+			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 0, -1, &redis.BitRangeIntArrayArgs{
+				Limit: 1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{1, 7}))
+
+			offs, err = client.BitRangeIntArray(ctx, "nosuchkey", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(BeEmpty())
+
+			err = client.BitRangeIntArrayWithArgs(ctx, "bria", 0, -1, &redis.BitRangeIntArrayArgs{
+				Unit: "nibble",
+			}).Err()
+			Expect(err).To(MatchError("redis: invalid bitrangeintarray unit"))
+		})
+
 		It("should BitPosSpan", func() {
 			err := client.Set(ctx, "mykey", "\x00\xff\x00", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
