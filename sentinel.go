@@ -376,6 +376,14 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		PipelineMinIdleConns:    opt.PipelineMinIdleConns,
 		AutoPipelineOptions:     opt.AutoPipelineOptions,
 
+		PubSubChanSize:               opt.PubSubChanSize,
+		PubSubHealthCheckInterval:    opt.PubSubHealthCheckInterval,
+		PubSubSubscribeRetryInterval: opt.PubSubSubscribeRetryInterval,
+		PubSubPingTimeout:            opt.PubSubPingTimeout,
+		PubSubReconnectTimeout:       opt.PubSubReconnectTimeout,
+		PubSubReconnectMaxBackoff:    opt.PubSubReconnectMaxBackoff,
+		PubSubLogInterval:            opt.PubSubLogInterval,
+
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,

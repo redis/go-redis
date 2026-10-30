@@ -15,7 +15,6 @@ import (
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 func TestManagerFanout(t *testing.T) {
@@ -369,21 +368,14 @@ func TestManagerReconnect(t *testing.T) {
 	t.Run("DialFailureRetriesAndReportsViaHook", func(t *testing.T) {
 		srv := newFakeServer()
 		hookCalls := make(chan struct{}, 100)
-		m := NewManager(
-			testConfig("node:6379"),
-			srv.dial,
-			func(cn *pool.Conn) error { return cn.Close() },
-			func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error { return nil },
-			testIsBadConn,
-			func() {
-				select {
-				case hookCalls <- struct{}{}:
-				default:
-				}
-			},
-			testShouldHandoff,
-			testResolveHandoff,
-		)
+		hooks := testHooks(srv)
+		hooks.requestTopologyRefresh = func() {
+			select {
+			case hookCalls <- struct{}{}:
+			default:
+			}
+		}
+		m := NewManager(testConfig("node:6379"), hooks)
 		t.Cleanup(func() { _ = m.Close() })
 
 		if _, err := m.Subscribe(ctx, "ch1"); err != nil {
@@ -679,16 +671,11 @@ func TestManagerSubscribeWriteFailureRollsBackFreshHandle(t *testing.T) {
 		_ = server.Close()
 		return pool.NewConn(client), nil
 	}
-	m := NewManager(
-		cfg,
-		deadDial,
-		func(cn *pool.Conn) error { return cn.Close() },
-		func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error { return nil },
-		testIsBadConn,
-		nil,
-		testShouldHandoff,
-		testResolveHandoff,
-	)
+	m := NewManager(cfg, funcHooks{
+		newConn:           deadDial,
+		shouldReplaceConn: testShouldHandoff,
+		resolveAddress:    testResolveHandoff,
+	})
 	t.Cleanup(func() { _ = m.Close() })
 
 	h, err := m.Subscribe(ctx, "ch1")
@@ -1969,20 +1956,16 @@ func TestCloseReportsConnCloseError(t *testing.T) {
 	srv.autoConfirm = true
 	errClose := errors.New("close failed")
 	var closes atomic.Int32
-	m := NewManager(
-		testConfig("node:6379"),
-		srv.dial,
-		func(cn *pool.Conn) error {
+	m := NewManager(testConfig("node:6379"), funcHooks{
+		newConn: srv.dial,
+		closeConn: func(cn *pool.Conn) error {
 			_ = cn.Close()
 			if closes.Add(1) == 1 {
 				return errClose
 			}
 			return nil
 		},
-		func(context.Context, *pool.Conn, *proto.Reader) error { return nil },
-		testIsBadConn,
-		nil, nil, nil,
-	)
+	})
 
 	h, err := m.Subscribe(ctx, "ch")
 	if err != nil {

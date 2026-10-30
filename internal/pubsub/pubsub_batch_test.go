@@ -17,29 +17,25 @@ import (
 func TestBatchedMessageBeforeConsumedPush(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
-	m := NewManager(
-		testConfig("node:6379"),
-		srv.dial,
-		func(cn *pool.Conn) error { return cn.Close() },
-		// Consumes MOVING pushes, like the client's push processor.
-		func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
-			for {
-				if t, err := rd.PeekReplyType(); err != nil || t != proto.RespPush {
-					return nil
-				}
-				if name, err := rd.PeekPushNotificationName(); err != nil || name != "MOVING" {
-					return nil
-				}
-				if _, err := rd.ReadReply(); err != nil {
-					return err
-				}
-				if rd.Buffered() == 0 {
-					return nil
-				}
+	hooks := testHooks(srv)
+	// Consumes MOVING pushes, like the client's push processor.
+	hooks.processPush = func(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+		for {
+			if t, err := rd.PeekReplyType(); err != nil || t != proto.RespPush {
+				return nil
 			}
-		},
-		testIsBadConn, nil, testShouldHandoff, testResolveHandoff,
-	)
+			if name, err := rd.PeekPushNotificationName(); err != nil || name != "MOVING" {
+				return nil
+			}
+			if _, err := rd.ReadReply(); err != nil {
+				return err
+			}
+			if rd.Buffered() == 0 {
+				return nil
+			}
+		}
+	}
+	m := NewManager(testConfig("node:6379"), hooks)
 	t.Cleanup(func() { _ = m.Close() })
 
 	h, err := m.Subscribe(ctx, "p")

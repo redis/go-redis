@@ -37,9 +37,9 @@ var ErrClientSetNameSubscribed error = pubsub.ErrClientSetNameSubscribed
 // a client that needs different behavior embeds it and overrides only
 // what differs (see failoverPubSubHooks). Declared here (not in
 // internal/pubsub) because interfaces with unexported methods are only
-// satisfiable within the declaring package. ClusterClient runs the
-// cluster stub (pubsub.ClusterManager) until the cluster manager is
-// ported.
+// satisfiable within the declaring package. ClusterClient builds a
+// pubsub.ClusterManager from its node clients' hooks instead (see
+// ClusterClient.newPubSubManager).
 type pubSubClienter interface {
 	pubsubConnect(ctx context.Context, addr string) (*pool.Conn, error)
 	pubsubDisconnect(cn *pool.Conn) error
@@ -64,18 +64,50 @@ var (
 // failover client's master-resolving dialer) every reconnect
 // re-resolves the target through it.
 func newPubSubManager(h pubSubClienter, opt *Options) *pubsub.Manager {
-	return pubsub.NewManager(
-		pubSubConfigFromOptions(opt),
-		h.pubsubConnect,
-		h.pubsubDisconnect,
-		h.pubsubProcessPush,
-		func(err error, allowTimeout bool) bool {
-			return isBadConn(err, allowTimeout, opt.Addr)
-		},
-		nil,
-		h.pubsubShouldReplaceConn,
-		h.pubsubResolveAddress,
-	)
+	return pubsub.NewManager(pubSubConfigFromOptions(opt), pubSubClientHooks{
+		pubSubClienter: h,
+		addr:           opt.Addr,
+	})
+}
+
+// pubSubClientHooks adapts a pubSubClienter to the engine's pubsub.Hooks.
+// The exported method set has to live on a type of its own: on
+// baseClient it would become public API of every client embedding it.
+type pubSubClientHooks struct {
+	pubSubClienter
+	// addr is the client's configured address, which isBadConn needs to
+	// classify an error.
+	addr string
+}
+
+var _ pubsub.Hooks = pubSubClientHooks{}
+
+func (h pubSubClientHooks) NewConn(ctx context.Context, addr string) (*pool.Conn, error) {
+	return h.pubsubConnect(ctx, addr)
+}
+
+func (h pubSubClientHooks) CloseConn(cn *pool.Conn) error {
+	return h.pubsubDisconnect(cn)
+}
+
+func (h pubSubClientHooks) ProcessPush(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	return h.pubsubProcessPush(ctx, cn, rd)
+}
+
+func (h pubSubClientHooks) IsBadConn(err error, allowTimeout bool) bool {
+	return isBadConn(err, allowTimeout, h.addr)
+}
+
+// RequestTopologyRefresh is a no-op: a standalone client has no
+// topology to refresh.
+func (pubSubClientHooks) RequestTopologyRefresh() {}
+
+func (h pubSubClientHooks) ShouldReplaceConn(cn *pool.Conn) bool {
+	return h.pubsubShouldReplaceConn(cn)
+}
+
+func (h pubSubClientHooks) ResolveAddress(prev *pool.Conn, current string) string {
+	return h.pubsubResolveAddress(prev, current)
 }
 
 // pubSubConfigFromOptions maps client Options (already defaulted by
@@ -137,12 +169,18 @@ func pubSubDialRetryBackoff(opt *Options) func(attempt int) time.Duration {
 // PubSub is a thin wrapper over an engine subscriber handle
 // (internal/pubsub): all PubSub instances of one client multiplex over
 // the client's shared pub/sub connection. Consequences of the shared
-// connection: ClientSetName names it for every subscriber, and the
-// subscription counts the server reports are connection-wide, not
-// per-PubSub.
+// connection: ClientSetName names it for every subscriber;
+// CredentialsProviderContext runs with the context of the call that
+// dialed it (reconnects reuse those values), so every subscriber shares
+// one ACL identity; Subscription.Count is this PubSub's own count, not
+// the server's connection-wide one.
 //
-// ClusterClient pub/sub is not implemented on this engine yet: its
-// PubSub operations return pubsub.ErrClusterNotImplemented.
+// A ClusterClient's PubSub spans connections: regular and pattern
+// subscriptions share one broadcast connection to a healthy node, and
+// each shard channel lives on a connection to the node owning its slot,
+// re-routed when the slot moves (a resubscription shows up as a
+// confirmation with an unchanged Count). Ping pings every connection the
+// PubSub spans; ClientSetName names the broadcast connection.
 type PubSub struct {
 	handle pubsub.PubSuber
 }

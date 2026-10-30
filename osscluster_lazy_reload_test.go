@@ -170,6 +170,33 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 		}
 	})
 
+	t.Run("RequestFromOnReloadSurvives", func(t *testing.T) {
+		// The pub/sub re-route hook runs from onReload and, when a move
+		// fails fast, asks for another reload while the first is still
+		// marked in progress. That request must not be cleared with the
+		// ones the finished load served: it is the only retry.
+		var reloadCount atomic.Int32
+
+		holder := newClusterStateHolder(func(ctx context.Context) (*clusterState, error) {
+			reloadCount.Add(1)
+			return &clusterState{}, nil
+		}, 10*time.Second)
+		holder.onReload = func() {
+			if reloadCount.Load() == 1 {
+				holder.LazyReload()
+			}
+		}
+
+		holder.LazyReload()
+
+		// First reload, cooldown, then the reload the callback requested.
+		time.Sleep(500 * time.Millisecond)
+
+		if count := reloadCount.Load(); count != 2 {
+			t.Errorf("Expected 2 reloads (initial + the one onReload requested), got %d", count)
+		}
+	})
+
 	t.Run("CascadingSMIGRATEDScenario", func(t *testing.T) {
 		// Simulate the real-world scenario: multiple SMIGRATED notifications
 		// arriving in quick succession from different node clients

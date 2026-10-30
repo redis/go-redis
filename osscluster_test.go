@@ -791,10 +791,7 @@ var _ = Describe("ClusterClient", func() {
 			})
 		})
 
-		// Pending until the cluster pub/sub manager is ported onto the new
-		// engine: ClusterClient runs the stub (pubsub.ClusterManager),
-		// which reports pubsub.ErrClusterNotImplemented.
-		PIt("should support PubSub", func() {
+		It("should support PubSub", func() {
 			pubsub := client.Subscribe(ctx, "mychannel")
 			defer pubsub.Close()
 
@@ -818,7 +815,7 @@ var _ = Describe("ClusterClient", func() {
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
 
-		PIt("should support sharded PubSub", func() { // see the pending note above
+		It("should support sharded PubSub", func() {
 			pubsub := client.SSubscribe(ctx, "mychannel")
 			defer pubsub.Close()
 
@@ -842,7 +839,7 @@ var _ = Describe("ClusterClient", func() {
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
 
-		PIt("should support PubSub.Ping without channels", func() { // see the pending note above
+		It("should support PubSub.Ping without channels", func() {
 			pubsub := client.Subscribe(ctx)
 			defer pubsub.Close()
 

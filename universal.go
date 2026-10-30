@@ -302,6 +302,14 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		MaintNotificationsConfig:  o.MaintNotificationsConfig,
+
+		PubSubChanSize:               o.PubSubChanSize,
+		PubSubHealthCheckInterval:    o.PubSubHealthCheckInterval,
+		PubSubSubscribeRetryInterval: o.PubSubSubscribeRetryInterval,
+		PubSubPingTimeout:            o.PubSubPingTimeout,
+		PubSubReconnectTimeout:       o.PubSubReconnectTimeout,
+		PubSubReconnectMaxBackoff:    o.PubSubReconnectMaxBackoff,
+		PubSubLogInterval:            o.PubSubLogInterval,
 	}
 }
 
