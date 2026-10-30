@@ -89,7 +89,7 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 	case nil:
 		return dst
 	default:
-		// scan struct field
+		// scan struct field / typed string-key maps
 		v := reflect.ValueOf(arg)
 		if v.Type().Kind() == reflect.Pointer {
 			if v.IsNil() {
@@ -97,6 +97,16 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 				return dst
 			}
 			v = v.Elem()
+		}
+
+		// Flatten map[string]T the same way as map[string]string /
+		// map[string]interface{}, so HSet/HMSet accept typed numeric maps.
+		if v.Kind() == reflect.Map && v.Type().Key().Kind() == reflect.String {
+			iter := v.MapRange()
+			for iter.Next() {
+				dst = append(dst, iter.Key().Interface(), iter.Value().Interface())
+			}
+			return dst
 		}
 
 		if v.Type().Kind() == reflect.Struct {
