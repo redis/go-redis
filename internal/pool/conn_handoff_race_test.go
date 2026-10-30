@@ -122,7 +122,7 @@ func TestClaimIdleForHandoffSkipsAcquiredConn(t *testing.T) {
 	}
 	gen := cn.HandoffOwnerGen()
 
-	if cn.ClaimIdleForHandoff() {
+	if _, ok := cn.ClaimIdleForHandoff(); ok {
 		t.Fatal("ClaimIdleForHandoff succeeded on a connection that is in use")
 	}
 	if got := cn.GetStateMachine().GetState(); got != StateInUse {
@@ -146,7 +146,8 @@ func TestClaimIdleForHandoffTakesIdleConn(t *testing.T) {
 	cn.GetStateMachine().Transition(StateIdle)
 	gen := cn.HandoffOwnerGen()
 
-	if !cn.ClaimIdleForHandoff() {
+	claimed, ok := cn.ClaimIdleForHandoff()
+	if !ok {
 		t.Fatal("ClaimIdleForHandoff failed on an idle connection")
 	}
 	if got := cn.GetStateMachine().GetState(); got != StateUnusable {
@@ -159,7 +160,7 @@ func TestClaimIdleForHandoffTakesIdleConn(t *testing.T) {
 		t.Fatal("claim did not bump the owner generation")
 	}
 
-	cn.MarkHandoffQueued()
+	cn.MarkHandoffQueued(claimed)
 	if cn.ShouldHandoff() {
 		t.Fatal("still marked ShouldHandoff after MarkHandoffQueued")
 	}
@@ -168,6 +169,36 @@ func TestClaimIdleForHandoffTakesIdleConn(t *testing.T) {
 	}
 	if got := cn.GetStateMachine().GetState(); got != StateUnusable {
 		t.Fatalf("MarkHandoffQueued changed the state to %v", got)
+	}
+}
+
+// The worker can finish a queued handoff and a later MOVING can mark the
+// connection again before the MOVING handler clears the mark of the handoff
+// it queued. Clearing must leave the new mark alone, or the later handoff is
+// lost: OnPut and the MOVING handler would both skip the connection.
+func TestMarkHandoffQueuedKeepsLaterMark(t *testing.T) {
+	cn := NewConn(nil)
+	if err := cn.MarkForHandoff("first:6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	cn.GetStateMachine().Transition(StateIdle)
+	claimed, ok := cn.ClaimIdleForHandoff()
+	if !ok {
+		t.Fatal("ClaimIdleForHandoff failed on an idle connection")
+	}
+
+	// The worker completes the queued handoff, then a later MOVING marks it.
+	cn.ClearHandoffState()
+	if err := cn.MarkForHandoff("second:6379", 2); err != nil {
+		t.Fatalf("second MarkForHandoff: %v", err)
+	}
+
+	cn.MarkHandoffQueued(claimed)
+	if !cn.ShouldHandoff() {
+		t.Fatal("MarkHandoffQueued cleared the later handoff mark")
+	}
+	if got := cn.GetHandoffEndpoint(); got != "second:6379" {
+		t.Fatalf("endpoint = %q, want the later handoff's", got)
 	}
 }
 
@@ -268,7 +299,7 @@ func TestRemoveClaimedIdleConnRecordsIdleState(t *testing.T) {
 	})
 	defer SetAllMetricCallbacks(nil)
 
-	if !idle.ClaimIdleForHandoff() {
+	if _, ok := idle.ClaimIdleForHandoff(); !ok {
 		t.Fatal("ClaimIdleForHandoff failed on an idle connection")
 	}
 	p.RemoveWithoutTurn(ctx, idle, errors.New("handoff queue full"))
