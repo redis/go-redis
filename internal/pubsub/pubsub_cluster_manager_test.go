@@ -22,6 +22,8 @@ type fakeCluster struct {
 
 	broadcast *fakeServer
 	reloads   chan struct{}
+	// onDial, when set, observes every NewConn call before the dial.
+	onDial func(ctx context.Context, addr string)
 }
 
 func newFakeCluster(addrs ...string) *fakeCluster {
@@ -51,6 +53,12 @@ func (c *fakeCluster) own(ch, addr string) {
 var _ ClusterHooks = (*fakeCluster)(nil)
 
 func (c *fakeCluster) NewConn(ctx context.Context, addr string) (*pool.Conn, error) {
+	c.mu.Lock()
+	onDial := c.onDial
+	c.mu.Unlock()
+	if onDial != nil {
+		onDial(ctx, addr)
+	}
 	if addr == "" {
 		return c.broadcast.dial(ctx, addr)
 	}
@@ -327,8 +335,11 @@ func TestClusterRerouteJoinsExistingPart(t *testing.T) {
 }
 
 // TestClusterSUnsubscribePrunes pins that releasing a node's last shard
-// channel closes that node's connection, through the handle and
-// through the manager-wide SUnsubscribe alike.
+// channel detaches that node's part once the unsubscribe confirmation
+// came through — the consumer still receives it — closing the
+// connection and pruning the node manager, through the handle and
+// through the manager-wide SUnsubscribe alike; a later subscribe on
+// that node dials afresh.
 func TestClusterSUnsubscribePrunes(t *testing.T) {
 	ctx := context.Background()
 	c := newFakeCluster("n1:6379", "n2:6379")
@@ -340,33 +351,76 @@ func TestClusterSUnsubscribePrunes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SSubscribe: %v", err)
 	}
+	events := h.ChannelWithSubscriptions()
 	n1 := c.nodes["n1:6379"].waitDial(t)
 	n1.expectCmd(t, "ssubscribe", "a")
 	n2 := c.nodes["n2:6379"].waitDial(t)
 	n2.expectCmd(t, "ssubscribe", "b")
+	recvSubscription(t, events)
+	recvSubscription(t, events)
 
 	if err := h.SUnsubscribe(ctx, "a"); err != nil {
 		t.Fatalf("SUnsubscribe: %v", err)
 	}
 	n1.expectCmd(t, "sunsubscribe", "a")
-	// The part is emptied but the handle keeps it until a sweep or
-	// close; the node manager stays while the part handle lives. A
-	// manager-wide SUnsubscribe of everything releases b and prunes.
+	if sub := recvSubscription(t, events); sub.Kind != "sunsubscribe" || sub.Channel != "a" || sub.Count != 1 {
+		t.Fatalf("confirmation = %v (count %d), want sunsubscribe a with count 1", sub, sub.Count)
+	}
+	// The emptied part is detached and its node manager pruned.
+	n1.expectClosed(t)
+	waitNodeManagerGone(t, m, "n1:6379")
+	if parts, _ := h.(*clusterShardHandle).openParts(); len(parts) != 1 {
+		t.Fatalf("parts after the unsubscribe = %d, want 1 (n2)", len(parts))
+	}
+
+	// Subscribing on that node again dials it afresh.
+	if _, err := h.SSubscribe(ctx, "a"); err != nil {
+		t.Fatalf("SSubscribe again: %v", err)
+	}
+	n1b := c.nodes["n1:6379"].waitDial(t)
+	n1b.expectCmd(t, "ssubscribe", "a")
+	recvSubscription(t, events)
+
+	// A manager-wide SUnsubscribe of everything releases both and prunes.
 	if err := m.SUnsubscribe(ctx); err != nil {
 		t.Fatalf("manager SUnsubscribe: %v", err)
 	}
+	n1b.expectCmd(t, "sunsubscribe", "a")
 	n2.expectCmd(t, "sunsubscribe", "b")
+	recvSubscription(t, events)
+	recvSubscription(t, events)
+	n1b.expectClosed(t)
+	n2.expectClosed(t)
+	waitNodeManagerGone(t, m, "n1:6379")
+	waitNodeManagerGone(t, m, "n2:6379")
 	_, _, schannels := h.Subscriptions()
 	if len(schannels) != 0 {
 		t.Fatalf("Subscriptions shard channels = %v, want none", schannels)
 	}
 
-	// Closing the handle releases its parts; both nodes' connections go.
+	// The handle itself is still open and closes cleanly.
 	if err := h.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	n1.expectClosed(t)
-	n2.expectClosed(t)
+}
+
+// waitNodeManagerGone waits until the manager has no node manager for
+// addr (pruning runs from the delivering goroutine).
+func waitNodeManagerGone(t *testing.T, m *ClusterManager, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		m.mu.Lock()
+		_, ok := m.nodeManagers[addr]
+		m.mu.Unlock()
+		if !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node manager for %s was not pruned", addr)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // TestClusterCloseEndsStreams pins the teardown contract: the manager's
@@ -724,5 +778,148 @@ func TestClusterEmptyHandlePing(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Events to close")
+	}
+}
+
+// TestClusterRerouteKeepsSubscribeContextValues pins that the dials a
+// re-route sweep makes — for a moved channel and for one that could not
+// be placed when subscribed — carry the context values of the
+// SSubscribe call, with its cancellation detached: credentials chosen
+// per context (CredentialsProviderContext) must be the subscriber's on
+// the new node too.
+func TestClusterRerouteKeepsSubscribeContextValues(t *testing.T) {
+	type tenantKey struct{}
+	type seen struct {
+		addr   string
+		tenant any
+		ctxErr error
+	}
+	c := newFakeCluster("n1:6379", "n2:6379", "n3:6379")
+	dials := make(chan seen, 8)
+	c.onDial = func(ctx context.Context, addr string) {
+		dials <- seen{addr: addr, tenant: ctx.Value(tenantKey{}), ctxErr: ctx.Err()}
+	}
+	c.own("a", "n1:6379") // b has no owner yet: it stays unplaced
+	m := newTestClusterManager(t, c)
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), tenantKey{}, "acme"))
+	h := m.NewHandle()
+	if _, err := h.SSubscribe(ctx, "a"); err != nil {
+		t.Fatalf("SSubscribe a: %v", err)
+	}
+	n1 := c.nodes["n1:6379"].waitDial(t)
+	n1.expectCmd(t, "ssubscribe", "a")
+	if d := <-dials; d.addr != "n1:6379" || d.tenant != "acme" {
+		t.Fatalf("subscribe dial = %+v, want n1 with tenant acme", d)
+	}
+	// b has no owner: it is recorded as intent for the sweep to place.
+	if _, err := h.SSubscribe(ctx, "b"); err == nil {
+		t.Fatal("SSubscribe of an ownerless channel succeeded")
+	}
+	c.waitReload(t)
+	cancel() // the subscriber's context is long gone when the sweep runs
+
+	// The sweep moves a to n2 and places b on n3: both dials carry the
+	// subscriber's values on a live context.
+	c.own("a", "n2:6379")
+	c.own("b", "n3:6379")
+	m.rerouteShards(context.Background())
+	for range 2 {
+		d := <-dials
+		if d.tenant != "acme" || d.ctxErr != nil {
+			t.Fatalf("re-route dial to %s saw tenant %v (ctx err %v), want acme and a live context", d.addr, d.tenant, d.ctxErr)
+		}
+	}
+	c.nodes["n2:6379"].waitDial(t).expectCmd(t, "ssubscribe", "a")
+	c.nodes["n3:6379"].waitDial(t).expectCmd(t, "ssubscribe", "b")
+}
+
+// TestClusterJoinSurvivesPartRelease pins that a channel joining a
+// node's existing part while that part's last channel is being released
+// is not torn down with it: the release confirmation finds the joining
+// channel placed and keeps the part. The interleaving is forced: a
+// second handle keeps the node's connection alive, the composite's
+// events are left unread so the part's forwarder parks with the release
+// confirmation queued behind them, the fake's read loop is paused so the
+// join's SSUBSCRIBE write parks on the pipe, and draining events then
+// delivers the confirmation mid-join.
+func TestClusterJoinSurvivesPartRelease(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeCluster("n1:6379")
+	c.own("a", "n1:6379")
+	c.own("b", "n1:6379")
+	c.own("c", "n1:6379")
+	srv := c.nodes["n1:6379"]
+	srv.autoConfirm = false
+	cfg := testConfig("")
+	cfg.WriteTimeout = 5 * time.Second // the parked write must outlive the interleaving
+	m := NewClusterManager(cfg, c)
+	t.Cleanup(func() { _ = m.Close() })
+
+	h, err := m.SSubscribe(ctx, "a")
+	if err != nil {
+		t.Fatalf("SSubscribe a: %v", err)
+	}
+	events := h.ChannelWithSubscriptions()
+	n1 := srv.waitDial(t)
+	n1.expectCmd(t, "ssubscribe", "a")
+	n1.sendConfirm(t, "ssubscribe", "a", 1)
+	recvSubscription(t, events)
+	// A second subscriber keeps the node's connection alive once a is
+	// released.
+	other, err := m.SSubscribe(ctx, "c")
+	if err != nil {
+		t.Fatalf("SSubscribe c: %v", err)
+	}
+	n1.expectCmd(t, "ssubscribe", "c")
+	n1.sendConfirm(t, "ssubscribe", "c", 2)
+	recvSubscription(t, other.Events())
+
+	// Park the forwarder on the unread events, then release a: the read
+	// loop pauses after the SUNSUBSCRIBE, and the release confirmation
+	// queues up behind the messages.
+	for i := range 3 * cfg.ChanSize {
+		n1.sendMessage(t, "smessage", "a", "fill-"+string(rune('a'+i%26)))
+	}
+	n1.pauseAfterNext()
+	if err := h.SUnsubscribe(ctx, "a"); err != nil {
+		t.Fatalf("SUnsubscribe a: %v", err)
+	}
+	n1.expectCmd(t, "sunsubscribe", "a")
+	n1.sendConfirm(t, "sunsubscribe", "a", 1)
+	time.Sleep(20 * time.Millisecond)
+
+	// The join picks the same part; its write parks on the pipe.
+	joined := make(chan error, 1)
+	go func() {
+		_, err := h.SSubscribe(ctx, "b")
+		joined <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	// Draining delivers the release confirmation while the join is in
+	// flight.
+	if sub := recvSubscription(t, events); sub.Kind != "sunsubscribe" || sub.Channel != "a" {
+		t.Fatalf("confirmation = %v, want sunsubscribe a", sub)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	n1.paused.Store(false)
+	n1.expectCmd(t, "ssubscribe", "b")
+	n1.sendConfirm(t, "ssubscribe", "b", 2)
+	if err := <-joined; err != nil {
+		t.Fatalf("SSubscribe b: %v", err)
+	}
+	if sub := recvSubscription(t, events); sub.Kind != "ssubscribe" || sub.Channel != "b" {
+		t.Fatalf("confirmation = %v, want ssubscribe b", sub)
+	}
+	// The joined part lives on: b is not unsubscribed, and it delivers.
+	n1.expectNoCmd(t, 50*time.Millisecond)
+	n1.sendMessage(t, "smessage", "b", "hello")
+	if msg, ok := recvEvent(t, events).(*Message); !ok || msg.Payload != "hello" {
+		t.Fatalf("event = %v, want the message on b", msg)
+	}
+	if parts, _ := h.(*clusterShardHandle).openParts(); len(parts) != 1 {
+		t.Fatalf("parts = %d, want 1", len(parts))
 	}
 }

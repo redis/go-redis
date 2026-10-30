@@ -19,6 +19,29 @@ type shardPart struct {
 	addr      string
 	handle    PubSuber
 	schannels map[string]struct{}
+	// leaving holds the shard channels unsubscribed on this part whose
+	// confirmation is still owed (see leaveLocked). A slot part with
+	// nothing placed and nothing leaving is detached and closed (see
+	// drainedLocked): closing it earlier would end its stream before
+	// the confirmations the consumer is owed came through, keeping it
+	// would leave the part, its forwarder and its node manager alive
+	// for as long as the composite lives.
+	leaving map[string]struct{}
+}
+
+// leaveLocked moves ch from placed to leaving. Callers must hold the
+// composite's mu.
+func (p *shardPart) leaveLocked(ch string) {
+	delete(p.schannels, ch)
+	if p.leaving == nil {
+		p.leaving = make(map[string]struct{})
+	}
+	p.leaving[ch] = struct{}{}
+}
+
+// drained reports whether a slot part carries nothing and owes nothing.
+func (p *shardPart) drained() bool {
+	return p.schannels != nil && len(p.schannels) == 0 && len(p.leaving) == 0
 }
 
 // shardHandleState is the composite handle's lifecycle state. It only
@@ -63,6 +86,14 @@ type clusterShardHandle struct {
 	// before that confirmation could outrun it and open a delivery gap.
 	// Both parts may deliver a message published in the overlap.
 	moving map[string]*shardPart
+	// dialValues carries the context values of the latest SSubscribe
+	// call, its cancellation detached (nil before the first). A re-route
+	// sweep runs on no caller's behalf, yet the node it dials
+	// authenticates through those values (CredentialsProviderContext):
+	// a moved or late-placed channel must land with the credentials the
+	// subscriber supplied, as the engine's own reconnect redials with
+	// (see dialer.attempt).
+	dialValues context.Context
 	// broadcast is the broadcast part's handle, created lazily.
 	broadcast PubSuber
 
@@ -237,24 +268,50 @@ func (h *clusterShardHandle) deliver(p *shardPart, ev any) {
 		return
 	}
 	release, emptied := h.landedLocked(p, ev)
+	detach := h.drainedLocked(p, ev)
 	ev, ok := h.stampLocked(ev)
 	h.mu.Unlock()
 
 	h.releaseParts(release, emptied)
-	if !ok {
-		return
+	if ok {
+		select {
+		case h.events <- ev:
+		case <-h.closing:
+		}
 	}
+	if detach != nil {
+		_ = detach.handle.Close()
+		h.m.prune()
+	}
+}
 
-	select {
-	case h.events <- ev:
-	case <-h.closing:
+// drainedLocked settles an unsubscribe confirmation of part p against
+// its leaving set and reports p when that was the last thing the part
+// owed, with nothing placed on it any more: the caller closes it once
+// the confirmation is delivered. The part is taken out of parts here,
+// so no ping or subscribe lands on a closing part. Callers must hold
+// h.mu.
+func (h *clusterShardHandle) drainedLocked(p *shardPart, ev any) *shardPart {
+	sub, ok := ev.(*Subscription)
+	if !ok || p == nil || p.schannels == nil || sub.Kind != "sunsubscribe" {
+		return nil
 	}
+	delete(p.leaving, sub.Channel)
+	if _, live := h.parts[p]; !live || !p.drained() {
+		return nil
+	}
+	delete(h.parts, p)
+	return p
 }
 
 // landedLocked completes the move of a shard channel when ev is its
 // subscription confirmation from the part the channel moves to: the
-// parts it left stop carrying it and are to be sent its unsubscribe,
-// and those left empty are to be closed. Callers must hold h.mu.
+// parts it left stop carrying it and are to be sent its unsubscribe.
+// A part that is left with nothing placed and nothing else owed is to
+// be closed right away (the released channel's own confirmation is
+// suppressed, nobody waits for it); one still owing confirmations of
+// earlier unsubscribes is closed once they came through (see
+// drainedLocked). Callers must hold h.mu.
 func (h *clusterShardHandle) landedLocked(p *shardPart, ev any) (release map[*shardPart][]string, emptied []*shardPart) {
 	sub, ok := ev.(*Subscription)
 	if !ok || p == nil || sub.Kind != "ssubscribe" || h.moving[sub.Channel] != p {
@@ -268,23 +325,26 @@ func (h *clusterShardHandle) landedLocked(p *shardPart, ev any) (release map[*sh
 		if _, held := q.schannels[sub.Channel]; !held {
 			continue
 		}
-		delete(q.schannels, sub.Channel)
 		if release == nil {
 			release = make(map[*shardPart][]string)
 		}
 		release[q] = append(release[q], sub.Channel)
-		if len(q.schannels) == 0 {
+		if delete(q.schannels, sub.Channel); q.drained() {
+			delete(h.parts, q)
 			emptied = append(emptied, q)
+		} else {
+			q.leaveLocked(sub.Channel)
 		}
 	}
 	return release, emptied
 }
 
 // releaseParts unsubscribes the released channels on the parts that
-// held them and closes the parts left empty: closing the handle ends
-// its stream, and the exiting forwarder detaches the part. The old
-// part's unsubscribe confirmation is then suppressed by stampLocked —
-// the composite stays subscribed. Callers must not hold h.mu.
+// held them and closes the parts landedLocked emptied: closing the
+// handle ends its stream, and the exiting forwarder runs the close
+// accounting. The old part's unsubscribe confirmation is then
+// suppressed by stampLocked — the composite stays subscribed. Callers
+// must not hold h.mu.
 func (h *clusterShardHandle) releaseParts(release map[*shardPart][]string, emptied []*shardPart) {
 	if len(release) == 0 {
 		return
@@ -440,11 +500,20 @@ func (h *clusterShardHandle) reroute(ctx context.Context) error {
 	}
 	h.rerouting++
 	current, currentAddrs, all := h.placementLocked()
+	values := h.dialValues
 	h.mu.Unlock()
 	defer h.endReroute()
 
 	if len(all) == 0 {
 		return nil
+	}
+
+	// The sweep dials with the subscriber's context values (see
+	// dialValues), bounded by the sweep's own cancellation.
+	if values != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = withCancelOf(values, ctx)
+		defer cancel()
 	}
 
 	// The current placement makes the resolve sticky: a channel moves
@@ -471,6 +540,18 @@ func (h *clusterShardHandle) reroute(ctx context.Context) error {
 	return firstErr
 }
 
+// withCancelOf returns a context with values' values that is cancelled
+// when ctrl is (values is expected cancellation-free already). The
+// returned cancel releases the link and must be called.
+func withCancelOf(values, ctrl context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(values)
+	stop := context.AfterFunc(ctrl, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
 // handleSSubscribe places one resolved owner-group of shard channels on
 // addr, preferring to join an existing part there (a fresh part per
 // call would leak one emptied part per migration cycle). A relocated
@@ -479,8 +560,13 @@ func (h *clusterShardHandle) reroute(ctx context.Context) error {
 // part it leaves until the new part confirms it (see landedLocked). A
 // failed dial still places the channels — the engine keeps their
 // registration for its reconnect replay, and the old part keeps
-// delivering meanwhile — and is reported. Callers hold rerouteMu and
-// must not hold h.mu.
+// delivering meanwhile — and is reported. Channels joining an existing
+// part are placed on it under the lock that picked it, before the
+// subscribe is written: a part is detached and closed once it is empty
+// and owes nothing (see drainedLocked, landedLocked), which a part
+// picked while its last channel's release was in flight would otherwise
+// become mid-join, taking the joining channels down with it. Callers
+// hold rerouteMu and must not hold h.mu.
 func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, channels map[string]struct{}, current map[string]*shardPart) error {
 	// Skip channels already placed on the target node; a channel with no
 	// placement needs subscribing but has no old part to release.
@@ -532,6 +618,7 @@ func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, 
 		}
 	}
 	if target != nil {
+		maps.Copy(target.schannels, moved)
 		markMoving(target)
 	}
 	h.mu.Unlock()
@@ -543,6 +630,9 @@ func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, 
 			// The part's node manager was pruned between the lookup and
 			// the subscribe; fall through to a fresh part.
 			h.mu.Lock()
+			for ch := range moved {
+				delete(target.schannels, ch)
+			}
 			unmarkMoving(target)
 			h.mu.Unlock()
 			target = nil
@@ -570,10 +660,6 @@ func (h *clusterShardHandle) handleSSubscribe(ctx context.Context, addr string, 
 		h.mu.Unlock()
 		return perr
 	}
-
-	h.mu.Lock()
-	maps.Copy(target.schannels, moved)
-	h.mu.Unlock()
 	return err
 }
 
@@ -731,6 +817,7 @@ func (h *clusterShardHandle) SSubscribe(ctx context.Context, channels ...string)
 	for _, ch := range channels {
 		h.schannels[ch] = struct{}{}
 	}
+	h.dialValues = context.WithoutCancel(ctx)
 	current, currentAddrs, _ := h.placementLocked()
 	h.mu.Unlock()
 
@@ -781,6 +868,9 @@ func (h *clusterShardHandle) SUnsubscribe(ctx context.Context, channels ...strin
 		h.mu.Unlock()
 		return pool.ErrClosed
 	}
+	// Every released channel becomes leaving on its part: the part is
+	// detached once its last confirmation came through (see
+	// drainedLocked).
 	targets := make(map[*shardPart][]string)
 	if len(channels) == 0 {
 		clear(h.schannels)
@@ -790,7 +880,9 @@ func (h *clusterShardHandle) SUnsubscribe(ctx context.Context, channels ...strin
 				continue
 			}
 			targets[p] = nil // nil means: everything the part owns
-			clear(p.schannels)
+			for ch := range p.schannels {
+				p.leaveLocked(ch)
+			}
 		}
 	} else {
 		for _, ch := range channels {
@@ -803,7 +895,7 @@ func (h *clusterShardHandle) SUnsubscribe(ctx context.Context, channels ...strin
 			for _, ch := range channels {
 				if _, ok := p.schannels[ch]; ok {
 					subset = append(subset, ch)
-					delete(p.schannels, ch)
+					p.leaveLocked(ch)
 				}
 			}
 			if len(subset) > 0 {
