@@ -216,8 +216,9 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 				reAuthFn(nil)
 			}
 
-			// Release the connection: transition from UNUSABLE back to IDLE
-			stateMachine.Transition(pool.StateIdle)
+			// Release the connection: UNUSABLE back to IDLE. A conn closed during
+			// reAuthFn (e.g. onAuthenticationErr after a rejected AUTH) stays CLOSED.
+			_, _ = stateMachine.TryTransition([]pool.ConnState{pool.StateUnusable}, pool.StateIdle)
 		}()
 	}
 

@@ -970,12 +970,21 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
-			if isBadConn(err, false, c.opt.Addr) {
+			// A server-side rejection of the re-auth AUTH (WRONGPASS, NOPERM) is
+			// not a bad-conn error, so isBadConn alone would leave the connection
+			// pooled while it is still authenticated with the credentials the
+			// provider has already replaced. Retire it too, so the reconnect
+			// authenticates with the provider's current credentials. Other server
+			// errors keep the current path.
+			if isBadConn(err, false, c.opt.Addr) || IsAuthError(err) || IsPermissionError(err) {
 				// Close the connection to force a reconnection.
 				// Re-auth happens on connections that were idle in the pool (the pool hook
 				// waits for IDLE state before transitioning to UNUSABLE for re-auth).
 				// From metrics perspective, the connection was never "used" by a client.
 				// Note: Using context.Background() as this callback doesn't have access to caller's context.
+				// Mark the conn CLOSED first so a concurrent popIdle cannot acquire it
+				// between OnRemove and its removal from the idle list.
+				poolCn.GetStateMachine().Transition(pool.StateClosed)
 				err := c.poolForConn(poolCn).CloseConn(context.Background(), poolCn, pool.CloseReasonAuthError, pool.MetricStateIdle)
 				if err != nil {
 					internal.Logger.Printf(context.Background(), "redis: failed to close connection: %v", err)
