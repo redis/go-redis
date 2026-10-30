@@ -1244,6 +1244,9 @@ func helloServerVersion(reply map[string]interface{}) string {
 // metadataView returns the client's current command-metadata view; clients
 // without a store share the static default.
 func (c *baseClient) metadataView() *commandMetadataView {
+	if source := c.metadataSource; source != nil {
+		return source.view()
+	}
 	if s := c.cmdMeta; s != nil {
 		return s.view()
 	}
@@ -1306,6 +1309,7 @@ func (c *baseClient) fetchMetadataIdentity(ctx context.Context, infoCmd *Command
 	// identity while this fetch is validating it; the parent connection init
 	// already owns onServerHello notifications.
 	fetchClient.cmdMeta = nil
+	fetchClient.metadataSource = nil
 	fetchClient.opt.onServerHello = nil
 
 	helloCmd := NewMapStringInterfaceCmd(ctx, "hello")

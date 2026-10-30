@@ -637,6 +637,7 @@ func NewRing(opt *RingOptions) *Ring {
 	// through them to shard construction, and reusing one caller-owned
 	// RingOptions across several rings must not make the rings share (or
 	// clobber each other's) registry.
+	customFactory := opt.NewClient != nil
 	optCopy := *opt
 	opt = &optCopy
 	opt.init()
@@ -654,6 +655,7 @@ func NewRing(opt *RingOptions) *Ring {
 
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
+	ring.captureCacheIntent = customFactory
 
 	ring.initHooks(hooks{
 		process: ring.process,

@@ -143,6 +143,8 @@ const (
 // cscMissReq is one caller waiting for its missed key. done carries the fetch
 // result back (the reply is already applied to cmd by the time done fires).
 type cscMissReq struct {
+	flag     byte
+	noStore  bool
 	cmd      Cmder
 	cacheKey string
 	view     *commandMetadataView // captured with eligibility and the cache key
@@ -509,7 +511,7 @@ func (mc *cscMissCoalescer) emitReplyErr(ctx context.Context, req *cscMissReq, e
 }
 
 func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64, view *commandMetadataView, redisKeys []string) (served *pool.Conn, err error) {
-	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, view: view, done: make(chan error, 1)}
+	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, view: view, done: make(chan error, 1), flag: mc.c.cscFlag(cmd, true)}
 	if mc.c.opt.cscPresenceOnly {
 		req.redisKeys = redisKeys
 	}
@@ -521,6 +523,9 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	// callers never allocate the wire. A single command larger than the whole budget
 	// sheds too (the pooled path runs it, so there is no progress hazard).
 	approxBytes := cmdApproxBytes(cmd)
+	if req.flag != 0 {
+		approxBytes += int64(len(cscYesWire))
+	}
 	if !mc.reserveWireBytes(approxBytes) {
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, errCSCRetryUncached
@@ -584,7 +589,11 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	// the reservation always settles. The reply side still claims cmd (apply
 	// interlock) before writing the result into it.
 	var wireBuf bytes.Buffer
-	if err := writeCmd(proto.NewWriter(&wireBuf), cmd); err != nil {
+	wr := proto.NewWriter(&wireBuf)
+	if err := writeCSCPrefix(wr, req.flag); err != nil {
+		return nil, err
+	}
+	if err := writeCmd(wr, cmd); err != nil {
 		mc.releaseSerialize()
 		serializeHeld = false
 		mc.c.csc.Cancel(cacheKey, token)
@@ -768,7 +777,7 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 		applyErr = classifyCachedReply(raw)
 		mc.abandonedApplies.Add(1)
 	}
-	if isCacheableReplyResult(applyErr) {
+	if isCacheableReplyResult(applyErr) && !req.noStore {
 		fc := &cscFetchCapture{
 			raw:     raw,
 			connID:  connID,

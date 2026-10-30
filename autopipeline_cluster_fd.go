@@ -85,6 +85,13 @@ func newClusterFDRouter(parent *AutoPipeliner, cc *ClusterClient, cfg *AutoPipel
 	// the reply, not the source node. startAttempt/writtenAt are unused here —
 	// cc.process owns its own MaxRedirects budget.
 	child.clusterReprocess = func(ctx context.Context, cmd Cmder, _ int, _ time.Time) error {
+		// Recovery belongs to the uncached FD batch even if a node hook
+		// replaces the context. Keep the bypass through nested dispatch.
+		if cc.captureCacheIntent {
+			cscEnter(cmd)
+			defer cscLeave(cmd)
+			cmd.cacheState().set(cscForceBypass, true)
+		}
 		return cc.process(cscBypass(ctx), cmd)
 	}
 	// Connection-failure recovery budget for each child engine. A node.Client
