@@ -58,6 +58,12 @@ type UniversalOptions struct {
 	// SentinelAuthEmptyPassword: see FailoverOptions.SentinelAuthEmptyPassword.
 	SentinelAuthEmptyPassword bool
 
+	// SentinelOptionsOverride overrides connection properties for the
+	// connections made to the Sentinel nodes, leaving master/replica connections
+	// on the top-level values. Only used when MasterName is set. If nil, sentinel
+	// connections inherit every top-level setting.
+	SentinelOptionsOverride *SentinelOptionsOverride
+
 	MaxRetries      int
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
@@ -347,6 +353,8 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		SentinelUsername:          o.SentinelUsername,
 		SentinelPassword:          o.SentinelPassword,
 		SentinelAuthEmptyPassword: o.SentinelAuthEmptyPassword,
+
+		SentinelOptionsOverride: o.SentinelOptionsOverride,
 
 		RouteByLatency:          o.RouteByLatency,
 		RouteByLatencyTolerance: o.RouteByLatencyTolerance,
