@@ -1725,6 +1725,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
+	// Read before the hooks: the maintnotifications OnPut hook can hand the
+	// connection to a handoff worker, which may start at once (see below).
+	ownerGen := cn.HandoffOwnerGen()
+
 	if hookManager != nil {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
@@ -1752,10 +1756,16 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
 		// Hot path optimization: try fast IN_USE → IDLE transition
 		// Using inline Release() method for better performance (avoids pointer dereference)
-		transitionedToIdle := cn.Release()
+		//
+		// Not when a hook handed the connection to a handoff worker: the worker
+		// owns it now and may already hold it IN_USE for its init commands, so
+		// Release would free the worker's IN_USE and a Get would take the
+		// connection mid-init. Pool it as-is; the worker makes it IDLE when done.
+		handedOff := cn.HandedOffSince(ownerGen)
+		transitionedToIdle := !handedOff && cn.Release()
 
 		// Handle unexpected state changes
-		if !transitionedToIdle {
+		if !transitionedToIdle && !handedOff {
 			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
 			sm := cn.GetStateMachine()
