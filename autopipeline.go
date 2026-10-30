@@ -283,6 +283,19 @@ type AutoPipelineOptions struct {
 	// retries live in MaxRedirects). Never set by users (unexported).
 	clusterRetryBudget int
 
+	// fdReroute is set internally by an owner of full-duplex children (the
+	// cluster full-duplex router). Commands the child's engine cannot complete on
+	// its own connection run through it, in order, instead of being replayed on
+	// that connection or failed: the replayable tail after a connection error,
+	// and the carry plus the queue once lease retries are spent. A cluster child
+	// reroutes through the ClusterClient, so a node that went away does not
+	// strand its accepted commands. maxRetries bounds the owner's retry loop
+	// (0 = one execution): the commands' remaining retry budget, so a command
+	// already issued on the child's connection does not get a fresh one. Shutdown
+	// flushes run through it too. Never set by users (unexported). See
+	// fdEngine.reroute.
+	fdReroute func(ctx context.Context, cmds []Cmder, maxRetries int) error
+
 	// NumShards is the number of independent queue+flusher shards the
 	// autopipeliner runs. 0 (the default) means auto: a single shard, which
 	// funnels every caller into one queue so batches stay deep — measured
@@ -949,14 +962,12 @@ type AutoPipeliner struct {
 	// tell whether flushing a tiny batch now would contend for a scarce pooled
 	// connection — see awaitExpectedArrivals / pipelineHasFreeConn.
 	pipelinePool pool.Pooler
-	// cscActiveFn reports whether client-side caching is CURRENTLY active on the
-	// underlying client (nil when the client type exposes none). Consulted per
-	// solo dispatch — not captured as a bool — because CSC can disable itself
-	// mid-life (RESP3 fallback, processor damping), after which cacheable solos
-	// should return to the pipeline pool instead of the main pool. Gates the
-	// cacheable-solo routing: only an active-CSC client routes through Process
-	// (which honors the cache).
+	// cscActiveFn checks the client's current CSC state before solo dispatch:
+	// CSC can disable itself after AutoPipeliner construction.
 	cscActiveFn func() bool
+	// cscEligibleFn checks eligibility under the client's current metadata view
+	// so live refreshes and application overrides take effect at dispatch.
+	cscEligibleFn func(Cmder) bool
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
 	// when true the command call itself blocks until the command has executed
 	// (drop-in, synchronous shape); when false the call returns immediately and
@@ -978,19 +989,9 @@ type AutoPipeliner struct {
 	// batch across nodes). When nil, commands are assigned round-robin.
 	shardFn func(Cmder) int
 
-	// preflight, when set, can reject a command at submit time, before it is
-	// enqueued or dispatched (cluster mode refuses fan-out-policy commands
-	// that cannot ride a pipeline, so one caller's command cannot poison a
-	// merged batch). The returned error is set on the command.
-	preflight func(ctx context.Context, cmd Cmder) error
-
-	// mustDivert, when set, forces a command off the batching path even though
-	// it is otherwise batchable — cluster mode uses it for commands whose
-	// routing is NOT slot-derived (ReqSpecial, e.g. FT.CURSOR READ, which is
-	// sticky to the node that owns the cursor). Batched, mapCmdsByNode would
-	// route them by slot and reach the wrong shard; diverted, they go through
-	// Client/ClusterClient.Process and keep their special routing.
-	mustDivert func(ctx context.Context, cmd Cmder) bool
+	// routeCommand validates cluster routing before dispatch and reports whether
+	// the command must run outside the batch. Nil for standalone clients.
+	routeCommand func(ctx context.Context, cmd Cmder) (divert bool, err error)
 
 	// sharedClosed, when non-nil, is the owning client's pool-set closed flag
 	// (shared across WithTimeout clones). The getters refuse to build a fresh
@@ -1327,10 +1328,13 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	if pp, ok := pipeliner.(interface{ getPipelinePool() pool.Pooler }); ok {
 		ap.pipelinePool = pp.getPipelinePool()
 	}
-	// CSC probe (in-package assertion; *ClusterClient does not expose it) — see
-	// the cscActiveFn field doc.
-	if cc, ok := pipeliner.(interface{ autopipelineCSCActive() bool }); ok {
+	// CSC probes for standalone and cluster clients.
+	if cc, ok := pipeliner.(interface {
+		autopipelineCSCActive() bool
+		autopipelineCSCEligible(Cmder) bool
+	}); ok {
 		ap.cscActiveFn = cc.autopipelineCSCActive
+		ap.cscEligibleFn = cc.autopipelineCSCEligible
 	}
 
 	// Route the typed command surface. Blocking: the command call blocks until
@@ -1576,6 +1580,7 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 // returning while it still holds a pooled connection.
 func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apBatch {
 	if ap.blocking {
+		defer cmd.setClusterRoutingDecision(nil)
 		// The blocking face runs it inline, so the caller's own goroutine holds
 		// the connection; still take the gate so Close cannot decide "nothing
 		// in flight" while this command is executing.
@@ -1610,6 +1615,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		ap.divertMu.Unlock()
 		cmd.SetErr(ErrClosed)
 		cmd.setReady(completedBatch)
+		cmd.setClusterRoutingDecision(nil)
 		return completedBatch
 	}
 	// Each diverted command holds a goroutine until it completes, so it counts
@@ -1618,6 +1624,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		ap.divertMu.Unlock()
 		cmd.SetErr(ErrAutoPipelineQueueFull)
 		cmd.setReady(completedBatch)
+		cmd.setClusterRoutingDecision(nil)
 		return completedBatch
 	}
 	b := newAPBatch()
@@ -1627,6 +1634,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 	go func() {
 		defer ap.divertWg.Done()
 		defer b.close()
+		defer cmd.setClusterRoutingDecision(nil)
 		defer ap.releaseQueued(1)
 		defer recoverDispatchPanic([]Cmder{cmd})
 		if ap.armSelfDeadlockGuard() {
@@ -2044,6 +2052,10 @@ func blockingArgString(arg interface{}) string {
 
 // submit queues a command without blocking and returns its completion future.
 func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
+	// Sequential command reuse must capture a fresh admission decision and slot:
+	// the FD slot table trusts a cached slot as this admission's.
+	cmd.setClusterRoutingDecision(nil)
+	cmd.resetCachedSlot()
 	// finish marks the command ready on the deferred face so its result
 	// accessors (Val/Result/Err) self-gate through await() — whether the
 	// caller goes through the typed surface or raw Submit. Reading a
@@ -2057,15 +2069,19 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		}
 		return f
 	}
-	// Decide DIVERSION first. The cluster preflight rejects commands whose
-	// request policy cannot ride a pipeline (ReqAllNodes/ReqAllShards), but a
-	// diverted command never rides one: it goes through the underlying
-	// Client/ClusterClient.Process, which performs the normal cluster-wide
-	// fan-out and aggregation. Running the preflight first therefore rejected
-	// commands that would have worked — typed WAIT/WAITAOF on a cluster with
-	// command policies enabled (review finding by codex on #3942).
-	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
-		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
+	// Validate routing even for commands that independently require diversion.
+	// A blocking command must not bypass the cluster's fan-out ordering check.
+	diverted := false
+	if ap.routeCommand != nil {
+		var err error
+		diverted, err = ap.routeCommand(ctx, cmd)
+		if err != nil {
+			cmd.SetErr(err)
+			cmd.setClusterRoutingDecision(nil)
+			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
+		}
+	}
+	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,
 		// so an HIMPORT SET on the FD pipe can fail "no such fieldset". Divert it to
@@ -2076,12 +2092,6 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// (clusterFD) routes to per-node FD children whose engines have the same
 		// limitation, so divert there too.
 		((ap.fd != nil || ap.clusterFD != nil) && isHImportCmd(cmd))
-	if !diverted && ap.preflight != nil {
-		if err := ap.preflight(ctx, cmd); err != nil {
-			cmd.SetErr(err)
-			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
-		}
-	}
 	if diverted {
 		// Blocking commands (and the conn-hostile ones above) are executed
 		// directly, outside the pipeline — via runOutsidePipeline, which
@@ -2094,6 +2104,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// of running after Close().
 		if ap.isClosed() {
 			cmd.SetErr(ErrClosed)
+			cmd.setClusterRoutingDecision(nil)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 		// runOutsidePipeline sets the command ready itself on the deferred
@@ -2120,7 +2131,11 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		}
 		return AutoFuture{cmd: cmd, batch: b}
 	}
-	return AutoFuture{cmd: cmd, batch: ap.enqueue(cmd)}
+	batch := ap.enqueue(cmd)
+	if batch == completedBatch {
+		cmd.setClusterRoutingDecision(nil)
+	}
+	return AutoFuture{cmd: cmd, batch: batch}
 }
 
 // ErrSubmitBlockingFace rejects Submit on the blocking face: Submit does not
@@ -2193,7 +2208,7 @@ func (ap *AutoPipeliner) processAsync(ctx context.Context, cmd Cmder) error {
 	// non-blocking not-yet-executed view — while the caller always sees its
 	// own store before any await.
 	f := ap.submit(ctx, cmd)
-	// Report SUBMIT-time rejections (a closed pipeliner, a cluster preflight
+	// Report SUBMIT-time rejections (a closed pipeliner, a cluster routing
 	// refusal): those paths set the error on the command and hand back the
 	// shared completed batch without queueing anything, so returning nil made
 	// Process claim success for a command that will never run — and callers
@@ -2451,6 +2466,8 @@ func (ap *AutoPipeliner) Config() AutoPipelineOptions {
 	// MaxRedirects, used as the child engine's recovery budget); it has no meaning
 	// on a config a caller copies into a standalone client, so strip it too.
 	cfg.clusterRetryBudget = 0
+	// fdReroute holds the owner's closure, like clusterReprocess: strip it.
+	cfg.fdReroute = nil
 	return cfg
 }
 
@@ -2475,20 +2492,6 @@ func (ap *AutoPipeliner) numShards() int { return len(ap.shards) }
 // how the shard's batch is split. Must be called before the autopipeliner is
 // used. Not safe to change concurrently with enqueues.
 func (ap *AutoPipeliner) setShardFn(fn func(Cmder) int) { ap.shardFn = fn }
-
-// setPreflight installs a submit-time command filter (cluster wiring rejects
-// commands whose request policy cannot ride a pipeline). Called once during
-// construction, before the AutoPipeliner is published.
-func (ap *AutoPipeliner) setPreflight(fn func(ctx context.Context, cmd Cmder) error) {
-	ap.preflight = fn
-}
-
-// setMustDivert installs a predicate that forces a command off the batching
-// path (see the mustDivert field). Called once during construction, before the
-// AutoPipeliner is published.
-func (ap *AutoPipeliner) setMustDivert(fn func(ctx context.Context, cmd Cmder) bool) {
-	ap.mustDivert = fn
-}
 
 // Close stops the autopipeliner and flushes any pending commands. Worst
 // case it blocks up to the internal permit backstop (~30s) PER SHARD if
@@ -3315,6 +3318,7 @@ func (s *apShard) flushBatchSlice() {
 			for i := range queues {
 				for _, qc := range queues[i] {
 					qc.SetErr(batchErr)
+					qc.setClusterRoutingDecision(nil)
 				}
 			}
 			// Release only once every command has its error, so the limit
@@ -3385,6 +3389,8 @@ func (s *apShard) flushBatchSlice() {
 			defer s.sem.Release()
 			defer putQueueSlice(queues[0])
 			defer recoverDispatchPanic(queues[0])
+			solo := queues[0][0]
+			defer solo.setClusterRoutingDecision(nil)
 			// Background for the same reason as the batch goroutine below:
 			// accepted commands execute even under a concurrent Close.
 			execStart := time.Now()
@@ -3392,7 +3398,6 @@ func (s *apShard) flushBatchSlice() {
 			if !ap.blocking && ap.armSelfDeadlockGuard() {
 				b.dispGid.Store(curGoroutineID())
 			}
-			solo := queues[0][0]
 			// Both faces run the user-hook chain via withProcessHook. The
 			// command records the CHAIN's final verdict — exactly what
 			// Client.Process does — before the deferred close wakes the
@@ -3405,7 +3410,7 @@ func (s *apShard) flushBatchSlice() {
 				// is honored (processPipeline bypasses processCached). Gated on
 				// the LIVE CSC state: without active CSC, Process would just run on
 				// the MAIN pool, ignoring the pipeline pool the straggler gate probed.
-				if ap.cscActiveFn != nil && ap.cscActiveFn() && isCacheable(cmd) {
+				if ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
 					return ap.pipeliner.process(ctx, cmd)
 				}
 				// One-command pipeline on the PIPELINE pool (falls back to the main
@@ -3434,6 +3439,9 @@ func (s *apShard) flushBatchSlice() {
 		defer func() {
 			ap.releaseQueued(total)
 			for i := range queues {
+				for _, cmd := range queues[i] {
+					cmd.setClusterRoutingDecision(nil)
+				}
 				batches[i].close()
 				putQueueSlice(queues[i])
 			}
@@ -3537,6 +3545,9 @@ func (s *apShard) flushBatchSliceShutdown() {
 			defer func() {
 				ap.releaseQueued(total)
 				for i := range queues {
+					for _, cmd := range queues[i] {
+						cmd.setClusterRoutingDecision(nil)
+					}
 					batches[i].close()
 					putQueueSlice(queues[i])
 				}

@@ -66,7 +66,6 @@ func (s *clusterScenario) newClusterClient(
 	ctx context.Context, opt *redis.ClusterOptions,
 ) *redis.ClusterClient {
 	client := s.newClusterClientUnstable(opt)
-	client.SetCommandInfoResolver(client.NewDynamicResolver())
 	err := eventually(func() error {
 		if opt.ClusterSlots != nil {
 			return nil
@@ -569,7 +568,17 @@ var _ = Describe("ClusterClient", func() {
 			lostScript := redis.NewScript(lostScriptSrc)
 
 			script.Load(ctx, client)
-			client.Do(ctx, "script", "load", lostScriptSrc)
+			// Load one master so SCRIPT EXISTS must aggregate false across shards.
+			var once sync.Once
+			var loadErr error
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				once.Do(func() {
+					loadErr = master.ScriptLoad(ctx, lostScriptSrc).Err()
+				})
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loadErr).NotTo(HaveOccurred())
 
 			val, _ := client.ScriptExists(ctx, script.Hash(), lostScript.Hash()).Result()
 
@@ -634,7 +643,6 @@ var _ = Describe("ClusterClient", func() {
 			var pipe *redis.Pipeline
 
 			assertPipeline := func(keys []string) {
-
 				It("should follow redirects", func() {
 					if !failover {
 						for _, key := range keys {
@@ -781,6 +789,41 @@ var _ = Describe("ClusterClient", func() {
 					pipe.Ping(ctx)
 					_, err := pipe.Exec(ctx)
 					Expect(err).To(Not(HaveOccurred()))
+				})
+
+				It("reads same-slot streams in transactions and follows MOVED", func() {
+					keys := []string{"stream-a{s}", "stream-b{s}"}
+					for _, key := range keys {
+						Expect(client.XAdd(ctx, &redis.XAddArgs{
+							Stream: key, ID: "1-0", Values: map[string]interface{}{"field": "value"},
+						}).Err()).NotTo(HaveOccurred())
+						Expect(client.XGroupCreate(ctx, key, "streams", "0").Err()).NotTo(HaveOccurred())
+					}
+					for _, redirect := range []bool{false, true} {
+						id := ">"
+						if redirect {
+							id = "0" // Read the pending entries again after redirecting.
+						}
+						if redirect && !failover {
+							Eventually(func() error { return client.SwapNodes(ctx, keys[0]) }, 30*time.Second).Should(Succeed())
+						}
+						read := pipe.XRead(ctx, &redis.XReadArgs{Streams: []string{keys[0], keys[1], "0", "0"}, Block: -1})
+						group := pipe.XReadGroup(ctx, &redis.XReadGroupArgs{
+							Group: "streams", Consumer: "streams", Count: 1,
+							Streams: []string{keys[0], keys[1], id, id}, Block: -1,
+						})
+						_, err := pipe.Exec(ctx)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(read.Val()).To(HaveLen(2))
+						for i, stream := range read.Val() {
+							Expect(stream.Stream).To(Equal(keys[i]))
+							Expect(stream.Messages).To(HaveLen(1))
+						}
+						Expect(group.Val()).To(HaveLen(2))
+						for _, stream := range group.Val() {
+							Expect(stream.Messages).To(HaveLen(1))
+						}
+					}
 				})
 
 				// doesn't fail when no commands are queued
@@ -1295,7 +1338,7 @@ var _ = Describe("ClusterClient", func() {
 
 					Expect(node.ReplicationOffset).To(BeNumerically(">=", 0))
 
-					validHealthStatuses := []string{"online", "failed", "loading"}
+					validHealthStatuses := []string{"online", "fail", "failed", "loading"}
 					Expect(validHealthStatuses).To(ContainElement(node.Health))
 				}
 			}
@@ -1422,7 +1465,8 @@ var _ = Describe("ClusterClient", func() {
 			}
 
 			for i := 0; i < nkeys*10; i++ {
-				key := client.RandomKey(ctx).Val()
+				key, err := client.RandomKey(ctx).Result()
+				Expect(err).NotTo(HaveOccurred())
 				addKey(key)
 			}
 
@@ -1616,16 +1660,6 @@ var _ = Describe("ClusterClient", func() {
 				"shard.AfterProcessPipeline",
 				"cluster.AfterProcessPipeline",
 			}))
-		})
-
-		It("should reject ping command in pipeline", func() {
-			// Test that ping command fails in pipeline as expected
-			_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Ping(ctx)
-				return nil
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("redis: cannot pipeline command \"ping\" with request policy ReqAllNodes/ReqAllShards/ReqMultiShard"))
 		})
 
 		It("should support TxPipeline hook", func() {
@@ -2038,6 +2072,77 @@ var _ = Describe("ClusterClient", func() {
 	})
 })
 
+// With cluster-preferred-endpoint-type unknown-endpoint the servers send a
+// null host in CLUSTER SLOTS and an empty host in MOVED and ASK. The client
+// reuses the host it connected to for the topology and the host of the node
+// that sent a redirect for its target. Redirects from a non-loopback host are
+// covered by TestClusterRedirectEmptyHost.
+var _ = Describe("ClusterClient with unknown-endpoint", func() {
+	const param = "cluster-preferred-endpoint-type"
+
+	var client *redis.ClusterClient
+	var saved map[string]string
+
+	BeforeEach(func() {
+		client, saved = nil, nil
+		// Redis 8.0 and 8.2 cluster nodes segfault in a module timer
+		// shortly after this setting is applied, which takes down the
+		// shared test cluster for every later spec.
+		SkipBeforeRedisVersion("8.4", "cluster nodes crash with unknown-endpoint")
+		saved = map[string]string{}
+		for port, node := range cluster.clients {
+			old, err := node.ConfigGet(ctx, param).Result()
+			Expect(err).NotTo(HaveOccurred())
+			saved[port] = old[param]
+			Expect(node.ConfigSet(ctx, param, "unknown-endpoint").Err()).NotTo(HaveOccurred())
+		}
+		client = cluster.newClusterClientUnstable(redisClusterOptions())
+	})
+
+	AfterEach(func() {
+		// Restore the setting even if BeforeEach failed before the client
+		// was built; AfterEach also runs after the version skip.
+		for port, value := range saved {
+			Expect(cluster.clients[port].ConfigSet(ctx, param, value).Err()).NotTo(HaveOccurred())
+		}
+		if client == nil {
+			return
+		}
+		_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			return master.FlushDB(ctx).Err()
+		})
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should load the topology and follow a MOVED redirect", func() {
+		slots, err := cluster.masters()[0].ClusterSlots(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		for _, slot := range slots {
+			for _, node := range slot.Nodes {
+				Expect(node.Addr).To(HavePrefix(":"))
+			}
+		}
+
+		state, err := client.LoadState(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		for _, master := range state.Masters {
+			Expect(master.Client.Options().Addr).To(HavePrefix("127.0.0.1:"))
+		}
+
+		// A (slot 6373) and C (slot 14503) belong to different masters.
+		for _, key := range []string{"A", "C"} {
+			Expect(client.Set(ctx, key, "VALUE", 0).Err()).NotTo(HaveOccurred())
+			Expect(client.Get(ctx, key).Val()).To(Equal("VALUE"))
+		}
+
+		// Route the slot of A at its replica, which answers with
+		// -MOVED <slot> :<port>.
+		Expect(client.SwapNodes(ctx, "A")).NotTo(HaveOccurred())
+		Expect(client.Set(ctx, "A", "MOVED", 0).Err()).NotTo(HaveOccurred())
+		Expect(client.Get(ctx, "A").Val()).To(Equal("MOVED"))
+	})
+})
+
 var _ = Describe("ClusterClient without nodes", func() {
 	var client *redis.ClusterClient
 
@@ -2217,11 +2322,175 @@ var _ = Describe("Command Tips tests", func() {
 	BeforeEach(func() {
 		opt := redisClusterOptions()
 		client = cluster.newClusterClient(ctx, opt)
+		client.SetCommandInfoResolver(client.NewDynamicResolver())
 	})
 
 	AfterEach(func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
+
+	for _, metadataPolicies := range []bool{false, true} {
+		mode := "default policies"
+		if metadataPolicies {
+			mode = "metadata policies"
+		}
+		Describe("routing compatibility with "+mode, func() {
+			const firstKey, secondKey = "routing-review:{a}:one", "routing-review:{b}:two"
+			const serializedKey = "routing-review:{a}:serialized"
+			configure := func(c *redis.ClusterClient) {
+				// The command-tips suite installs a dynamic resolver. Reset it
+				// explicitly so each case exercises the intended public mode.
+				if metadataPolicies {
+					c.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+				} else {
+					c.SetCommandInfoResolver(redis.NewDefaultCommandPolicyResolver())
+				}
+			}
+			BeforeEach(func() {
+				configure(client)
+				Expect(client.Set(ctx, firstKey, "one", 0).Err()).NotTo(HaveOccurred())
+				Expect(client.Set(ctx, secondKey, "two", 0).Err()).NotTo(HaveOccurred())
+			})
+			AfterEach(func() {
+				for _, key := range []string{firstKey, secondKey, serializedKey} {
+					Expect(client.Del(ctx, key).Err()).NotTo(HaveOccurred())
+				}
+			})
+
+			It("keeps ordinary direct commands available and makes cross-slot fan-out opt-in", func() {
+				Expect(client.Ping(ctx).Val()).To(Equal("PONG"))
+				info, err := client.Info(ctx, "server").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(info).To(ContainSubstring("redis_version:"))
+				_, _, err = client.Scan(ctx, 0, "routing-review:*", 10).Result()
+				Expect(err).NotTo(HaveOccurred())
+				values, err := client.MGet(ctx, secondKey, firstKey).Result()
+				if metadataPolicies {
+					Expect(err).NotTo(HaveOccurred())
+					Expect(values).To(Equal([]interface{}{"two", "one"}))
+				} else {
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("CROSSSLOT"))
+				}
+			})
+
+			It("runs a mixed pipeline despite one cross-slot command", func() {
+				pipe := client.Pipeline()
+				first := pipe.Get(ctx, firstKey)
+				ping := pipe.Ping(ctx)
+				size := pipe.DBSize(ctx)
+				script := pipe.ScriptLoad(ctx, "return 1")
+				info := pipe.Info(ctx, "server")
+				crossSlot := pipe.MGet(ctx, firstKey, secondKey)
+				last := pipe.Get(ctx, secondKey)
+				cmds, err := pipe.Exec(ctx)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("CROSSSLOT"))
+				for _, cmd := range cmds {
+					if cmd == crossSlot {
+						Expect(cmd.Err()).To(HaveOccurred())
+					} else {
+						Expect(cmd.Err()).NotTo(HaveOccurred())
+					}
+				}
+				Expect(first.Val()).To(Equal("one"))
+				Expect(last.Val()).To(Equal("two"))
+				Expect(ping.Val()).To(Equal("PONG"))
+				Expect(size.Val()).To(BeNumerically(">=", 0))
+				Expect(script.Val()).To(HaveLen(40))
+				Expect(info.Val()).To(ContainSubstring("redis_version:"))
+			})
+
+			It("runs administrative commands on the transaction connection", func() {
+				pipe := client.TxPipeline()
+				value := pipe.Get(ctx, firstKey)
+				ping := pipe.Ping(ctx)
+				size := pipe.DBSize(ctx)
+				script := pipe.ScriptLoad(ctx, "return 1")
+				info := pipe.Info(ctx, "server")
+				cmds, err := pipe.Exec(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				for _, cmd := range cmds {
+					Expect(cmd.Err()).NotTo(HaveOccurred())
+				}
+				Expect(value.Val()).To(Equal("one"))
+				Expect(ping.Val()).To(Equal("PONG"))
+				Expect(size.Val()).To(BeNumerically(">=", 1))
+				Expect(script.Val()).To(HaveLen(40))
+				Expect(info.Val()).To(ContainSubstring("redis_version:"))
+			})
+
+			It("runs SORT transactions with incomplete key metadata", func() {
+				Expect(client.Del(ctx, firstKey).Err()).NotTo(HaveOccurred())
+				Expect(client.RPush(ctx, firstKey, "3", "1", "2").Err()).NotTo(HaveOccurred())
+				pipe := client.TxPipeline()
+				sorted := pipe.Sort(ctx, firstKey, &redis.Sort{})
+				stored := pipe.SortStore(ctx, firstKey, serializedKey, &redis.Sort{})
+				_, err := pipe.Exec(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sorted.Val()).To(Equal([]string{"1", "2", "3"}))
+				Expect(stored.Val()).To(Equal(int64(3)))
+				Expect(client.LRange(ctx, serializedKey, 0, -1).Val()).To(Equal([]string{"1", "2", "3"}))
+			})
+
+			It("accepts BinaryMarshaler values when MSET needs only one slot", func() {
+				Expect(client.MSet(ctx, firstKey, numberStruct{Number: 7}).Err()).NotTo(HaveOccurred())
+				Expect(client.Get(ctx, firstKey).Val()).To(Equal(`{"Number":7}`))
+				Expect(client.MSet(ctx,
+					firstKey, numberStruct{Number: 8}, serializedKey, numberStruct{Number: 9},
+				).Err()).NotTo(HaveOccurred())
+				values, err := client.MGet(ctx, firstKey, serializedKey).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(values).To(Equal([]interface{}{`{"Number":8}`, `{"Number":9}`}))
+			})
+
+			It("enforces fan-out ordering across AutoPipeline modes", func() {
+				for _, fullDuplex := range []bool{false, true} {
+					opt := *client.Options()
+					apClient := redis.NewClusterClient(&opt)
+					configure(apClient)
+					defer apClient.Close()
+					cfg := &redis.AutoPipelineOptions{FullDuplex: fullDuplex}
+					blocking, err := apClient.AutoPipelineWithOptions(cfg)
+					Expect(err).NotTo(HaveOccurred())
+					async, err := apClient.AsyncAutoPipelineWithOptions(cfg)
+					Expect(err).NotTo(HaveOccurred())
+					for i, ap := range []*redis.AutoPipeliner{blocking, async} {
+						By(fmt.Sprintf("full duplex=%v, async=%v", fullDuplex, i == 1))
+						ping := ap.Ping(ctx)
+						values := ap.MGet(ctx, secondKey, firstKey)
+						sameSlot := ap.MGet(ctx, firstKey, firstKey)
+						value := ap.Get(ctx, firstKey)
+						size := ap.DBSize(ctx)
+						if metadataPolicies && i == 1 {
+							Expect(ping.Err()).To(MatchError(ContainSubstring("ordered AsyncAutoPipeline")))
+						} else {
+							Expect(ping.Err()).NotTo(HaveOccurred())
+							Expect(ping.Val()).To(Equal("PONG"))
+						}
+						Expect(sameSlot.Err()).NotTo(HaveOccurred())
+						Expect(sameSlot.Val()).To(Equal([]interface{}{"one", "one"}))
+						Expect(value.Err()).NotTo(HaveOccurred())
+						Expect(value.Val()).To(Equal("one"))
+						Expect(size.Err()).NotTo(HaveOccurred())
+						Expect(size.Val()).To(BeNumerically(">=", 0))
+						if metadataPolicies {
+							Expect(size.Val()).To(BeNumerically(">=", 2))
+							if i == 1 {
+								Expect(values.Err()).To(MatchError(ContainSubstring("ordered AsyncAutoPipeline")))
+							} else {
+								Expect(values.Err()).NotTo(HaveOccurred())
+								Expect(values.Val()).To(Equal([]interface{}{"two", "one"}))
+							}
+						} else {
+							Expect(values.Err()).To(HaveOccurred())
+							Expect(values.Err().Error()).To(ContainSubstring("CROSSSLOT"))
+						}
+					}
+				}
+			})
+		})
+	}
 
 	It("should verify COMMAND tips match router policy types", func() {
 		SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
@@ -2354,7 +2623,8 @@ var _ = Describe("Command Tips tests", func() {
 	Describe("DDL Commands Routing Policy Tests", func() {
 		BeforeEach(func() {
 			info := client.Info(ctx, "modules")
-			if info.Err() != nil || !strings.Contains(info.Val(), "search") {
+			Expect(info.Err()).NotTo(HaveOccurred())
+			if !strings.Contains(info.Val(), "search") {
 				Skip("Search module not available")
 			}
 		})
@@ -3140,6 +3410,23 @@ var _ = Describe("Command Tips tests", func() {
 				}
 			})
 
+			It("should count keys in the same slot once with multi-slot routing", func() {
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
+
+				keys := []string{"{sameslot}a", "{sameslot}b", "{sameslot}c", "sameslot_1111", "sameslot_2222"}
+				for _, key := range keys {
+					Expect(client.Set(ctx, key, "value", 0).Err()).NotTo(HaveOccurred())
+				}
+
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b", "{sameslot}missing").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, keys...).Result()).To(Equal(int64(5)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(3)))
+				Expect(client.Touch(ctx, "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Del(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Unlink(ctx, "{sameslot}c", "sameslot_2222").Result()).To(Equal(int64(2)))
+			})
+
 			It("should test DBSIZE command with agg_sum aggregation across all shards", func() {
 				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
@@ -3213,7 +3500,7 @@ var _ = Describe("Command Tips tests", func() {
 				// MGET with no keys should return an error
 				result := client.MGet(ctx)
 				Expect(result.Err()).To(HaveOccurred())
-				Expect(result.Err().Error()).To(ContainSubstring("multi-shard command mget has no key arguments"))
+				Expect(result.Err().Error()).To(ContainSubstring("cannot determine all key arguments for multi-shard command mget"))
 			})
 
 			It("should test MGET integration with MSET across multiple shards", func() {
@@ -3258,36 +3545,10 @@ var _ = Describe("Command Tips tests", func() {
 				}
 			})
 
-			It("should test multi-shard commands cannot be used in pipeline", func() {
-				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
-
-				// Create keys across multiple shards
-				keys := []string{
-					"pipeline_test_1111",
-					"pipeline_test_2222",
-					"pipeline_test_3333",
-				}
-
-				// Verify keys are on different shards
-				slotMap := make(map[int]bool)
-				for _, key := range keys {
-					slot := hashtag.Slot(key)
-					slotMap[slot] = true
-				}
-				Expect(len(slotMap)).To(BeNumerically(">", 1))
-
-				// Try to use MGET in pipeline - should fail
-				pipe := client.Pipeline()
-				pipe.MGet(ctx, keys...)
-				_, err := pipe.Exec(ctx)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("cannot pipeline command"))
-			})
-
 			It("should test DisableRoutingPolicies option disables routing policies", func() {
 				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
-				// Test 1: With routing policies enabled (default), MGET should work across slots
+				// The fixture explicitly enables metadata policies, so MGET works across slots.
 				testData := map[string]string{
 					"disable_routing_key_1111": "value1",
 					"disable_routing_key_2222": "value2",
@@ -3496,7 +3757,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 	})
 
-	var _ = Describe("ClusterClient ParseURL", func() {
+	_ = Describe("ClusterClient ParseURL", func() {
 		cases := []struct {
 			test string
 			url  string
@@ -3510,7 +3771,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "ParseRedissURL",
 				url:  "rediss://localhost:123",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "MissingRedisPort",
 				url:  "redis://localhost",
@@ -3518,7 +3779,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "MissingRedissPort",
 				url:  "rediss://localhost",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:6379"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "MultipleRedisURLs",
 				url:  "redis://localhost:123?addr=localhost:1234&addr=localhost:12345",
@@ -3526,7 +3787,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "MultipleRedissURLs",
 				url:  "rediss://localhost:123?addr=localhost:1234&addr=localhost:12345",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234", "localhost:12345"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "OnlyPassword",
 				url:  "redis://:bar@localhost:123",
@@ -3542,7 +3803,19 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "RedissUsernamePassword",
 				url:  "rediss://foo:bar@localhost:123?addr=localhost:1234",
-				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost"}},
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "localhost:1234"}, Username: "foo", Password: "bar", TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
+			}, {
+				test: "RedissSkipVerify",
+				url:  "rediss://localhost:123?skip_verify=true",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
+			}, {
+				test: "RedissVerifyNodeHost",
+				url:  "rediss://localhost:123?addr=127.0.0.1:1234&tls_verify_node_host=true",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123", "127.0.0.1:1234"}, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
+			}, {
+				test: "RedissVerifyNodeHostFalse",
+				url:  "rediss://localhost:123?tls_verify_node_host=false",
+				o:    &redis.ClusterOptions{Addrs: []string{"localhost:123"}, TLSConfig: &tls.Config{ServerName: "localhost", MinVersion: tls.VersionTLS12}},
 			}, {
 				test: "QueryParameters",
 				url:  "redis://localhost:123?read_timeout=2&pool_fifo=true&addr=localhost:1234",
@@ -3583,6 +3856,22 @@ var _ = Describe("Command Tips tests", func() {
 				test: "InvalidBool",
 				url:  "redis://localhost?pool_fifo=yes",
 				err:  errors.New(`redis: invalid pool_fifo boolean: expected true/false/1/0 or an empty string, got "yes"`),
+			}, {
+				test: "InvalidSkipVerify",
+				url:  "rediss://localhost?skip_verify=yes",
+				err:  errors.New(`redis: invalid skip_verify boolean: expected true/false/1/0 or an empty string, got "yes"`),
+			}, {
+				test: "SkipVerifyWithoutTLS",
+				url:  "redis://localhost?skip_verify=true",
+				err:  errors.New("redis: unexpected option: skip_verify"),
+			}, {
+				test: "InvalidVerifyNodeHost",
+				url:  "rediss://localhost?tls_verify_node_host=yes",
+				err:  errors.New(`redis: invalid tls_verify_node_host boolean: expected true/false/1/0 or an empty string, got "yes"`),
+			}, {
+				test: "VerifyNodeHostWithoutTLS",
+				url:  "redis://localhost?tls_verify_node_host=true",
+				err:  errors.New("redis: unexpected option: tls_verify_node_host"),
 			}, {
 				test: "UnknownParam",
 				url:  "redis://localhost?abc=123",
