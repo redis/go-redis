@@ -402,7 +402,7 @@ func (opt *ClusterOptions) init() {
 func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
 	o := &ClusterOptions{}
 
-	u, err := url.Parse(redisURL)
+	u, err := parseURL(redisURL)
 	if err != nil {
 		return nil, err
 	}
