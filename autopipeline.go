@@ -114,6 +114,13 @@ type AutoPipelineOptions struct {
 	// when PipelinePoolSize<0 removes the node pipeline pools. Validate rejects the
 	// contradictory standalone combos (FullDuplex with Unordered or MaxConcurrentBatches>1).
 	//
+	// With client-side caching, native full-duplex sessions use only the
+	// untracked pipeline pool and never send CLIENT CACHING. Pool saturation
+	// waits up to DefaultPipelinePoolTimeout (or a smaller positive
+	// Options.PoolTimeout), then follows the existing lease retry budget. It does not spill to the main
+	// pool. Commands diverted to Process and ordinary pipeline fallbacks keep
+	// their normal caching and connection-acquisition behavior.
+	//
 	// Ordering caveat: blocking and connection-hostile commands (BLPOP, WAIT,
 	// XREAD BLOCK, SUBSCRIBE, MULTI, ...) are diverted to a separate pooled
 	// connection so they cannot stall the shared pipe. Managed HIMPORT
@@ -182,9 +189,14 @@ type AutoPipelineOptions struct {
 	// Limiter: Options.Limiter is admitted (Allow/ReportResult) once PER WRITTEN
 	// BATCH — the chunk flushed to the connection in one write, the full-duplex
 	// analogue of a pipeline exec or a half-duplex flush — not per command and
-	// not per session. A deny fails every command of that chunk with the
-	// Limiter's own error, verbatim (examinable via errors.Is); the session and
-	// its connection stay alive, and the next chunk pays Allow again, so an open
+	// not per session. The one addition is the handshake of a fresh connection
+	// (a new session, or one recycled after a connection failure): it is
+	// admitted once before the handshake and reported once with the handshake
+	// result, the same accounting a pooled command pays when it dials. A deny
+	// there fails the lease, not a chunk. A deny on a chunk fails every command
+	// of that chunk with the Limiter's own error, verbatim (examinable via
+	// errors.Is); the session and its connection stay alive, and the next chunk
+	// pays Allow again, so an open
 	// breaker fail-fasts and service resumes as soon as it closes. Because
 	// admission happens at write time, a deny surfaces as queue latency on the
 	// awaited result, not as a submit-time error — and one deny covers a whole
@@ -964,7 +976,8 @@ type AutoPipeliner struct {
 	pipelinePool pool.Pooler
 	// cscActiveFn checks the client's current CSC state before solo dispatch:
 	// CSC can disable itself after AutoPipeliner construction.
-	cscActiveFn func() bool
+	cscActiveFn        func() bool
+	captureCacheIntent bool
 	// cscEligibleFn checks eligibility under the client's current metadata view
 	// so live refreshes and application overrides take effect at dispatch.
 	cscEligibleFn func(Cmder) bool
@@ -1328,6 +1341,12 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	if pp, ok := pipeliner.(interface{ getPipelinePool() pool.Pooler }); ok {
 		ap.pipelinePool = pp.getPipelinePool()
 	}
+	// Unknown wrappers may delegate to a CSC client; built-in clients can skip
+	// context lookup entirely when their construction cannot enable caching.
+	ap.captureCacheIntent = true
+	if cc, ok := pipeliner.(interface{ cscCapturesIntent() bool }); ok {
+		ap.captureCacheIntent = cc.cscCapturesIntent()
+	}
 	// CSC probes for standalone and cluster clients.
 	if cc, ok := pipeliner.(interface {
 		autopipelineCSCActive() bool
@@ -1579,8 +1598,11 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 // so Close waits for accepted diverted work (bounded — see Close) instead of
 // returning while it still holds a pooled connection.
 func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apBatch {
+	if ap.captureCacheIntent && cmd.cacheState().depth == 0 {
+		cscBegin(ctx, cmd)
+	}
 	if ap.blocking {
-		defer cmd.setClusterRoutingDecision(nil)
+		defer resetAutoPipelineCommand(cmd)
 		// The blocking face runs it inline, so the caller's own goroutine holds
 		// the connection; still take the gate so Close cannot decide "nothing
 		// in flight" while this command is executing.
@@ -1615,7 +1637,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		ap.divertMu.Unlock()
 		cmd.SetErr(ErrClosed)
 		cmd.setReady(completedBatch)
-		cmd.setClusterRoutingDecision(nil)
+		resetAutoPipelineCommand(cmd)
 		return completedBatch
 	}
 	// Each diverted command holds a goroutine until it completes, so it counts
@@ -1624,7 +1646,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		ap.divertMu.Unlock()
 		cmd.SetErr(ErrAutoPipelineQueueFull)
 		cmd.setReady(completedBatch)
-		cmd.setClusterRoutingDecision(nil)
+		resetAutoPipelineCommand(cmd)
 		return completedBatch
 	}
 	b := newAPBatch()
@@ -1634,7 +1656,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 	go func() {
 		defer ap.divertWg.Done()
 		defer b.close()
-		defer cmd.setClusterRoutingDecision(nil)
+		defer resetAutoPipelineCommand(cmd)
 		defer ap.releaseQueued(1)
 		defer recoverDispatchPanic([]Cmder{cmd})
 		if ap.armSelfDeadlockGuard() {
@@ -2050,10 +2072,21 @@ func blockingArgString(arg interface{}) string {
 	}
 }
 
+// resetAutoPipelineCommand releases request state before completion is published.
+func resetAutoPipelineCommand(cmd Cmder) {
+	cmd.setClusterRoutingDecision(nil)
+	resetCSCCommand(cmd)
+}
+
 // submit queues a command without blocking and returns its completion future.
 func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
-	// Sequential command reuse must capture a fresh admission decision.
+	if ap.captureCacheIntent {
+		cscBegin(ctx, cmd)
+	}
+	// Sequential command reuse must capture a fresh admission decision and slot:
+	// the FD slot table trusts a cached slot as this admission's.
 	cmd.setClusterRoutingDecision(nil)
+	cmd.resetCachedSlot()
 	// finish marks the command ready on the deferred face so its result
 	// accessors (Val/Result/Err) self-gate through await() — whether the
 	// caller goes through the typed surface or raw Submit. Reading a
@@ -2075,9 +2108,13 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		diverted, err = ap.routeCommand(ctx, cmd)
 		if err != nil {
 			cmd.SetErr(err)
-			cmd.setClusterRoutingDecision(nil)
+			resetAutoPipelineCommand(cmd)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
+	}
+	if cmd.cacheState().mark() != cacheUnmarked {
+		cacheDivert := ap.cscAdmitMarked(cmd)
+		diverted = diverted || cacheDivert
 	}
 	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
@@ -2102,7 +2139,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// of running after Close().
 		if ap.isClosed() {
 			cmd.SetErr(ErrClosed)
-			cmd.setClusterRoutingDecision(nil)
+			resetAutoPipelineCommand(cmd)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 		// runOutsidePipeline sets the command ready itself on the deferred
@@ -2117,13 +2154,20 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// command's slot. The child is a standalone FD autopipeliner sharing this
 		// face's blocking flag, so its submit honors the same setReady/blocking
 		// contract — return its AutoFuture directly.
-		return ap.clusterFD.submit(ctx, cmd)
+		f := ap.clusterFD.submit(ctx, cmd)
+		if f.batch == completedBatch {
+			resetAutoPipelineCommand(cmd)
+		}
+		return f
 	}
 	if ap.fd != nil {
 		// Ordered full-duplex: stream on one held connection. enqueue's async
 		// setReady is replicated here since we bypass it. ctx is threaded so a
 		// per-command process-hook host can parent its span correctly.
 		b := ap.fdFor(cmd).submit(ctx, cmd)
+		if b == completedBatch {
+			resetAutoPipelineCommand(cmd)
+		}
 		if !ap.blocking {
 			cmd.setReady(b)
 		}
@@ -2131,7 +2175,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	}
 	batch := ap.enqueue(cmd)
 	if batch == completedBatch {
-		cmd.setClusterRoutingDecision(nil)
+		resetAutoPipelineCommand(cmd)
 	}
 	return AutoFuture{cmd: cmd, batch: batch}
 }
@@ -3316,7 +3360,7 @@ func (s *apShard) flushBatchSlice() {
 			for i := range queues {
 				for _, qc := range queues[i] {
 					qc.SetErr(batchErr)
-					qc.setClusterRoutingDecision(nil)
+					resetAutoPipelineCommand(qc)
 				}
 			}
 			// Release only once every command has its error, so the limit
@@ -3388,7 +3432,7 @@ func (s *apShard) flushBatchSlice() {
 			defer putQueueSlice(queues[0])
 			defer recoverDispatchPanic(queues[0])
 			solo := queues[0][0]
-			defer solo.setClusterRoutingDecision(nil)
+			defer resetAutoPipelineCommand(solo)
 			// Background for the same reason as the batch goroutine below:
 			// accepted commands execute even under a concurrent Close.
 			execStart := time.Now()
@@ -3408,7 +3452,7 @@ func (s *apShard) flushBatchSlice() {
 				// is honored (processPipeline bypasses processCached). Gated on
 				// the LIVE CSC state: without active CSC, Process would just run on
 				// the MAIN pool, ignoring the pipeline pool the straggler gate probed.
-				if ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
+				if !cmd.cacheState().has(cscForceBypass) && ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
 					return ap.pipeliner.process(ctx, cmd)
 				}
 				// One-command pipeline on the PIPELINE pool (falls back to the main
@@ -3438,7 +3482,7 @@ func (s *apShard) flushBatchSlice() {
 			ap.releaseQueued(total)
 			for i := range queues {
 				for _, cmd := range queues[i] {
-					cmd.setClusterRoutingDecision(nil)
+					resetAutoPipelineCommand(cmd)
 				}
 				batches[i].close()
 				putQueueSlice(queues[i])
@@ -3544,7 +3588,7 @@ func (s *apShard) flushBatchSliceShutdown() {
 				ap.releaseQueued(total)
 				for i := range queues {
 					for _, cmd := range queues[i] {
-						cmd.setClusterRoutingDecision(nil)
+						resetAutoPipelineCommand(cmd)
 					}
 					batches[i].close()
 					putQueueSlice(queues[i])

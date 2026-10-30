@@ -67,6 +67,9 @@ type (
 )
 
 type hooksMixin struct {
+	// Fixed at construction, including custom factories that may enable CSC.
+	// Ordinary clients do not traverse request contexts for cache marks.
+	captureCacheIntent bool
 	// hooksMu serializes writers (AddHook); readers never take it.
 	hooksMu *sync.Mutex
 	// state holds the immutable hook snapshot. Readers Load it lock-free;
@@ -218,8 +221,9 @@ func (hs *hooksMixin) clone() hooksMixin {
 	}
 
 	clone := hooksMixin{
-		hooksMu: new(sync.Mutex),
-		state:   new(atomic.Pointer[hooksState]),
+		captureCacheIntent: hs.captureCacheIntent,
+		hooksMu:            new(sync.Mutex),
+		state:              new(atomic.Pointer[hooksState]),
 	}
 	clone.state.Store(state)
 	return clone
@@ -259,6 +263,9 @@ func (hs *hooksMixin) hookCount() int {
 }
 
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
+	if hs.captureCacheIntent && cscBegin(ctx, cmd) {
+		defer cscLeave(cmd)
+	}
 	return hs.state.Load().current.process(ctx, cmd)
 }
 
@@ -410,6 +417,7 @@ type pipelinePoolRef struct {
 }
 
 type baseClient struct {
+	cscPolicy cscPolicy
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -469,6 +477,8 @@ type baseClient struct {
 	// command_metadata.go); nil when the client uses the shared static
 	// default. Shared with clones; only the owner's Close stops its worker.
 	cmdMeta *commandMetadataStore
+	// metadataSource is read-only access to a parent's store. Only cmdMeta is owned.
+	metadataSource *commandMetadataStore
 	// staticCmdMeta caches the lazy default when CSC attaches without a store,
 	// so serving a cached command does not need to call sync.OnceValue.
 	staticCmdMeta *commandMetadataView
@@ -496,6 +506,16 @@ type baseClient struct {
 	// wrapper, whose init pipeline legitimately issues CLIENT TRACKING ON;
 	// never set on user-visible clients.
 	allowClientTracking bool
+
+	// limiterExempt exempts a client from Options.Limiter. Set only on
+	// initConn's internal conn wrapper: the handshake it runs (HELLO, AUTH,
+	// SELECT, CLIENT SETINFO, CLIENT MAINT_NOTIFICATIONS) belongs to the
+	// command that dials the connection, which the caller already admitted and
+	// reports as one operation. Admitting each handshake command again double
+	// counts against a rate limiter and, with a circuit breaker in half-open,
+	// lets a handshake exhaust the probe budget and report the breaker's own
+	// rejection back as a failure, so the breaker never closes.
+	limiterExempt bool
 
 	// The following are OWNER-ONLY and NOT copied by clone(): derived clients
 	// (Conn/WithTimeout) share the cache but must not stop the owner's
@@ -550,9 +570,11 @@ func (c *baseClient) clone() *baseClient {
 		cscPoolHook:  c.cscPoolHook,
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
+		cscPolicy:    c.cscPolicy,
 		// Derived clients share the owner's immutable metadata view.
-		cmdMeta:       c.cmdMeta,
-		staticCmdMeta: c.staticCmdMeta,
+		cmdMeta:        c.cmdMeta,
+		metadataSource: c.metadataSource,
+		staticCmdMeta:  c.staticCmdMeta,
 
 		// cscRefreshQueue is SHARED (pointer copy), like cscPoolHook: processCached
 		// calls signalDemand on it so a miss for a key still in the refresher's
@@ -617,6 +639,66 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
 
+// limiter returns Options.Limiter, or nil for the handshake conn wrapper that
+// initConn builds (see limiterExempt).
+func (c *baseClient) limiter() Limiter {
+	if c.limiterExempt {
+		return nil
+	}
+	return c.opt.Limiter
+}
+
+var errInitPanic = errors.New("redis: connection init panic")
+
+// admitted runs fn as one admitted operation against limiter: one Allow and
+// one ReportResult, settled from a defer when fn panics so the admission is
+// never left unpaired. denied runs when Allow rejects, before the error
+// returns. A nil limiter runs fn as is.
+func admitted(limiter Limiter, denied func(error), fn func() error) error {
+	if limiter == nil {
+		return fn()
+	}
+	if err := limiter.Allow(); err != nil {
+		if denied != nil {
+			denied(err)
+		}
+		return err
+	}
+	settled := false
+	defer func() {
+		if !settled {
+			limiter.ReportResult(errInitPanic)
+		}
+	}()
+	err := fn()
+	settled = true
+	limiter.ReportResult(err)
+	return err
+}
+
+// newPubSubConn dials, initializes, and tracks a PubSub connection as one
+// admitted operation against Options.Limiter.
+func (c *baseClient) newPubSubConn(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+	var cn *pool.Conn
+	err := admitted(c.limiter(), nil, func() error {
+		var err error
+		cn, err = c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
+		if err == nil {
+			err = c.initConn(ctx, cn)
+		}
+		if err == nil {
+			err = c.pubSubPool.TrackConn(cn)
+		}
+		if err != nil && cn != nil {
+			_ = cn.Close()
+			c.removeStreamingCredentialsState(cn)
+			cn = nil
+		}
+		return err
+	})
+	return cn, err
+}
+
 func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 	cn, _, err := c.getConnLimited(ctx)
 	return cn, err
@@ -629,16 +711,17 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 // other caller unchanged. Allow is reported (ReportResult) only for dial results,
 // never for admission denials — matching the original getConn.
 func (c *baseClient) getConnLimited(ctx context.Context) (cn *pool.Conn, limited bool, err error) {
-	if c.opt.Limiter != nil {
-		if err := c.opt.Limiter.Allow(); err != nil {
+	limiter := c.limiter()
+	if limiter != nil {
+		if err := limiter.Allow(); err != nil {
 			return nil, true, err
 		}
 	}
 
 	cn, err = c._getConn(ctx)
 	if err != nil {
-		if c.opt.Limiter != nil {
-			c.opt.Limiter.ReportResult(err)
+		if limiter != nil {
+			limiter.ReportResult(err)
 		}
 		return nil, false, err
 	}
@@ -657,6 +740,18 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	}
 
 	return cn, nil
+}
+
+// initPooledConnLimited runs initPooledConn as one admitted operation against
+// Options.Limiter, for a caller that leases outside getConnLimited. A denial
+// removes the leased conn, the same disposition as a failed init.
+func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) error {
+	if cn.IsInited() {
+		return nil
+	}
+	return admitted(c.limiter(), func(err error) { p.Remove(ctx, cn, err) }, func() error {
+		return c.initPooledConn(ctx, p, cn)
+	})
 }
 
 // initPooledConn brings a conn freshly obtained from p to a usable state: it
@@ -801,14 +896,10 @@ func pipelinePoolOptions(opt *Options) *Options {
 	// 0 the pipeline pool never itself returns ErrPoolExhausted; a burst wider
 	// than PoolSize spills on ErrPoolTimeout instead — see withPipelineConn.)
 	pipelineOpt.MaxActiveConns = 0
-	// Spill, don't queue: withPipelineConn acquires from the pipeline pool with
-	// TryGet, which never waits out PoolTimeout — a saturated pool returns
-	// ErrPoolTryFull AT ONCE and the caller spills to the main pool immediately
-	// (see withPipelineConn, DefaultPipelinePoolTimeout). This value therefore
-	// has no live effect on that acquisition; it only bounds what PoolTimeout
-	// ends up stored on the pipeline pool's Options, capped here so a caller
-	// tuned to a short PoolTimeout is not silently widened to the (main)
-	// default (tens of seconds), which the clone would otherwise inherit.
+	// Ordinary pipelines acquire with TryGet and spill at once when the pool
+	// is full, without waiting out this timeout. Native full-duplex sessions
+	// with CSC use Get instead so they stay on untracked connections. Bound
+	// that wait while respecting a shorter positive timeout from the caller.
 	pipelineOpt.PoolTimeout = DefaultPipelinePoolTimeout
 	if opt.PoolTimeout > 0 && opt.PoolTimeout < DefaultPipelinePoolTimeout {
 		pipelineOpt.PoolTimeout = opt.PoolTimeout
@@ -928,6 +1019,9 @@ func (opt *Options) sendAuth(username, password string) bool {
 }
 
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
+	// Dial paths such as PubSub do not pass through command submission.
+	// Handshake commands and OnConnect must not inherit application cache intent.
+	ctx = cscUnmarkedContext(ctx)
 	// This function is called in two scenarios:
 	// 1. First-time init: Connection is in CREATED state (from pool.Get())
 	//    - We need to transition CREATED → INITIALIZING and do the initialization
@@ -1015,12 +1109,17 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// successful-attachment signal both to issue CLIENT TRACKING during init
 	// and to guard the user-visible OnConnect callback below.
 	conn.baseClient.cscActive = c.cscActive
+	// Share the policy and tracking generations so uncached OnConnect reads
+	// can suppress tracking on an OPTOUT connection.
+	conn.baseClient.cscPolicy = c.cscPolicy
+	conn.baseClient.cscPoolHook = c.cscPoolHook
 	// This internal conn's init pipeline issues CLIENT TRACKING ON itself;
 	// exempt it from the guard that blocks user-issued CLIENT TRACKING. Setting
 	// the field after newConn is safe: initHooks bound the pipeline hook as a
 	// method value on the addressable baseClient, so the guard reads the
 	// updated field.
 	conn.baseClient.allowClientTracking = true
+	conn.baseClient.limiterExempt = true
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
@@ -1161,7 +1260,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 		if trackingEnabled {
 			// Must run before any cacheable command is issued on this conn.
-			trackingCmd = pipe.ClientTrackingOn(ctx, nil)
+			trackingCmd = pipe.ClientTrackingOn(ctx, &ClientTrackingOptions{OptIn: c.cscPolicy.mode == TrackingModeOptIn, OptOut: c.cscPolicy.mode == TrackingModeOptOut})
 		}
 
 		return nil
@@ -1366,8 +1465,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 var errConnUnusable = errors.New("redis: connection unusable (reply stream desynchronized)")
 
 func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) {
-	if c.opt.Limiter != nil {
-		c.opt.Limiter.ReportResult(err)
+	if limiter := c.limiter(); limiter != nil {
+		limiter.ReportResult(err)
 	}
 	c.releaseConnToPool(ctx, c.connPool, cn, err)
 }
@@ -1463,8 +1562,9 @@ func (c *baseClient) withPipelineConn(
 	// exit (including the early init/re-acquire failures below). Without this,
 	// enabling the pipeline pool would silently bypass throttling and failure
 	// reporting for callers that set a Limiter.
-	if c.opt.Limiter != nil {
-		if err := c.opt.Limiter.Allow(); err != nil {
+	limiter := c.limiter()
+	if limiter != nil {
+		if err := limiter.Allow(); err != nil {
 			return err
 		}
 	}
@@ -1498,8 +1598,8 @@ func (c *baseClient) withPipelineConn(
 			fnErr = fmt.Errorf("%w: panic: %v", errConnUnusable, r)
 			retErr = fnErr
 		}
-		if c.opt.Limiter != nil {
-			c.opt.Limiter.ReportResult(retErr)
+		if limiter != nil {
+			limiter.ReportResult(retErr)
 		}
 		if cn != nil {
 			c.releaseConnToPool(ctx, connPool, cn, fnErr)
@@ -1636,16 +1736,30 @@ type processState struct {
 }
 
 func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
+	cs := cmd.cacheState()
+	policyCall := c.cscPolicy.configured() || cs.mark() != cacheUnmarked || cs.has(cscForceBypass) || cs.has(cscAsk)
+	if policyCall {
+		cscEnter(cmd)
+		defer cscLeave(cmd)
+	}
 	// Reject commands that would make one pooled connection diverge from CSC's
 	// tracking or database assumptions. Pipelines mirror this guard below.
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
-	if c.csc != nil {
-		// One view per invocation: eligibility, key extraction, and the cache
-		// key all come from the same metadata generation.
-		view := c.metadataView()
-		if meta, ok := cscEligibleMeta(view, cmd); ok {
+	if !policyCall {
+		if c.csc != nil {
+			view := c.cscInvocationView(cmd)
+			if meta, ok := cscEligibleMeta(view, cmd); ok {
+				return c.processCached(ctx, cmd, state, view, meta, startAttempt)
+			}
+		}
+		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
+	}
+	if c.csc != nil || cmd.cacheState().mark() != cacheUnmarked || c.cscPolicy.configured() {
+		view := c.cscInvocationView(cmd)
+		meta, use := c.cscDecide(ctx, cmd, view)
+		if use {
 			return c.processCached(ctx, cmd, state, view, meta, startAttempt)
 		}
 	}
@@ -1857,6 +1971,22 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 			return err
 		}
 
+		if capture != nil {
+			capture.noStore = false
+		}
+		// Borrowed Conn/Tx wrappers do not serve cache hits, but can still hold
+		// a tracked connection and need NO for an ordinary uncached OPTOUT read.
+		flag := byte(0)
+		if c.cscPolicy.mode != TrackingModePlain {
+			tracked := c.cscTrackingRequested() && c.cscConnInitGen(cn.GetID()) != 0
+			if capture != nil && !tracked {
+				capture.noStore = true
+			}
+			if tracked {
+				flag = c.cscFlag(cmd, capture != nil)
+			}
+		}
+
 		// HIMPORT bookkeeping: pending discards for this session and the
 		// PREPARE for an HIMPORT SET's registered fieldset are written in
 		// the same round trip, right before the command.
@@ -1871,8 +2001,16 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 					return err
 				}
 			}
+			if err := writeCSCPrefix(wr, flag); err != nil {
+				return err
+			}
 			return writeCmd(wr, cmd)
 		}); err != nil {
+			// Even an encoder error typed as a Redis error must retire a partial
+			// pair: its prefix may already be buffered or on the wire.
+			if flag != 0 {
+				_ = cn.Close()
+			}
 			retryTimeout.Store(1)
 			return err
 		}
@@ -1895,6 +2033,10 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		readErr := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				if flag != 0 {
+					_ = cn.Close()
+					return err
+				}
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
 			if len(injected) > 0 {
@@ -1906,6 +2048,20 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				// reply read below does not consume it as the command's.
 				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+				}
+			}
+			if flag != 0 {
+				ok, err := c.readCSCAck(ctx, cn, rd)
+				if err != nil {
+					_ = cn.Close()
+					return err
+				}
+				if capture != nil && !ok {
+					capture.noStore = true
+				}
+				if err := c.drainPushFrames(ctx, cn, rd, true); err != nil {
+					_ = cn.Close()
+					return err
 				}
 			}
 			err := readReplyFunc(rd)
@@ -1993,9 +2149,14 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 }
 
 // createInitConnFunc creates a connection initialization function that can be used for reconnections.
+// A reconnect (a maintenance handoff or a re-auth) dials outside getConnLimited,
+// so the handshake it runs is admitted once and reported once against Options.Limiter.
 func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
 	return func(ctx context.Context, cn *pool.Conn) error {
-		return c.initConn(ctx, cn)
+		closeConn := func(error) { cn.GetStateMachine().Transition(pool.StateClosed) }
+		return admitted(c.limiter(), closeConn, func() error {
+			return c.initConn(ctx, cn)
+		})
 	}
 }
 
@@ -2303,6 +2464,7 @@ func (c *baseClient) pipelineProcessCmds(
 	// for registered fieldsets the batch references get written ahead of
 	// the batch.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
+	flags := c.cscPipelineFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -2310,8 +2472,11 @@ func (c *baseClient) pipelineProcessCmds(
 				return err
 			}
 		}
-		return writeCmds(wr, cmds)
+		return writeCSCPipelineCmds(wr, cmds, flags)
 	}); err != nil {
+		if flags != nil {
+			_ = cn.Close()
+		}
 		setCmdsErr(cmds, err)
 		return true, err
 	}
@@ -2328,7 +2493,7 @@ func (c *baseClient) pipelineProcessCmds(
 			return err
 		}
 		// read all replies
-		readErr = c.pipelineReadCmds(ctx, cn, rd, cmds)
+		readErr = c.pipelineReadCmdsWithFlags(ctx, cn, rd, cmds, flags)
 		if readErr != nil && !isRedisError(readErr) {
 			return readErr
 		}
@@ -2365,7 +2530,17 @@ func (c *baseClient) pipelineProcessCmds(
 }
 
 func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder) error {
+	return c.pipelineReadCmdsWithFlags(ctx, cn, rd, cmds, nil)
+}
+
+func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder, flags []byte) error {
 	for i, cmd := range cmds {
+		if flags != nil && flags[i] != 0 {
+			if err := c.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
+				setCmdsErr(cmds[i:], err)
+				return err
+			}
+		}
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
@@ -2400,6 +2575,7 @@ func (c *baseClient) txPipelineProcessCmds(
 	// for registered fieldsets the transaction references get written ahead
 	// of MULTI; the session state is visible inside the transaction.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
+	flags := c.cscPipelineFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -2407,8 +2583,11 @@ func (c *baseClient) txPipelineProcessCmds(
 				return err
 			}
 		}
-		return writeCmds(wr, cmds)
+		return writeCSCPipelineCmds(wr, cmds, flags)
 	}); err != nil {
+		if flags != nil {
+			_ = cn.Close()
+		}
 		setCmdsErr(cmds, err)
 		return true, err
 	}
@@ -2421,6 +2600,12 @@ func (c *baseClient) txPipelineProcessCmds(
 			return err
 		}
 
+		if flags != nil && flags[0] != 0 {
+			if err := c.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
+				setCmdsErr(cmds, err)
+				return err
+			}
+		}
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
 		trimmedCmds := cmds[1 : len(cmds)-1]
@@ -2535,10 +2720,11 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: &baseClient{
-			apClosed: &atomic.Bool{},
-			opt:      opt,
-			onClose:  &onCloseHooks{},
-			himport:  newHImportRegistry(),
+			apClosed:  &atomic.Bool{},
+			opt:       opt,
+			cscPolicy: opt.cachePolicy(),
+			onClose:   &onCloseHooks{},
+			himport:   newHImportRegistry(),
 		},
 	}
 	c.init()
@@ -2606,7 +2792,10 @@ func NewClient(opt *Options) *Client {
 
 	// Create metadata independently of CSC. The zero config reuses the package
 	// default without allocating a store.
-	c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
+	c.baseClient.metadataSource = opt.cscMetadataSource
+	if c.baseClient.metadataSource == nil {
+		c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
+	}
 
 	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
 	// background drainer. attachCSC is the strategy dispatch entry.
@@ -2679,6 +2868,7 @@ func (c *Client) init() {
 	c.autopipeliner = nil
 	c.asyncAutopipeliner = nil
 	c.cmdable = c.Process
+	c.captureCacheIntent = c.opt.ClientSideCacheConfig != nil || c.opt.ClientSideCache != nil
 	c.initHooks(hooks{
 		dial:       c.baseClient.dial,
 		process:    c.baseClient.process,
@@ -2779,26 +2969,59 @@ func (c *Client) Conn() *Conn {
 // instead of returning it to the pool. Session state a Conn sets (AUTH,
 // SELECT, CLIENT SETNAME, CLIENT TRACKING, RESET, ...) cannot be undone
 // generically on release, so a connection that carried it must not go on to
-// serve unrelated callers. The cost is one dial per EphemeralConn lifetime;
-// Get still reuses an idle pooled connection.
+// serve unrelated callers. Without client-side caching, the first command
+// reuses an idle pooled connection if available.
+//
+// With client-side caching active, the first command dials a fresh, untracked
+// connection so session commands cannot disrupt the parent's cache. Reads on
+// this connection always hit the server. It obeys MaxActiveConns and
+// MaxConcurrentDials without acquiring a PoolSize turn, and does not support
+// maintenance handoff.
+// Close must be called to release the connection.
 func (c *Client) EphemeralConn() *Conn {
 	return c.conn(true)
 }
 
 func (c *Client) conn(discardOnClose bool) *Conn {
-	sticky := c.baseClient.newStickyConnPool()
+	isolated := discardOnClose && c.baseClient.cscTrackingRequested()
+	connOpt := c.opt
+	if isolated {
+		// This socket has no maintenance handoff manager. Keep its skipped
+		// maintenance negotiation from downgrading the shared parent config.
+		connOpt = c.baseClient.cloneOpt()
+		if connOpt.MaintNotificationsConfig != nil {
+			connOpt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
+		}
+	}
+	var sticky *pool.StickyConnPool
+	if isolated {
+		sticky = pool.NewStickyConnPool(c.connPool)
+		sticky.NewConnOnGet()
+	} else {
+		sticky = c.baseClient.newStickyConnPool()
+	}
 	if discardOnClose {
 		sticky.DiscardOnClose()
 	}
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
-	conn := newConn(c.opt, sticky, &c.hooksMixin, c.himport)
+	conn := newConn(connOpt, sticky, &c.hooksMixin, c.himport)
+	if isolated {
+		// Never enable tracking or attach the parent's cache to a socket whose
+		// session state the caller may change freely.
+		// Credential providers disable CSC in attachCSC, so isolated sessions
+		// cannot require the streaming-credentials manager copied below.
+		return conn
+	}
 	// A sticky client does not serve cache hits, but a new pool connection first
 	// initialized through it may later be reused by the parent. Share the
 	// successful-attachment signal so that connection is tracked exactly when
 	// the parent's CSC is active.
 	conn.baseClient.cscActive = c.baseClient.cscActive
+	// A cold borrowed connection must select the parent's immutable mode before
+	// returning to its pool, even though this wrapper never serves cache hits.
+	conn.baseClient.cscPolicy = c.baseClient.cscPolicy
 	// No-op today: the strategy needs an idle-conn drainer and a StickyConnPool
 	// has none, so CSC isn't active on a Conn() (its reads hit the server). Kept
 	// so a future sticky-pool-capable strategy attaches here.
@@ -3007,20 +3230,7 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
-			if err != nil {
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = c.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				c.removeStreamingCredentialsState(cn)
-				return nil, err
-			}
-			// Track connection in PubSubPool
-			c.pubSubPool.TrackConn(cn)
-			return cn, nil
+			return c.newPubSubConn(ctx, addr, channels)
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool

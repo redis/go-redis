@@ -97,7 +97,10 @@ type routingCommandMeta struct {
 	keySpecs []routingKeySpec
 	// template holds the ordinary keyed decision shared by this immutable view.
 	// Its invocation-specific slot is stored on the admitted command.
-	template        *clusterRoutingDecision
+	template *clusterRoutingDecision
+	// defaultTemplate is set (atomically, 1) once the default resolver produced
+	// exactly template for this command; the fast path then uses it directly.
+	defaultTemplate uint32
 	readOnly        bool
 	keyState        routingKeyState
 	keyPlanComplete bool
@@ -139,13 +142,16 @@ var routingSpecialPolicies = map[string]routingSpecialSupport{
 	"ft.cursor|del":  routingSpecialRequestDeclared | routingSpecialRequestSupported,
 	"ft.cursor|read": routingSpecialRequestDeclared | routingSpecialRequestSupported,
 	"randomkey":      routingSpecialResponseDeclared | routingSpecialResponseSupported,
+	// SCAN walks every master (or the master of a hash-tag MATCH); see executeScanCommand.
+	"scan": routingSpecialRequestDeclared | routingSpecialRequestSupported |
+		routingSpecialResponseDeclared | routingSpecialResponseSupported,
 }
 
 // These keyless commands retain their node-local replies and cursors. Their
 // special metadata does not define an implemented cluster-wide aggregation.
 func routingLocalSpecialCommand(name string) bool {
 	switch name {
-	case "info", "scan", "bless|scan", "function|stats",
+	case "info", "bless|scan", "function|stats",
 		"hotkeys|get", "hotkeys|reset", "hotkeys|start", "hotkeys|stop",
 		"latency|doctor", "latency|graph", "latency|histogram", "latency|history", "latency|latest",
 		"memory|doctor", "memory|malloc-stats", "memory|stats":

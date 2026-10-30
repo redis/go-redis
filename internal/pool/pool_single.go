@@ -12,6 +12,10 @@ type SingleConnPool struct {
 	pool      Pooler
 	cn        *Conn
 	stickyErr error
+	// ownerState is the connection's state when Get took it. Put and Remove
+	// restore it: the connection belongs to whoever runs these commands
+	// (initConn, a handoff re-init, re-auth), not to the pool.
+	ownerState ConnState
 }
 
 var _ Pooler = (*SingleConnPool)(nil)
@@ -49,11 +53,24 @@ func (p *SingleConnPool) Get(_ context.Context) (*Conn, error) {
 	// - During initialization (connection is in INITIALIZING state)
 	// - During re-authentication (connection is in UNUSABLE state)
 	// - For transactions (connection might be in various states)
-	// We use SetUsed() which forces the transition, rather than TryTransition() which
-	// would fail if the connection is not in IDLE/CREATED state.
-	p.cn.SetUsed(true)
+	// Force IN_USE for the command, rather than TryTransition() which would fail
+	// if the connection is not in IDLE/CREATED state, and remember the state to
+	// restore on Put.
+	p.ownerState = p.cn.stateMachine.GetState()
+	p.cn.stateMachine.Transition(StateInUse)
 	p.cn.SetUsedAt(time.Now())
 	return p.cn, nil
+}
+
+// restoreOwnerState hands the connection back to its owner's state. It must
+// not make it IDLE: a handoff re-init or re-auth runs on a connection that
+// can sit in its pool's idle list, and an IDLE connection is given to the
+// next Get while the owner still sends its remaining commands on it. The CAS
+// leaves a state someone else set during the command (e.g. CLOSED) alone.
+func (p *SingleConnPool) restoreOwnerState(cn *Conn) {
+	if cn.stateMachine.state.CompareAndSwap(uint32(StateInUse), uint32(p.ownerState)) {
+		cn.stateMachine.notifyWaiters()
+	}
 }
 
 func (p *SingleConnPool) Put(_ context.Context, cn *Conn) {
@@ -63,11 +80,11 @@ func (p *SingleConnPool) Put(_ context.Context, cn *Conn) {
 	if p.cn != cn {
 		return
 	}
-	p.cn.SetUsed(false)
+	p.restoreOwnerState(cn)
 }
 
 func (p *SingleConnPool) Remove(_ context.Context, cn *Conn, reason error) {
-	cn.SetUsed(false)
+	p.restoreOwnerState(cn)
 	p.cn = nil
 	p.stickyErr = reason
 }

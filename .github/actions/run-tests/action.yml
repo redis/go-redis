@@ -51,8 +51,8 @@ runs:
         elif [[ -n "$REDIS_VERSION" ]]; then
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.12.x"]="8.12-m02-int"
-            ["8.10.x"]="8.10.0"
+            ["8.12.x"]="8.12-rc1"
+            ["8.10.x"]="8.10.3"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
             ["8.2.x"]="8.2.1-pre"
@@ -85,7 +85,7 @@ runs:
         docker run --rm --platform linux/amd64 --network none -e GOREDIS_CSC_LIVE=1 \
           --mount "type=bind,src=$RUNNER_TEMP/csc-cluster.test,dst=/csc-cluster.test,readonly" \
           --entrypoint /csc-cluster.test "$CLIENT_LIBS_TEST_IMAGE" \
-          -test.run '^TestClusterCSCLive' -test.v -test.timeout=3m
+          -test.run '^(TestClusterCSCLive|TestCSCPolicy(Fanout)?Live)' -test.v -test.timeout=3m
     - name: Run tests
       env:
         RCE_DOCKER: "true"
@@ -95,5 +95,5 @@ runs:
         MAKE_TARGET: ${{ inputs.make-target }}
       run: |
         # The live fixtures already passed above against this matrix's Redis.
-        make -- "${MAKE_TARGET:?make-target must not be empty}" TEST_SKIP='Example|^TestClusterCSCLive'
+        make -- "${MAKE_TARGET:?make-target must not be empty}" TEST_SKIP='Example|^(TestClusterCSCLive|TestCSCPolicy(Fanout)?Live)'
       shell: bash

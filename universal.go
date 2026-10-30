@@ -200,6 +200,17 @@ type UniversalOptions struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
+	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
+	// The zero value is TrackingModePlain. An invalid value logs a warning and
+	// disables CSC at construction. Requires an enabled client-side cache.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheTrackingMode TrackingMode
+
+	// ClientSideCacheable selects eligible unmarked calls for caching. It also
+	// applies with a custom Cache. See CacheablePredicate for its callback contract.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheable CacheablePredicate
+
 	// ClientSideCache supplies an explicit cache when NewUniversalClient selects
 	// a standalone Client. See Options.ClientSideCache.
 	// It is not distributed to Cluster nodes; use ClusterOptions.NewClient for
@@ -248,6 +259,8 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 	return &ClusterOptions{
 		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    o.ClientSideCacheable,
 		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
@@ -324,6 +337,8 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 
 	return &FailoverOptions{
 		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    o.ClientSideCacheable,
 		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
@@ -454,17 +469,19 @@ func (o *UniversalOptions) Simple() *Options {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIdentity:           o.DisableIdentity,
-		DisableIndentity:          o.DisableIndentity,
-		IdentitySuffix:            o.IdentitySuffix,
-		AutoPipelineOptions:       o.AutoPipelineOptions,
-		UnstableResp3:             o.UnstableResp3,
-		PushNotificationProcessor: o.PushNotificationProcessor,
-		MaintNotificationsConfig:  o.MaintNotificationsConfig,
-		ClientSideCacheConfig:     o.ClientSideCacheConfig,
-		ClientSideCache:           o.ClientSideCache,
-		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
-		CommandMetadata:           o.CommandMetadata,
+		DisableIdentity:             o.DisableIdentity,
+		DisableIndentity:            o.DisableIndentity,
+		IdentitySuffix:              o.IdentitySuffix,
+		AutoPipelineOptions:         o.AutoPipelineOptions,
+		UnstableResp3:               o.UnstableResp3,
+		PushNotificationProcessor:   o.PushNotificationProcessor,
+		MaintNotificationsConfig:    o.MaintNotificationsConfig,
+		ClientSideCacheConfig:       o.ClientSideCacheConfig,
+		ClientSideCacheTrackingMode: o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:         o.ClientSideCacheable,
+		ClientSideCache:             o.ClientSideCache,
+		ClientSideCacheStrategy:     o.ClientSideCacheStrategy,
+		CommandMetadata:             o.CommandMetadata,
 
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,

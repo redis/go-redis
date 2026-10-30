@@ -953,6 +953,7 @@ func (c *baseClient) newStickyConnPool() *pool.StickyConnPool {
 // released: a handoff queued at Put can re-init the socket (bumping the
 // generation) before fulfillCached runs.
 type cscFetchCapture struct {
+	noStore bool
 	raw     []byte
 	connID  uint64
 	initGen uint64
@@ -991,6 +992,8 @@ func (c *baseClient) cscForgetConn(connID uint64) {
 var errClientTrackingWithCSC = errors.New(
 	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled",
 )
+
+var errClientCachingWithCSC = errors.New("redis: CLIENT CACHING is not allowed when client-side caching is enabled")
 
 // errSelectWithCSC rejects runtime SELECT on clients with built-in CSC. Cache
 // keys use Options.DB, while SELECT mutates only the chosen pool connection.
@@ -1044,6 +1047,9 @@ func (c *baseClient) cscCommandError(cmd Cmder) error {
 		subcommand, ok := cscCommandToken(cmd, 1)
 		if !ok {
 			return errUnverifiableCommandWithCSC
+		}
+		if strings.EqualFold(subcommand, "caching") {
+			return errClientCachingWithCSC
 		}
 		if strings.EqualFold(subcommand, "tracking") {
 			return errClientTrackingWithCSC
@@ -1633,12 +1639,19 @@ func (c *baseClient) processCached(
 		return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 	}
 
+	noLookup := cmd.cacheState().has(cscNoLookup)
+	if noLookup {
+		// A redirected attempt must reach the destination. Retire an old target
+		// reservation/value so this network fetch can reserve and publish anew.
+		c.csc.DeleteByCacheKey(key)
+	}
+
 	// Serve hits straight from the cache. A hit is served only while the
 	// captured view's DECISIONS are still current (fingerprint compare, not
 	// pointer identity: a refresh that changed nothing must not suppress
 	// hits); after a decision change the entry belongs to a retired
 	// generation.
-	if data, ok := c.cscGet(ctx, key); ok {
+	if data, ok := c.cscGetForAttempt(ctx, noLookup, key); ok {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1665,7 +1678,7 @@ func (c *baseClient) processCached(
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
 		// Another goroutine is fetching; Get below waits until it completes.
-		if data, ok := c.cscGet(ctx, key); ok {
+		if data, ok := c.cscGetForAttempt(ctx, noLookup, key); ok {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -1682,6 +1695,8 @@ func (c *baseClient) processCached(
 		// path under churn: we waited a round trip and still must fetch ourselves.
 		token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
 	}
+
+	shouldFetch = c.cscReservationAdmitted(token, shouldFetch)
 
 	// Reader-miss coalescing: hand the reserved miss to the batcher (no-op when
 	// off). Load the pointer ONCE: a concurrent Close swaps it to nil, and a
@@ -1760,7 +1775,7 @@ func (c *baseClient) processCached(
 				// one hot key into a pool stampede mid-recovery — defeating the
 				// coalescing this path exists for. Same shape (and 2x-RTT churn
 				// tradeoff) as the first-Reserve loser path above.
-				if data, ok := c.cscGet(ctx, key); ok {
+				if data, ok := c.cscGetForAttempt(ctx, noLookup, key); ok {
 					if err := ctx.Err(); err != nil {
 						return err
 					}
@@ -1789,6 +1804,8 @@ func (c *baseClient) processCached(
 			return err
 		}
 	}
+
+	shouldFetch = c.cscReservationAdmitted(token, shouldFetch)
 
 	// With shouldFetch still false, this caller lost the reservation twice and
 	// reads the server directly, uncached. That read can return a newer value
@@ -1849,6 +1866,10 @@ func (c *baseClient) cscEvictOnRedirect(redisKeys []string, err error) {
 // was already lost never becomes visible and never wakes waiters with stale
 // data.
 func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture, view *commandMetadataView) bool {
+	if fc.noStore {
+		c.csc.Cancel(key, token)
+		return false
+	}
 	if c.opt.cscPresenceOnly && !c.clusterCSCReplyCacheable(key, fc.raw, view) {
 		c.csc.Cancel(key, token)
 		return false
@@ -1883,4 +1904,21 @@ func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture
 		return true
 	}
 	return c.csc.FulfillOwned(key, token, 0, fc.raw)
+}
+
+// A MOVED attempt must fetch on the destination, while still allowing publication.
+func (c *baseClient) cscGetForAttempt(ctx context.Context, noLookup bool, key string) ([]byte, bool) {
+	if noLookup {
+		return nil, false
+	}
+	return c.cscGet(ctx, key)
+}
+
+// Only the built-in implementation defines zero as declined admission. Custom
+// Cache tokens are opaque and may legitimately be zero.
+func (c *baseClient) cscReservationAdmitted(token uint64, fetch bool) bool {
+	if _, builtin := c.csc.(*LocalCache); builtin && token == 0 {
+		return false
+	}
+	return fetch
 }
