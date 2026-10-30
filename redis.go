@@ -709,20 +709,30 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 // dial), so a caller can tell an explicit admission denial apart from a
 // dial/transport failure. getConn wraps it for the common case, leaving every
 // other caller unchanged. Allow is reported (ReportResult) only for dial results,
-// never for admission denials — matching the original getConn.
+// never for admission denials — matching the original getConn. A panic inside
+// _getConn settles the admission too, as admitted() does for the other paths, so
+// an Allow is never left unpaired.
 func (c *baseClient) getConnLimited(ctx context.Context) (cn *pool.Conn, limited bool, err error) {
 	limiter := c.limiter()
-	if limiter != nil {
-		if err := limiter.Allow(); err != nil {
-			return nil, true, err
-		}
+	if limiter == nil {
+		cn, err = c._getConn(ctx)
+		return cn, false, err
+	}
+	if err := limiter.Allow(); err != nil {
+		return nil, true, err
 	}
 
-	cn, err = c._getConn(ctx)
-	if err != nil {
-		if limiter != nil {
-			limiter.ReportResult(err)
+	settled := false
+	defer func() {
+		if !settled {
+			limiter.ReportResult(errInitPanic)
 		}
+	}()
+
+	cn, err = c._getConn(ctx)
+	settled = true
+	if err != nil {
+		limiter.ReportResult(err)
 		return nil, false, err
 	}
 
