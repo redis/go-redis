@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Connection handshake and `Options.Limiter`:** the handshake of a new
+  connection (`HELLO`, `AUTH`, `SELECT`, `CLIENT SETINFO`) no longer calls
+  `Limiter.Allow` per command. The command that dials pays one admission and
+  reports the handshake result once. A PubSub connection, a reconnect after a
+  maintenance handoff, and a fresh full-duplex session each pay one admission
+  for their handshake. Before, a circuit breaker in the half-open state spent
+  its probe budget on the handshake and never closed.
 - **Ephemeral connections with client-side caching:** with CSC active,
   `EphemeralConn` now lazily dials a fresh, untracked connection. Session commands
   are allowed without disrupting the parent cache, and reads always go to Redis.

@@ -507,6 +507,16 @@ type baseClient struct {
 	// never set on user-visible clients.
 	allowClientTracking bool
 
+	// limiterExempt exempts a client from Options.Limiter. Set only on
+	// initConn's internal conn wrapper: the handshake it runs (HELLO, AUTH,
+	// SELECT, CLIENT SETINFO, CLIENT MAINT_NOTIFICATIONS) belongs to the
+	// command that dials the connection, which the caller already admitted and
+	// reports as one operation. Admitting each handshake command again double
+	// counts against a rate limiter and, with a circuit breaker in half-open,
+	// lets a handshake exhaust the probe budget and report the breaker's own
+	// rejection back as a failure, so the breaker never closes.
+	limiterExempt bool
+
 	// The following are OWNER-ONLY and NOT copied by clone(): derived clients
 	// (Conn/WithTimeout) share the cache but must not stop the owner's
 	// goroutines or flush its cache on their own Close.
@@ -629,6 +639,65 @@ func (c *baseClient) String() string {
 	return fmt.Sprintf("Redis<%s db:%d>", c.getAddr(), c.opt.DB)
 }
 
+// limiter returns Options.Limiter, or nil for the handshake conn wrapper that
+// initConn builds (see limiterExempt).
+func (c *baseClient) limiter() Limiter {
+	if c.limiterExempt {
+		return nil
+	}
+	return c.opt.Limiter
+}
+
+var errInitPanic = errors.New("redis: connection init panic")
+
+// admitted runs fn as one admitted operation against limiter: one Allow and
+// one ReportResult, settled from a defer when fn panics so the admission is
+// never left unpaired. denied runs when Allow rejects, before the error
+// returns. A nil limiter runs fn as is.
+func admitted(limiter Limiter, denied func(error), fn func() error) error {
+	if limiter == nil {
+		return fn()
+	}
+	if err := limiter.Allow(); err != nil {
+		if denied != nil {
+			denied(err)
+		}
+		return err
+	}
+	settled := false
+	defer func() {
+		if !settled {
+			limiter.ReportResult(errInitPanic)
+		}
+	}()
+	err := fn()
+	settled = true
+	limiter.ReportResult(err)
+	return err
+}
+
+// newPubSubConn dials, initializes, and tracks a PubSub connection as one
+// admitted operation against Options.Limiter.
+func (c *baseClient) newPubSubConn(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+	var cn *pool.Conn
+	err := admitted(c.limiter(), nil, func() error {
+		var err error
+		cn, err = c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
+		if err == nil {
+			err = c.initConn(ctx, cn)
+		}
+		if err == nil {
+			err = c.pubSubPool.TrackConn(cn)
+		}
+		if err != nil && cn != nil {
+			_ = cn.Close()
+			cn = nil
+		}
+		return err
+	})
+	return cn, err
+}
+
 func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 	cn, _, err := c.getConnLimited(ctx)
 	return cn, err
@@ -641,16 +710,17 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 // other caller unchanged. Allow is reported (ReportResult) only for dial results,
 // never for admission denials — matching the original getConn.
 func (c *baseClient) getConnLimited(ctx context.Context) (cn *pool.Conn, limited bool, err error) {
-	if c.opt.Limiter != nil {
-		if err := c.opt.Limiter.Allow(); err != nil {
+	limiter := c.limiter()
+	if limiter != nil {
+		if err := limiter.Allow(); err != nil {
 			return nil, true, err
 		}
 	}
 
 	cn, err = c._getConn(ctx)
 	if err != nil {
-		if c.opt.Limiter != nil {
-			c.opt.Limiter.ReportResult(err)
+		if limiter != nil {
+			limiter.ReportResult(err)
 		}
 		return nil, false, err
 	}
@@ -669,6 +739,18 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	}
 
 	return cn, nil
+}
+
+// initPooledConnLimited runs initPooledConn as one admitted operation against
+// Options.Limiter, for a caller that leases outside getConnLimited. A denial
+// removes the leased conn, the same disposition as a failed init.
+func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) error {
+	if cn.IsInited() {
+		return nil
+	}
+	return admitted(c.limiter(), func(err error) { p.Remove(ctx, cn, err) }, func() error {
+		return c.initPooledConn(ctx, p, cn)
+	})
 }
 
 // initPooledConn brings a conn freshly obtained from p to a usable state: it
@@ -1036,6 +1118,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// method value on the addressable baseClient, so the guard reads the
 	// updated field.
 	conn.baseClient.allowClientTracking = true
+	conn.baseClient.limiterExempt = true
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
@@ -1367,8 +1450,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 var errConnUnusable = errors.New("redis: connection unusable (reply stream desynchronized)")
 
 func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) {
-	if c.opt.Limiter != nil {
-		c.opt.Limiter.ReportResult(err)
+	if limiter := c.limiter(); limiter != nil {
+		limiter.ReportResult(err)
 	}
 	c.releaseConnToPool(ctx, c.connPool, cn, err)
 }
@@ -1464,8 +1547,9 @@ func (c *baseClient) withPipelineConn(
 	// exit (including the early init/re-acquire failures below). Without this,
 	// enabling the pipeline pool would silently bypass throttling and failure
 	// reporting for callers that set a Limiter.
-	if c.opt.Limiter != nil {
-		if err := c.opt.Limiter.Allow(); err != nil {
+	limiter := c.limiter()
+	if limiter != nil {
+		if err := limiter.Allow(); err != nil {
 			return err
 		}
 	}
@@ -1499,8 +1583,8 @@ func (c *baseClient) withPipelineConn(
 			fnErr = fmt.Errorf("%w: panic: %v", errConnUnusable, r)
 			retErr = fnErr
 		}
-		if c.opt.Limiter != nil {
-			c.opt.Limiter.ReportResult(retErr)
+		if limiter != nil {
+			limiter.ReportResult(retErr)
 		}
 		if cn != nil {
 			c.releaseConnToPool(ctx, connPool, cn, fnErr)
@@ -2050,9 +2134,14 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 }
 
 // createInitConnFunc creates a connection initialization function that can be used for reconnections.
+// A reconnect (a maintenance handoff or a re-auth) dials outside getConnLimited,
+// so the handshake it runs is admitted once and reported once against Options.Limiter.
 func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
 	return func(ctx context.Context, cn *pool.Conn) error {
-		return c.initConn(ctx, cn)
+		closeConn := func(error) { cn.GetStateMachine().Transition(pool.StateClosed) }
+		return admitted(c.limiter(), closeConn, func() error {
+			return c.initConn(ctx, cn)
+		})
 	}
 }
 
@@ -3117,21 +3206,7 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
-			if err != nil {
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = c.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				return nil, err
-			}
-			// Track connection in PubSubPool
-			if err := c.pubSubPool.TrackConn(cn); err != nil {
-				return nil, err
-			}
-			return cn, nil
+			return c.newPubSubConn(ctx, addr, channels)
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool

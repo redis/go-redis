@@ -4047,19 +4047,8 @@ func (c *ClusterClient) pubSub() *PubSub {
 					return nil, err
 				}
 			}
-			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
+			cn, err := node.Client.newPubSubConn(ctx, node.Client.opt.Addr, channels)
 			if err != nil {
-				node = nil
-				return nil, err
-			}
-			// will return nil if already initialized
-			err = node.Client.initConn(ctx, cn)
-			if err != nil {
-				_ = cn.Close()
-				node = nil
-				return nil, err
-			}
-			if err := node.Client.pubSubPool.TrackConn(cn); err != nil {
 				node = nil
 				return nil, err
 			}

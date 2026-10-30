@@ -1495,9 +1495,11 @@ func (fd *fdEngine) run() {
 // first), and releases the connection. Returns the unacked tail + error on
 // connection failure, or graceful=true on Close.
 func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
-	// Options.Limiter is deliberately NOT consulted here: the lease is not the
-	// Limiter's unit. Admission is per written chunk, in writeBatch — see the
-	// comment there for the rationale.
+	// Options.Limiter is deliberately NOT consulted for the lease: the lease is
+	// not the Limiter's unit. Admission is per written chunk, in writeBatch — see
+	// the comment there for the rationale. The handshake of a fresh conn is the
+	// one exception: initPooledConnLimited admits and reports it once, because
+	// no chunk admission covers it.
 	var cn *pool.Conn
 	// connPool records which pool cn was leased from — the pipeline pool normally, or
 	// the main pool on a spill (see the acquire below) — so the deferred remove/release
@@ -1621,7 +1623,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 				return carry, fdLeaseErr, aerr
 			}
 			spill = true
-		} else if e := fd.client.initPooledConn(initCtx, ref.pool, cn); e != nil {
+		} else if e := fd.client.initPooledConnLimited(initCtx, ref.pool, cn); e != nil {
 			cn = nil // initPooledConn already Removed it from the pipeline pool
 			if untracked {
 				return carry, fdLeaseErr, e
@@ -1635,7 +1637,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 				return carry, fdLeaseErr, aerr
 			}
 			connPool = fd.client.connPool
-			if e := fd.client.initPooledConn(initCtx, fd.client.connPool, cn); e != nil {
+			if e := fd.client.initPooledConnLimited(initCtx, fd.client.connPool, cn); e != nil {
 				cn = nil // initPooledConn already Removed it from the main pool
 				return carry, fdLeaseErr, e
 			}
@@ -1648,7 +1650,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 			cn = nil
 			return carry, fdLeaseErr, aerr
 		}
-		if e := fd.client.initPooledConn(initCtx, fd.pool, cn); e != nil {
+		if e := fd.client.initPooledConnLimited(initCtx, fd.pool, cn); e != nil {
 			cn = nil // initPooledConn already Removed it
 			return carry, fdLeaseErr, e
 		}

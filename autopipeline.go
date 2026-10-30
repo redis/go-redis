@@ -189,9 +189,14 @@ type AutoPipelineOptions struct {
 	// Limiter: Options.Limiter is admitted (Allow/ReportResult) once PER WRITTEN
 	// BATCH — the chunk flushed to the connection in one write, the full-duplex
 	// analogue of a pipeline exec or a half-duplex flush — not per command and
-	// not per session. A deny fails every command of that chunk with the
-	// Limiter's own error, verbatim (examinable via errors.Is); the session and
-	// its connection stay alive, and the next chunk pays Allow again, so an open
+	// not per session. The one addition is the handshake of a fresh connection
+	// (a new session, or one recycled after a connection failure): it is
+	// admitted once before the handshake and reported once with the handshake
+	// result, the same accounting a pooled command pays when it dials. A deny
+	// there fails the lease, not a chunk. A deny on a chunk fails every command
+	// of that chunk with the Limiter's own error, verbatim (examinable via
+	// errors.Is); the session and its connection stay alive, and the next chunk
+	// pays Allow again, so an open
 	// breaker fail-fasts and service resumes as soon as it closes. Because
 	// admission happens at write time, a deny surfaces as queue latency on the
 	// awaited result, not as a submit-time error — and one deny covers a whole
