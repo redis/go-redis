@@ -174,19 +174,22 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 				// it under the holder when its wait for the connection times out. A
 				// failed claim needs nothing more: the handoff mark stays, so OnPut
 				// queues the handoff when the holder returns the connection.
-				if owner != nil && owner.workerManager != nil && poolConn.ClaimIdleForHandoff() {
-					if err := owner.workerManager.queueHandoff(poolConn); err != nil {
-						internal.Logger.Printf(context.Background(), "%s", logs.FailedToQueueHandoff(poolConn.GetID(), err))
-						// Claimed but no worker will take it: remove it, as OnPut does
-						// when queueing fails, instead of leaving it UNUSABLE for good.
-						if owner.pool != nil {
-							owner.pool.RemoveWithoutTurn(context.Background(), poolConn, err)
+				if owner != nil && owner.workerManager != nil {
+					if claimed := poolConn.ClaimIdleForHandoff(); claimed != nil {
+						if err := owner.workerManager.queueHandoff(poolConn); err != nil {
+							internal.Logger.Printf(context.Background(), "%s", logs.FailedToQueueHandoff(poolConn.GetID(), err))
+							// Claimed but no worker will take it: remove it, as OnPut does
+							// when queueing fails, instead of leaving it UNUSABLE for good.
+							if owner.pool != nil {
+								owner.pool.RemoveWithoutTurn(context.Background(), poolConn, err)
+							}
+						} else {
+							// Clear only the claimed mark so the connection is not queued
+							// again. Metadata only: the worker may already own the
+							// connection's state. A later MOVING mark is a new pointer.
+							poolConn.MarkHandoffQueued(claimed)
+							internal.Logger.Printf(context.Background(), "%s", logs.MarkedForHandoff(poolConn.GetID()))
 						}
-					} else {
-						// Clear the mark so the connection is not queued again. Metadata
-						// only: the worker may already own the connection's state.
-						poolConn.MarkHandoffQueued()
-						internal.Logger.Printf(context.Background(), "%s", logs.MarkedForHandoff(poolConn.GetID()))
 					}
 				}
 			}

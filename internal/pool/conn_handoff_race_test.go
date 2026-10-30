@@ -122,7 +122,7 @@ func TestClaimIdleForHandoffSkipsAcquiredConn(t *testing.T) {
 	}
 	gen := cn.HandoffOwnerGen()
 
-	if cn.ClaimIdleForHandoff() {
+	if cn.ClaimIdleForHandoff() != nil {
 		t.Fatal("ClaimIdleForHandoff succeeded on a connection that is in use")
 	}
 	if got := cn.GetStateMachine().GetState(); got != StateInUse {
@@ -146,7 +146,8 @@ func TestClaimIdleForHandoffTakesIdleConn(t *testing.T) {
 	cn.GetStateMachine().Transition(StateIdle)
 	gen := cn.HandoffOwnerGen()
 
-	if !cn.ClaimIdleForHandoff() {
+	claimed := cn.ClaimIdleForHandoff()
+	if claimed == nil {
 		t.Fatal("ClaimIdleForHandoff failed on an idle connection")
 	}
 	if got := cn.GetStateMachine().GetState(); got != StateUnusable {
@@ -159,7 +160,7 @@ func TestClaimIdleForHandoffTakesIdleConn(t *testing.T) {
 		t.Fatal("claim did not bump the owner generation")
 	}
 
-	cn.MarkHandoffQueued()
+	cn.MarkHandoffQueued(claimed)
 	if cn.ShouldHandoff() {
 		t.Fatal("still marked ShouldHandoff after MarkHandoffQueued")
 	}
@@ -268,7 +269,7 @@ func TestRemoveClaimedIdleConnRecordsIdleState(t *testing.T) {
 	})
 	defer SetAllMetricCallbacks(nil)
 
-	if !idle.ClaimIdleForHandoff() {
+	if idle.ClaimIdleForHandoff() == nil {
 		t.Fatal("ClaimIdleForHandoff failed on an idle connection")
 	}
 	p.RemoveWithoutTurn(ctx, idle, errors.New("handoff queue full"))
@@ -350,5 +351,41 @@ func TestSingleConnPoolPutKeepsHeldConn(t *testing.T) {
 	p.Put(ctx, cn)
 	if s := cn.GetStateMachine().GetState(); s != StateInUse {
 		t.Fatalf("state after Put = %v, want %v", s, StateInUse)
+	}
+}
+
+// TestMarkHandoffQueuedDoesNotClearLaterMark is the race in #4238: after the
+// claimed handoff is queued, the worker can ClearHandoffState and a later
+// MOVING can MarkForHandoff before MarkHandoffQueued runs. Clearing must CAS
+// only the claimed pointer so the later mark stays.
+func TestMarkHandoffQueuedDoesNotClearLaterMark(t *testing.T) {
+	cn := NewConn(nil)
+	if err := cn.MarkForHandoff("first-endpoint:6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	cn.GetStateMachine().Transition(StateIdle)
+
+	claimed := cn.ClaimIdleForHandoff()
+	if claimed == nil {
+		t.Fatal("ClaimIdleForHandoff failed on an idle connection")
+	}
+
+	// Worker finishes the queued handoff, then a later MOVING marks again
+	// before MarkHandoffQueued runs.
+	cn.ClearHandoffState()
+	if err := cn.MarkForHandoff("later-endpoint:6379", 2); err != nil {
+		t.Fatalf("later MarkForHandoff: %v", err)
+	}
+
+	cn.MarkHandoffQueued(claimed)
+	if !cn.ShouldHandoff() {
+		t.Fatal("MarkHandoffQueued cleared a later handoff mark")
+	}
+	if got := cn.GetHandoffEndpoint(); got != "later-endpoint:6379" {
+		t.Fatalf("endpoint = %q, want later-endpoint:6379", got)
+	}
+	seqShould, endpoint, seqID := cn.GetHandoffInfo()
+	if !seqShould || endpoint != "later-endpoint:6379" || seqID != 2 {
+		t.Fatalf("handoff info = (%v, %q, %d), want (true, later-endpoint:6379, 2)", seqShould, endpoint, seqID)
 	}
 }

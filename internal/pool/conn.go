@@ -1035,31 +1035,34 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 // ClaimIdleForHandoff takes an IDLE connection out of circulation for a
 // handoff (IDLE -> UNUSABLE) and keeps its handoff mark, so the handoff can
 // then be queued. It is for a connection nobody holds, which would never
-// reach OnPut. It returns false when the connection is not IDLE: a Get
-// acquired it, and OnPut queues the handoff when the holder returns it.
-func (cn *Conn) ClaimIdleForHandoff() bool {
+// reach OnPut. It returns the handoff state present at claim time, which
+// MarkHandoffQueued must clear by CAS so a later MarkForHandoff is not wiped.
+// It returns nil when the connection is not IDLE: a Get acquired it, and
+// OnPut queues the handoff when the holder returns it.
+func (cn *Conn) ClaimIdleForHandoff() *HandoffState {
+	current := cn.handoffStateAtomic.Load()
+	state, _ := current.(*HandoffState)
 	if _, err := cn.stateMachine.TryTransition(validFromIdle, StateUnusable); err != nil {
-		return false
+		return nil
 	}
 	cn.handoffOwnerGen.Add(1)
-	return true
+	return state
 }
 
-// MarkHandoffQueued clears the ShouldHandoff mark of a connection whose
-// handoff was claimed (ClaimIdleForHandoff) and queued, so it is not queued
-// again. Endpoint and seqID stay for the worker. It does not touch the
-// connection state: the worker may already own it. A no-op once the worker
-// cleared the handoff state.
-func (cn *Conn) MarkHandoffQueued() {
-	current := cn.handoffStateAtomic.Load()
-	state, ok := current.(*HandoffState)
-	if !ok || !state.ShouldHandoff {
+// MarkHandoffQueued clears the ShouldHandoff mark of the handoff state that
+// ClaimIdleForHandoff returned, after that handoff was queued. Endpoint and
+// seqID stay for the worker. It does not touch the connection state: the
+// worker may already own it. CAS against the claimed pointer only: if the
+// worker finished (ClearHandoffState) and a later MOVING marked the
+// connection again, that new mark is a different pointer and is left alone.
+func (cn *Conn) MarkHandoffQueued(claimed *HandoffState) {
+	if claimed == nil || !claimed.ShouldHandoff {
 		return
 	}
-	cn.handoffStateAtomic.CompareAndSwap(current, &HandoffState{
+	cn.handoffStateAtomic.CompareAndSwap(claimed, &HandoffState{
 		ShouldHandoff: false,
-		Endpoint:      state.Endpoint,
-		SeqID:         state.SeqID,
+		Endpoint:      claimed.Endpoint,
+		SeqID:         claimed.SeqID,
 	})
 }
 
