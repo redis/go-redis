@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/redis/go-redis/v9/internal/pool"
+
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
@@ -189,7 +191,7 @@ func TestRedirectAddr(t *testing.T) {
 		{":6380", nil, ":6380"},
 	}
 	for _, tc := range tests {
-		if got := redirectAddr(tc.addr, tc.node); got != tc.want {
+		if got := redirectAddr(tc.addr, tc.node, ""); got != tc.want {
 			t.Errorf("redirectAddr(%q) = %q, want %q", tc.addr, got, tc.want)
 		}
 	}
@@ -219,7 +221,7 @@ func TestIsMovedSameConnAddr(t *testing.T) {
 // After a maintenance-notification handoff, Options.Addr stays at the old
 // endpoint while the pooled connection serves from a new one. Hostless
 // redirects must reuse the serving host, not the configured address (#4230).
-func TestRedirectAddrPreferServingAddr(t *testing.T) {
+func TestRedirectAddrPreferServingEndpoint(t *testing.T) {
 	opt := &ClusterOptions{}
 	opt.init()
 	nodes := newClusterNodes(opt)
@@ -229,38 +231,42 @@ func TestRedirectAddrPreferServingAddr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if node.Client.servingAddr == nil {
-		t.Fatal("servingAddr not initialized on node client")
-	}
-	node.Client.servingAddr.Store("10.0.0.9:7000")
 
-	if got := redirectAddr(":6380", node); got != "10.0.0.9:6380" {
+	if got := redirectAddr(":6380", node, "10.0.0.9:7000"); got != "10.0.0.9:6380" {
 		t.Errorf("redirectAddr(%q) = %q, want %q", ":6380", got, "10.0.0.9:6380")
 	}
+	// Empty serving endpoint falls back to the node's configured address.
+	if got := redirectAddr(":6380", node, ""); got != "10.0.0.5:6380" {
+		t.Errorf("fallback redirectAddr = %q, want configured host", got)
+	}
 	// Absolute redirects are unchanged.
-	if got := redirectAddr("10.0.0.6:6380", node); got != "10.0.0.6:6380" {
+	if got := redirectAddr("10.0.0.6:6380", node, "10.0.0.9:7000"); got != "10.0.0.6:6380" {
 		t.Errorf("redirectAddr absolute = %q, want %q", got, "10.0.0.6:6380")
 	}
 }
 
-func TestRecordServingAddr(t *testing.T) {
-	c := NewClient(&Options{Addr: "10.0.0.5:6379", DisableIdentity: true})
-	t.Cleanup(func() { _ = c.Close() })
-	if got := c.getServingAddr(); got != "" {
-		t.Fatalf("getServingAddr() = %q, want empty before any connection", got)
+func TestConnServingEndpoint(t *testing.T) {
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+	cn := pool.NewConn(c1)
+	if got := cn.ServingEndpoint(); got != "" {
+		t.Fatalf("ServingEndpoint() = %q, want empty", got)
 	}
-	// Nil-safe on partially-built clients.
-	stub := &baseClient{}
-	stub.recordServingAddr(nil)
-	if got := stub.getServingAddr(); got != "" {
-		t.Fatalf("nil servingAddr getServingAddr() = %q", got)
+	cn.SetServingEndpoint("localhost:16600")
+	if got := cn.ServingEndpoint(); got != "localhost:16600" {
+		t.Fatalf("ServingEndpoint() = %q, want localhost:16600", got)
+	}
+	// Empty set is ignored.
+	cn.SetServingEndpoint("")
+	if got := cn.ServingEndpoint(); got != "localhost:16600" {
+		t.Fatalf("empty SetServingEndpoint cleared value: %q", got)
 	}
 }
 
 // Pipeline and TxPipeline resolve hostless MOVED/ASK while the connection is
-// still held. recordServingAddr must run before redirectAddr in that window,
-// not only in releaseConnToPool (#4230 review).
-func TestRedirectAddrAfterRecordServingAddrWhileHeld(t *testing.T) {
+// still held. The per-connection serving endpoint must drive redirectAddr
+// without a client-wide last-writer slot (#4233 review).
+func TestRedirectAddrUsesHeldConnEndpoint(t *testing.T) {
 	opt := &ClusterOptions{}
 	opt.init()
 	nodes := newClusterNodes(opt)
@@ -270,13 +276,10 @@ func TestRedirectAddrAfterRecordServingAddrWhileHeld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate Options.Addr still pointing at the pre-handoff endpoint while
-	// the held connection's remote address has already moved.
-	if got := redirectAddr(":6380", node); got != "10.0.0.5:6380" {
-		t.Fatalf("before record: redirectAddr = %q, want configured host", got)
+	if got := redirectAddr(":6380", node, ""); got != "10.0.0.5:6380" {
+		t.Fatalf("before endpoint: redirectAddr = %q, want configured host", got)
 	}
-	node.Client.servingAddr.Store("10.0.0.9:7000")
-	if got := redirectAddr(":6380", node); got != "10.0.0.9:6380" {
-		t.Fatalf("after record while held: redirectAddr = %q, want serving host", got)
+	if got := redirectAddr(":6380", node, "10.0.0.9:7000"); got != "10.0.0.9:6380" {
+		t.Fatalf("with held conn endpoint: redirectAddr = %q, want serving host", got)
 	}
 }

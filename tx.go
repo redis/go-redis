@@ -44,7 +44,6 @@ func (c *Client) newTx() *Tx {
 		baseClient: baseClient{
 			opt:           c.cloneOpt(), // Clone options under optLock to avoid race with initConn
 			connPool:      c.baseClient.newStickyConnPool(),
-			servingAddr:   c.servingAddr, // share parent's last-known serving endpoint (#4230)
 			hooksMixin:    c.hooksMixin.clone(),
 			pushProcessor: c.pushProcessor, // Copy push processor from parent client
 			onClose:       &onCloseHooks{},

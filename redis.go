@@ -424,13 +424,6 @@ type baseClient struct {
 	// per pool-set, not one per wrapper. See baseClient.Close.
 	apClosed *atomic.Bool
 
-	// servingAddr holds the most recently observed remote address of a pooled
-	// connection for this client (host:port). After a maintenance-notification
-	// handoff the socket may serve from a different endpoint than Options.Addr;
-	// hostless MOVED/ASK redirects must reuse that serving host (see #4230).
-	// Pointer so clones sharing the pool also share the recorded endpoint.
-	servingAddr *atomic.Value // stores string
-
 	opt        *Options
 	optLock    sync.RWMutex
 	connPool   pool.Pooler
@@ -558,10 +551,9 @@ func (c *baseClient) clone() *baseClient {
 	c.maintNotificationsManagerLock.RUnlock()
 
 	clone := &baseClient{
-		apClosed:    c.apClosed,
-		servingAddr: c.servingAddr,
-		opt:         c.opt,
-		connPool:    c.connPool,
+		apClosed: c.apClosed,
+		opt:      c.opt,
+		connPool: c.connPool,
 		// Pointer copy on purpose: the clone shares the parent's already-created
 		// pipeline pool over the one shared pool set, rather than building its own.
 		pipelinePool:                c.pipelinePool,
@@ -1479,29 +1471,42 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	c.releaseConnToPool(ctx, c.connPool, cn, err)
 }
 
-// recordServingAddr remembers cn's current remote address for hostless redirect
-// resolution. Safe with a nil servingAddr (partially-built test clients).
-func (c *baseClient) recordServingAddr(cn *pool.Conn) {
-	if c.servingAddr == nil || cn == nil {
-		return
-	}
-	if ra := cn.RemoteAddr(); ra != nil {
-		c.servingAddr.Store(ra.String())
-	}
-}
-
-// getServingAddr returns the most recently recorded pooled-connection remote
-// address, or empty when none has been observed yet.
-func (c *baseClient) getServingAddr() string {
-	if c.servingAddr == nil {
+// connServingEndpoint returns the logical dial/handoff endpoint recorded on cn
+// (hostname:port), or empty when none is set. Does not touch RemoteAddr and
+// allocates nothing on the hot path.
+func connServingEndpoint(cn *pool.Conn) string {
+	if cn == nil {
 		return ""
 	}
-	if v := c.servingAddr.Load(); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
+	return cn.ServingEndpoint()
+}
+
+// errWithServingEndpoint wraps a MOVED/ASK (or other) error with the logical
+// endpoint of the connection that produced it. Cluster redirect resolution
+// prefers this over Options.Addr after a maintenance-notification handoff
+// (#4230 / #4233 review). Allocates only on the redirect error path.
+type errWithServingEndpoint struct {
+	endpoint string
+	err      error
+}
+
+func (e *errWithServingEndpoint) Error() string { return e.err.Error() }
+
+func (e *errWithServingEndpoint) Unwrap() error { return e.err }
+
+func wrapServingEndpoint(cn *pool.Conn, err error) error {
+	if err == nil || cn == nil {
+		return err
 	}
-	return ""
+	moved, ask, _ := isMovedError(err)
+	if !moved && !ask {
+		return err
+	}
+	ep := cn.ServingEndpoint()
+	if ep == "" {
+		return err
+	}
+	return &errWithServingEndpoint{endpoint: ep, err: err}
 }
 
 // releaseConnToPool returns a conn to p after a command or pipeline ran on
@@ -1511,7 +1516,6 @@ func (c *baseClient) getServingAddr() string {
 // tracking is on. Limiter accounting stays with the callers, whose shapes
 // differ. Shared by releaseConn and withPipelineConn so the two cannot drift.
 func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *pool.Conn, err error) {
-	c.recordServingAddr(cn)
 	// errConnUnusable is wrapped around errors that leave the connection's reply
 	// stream desynchronized even though they are not transport (bad-conn) errors:
 	// a push-notification drain that consumed part of a RESP3 frame, or a panic
@@ -2135,7 +2139,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 			} else {
 				retryTimeout.Store(0)
 			}
-			return readErr
+			// Carry the held connection's logical endpoint with hostless redirects
+			// so ClusterClient can resolve them after release (#4233 review).
+			return wrapServingEndpoint(cn, readErr)
 		}
 		if capture != nil {
 			// Attribute while the conn is still held: once it is released, a
@@ -2754,12 +2760,11 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: &baseClient{
-			apClosed:    &atomic.Bool{},
-			servingAddr: &atomic.Value{},
-			opt:         opt,
-			cscPolicy:   opt.cachePolicy(),
-			onClose:     &onCloseHooks{},
-			himport:     newHImportRegistry(),
+			apClosed:  &atomic.Bool{},
+			opt:       opt,
+			cscPolicy: opt.cachePolicy(),
+			onClose:   &onCloseHooks{},
+			himport:   newHImportRegistry(),
 		},
 	}
 	c.init()
@@ -3355,12 +3360,11 @@ type Conn struct {
 func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin, himport *himportRegistry) *Conn {
 	c := Conn{
 		baseClient: baseClient{
-			apClosed:    &atomic.Bool{},
-			servingAddr: &atomic.Value{},
-			opt:         opt,
-			connPool:    connPool,
-			onClose:     &onCloseHooks{},
-			himport:     himport,
+			apClosed: &atomic.Bool{},
+			opt:      opt,
+			connPool: connPool,
+			onClose:  &onCloseHooks{},
+			himport:  himport,
 		},
 	}
 

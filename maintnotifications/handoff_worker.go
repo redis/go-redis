@@ -454,6 +454,9 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 		// Initialization failed - remove the connection
 		return false, err
 	}
+	// Record the logical handoff target (hostname:port), not RemoteAddr.
+	// Hostless MOVED/ASK must reuse this endpoint (#4230 / #4233 review).
+	conn.SetServingEndpoint(newEndpoint)
 	defer func() {
 		if oldConn != nil {
 			oldConn.Close()
