@@ -1133,8 +1133,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			return fmt.Errorf("failed to create credentials listener: %w", initErr)
 		}
 
-		credentials, unsubscribeFromCredentialsProvider, initErr := c.opt.StreamingCredentialsProvider.
-			Subscribe(credListener)
+		credentials, unsubscribeFromCredentialsProvider, initErr := subscribeStreamingCredentials(
+			ctx, c.opt.StreamingCredentialsProvider, credListener,
+		)
 		if initErr != nil {
 			cn.GetStateMachine().Transition(pool.StateClosed)
 			return fmt.Errorf("failed to subscribe to streaming credentials: %w", initErr)
@@ -1171,6 +1172,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			}
 		}
 		cn.SetOnClose(onClose)
+
+		// Close may have run while subscription setup was waiting, before
+		// onClose was installed. Re-run teardown in that case; Conn.Close
+		// atomically claims callbacks, so unsubscribe still runs only once.
+		if cn.IsClosed() {
+			_ = cn.Close()
+		}
 
 		username, password = credentials.BasicAuth()
 	} else {
