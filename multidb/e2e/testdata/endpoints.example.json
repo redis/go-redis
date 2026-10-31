@@ -1,0 +1,12 @@
+{
+  "go-redis-active-active": {
+    "bdb_id": 1,
+    "username": "default",
+    "password": "",
+    "endpoints": [
+      "redis://127.0.0.1:17100",
+      "redis://127.0.0.1:17101",
+      "redis://127.0.0.1:17102"
+    ]
+  }
+}

@@ -1796,8 +1796,20 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// put them at the opposite end of the queue
 		// Check even if Release() succeeded: it notifies waiters, which may have
 		// already moved the conn out of IDLE (e.g. re-auth to UNUSABLE).
-		if !cn.IsUsable() {
+		// Skipped when the StateClosed case above already removed the conn.
+		if !shouldCloseConn && !cn.IsUsable() {
 			p.connsMu.Lock()
+			if reason := cn.CloseOnPutReason(); reason != "" {
+				// Marked for retirement between the check at the top of this
+				// function and here: RetireConns saw the connection as in use
+				// (not yet in idleConns) and marked it instead of removing it,
+				// so the removal is ours. Re-checked under connsMu, the lock
+				// RetireConns marks under, so a marked connection is never
+				// idled and left in the pool until its next put.
+				p.connsMu.Unlock()
+				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
+				return
+			}
 			// Check if Close() already removed this connection from p.conns.
 			// If so, skip the append and metrics — Close() already accounted for it.
 			if _, inPool := p.conns[cn.GetID()]; inPool {
@@ -1821,6 +1833,12 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			}
 		} else if !shouldCloseConn {
 			p.connsMu.Lock()
+			if reason := cn.CloseOnPutReason(); reason != "" {
+				// Same late-retirement check as above (see there).
+				p.connsMu.Unlock()
+				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
+				return
+			}
 			if _, inPool := p.conns[cn.GetID()]; inPool {
 				p.idleConns = append(p.idleConns, cn)
 				if cb := getMetricConnectionStateChangeCallback(); cb != nil {

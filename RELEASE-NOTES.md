@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **MultiDB client (experimental):** `NewMultiDBClient` routes commands to one
+  active database out of several standalone or cluster members (e.g. Redis
+  Enterprise Active-Active) and fails over based on circuit breakers, health
+  checks and a weight-based failover strategy, with auto-fallback to
+  higher-weight members. The `multidb` package adds ping and lag-aware health
+  checks and probe policies. See `example/multidb`
+  ([#3954](https://github.com/redis/go-redis/pull/3954)). Defaults:
+  - MultiDB owns retries: `CommandRetries` (0 = 2, -1 = none) retries on the
+    database active at each attempt, and every attempt is counted by the
+    breaker and failure detector. Standalone members get no retries of their
+    own (`MaxRetries` 0 becomes -1); an explicit `MaxRetries` is kept.
+  - Health checks: HEALTHY_ALL, 3 probes 500ms apart per check, honoring
+    `multidb.WithProbes` / `WithDelay` / `WithTimeout`; `HealthCheckTimeout`
+    (3s) caps the pass. Probes that cannot fit it are rejected at
+    construction and by `AddDatabase`. Under the default policy,
+    `SetActiveDatabase` and `ProbeTargetBeforeFailover` use one probe per
+    check.
+  - Startup: `InitialDBStateMajorityAvailable` needs half the members, rounded
+    up (1 of 2). A failed start matches `ErrInsufficientHealthyDatabases`;
+    with no healthy member it also matches `ErrPermanentlyNotAvailable`.
+  - Weights are in (0, 1] (0 = 1.0); -1 disables a member. The last enabled
+    member cannot be disabled.
+  - The default failure detector (1000 failures and 10% within 2s) is set
+    with `FailureDetectorConfig`, whose fields are used as given; start from
+    `DefaultMultiDBFailureDetectorConfig()`.
 - **Connection handshake and `Options.Limiter`:** the handshake of a new
   connection (`HELLO`, `AUTH`, `SELECT`, `CLIENT SETINFO`) no longer calls
   `Limiter.Allow` per command. The command that dials pays one admission and
