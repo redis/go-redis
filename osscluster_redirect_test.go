@@ -283,3 +283,34 @@ func TestRedirectAddrUsesHeldConnEndpoint(t *testing.T) {
 		t.Fatalf("with held conn endpoint: redirectAddr = %q, want serving host", got)
 	}
 }
+
+// EXEC-stage MOVED/ASK must carry the held connection endpoint the same way
+// queue-stage redirects do (Bugbot on #4233).
+func TestClassifyExecErrorCarriesServingEndpoint(t *testing.T) {
+	opt := &ClusterOptions{}
+	opt.init()
+	c := &ClusterClient{opt: opt}
+
+	moved := proto.ParseErrorReply([]byte("-MOVED 1 :6380"))
+	ask := proto.ParseErrorReply([]byte("-ASK 1 :6380"))
+	serving := "10.0.0.9:7000"
+
+	movedOut := c.classifyExecError(moved, nil, nil, serving)
+	if movedOut.kind != txRetryMoved || movedOut.endpoint != serving || movedOut.addr != ":6380" {
+		t.Fatalf("MOVED EXEC: kind=%v addr=%q endpoint=%q", movedOut.kind, movedOut.addr, movedOut.endpoint)
+	}
+	askOut := c.classifyExecError(ask, nil, nil, serving)
+	if askOut.kind != txRetryAsk || askOut.endpoint != serving || askOut.addr != ":6380" {
+		t.Fatalf("ASK EXEC: kind=%v addr=%q endpoint=%q", askOut.kind, askOut.addr, askOut.endpoint)
+	}
+
+	nodes := newClusterNodes(opt)
+	defer nodes.Close()
+	node, err := nodes.GetOrCreate("10.0.0.5:6379")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := redirectAddr(movedOut.addr, node, movedOut.endpoint); got != "10.0.0.9:6380" {
+		t.Fatalf("EXEC MOVED redirectAddr = %q, want serving host", got)
+	}
+}

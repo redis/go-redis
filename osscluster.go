@@ -3886,7 +3886,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 		if !isRedisError(err) {
 			return c.txReadFatal(err) // IO error
 		}
-		return c.classifyExecError(err, firstRedirect, firstFatal)
+		return c.classifyExecError(err, firstRedirect, firstFatal, servingEp)
 	}
 
 	if line[0] != proto.RespArray {
@@ -3942,13 +3942,15 @@ func (c *ClusterClient) txPreQueueErrorOutcome(err error, cmds []Cmder) *txOutco
 }
 
 // classifyExecError turns an EXEC reply error into a retry/fatal outcome.
-func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedirect, firstFatal error) *txOutcome {
+// servingEp is the held connection's logical endpoint so hostless EXEC
+// MOVED/ASK reuse the same host as queue-stage redirects.
+func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedirect, firstFatal error, servingEp string) *txOutcome {
 	if moved, ask, addr := isMovedError(execErr); moved || ask {
 		// Narrow race: the slot moved after every command was queued.
 		if ask {
-			return &txOutcome{kind: txRetryAsk, err: execErr, addr: addr}
+			return &txOutcome{kind: txRetryAsk, err: execErr, addr: addr, endpoint: servingEp}
 		}
-		return &txOutcome{kind: txRetryMoved, err: execErr, addr: addr}
+		return &txOutcome{kind: txRetryMoved, err: execErr, addr: addr, endpoint: servingEp}
 	}
 	if proto.IsTryAgainError(execErr) {
 		return &txOutcome{kind: txRetryTryAgain, err: execErr}
