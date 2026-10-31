@@ -603,9 +603,10 @@ func (c cmdable) CFCount(ctx context.Context, key string, element interface{}) *
 	return cmd
 }
 
-// CFCompact compacts a Cuckoo filter by moving items into earlier sub-filters
-// and freeing the sub-filters left empty. Useful after many CF.DEL calls.
-// For more information - https://redis.io/commands/cf.compact/
+// CFCompact compacts a Cuckoo filter: it moves items into earlier sub-filters
+// and frees the sub-filters left empty. CF.DEL compacts automatically but stops
+// at the first sub-filter it cannot empty; CF.COMPACT tries all of them.
+// cmd: CF.COMPACT key
 func (c cmdable) CFCompact(ctx context.Context, key string) *StatusCmd {
 	args := []interface{}{"CF.COMPACT", key}
 	cmd := NewStatusCmd(ctx, args...)
