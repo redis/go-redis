@@ -558,15 +558,18 @@ func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacit
 // maximum number of iterations and expansion rate.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
-	args := []interface{}{"CF.RESERVE", key, options.Capacity}
-	if options.BucketSize != 0 {
-		args = append(args, "BUCKETSIZE", options.BucketSize)
-	}
-	if options.MaxIterations != 0 {
-		args = append(args, "MAXITERATIONS", options.MaxIterations)
-	}
-	if options.Expansion != 0 {
-		args = append(args, "EXPANSION", options.Expansion)
+	args := []interface{}{"CF.RESERVE", key}
+	if options != nil {
+		args = append(args, options.Capacity)
+		if options.BucketSize != 0 {
+			args = append(args, "BUCKETSIZE", options.BucketSize)
+		}
+		if options.MaxIterations != 0 {
+			args = append(args, "MAXITERATIONS", options.MaxIterations)
+		}
+		if options.Expansion != 0 {
+			args = append(args, "EXPANSION", options.Expansion)
+		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)

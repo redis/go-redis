@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -89,5 +90,48 @@ func TestBFInfoCmdSingleUnknownAttributeStillErrors(t *testing.T) {
 	rd := proto.NewReader(strings.NewReader("*1\r\n:1\r\n"))
 	if err := cmd.readReply(rd); err == nil {
 		t.Fatal("readReply() = nil, want error for unknown attribute")
+	}
+}
+
+// A nil options pointer means "no options", as in BFReserveWithArgs: the
+// command is still built and the server reports what is missing, instead of
+// the client dereferencing the pointer and panicking.
+func TestCFReserveWithArgsNilOptions(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		options *CFReserveOptions
+		want    []interface{}
+	}{
+		{
+			name: "nil_options",
+			want: []interface{}{"CF.RESERVE", "cf"},
+		},
+		{
+			name:    "capacity",
+			options: &CFReserveOptions{Capacity: 1000},
+			want:    []interface{}{"CF.RESERVE", "cf", int64(1000)},
+		},
+		{
+			name:    "all_options",
+			options: &CFReserveOptions{Capacity: 1000, BucketSize: 2, MaxIterations: 20, Expansion: 1},
+			want: []interface{}{
+				"CF.RESERVE", "cf", int64(1000),
+				"BUCKETSIZE", int64(2),
+				"MAXITERATIONS", int64(20),
+				"EXPANSION", int64(1),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).CFReserveWithArgs(ctx, "cf", tt.options)
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
 	}
 }
