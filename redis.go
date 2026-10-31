@@ -1471,16 +1471,6 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	c.releaseConnToPool(ctx, c.connPool, cn, err)
 }
 
-// connServingEndpoint returns the logical dial/handoff endpoint recorded on cn
-// (hostname:port), or empty when none is set. Does not touch RemoteAddr and
-// allocates nothing on the hot path.
-func connServingEndpoint(cn *pool.Conn) string {
-	if cn == nil {
-		return ""
-	}
-	return cn.ServingEndpoint()
-}
-
 // errWithServingEndpoint wraps a MOVED/ASK (or other) error with the logical
 // endpoint of the connection that produced it. Cluster redirect resolution
 // prefers this over Options.Addr after a maintenance-notification handoff
