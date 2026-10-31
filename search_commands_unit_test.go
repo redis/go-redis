@@ -768,3 +768,78 @@ func TestDropIndexBuilderDeleteDocs(t *testing.T) {
 		t.Fatal("expected DeleteDocs to be true")
 	}
 }
+
+// A nil options pointer means "no options", as in BFReserveWithArgs,
+// FTAggregateWithArgs and every other "*WithArgs" helper. These two used to
+// dereference it and panic.
+
+func TestFTExplainWithArgsNilOptions(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		options *FTExplainOptions
+		want    []interface{}
+	}{
+		{
+			name: "nil_options_use_the_default_dialect",
+			want: []interface{}{"FT.EXPLAIN", "idx", "@a:1", "DIALECT", 2},
+		},
+		{
+			name:    "empty_options_use_the_default_dialect",
+			options: &FTExplainOptions{},
+			want:    []interface{}{"FT.EXPLAIN", "idx", "@a:1", "DIALECT", 2},
+		},
+		{
+			name:    "dialect",
+			options: &FTExplainOptions{Dialect: "3"},
+			want:    []interface{}{"FT.EXPLAIN", "idx", "@a:1", "DIALECT", "3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).FTExplainWithArgs(ctx, "idx", "@a:1", tt.options)
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
+func TestFTSynUpdateWithArgsNilOptions(t *testing.T) {
+	ctx := context.Background()
+	terms := []interface{}{"a", "b"}
+
+	tests := []struct {
+		name    string
+		options *FTSynUpdateOptions
+		want    []interface{}
+	}{
+		{
+			name: "nil_options_skip_the_scan_flag_only",
+			want: []interface{}{"FT.SYNUPDATE", "idx", "g1", "a", "b"},
+		},
+		{
+			name:    "empty_options_skip_the_scan_flag_only",
+			options: &FTSynUpdateOptions{},
+			want:    []interface{}{"FT.SYNUPDATE", "idx", "g1", "a", "b"},
+		},
+		{
+			name:    "skip_initial_scan",
+			options: &FTSynUpdateOptions{SkipInitialScan: true},
+			want:    []interface{}{"FT.SYNUPDATE", "idx", "g1", "SKIPINITIALSCAN", "a", "b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).FTSynUpdateWithArgs(ctx, "idx", "g1", tt.options, terms)
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}

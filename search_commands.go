@@ -1795,6 +1795,9 @@ func (c cmdable) FTExplain(ctx context.Context, index string, query string) *Str
 // For more information, please refer to the Redis documentation:
 // [FT.EXPLAIN]: (https://redis.io/commands/ft.explain/)
 func (c cmdable) FTExplainWithArgs(ctx context.Context, index string, query string, options *FTExplainOptions) *StringCmd {
+	if options == nil {
+		options = &FTExplainOptions{}
+	}
 	args := []interface{}{"FT.EXPLAIN", index, query}
 	if options.Dialect != "" {
 		args = append(args, "DIALECT", options.Dialect)
@@ -3849,6 +3852,9 @@ func (c cmdable) FTSynUpdate(ctx context.Context, index string, synGroupId inter
 // For more information, please refer to the Redis documentation:
 // [FT.SYNUPDATE]: (https://redis.io/commands/ft.synupdate/)
 func (c cmdable) FTSynUpdateWithArgs(ctx context.Context, index string, synGroupId interface{}, options *FTSynUpdateOptions, terms []interface{}) *StatusCmd {
+	if options == nil {
+		options = &FTSynUpdateOptions{}
+	}
 	args := []interface{}{"FT.SYNUPDATE", index, synGroupId}
 	if options.SkipInitialScan {
 		args = append(args, "SKIPINITIALSCAN")
