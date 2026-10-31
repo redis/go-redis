@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -40,7 +41,7 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 	case *redis.Ring:
 		instrument := func(rdb *redis.Client) {
 			opt := rdb.Options()
-			opts = addServerAttributes(opts, opt.Addr)
+			opts := addServerAttributes(slices.Clone(opts), opt.Addr)
 			connString := formatDBConnString(opt.Network, opt.Addr)
 			rdb.AddHook(newTracingHook(connString, opts...))
 		}
