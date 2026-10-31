@@ -1082,8 +1082,26 @@ func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error
 	return addresses[rand.Intn(len(addresses))], nil
 }
 
+func (c *sentinelFailover) sharedLookupTimeout() time.Duration {
+	if c.opt == nil {
+		return 10 * time.Second
+	}
+	dial := c.opt.DialTimeout
+	if dial == 0 {
+		dial = 5 * time.Second
+	}
+	read := c.opt.ReadTimeout
+	switch {
+	case read < 0:
+		read = 0
+	case read == 0:
+		read = 5 * time.Second
+	}
+	return dial + read
+}
+
 func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
-	v, err, _ := c.masterAddrFlight.Do(ctx, "master", func(shared context.Context) (interface{}, error) {
+	v, err := c.masterAddrFlight.Do(ctx, "master", c.sharedLookupTimeout(), func(shared context.Context) (interface{}, error) {
 		return c.masterAddrOnce(shared)
 	})
 	if err != nil {
@@ -1195,7 +1213,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	if useDisconnected {
 		key = "replicas-disconnected"
 	}
-	v, err, _ := c.replicaAddrsFlight.Do(ctx, key, func(shared context.Context) (interface{}, error) {
+	v, err := c.replicaAddrsFlight.Do(ctx, key, c.sharedLookupTimeout(), func(shared context.Context) (interface{}, error) {
 		return c.replicaAddrsOnce(shared, useDisconnected)
 	})
 	if err != nil {
