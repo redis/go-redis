@@ -2576,6 +2576,10 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
+		// Carry the held connection's logical endpoint with hostless MOVED/ASK
+		// the same way process() does, so ClusterClient ASK retries and
+		// Pipelined redirects survive maintenance handoffs (#4233 Bugbot).
+		err = wrapServingEndpoint(cn, err)
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
 			setCmdsErr(cmds[i+1:], err)

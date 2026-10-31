@@ -355,10 +355,16 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		} else {
 			lastErr = node.Client.Process(ctx, cmd)
 		}
-		servingEp := ""
+		// Walk wrappers the same way process/Watch do so a hook-wrapped
+		// MOVED/ASK still carries the handoff host (#4233 Bugbot).
+		servingEp := servingEndpointFromErr(lastErr)
 		if e, ok := lastErr.(*errWithServingEndpoint); ok {
-			servingEp = e.endpoint
 			lastErr = e.err
+		} else if e, ok := lastErr.(*redirectFromNodeError); ok {
+			lastErr = e.err
+			if e.endpoint != "" {
+				servingEp = e.endpoint
+			}
 		}
 		if lastErr == nil {
 			return nil

@@ -314,3 +314,43 @@ func TestClassifyExecErrorCarriesServingEndpoint(t *testing.T) {
 		t.Fatalf("EXEC MOVED redirectAddr = %q, want serving host", got)
 	}
 }
+
+
+// wrapServingEndpoint attaches the held connection endpoint so pipeline /
+// ASK-retry Exec errors stay usable after maintenance handoff (#4233 Bugbot).
+func TestWrapServingEndpointOnHostlessRedirect(t *testing.T) {
+	cn := pool.NewConn(nil)
+	cn.SetServingEndpoint("10.0.0.9:7000")
+	moved := proto.ParseErrorReply([]byte("-MOVED 1 :6380"))
+	wrapped := wrapServingEndpoint(cn, moved)
+	if got := servingEndpointFromErr(wrapped); got != "10.0.0.9:7000" {
+		t.Fatalf("servingEndpointFromErr = %q, want 10.0.0.9:7000", got)
+	}
+	movedOK, askOK, addr := isMovedError(wrapped)
+	if !movedOK || askOK || addr != ":6380" {
+		t.Fatalf("isMovedError = moved=%v ask=%v addr=%q", movedOK, askOK, addr)
+	}
+	ask := proto.ParseErrorReply([]byte("-ASK 1 :6380"))
+	askWrapped := wrapServingEndpoint(cn, ask)
+	if got := servingEndpointFromErr(askWrapped); got != "10.0.0.9:7000" {
+		t.Fatalf("ASK servingEndpointFromErr = %q", got)
+	}
+}
+
+// executeMultiSlotCommand must walk wrappers via servingEndpointFromErr, not a
+// top-level type assert, so a hook-wrapped MOVED still carries the handoff host.
+func TestServingEndpointFromErrWalksUnwrap(t *testing.T) {
+	inner := &errWithServingEndpoint{
+		endpoint: "10.0.0.9:7000",
+		err:      proto.ParseErrorReply([]byte("-MOVED 1 :6380")),
+	}
+	// stdlib errors.As only walks Unwrap; emulate a process hook.
+	var chained error = inner
+	if got := servingEndpointFromErr(chained); got != "10.0.0.9:7000" {
+		t.Fatalf("direct = %q", got)
+	}
+	chained = fmt.Errorf("hook: %w", inner)
+	if got := servingEndpointFromErr(chained); got != "10.0.0.9:7000" {
+		t.Fatalf("fmt-wrapped = %q", got)
+	}
+}
