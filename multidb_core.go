@@ -355,6 +355,33 @@ type multidbCore struct {
 	// if a callback called Close() (close() waits on that goroutine via
 	// wg.Wait). Like the per-db cbq, close() does not wait on this queue.
 	cbq cbq.CallbackQueue
+
+	// ready holds queued user callbacks until NewMultiDBClient returns, so a
+	// transition during construction (startup breaker reconcile, initial
+	// selection) does not reach a callback before the caller has the client.
+	// readyOK is false when construction failed: no client is returned, and
+	// the held callbacks are dropped. nil when the core was not built by
+	// NewMultiDBClient (internal tests): callbacks are not held.
+	ready   chan struct{}
+	readyOK atomic.Bool
+}
+
+// awaitReady blocks a queued callback until construction finished, and
+// reports whether the client was returned. It runs on a callback queue
+// goroutine, never under a lock.
+func (c *multidbCore) awaitReady() bool {
+	if c.ready == nil {
+		return true
+	}
+	<-c.ready
+	return c.readyOK.Load()
+}
+
+// markReady releases the callbacks held by awaitReady. ok reports whether
+// NewMultiDBClient returned the client.
+func (c *multidbCore) markReady(ok bool) {
+	c.readyOK.Store(ok)
+	close(c.ready)
 }
 
 // multidbEpoch anchors the core's clock for deadlines that must survive a
@@ -366,6 +393,10 @@ var multidbEpoch = time.Now()
 // multidbNowNano returns the monotonic clock in nanoseconds since
 // multidbEpoch. A variable so tests can drive the clock without sleeping.
 var multidbNowNano = func() int64 { return int64(time.Since(multidbEpoch)) }
+
+// multidbAfterStartupReconcile runs right after startup sets the breakers
+// from the final probe pass. Test seam: nil in production.
+var multidbAfterStartupReconcile func()
 
 func newMultidbCore(opts *MultiDBOptions) *multidbCore {
 	core := &multidbCore{
@@ -471,7 +502,7 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 			from, to := oldState.String(), newState.String()
 			id := dbRef.id
 			dbRef.cbq.Dispatch(func() {
-				if dbRef.removed.Load() {
+				if !c.awaitReady() || dbRef.removed.Load() {
 					return
 				}
 				stateCallback(id, from, to)
@@ -734,6 +765,9 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 			continue
 		}
 		db.cb.ForceOpen()
+	}
+	if multidbAfterStartupReconcile != nil {
+		multidbAfterStartupReconcile() // test seam: nil in production
 	}
 
 	// Select the highest-weight database among those that passed the final
@@ -1663,7 +1697,7 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	if reason == failoverReasonAutomatic || reason == failoverReasonManual {
 		if c.opts.OnFailover != nil {
 			c.cbq.Dispatch(func() {
-				if c.closed.Load() {
+				if !c.awaitReady() || c.closed.Load() {
 					return
 				}
 				c.opts.OnFailover(cbCtx, from, to)
@@ -1672,7 +1706,7 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	}
 	if c.opts.OnActiveDatabaseChanged != nil {
 		c.cbq.Dispatch(func() {
-			if c.closed.Load() {
+			if !c.awaitReady() || c.closed.Load() {
 				return
 			}
 			c.opts.OnActiveDatabaseChanged(from, to)

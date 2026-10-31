@@ -1336,6 +1336,43 @@ func TestMultiDBInitDeadlineBeforeVerdictsNotPermanent(t *testing.T) {
 	}
 }
 
+// The startup breaker reconcile opens the breaker of a member that failed
+// its probe while NewMultiDBClient is still running. The callbacks may call
+// control operations on the client, so they must not run before it returns.
+func TestMultiDBStartupCallbacksWaitForConstruction(t *testing.T) {
+	var reconciled atomic.Int64
+	multidbAfterStartupReconcile = func() {
+		// Leave a queued callback time to run before construction returns.
+		time.Sleep(100 * time.Millisecond)
+		reconciled.Store(time.Now().UnixNano())
+	}
+	defer func() { multidbAfterStartupReconcile = nil }()
+
+	ran := make(chan int64, 4)
+	mdb, err := NewMultiDBClient(context.Background(), &MultiDBOptions{
+		HealthCheckInterval:   time.Hour,
+		AutoFallbackInterval:  -1,
+		OnCircuitStateChanged: func(int, string, string) { ran <- time.Now().UnixNano() },
+		Clients: []MultiDBClientConfig{
+			{Options: &Options{Addr: "127.0.0.1:1"}, Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}},
+			{Options: &Options{Addr: "127.0.0.1:2"}, Weight: 0.5, HealthChecks: []MultiDBHealthCheck{downCheck{}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+
+	select {
+	case at := <-ran:
+		if at < reconciled.Load() {
+			t.Fatal("OnCircuitStateChanged ran before NewMultiDBClient returned")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnCircuitStateChanged never ran for the member that failed its startup probe")
+	}
+}
+
 // slowFailCheck passes until armed, then waits delay and fails.
 type slowFailCheck struct {
 	oneProbe

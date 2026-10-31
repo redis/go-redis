@@ -667,7 +667,7 @@ type MultiDBClient struct {
 // ProbeTargetBeforeFailover use one probe per check.
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
-func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient, error) {
+func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (_ *MultiDBClient, retErr error) {
 	if opts == nil {
 		return nil, errors.New("redis: multidb: nil options")
 	}
@@ -709,6 +709,9 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	}
 
 	core := newMultidbCore(opts)
+	// Hold the user callbacks until this returns; drop them if it fails.
+	core.ready = make(chan struct{})
+	defer func() { core.markReady(retErr == nil) }()
 	for i := range opts.Clients {
 		cfg := &opts.Clients[i]
 		if err := cfg.validate(); err != nil {

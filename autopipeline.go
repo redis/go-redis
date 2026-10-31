@@ -2229,7 +2229,11 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	if ap.mdbFD != nil {
 		// MultiDB full-duplex: route to the active member's FD child (or divert
 		// to MultiDB's normal path); the router honors the face contract.
-		return ap.mdbFD.submit(ctx, cmd)
+		f := ap.mdbFD.submit(ctx, cmd)
+		if f.batch == completedBatch {
+			resetAutoPipelineCommand(cmd)
+		}
+		return f
 	}
 	if ap.clusterFD != nil {
 		// Cluster full-duplex: route to the per-node FD child that owns this
