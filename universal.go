@@ -33,6 +33,8 @@ type UniversalOptions struct {
 	Protocol int
 	Username string
 	Password string
+	// AuthEmptyPassword: see Options.AuthEmptyPassword.
+	AuthEmptyPassword bool
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -53,6 +55,8 @@ type UniversalOptions struct {
 
 	SentinelUsername string
 	SentinelPassword string
+	// SentinelAuthEmptyPassword: see FailoverOptions.SentinelAuthEmptyPassword.
+	SentinelAuthEmptyPassword bool
 
 	MaxRetries      int
 	MinRetryBackoff time.Duration
@@ -108,11 +112,12 @@ type UniversalOptions struct {
 
 	// PipelineReadBufferSize / PipelineWriteBufferSize size the dedicated pipeline
 	// pool's per-connection buffers. PipelinePoolSize sizes that pool; a negative
-	// value opts out of the dedicated pipeline pool. See the same fields on
-	// Options for details.
+	// value opts out of the dedicated pipeline pool. PipelineMinIdleConns keeps
+	// idle connections in it. See the same fields on Options for details.
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
+	PipelineMinIdleConns    int
 
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
@@ -187,22 +192,44 @@ type UniversalOptions struct {
 	MaintNotificationsConfig *maintnotifications.Config
 
 	// ClientSideCacheConfig enables client-side caching when NewUniversalClient
-	// selects a standalone Client. See Options.ClientSideCacheConfig.
+	// selects a standalone Client or ClusterClient. Cluster limits apply per node.
+	// Sentinel-backed ClusterClients are supported; single-node failover clients
+	// do not support CSC.
+	// See Options.ClientSideCacheConfig.
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
+	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
+	// The zero value is TrackingModePlain. An invalid value logs a warning and
+	// disables CSC at construction. Requires an enabled client-side cache.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheTrackingMode TrackingMode
+
+	// ClientSideCacheable selects eligible unmarked calls for caching. It also
+	// applies with a custom Cache. See CacheablePredicate for its callback contract.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheable CacheablePredicate
+
 	// ClientSideCache supplies an explicit cache when NewUniversalClient selects
 	// a standalone Client. See Options.ClientSideCache.
+	// It is not distributed to Cluster nodes; use ClusterOptions.NewClient for
+	// independent custom node caches.
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCache Cache
 
-	// ClientSideCacheStrategy selects the standalone client's invalidation
+	// ClientSideCacheStrategy selects each node client's invalidation
 	// strategy. See Options.ClientSideCacheStrategy.
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
+
+	// CommandMetadata configures shared metadata for standalone and cluster clients.
+	// See Options.CommandMetadata and ClusterOptions.CommandMetadata.
+	//
+	// Experimental: this API may change in a minor release.
+	CommandMetadata *CommandMetadataConfig
 
 	// ClientSideCacheRefreshOnInvalidate re-fetches every cached entry of an
 	// invalidated key as soon as its invalidation arrives, whether or not it was
@@ -231,14 +258,22 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 	}
 
 	return &ClusterOptions{
-		Addrs:      o.Addrs,
-		ClientName: o.ClientName,
-		Dialer:     o.Dialer,
-		OnConnect:  o.OnConnect,
+		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    o.ClientSideCacheable,
+		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
+		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
+		ClientSideCacheInvalidationBatchWindow: o.ClientSideCacheInvalidationBatchWindow,
+		Addrs:                                  o.Addrs,
+		ClientName:                             o.ClientName,
+		Dialer:                                 o.Dialer,
+		OnConnect:                              o.OnConnect,
 
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
@@ -267,6 +302,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PipelineReadBufferSize:  o.PipelineReadBufferSize,
 		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
 		PipelinePoolSize:        o.PipelinePoolSize,
+		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
@@ -289,6 +325,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		MaintNotificationsConfig:  o.MaintNotificationsConfig,
+		CommandMetadata:           o.CommandMetadata,
 	}
 }
 
@@ -299,9 +336,16 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 	}
 
 	return &FailoverOptions{
-		SentinelAddrs: o.Addrs,
-		MasterName:    o.MasterName,
-		ClientName:    o.ClientName,
+		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    o.ClientSideCacheable,
+		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
+		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
+		ClientSideCacheInvalidationBatchWindow: o.ClientSideCacheInvalidationBatchWindow,
+		SentinelAddrs:                          o.Addrs,
+		MasterName:                             o.MasterName,
+		ClientName:                             o.ClientName,
 
 		Dialer:    o.Dialer,
 		OnConnect: o.OnConnect,
@@ -310,12 +354,14 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
 
-		SentinelUsername: o.SentinelUsername,
-		SentinelPassword: o.SentinelPassword,
+		SentinelUsername:          o.SentinelUsername,
+		SentinelPassword:          o.SentinelPassword,
+		SentinelAuthEmptyPassword: o.SentinelAuthEmptyPassword,
 
 		RouteByLatency:          o.RouteByLatency,
 		RouteByLatencyTolerance: o.RouteByLatencyTolerance,
@@ -339,6 +385,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PipelineReadBufferSize:  o.PipelineReadBufferSize,
 		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
 		PipelinePoolSize:        o.PipelinePoolSize,
+		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
@@ -359,8 +406,10 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
 		AutoPipelineOptions:       o.AutoPipelineOptions,
+		FailingTimeoutSeconds:     o.FailingTimeoutSeconds,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
+		CommandMetadata:           o.CommandMetadata,
 		// Note: MaintNotificationsConfig not supported for FailoverOptions
 	}
 }
@@ -382,6 +431,7 @@ func (o *UniversalOptions) Simple() *Options {
 		Protocol:                     o.Protocol,
 		Username:                     o.Username,
 		Password:                     o.Password,
+		AuthEmptyPassword:            o.AuthEmptyPassword,
 		CredentialsProvider:          o.CredentialsProvider,
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
@@ -404,6 +454,7 @@ func (o *UniversalOptions) Simple() *Options {
 		PipelineReadBufferSize:  o.PipelineReadBufferSize,
 		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
 		PipelinePoolSize:        o.PipelinePoolSize,
+		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
@@ -418,16 +469,19 @@ func (o *UniversalOptions) Simple() *Options {
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIdentity:           o.DisableIdentity,
-		DisableIndentity:          o.DisableIndentity,
-		IdentitySuffix:            o.IdentitySuffix,
-		AutoPipelineOptions:       o.AutoPipelineOptions,
-		UnstableResp3:             o.UnstableResp3,
-		PushNotificationProcessor: o.PushNotificationProcessor,
-		MaintNotificationsConfig:  o.MaintNotificationsConfig,
-		ClientSideCacheConfig:     o.ClientSideCacheConfig,
-		ClientSideCache:           o.ClientSideCache,
-		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
+		DisableIdentity:             o.DisableIdentity,
+		DisableIndentity:            o.DisableIndentity,
+		IdentitySuffix:              o.IdentitySuffix,
+		AutoPipelineOptions:         o.AutoPipelineOptions,
+		UnstableResp3:               o.UnstableResp3,
+		PushNotificationProcessor:   o.PushNotificationProcessor,
+		MaintNotificationsConfig:    o.MaintNotificationsConfig,
+		ClientSideCacheConfig:       o.ClientSideCacheConfig,
+		ClientSideCacheTrackingMode: o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:         o.ClientSideCacheable,
+		ClientSideCache:             o.ClientSideCache,
+		ClientSideCacheStrategy:     o.ClientSideCacheStrategy,
+		CommandMetadata:             o.CommandMetadata,
 
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,

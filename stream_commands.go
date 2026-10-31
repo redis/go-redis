@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -92,7 +93,7 @@ type StreamCmdable interface {
 //   - IdempotentID: A unique identifier for the message (used with IDMP)
 //   - IdempotentAuto: If true, Redis will auto-generate an idempotent ID based on message content (IDMPAUTO)
 //
-// ProducerID and IdempotentID are mutually exclusive with IdempotentAuto.
+// IdempotentID is mutually exclusive with IdempotentAuto.
 // When using idempotent production, ID must be "*" or empty.
 type XAddArgs struct {
 	Stream     string
@@ -226,16 +227,30 @@ func (c cmdable) XRevRangeN(ctx context.Context, stream, start, stop string, cou
 	return cmd
 }
 
+// XReadArgs holds the arguments for XRead.
+//
+// Streams lists the stream keys. Set ID to read every stream from the same
+// ID, or IDs to read each stream from its own ID, in the same order as
+// Streams. If IDs is set and its length differs from Streams, XRead returns
+// an error without sending the command. With ID and IDs both empty, Streams
+// holds the keys followed by one ID per stream, e.g. stream1 stream2 id1 id2.
 type XReadArgs struct {
-	Streams  []string // list of streams and ids, e.g. stream1 stream2 id1 id2
+	Streams  []string // stream keys, optionally followed by one ID per stream
 	Count    int64
 	MaxCount int64 // cumulative cap on total entries across all streams (Redis >= 8.10)
 	MaxSize  int64 // soft cumulative cap on total reply size in bytes across all streams (Redis >= 8.10)
 	Block    time.Duration
-	ID       string
+	ID       string   // ID for every stream; ignored when IDs is set
+	IDs      []string // one ID per stream, in Streams order; takes precedence over ID
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
+	if len(a.IDs) > 0 && len(a.IDs) != len(a.Streams) {
+		cmd := NewXStreamSliceCmd(ctx)
+		cmd.SetErr(errors.New("redis: XRead IDs length must match Streams length"))
+		return cmd
+	}
+
 	args := make([]interface{}, 0, 2*len(a.Streams)+10)
 	args = append(args, "xread")
 
@@ -263,7 +278,12 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	for _, s := range a.Streams {
 		args = append(args, s)
 	}
-	if a.ID != "" {
+	switch {
+	case len(a.IDs) > 0:
+		for _, id := range a.IDs {
+			args = append(args, id)
+		}
+	case a.ID != "":
 		for range a.Streams {
 			args = append(args, a.ID)
 		}

@@ -524,6 +524,66 @@ func TestFTCreateHNSWRerank_Args(t *testing.T) {
 	}
 }
 
+// TestFTCreateSortableAfterFieldOptions verifies that SORTABLE, UNF and
+// NOINDEX follow the type-specific field options. FT.CREATE reads no
+// type-specific option after them, so "TEXT SORTABLE WEIGHT 2" fails.
+func TestFTCreateSortableAfterFieldOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema *FieldSchema
+		want   []interface{}
+	}{
+		{
+			name: "text",
+			schema: &FieldSchema{
+				FieldName: "t", FieldType: SearchFieldTypeText,
+				NoStem: true, PhoneticMatcher: "dm:en", Weight: 2, WithSuffixtrie: true,
+				IndexEmpty: true, IndexMissing: true, Sortable: true, UNF: true,
+			},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "t", "TEXT", "NOSTEM", "PHONETIC", "dm:en",
+				"WEIGHT", float64(2), "WITHSUFFIXTRIE", "INDEXEMPTY", "INDEXMISSING",
+				"SORTABLE", "UNF",
+			},
+		},
+		{
+			name: "tag",
+			schema: &FieldSchema{
+				FieldName: "g", FieldType: SearchFieldTypeTag,
+				Separator: ";", CaseSensitive: true, Sortable: true, NoIndex: true,
+			},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "g", "TAG", "SEPARATOR", ";", "CASESENSITIVE",
+				"SORTABLE", "NOINDEX",
+			},
+		},
+		{
+			name: "numeric",
+			schema: &FieldSchema{
+				FieldName: "n", FieldType: SearchFieldTypeNumeric,
+				IndexMissing: true, Sortable: true,
+			},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "n", "NUMERIC", "INDEXMISSING", "SORTABLE",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &mockCmdable{}
+			c := m.asCmdable()
+			cmd := c.FTCreate(context.Background(), "idx", nil, tt.schema)
+			if cmd.Err() != nil {
+				t.Fatalf("unexpected error: %v", cmd.Err())
+			}
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
 // TestFTCreateHNSWCompression_Args verifies the COMPRESSION and
 // TRAINING_THRESHOLD attributes (Redis 8.12+, scalar-quantized HNSW) are
 // emitted as key-value pairs counted in the attribute-count token.
@@ -696,5 +756,15 @@ func TestParseFTHybridWarnings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDropIndexBuilderDeleteDocs(t *testing.T) {
+	client := NewClient(&Options{Addr: "localhost:6379"})
+	defer client.Close()
+
+	builder := client.NewDropIndexBuilder(context.Background(), "idx").DeleteDocs()
+	if builder.options == nil || !builder.options.DeleteDocs {
+		t.Fatal("expected DeleteDocs to be true")
 	}
 }

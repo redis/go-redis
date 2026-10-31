@@ -166,16 +166,16 @@ func TestCSCRefreshChunkEnd(t *testing.T) {
 	// Reply budget splits the chunk: three 15KiB values fit two per chunk
 	// under the 32KiB reply budget (request bytes tiny).
 	big := []cscRefreshTarget{mk("get:a", 15<<10), mk("get:b", 15<<10), mk("get:c", 15<<10)}
-	if got := cscRefreshChunkEnd(big, 0, 0, 1<<20); got != 2 {
+	if got := cscRefreshChunkEnd(big, 0, 0, 1<<20, 0); got != 2 {
 		t.Fatalf("reply budget: end = %d, want 2 (two 15KiB replies fit, third exceeds 32KiB)", got)
 	}
-	if got := cscRefreshChunkEnd(big, 2, 0, 1<<20); got != 3 {
+	if got := cscRefreshChunkEnd(big, 2, 0, 1<<20, 0); got != 3 {
 		t.Fatalf("tail: end = %d, want 3", got)
 	}
 
 	// A single oversized value still goes (progress guarantee).
 	huge := []cscRefreshTarget{mk("get:x", 1<<20), mk("get:y", 1)}
-	if got := cscRefreshChunkEnd(huge, 0, 0, 1<<20); got != 1 {
+	if got := cscRefreshChunkEnd(huge, 0, 0, 1<<20, 0); got != 1 {
 		t.Fatalf("oversized first: end = %d, want 1 (always include the first target)", got)
 	}
 
@@ -185,7 +185,7 @@ func TestCSCRefreshChunkEnd(t *testing.T) {
 		longKey[i] = 'k'
 	}
 	keys := []cscRefreshTarget{mk(string(longKey), 0), mk(string(longKey), 0), mk(string(longKey), 0)}
-	if got := cscRefreshChunkEnd(keys, 0, 0, 150); got != 1 {
+	if got := cscRefreshChunkEnd(keys, 0, 0, 150, 0); got != 1 {
 		t.Fatalf("request budget: end = %d, want 1 (second 100B key exceeds 150B budget)", got)
 	}
 
@@ -194,7 +194,7 @@ func TestCSCRefreshChunkEnd(t *testing.T) {
 	for i := range many {
 		many[i] = mk("get:k", 1)
 	}
-	if got := cscRefreshChunkEnd(many, 0, 0, 1<<20); got != cscRefreshBatchMax {
+	if got := cscRefreshChunkEnd(many, 0, 0, 1<<20, 0); got != cscRefreshBatchMax {
 		t.Fatalf("count cap: end = %d, want %d", got, cscRefreshBatchMax)
 	}
 }

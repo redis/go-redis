@@ -1,5 +1,91 @@
 # Release Notes
 
+## Unreleased
+
+- **Connection handshake and `Options.Limiter`:** the handshake of a new
+  connection (`HELLO`, `AUTH`, `SELECT`, `CLIENT SETINFO`) no longer calls
+  `Limiter.Allow` per command. The command that dials pays one admission and
+  reports the handshake result once. A PubSub connection, a reconnect after a
+  maintenance handoff, and a fresh full-duplex session each pay one admission
+  for their handshake. Before, a circuit breaker in the half-open state spent
+  its probe budget on the handshake and never closed.
+- **Ephemeral connections with client-side caching:** with CSC active,
+  `EphemeralConn` now lazily dials a fresh, untracked connection. Session commands
+  are allowed without disrupting the parent cache, and reads always go to Redis.
+  The connection takes no `PoolSize` turn, does not support maintenance handoff,
+  and must be closed after use. Without CSC, idle-connection reuse is unchanged
+  ([#4174](https://github.com/redis/go-redis/pull/4174)).
+- **Connection-pool limits:** `MaxActiveConns` now counts all connections
+  registered with the pool (pooled, excess, and dedicated `NewConn` connections)
+  plus in-flight dial reservations. Previously, admission checked only the
+  pooled count (`poolSize`). Clients with this limit configured can now receive
+  `ErrPoolExhausted` from `NewConn`/`EphemeralConn` or during bursts that previously
+  exceeded the limit.
+- **Dial concurrency and prewarming:** `NewConn` now waits for the shared
+  `MaxConcurrentDials` limit and honors context cancellation while waiting. Idle
+  prewarming shares this limit without holding a pool turn while waiting for
+  dial capacity. Refill checks resume after foreground dials and successful
+  prewarm dials complete, and concurrent refill requests are preserved. These
+  pool-limit and prewarming changes apply to all clients using the pool, not
+  only CSC-enabled ephemeral sessions.
+
+- **Username without a password:** a `Username` with an empty `Password` again sends no `AUTH`, as before [#4161](https://github.com/redis/go-redis/pull/4161). Redis Enterprise and Redis Cloud databases with unauthenticated access can reject an empty password, so #4161 could break configs that set a username (e.g. `default`) without a password. Redis OSS accepts it. To authenticate an ACL user created with `nopass`, set `AuthEmptyPassword: true` (or `auth_empty_password=true` in the URL); for sentinel connections use `SentinelAuthEmptyPassword` (`sentinel_auth_empty_password=true`). The rule also applies to credentials from `CredentialsProvider`, `CredentialsProviderContext` and `StreamingCredentialsProvider` used when a connection is set up; re-authentication on a credentials refresh is unchanged. The client-side cache keeps a separate namespace for a username that sends no `AUTH`.
+- **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
+- **Struct scan on a bad field:** `Scan` on `HGETALL`/`HMGET` results used to stop at the first field that failed to decode, and with `HGETALL` the set of filled fields was random. It now sets every field it can decode and still returns an error: the one of the failing field with the smallest key for `HGETALL`, and the first failing argument for `HMGET`. A nil pointer field stays nil when its decode fails. Code that reuses the struct after an error will see more fields set ([#4136](https://github.com/redis/go-redis/pull/4136)).
+- Cluster routing shares command metadata with client-side caching for key
+  extraction and read-only status. Existing default routing and cluster-wide
+  `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers are preserved.
+  Install `NewCommandMetadataResolver()` or `client.NewDynamicResolver()` with
+  `SetCommandInfoResolver` to enable metadata-based fan-out and aggregation.
+  `CommandMetadata` configuration alone does not enable them. Cross-slot
+  fan-out is not atomic.
+- With metadata routing enabled, cross-slot `MGET` follows redirects for each
+  affected slot during resharding instead of returning a missing value for a
+  key that moved. Successful slot groups are not replayed.
+- Explicit pipelines and transactions retain node-local command execution;
+  ordered `AsyncAutoPipeline` rejects fan-out before dispatch. Same-slot
+  metadata commands remain batchable. Automatic fan-out is available through
+  the blocking face or unordered half-duplex mode. Existing direct helpers
+  and special routing retain their separate execution path.
+  `SCAN`, `INFO`, and
+  known diagnostics remain node-local. Single-slot raw commands and binary
+  marshaler values are accepted when no fan-out is needed.
+- Numeric sum/min/max fan-out preserves integer replies as exact `int64`
+  results, including raw `Do` results; integer overflow returns an error.
+  Aggregates containing floating-point replies return `float64`.
+- Resolved command key specifications take precedence over `SetFirstKeyPos`.
+  Missing snapshot commands retain the legacy key-position fallback; configure
+  `CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` for full
+  metadata. The default `CommandMetadataStatic` mode performs no network lookup
+  unless resolution reaches an explicitly installed `NewDynamicResolver`.
+  After activation, reconnects, topology changes and a configured refresh
+  interval also verify server identity in Static mode.
+- Embedded command wrappers retain raw-reply safety checks and receive typed
+  aggregate results through their promoted `SetVal` methods.
+- Metadata identity probes have bounded internal deadlines, including when
+  application socket timeouts are disabled. Waiting callers can cancel
+  independently of an ongoing refresh. Dynamic resolution waits for one initial
+  attempt; after failure or invalidation, commands use conservative metadata
+  immediately while background verification retries with backoff.
+- Cluster routing decisions are stored on commands without using commands as
+  map keys, and concurrent topology reloads share one in-flight load.
+- Topology loading prefers `CLUSTER SHARDS` and falls back to `CLUSTER SLOTS`
+  for unsupported commands or unusable replies, including missing or unknown
+  node health. Connection failures try another node without repeating `SLOTS`
+  on the failed connection.
+- Keyless routing prefers healthy nodes, but temporary local failure/loading
+  markers no longer exclude every candidate. Nodes explicitly marked offline
+  by topology remain excluded. `ErrClusterTopologyUnhealthy` supports
+  `errors.Is` checks. Unknown response policies return an error.
+- Fan-out responses containing `MOVED` or `ASK` refresh topology for later
+  commands without replaying already successful operations.
+- `FT.CURSOR READ` is no longer automatically retried after a lost reply, on
+  standalone and cluster clients, because the server may already have advanced
+  the cursor. Cursor ownership and reply-parsing changes are deferred to a
+  separate PR.
+- **Per-node TLS verification for cluster URLs:** `ParseClusterURL` accepts `tls_verify_node_host=true` on `rediss://` URLs. The parameter clears `TLSConfig.ServerName`, so each node is verified against the host it is dialed at and not against the host of the first URL. Use it when each node has a certificate for its own host. The default is unchanged: every node is verified against the host of the first URL, so clusters that use one certificate and announce their nodes by IP continue to work. `rediss://` cluster URLs now also set `MinVersion: tls.VersionTLS12`, as `ParseURL` and `ParseFailoverURL` do ([#4145](https://github.com/redis/go-redis/pull/4145)).
+- **Failover client with `StreamingCredentialsProvider`:** `NewFailoverClient` now creates the streaming credentials manager, so new connections no longer panic in `initConn` ([#4182](https://github.com/redis/go-redis/pull/4182)).
+
 # 9.23.0 (2026-10-05)
 
 This is a minor release. It contains everything from 9.23.0-beta.1, so these notes cover the full 9.22.0 → 9.23.0 upgrade. The release adds:

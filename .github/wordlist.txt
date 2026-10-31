@@ -11,6 +11,7 @@ runnable
 Autoloading
 backend
 backends
+batchable
 behaviour
 CAS
 ClickHouse
@@ -51,6 +52,7 @@ rebalanced
 rebalancing
 redis
 Redis
+resolvers
 RocksDB
 runtime
 SHA
@@ -88,10 +90,12 @@ oldstable
 backoff
 BCAST
 cacheable
+coalescer
 CLI
 conns
 CSC
 DBs
+DDL
 goroutine
 goroutines
 PerConnection
@@ -130,3 +134,6 @@ fetch's
 loopback
 autopipeliner
 autopipeliner's
+AutoPipeline's
+uncached
+failback

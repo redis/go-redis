@@ -9,7 +9,7 @@ so there is no request-response wait between batches.
 
 This example uses the blocking face (`AutoPipeline`): each call blocks until
 its reply lands, like a plain client. For the async face, and for several
-connections (`NumShards > 1`), see
+connections (`FullDuplexPipes > 1`), see
 [`autopipeline-fullduplex-async`](../autopipeline-fullduplex-async).
 
 ## Run

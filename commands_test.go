@@ -83,7 +83,18 @@ var _ = Describe("Commands", func() {
 			Expect(cmds[0].Err().Error()).To(authErr)
 
 			stats := rawClient.PoolStats()
-			if stats.PipelineStats != nil {
+			if stats.PipelineStats != nil && isFullDuplexSubject() {
+				// Full-duplex keeps a warm spare in the pipeline pool, refilled
+				// by a background dial, so whether a lease hits the spare or
+				// dials races that refill, and the held session can carry the
+				// second Pipelined without a pool operation. Pin the intent
+				// instead: the pipelines ran on the pipeline pool, and the main
+				// pool served only the BeforeEach FlushDB.
+				Expect(stats.PipelineStats.Hits + stats.PipelineStats.Misses).To(BeNumerically(">=", 1))
+				Expect(stats.PipelineStats.Timeouts).To(Equal(uint32(0)))
+				Expect(stats.Hits).To(Equal(uint32(0)))
+				Expect(stats.Misses).To(Equal(uint32(1)))
+			} else if stats.PipelineStats != nil {
 				// The autopipeline subject faces create the dedicated pipeline
 				// pool lazily, so the two Pipelined calls above ran there: the
 				// first dialed (miss), the second reused (hit). The main pool
@@ -410,11 +421,10 @@ var _ = Describe("Commands", func() {
 				pipe.ClientSetInfo(ctx, libInfo)
 			}).To(Panic())
 			// Test setting the default options for libName, libName suffix and libVer.
-			// CLIENT SETINFO is per-connection state, so read CLIENT INFO through the
-			// same pipeline path that issued the SETINFOs above: when the client has a
-			// dedicated pipeline pool (the autopipeline subject faces create one
-			// lazily), those ran on a pipeline-pool connection and rawClient.ClientInfo
-			// would inspect a different, main-pool connection.
+			// CLIENT SETINFO is per-connection state. Set the libName and read
+			// CLIENT INFO in the same Exec, so both run on one connection; separate
+			// Execs are not guaranteed to share one.
+			pipe.ClientSetInfo(ctx, redis.WithLibraryName(libName))
 			infoCmd := pipe.ClientInfo(ctx)
 			_, err = pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -3563,9 +3573,7 @@ var _ = Describe("Commands", func() {
 				"value1",
 				"ARGS",
 				"arg1",
-				"ARGS",
 				"arg2",
-				"ARGS",
 				3,
 			}
 
@@ -4188,8 +4196,9 @@ var _ = Describe("Commands", func() {
 
 			res, err = client.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
-			// overhead of the push notification check is about 1-2ms for 100 commands
-			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 2))
+			// TTL only counts down; allow slack for slow CI runners.
+			Expect(res[0]).To(BeNumerically("<=", 10*time.Second.Milliseconds()))
+			Expect(res[0]).To(BeNumerically(">", 9*time.Second.Milliseconds()))
 		})
 
 		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
@@ -8163,6 +8172,45 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
+		It("should XRead with per-stream IDs", func() {
+			_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "stream2", ID: "1-0", Values: map[string]interface{}{"alpha": "a"}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "stream2", ID: "2-0", Values: map[string]interface{}{"beta": "b"}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// "stream" is read after 2-0 and "stream2" from the start.
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"2-0", "0"},
+				Block:   -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+				{
+					Stream: "stream2",
+					Messages: []redis.XMessage{
+						{ID: "1-0", Values: map[string]interface{}{"alpha": "a"}},
+						{ID: "2-0", Values: map[string]interface{}{"beta": "b"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead fail when IDs and Streams lengths differ", func() {
+			err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"0"},
+				Block:   -1,
+			}).Err()
+			Expect(err).To(MatchError("redis: XRead IDs length must match Streams length"))
+		})
+
 		It("should XRead with MAXCOUNT capping cumulative entries across streams", func() {
 			SkipBeforeRedisVersion("8.10", "XREAD MAXCOUNT requires Redis 8.10+")
 
@@ -9135,6 +9183,28 @@ var _ = Describe("Commands", func() {
 				}))
 			})
 
+			It("should return -1 for nil lag in XINFO STREAM FULL", func() {
+				for _, id := range []string{"0-1", "0-2", "0-3"} {
+					err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: id, Values: []string{"foo", id}}).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				err := client.XGroupCreate(ctx, "s", "g", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+				err = client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{"s", ">"}, Count: 1, Block: -1}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Deleting an entry the group has not read yet makes Redis reply with a nil lag.
+				err = client.XDel(ctx, "s", "0-2").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				res, err := client.XInfoStreamFull(ctx, "s", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.Groups).To(HaveLen(1))
+				Expect(res.Groups[0].EntriesRead).To(Equal(int64(1)))
+				Expect(res.Groups[0].Lag).To(Equal(int64(-1))) // nil lag from Redis is reported as -1
+			})
+
 			It("should XINFO CONSUMERS", func() {
 				res, err := client.XInfoConsumers(ctx, "stream", "group1").Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -9266,6 +9336,24 @@ var _ = Describe("Commands", func() {
 			Expect(res[0].GeoHash).To(Equal(int64(3479447370796909)))
 			Expect(res[0].Longitude).To(Equal(15.087267458438873))
 			Expect(res[0].Latitude).To(Equal(37.50266842333162))
+		})
+
+		It("should search geo radius twice with the same query", func() {
+			q := &redis.GeoRadiusQuery{
+				Radius:   200,
+				Unit:     "km",
+				WithDist: true,
+				Sort:     "ASC",
+			}
+			for i := 0; i < 2; i++ {
+				res, err := client.GeoRadius(ctx, "Sicily", 15, 37, q).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(2))
+				Expect(res[0].Name).To(Equal("Catania"))
+				Expect(res[0].Dist).To(Equal(56.4413))
+				Expect(res[1].Name).To(Equal("Palermo"))
+				Expect(res[1].Dist).To(Equal(190.4424))
+			}
 		})
 
 		It("should search geo radius by member with options", func() {
@@ -9448,6 +9536,18 @@ var _ = Describe("Commands", func() {
 			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]string{"Palermo"}))
+		})
+
+		It("should geo search without changing the query", func() {
+			q := &redis.GeoSearchQuery{
+				Member: "Catania",
+				Radius: 200,
+				Sort:   "asc",
+			}
+			val, err := client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania", "Palermo"}))
+			Expect(q.RadiusUnit).To(BeEmpty())
 		})
 
 		It("should geo search with options", func() {

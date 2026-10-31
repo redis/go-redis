@@ -93,6 +93,7 @@ type OTelConnectionCounter interface {
 	// delta: +1 when connection added, -1 when connection removed
 	// state: connection state (e.g., "idle", "used")
 	// isPubSub: true if this is a PubSub connection
+	// It may be called with pool locks held, so it must not call back into go-redis.
 	RecordConnectionCount(ctx context.Context, delta int, cn ConnInfo, state string, isPubSub bool)
 
 	// RecordPendingRequests records a change in pending requests (UpDownCounter)

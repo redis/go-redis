@@ -1447,6 +1447,7 @@ func (batchCountingHook) DialHook(next redis.DialHook) redis.DialHook { return n
 func (batchCountingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return next
 }
+
 func (h batchCountingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if len(cmds) >= 2 {
@@ -1464,9 +1465,11 @@ type fuzzOp struct {
 }
 
 func genOps(rng *rand.Rand, n int) []fuzzOp {
-	kinds := []string{"set", "get", "getdel", "incr", "incrby", "append", "strlen",
+	kinds := []string{
+		"set", "get", "getdel", "incr", "incrby", "append", "strlen",
 		"exists", "del", "hset", "hget", "hgetall", "lpush", "lrange", "llen",
-		"expire", "ttl", "type", "setbig", "setbin"}
+		"expire", "ttl", "type", "setbig", "setbin",
+	}
 	keys := make([]string, 8)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("fz:%d", i)
@@ -1474,8 +1477,10 @@ func genOps(rng *rand.Rand, n int) []fuzzOp {
 	ops := make([]fuzzOp, n)
 	for i := range ops {
 		k := keys[rng.Intn(len(keys))]
-		ops[i] = fuzzOp{kind: kinds[rng.Intn(len(kinds))], key: k,
-			val: fmt.Sprintf("v%d", rng.Intn(1000)), n: int64(rng.Intn(50))}
+		ops[i] = fuzzOp{
+			kind: kinds[rng.Intn(len(kinds))], key: k,
+			val: fmt.Sprintf("v%d", rng.Intn(1000)), n: int64(rng.Intn(50)),
+		}
 	}
 	return ops
 }
@@ -1854,7 +1859,7 @@ func TestAutoPipelineNoGoroutineLeak(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var wg = make([]redis.AutoFuture, 0, 200)
+				wg := make([]redis.AutoFuture, 0, 200)
 				for i := 0; i < 200; i++ {
 					if async {
 						wg = append(wg, ap.Submit(ctx, redis.NewCmd(ctx, "set", "leak:k", i)))
@@ -3448,6 +3453,7 @@ func (h shortCircuitHook) DialHook(next redis.DialHook) redis.DialHook { return 
 func (h shortCircuitHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error { return h.err }
 }
+
 func (h shortCircuitHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error { return h.err }
 }
@@ -3465,6 +3471,7 @@ func (h pipelineBreakerHook) DialHook(next redis.DialHook) redis.DialHook { retu
 func (h pipelineBreakerHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error { return next(ctx, cmd) }
 }
+
 func (h pipelineBreakerHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if !h.armed.Load() {
@@ -3775,9 +3782,7 @@ func TestClusterPipelineUsesDedicatedPool(t *testing.T) {
 		PipelineReadBufferSize: 64 * 1024,
 	})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		// Manual pipeline spanning many slots.
@@ -3895,9 +3900,8 @@ func TestClusterNodeHookShortCircuit(t *testing.T) {
 	// are pipelines too) and armed just before the asserted round.
 	var armed atomic.Bool
 	c.OnNewNode(func(cl *redis.Client) { cl.AddHook(pipelineBreakerHook{err: errBreaker, armed: &armed}) })
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+
+	skipIfClusterUnhealthy(t, c)
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		// Warm pooled connections on every node so the asserted round doesn't
@@ -3940,6 +3944,7 @@ func (h postNextErrorHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook
 		return h.err
 	}
 }
+
 func (h postNextErrorHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		_ = next(ctx, cmds)
@@ -4203,6 +4208,7 @@ func (h routeRecordingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHoo
 		return next(ctx, cmd)
 	}
 }
+
 func (h routeRecordingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		h.mu.Lock()
@@ -4276,6 +4282,7 @@ func (h armablePostNextPipelineHook) DialHook(next redis.DialHook) redis.DialHoo
 func (h armablePostNextPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return next
 }
+
 func (h armablePostNextPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		err := next(ctx, cmds)
@@ -4303,9 +4310,8 @@ func TestClusterNodeHookPostNextError(t *testing.T) {
 	c.OnNewNode(func(cl *redis.Client) {
 		cl.AddHook(armablePostNextPipelineHook{err: errVerdict, armed: &armed})
 	})
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+
+	skipIfClusterUnhealthy(t, c)
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		warm := c.Pipeline()
@@ -4387,11 +4393,9 @@ func markNonPipelinable(c *redis.ClusterClient, name string) {
 	}))
 }
 
-// TestClusterPipelineNonPipelinableAllOrNothing pins user Pipeline() atomicity:
-// a command whose request policy cannot ride a pipeline fails the WHOLE batch
-// before anything dispatches — existing users rely on all-or-nothing (review
-// decision on #3942; an earlier revision executed the rest and returned an
-// error, silently landing partial writes).
+// An explicitly configured custom fan-out policy unsupported by Pipeline is
+// rejected before batch dispatch. This validation does not make ordinary
+// pipelines atomic; Redis command errors can still accompany successful writes.
 func TestClusterPipelineNonPipelinableAllOrNothing(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
@@ -4422,42 +4426,93 @@ func TestClusterPipelineNonPipelinableAllOrNothing(t *testing.T) {
 	}
 }
 
-// TestAPClusterNonPipelinableRejectedAtSubmit pins the autopipeline side of the
-// same decision: the offending command is rejected at submit (before it can
-// join a merged batch), while unrelated batch-mates execute normally — one
-// caller's bad command must not poison everyone else's batch.
-func TestAPClusterNonPipelinableRejectedAtSubmit(t *testing.T) {
-	ctx := context.Background()
-	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
-	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
+// Fan-out is rejected on ordered async streams and remains available with an
+// explicit Unordered opt-in. Neither outcome affects neighboring batches.
+func TestAPClusterFanoutRespectsOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		fullDuplex bool
+		unordered  bool
+	}{
+		{name: "ordered"},
+		{name: "ordered-full-duplex", fullDuplex: true},
+		{name: "unordered", unordered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
+			defer c.Close()
+			skipIfClusterUnhealthy(t, c)
+			c.SetCommandInfoResolver(redis.NewCommandInfoResolver(func(_ context.Context, cmd redis.Cmder) *routing.CommandPolicy {
+				if cmd.Name() == "ping" {
+					return &routing.CommandPolicy{Request: routing.ReqAllShards, Response: routing.RespAllSucceeded}
+				}
+				return nil
+			}))
+
+			var hooksMu sync.Mutex
+			var hooks []routeRecordingHook
+			if err := c.ForEachMaster(ctx, func(_ context.Context, node *redis.Client) error {
+				hook := routeRecordingHook{mu: &sync.Mutex{}, pipeline: map[string]bool{}, direct: map[string]bool{}}
+				node.AddHook(hook)
+				hooksMu.Lock()
+				hooks = append(hooks, hook)
+				hooksMu.Unlock()
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(hooks) < 2 {
+				t.Fatal("fan-out test requires multiple masters")
+			}
+
+			ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+				MaxBatchSize:  100,
+				MaxFlushDelay: 20 * time.Millisecond,
+				FullDuplex:    tc.fullDuplex,
+				Unordered:     tc.unordered,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			key1 := fmt.Sprintf("apfanout:%s:{a}:1", tc.name)
+			key2 := fmt.Sprintf("apfanout:%s:{a}:2", tc.name)
+			defer c.Del(ctx, key1, key2)
+
+			runWithWatchdog(t, 30*time.Second, func() {
+				set1 := ap.Set(ctx, key1, "v1", 0)
+				ping := ap.Ping(ctx)
+				set2 := ap.Set(ctx, key2, "v2", 0)
+
+				got, err := ping.Result()
+				if tc.unordered {
+					if err != nil || got != "PONG" {
+						t.Fatalf("fan-out PING = %q, %v; want PONG", got, err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "ordered AsyncAutoPipeline") {
+					t.Fatalf("fan-out PING = %q, %v; want ordering rejection", got, err)
+				}
+				if err := set1.Err(); err != nil {
+					t.Fatalf("neighboring set1 failed: %v", err)
+				}
+				if err := set2.Err(); err != nil {
+					t.Fatalf("neighboring set2 failed: %v", err)
+				}
+			})
+			for i, hook := range hooks {
+				hook.mu.Lock()
+				direct, pipelined := hook.direct["ping"], hook.pipeline["ping"]
+				hook.mu.Unlock()
+				if direct != tc.unordered || pipelined {
+					t.Fatalf("master %d: PING direct=%v pipelined=%v; want direct=%v and no pipelining", i, direct, pipelined, tc.unordered)
+				}
+			}
+			values, err := c.MGet(ctx, key1, key2).Result()
+			if err != nil || len(values) != 2 || values[0] != "v1" || values[1] != "v2" {
+				t.Fatalf("neighboring writes = %v, %v; want [v1 v2]", values, err)
+			}
+		})
 	}
-	markNonPipelinable(c, "getdel")
-
-	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
-		MaxBatchSize:  100,
-		MaxFlushDelay: 20 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	runWithWatchdog(t, 30*time.Second, func() {
-		set1 := ap.Set(ctx, "apnp:{a}:1", "v1", 0)
-		bad := ap.GetDel(ctx, "apnp:{a}:marked")
-		set2 := ap.Set(ctx, "apnp:{a}:2", "v2", 0)
-
-		if err := bad.Err(); err == nil || !strings.Contains(err.Error(), "cannot pipeline command") {
-			t.Fatalf("marked command: err = %v, want the request-policy rejection", err)
-		}
-		if err := set1.Err(); err != nil {
-			t.Fatalf("batch-mate set1 poisoned: %v", err)
-		}
-		if err := set2.Err(); err != nil {
-			t.Fatalf("batch-mate set2 poisoned: %v", err)
-		}
-	})
 }
 
 // Regression: reading a Submit()-ed command's result accessors BEFORE calling
@@ -4513,6 +4568,7 @@ func (h batchSizeRecordingHook) ProcessHook(next redis.ProcessHook) redis.Proces
 		return next(ctx, cmd)
 	}
 }
+
 func (h batchSizeRecordingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		n := 0
@@ -4622,6 +4678,7 @@ func (h panicPipelineHook) DialHook(next redis.DialHook) redis.DialHook { return
 func (h panicPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return next
 }
+
 func (h panicPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if h.armed.Load() {
@@ -4814,9 +4871,7 @@ func TestAPClusterWideCommandsDelegate(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 	ap, err := c.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)
@@ -4910,6 +4965,7 @@ func (h gateHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		return next(ctx, cmd)
 	}
 }
+
 func (h gateHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if h.armed.Load() {
@@ -5636,9 +5692,7 @@ func TestTruthClusterOrderAndDemux(t *testing.T) {
 	ctx := context.Background()
 	cc := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
 	defer cc.Close()
-	if err := cc.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, cc)
 	for _, n := range []string{":16600", ":16601", ":16602"} {
 		nc := redis.NewClient(&redis.Options{Addr: n})
 		nc.FlushDB(ctx)
