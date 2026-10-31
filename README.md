@@ -197,6 +197,14 @@ type Credentials interface {
 }
 ```
 
+Providers can optionally implement `auth.ContextStreamingCredentialsProvider` by
+adding `SubscribeWithContext(ctx, listener)` alongside `Subscribe`. go-redis uses
+this method during connection initialization so the caller's context can bound
+the wait for credentials. Canceling that context must not end an established
+subscription or cancel token acquisition shared with other connections. Providers
+and wrappers without this method retain synchronous `Subscribe` behavior; there
+is no goroutine fallback. go-redis-entraid v1.1.0 and later support this method.
+
 Example usage:
 ```go
 rdb := redis.NewClient(&redis.Options{
