@@ -1403,12 +1403,14 @@ func replaceEmptyHost(nodeAddr, originHost string) string {
 	return net.JoinHostPort(originHost, nodePort)
 }
 
-// redirectFromNodeError carries the node that returned a MOVED or ASK error on
-// a route that picks its own node, such as FT.CURSOR. process unwraps it right
-// away, so the error a caller sees is unchanged.
+// redirectFromNodeError carries the node (and optional logical serving
+// endpoint) that returned a MOVED or ASK error on a route that picks its own
+// node, such as FT.CURSOR. process unwraps it right away, so the error a
+// caller sees is unchanged.
 type redirectFromNodeError struct {
-	node *clusterNode
-	err  error
+	node     *clusterNode
+	endpoint string // logical dial/handoff endpoint of the connection that sent the redirect
+	err      error
 }
 
 func (e *redirectFromNodeError) Error() string { return e.err.Error() }
@@ -1417,22 +1419,42 @@ func (e *redirectFromNodeError) Unwrap() error { return e.err }
 
 // redirectAddr returns the address a MOVED or ASK redirect sent by node points
 // to. With cluster-preferred-endpoint-type unknown-endpoint the server omits
-// the host, and the client is expected to reuse the host of the node that sent
-// the redirect.
+// the host, and the client is expected to reuse the host of the connection that
+// sent the redirect.
 //
-// The host comes from the node's configured address. After a maintenance
-// notification handoff the connection that sent the redirect may serve from
-// another endpoint, so this address can be stale. We may consider recording the
-// current address of the serving connection and using it here instead.
-func redirectAddr(addr string, node *clusterNode) string {
+// servingEndpoint is the logical host:port that connection was dialed or
+// handed off to (pool.Conn.ServingEndpoint). After a maintenance-notification
+// handoff the socket may serve from another endpoint while Options.Addr stays
+// unchanged (#4230). Fall back to the node's configured address when no
+// serving endpoint was recorded. Prefer the per-connection value over any
+// client-wide last-writer slot so mixed-generation pools cannot race (#4233).
+func redirectAddr(addr string, node *clusterNode, servingEndpoint string) string {
 	if node == nil {
 		return addr
 	}
-	originHost, _, err := net.SplitHostPort(node.Client.getAddr())
+	origin := servingEndpoint
+	if origin == "" {
+		origin = node.Client.getAddr()
+	}
+	originHost, _, err := net.SplitHostPort(origin)
 	if err != nil {
 		return addr
 	}
 	return replaceEmptyHost(addr, originHost)
+}
+
+// servingEndpointFromErr extracts a logical serving endpoint carried on a
+// redirect error (per-connection handoff target), if any.
+func servingEndpointFromErr(err error) string {
+	var se *errWithServingEndpoint
+	if errors.As(err, &se) {
+		return se.endpoint
+	}
+	var re *redirectFromNodeError
+	if errors.As(err, &re) {
+		return re.endpoint
+	}
+	return ""
 }
 
 // isLoopback returns true if the host is a loopback address.
@@ -2228,8 +2250,15 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		redirectFrom := node
+		servingEp := servingEndpointFromErr(lastErr)
 		if e, ok := lastErr.(*redirectFromNodeError); ok {
 			redirectFrom, lastErr = e.node, e.err
+			if e.endpoint != "" {
+				servingEp = e.endpoint
+			}
+		} else if e, ok := lastErr.(*errWithServingEndpoint); ok {
+			lastErr = e.err
+			servingEp = e.endpoint
 		}
 
 		// If there is no error - we are done.
@@ -2272,7 +2301,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			recordClusterRedirectMetric(ctx, ask)
 
 			var err error
-			node, err = c.nodes.GetOrCreate(redirectAddr(addr, redirectFrom))
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, redirectFrom, servingEp))
 			if err != nil {
 				return err
 			}
@@ -3289,7 +3318,9 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 			continue
 		}
 
-		if c.checkMovedErr(ctx, node, cmd, err, failedCmds) {
+		// Resolve hostless redirects from the held connection's logical
+		// serving endpoint (set on dial/handoff), not a client-wide slot (#4233).
+		if c.checkMovedErr(ctx, node, cmd, err, failedCmds, cn.ServingEndpoint()) {
 			continue
 		}
 
@@ -3322,14 +3353,14 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 // with or without a host, so Pipeline and TxPipeline may reuse that connection on
 // the retry. This is not handled yet.
 func (c *ClusterClient) checkMovedErr(
-	ctx context.Context, from *clusterNode, cmd Cmder, err error, failedCmds *cmdsMap,
+	ctx context.Context, from *clusterNode, cmd Cmder, err error, failedCmds *cmdsMap, servingEndpoint string,
 ) bool {
 	moved, ask, addr := isMovedError(err)
 	if !moved && !ask {
 		return false
 	}
 
-	node, err := c.nodes.GetOrCreate(redirectAddr(addr, from))
+	node, err := c.nodes.GetOrCreate(redirectAddr(addr, from, servingEndpoint))
 	if err != nil {
 		return false
 	}
@@ -3427,6 +3458,7 @@ type txOutcome struct {
 	kind          txOutcomeKind
 	err           error
 	addr          string
+	endpoint      string // logical serving endpoint when redirecting
 	execErr       error
 	unreadReplies bool
 }
@@ -3441,6 +3473,8 @@ type txRedirect struct {
 	tryAgain bool
 	addr     string
 	err      error
+
+	endpoint string // logical serving endpoint of the held connection
 }
 
 // errTxDirtyConn forces releaseConn to discard a connection that may still have
@@ -3533,14 +3567,14 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 			redirected = true
 			asking = false
 			c.state.LazyReload()
-			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node)); err != nil {
+			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node, outcome.endpoint)); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
 		case txRetryAsk:
 			redirected = true
 			asking = true
-			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node)); err != nil {
+			if node, err = c.nodes.GetOrCreate(redirectAddr(outcome.addr, node, outcome.endpoint)); err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
@@ -3794,6 +3828,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 func (c *ClusterClient) readTxPipelineReplies(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader, cmds []Cmder, asking bool,
 ) *txOutcome {
+	servingEp := cn.ServingEndpoint()
 	scratch := NewStatusCmd(ctx)
 
 	readStatus := func() error {
@@ -3826,7 +3861,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 		}
 		if moved, ask, addr := isMovedError(err); moved || ask {
 			if firstRedirect == nil {
-				firstRedirect = &txRedirect{moved: moved, ask: ask, addr: addr, err: err}
+				firstRedirect = &txRedirect{moved: moved, ask: ask, addr: addr, err: err, endpoint: servingEp}
 			}
 			continue
 		}
@@ -3851,7 +3886,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 		if !isRedisError(err) {
 			return c.txReadFatal(err) // IO error
 		}
-		return c.classifyExecError(err, firstRedirect, firstFatal)
+		return c.classifyExecError(err, firstRedirect, firstFatal, servingEp)
 	}
 
 	if line[0] != proto.RespArray {
@@ -3907,13 +3942,15 @@ func (c *ClusterClient) txPreQueueErrorOutcome(err error, cmds []Cmder) *txOutco
 }
 
 // classifyExecError turns an EXEC reply error into a retry/fatal outcome.
-func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedirect, firstFatal error) *txOutcome {
+// servingEp is the held connection's logical endpoint so hostless EXEC
+// MOVED/ASK reuse the same host as queue-stage redirects.
+func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedirect, firstFatal error, servingEp string) *txOutcome {
 	if moved, ask, addr := isMovedError(execErr); moved || ask {
 		// Narrow race: the slot moved after every command was queued.
 		if ask {
-			return &txOutcome{kind: txRetryAsk, err: execErr, addr: addr}
+			return &txOutcome{kind: txRetryAsk, err: execErr, addr: addr, endpoint: servingEp}
 		}
-		return &txOutcome{kind: txRetryMoved, err: execErr, addr: addr}
+		return &txOutcome{kind: txRetryMoved, err: execErr, addr: addr, endpoint: servingEp}
 	}
 	if proto.IsTryAgainError(execErr) {
 		return &txOutcome{kind: txRetryTryAgain, err: execErr}
@@ -3929,9 +3966,9 @@ func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedire
 		if firstRedirect != nil {
 			switch {
 			case firstRedirect.moved:
-				return &txOutcome{kind: txRetryMoved, err: firstRedirect.err, addr: firstRedirect.addr}
+				return &txOutcome{kind: txRetryMoved, err: firstRedirect.err, addr: firstRedirect.addr, endpoint: firstRedirect.endpoint}
 			case firstRedirect.ask:
-				return &txOutcome{kind: txRetryAsk, err: firstRedirect.err, addr: firstRedirect.addr}
+				return &txOutcome{kind: txRetryAsk, err: firstRedirect.err, addr: firstRedirect.addr, endpoint: firstRedirect.endpoint}
 			case firstRedirect.tryAgain:
 				return &txOutcome{kind: txRetryTryAgain, err: firstRedirect.err}
 			}
@@ -3978,9 +4015,13 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			return fnErr
 		}
 
+		servingEp := servingEndpointFromErr(err)
+		if e, ok := err.(*errWithServingEndpoint); ok {
+			err = e.err
+		}
 		moved, ask, addr := isMovedError(err)
 		if moved || ask {
-			node, err = c.nodes.GetOrCreate(redirectAddr(addr, node))
+			node, err = c.nodes.GetOrCreate(redirectAddr(addr, node, servingEp))
 			if err != nil {
 				return err
 			}

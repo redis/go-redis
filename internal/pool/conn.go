@@ -139,6 +139,11 @@ type Conn struct {
 	// tell its caller's IN_USE from a worker's (see HandedOffSince).
 	handoffOwnerGen atomic.Uint32
 
+	// servingEndpoint is the logical host:port this connection was dialed
+	// or handed off to (not the resolved RemoteAddr). Hostless MOVED/ASK
+	// redirects reuse this host after a maintenance-notification handoff.
+	servingEndpoint atomic.Value // stores string
+
 	pooled    bool
 	pubsub    bool
 	createdAt time.Time
@@ -481,6 +486,27 @@ func (cn *Conn) ShouldHandoff() bool {
 func (cn *Conn) GetHandoffEndpoint() string {
 	if v := cn.handoffStateAtomic.Load(); v != nil {
 		return v.(*HandoffState).Endpoint
+	}
+	return ""
+}
+
+// SetServingEndpoint records the logical endpoint this connection was dialed
+// or handed off to. Empty values are ignored. Call after a successful dial or
+// SetNetConnAndInitConn so hostless redirects reuse the hostname, not RemoteAddr.
+func (cn *Conn) SetServingEndpoint(endpoint string) {
+	if endpoint == "" {
+		return
+	}
+	cn.servingEndpoint.Store(endpoint)
+}
+
+// ServingEndpoint returns the logical dial/handoff endpoint, or empty when
+// none has been recorded (callers fall back to Options.Addr).
+func (cn *Conn) ServingEndpoint() string {
+	if v := cn.servingEndpoint.Load(); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
 	}
 	return ""
 }

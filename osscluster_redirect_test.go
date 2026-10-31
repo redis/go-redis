@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/redis/go-redis/v9/internal/pool"
+
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
@@ -189,7 +191,7 @@ func TestRedirectAddr(t *testing.T) {
 		{":6380", nil, ":6380"},
 	}
 	for _, tc := range tests {
-		if got := redirectAddr(tc.addr, tc.node); got != tc.want {
+		if got := redirectAddr(tc.addr, tc.node, ""); got != tc.want {
 			t.Errorf("redirectAddr(%q) = %q, want %q", tc.addr, got, tc.want)
 		}
 	}
@@ -213,5 +215,142 @@ func TestIsMovedSameConnAddr(t *testing.T) {
 		if got := isMovedSameConnAddr(err, tc.addr); got != tc.want {
 			t.Errorf("isMovedSameConnAddr(%q, %q) = %v, want %v", tc.moved, tc.addr, got, tc.want)
 		}
+	}
+}
+
+// After a maintenance-notification handoff, Options.Addr stays at the old
+// endpoint while the pooled connection serves from a new one. Hostless
+// redirects must reuse the serving host, not the configured address (#4230).
+func TestRedirectAddrPreferServingEndpoint(t *testing.T) {
+	opt := &ClusterOptions{}
+	opt.init()
+	nodes := newClusterNodes(opt)
+	defer nodes.Close()
+
+	node, err := nodes.GetOrCreate("10.0.0.5:6379")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := redirectAddr(":6380", node, "10.0.0.9:7000"); got != "10.0.0.9:6380" {
+		t.Errorf("redirectAddr(%q) = %q, want %q", ":6380", got, "10.0.0.9:6380")
+	}
+	// Empty serving endpoint falls back to the node's configured address.
+	if got := redirectAddr(":6380", node, ""); got != "10.0.0.5:6380" {
+		t.Errorf("fallback redirectAddr = %q, want configured host", got)
+	}
+	// Absolute redirects are unchanged.
+	if got := redirectAddr("10.0.0.6:6380", node, "10.0.0.9:7000"); got != "10.0.0.6:6380" {
+		t.Errorf("redirectAddr absolute = %q, want %q", got, "10.0.0.6:6380")
+	}
+}
+
+func TestConnServingEndpoint(t *testing.T) {
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+	cn := pool.NewConn(c1)
+	if got := cn.ServingEndpoint(); got != "" {
+		t.Fatalf("ServingEndpoint() = %q, want empty", got)
+	}
+	cn.SetServingEndpoint("localhost:16600")
+	if got := cn.ServingEndpoint(); got != "localhost:16600" {
+		t.Fatalf("ServingEndpoint() = %q, want localhost:16600", got)
+	}
+	// Empty set is ignored.
+	cn.SetServingEndpoint("")
+	if got := cn.ServingEndpoint(); got != "localhost:16600" {
+		t.Fatalf("empty SetServingEndpoint cleared value: %q", got)
+	}
+}
+
+// Pipeline and TxPipeline resolve hostless MOVED/ASK while the connection is
+// still held. The per-connection serving endpoint must drive redirectAddr
+// without a client-wide last-writer slot (#4233 review).
+func TestRedirectAddrUsesHeldConnEndpoint(t *testing.T) {
+	opt := &ClusterOptions{}
+	opt.init()
+	nodes := newClusterNodes(opt)
+	defer nodes.Close()
+
+	node, err := nodes.GetOrCreate("10.0.0.5:6379")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := redirectAddr(":6380", node, ""); got != "10.0.0.5:6380" {
+		t.Fatalf("before endpoint: redirectAddr = %q, want configured host", got)
+	}
+	if got := redirectAddr(":6380", node, "10.0.0.9:7000"); got != "10.0.0.9:6380" {
+		t.Fatalf("with held conn endpoint: redirectAddr = %q, want serving host", got)
+	}
+}
+
+// EXEC-stage MOVED/ASK must carry the held connection endpoint the same way
+// queue-stage redirects do (Bugbot on #4233).
+func TestClassifyExecErrorCarriesServingEndpoint(t *testing.T) {
+	opt := &ClusterOptions{}
+	opt.init()
+	c := &ClusterClient{opt: opt}
+
+	moved := proto.ParseErrorReply([]byte("-MOVED 1 :6380"))
+	ask := proto.ParseErrorReply([]byte("-ASK 1 :6380"))
+	serving := "10.0.0.9:7000"
+
+	movedOut := c.classifyExecError(moved, nil, nil, serving)
+	if movedOut.kind != txRetryMoved || movedOut.endpoint != serving || movedOut.addr != ":6380" {
+		t.Fatalf("MOVED EXEC: kind=%v addr=%q endpoint=%q", movedOut.kind, movedOut.addr, movedOut.endpoint)
+	}
+	askOut := c.classifyExecError(ask, nil, nil, serving)
+	if askOut.kind != txRetryAsk || askOut.endpoint != serving || askOut.addr != ":6380" {
+		t.Fatalf("ASK EXEC: kind=%v addr=%q endpoint=%q", askOut.kind, askOut.addr, askOut.endpoint)
+	}
+
+	nodes := newClusterNodes(opt)
+	defer nodes.Close()
+	node, err := nodes.GetOrCreate("10.0.0.5:6379")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := redirectAddr(movedOut.addr, node, movedOut.endpoint); got != "10.0.0.9:6380" {
+		t.Fatalf("EXEC MOVED redirectAddr = %q, want serving host", got)
+	}
+}
+
+
+// wrapServingEndpoint attaches the held connection endpoint so pipeline /
+// ASK-retry Exec errors stay usable after maintenance handoff (#4233 Bugbot).
+func TestWrapServingEndpointOnHostlessRedirect(t *testing.T) {
+	cn := pool.NewConn(nil)
+	cn.SetServingEndpoint("10.0.0.9:7000")
+	moved := proto.ParseErrorReply([]byte("-MOVED 1 :6380"))
+	wrapped := wrapServingEndpoint(cn, moved)
+	if got := servingEndpointFromErr(wrapped); got != "10.0.0.9:7000" {
+		t.Fatalf("servingEndpointFromErr = %q, want 10.0.0.9:7000", got)
+	}
+	movedOK, askOK, addr := isMovedError(wrapped)
+	if !movedOK || askOK || addr != ":6380" {
+		t.Fatalf("isMovedError = moved=%v ask=%v addr=%q", movedOK, askOK, addr)
+	}
+	ask := proto.ParseErrorReply([]byte("-ASK 1 :6380"))
+	askWrapped := wrapServingEndpoint(cn, ask)
+	if got := servingEndpointFromErr(askWrapped); got != "10.0.0.9:7000" {
+		t.Fatalf("ASK servingEndpointFromErr = %q", got)
+	}
+}
+
+// executeMultiSlotCommand must walk wrappers via servingEndpointFromErr, not a
+// top-level type assert, so a hook-wrapped MOVED still carries the handoff host.
+func TestServingEndpointFromErrWalksUnwrap(t *testing.T) {
+	inner := &errWithServingEndpoint{
+		endpoint: "10.0.0.9:7000",
+		err:      proto.ParseErrorReply([]byte("-MOVED 1 :6380")),
+	}
+	// stdlib errors.As only walks Unwrap; emulate a process hook.
+	var chained error = inner
+	if got := servingEndpointFromErr(chained); got != "10.0.0.9:7000" {
+		t.Fatalf("direct = %q", got)
+	}
+	chained = fmt.Errorf("hook: %w", inner)
+	if got := servingEndpointFromErr(chained); got != "10.0.0.9:7000" {
+		t.Fatalf("fmt-wrapped = %q", got)
 	}
 }

@@ -1471,6 +1471,34 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	c.releaseConnToPool(ctx, c.connPool, cn, err)
 }
 
+// errWithServingEndpoint wraps a MOVED/ASK (or other) error with the logical
+// endpoint of the connection that produced it. Cluster redirect resolution
+// prefers this over Options.Addr after a maintenance-notification handoff
+// (#4230 / #4233 review). Allocates only on the redirect error path.
+type errWithServingEndpoint struct {
+	endpoint string
+	err      error
+}
+
+func (e *errWithServingEndpoint) Error() string { return e.err.Error() }
+
+func (e *errWithServingEndpoint) Unwrap() error { return e.err }
+
+func wrapServingEndpoint(cn *pool.Conn, err error) error {
+	if err == nil || cn == nil {
+		return err
+	}
+	moved, ask, _ := isMovedError(err)
+	if !moved && !ask {
+		return err
+	}
+	ep := cn.ServingEndpoint()
+	if ep == "" {
+		return err
+	}
+	return &errWithServingEndpoint{endpoint: ep, err: err}
+}
+
 // releaseConnToPool returns a conn to p after a command or pipeline ran on
 // it: bad conns are Removed, pending push notifications are drained (a
 // mid-frame drain failure also Removes — the reply stream may be
@@ -2101,7 +2129,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 			} else {
 				retryTimeout.Store(0)
 			}
-			return readErr
+			// Carry the held connection's logical endpoint with hostless redirects
+			// so ClusterClient can resolve them after release (#4233 review).
+			return wrapServingEndpoint(cn, readErr)
 		}
 		if capture != nil {
 			// Attribute while the conn is still held: once it is released, a
@@ -2546,6 +2576,10 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
+		// Carry the held connection's logical endpoint with hostless MOVED/ASK
+		// the same way process() does, so ClusterClient ASK retries and
+		// Pipelined redirects survive maintenance handoffs (#4233 Bugbot).
+		err = wrapServingEndpoint(cn, err)
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
 			setCmdsErr(cmds[i+1:], err)
