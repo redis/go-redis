@@ -80,6 +80,9 @@ func TestSingleflightGroupWaiterCancelDoesNotAbortShared(t *testing.T) {
 			calls.Add(1)
 			close(started)
 			<-release
+			if err := shared.Err(); err != nil {
+				t.Errorf("shared ctx cancelled while the leader still waits: %v", err)
+			}
 			sharedFinished.Store(true)
 			return "ok", nil
 		})
@@ -123,18 +126,17 @@ func TestSingleflightGroupWaiterCancelDoesNotAbortShared(t *testing.T) {
 
 func TestSingleflightGroupLeaderCancelReturnsEarly(t *testing.T) {
 	var g singleflightGroup
-	var sharedFinished atomic.Bool
 	started := make(chan struct{})
-	release := make(chan struct{})
+	sharedErr := make(chan error, 1)
 
 	leaderCtx, cancel := context.WithCancel(context.Background())
 	leaderErr := make(chan error, 1)
 	go func() {
 		_, err := g.Do(leaderCtx, "k", 0, func(shared context.Context) (interface{}, error) {
 			close(started)
-			<-release
-			sharedFinished.Store(true)
-			return "ok", nil
+			<-shared.Done()
+			sharedErr <- shared.Err()
+			return nil, shared.Err()
 		})
 		leaderErr <- err
 	}()
@@ -149,17 +151,60 @@ func TestSingleflightGroupLeaderCancelReturnsEarly(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("leader did not return on cancel")
 	}
-	if sharedFinished.Load() {
-		t.Fatal("shared finished before release")
-	}
-	close(release)
-	deadline := time.After(2 * time.Second)
-	for !sharedFinished.Load() {
-		select {
-		case <-deadline:
-			t.Fatal("shared call was aborted")
-		case <-time.After(10 * time.Millisecond):
+	// The leader was the only caller, so the shared lookup must be cancelled
+	// rather than keep running with nobody waiting for it.
+	select {
+	case err := <-sharedErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("shared err = %v, want context.Canceled", err)
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shared lookup kept running after every caller gave up")
+	}
+}
+
+func TestSingleflightGroupAbandonedCallNotReused(t *testing.T) {
+	var g singleflightGroup
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := g.Do(ctx, "k", 0, func(shared context.Context) (interface{}, error) {
+			close(started)
+			<-release
+			return "stale", nil
+		})
+		errCh <- err
+	}()
+	<-started
+	cancel()
+	<-errCh
+
+	// A new caller must start a fresh lookup, not join the abandoned one.
+	v, err := g.Do(context.Background(), "k", 0, func(shared context.Context) (interface{}, error) {
+		return "fresh", nil
+	})
+	close(release)
+	if err != nil || v != "fresh" {
+		t.Fatalf("Do = %v, %v; want fresh, nil", v, err)
+	}
+}
+
+func TestSingleflightGroupPanicReturnsError(t *testing.T) {
+	var g singleflightGroup
+	_, err := g.Do(context.Background(), "k", 0, func(shared context.Context) (interface{}, error) {
+		panic("boom")
+	})
+	if err == nil {
+		t.Fatal("want error from panicking fn")
+	}
+	// The key must not stay stuck after a panic.
+	v, err := g.Do(context.Background(), "k", 0, func(shared context.Context) (interface{}, error) {
+		return "ok", nil
+	})
+	if err != nil || v != "ok" {
+		t.Fatalf("Do after panic = %v, %v; want ok, nil", v, err)
 	}
 }
 
