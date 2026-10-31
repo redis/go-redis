@@ -35,6 +35,51 @@ func WaitForIndexing(c *redis.Client, index string) {
 	}
 }
 
+// testFTAggregateCursor pages an FT.AGGREGATE WITHCURSOR result with
+// FT.CURSOR READ and deletes a live cursor with FT.CURSOR DEL.
+func testFTAggregateCursor(ctx context.Context, client redis.UniversalClient, rawClient *redis.Client) {
+	opts := &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{"doc:"}}
+	schema := &redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric}
+	val, err := client.FTCreate(ctx, "idx_cursor", opts, schema).Result()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(val).To(BeEquivalentTo("OK"))
+	WaitForIndexing(rawClient, "idx_cursor")
+	for i := 1; i <= 3; i++ {
+		Expect(client.HSet(ctx, fmt.Sprintf("doc:%d", i), "n", i).Err()).NotTo(HaveOccurred())
+	}
+	WaitForIndexing(rawClient, "idx_cursor")
+
+	options := &redis.FTAggregateOptions{
+		LoadAll:           true,
+		WithCursor:        true,
+		WithCursorOptions: &redis.FTAggregateWithCursor{Count: 1},
+	}
+	res, err := client.FTAggregateWithArgs(ctx, "idx_cursor", "*", options).Result()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(res.Rows).To(HaveLen(1))
+	Expect(res.Cursor).NotTo(BeZero())
+
+	seen := map[interface{}]bool{res.Rows[0].Fields["n"]: true}
+	cursor := res.Cursor
+	for i := 0; cursor != 0; i++ {
+		Expect(i).To(BeNumerically("<", 10), "cursor did not finish")
+		page, err := client.FTCursorRead(ctx, "idx_cursor", int(cursor), 1).Result()
+		Expect(err).NotTo(HaveOccurred())
+		for _, row := range page["results"].([]map[string]interface{}) {
+			seen[row["n"]] = true
+		}
+		cursor = page["cursor"].(int64)
+	}
+	Expect(seen).To(Equal(map[interface{}]bool{"1": true, "2": true, "3": true}))
+
+	res, err = client.FTAggregateWithArgs(ctx, "idx_cursor", "*", options).Result()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(res.Cursor).NotTo(BeZero())
+	status, err := client.FTCursorDel(ctx, "idx_cursor", int(res.Cursor)).Result()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(status).To(BeEquivalentTo("OK"))
+}
+
 func encodeFloat32Vector(vec []float32) []byte {
 	buf := new(bytes.Buffer)
 	for _, v := range vec {
@@ -68,6 +113,10 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 	AfterEach(func() {
 		Expect(closeSubject()).NotTo(HaveOccurred())
+	})
+
+	It("should page FTAggregate WITHCURSOR with FTCursorRead", Label("search", "ftaggregate", "ftcursor"), func() {
+		testFTAggregateCursor(ctx, client, rawClient)
 	})
 
 	It("should FTCreate and FTSearch WithScores", Label("search", "ftcreate", "ftsearch"), func() {
@@ -4663,6 +4712,10 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		// client2 is spec-local like the subject; leaking it across specs
 		// accumulates pools and goroutines over the suite.
 		Expect(client2.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should page FTAggregate WITHCURSOR with FTCursorRead", Label("search", "ftaggregate", "ftcursor"), func() {
+		testFTAggregateCursor(ctx, client, rawClient)
 	})
 
 	It("should handle FTAggregate with RESP3", Label("search", "ftcreate", "ftaggregate"), func() {
