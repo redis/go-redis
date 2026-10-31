@@ -966,6 +966,32 @@ func TestFDRerouteAbortReportsOncePerAttempt(t *testing.T) {
 	}
 }
 
+// A rerouted command whose retry budget is spent is failed, not re-run, and
+// is not reported a second time: rerouteReqs already reported its failed
+// attempt on the FD connection.
+func TestFDRerouteSpentBudgetReportsOncePerAttempt(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdRerouteTestEngine(0, fdServeOK)
+	reports := 0
+	fd.outcome = func(context.Context, Cmder, error, *fdFailGroup) { reports++ }
+	reqs := make([]fdReq, 3)
+	for i := range reqs {
+		reqs[i] = fdReq{cmd: NewStatusCmd(ctx, "set", "k"+strconv.Itoa(i), "v"), batch: newAPBatch(), attempts: 2, sent: true}
+	}
+	fd.rerouteReqs(ctx, reqs, io.EOF)
+	if reports != len(reqs) {
+		t.Fatalf("outcome reports = %d, want %d (one per failed FD attempt)", reports, len(reqs))
+	}
+	if len(*bounds) != 0 {
+		t.Fatalf("owner ran %d chunks, want none (budget spent)", len(*bounds))
+	}
+	for i, r := range reqs {
+		if err := r.cmd.rawErr(); !errors.Is(err, errFDRetryBudgetExhausted) {
+			t.Fatalf("reqs[%d] err = %v, want errFDRetryBudgetExhausted", i, err)
+		}
+	}
+}
+
 // A lane left over from before a failover (here: the non-active member's
 // child) is drained and replaced by the active member's child on the next
 // submit, under laneSem; the command lands on the new lane.

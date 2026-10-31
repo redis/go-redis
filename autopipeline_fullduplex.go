@@ -3407,7 +3407,9 @@ func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error 
 			rem = min(rem, fdCarryRemainingRetries(group[k].attempts, mr))
 		}
 		if rem < 0 {
-			fd.failReqs(group, errFDRetryBudgetExhausted) // budget spent; do not re-run
+			// Budget spent; do not re-run. Not accounted when flushing via the
+			// owner: rerouteReqs already reported the failed attempt.
+			fd.failReqsAcct(group, errFDRetryBudgetExhausted, !fd.flushesViaOwner())
 			continue
 		}
 		if err := fd.flushReqs(bg, group, rem); err != nil {

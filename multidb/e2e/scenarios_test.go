@@ -387,13 +387,14 @@ func TestRuntimeMembershipUnderFaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddDatabase: %v", err)
 	}
-	if id != spare {
-		t.Fatalf("AddDatabase id = %d, want %d", id, spare)
+	// spare is a topology index; the new member gets the next stable id.
+	if want := len(opts.Clients); id != want {
+		t.Fatalf("AddDatabase id = %d, want %d (next id)", id, want)
 	}
 
 	triggerNetworkFailure(t, 0, 60*time.Second)
 	eventually(t, 20*time.Second, "commands succeeding on the runtime-added member", func() bool {
-		return mdb.Set(ctx, "e2e:member", "x", 0).Err() == nil && mdb.ActiveDatabaseID() == spare
+		return mdb.Set(ctx, "e2e:member", "x", 0).Err() == nil && mdb.ActiveDatabaseID() == id
 	})
 
 	// Removing the down, passive member 0 does not renumber survivors: ids
@@ -401,8 +402,8 @@ func TestRuntimeMembershipUnderFaults(t *testing.T) {
 	if err := mdb.RemoveDatabase(ctx, 0); err != nil {
 		t.Fatalf("RemoveDatabase: %v", err)
 	}
-	if got := mdb.ActiveDatabaseID(); got != spare {
-		t.Fatalf("active id after removal = %d, want %d (unchanged; ids are stable)", got, spare)
+	if got := mdb.ActiveDatabaseID(); got != id {
+		t.Fatalf("active id after removal = %d, want %d (unchanged; ids are stable)", got, id)
 	}
 	if err := mdb.Set(ctx, "e2e:member", "y", 0).Err(); err != nil {
 		t.Fatalf("Set after removal: %v", err)

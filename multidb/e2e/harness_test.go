@@ -249,10 +249,12 @@ func triggerNetworkFailure(t *testing.T, member int, delay time.Duration) string
 		defer wcancel()
 		st, err := faultInjector.WaitForAction(wctx, id, fi.WithMaxWaitTime(delay+30*time.Second))
 		switch {
+		// Fail the test: a member that was not restored breaks later
+		// scenarios, which would then fail for the wrong reason.
 		case err != nil:
-			t.Logf("cleanup: waiting for network_failure action %s to finish: %v", id, err)
+			t.Errorf("cleanup: waiting for network_failure action %s to finish: %v", id, err)
 		case st.Status == fi.StatusFailed:
-			t.Logf("cleanup: network_failure action %s failed: %v", id, st.Error)
+			t.Errorf("cleanup: network_failure action %s failed: %v", id, st.Error)
 		}
 	})
 	return id

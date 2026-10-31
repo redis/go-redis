@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
 
 // multidbFDRouter runs the ordered full-duplex autopipeline on a
@@ -143,14 +145,11 @@ func (r *multidbFDRouter) target() (child *AutoPipeliner, reject bool) {
 	if db == nil || core.shouldFailoverSafely() {
 		return nil, false
 	}
-	ok, res := db.cb.AllowReserve()
-	if !ok {
-		return nil, false
-	}
-	if res.Held() {
-		// A half-open probe: give the slot back and let MultiDB's path take
-		// it, which reserves it again and settles the probe precisely.
-		db.cb.ReleaseFor(res)
+	// Read the state; do not reserve. Only a closed breaker takes the FD
+	// path. Half-open probes (and the open -> half-open transition) belong to
+	// MultiDB's path, and a reserve-then-release here would hold a probe slot
+	// that a concurrent probe could then not get.
+	if db.cb.State() != imultidb.CircuitClosed {
 		return nil, false
 	}
 	return r.childFor(db)
@@ -351,22 +350,18 @@ func (r *multidbFDRouter) childFor(db *multidbDatabase) (*AutoPipeliner, bool) {
 	if _, ok := r.noFD[db]; ok {
 		return nil, false
 	}
-	child, err := r.newChild(db)
 	// Tie the entry (child or noFD mark) to the member's removal before
-	// publishing it, under r.mu: the hook takes r.mu, so a removal racing this
-	// either finds the entry published, or has already run and register
-	// reports false.
-	registered := r.registerRemoveLocked(db)
-	if err != nil || child == nil {
-		if registered {
-			r.noFD[db] = struct{}{}
-		}
+	// building it, under r.mu. A building child already runs its engine on
+	// the member's pool, so it must not exist once the removal ran. The hook
+	// takes r.mu: a removal racing this either has already run (register
+	// reports false, nothing is built) or waits and drains the published
+	// entry.
+	if !r.registerRemoveLocked(db) {
 		return nil, false
 	}
-	if !registered {
-		// db's removal already ran: the child was never published, so it has
-		// accepted nothing and its Close has nothing to drain.
-		go func() { _ = child.Close() }()
+	child, err := r.newChild(db)
+	if err != nil || child == nil {
+		r.noFD[db] = struct{}{}
 		return nil, false
 	}
 	r.children[db] = child
