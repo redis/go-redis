@@ -945,8 +945,15 @@ func (c *baseClient) initStreamingCredentials() {
 
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
 	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
-		var err error
 		username, password := credentials.BasicAuth()
+		if poolCn.IsPubSub() {
+			if fn := poolCn.GetPubSubReAuth(); fn != nil {
+				return fn(username, password)
+			}
+			return nil
+		}
+
+		var err error
 
 		// Use background context - timeout is handled by ReadTimeout in WithReader/WithWriter
 		ctx := context.Background()
@@ -970,6 +977,10 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
+			if poolCn.IsPubSub() {
+				_ = poolCn.Close()
+				return
+			}
 			if isBadConn(err, false, c.opt.Addr) {
 				// Close the connection to force a reconnection.
 				// Re-auth happens on connections that were idle in the pool (the pool hook

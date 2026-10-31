@@ -132,6 +132,12 @@ func (m *Manager) Listener(
 //
 // Thread-safe: Called by credentials listeners when credentials change.
 func (m *Manager) MarkForReAuth(poolCn *pool.Conn, reAuthFn func(error)) {
+	if poolCn.IsPubSub() {
+		if !poolCn.IsClosed() {
+			go reAuthFn(nil)
+		}
+		return
+	}
 	m.poolHookRef.markForReAuthIfOpen(poolCn, reAuthFn)
 }
 
