@@ -488,6 +488,10 @@ func TestParseURLErrorRedactsPassword(t *testing.T) {
 		"rediss://:s3cr3t@[::1/0",
 		"redis://user:s3cr3t%zz@localhost/0",
 		"redis://user:s3/cr@t@localhost:bad/0",
+		"redis://user:s3#cr@localhost:bad/0",
+		"redis://user:%s3@localhost/0",
+		"redis://sentinel:pass@localhost:bad?password=s3cr3t",
+		"redis://sentinel:pass@localhost:bad?password=app@s3cr3t",
 	}
 	parsers := map[string]func(string) error{
 		"ParseURL":         func(u string) error { _, err := ParseURL(u); return err },

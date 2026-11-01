@@ -1062,12 +1062,17 @@ func parseURL(redisURL string) (*url.URL, error) {
 		var uerr *url.Error
 		if errors.As(err, &uerr) {
 			var password string
-			uerr.URL, password = redactRawURL(uerr.URL)
+			uerr.URL, password = redactRawURL(redisURL)
 			// url.Parse ends the authority at the first '/', '?' or '#', so
 			// with one of them unescaped in the password it parses part of
-			// the password as host or port and quotes it in uerr.Err.
-			if strings.ContainsAny(password, "/?#") {
+			// the password as host or port and quotes it in uerr.Err. An
+			// invalid escape in the password is quoted as well.
+			var escErr url.EscapeError
+			switch {
+			case strings.ContainsAny(password, "/?#"):
 				uerr.Err = errors.New("password contains unescaped '/', '?' or '#'")
+			case errors.As(uerr.Err, &escErr) && strings.Contains(password, string(escErr)):
+				uerr.Err = errors.New("password contains an invalid URL escape")
 			}
 		}
 		return nil, err
@@ -1075,25 +1080,35 @@ func parseURL(redisURL string) (*url.URL, error) {
 	return u, nil
 }
 
-// redactRawURL replaces the password in a URL that failed to parse with
-// "xxxxx", like url.URL.Redacted, and returns the password it removed. The
-// userinfo ends at the last '@', so a password containing unescaped '@' or
-// '/' is still covered.
+// redactRawURL returns a URL that failed to parse with the password replaced
+// by "xxxxx", like url.URL.Redacted, and the query and fragment dropped, since
+// ParseFailoverURL reads a password from the query. It also returns the
+// password it found. The userinfo ends at the last '@', so a password
+// containing unescaped '@' or '/' is still covered.
 func redactRawURL(s string) (string, string) {
 	start := 0
 	if i := strings.Index(s, "://"); i >= 0 {
 		start = i + len("://")
 	}
+	end := len(s)
+	if i := strings.IndexAny(s[start:], "?#"); i >= 0 {
+		end = start + i
+	}
 	at := strings.LastIndexByte(s, '@')
 	if at < start {
-		return s, ""
+		return s[:end], ""
 	}
-	userinfo := s[start:at]
-	i := strings.IndexByte(userinfo, ':')
-	if i < 0 {
-		return s, ""
+	user, password, ok := strings.Cut(s[start:at], ":")
+	switch {
+	case at > end:
+		// The '@' is in the password or in a query value, and the two
+		// can't be told apart, so quote only the scheme.
+		return s[:start], password
+	case !ok:
+		return s[:end], ""
+	default:
+		return s[:start] + user + ":xxxxx" + s[at:end], password
 	}
-	return s[:start] + userinfo[:i] + ":xxxxx" + s[at:], userinfo[i+1:]
 }
 
 func setupTCPConn(u *url.URL) (*Options, error) {
