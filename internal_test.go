@@ -100,7 +100,7 @@ var _ = Describe("newClusterState", func() {
 			Expect(slotAddr(state.slots[0])).To(Equal("10.10.10.10:7001"))
 			Expect(slotAddr(state.slots[1])).To(Equal("10.10.10.10:7002"))
 			Expect(slotAddr(state.slots[2])).To(Equal("1.2.3.4:1234"))
-			Expect(slotAddr(state.slots[3])).To(Equal(":1234"))
+			Expect(slotAddr(state.slots[3])).To(Equal("10.10.10.10:1234"))
 		})
 	})
 
@@ -481,6 +481,37 @@ func TestNewClusterState_PortZero(t *testing.T) {
 				"be replaced from the origin)", got, "172.30.0.10:6379")
 		}
 	})
+}
+
+// With `cluster-preferred-endpoint-type unknown-endpoint` the server sends a
+// null host in CLUSTER SLOTS, and the client is expected to reuse the host it
+// connected to.
+func TestNewClusterState_NullHost(t *testing.T) {
+	for _, null := range []string{"_\r\n", "$-1\r\n"} {
+		cmd := NewClusterSlotsCmd(context.Background())
+		reply := "*1\r\n*3\r\n:0\r\n:5460\r\n*2\r\n" + null + ":6380\r\n"
+		if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err != nil {
+			t.Fatalf("reply %q: readReply() = %v", null, err)
+		}
+
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		state, err := newClusterState(nodes, cmd.Val(), "172.30.0.10:6379")
+		if err != nil {
+			t.Fatalf("newClusterState failed: %v", err)
+		}
+
+		client := state.slots[0].nodes[0].Client
+		if got := client.Options().Addr; got != "172.30.0.10:6380" {
+			t.Errorf("reply %q: Addr = %q, want %q", null, got, "172.30.0.10:6380")
+		}
+		if got := client.NodeAddress(); got != ":6380" {
+			t.Errorf("reply %q: NodeAddress = %q, want %q", null, got, ":6380")
+		}
+	}
 }
 
 type fixedHash string

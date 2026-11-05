@@ -204,6 +204,9 @@ type (
 )
 
 type Cmder interface {
+	cacheState() *cscCommandState
+	cacheView() *commandMetadataView
+	setCacheView(*commandMetadataView)
 	// command name.
 	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster".
 	Name() string
@@ -234,6 +237,7 @@ type Cmder interface {
 	// (in the autopipeline shard router) and reused at pipeline-flush routing.
 	cachedSlot() (int, bool)
 	setCachedSlot(int)
+	resetCachedSlot()
 	clusterRoutingDecision() *clusterRoutingDecision
 	setClusterRoutingDecision(*clusterRoutingDecision)
 	takeClusterRoutingDecision() *clusterRoutingDecision
@@ -257,6 +261,15 @@ type Cmder interface {
 	// Commands that write directly to an io.Writer should return true since
 	// partial writes cannot be undone on retry.
 	NoRetry() bool
+	// setNoRetry sets the flag NoRetry reports. Part of the interface (not
+	// only of baseCmd) so a decorator that embeds a Cmder promotes it: the
+	// MultiDB transaction path marks every command of a transaction, and a
+	// decorated command must not slip through unmarked.
+	setNoRetry(bool)
+	// base returns the command's embedded baseCmd: the identity of the
+	// command that executes, stable across decorators, and usable as a map
+	// key where the Cmder value itself may not be comparable.
+	base() *baseCmd
 
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
@@ -477,19 +490,12 @@ type baseCmd struct {
 	ctx          context.Context
 	args         []interface{}
 	err          error
-	keyPos       int8
-	_stepCount   int8
 	rawVal       interface{}
 	_readTimeout *time.Duration
-	cmdType      CmdType
-	// slotCache memoizes the cluster slot once computed, so the cluster
-	// autopipeline shard router and the pipeline flush router don't each
-	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
-	// distinguishable from unset. A plain field is safe by construction: it
-	// is written during admission or explicit pipeline resolution, before the
-	// command is dispatched to any worker. Workers only read it until the
-	// command completes. A shared routing template carries no slot of its own.
-	slotCache uint16
+
+	// noRetry marks the command as never-retryable (see NoRetry). It is set
+	// before the command is handed to an execution path, never concurrently.
+	noRetry bool
 
 	// ready, when non-nil, is the batch whose done channel closes once the
 	// command has executed. It is set only by the deferred (async)
@@ -507,6 +513,22 @@ type baseCmd struct {
 	// routing pins admission metadata until cluster dispatch completes. Keeping
 	// it on the command avoids retaining commands in a client-wide lookup table.
 	routing atomic.Pointer[clusterRoutingDecision]
+	// The pinned CSC view is independent of the consumed routing decision.
+	cscView *commandMetadataView
+
+	// slotCache memoizes the cluster slot once computed, so the cluster
+	// autopipeline shard router and the pipeline flush router don't each
+	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
+	// distinguishable from unset. A plain field is safe by construction: it
+	// is written during admission or explicit pipeline resolution, before the
+	// command is dispatched to any worker. Workers only read it until the
+	// command completes. A shared routing template carries no slot of its own.
+	slotCache uint16
+
+	keyPos     int8
+	_stepCount int8
+	cmdType    CmdType
+	csc        cscCommandState
 }
 
 func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
@@ -514,6 +536,9 @@ func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
 }
 
 func (cmd *baseCmd) setClusterRoutingDecision(decision *clusterRoutingDecision) {
+	if decision == nil && cmd.routing.Load() == nil {
+		return // nothing to clear: a load instead of an atomic exchange
+	}
 	cmd.routing.Store(decision)
 }
 
@@ -584,6 +609,10 @@ func (cmd *baseCmd) resultReady() bool {
 }
 
 var _ Cmder = (*Cmd)(nil)
+
+func (cmd *baseCmd) cacheState() *cscCommandState           { return &cmd.csc }
+func (cmd *baseCmd) cacheView() *commandMetadataView        { return cmd.cscView }
+func (cmd *baseCmd) setCacheView(view *commandMetadataView) { cmd.cscView = view }
 
 func (cmd *baseCmd) Name() string {
 	if len(cmd.args) == 0 {
@@ -658,6 +687,12 @@ func (cmd *baseCmd) setCachedSlot(slot int) {
 	}
 }
 
+// resetCachedSlot drops the cached slot, so a reused command gets one from its
+// new admission.
+func (cmd *baseCmd) resetCachedSlot() {
+	cmd.slotCache = 0
+}
+
 func (cmd *baseCmd) stepCount() int8 {
 	return cmd._stepCount
 }
@@ -695,10 +730,25 @@ func (cmd *baseCmd) isRawReply() bool { return false }
 // io.Writer (like RawWriteToCmd) should override this to return true since
 // partial writes cannot be undone on retry.
 func (cmd *baseCmd) NoRetry() bool {
+	if cmd.noRetry {
+		return true
+	}
 	// A READ advances server-side cursor state. Retrying after a lost reply
 	// would silently skip the results that were already consumed.
 	return len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(0), "ft.cursor") &&
 		strings.EqualFold(cmd.stringArg(1), "read")
+}
+
+// setNoRetry marks the command as never-retryable, e.g. the synthetic MULTI
+// of a MultiDB transaction whose batch must not be replayed by the member
+// client's retry loop.
+func (cmd *baseCmd) setNoRetry(v bool) {
+	cmd.noRetry = v
+}
+
+// base returns the command's identity (see Cmder.base).
+func (cmd *baseCmd) base() *baseCmd {
+	return cmd
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -711,6 +761,12 @@ func (cmd *baseCmd) setArgs(args []interface{}) {
 }
 
 func (cmd *baseCmd) cloneBaseCmd() baseCmd {
+	state := cmd.csc
+	state.depth = 0
+	state.set(cscNoLookup, false)
+	if state.has(cscForceBypass) {
+		state.setMark(cacheBypassed)
+	}
 	var readTimeout *time.Duration
 	if cmd._readTimeout != nil {
 		timeout := *cmd._readTimeout
@@ -722,6 +778,8 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 	copy(args, cmd.args)
 
 	return baseCmd{
+		csc:          state,
+		cscView:      cmd.cscView,
 		ctx:          cmd.ctx,
 		args:         args,
 		err:          cmd.err,
@@ -730,6 +788,7 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 		rawVal:       cmd.rawVal,
 		_readTimeout: readTimeout,
 		cmdType:      cmd.cmdType,
+		noRetry:      cmd.noRetry,
 	}
 }
 
@@ -829,7 +888,12 @@ func (cmd *Cmd) Int() (int, error) {
 	}
 	switch val := cmd.val.(type) {
 	case int64:
-		return int(val), nil
+		if n := int(val); int64(n) == val {
+			return n, nil
+		}
+		// int is 32 bits on 386 and arm: give the range error Atoi gives
+		// for the same number in a bulk string, not a truncated value.
+		return strconv.Atoi(strconv.FormatInt(val, 10))
 	case string:
 		return strconv.Atoi(val)
 	case float64:
@@ -2639,7 +2703,10 @@ func (cmd *MapStringStringCmd) String() string {
 }
 
 // Scan scans the results from the map into a destination struct. The map keys
-// are matched in the Redis struct fields by the `redis:"field"` tag.
+// are matched in the Redis struct fields by the `redis:"field"` tag. If a field
+// fails to decode, Scan still sets every other field it can. One failing field
+// returns its error as is; several return them joined with errors.Join in key
+// order, so errors.Is and errors.As match any of them.
 func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 	cmd.await()
 	if cmd.err != nil {
@@ -2651,13 +2718,28 @@ func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 		return err
 	}
 
+	// cmd.val is a map, so order the field errors by key to return the same
+	// error on every call.
+	var errKeys []string
+	var keyErrs map[string]error
 	for k, v := range cmd.val {
 		if err := strct.Scan(k, v); err != nil {
-			return err
+			if keyErrs == nil {
+				keyErrs = make(map[string]error)
+			}
+			keyErrs[k] = err
+			errKeys = append(errKeys, k)
 		}
 	}
-
-	return nil
+	if len(errKeys) == 0 {
+		return nil
+	}
+	slices.Sort(errKeys)
+	errs := make([]error, len(errKeys))
+	for i, k := range errKeys {
+		errs[i] = keyErrs[k]
+	}
+	return hscan.JoinErrors(errs)
 }
 
 func (cmd *MapStringStringCmd) readReply(rd *proto.Reader) error {
@@ -4197,7 +4279,7 @@ type XInfoStreamGroup struct {
 	Name            string
 	LastDeliveredID string
 	EntriesRead     int64
-	Lag             int64
+	Lag             int64 // -1 when the lag cannot be determined, as in XInfoGroup
 	PelCount        int64
 	NackedCount     uint64 // redis version 8.8, number of NACK'd messages in the group
 	Pending         []XInfoStreamGroupPending
@@ -4395,9 +4477,12 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 			case "lag":
 				// lag: the number of entries in the stream that are still waiting to be delivered
 				// to the group's consumers, or a NULL(Nil) when that number can't be determined.
+				// In that case, we return -1.
 				group.Lag, err = rd.ReadInt()
 				if err != nil && err != Nil {
 					return nil, err
+				} else if err == Nil {
+					group.Lag = -1
 				}
 			case "pel-count":
 				group.PelCount, err = rd.ReadInt()
@@ -4783,6 +4868,10 @@ type ScanCmd struct {
 	cursor uint64
 
 	process cmdable
+
+	// clusterScan is the walk over the masters of a cluster SCAN, kept on the
+	// command because ScanIterator re-sends the same command for every page.
+	clusterScan *clusterScanState
 }
 
 var _ Cmder = (*ScanCmd)(nil)
@@ -4801,6 +4890,11 @@ func NewScanCmd(ctx context.Context, process cmdable, args ...interface{}) *Scan
 func (cmd *ScanCmd) SetVal(page []string, cursor uint64) {
 	cmd.page = page
 	cmd.cursor = cursor
+}
+
+// more reports whether the iterator has more pages to fetch.
+func (cmd *ScanCmd) more() bool {
+	return cmd.cursor != 0 || cmd.clusterScan.pending()
 }
 
 func (cmd *ScanCmd) Val() (keys []string, cursor uint64) {
@@ -4854,6 +4948,7 @@ func (cmd *ScanCmd) Clone() Cmder {
 		page:    page,
 		cursor:  cmd.cursor,
 		process: cmd.process,
+		// clusterScan is not copied: a clone is a new command, not the same walk.
 	}
 }
 
@@ -4954,7 +5049,9 @@ func (cmd *ClusterSlotsCmd) readReply(rd *proto.Reader) error {
 			}
 
 			ip, err := rd.ReadString()
-			if err != nil {
+			// A null host (cluster-preferred-endpoint-type unknown-endpoint)
+			// means "reuse the origin host"; newClusterState fills it in.
+			if err != nil && err != Nil {
 				return err
 			}
 
@@ -5599,14 +5696,46 @@ func (cmd *CommandsInfoCmd) SetVal(val map[string]*CommandInfo) {
 	cmd.val = val
 }
 
+// Val omits records that the client could not parse.
 func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
+	cmd.await()
+	return withoutCommandInfoTombstones(cmd.val)
+}
+
+// Result omits records that the client could not parse.
+func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
+	cmd.await()
+	return withoutCommandInfoTombstones(cmd.val), cmd.err
+}
+
+// valWithTombstones returns the reply as parsed, including the nil entries.
+// The command-metadata builder needs them to block snapshot and correction
+// fallback for a name the server reported malformed or conflicting; the public
+// accessors hide them because ranging over the reply and dereferencing a value
+// is the natural way to read it.
+func (cmd *CommandsInfoCmd) valWithTombstones() map[string]*CommandInfo {
 	cmd.await()
 	return cmd.val
 }
 
-func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
-	cmd.await()
-	return cmd.val, cmd.err
+func withoutCommandInfoTombstones(val map[string]*CommandInfo) map[string]*CommandInfo {
+	tombstones := 0
+	for _, info := range val {
+		if info == nil {
+			tombstones++
+		}
+	}
+	if tombstones == 0 {
+		return val
+	}
+
+	valid := make(map[string]*CommandInfo, len(val)-tombstones)
+	for name, info := range val {
+		if info != nil {
+			valid[name] = info
+		}
+	}
+	return valid
 }
 
 func (cmd *CommandsInfoCmd) String() string {
@@ -5682,7 +5811,13 @@ func peekCommandInfoReplyType(rd *proto.Reader, depth int) (byte, int, error) {
 			return b[0], depth, nil
 		}
 		n, err := rd.ReadAttributeLen()
-		if err != nil {
+		if err == Nil {
+			// A null attribute (|-1) is not valid RESP3, but the header is
+			// already consumed and carries no pairs, so unwrap it like an empty
+			// attribute. Returning Nil here would make the scalar readers treat
+			// the wrapped value as consumed and leave it on the wire.
+			n = 0
+		} else if err != nil {
 			return 0, depth, err
 		}
 		for range n {
@@ -6901,10 +7036,11 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 	if v, ok := data["collection-duration-ms"].(int64); ok {
 		result.CollectionDuration = time.Duration(v) * time.Millisecond
 	}
-	if v, ok := data["used-cpu-sys-ms"].(int64); ok {
+	// The server names these total-cpu-time-*-ms, not after the fields below.
+	if v, ok := data["total-cpu-time-sys-ms"].(int64); ok {
 		result.UsedCPUSys = time.Duration(v) * time.Millisecond
 	}
-	if v, ok := data["used-cpu-user-ms"].(int64); ok {
+	if v, ok := data["total-cpu-time-user-ms"].(int64); ok {
 		result.UsedCPUUser = time.Duration(v) * time.Millisecond
 	}
 	if v, ok := data["total-net-bytes"].(int64); ok {

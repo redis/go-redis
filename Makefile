@@ -2,7 +2,7 @@ GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 REDIS_VERSION ?= 8.10
 RE_CLUSTER ?= false
 RCE_DOCKER ?= true
-CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:8.10.0
+CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:8.10.3
 # CI runs private live CSC fixtures inside the matching Redis image first, then
 # excludes only those already-executed tests from the host's race/coverage run.
 TEST_SKIP ?= Example
@@ -129,6 +129,17 @@ test.e2e.docker:
 	$(MAKE) docker.e2e.stop
 	@echo "Docker E2E tests completed!"
 
+test.multidb.e2e:
+	@echo "Running MultiDB e2e tests (per-member proxies)..."
+	docker compose --profile multidb up -d || (docker compose --profile multidb down && exit 1)
+	@echo "Waiting for the per-member proxies to be ready..."
+	@for port in 18120 18121 18122; do \
+		timeout 30 bash -c "until curl -s http://127.0.0.1:$$port/stats > /dev/null; do sleep 1; done" || { docker compose --profile multidb down; exit 1; }; \
+	done
+	@E2E_MULTIDB_TESTS=true go test -v -race -count=1 -timeout 15m ./multidb/e2e/... || (docker compose --profile multidb down && exit 1)
+	docker compose --profile multidb down
+	@echo "MultiDB e2e tests completed!"
+
 test.e2e.logic:
 	@echo "Running E2E logic tests (no proxy required)..."
 	@E2E_SCENARIO_TESTS=true \
@@ -137,7 +148,7 @@ test.e2e.logic:
 		go test -v -run "TestCreateTestFaultInjectorLogic|TestFaultInjectorClientCreation" ./maintnotifications/e2e/
 	@echo "Logic tests completed!"
 
-.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench fmt test.e2e test.e2e.logic docker.e2e.start docker.e2e.stop
+.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench fmt test.e2e test.e2e.logic test.multidb.e2e docker.e2e.start docker.e2e.stop
 
 build:
 	export RE_CLUSTER=$(RE_CLUSTER) && \

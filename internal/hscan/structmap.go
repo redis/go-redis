@@ -91,11 +91,24 @@ func (s StructValue) Scan(key string, value string) error {
 	}
 
 	v := s.value.Field(field.index)
-	isPtr := v.Kind() == reflect.Pointer
-
-	if isPtr && v.IsNil() {
-		v.Set(reflect.New(v.Type().Elem()))
+	if !v.CanSet() {
+		t := s.value.Type()
+		return fmt.Errorf("redis.Scan(unexported field %s.%s)", t.Name(), t.Field(field.index).Name)
 	}
+	if v.Kind() == reflect.Pointer && v.IsNil() {
+		ptr := reflect.New(v.Type().Elem())
+		if err := s.decode(field, ptr, value); err != nil {
+			return err
+		}
+		v.Set(ptr)
+		return nil
+	}
+
+	return s.decode(field, v, value)
+}
+
+func (s StructValue) decode(field *structField, v reflect.Value, value string) error {
+	isPtr := v.Kind() == reflect.Pointer
 	if !isPtr && v.Type().Name() != "" && v.CanAddr() {
 		v = v.Addr()
 		isPtr = true

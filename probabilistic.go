@@ -33,6 +33,7 @@ type ProbabilisticCmdable interface {
 
 	CFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
 	CFAddNX(ctx context.Context, key string, element interface{}) *BoolCmd
+	CFCompact(ctx context.Context, key string) *StatusCmd
 	CFCount(ctx context.Context, key string, element interface{}) *IntCmd
 	CFDel(ctx context.Context, key string, element interface{}) *BoolCmd
 	CFExists(ctx context.Context, key string, element interface{}) *BoolCmd
@@ -558,15 +559,18 @@ func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacit
 // maximum number of iterations and expansion rate.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
-	args := []interface{}{"CF.RESERVE", key, options.Capacity}
-	if options.BucketSize != 0 {
-		args = append(args, "BUCKETSIZE", options.BucketSize)
-	}
-	if options.MaxIterations != 0 {
-		args = append(args, "MAXITERATIONS", options.MaxIterations)
-	}
-	if options.Expansion != 0 {
-		args = append(args, "EXPANSION", options.Expansion)
+	args := []interface{}{"CF.RESERVE", key}
+	if options != nil {
+		args = append(args, options.Capacity)
+		if options.BucketSize != 0 {
+			args = append(args, "BUCKETSIZE", options.BucketSize)
+		}
+		if options.MaxIterations != 0 {
+			args = append(args, "MAXITERATIONS", options.MaxIterations)
+		}
+		if options.Expansion != 0 {
+			args = append(args, "EXPANSION", options.Expansion)
+		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -598,6 +602,17 @@ func (c cmdable) CFAddNX(ctx context.Context, key string, element interface{}) *
 func (c cmdable) CFCount(ctx context.Context, key string, element interface{}) *IntCmd {
 	args := []interface{}{"CF.COUNT", key, element}
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// CFCompact compacts a Cuckoo filter: it moves items into earlier sub-filters
+// and frees the sub-filters left empty. CF.DEL compacts automatically but stops
+// at the first sub-filter it cannot empty; CF.COMPACT tries all of them.
+// cmd: CF.COMPACT key
+func (c cmdable) CFCompact(ctx context.Context, key string) *StatusCmd {
+	args := []interface{}{"CF.COMPACT", key}
+	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -971,8 +986,8 @@ func isValidCMSCellSize(cellSize int64) bool {
 }
 
 // CMSMerge merges multiple Count-Min Sketch filters into a single filter.
-// The destination filter must not exist and will be created with the dimensions of the first source filter.
-// The number of items in each source filter must be equal.
+// The destination filter must already be initialized and all filters must have
+// the same width and depth. The filters do not need to contain the same number of items.
 // Returns OK on success or an error if the filters could not be merged.
 // For more information - https://redis.io/commands/cms.merge/
 func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...string) *StatusCmd {
@@ -986,8 +1001,8 @@ func (c cmdable) CMSMerge(ctx context.Context, destKey string, sourceKeys ...str
 }
 
 // CMSMergeWithWeight merges multiple Count-Min Sketch filters into a single filter with weights for each source filter.
-// The destination filter must not exist and will be created with the dimensions of the first source filter.
-// The number of items in each source filter must be equal.
+// The destination filter must already be initialized and all filters must have
+// the same width and depth. The filters do not need to contain the same number of items.
 // Returns OK on success or an error if the filters could not be merged.
 // For more information - https://redis.io/commands/cms.merge/
 func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceKeys map[string]int64) *StatusCmd {

@@ -139,7 +139,6 @@ func TestRoutingMetadataLocalSpecialPolicies(t *testing.T) {
 		wantResponse            routing.ResponsePolicy
 	}{
 		{"bless|scan", "special", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
-		{"scan", "special", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
 		{"info", "default", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
 		{"memory|stats", "default", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
 		{"latency|history", "default", "special", 0, routing.ReqDefault, routing.RespDefaultKeyless},
@@ -175,7 +174,7 @@ func TestRoutingMetadataLocalSpecialPolicies(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"info", "scan", "memory|stats", "function|stats", "latency|latest", "hotkeys|get"} {
+	for _, name := range []string{"info", "memory|stats", "function|stats", "latency|latest", "hotkeys|get"} {
 		t.Run("snapshot/"+name, func(t *testing.T) {
 			meta, ok := defaultCommandMetadataView().routingTable[name]
 			if !ok {
@@ -189,6 +188,30 @@ func TestRoutingMetadataLocalSpecialPolicies(t *testing.T) {
 	}
 }
 
+// SCAN keeps its special request and response policies: executeScanCommand walks
+// every master (see osscluster_scan.go).
+func TestRoutingMetadataScanSpecialPolicy(t *testing.T) {
+	info := &CommandInfo{
+		Name: "scan", Tips: []string{"request_policy:special", "response_policy:special"},
+		Flags: []string{"readonly"},
+	}
+	meta := deriveRoutingCommandMeta("scan", info)
+	policy, supported := routingPolicyFor(meta)
+	if !supported || policy.Request != routing.ReqSpecial || policy.Response != routing.RespSpecial {
+		t.Fatalf("derived scan policy = %#v, supported = %v; want supported (special, special)", policy, supported)
+	}
+	meta, ok := defaultCommandMetadataView().routingTable["scan"]
+	if !ok {
+		t.Fatal("snapshot metadata is missing for scan")
+	}
+	policy, supported = routingPolicyFor(meta)
+	if !supported || policy.Request != routing.ReqSpecial || policy.Response != routing.RespSpecial {
+		t.Fatalf("snapshot scan policy = %#v, supported = %v; want supported (special, special)", policy, supported)
+	}
+	if clusterSpecialRequestHandlers["scan"] == nil {
+		t.Fatal("no special request handler for scan")
+	}
+}
 func TestCommandPolicyResolverMetadataOptIn(t *testing.T) {
 	ctx := context.Background()
 	legacy := NewDefaultCommandPolicyResolver()

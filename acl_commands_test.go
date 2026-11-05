@@ -115,16 +115,25 @@ var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 		Expect(add).To(Equal("OK"))
 
 		for _, protocol := range []int{3, 2} {
-			opt := redisOptions()
-			opt.Username = TestUserName
-			opt.Password = ""
-			opt.Protocol = protocol
-			userClient := redis.NewClient(opt)
+			for _, authEmptyPassword := range []bool{false, true} {
+				opt := redisOptions()
+				opt.Username = TestUserName
+				opt.Password = ""
+				opt.Protocol = protocol
+				opt.AuthEmptyPassword = authEmptyPassword
+				userClient := redis.NewClient(opt)
 
-			whoami, err := userClient.ACLWhoAmI(ctx).Result()
-			Expect(userClient.Close()).NotTo(HaveOccurred())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(whoami).To(Equal(TestUserName), "protocol %d", protocol)
+				whoami, err := userClient.ACLWhoAmI(ctx).Result()
+				Expect(userClient.Close()).NotTo(HaveOccurred())
+				Expect(err).NotTo(HaveOccurred())
+				// By default a username without a password sends no AUTH.
+				want := "default"
+				if authEmptyPassword {
+					want = TestUserName
+				}
+				Expect(whoami).To(Equal(want),
+					"protocol %d, AuthEmptyPassword %t", protocol, authEmptyPassword)
+			}
 		}
 	})
 

@@ -33,6 +33,15 @@ func (r *Reader) HasBufferedReply() bool {
 	return false
 }
 
+// HasBufferedFrame reports whether the buffer already holds the whole next frame,
+// with any attributes in front of it, so reading it needs no socket read. It
+// does not read from the socket and consumes nothing.
+func (r *Reader) HasBufferedFrame() bool {
+	b, _ := r.rd.Peek(r.rd.Buffered())
+	_, ok := bufferedValueLen(b, 0)
+	return ok
+}
+
 // bufferedValueLen returns the length of one complete value at the start of
 // b, including the attribute frames that may prefix it: inside an aggregate an
 // attribute decorates the element after it and is not an element itself.

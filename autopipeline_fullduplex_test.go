@@ -2098,6 +2098,12 @@ func (r *fdOtelRecorder) RecordStreamLag(context.Context, time.Duration, *pool.C
 }
 func (r *fdOtelRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
 func (r *fdOtelRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
+func (r *fdOtelRecorder) RecordMultiDBFailover(context.Context, string, string, string, time.Duration) {
+}
+func (r *fdOtelRecorder) RecordMultiDBActiveDatabaseChange(context.Context, string, string) {}
+func (r *fdOtelRecorder) RecordMultiDBCircuitStateChange(context.Context, string, string, string) {
+}
+func (r *fdOtelRecorder) RecordMultiDBHealthCheck(context.Context, string, bool, time.Duration) {}
 
 // TestFullDuplexRecordsOTelOperationDuration verifies the FD reader records the
 // native per-command OTel duration metric (redisotel-native) itself, which it
@@ -3797,7 +3803,7 @@ func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 			}
 		}()
 		// A non-nil error routes to the panicking error callback.
-		fd.reportReplyMetrics(context.Background(), req, errors.New("WRONGTYPE Operation"), nil)
+		fd.reportReplyMetrics(context.Background(), req, errors.New("WRONGTYPE Operation"), nil, 0)
 	}()
 
 	if calls.Load() != 1 {
@@ -3822,7 +3828,7 @@ func TestFDReportReplyMetricsNilReplyType(t *testing.T) {
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
 	req := fdReq{cmd: NewStringCmd(context.Background(), "get", "k"), attempts: 1}
 
-	fd.reportReplyMetrics(context.Background(), req, Nil, nil)
+	fd.reportReplyMetrics(context.Background(), req, Nil, nil, 0)
 	if got := gotType.Load(); got != "NIL" || gotInternal.Load() {
 		t.Fatalf("errorType = %v, internal = %v, want NIL, false", got, gotInternal.Load())
 	}
@@ -3993,7 +3999,7 @@ func TestFDReportReplyMetricsDurationCallbackNoDeadlock(t *testing.T) {
 		// e == nil exercises the duration callback (the blocking-view path). The
 		// batch is deliberately left open, matching the real order where
 		// reportReplyMetrics runs before req.complete().
-		fd.reportReplyMetrics(ctx, req, nil, nil)
+		fd.reportReplyMetrics(ctx, req, nil, nil, 0)
 	}()
 
 	select {
@@ -6593,9 +6599,11 @@ func TestFullDuplexGroupPanicDoesNotReplayReadReplies(t *testing.T) {
 		}
 	}()
 
-	cl := NewClient(&Options{Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
+	cl := NewClient(&Options{
+		Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
 		PipelinePoolSize: 2, MaxRetries: 1,
-		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond})
+		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond,
+	})
 	defer cl.Close()
 	ap, err := cl.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
@@ -6962,7 +6970,7 @@ func TestFDRerouteKeepsRemainingRetryBudget(t *testing.T) {
 		{cmd: NewStatusCmd(ctx, "set", "b", "1"), batch: newAPBatch(), attempts: 2},
 		{cmd: NewStatusCmd(ctx, "set", "c", "1"), batch: newAPBatch(), attempts: 1},
 	}
-	fd.rerouteReqs(ctx, reqs)
+	fd.rerouteReqs(ctx, reqs, io.EOF)
 	if got, want := fmt.Sprint(*bounds), "[2 3]"; got != want {
 		t.Fatalf("reroute retry bounds = %s, want %s (budget 3 minus executions done)", got, want)
 	}
@@ -7013,7 +7021,7 @@ func TestFDRerouteDetectsMaskedTransportError(t *testing.T) {
 	for i := range reqs {
 		reqs[i] = fdReq{cmd: NewStringCmd(ctx, "get", "k"+itoa(i)), batch: newAPBatch(), attempts: 1}
 	}
-	fd.rerouteReqs(ctx, reqs)
+	fd.rerouteReqs(ctx, reqs, io.EOF)
 	if calls != 1 {
 		t.Fatalf("owner ran %d chunks, want 1: the second ran after a transport failure", calls)
 	}
@@ -7037,7 +7045,7 @@ func TestFDRerouteRecordsCommandMetrics(t *testing.T) {
 		{cmd: NewStatusCmd(ctx, "set", "a", "1"), batch: newAPBatch(), attempts: 2},
 		{cmd: NewStatusCmd(ctx, "set", "b", "1"), batch: newAPBatch(), attempts: 1},
 	}
-	fd.rerouteReqs(ctx, reqs)
+	fd.rerouteReqs(ctx, reqs, io.EOF)
 	if n := rec.opDurations.Load(); n != int64(len(reqs)) {
 		t.Fatalf("operation durations recorded = %d, want %d", n, len(reqs))
 	}
@@ -7167,6 +7175,86 @@ func TestFDConnErrReroutesTail(t *testing.T) {
 	}
 	if rerouted.Load() == 0 {
 		t.Fatal("no command went through the reroute across 5 connection kills")
+	}
+}
+
+// With an owner reroute, the replayable tail after a connection error goes to
+// the owner before the reconnect backoff, not after it: the backoff only paces
+// the re-lease.
+func TestFDConnErrReroutesBeforeBackoff(t *testing.T) {
+	ctx := context.Background()
+	target := NewClient(&Options{Addr: ":6379"})
+	defer target.Close()
+	if err := target.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	const backoff = 2 * time.Second
+	c := NewClient(&Options{
+		Addr:             ":6379",
+		Protocol:         3,
+		PipelinePoolSize: 4,
+		PoolSize:         4,
+		MinRetryBackoff:  backoff,
+		MaxRetryBackoff:  backoff,
+	})
+	defer c.Close()
+	var rerouted atomic.Int64
+	var firstReroute atomic.Int64 // UnixNano of the first reroute call
+	inner := rerouteTo(target, &rerouted)
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		fdReroute: func(ctx context.Context, cmds []Cmder, maxRetries int) error {
+			firstReroute.CompareAndSwap(0, time.Now().UnixNano())
+			return inner(ctx, cmds, maxRetries)
+		},
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	killer := NewClient(&Options{Addr: ":6379"})
+	defer killer.Close()
+
+	const workers = 8
+	var stop atomic.Bool
+	done := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			key := "fd:reroute:backoff:" + itoa(w)
+			for n := 0; !stop.Load(); n++ {
+				if err := ap.Set(ctx, key, itoa(n), 0).Err(); err != nil {
+					done <- fmt.Errorf("worker %d set #%d: %w", w, n, err)
+					return
+				}
+			}
+			done <- nil
+		}(w)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	killAt := time.Now()
+	_ = killer.Do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes").Err()
+	time.Sleep(backoff + 500*time.Millisecond)
+	stop.Store(true)
+
+	deadline := time.After(10 * time.Second)
+	for w := 0; w < workers; w++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("timeout: a worker hung after a connection kill")
+		}
+	}
+	at := firstReroute.Load()
+	if at == 0 {
+		t.Skip("kill landed between sessions: nothing in flight to reroute")
+	}
+	if got := time.Unix(0, at).Sub(killAt); got >= backoff/2 {
+		t.Fatalf("first reroute %v after the connection kill, want < %v (it waited out the %v backoff)", got, backoff/2, backoff)
 	}
 }
 
@@ -7569,5 +7657,119 @@ func TestPipelineMinIdleConnsWithoutFD(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if n := def.loadPipelinePool().pool.IdleLen(); n != 0 {
 		t.Fatalf("default pipeline IdleLen = %d, want 0", n)
+	}
+}
+
+// TestFDReaderDurationCallbackReadsOwnCommand runs the real reader with a duration
+// callback that reads its own command: the reader registers itself as the batch's
+// executor with the goroutine id it read once at session start, so the read must
+// return the just-set view instead of wedging the reader.
+func TestFDReaderDurationCallbackReadsOwnCommand(t *testing.T) {
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	rec := &fdBlockingDurationRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
+	defer client.Close()
+	for _, async := range []bool{false, true} {
+		var ap *AutoPipeliner
+		var err error
+		if async {
+			ap, err = client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+		} else {
+			ap, err = client.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := rec.called.Load()
+		done := make(chan error, 1)
+		go func() {
+			cmds := make([]*StatusCmd, 200)
+			for i := range cmds {
+				cmds[i] = ap.Set(ctx, "fd-reader-gid", i, 0)
+			}
+			for _, c := range cmds {
+				if err := c.Err(); err != nil {
+					done <- err
+					return
+				}
+			}
+			done <- nil
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("async=%v: %v", async, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("async=%v: commands did not complete: a duration callback reading its own command wedged the reader", async)
+		}
+		if got := rec.called.Load() - before; got < 200 {
+			t.Fatalf("async=%v: duration callback invoked %d times, want at least 200", async, got)
+		}
+		if v, _ := rec.gotErr.Load().(string); v != "" {
+			t.Fatalf("async=%v: callback saw cmd.Err() = %q, want \"\"", async, v)
+		}
+		_ = ap.Close()
+	}
+}
+
+// TestFDReaderLateDurationCallbackReadsOwnCommand: the session starts before the
+// duration callback is registered (metrics enabled later); the reader's executor
+// guard still uses its session goroutine id, so a callback reading its own
+// command does not wedge the reader.
+func TestFDReaderLateDurationCallbackReadsOwnCommand(t *testing.T) {
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	otel.SetGlobalRecorder(nil)
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
+	defer client.Close()
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	if err := ap.Set(ctx, "fd-reader-gid-late", 0, 0).Err(); err != nil {
+		t.Fatal(err) // the session is up, with no callback registered
+	}
+
+	rec := &fdBlockingDurationRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	done := make(chan error, 1)
+	go func() {
+		cmds := make([]*StatusCmd, 200)
+		for i := range cmds {
+			cmds[i] = ap.Set(ctx, "fd-reader-gid-late", i, 0)
+		}
+		for _, c := range cmds {
+			if err := c.Err(); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("commands did not complete: a late duration callback reading its own command wedged the reader")
+	}
+	if got := rec.called.Load(); got < 200 {
+		t.Fatalf("duration callback invoked %d times, want at least 200", got)
+	}
+	if v, _ := rec.gotErr.Load().(string); v != "" {
+		t.Fatalf("callback saw cmd.Err() = %q, want \"\"", v)
 	}
 }

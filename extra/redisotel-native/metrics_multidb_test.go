@@ -36,6 +36,9 @@ func newTestRecorder(t *testing.T, groups MetricGroupFlags) (*metricsRecorder, *
 	if err != nil {
 		t.Fatalf("createRecorder: %v", err)
 	}
+	if rec.opq != nil {
+		t.Cleanup(rec.opq.stop) // no Init, so no Shutdown stops the worker
+	}
 	return rec, reader
 }
 

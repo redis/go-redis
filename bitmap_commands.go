@@ -19,6 +19,8 @@ type BitMapCmdable interface {
 	BitOpNot(ctx context.Context, destKey string, key string) *IntCmd
 	BitPos(ctx context.Context, key string, bit int64, pos ...int64) *IntCmd
 	BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd
+	BitRangeIntArray(ctx context.Context, key string, start, end int64) *IntSliceCmd
+	BitRangeIntArrayWithArgs(ctx context.Context, key string, start, end int64, args *BitRangeIntArrayArgs) *IntSliceCmd
 	BitField(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
 	BitFieldRO(ctx context.Context, key string, values ...interface{}) *IntSliceCmd
 }
@@ -159,6 +161,56 @@ func (c cmdable) BitPos(ctx context.Context, key string, bit int64, pos ...int64
 // span = "byte", cmd: bitpos key bit start end byte
 func (c cmdable) BitPosSpan(ctx context.Context, key string, bit int8, start, end int64, span string) *IntCmd {
 	cmd := NewIntCmd(ctx, "bitpos", key, bit, start, end, span)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// BitRangeIntArrayArgs holds the optional arguments of BITRANGEINTARRAY.
+type BitRangeIntArrayArgs struct {
+	// Unit of start and end: BYTE (default) or BIT.
+	Unit string
+	// Limit returns at most Limit offsets. 0 means no limit.
+	// In BYTE units the reply also completes the byte that holds the last offset.
+	Limit int64
+	// Zeros returns the offsets of the clear bits instead of the set bits.
+	Zeros bool
+}
+
+// BitRangeIntArray returns the offsets of the set bits of key in the byte
+// range [start, end], in ascending order.
+// cmd: BITRANGEINTARRAY key start end
+// Introduced with Redis 8.12
+func (c cmdable) BitRangeIntArray(ctx context.Context, key string, start, end int64) *IntSliceCmd {
+	return c.BitRangeIntArrayWithArgs(ctx, key, start, end, nil)
+}
+
+// BitRangeIntArrayWithArgs returns the offsets of the set bits, or of the
+// clear bits with Zeros, of key in the range [start, end], in ascending order.
+// cmd: BITRANGEINTARRAY key start end [BYTE|BIT] [LIMIT count] [ZEROS]
+// Introduced with Redis 8.12
+func (c cmdable) BitRangeIntArrayWithArgs(ctx context.Context, key string, start, end int64, args *BitRangeIntArrayArgs) *IntSliceCmd {
+	cmdArgs := make([]any, 4, 8)
+	cmdArgs[0] = "bitrangeintarray"
+	cmdArgs[1] = key
+	cmdArgs[2] = start
+	cmdArgs[3] = end
+	if args != nil {
+		if args.Unit != "" {
+			if args.Unit != BitCountIndexByte && args.Unit != BitCountIndexBit {
+				cmd := NewIntSliceCmd(ctx)
+				cmd.SetErr(errors.New("redis: invalid bitrangeintarray unit"))
+				return cmd
+			}
+			cmdArgs = append(cmdArgs, args.Unit)
+		}
+		if args.Limit != 0 {
+			cmdArgs = append(cmdArgs, "limit", args.Limit)
+		}
+		if args.Zeros {
+			cmdArgs = append(cmdArgs, "zeros")
+		}
+	}
+	cmd := NewIntSliceCmd(ctx, cmdArgs...)
 	_ = c(ctx, cmd)
 	return cmd
 }

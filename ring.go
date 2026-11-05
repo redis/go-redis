@@ -78,6 +78,8 @@ type RingOptions struct {
 	Protocol int
 	Username string
 	Password string
+	// AuthEmptyPassword: see Options.AuthEmptyPassword.
+	AuthEmptyPassword bool
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -234,6 +236,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
 		Password:                     opt.Password,
+		AuthEmptyPassword:            opt.AuthEmptyPassword,
 		CredentialsProvider:          opt.CredentialsProvider,
 		CredentialsProviderContext:   opt.CredentialsProviderContext,
 		StreamingCredentialsProvider: opt.StreamingCredentialsProvider,
@@ -634,6 +637,7 @@ func NewRing(opt *RingOptions) *Ring {
 	// through them to shard construction, and reusing one caller-owned
 	// RingOptions across several rings must not make the rings share (or
 	// clobber each other's) registry.
+	customFactory := opt.NewClient != nil
 	optCopy := *opt
 	opt = &optCopy
 	opt.init()
@@ -651,6 +655,7 @@ func NewRing(opt *RingOptions) *Ring {
 
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
+	ring.captureCacheIntent = customFactory
 
 	ring.initHooks(hooks{
 		process: ring.process,

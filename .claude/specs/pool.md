@@ -121,6 +121,14 @@ The contract now: a conn that is `StateUnusable` *for handoff* must not be picke
 
 `ConnMaxLifetimeJitter` matters in deployments where many clients started at the same time: without jitter, all their connections expire in the same second and reconnect simultaneously, hammering the server (thundering herd).
 
+### Statistics snapshots
+
+`Stats()` reads `TotalConns` and `IdleConns` from `conns` and `idleConns` under one
+`connsMu` lock, so they describe the same instant. Do not use `idleConnsLen` for
+this snapshot: that scheduling counter also includes reserved `MinIdleConns`
+dials that have not yet produced open connections. Other statistics are loaded
+independently and are not part of this coherent pair.
+
 ---
 
 ## Hook integration (`hooks.go`)

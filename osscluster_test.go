@@ -2072,6 +2072,77 @@ var _ = Describe("ClusterClient", func() {
 	})
 })
 
+// With cluster-preferred-endpoint-type unknown-endpoint the servers send a
+// null host in CLUSTER SLOTS and an empty host in MOVED and ASK. The client
+// reuses the host it connected to for the topology and the host of the node
+// that sent a redirect for its target. Redirects from a non-loopback host are
+// covered by TestClusterRedirectEmptyHost.
+var _ = Describe("ClusterClient with unknown-endpoint", func() {
+	const param = "cluster-preferred-endpoint-type"
+
+	var client *redis.ClusterClient
+	var saved map[string]string
+
+	BeforeEach(func() {
+		client, saved = nil, nil
+		// Redis 8.0 and 8.2 cluster nodes segfault in a module timer
+		// shortly after this setting is applied, which takes down the
+		// shared test cluster for every later spec.
+		SkipBeforeRedisVersion("8.4", "cluster nodes crash with unknown-endpoint")
+		saved = map[string]string{}
+		for port, node := range cluster.clients {
+			old, err := node.ConfigGet(ctx, param).Result()
+			Expect(err).NotTo(HaveOccurred())
+			saved[port] = old[param]
+			Expect(node.ConfigSet(ctx, param, "unknown-endpoint").Err()).NotTo(HaveOccurred())
+		}
+		client = cluster.newClusterClientUnstable(redisClusterOptions())
+	})
+
+	AfterEach(func() {
+		// Restore the setting even if BeforeEach failed before the client
+		// was built; AfterEach also runs after the version skip.
+		for port, value := range saved {
+			Expect(cluster.clients[port].ConfigSet(ctx, param, value).Err()).NotTo(HaveOccurred())
+		}
+		if client == nil {
+			return
+		}
+		_ = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			return master.FlushDB(ctx).Err()
+		})
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("should load the topology and follow a MOVED redirect", func() {
+		slots, err := cluster.masters()[0].ClusterSlots(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		for _, slot := range slots {
+			for _, node := range slot.Nodes {
+				Expect(node.Addr).To(HavePrefix(":"))
+			}
+		}
+
+		state, err := client.LoadState(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		for _, master := range state.Masters {
+			Expect(master.Client.Options().Addr).To(HavePrefix("127.0.0.1:"))
+		}
+
+		// A (slot 6373) and C (slot 14503) belong to different masters.
+		for _, key := range []string{"A", "C"} {
+			Expect(client.Set(ctx, key, "VALUE", 0).Err()).NotTo(HaveOccurred())
+			Expect(client.Get(ctx, key).Val()).To(Equal("VALUE"))
+		}
+
+		// Route the slot of A at its replica, which answers with
+		// -MOVED <slot> :<port>.
+		Expect(client.SwapNodes(ctx, "A")).NotTo(HaveOccurred())
+		Expect(client.Set(ctx, "A", "MOVED", 0).Err()).NotTo(HaveOccurred())
+		Expect(client.Get(ctx, "A").Val()).To(Equal("MOVED"))
+	})
+})
+
 var _ = Describe("ClusterClient without nodes", func() {
 	var client *redis.ClusterClient
 
@@ -3337,6 +3408,23 @@ var _ = Describe("Command Tips tests", func() {
 					val := client.Get(ctx, key)
 					Expect(val.Err()).To(Equal(redis.Nil))
 				}
+			})
+
+			It("should count keys in the same slot once with multi-slot routing", func() {
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
+
+				keys := []string{"{sameslot}a", "{sameslot}b", "{sameslot}c", "sameslot_1111", "sameslot_2222"}
+				for _, key := range keys {
+					Expect(client.Set(ctx, key, "value", 0).Err()).NotTo(HaveOccurred())
+				}
+
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b", "{sameslot}missing").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, keys...).Result()).To(Equal(int64(5)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(3)))
+				Expect(client.Touch(ctx, "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Del(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Unlink(ctx, "{sameslot}c", "sameslot_2222").Result()).To(Equal(int64(2)))
 			})
 
 			It("should test DBSIZE command with agg_sum aggregation across all shards", func() {

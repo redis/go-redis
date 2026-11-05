@@ -2,7 +2,64 @@
 
 ## Unreleased
 
+- **MultiDB client (experimental):** `NewMultiDBClient` routes commands to one
+  active database out of several standalone or cluster members (e.g. Redis
+  Enterprise Active-Active) and fails over based on circuit breakers, health
+  checks and a weight-based failover strategy, with auto-fallback to
+  higher-weight members. The `multidb` package adds ping and lag-aware health
+  checks and probe policies. See `example/multidb`
+  ([#3954](https://github.com/redis/go-redis/pull/3954)). Defaults:
+  - MultiDB owns retries: `CommandRetries` (0 = 2, -1 = none) retries on the
+    database active at each attempt, and every attempt is counted by the
+    breaker and failure detector. Standalone members get no retries of their
+    own (`MaxRetries` 0 becomes -1); an explicit `MaxRetries` is kept.
+  - Health checks: HEALTHY_ALL, 3 probes 500ms apart per check, honoring
+    `multidb.WithProbes` / `WithDelay` / `WithTimeout`; `HealthCheckTimeout`
+    (3s) caps the pass. Probes that cannot fit it are rejected at
+    construction and by `AddDatabase`. Under the default policy,
+    `SetActiveDatabase` and `ProbeTargetBeforeFailover` use one probe per
+    check.
+  - Startup: `InitialDBStateMajorityAvailable` needs half the members, rounded
+    up (1 of 2). A failed start matches `ErrInsufficientHealthyDatabases`;
+    with no healthy member it also matches `ErrPermanentlyNotAvailable`.
+  - Weights are in (0, 1] (0 = 1.0); -1 disables a member. The last enabled
+    member cannot be disabled.
+  - The default failure detector (1000 failures and 10% within 2s) is set
+    with `FailureDetectorConfig`, whose fields are used as given; start from
+    `DefaultMultiDBFailureDetectorConfig()`.
+- **Connection handshake and `Options.Limiter`:** the handshake of a new
+  connection (`HELLO`, `AUTH`, `SELECT`, `CLIENT SETINFO`,
+  `CLIENT MAINT_NOTIFICATIONS`) no longer calls `Limiter.Allow` per command. The
+  command that dials pays one admission and reports the handshake result once;
+  that admission also covers the commands an `OnConnect` callback sends on the
+  connection. A PubSub
+  connection, a reconnect after a maintenance handoff, and a fresh full-duplex
+  session each pay one admission for their handshake. Before, a circuit breaker in
+  the half-open state spent its probe budget on the handshake and never closed.
+- **Ephemeral connections with client-side caching:** with CSC active,
+  `EphemeralConn` now lazily dials a fresh, untracked connection. Session commands
+  are allowed without disrupting the parent cache, and reads always go to Redis.
+  The connection takes no `PoolSize` turn, does not support maintenance handoff,
+  and must be closed after use. Without CSC, idle-connection reuse is unchanged
+  ([#4174](https://github.com/redis/go-redis/pull/4174)).
+- **Connection-pool limits:** `MaxActiveConns` now counts all connections
+  registered with the pool (pooled, excess, and dedicated `NewConn` connections)
+  plus in-flight dial reservations. Previously, admission checked only the
+  pooled count (`poolSize`). Clients with this limit configured can now receive
+  `ErrPoolExhausted` from `NewConn`/`EphemeralConn` or during bursts that previously
+  exceeded the limit.
+- **Dial concurrency and prewarming:** `NewConn` now waits for the shared
+  `MaxConcurrentDials` limit and honors context cancellation while waiting. Idle
+  prewarming shares this limit without holding a pool turn while waiting for
+  dial capacity. Refill checks resume after foreground dials and successful
+  prewarm dials complete, and concurrent refill requests are preserved. These
+  pool-limit and prewarming changes apply to all clients using the pool, not
+  only CSC-enabled ephemeral sessions.
+
+- **Ring telemetry:** `redisotel.InstrumentTracing` and `InstrumentMetrics` now instrument existing shards. Remove any per-shard instrumentation workaround when instrumenting the ring to avoid duplicate spans and metrics ([#4227](https://github.com/redis/go-redis/pull/4227)).
+- **Username without a password:** a `Username` with an empty `Password` again sends no `AUTH`, as before [#4161](https://github.com/redis/go-redis/pull/4161). Redis Enterprise and Redis Cloud databases with unauthenticated access can reject an empty password, so #4161 could break configs that set a username (e.g. `default`) without a password. Redis OSS accepts it. To authenticate an ACL user created with `nopass`, set `AuthEmptyPassword: true` (or `auth_empty_password=true` in the URL); for sentinel connections use `SentinelAuthEmptyPassword` (`sentinel_auth_empty_password=true`). The rule also applies to credentials from `CredentialsProvider`, `CredentialsProviderContext` and `StreamingCredentialsProvider` used when a connection is set up; re-authentication on a credentials refresh is unchanged. The client-side cache keeps a separate namespace for a username that sends no `AUTH`.
 - **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
+- **Struct scan on a bad field:** `Scan` on `HGETALL`/`HMGET` results used to stop at the first field that failed to decode, and with `HGETALL` the set of filled fields was random. It now sets every field it can decode and still returns an error: the one of the failing field with the smallest key for `HGETALL`, and the first failing argument for `HMGET`. A nil pointer field stays nil when its decode fails. Code that reuses the struct after an error will see more fields set ([#4136](https://github.com/redis/go-redis/pull/4136)).
 - Cluster routing shares command metadata with client-side caching for key
   extraction and read-only status. Existing default routing and cluster-wide
   `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers are preserved.
@@ -55,6 +112,7 @@
   the cursor. Cursor ownership and reply-parsing changes are deferred to a
   separate PR.
 - **Per-node TLS verification for cluster URLs:** `ParseClusterURL` accepts `tls_verify_node_host=true` on `rediss://` URLs. The parameter clears `TLSConfig.ServerName`, so each node is verified against the host it is dialed at and not against the host of the first URL. Use it when each node has a certificate for its own host. The default is unchanged: every node is verified against the host of the first URL, so clusters that use one certificate and announce their nodes by IP continue to work. `rediss://` cluster URLs now also set `MinVersion: tls.VersionTLS12`, as `ParseURL` and `ParseFailoverURL` do ([#4145](https://github.com/redis/go-redis/pull/4145)).
+- **Failover client with `StreamingCredentialsProvider`:** `NewFailoverClient` now creates the streaming credentials manager, so new connections no longer panic in `initConn` ([#4182](https://github.com/redis/go-redis/pull/4182)).
 
 # 9.23.0 (2026-10-05)
 

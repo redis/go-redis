@@ -57,12 +57,16 @@ func (c *Client) newTx() *Tx {
 			// evict from the parent cache.
 			cscPoolHook: c.cscPoolHook,
 			cscActive:   c.cscActive,
+			cscPolicy:   c.cscPolicy,
 			// Carry the parent's streaming-credentials manager so initConn can
 			// create a credentials listener when Watch initializes a fresh
 			// connection (issue #4154).
 			streamingCredentialsManager: c.streamingCredentialsManager,
 		},
 	}
+	// Tx reads are uncached but still OPTOUT-prefix when trackable; share the
+	// parent's CommandMetadata overrides for custom read-only keyed commands.
+	c.baseClient.shareCommandMetadata(&tx.baseClient)
 	tx.init()
 	return &tx
 }
@@ -81,7 +85,8 @@ func (c *Tx) init() {
 
 func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
-	cmd.SetErr(err)
+	// Same as Client.Process: keep the serving-endpoint wrapper off cmd.Err().
+	cmd.SetErr(unwrapServingEndpoint(err))
 	return err
 }
 
@@ -93,7 +98,9 @@ func (c *Client) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) 
 	tx := c.newTx()
 	defer tx.Close(ctx)
 	if len(keys) > 0 {
-		if err := tx.Watch(ctx, keys...).Err(); err != nil {
+		// Return the Process error, not cmd.Err(): it keeps the serving
+		// endpoint that ClusterClient.Watch needs for a hostless redirect.
+		if _, err := tx.watch(ctx, keys...); err != nil {
 			return err
 		}
 	}
@@ -107,7 +114,8 @@ func (c *Tx) Close(ctx context.Context) error {
 	// WATCH/.../EXEC paths leave nothing to release and avoid the extra round
 	// trip.
 	if c.watchArmed {
-		_ = c.Unwatch(ctx).Err()
+		// Cleanup must not inherit the caller's cache intent.
+		_ = c.Unwatch(cscUnmarkedContext(ctx)).Err()
 	}
 	return c.baseClient.Close()
 }
@@ -115,19 +123,26 @@ func (c *Tx) Close(ctx context.Context) error {
 // Watch marks the keys to be watched for conditional execution
 // of a transaction.
 func (c *Tx) Watch(ctx context.Context, keys ...string) *StatusCmd {
+	cmd, _ := c.watch(ctx, keys...)
+	return cmd
+}
+
+// watch is Watch that also returns the Process error, which (unlike cmd.Err())
+// keeps the serving-endpoint wrapper.
+func (c *Tx) watch(ctx context.Context, keys ...string) (*StatusCmd, error) {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "watch"
 	for i, key := range keys {
 		args[1+i] = key
 	}
 	cmd := NewStatusCmd(ctx, args...)
-	_ = c.Process(ctx, cmd)
+	err := c.Process(ctx, cmd)
 	// A successful WATCH leaves keys watched on the connection that Close must
 	// later release with UNWATCH.
 	if cmd.Err() == nil {
 		c.watchArmed = true
 	}
-	return cmd
+	return cmd, err
 }
 
 // Unwatch flushes all the previously watched keys for a transaction.

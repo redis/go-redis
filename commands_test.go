@@ -421,11 +421,10 @@ var _ = Describe("Commands", func() {
 				pipe.ClientSetInfo(ctx, libInfo)
 			}).To(Panic())
 			// Test setting the default options for libName, libName suffix and libVer.
-			// CLIENT SETINFO is per-connection state, so read CLIENT INFO through the
-			// same pipeline path that issued the SETINFOs above: when the client has a
-			// dedicated pipeline pool (the autopipeline subject faces create one
-			// lazily), those ran on a pipeline-pool connection and rawClient.ClientInfo
-			// would inspect a different, main-pool connection.
+			// CLIENT SETINFO is per-connection state. Set the libName and read
+			// CLIENT INFO in the same Exec, so both run on one connection; separate
+			// Execs are not guaranteed to share one.
+			pipe.ClientSetInfo(ctx, redis.WithLibraryName(libName))
 			infoCmd := pipe.ClientInfo(ctx)
 			_, err = pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -1823,6 +1822,58 @@ var _ = Describe("Commands", func() {
 
 			_, err = client.BitPos(ctx, "mykey", 0, 0, 0, 0, 0).Result()
 			Expect(err).Should(MatchError("too many arguments"))
+		})
+
+		It("should BitRangeIntArray", func() {
+			SkipBeforeRedisVersion("8.12", "BITRANGEINTARRAY needs Redis 8.12")
+
+			for _, off := range []int64{1, 7, 9, 30} {
+				Expect(client.SetBit(ctx, "bria", off, 1).Err()).NotTo(HaveOccurred())
+			}
+
+			offs, err := client.BitRangeIntArray(ctx, "bria", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{1, 7, 9, 30}))
+
+			offs, err = client.BitRangeIntArray(ctx, "bria", 1, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{9, 30}))
+
+			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 5, 10, &redis.BitRangeIntArrayArgs{
+				Unit: redis.BitCountIndexBit,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{7, 9}))
+
+			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 24, 31, &redis.BitRangeIntArrayArgs{
+				Unit:  redis.BitCountIndexBit,
+				Zeros: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{24, 25, 26, 27, 28, 29, 31}))
+
+			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 2, -1, &redis.BitRangeIntArrayArgs{
+				Unit:  redis.BitCountIndexBit,
+				Limit: 2,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{7, 9}))
+
+			// BYTE units complete the byte that holds the last offset.
+			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 0, -1, &redis.BitRangeIntArrayArgs{
+				Limit: 1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(Equal([]int64{1, 7}))
+
+			offs, err = client.BitRangeIntArray(ctx, "nosuchkey", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(offs).To(BeEmpty())
+
+			err = client.BitRangeIntArrayWithArgs(ctx, "bria", 0, -1, &redis.BitRangeIntArrayArgs{
+				Unit: "nibble",
+			}).Err()
+			Expect(err).To(MatchError("redis: invalid bitrangeintarray unit"))
 		})
 
 		It("should BitPosSpan", func() {
@@ -3574,9 +3625,7 @@ var _ = Describe("Commands", func() {
 				"value1",
 				"ARGS",
 				"arg1",
-				"ARGS",
 				"arg2",
-				"ARGS",
 				3,
 			}
 
@@ -8175,6 +8224,45 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
+		It("should XRead with per-stream IDs", Label("NonRedisEnterprise"), func() {
+			_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "stream2", ID: "1-0", Values: map[string]interface{}{"alpha": "a"}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "stream2", ID: "2-0", Values: map[string]interface{}{"beta": "b"}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// "stream" is read after 2-0 and "stream2" from the start.
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"2-0", "0"},
+				Block:   -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+				{
+					Stream: "stream2",
+					Messages: []redis.XMessage{
+						{ID: "1-0", Values: map[string]interface{}{"alpha": "a"}},
+						{ID: "2-0", Values: map[string]interface{}{"beta": "b"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead fail when IDs and Streams lengths differ", func() {
+			err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"0"},
+				Block:   -1,
+			}).Err()
+			Expect(err).To(MatchError("redis: XRead IDs length must match Streams length"))
+		})
+
 		It("should XRead with MAXCOUNT capping cumulative entries across streams", func() {
 			SkipBeforeRedisVersion("8.10", "XREAD MAXCOUNT requires Redis 8.10+")
 
@@ -9145,6 +9233,28 @@ var _ = Describe("Commands", func() {
 						Lag:             -1, // nil lag from Redis is reported as -1
 					},
 				}))
+			})
+
+			It("should return -1 for nil lag in XINFO STREAM FULL", func() {
+				for _, id := range []string{"0-1", "0-2", "0-3"} {
+					err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: id, Values: []string{"foo", id}}).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				err := client.XGroupCreate(ctx, "s", "g", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+				err = client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{"s", ">"}, Count: 1, Block: -1}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Deleting an entry the group has not read yet makes Redis reply with a nil lag.
+				err = client.XDel(ctx, "s", "0-2").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				res, err := client.XInfoStreamFull(ctx, "s", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.Groups).To(HaveLen(1))
+				Expect(res.Groups[0].EntriesRead).To(Equal(int64(1)))
+				Expect(res.Groups[0].Lag).To(Equal(int64(-1))) // nil lag from Redis is reported as -1
 			})
 
 			It("should XINFO CONSUMERS", func() {

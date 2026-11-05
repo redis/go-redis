@@ -33,7 +33,7 @@ func (it *ScanIterator) Next(ctx context.Context) bool {
 
 	for {
 		// Return if there is no more data to fetch.
-		if it.cmd.cursor == 0 {
+		if !it.cmd.more() {
 			return false
 		}
 
@@ -93,7 +93,7 @@ func (it *ScanIterator) Vals(ctx context.Context) iter.Seq[string] {
 			}
 
 			// Return if there is no more data to fetch.
-			if it.cmd.cursor == 0 {
+			if !it.cmd.more() {
 				return
 			}
 

@@ -69,6 +69,14 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 // and then continues only through frames already buffered by that read. It is
 // used by callers that have already established socket readiness and must not
 // wait for another frame after draining the current batch.
+//
+// After the first notification it starts a push frame only when the whole frame
+// is buffered. Callers run it under one hard read deadline for the whole call, and
+// handler time counts against it: a partly buffered frame started after slow
+// handlers could need a socket read after the deadline passed, time out
+// mid-frame, and retire a healthy connection. Such a frame is left untouched for
+// the next drain. A partly buffered attribute is still read here: the pool's
+// put-path check would parse it without a deadline.
 func (p *Processor) ProcessPendingNotificationsBuffered(
 	ctx context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader,
 ) error {
@@ -107,6 +115,12 @@ func (p *Processor) processPendingNotifications(
 				if err := rd.DiscardNext(); err != nil {
 					return err
 				}
+			}
+			// At a push frame with nothing of it consumed (any attributes before it
+			// are gone): leave it for the next drain unless it is fully buffered,
+			// rather than read the rest under a deadline the handlers may have used up.
+			if processed && replyType == proto.RespPush && !rd.HasBufferedFrame() {
+				return nil
 			}
 		} else {
 			var err error

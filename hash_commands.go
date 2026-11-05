@@ -132,6 +132,11 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 //
 //   - HSet(ctx, "myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
 //
+//   - HSet(ctx, "myhash", map[string]string{"key1": "value1", "key2": "value2"})
+//
+//   - HSet(ctx, "myhash", map[string]int{"counter1": 10, "counter2": 20})
+//     Other map[string]T forms (int64, float64, bool, …) are flattened the same way.
+//
 //     Playing struct With "redis" tag.
 //     type MyHash struct { Key1 string `redis:"key1"`; Key2 int `redis:"key2"` }
 //
@@ -549,6 +554,9 @@ type HGetEXOptions struct {
 }
 
 func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd {
+	if options == nil {
+		options = &HGetEXOptions{}
+	}
 	args := []interface{}{"HGETEX", key}
 	if options.ExpirationType != "" {
 		args = append(args, string(options.ExpirationType))
@@ -602,6 +610,9 @@ func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...stri
 }
 
 func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetEXOptions, fieldsAndValues ...string) *IntCmd {
+	if options == nil {
+		options = &HSetEXOptions{}
+	}
 	args := []interface{}{"HSETEX", key}
 	if options.Condition != "" {
 		args = append(args, string(options.Condition))
