@@ -1179,13 +1179,11 @@ func (o *queryOptions) duration(name string) time.Duration {
 	if s == "" {
 		return 0
 	}
-	// try plain number first
-	if i, err := strconv.Atoi(s); err == nil {
-		if i <= 0 {
-			// disable timeouts
-			return -1
-		}
-		return time.Duration(i) * time.Second
+	// Plain numbers are seconds. Normalize them to a duration string so that
+	// oversized values are rejected rather than wrapping the multiplication
+	// into a negative duration.
+	if _, err := strconv.Atoi(s); err == nil {
+		s += "s"
 	}
 	dur, err := time.ParseDuration(s)
 	if err == nil {
