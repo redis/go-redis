@@ -268,7 +268,7 @@ func TestParseURL(t *testing.T) {
 			// a plain number is seconds; an oversized one must error out
 			// instead of wrapping into a negative duration
 			url: "redis://localhost/?dial_timeout=10000000000",
-			err: errors.New(`redis: invalid dial_timeout duration: time: invalid duration "10000000000s"`),
+			err: errors.New(`redis: invalid dial_timeout duration: value out of range`),
 		},
 	}
 
@@ -297,6 +297,8 @@ func TestParseURLPlainNumberDurations(t *testing.T) {
 	t.Parallel()
 
 	// Oversized seconds must be rejected for every duration parameter.
+	// 9223372037s overflows int64 nanoseconds; parse with ParseInt so this
+	// expectation holds on both 32-bit and 64-bit hosts.
 	for _, name := range []string{"dial_timeout", "read_timeout", "write_timeout", "pool_timeout", "conn_max_lifetime"} {
 		if _, err := ParseURL("redis://localhost/?" + name + "=9223372037"); err == nil || !strings.Contains(err.Error(), name) {
 			t.Fatalf("%s: expected overflow error, got %v", name, err)
@@ -314,13 +316,16 @@ func TestParseURLPlainNumberDurations(t *testing.T) {
 		t.Fatalf("read_timeout = %v, want 1m", o.ReadTimeout)
 	}
 
-	// Zero and negative values still disable the timeout.
-	o, err = ParseURL("redis://localhost/?write_timeout=-5")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if o.WriteTimeout != -1 {
-		t.Fatalf("write_timeout = %v, want -1 (disabled)", o.WriteTimeout)
+	// Zero and negative values still disable the timeout, including large
+	// negatives that would overflow as a ParseDuration string.
+	for _, raw := range []string{"-5", "-10000000000", "0"} {
+		o, err = ParseURL("redis://localhost/?write_timeout=" + raw)
+		if err != nil {
+			t.Fatalf("write_timeout=%s: unexpected error: %v", raw, err)
+		}
+		if o.WriteTimeout != -1 {
+			t.Fatalf("write_timeout=%s => %v, want -1 (disabled)", raw, o.WriteTimeout)
+		}
 	}
 }
 

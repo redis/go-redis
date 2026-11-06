@@ -1179,11 +1179,23 @@ func (o *queryOptions) duration(name string) time.Duration {
 	if s == "" {
 		return 0
 	}
-	// Plain numbers are seconds. Normalize them to a duration string so that
-	// oversized values are rejected rather than wrapping the multiplication
-	// into a negative duration.
-	if _, err := strconv.Atoi(s); err == nil {
-		s += "s"
+	// Plain integers are seconds. Use a 64-bit parse so large values work on
+	// 32-bit targets the same as on amd64, and keep the historical rule that
+	// any non-positive integer disables the timeout (including values that
+	// would overflow when expressed as a ParseDuration string).
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if i <= 0 {
+			// disable timeouts
+			return -1
+		}
+		const maxSeconds = int64((1<<63 - 1) / int64(time.Second))
+		if i > maxSeconds {
+			if o.err == nil {
+				o.err = fmt.Errorf("redis: invalid %s duration: value out of range", name)
+			}
+			return 0
+		}
+		return time.Duration(i) * time.Second
 	}
 	dur, err := time.ParseDuration(s)
 	if err == nil {
