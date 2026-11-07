@@ -1456,6 +1456,108 @@ func TestCSCPolicyInvalidModeDisablesAtConstruction(t *testing.T) {
 	}
 }
 
+func TestCSCPolicyOptOutKeepsNOAfterDisable(t *testing.T) {
+	// #4236 item 1: after disableCSCServing, OPTOUT sockets that were
+	// initialized with TRACKING ON must still emit CLIENT CACHING NO for
+	// ordinary uncached reads. Client-level cscActive=false must not drop
+	// the per-connection prefix.
+	ctx := context.Background()
+	s := newCSCPolicyServer(t, nil)
+	opt := cscPolicyOptions(s.addr, TrackingModeOptOut)
+	opt.PoolSize = 1
+	// Force pipelines onto the tracked main pool (dedicated pipeline sockets
+	// stay untracked and correctly omit CLIENT CACHING).
+	opt.PipelinePoolSize = -1
+	c := policyClient(t, opt)
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	before := s.prefixes()
+	if got, err := c.Get(WithoutCache(ctx), "k").Result(); err != nil || got != "v" {
+		t.Fatal(got, err)
+	}
+	if s.prefixes() != before+1 {
+		t.Fatal("baseline OPTOUT NO missing", s.snapshot())
+	}
+	c.disableCSCServing(ctx, "test: mid-life disable must keep per-conn NO")
+	if got, err := c.Get(WithoutCache(ctx), "k2").Result(); err != nil || got != "v" {
+		t.Fatal(got, err)
+	}
+	if s.prefixes() != before+2 {
+		t.Fatal("disabled CSC dropped OPTOUT NO on tracked socket", s.snapshot())
+	}
+	pipe := c.Pipeline()
+	pipe.Get(WithoutCache(ctx), "k3")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.prefixes() != before+3 {
+		t.Fatal("disabled CSC dropped OPTOUT NO on tracked pipeline", s.snapshot())
+	}
+	s.assertPairs(t)
+}
+
+func TestCSCPolicyOptOutReinitAfterDisableDropsNO(t *testing.T) {
+	// #4236 item 1 follow-up: a tracked conn re-initialized after
+	// disableCSCServing (e.g. a handoff through SetNetConnAndInitConn) skips
+	// CLIENT TRACKING ON, so the new socket is untracked and must not receive
+	// CLIENT CACHING NO.
+	ctx := context.Background()
+	s := newCSCPolicyServer(t, nil)
+	opt := cscPolicyOptions(s.addr, TrackingModeOptOut)
+	opt.PoolSize = 1
+	opt.PipelinePoolSize = -1
+	c := policyClient(t, opt)
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	c.disableCSCServing(ctx, "test: re-init after disable")
+	cn, err := c.connPool.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.cscConnInitGen(cn.GetID()) == 0 {
+		t.Fatal("expected tracked conn before re-init")
+	}
+	c.connPool.Put(ctx, cn)
+	netConn, err := net.Dial("tcp", s.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trackingOn := func() int {
+		n := 0
+		for _, e := range s.snapshot() {
+			if len(e.args) > 1 && strings.EqualFold(e.args[0], "client") && strings.EqualFold(e.args[1], "tracking") {
+				n++
+			}
+		}
+		return n
+	}
+	tracking := trackingOn()
+	if err := cn.SetNetConnAndInitConn(ctx, netConn); err != nil {
+		t.Fatalf("re-init: %v", err)
+	}
+	if got := trackingOn(); got != tracking {
+		t.Fatalf("re-init after disable sent CLIENT TRACKING ON (%d -> %d)", tracking, got)
+	}
+	if gen := c.cscConnInitGen(cn.GetID()); gen != 0 {
+		t.Fatalf("untracked re-init kept init generation %d", gen)
+	}
+	before := s.prefixes()
+	if got, err := c.Get(WithoutCache(ctx), "k").Result(); err != nil || got != "v" {
+		t.Fatal(got, err)
+	}
+	pipe := c.Pipeline()
+	pipe.Get(WithoutCache(ctx), "k2")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.prefixes(); got != before {
+		t.Fatal("OPTOUT NO sent on untracked re-initialized socket", s.snapshot())
+	}
+	s.assertPairs(t)
+}
+
 func TestCSCPolicyFullDuplexUntracked(t *testing.T) {
 	for _, mode := range []TrackingMode{TrackingModePlain, TrackingModeOptIn, TrackingModeOptOut} {
 		for _, cluster := range []bool{false, true} {
@@ -1707,5 +1809,48 @@ func TestCSCPolicyFullDuplexCloseWhileWaitingForPool(t *testing.T) {
 	}
 	if s.count("get") != 1 {
 		t.Fatal("Close lost or duplicated accepted request", s.snapshot())
+	}
+}
+
+func TestCSCOptOutWrappersShareCommandMetadata(t *testing.T) {
+	// Custom readonly keyed command that only exists via Overrides. Without the
+	// parent store, Conn/Tx fall back to the static table, cscTrackable fails,
+	// and OPTOUT omits CLIENT CACHING NO (issue #4236 item 3).
+	info := cloneCommandInfo(defaultCommandMetadataView().records["get"])
+	c := NewClient(&Options{
+		Addr:                        "127.0.0.1:1",
+		Protocol:                    3,
+		ClientSideCacheConfig:       &ClientSideCacheConfig{MaxEntries: 8},
+		ClientSideCacheTrackingMode: TrackingModeOptOut,
+		CommandMetadata: &CommandMetadataConfig{
+			Overrides: map[string]*CommandInfo{"xcustomget": info},
+		},
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer c.Close()
+	if c.cmdMeta == nil {
+		t.Fatal("expected a parent command-metadata store for overrides")
+	}
+	cmd := NewCmd(context.Background(), "xcustomget", "k")
+	if !c.cscTrackable(cmd) {
+		t.Fatal("parent should treat the override as trackable")
+	}
+
+	cn := c.Conn()
+	defer cn.Close()
+	if cn.cmdMeta != nil || cn.metadataSource != c.cmdMeta || cn.metadataView() != c.metadataView() {
+		t.Fatal("Conn did not borrow the parent metadata view")
+	}
+	if !cn.cscTrackable(cmd) {
+		t.Fatal("Conn ignored the parent CommandMetadata override")
+	}
+
+	tx := c.newTx()
+	defer tx.Close(context.Background())
+	if tx.cmdMeta != nil || tx.metadataSource != c.cmdMeta || tx.metadataView() != c.metadataView() {
+		t.Fatal("Tx did not borrow the parent metadata view")
+	}
+	if !tx.cscTrackable(cmd) {
+		t.Fatal("Tx ignored the parent CommandMetadata override")
 	}
 }

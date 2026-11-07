@@ -2023,6 +2023,38 @@ func TestClientTrackingRejectedWithCSC_Pipeline(t *testing.T) {
 	}
 }
 
+func TestCSCClientCommandGuard(t *testing.T) {
+	c := NewClient(&Options{
+		Addr:                  "localhost:1",
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16},
+	})
+	t.Cleanup(func() { _ = c.Close() })
+
+	client := "client"
+	for _, tc := range []struct {
+		name string
+		args []interface{}
+		want error
+	}{
+		{"bare string", []interface{}{"client"}, nil},
+		{"bare mixed case", []interface{}{"ClIeNt"}, nil},
+		{"bare bytes", []interface{}{[]byte("CLIENT")}, nil},
+		{"bare pointer", []interface{}{&client}, nil},
+		{"info", []interface{}{"client", "info"}, nil},
+		{"tracking", []interface{}{"client", "tracking", "off"}, errClientTrackingWithCSC},
+		{"caching", []interface{}{"client", "caching", "no"}, errClientCachingWithCSC},
+		{"opaque subcommand", []interface{}{"client", cscWireSmuggler{wire: "tracking", str: "info"}}, errUnverifiableCommandWithCSC},
+		{"opaque command", []interface{}{cscWireSmuggler{wire: "client", str: "get"}}, errUnverifiableCommandWithCSC},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := c.cscCommandError(makeCmd(tc.args...)); !errors.Is(err, tc.want) {
+				t.Fatalf("guard error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestCSCDisablesWhenHELLO3FallsBackToRESP2(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

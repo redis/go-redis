@@ -1795,6 +1795,9 @@ func (c cmdable) FTExplain(ctx context.Context, index string, query string) *Str
 // For more information, please refer to the Redis documentation:
 // [FT.EXPLAIN]: (https://redis.io/commands/ft.explain/)
 func (c cmdable) FTExplainWithArgs(ctx context.Context, index string, query string, options *FTExplainOptions) *StringCmd {
+	if options == nil {
+		options = &FTExplainOptions{}
+	}
 	args := []interface{}{"FT.EXPLAIN", index, query}
 	if options.Dialect != "" {
 		args = append(args, "DIALECT", options.Dialect)
@@ -3521,8 +3524,12 @@ func FTSearchQuery(query string, options *FTSearchOptions) (SearchQuery, error) 
 				queryArgs = append(queryArgs, "WITHCOUNT")
 			}
 		}
-		if options.LimitOffset >= 0 && options.Limit > 0 {
-			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
+		if options.CountOnly {
+			queryArgs = append(queryArgs, "LIMIT", 0, 0)
+		} else {
+			if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
+				queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
+			}
 		}
 		if options.Params != nil {
 			queryArgs = append(queryArgs, "PARAMS", len(options.Params)*2)
@@ -3849,6 +3856,9 @@ func (c cmdable) FTSynUpdate(ctx context.Context, index string, synGroupId inter
 // For more information, please refer to the Redis documentation:
 // [FT.SYNUPDATE]: (https://redis.io/commands/ft.synupdate/)
 func (c cmdable) FTSynUpdateWithArgs(ctx context.Context, index string, synGroupId interface{}, options *FTSynUpdateOptions, terms []interface{}) *StatusCmd {
+	if options == nil {
+		options = &FTSynUpdateOptions{}
+	}
 	args := []interface{}{"FT.SYNUPDATE", index, synGroupId}
 	if options.SkipInitialScan {
 		args = append(args, "SKIPINITIALSCAN")

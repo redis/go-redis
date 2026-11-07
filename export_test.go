@@ -5,11 +5,17 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"testing"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+func NewTestRedisAddr(t *testing.T) string {
+	t.Helper()
+	return newFDStateServer(t).addr()
+}
 
 func (c *baseClient) Pool() pool.Pooler {
 	return c.connPool
@@ -129,4 +135,55 @@ func NewTestSentinelFailover(opt *FailoverOptions, sentinelAddrs []string) *sent
 // ReplicaAddrs is exported for testing.
 func (c *sentinelFailover) ReplicaAddrs(ctx context.Context) ([]string, error) {
 	return c.replicaAddrs(ctx, false)
+}
+
+// TestBreakerRecordFailure records one failure on the given member's circuit
+// breaker. Exported for testing breaker-gate interactions.
+func (c *MultiDBClient) TestBreakerRecordFailure(id int) {
+	c.core.dbByID(id).cb.RecordFailure()
+}
+
+// TestBreakerReserveHalfOpen runs the given member's breaker admission check,
+// reserving one half-open probe slot when the breaker is half-open. Exported
+// for testing breaker-gate interactions.
+func (c *MultiDBClient) TestBreakerReserveHalfOpen(id int) bool {
+	return c.core.dbByID(id).cb.IsAllowed()
+}
+
+// TestProbeRacingRemoval reproduces the background health-check loop racing a
+// concurrent RemoveDatabase: the member is snapshotted (as the loop does),
+// removed, and then probed through the stale snapshot.
+func (c *MultiDBClient) TestProbeRacingRemoval(id int) {
+	db := c.core.dbByID(id)
+	if err := c.core.removeDatabase(context.Background(), id); err != nil {
+		panic(err)
+	}
+	db.probe(context.Background(), c.core.opts.HealthCheckTimeout)
+}
+
+// TestRunHealthChecksOnce runs one synchronous background health-check pass.
+func (c *MultiDBClient) TestRunHealthChecksOnce() {
+	c.core.runHealthChecksOnce(context.Background())
+}
+
+// TestTryFallback runs one synchronous auto-fallback pass.
+func (c *MultiDBClient) TestTryFallback() {
+	c.core.tryFallbackToPrimary(context.Background())
+}
+
+// TestTryFailover runs one synchronous automatic-failover pass from the given
+// database id, as the command hot path and background loop do.
+func (c *MultiDBClient) TestTryFailover(from int) error {
+	return c.core.tryFailover(context.Background(), from)
+}
+
+// TestStaleRecordAfterRemoval simulates a probe that passed its removed-check
+// just before the member was removed: the breaker outcome lands after the
+// removal completed.
+func (c *MultiDBClient) TestStaleRecordAfterRemoval(id int) {
+	db := c.core.dbByID(id)
+	if err := c.core.removeDatabase(context.Background(), id); err != nil {
+		panic(err)
+	}
+	db.cb.RecordFailure()
 }

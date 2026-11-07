@@ -507,7 +507,8 @@ type Options struct {
 	// takes precedence over this config.
 	//
 	// Client-side caching is disabled when CredentialsProvider,
-	// CredentialsProviderContext, or StreamingCredentialsProvider is set:
+	// CredentialsProviderContext, or StreamingCredentialsProvider is set, and
+	// when TLSConfig.GetClientCertificate is set without AUTH credentials:
 	// provider-backed credentials can change the ACL identity after the cache
 	// namespace is selected. Fixed Username/Password values are supported and
 	// the ACL user they authenticate as is included in the cache namespace.
@@ -547,7 +548,8 @@ type Options struct {
 	//
 	// A shared Cache is only safe across clients on the same server and DB.
 	// Clients with different fixed Username/Password values are isolated by a
-	// username namespace.
+	// username namespace. Clients that send no AUTH are also isolated by their
+	// TLSConfig.Certificates, which can select the ACL user on the server.
 	// Client-side caching is restricted to DB 0 and disabled with a warning
 	// otherwise. It is also disabled with any credential provider; see
 	// ClientSideCacheConfig.
@@ -756,7 +758,13 @@ func (opt *Options) init() {
 	if opt.Protocol < 2 {
 		opt.Protocol = 3
 	}
-	if opt.DialTimeout == 0 {
+	// A duration option is disabled with a value of 0 or less in ParseURL, and
+	// ReadTimeout/WriteTimeout turn that into "no deadline". A negative value
+	// cannot do that for DialTimeout: net.Dialer reads it as a deadline that has
+	// already passed and fails every dial at once, so it has to become 0.
+	if opt.DialTimeout < 0 {
+		opt.DialTimeout = 0
+	} else if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
 	// <= 0, not == 0: the pool already treats a nonpositive value as the default
@@ -940,8 +948,17 @@ var defaultKeepAliveConfig = net.KeepAliveConfig{
 // when none is specified in Options.Dialer.
 func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// ParseURL disables DialTimeout with a value of 0 or less, and init turns
+		// that into 0 ("no deadline"). This dialer is exported and can be built
+		// straight from a parsed Options, without NewClient's clone or init, so it
+		// normalises the value itself: net.Dialer reads a negative timeout as a
+		// deadline that has already passed.
+		timeout := opt.DialTimeout
+		if timeout < 0 {
+			timeout = 0
+		}
 		netDialer := &net.Dialer{
-			Timeout:         opt.DialTimeout,
+			Timeout:         timeout,
 			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if opt.TLSConfig == nil {

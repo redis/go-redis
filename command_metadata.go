@@ -1241,6 +1241,18 @@ func helloServerVersion(reply map[string]interface{}) string {
 	return version
 }
 
+// shareCommandMetadata equips an uncached derived client (Conn, Tx, initConn
+// handshake) with read-only access to the parent's command-metadata store so
+// custom CommandMetadata overrides still drive cscTrackable / OPTOUT prefixes.
+func (c *baseClient) shareCommandMetadata(dst *baseClient) {
+	if c.cmdMeta != nil {
+		dst.metadataSource = c.cmdMeta
+	} else if c.metadataSource != nil {
+		dst.metadataSource = c.metadataSource
+	}
+	dst.staticCmdMeta = c.staticCmdMeta
+}
+
 // metadataView returns the client's current command-metadata view; clients
 // without a store share the static default.
 func (c *baseClient) metadataView() *commandMetadataView {

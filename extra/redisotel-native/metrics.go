@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -24,9 +25,12 @@ const (
 	libraryName = "go-redis"
 )
 
+// libraryVersionAttr is built once: every recorded metric carries it.
+var libraryVersionAttr = attribute.String(AttrRedisClientLibrary, libraryName+":"+redis.Version())
+
 // getLibraryVersionAttr returns the redis.client.library attribute
 func getLibraryVersionAttr() attribute.KeyValue {
-	return attribute.String(AttrRedisClientLibrary, fmt.Sprintf("%s:%s", libraryName, redis.Version()))
+	return libraryVersionAttr
 }
 
 // addServerPortIfNonDefault adds server.port attribute if port is not the default (6379)
@@ -65,6 +69,17 @@ type metricsRecorder struct {
 
 	// Configuration
 	cfg *config
+
+	// opAttrs caches success-path operation attribute sets (opAttrKey ->
+	// attribute.Set). Hits only Load; misses go through storeOpAttrs, which
+	// holds opAttrsMu, so opAttrsLen is exactly the number of entries.
+	opAttrs    sync.Map
+	opAttrsMu  sync.Mutex
+	opAttrsLen int
+
+	// opq records success-path operation durations off the caller's goroutine
+	// (op_queue.go); nil records them inline.
+	opq *opQueue
 }
 
 // RecordOperationDuration records db.client.operation.duration metric
@@ -89,12 +104,104 @@ func (r *metricsRecorder) RecordOperationDuration(
 	// Convert duration to seconds (OTel convention for duration metrics)
 	durationSeconds := duration.Seconds()
 
-	serverAddr, serverPort := extractServerInfo(cn)
+	var addr net.Addr
+	if cn != nil {
+		addr = cn.RemoteAddr()
+	}
+
+	failed := err != nil && !r.skipNilReply(err)
+	if !failed {
+		// The success-path attributes depend only on the key, so the set is built
+		// once per key instead of once per command. That matters on full duplex,
+		// where every command is recorded on the one reader goroutine.
+		key := opAttrKey{op: cmd.FullName(), attempts: attempts, db: dbIndex}
+		switch addr.(type) {
+		case nil:
+		case *net.TCPAddr, *net.UnixAddr:
+			// A connection returns the same address value every time, so the
+			// pointer is the key and String() is paid once per key, not per command.
+			key.addr = addr
+		default:
+			key.remote = addr.String() // may not be comparable: key by its text
+		}
+		set, ok := r.opAttrs.Load(key)
+		if !ok {
+			set = r.storeOpAttrs(key, addr)
+		}
+		if r.opq != nil {
+			r.opq.record(ctx, durationSeconds, set.(attribute.Set))
+			return
+		}
+		r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributeSet(set.(attribute.Set)))
+		return
+	}
+
+	attrs := operationAttrs(cmd.FullName(), attempts, addrString(addr), dbIndex)
+	attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
+	attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
+	if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
+		attrs = append(attrs, attribute.String(AttrDBResponseStatusCode, statusCode))
+	}
+
+	// Record the histogram
+	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// maxOpAttrSets bounds the success-path attribute-set cache: past it the
+// cache is cleared, so many commands x endpoints x attempts x dbs cannot grow it without limit.
+const maxOpAttrSets = 4096
+
+// opAttrKey is everything the success-path operation attributes are built from.
+// The connection's remote address is addr (a *net.TCPAddr or *net.UnixAddr) or
+// else remote, its String(); never the connection, so the cache keeps no closed
+// connection reachable.
+type opAttrKey struct {
+	op       string
+	addr     net.Addr
+	remote   string
+	attempts int
+	db       int
+}
+
+// storeOpAttrs builds and caches the set for key, clearing the cache first
+// when it is full.
+func (r *metricsRecorder) storeOpAttrs(key opAttrKey, addr net.Addr) any {
+	r.opAttrsMu.Lock()
+	defer r.opAttrsMu.Unlock()
+	if set, ok := r.opAttrs.Load(key); ok {
+		return set
+	}
+	if r.opAttrsLen >= maxOpAttrSets {
+		r.opAttrs.Clear()
+		r.opAttrsLen = 0
+	}
+	set := attribute.NewSet(operationAttrs(key.op, key.attempts, addrString(addr), key.db)...)
+	r.opAttrs.Store(key, set)
+	r.opAttrsLen++
+	return set
+}
+
+func addrString(a net.Addr) string {
+	if a == nil {
+		return ""
+	}
+	return a.String()
+}
+
+// operationAttrs is db.client.operation.duration's attributes without the
+// error ones; remote is the connection's RemoteAddr().String(), or "".
+func operationAttrs(op string, attempts int, remote string, dbIndex int) []attribute.KeyValue {
+	var serverAddr, serverPort string
+	if remote != "" {
+		serverAddr, serverPort = parseAddr(remote)
+	}
 
 	// Build attributes
-	attrs := []attribute.KeyValue{
+	attrs := make([]attribute.KeyValue, 0, 12)
+	attrs = append(
+		attrs,
 		// Required attributes
-		attribute.String(AttrDBOperationName, cmd.FullName()),
+		attribute.String(AttrDBOperationName, op),
 		getLibraryVersionAttr(),
 		attribute.Int(AttrRedisClientOperationRetryAttempts, max(attempts-1, 0)),
 
@@ -102,35 +209,22 @@ func (r *metricsRecorder) RecordOperationDuration(
 		attribute.String(AttrDBSystemName, DBSystemRedis),
 		attribute.String(AttrServerAddress, serverAddr),
 		attribute.String(AttrDBNamespace, strconv.Itoa(dbIndex)),
-	}
+	)
 
 	// Add server.port if not default
 	attrs = addServerPortIfNonDefault(attrs, serverPort)
 
 	// Add network.peer.address and network.peer.port from connection
-	if cn != nil {
-		remoteAddr := cn.RemoteAddr()
-		if remoteAddr != nil {
-			peerAddr, peerPort := splitHostPort(remoteAddr.String())
-			if peerAddr != "" {
-				attrs = append(attrs, attribute.String(AttrNetworkPeerAddress, peerAddr))
-			}
-			if peerPort != "" {
-				attrs = append(attrs, attribute.String(AttrNetworkPeerPort, peerPort))
-			}
+	if remote != "" {
+		peerAddr, peerPort := splitHostPort(remote)
+		if peerAddr != "" {
+			attrs = append(attrs, attribute.String(AttrNetworkPeerAddress, peerAddr))
+		}
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String(AttrNetworkPeerPort, peerPort))
 		}
 	}
-
-	if err != nil && !r.skipNilReply(err) {
-		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
-		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
-		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
-			attrs = append(attrs, attribute.String(AttrDBResponseStatusCode, statusCode))
-		}
-	}
-
-	// Record the histogram
-	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+	return attrs
 }
 
 // RecordPipelineOperationDuration records db.client.operation.duration metric for pipelines/transactions.

@@ -68,9 +68,24 @@ func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCm
 func (c *ClusterClient) ScriptFlush(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "script", "flush")
 	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
-		return c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
-			return shard.ScriptFlush(ctx).Err()
+		var mu sync.Mutex
+		var status string
+		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
+			val, err := shard.ScriptFlush(ctx).Result()
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			status = val
+			mu.Unlock()
+
+			return nil
 		})
+		if err == nil {
+			cmd.val = status
+		}
+		return err
 	})
 	return cmd
 }

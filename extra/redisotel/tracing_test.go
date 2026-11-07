@@ -2,10 +2,12 @@ package redisotel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -658,6 +660,50 @@ func TestTracingHook_ProcessPipelineHook_LongCommands(t *testing.T) {
 				t.Errorf("Expected DB statement:\n%q\nGot:\n%q", tt.expected, dbStatement)
 			}
 		})
+	}
+}
+
+// newTestRing returns a Ring with one shard that fails to dial, so commands
+// still run through the shard's hooks without a Redis server.
+func newTestRing(addr string) *redis.Ring {
+	return redis.NewRing(&redis.RingOptions{
+		Addrs:              map[string]string{"shard": addr},
+		HeartbeatFrequency: time.Hour,
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("no server")
+		},
+	})
+}
+
+func TestInstrumentTracingRing(t *testing.T) {
+	imsb := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+
+	rdb := newTestRing("127.0.0.1:6379")
+	defer rdb.Close()
+	if err := InstrumentTracing(rdb, WithTracerProvider(provider)); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, port := range []int{
+		6379, // the shard created by NewRing
+		6380, // a shard added later
+	} {
+		rdb.SetAddrs(map[string]string{"shard": fmt.Sprintf("127.0.0.1:%d", port)})
+		imsb.Reset()
+
+		_ = rdb.Get(context.Background(), "key").Err()
+
+		var spans []tracetest.SpanStub
+		for _, span := range imsb.GetSpans() {
+			if span.Name == "get" {
+				spans = append(spans, span)
+			}
+		}
+		assertEqual(t, 1, len(spans))
+		assertAttributeContains(t, spans[0].Attributes, attribute.Int("server.port", port))
 	}
 }
 

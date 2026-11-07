@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -265,6 +266,9 @@ func TestEnterpriseClusterRouting(t *testing.T) {
 					t.Fatal(err)
 				}
 				shards, err := client.ClusterShards(ctx).Result()
+				if err != nil && strings.Contains(err.Error(), "not allowed") {
+					t.Skipf("database does not expose the OSS Cluster API: %v", err)
+				}
 				if err != nil || len(shards) < 3 {
 					t.Fatalf("need three Enterprise shards: count=%d error=%v", len(shards), err)
 				}

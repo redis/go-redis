@@ -3,6 +3,9 @@ package redis
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"reflect"
 	"runtime"
@@ -138,6 +141,24 @@ const (
 func cscNamespacePrefix(db int, username string) string {
 	return strconv.Itoa(db) + cscNamespaceSep +
 		strconv.Itoa(len(username)) + ":" + username + cscNamespaceSep
+}
+
+// tlsClientCertID fingerprints the leaf certificates a TLS config can present
+// as the client identity, or returns "" when it presents none.
+func tlsClientCertID(cfg *tls.Config) string {
+	h := sha256.New()
+	n := 0
+	for _, cert := range cfg.Certificates {
+		if len(cert.Certificate) == 0 {
+			continue
+		}
+		h.Write(cert.Certificate[0])
+		n++
+	}
+	if n == 0 {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func cscNamespacedKey(prefix, key string) string {
@@ -693,8 +714,23 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 	// from the AUTH-ed user and from other certificates. ACL usernames cannot
 	// contain spaces, so "noauth <name>" never matches a real user.
 	username := c.opt.Username
-	if username != "" && !c.opt.sendAuth(c.opt.Username, c.opt.Password) {
+	sendAuth := c.opt.sendAuth(c.opt.Username, c.opt.Password)
+	if username != "" && !sendAuth {
 		username = "noauth " + username
+	}
+	// Without AUTH, a server with tls-auth-clients-user authenticates the
+	// connection as the user named by the client certificate, so the
+	// certificate is part of the ACL identity. A GetClientCertificate callback
+	// can present a different certificate per handshake, like a provider.
+	if !sendAuth && c.opt.TLSConfig != nil {
+		if c.opt.TLSConfig.GetClientCertificate != nil {
+			internal.Logger.Printf(ctx,
+				"redis: client-side caching is disabled with TLSConfig.GetClientCertificate")
+			return
+		}
+		if id := tlsClientCertID(c.opt.TLSConfig); id != "" {
+			username += " cert " + id
+		}
 	}
 	c.cscKeyPrefix = cscNamespacePrefix(c.opt.DB, username)
 	switch c.opt.ClientSideCacheStrategy {
@@ -1044,6 +1080,10 @@ func (c *baseClient) cscCommandError(cmd Cmder) error {
 		return errUnverifiableCommandWithCSC
 	}
 	if strings.EqualFold(name, "client") {
+		if len(cmd.Args()) == 1 {
+			// Let the server report the missing subcommand.
+			return nil
+		}
 		subcommand, ok := cscCommandToken(cmd, 1)
 		if !ok {
 			return errUnverifiableCommandWithCSC

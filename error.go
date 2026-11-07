@@ -233,6 +233,19 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 }
 
 func isMovedError(err error) (moved bool, ask bool, addr string) {
+	// Unwrap serving-endpoint / redirect-from-node wrappers so typed and
+	// string MOVED/ASK checks still see the Redis error (#4233).
+	for {
+		switch e := err.(type) {
+		case *errWithServingEndpoint:
+			err = e.err
+		case *redirectFromNodeError:
+			err = e.err
+		default:
+			goto movedCheck
+		}
+	}
+movedCheck:
 	// Check for typed MovedError
 	if movedErr, ok := proto.IsMovedError(err); ok {
 		addr = movedErr.Addr()
@@ -278,17 +291,24 @@ func isReadOnlyError(err error) bool {
 }
 
 func isMovedSameConnAddr(err error, addr string) bool {
-	if movedErr, ok := proto.IsMovedError(err); ok {
-		movedAddr := movedErr.Addr()
-		// A MOVED without a host (cluster-preferred-endpoint-type
-		// unknown-endpoint) points at the host of the connection that sent
-		// it, so only the port has to match.
-		if strings.HasPrefix(movedAddr, ":") {
-			return strings.HasSuffix(addr, movedAddr)
-		}
-		return strings.HasSuffix(movedAddr, addr)
+	movedErr, ok := proto.IsMovedError(err)
+	if !ok {
+		return false
 	}
-	return false
+
+	movedHost, movedPort, err := net.SplitHostPort(internal.GetAddr(movedErr.Addr()))
+	if err != nil {
+		return false
+	}
+
+	connHost, connPort, err := net.SplitHostPort(internal.GetAddr(addr))
+	if err != nil || movedPort != connPort {
+		return false
+	}
+	// A MOVED without a host (cluster-preferred-endpoint-type
+	// unknown-endpoint) points at the host of the connection that sent it, so
+	// only the port has to match.
+	return movedHost == "" || strings.EqualFold(movedHost, connHost)
 }
 
 //------------------------------------------------------------------------------

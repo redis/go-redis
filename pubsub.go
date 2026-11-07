@@ -50,6 +50,12 @@ type PubSub struct {
 
 	// Push notification processor for handling generic push notifications
 	pushProcessor push.NotificationProcessor
+	// processorFor, when set, picks the push processor for a given connection
+	// instead of pushProcessor. MultiDB sets it: the connections of one
+	// PubSub may be owned by different member clients over its lifetime, and
+	// a push must be handled by the processor of the member that owns the
+	// connection it arrived on.
+	processorFor func(*pool.Conn) push.NotificationProcessor
 
 	// Cleanup callback for maintenanceNotifications upgrade tracking
 	onClose func()
@@ -187,6 +193,28 @@ func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allo
 	if isBadConn(err, allowTimeout, c.opt.Addr) {
 		c.reconnect(ctx, err)
 	}
+}
+
+// forceReconnect closes the current connection and re-dials through the
+// PubSub's connection factory, resubscribing to all channels and patterns.
+// MultiDBClient uses it to move subscriptions to the new active database after
+// a failover.
+func (c *PubSub) forceReconnect(ctx context.Context, reason error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	// A canceled ctx means a newer switch superseded this one; its own
+	// reconnect may already hold the new connection.
+	if ctx.Err() != nil {
+		return
+	}
+	// Nothing to move: an empty handle dials lazily on first use.
+	if c.cn == nil && len(c.channels) == 0 && len(c.patterns) == 0 && len(c.schannels) == 0 {
+		return
+	}
+	c.reconnect(ctx, reason)
 }
 
 func (c *PubSub) reconnect(ctx context.Context, reason error) {
@@ -662,15 +690,30 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 	return c.allCh.allCh
 }
 
+// pushProcessorFor returns the processor for pushes arriving on cn, or nil
+// when pushes are not processed on that connection: no RESP3, or no
+// processor. With processorFor set (MultiDB), the connection's owner decides
+// both, since its protocol and its processor may differ from the ones this
+// PubSub was created with.
+func (c *PubSub) pushProcessorFor(cn *pool.Conn) push.NotificationProcessor {
+	if c.processorFor != nil {
+		return c.processorFor(cn)
+	}
+	if c.opt.Protocol != 3 {
+		return nil
+	}
+	return c.pushProcessor
+}
+
 func (c *PubSub) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
-	// Only process push notifications for RESP3 connections with a processor
-	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+	processor := c.pushProcessorFor(cn)
+	if processor == nil {
 		return nil
 	}
 
 	// Create handler context with client, connection pool, and connection information
 	handlerCtx := c.pushNotificationHandlerContext(cn)
-	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	return processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
 func (c *PubSub) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
@@ -848,7 +891,8 @@ func (c *channel) initMsgChan() {
 				case <-timer.C:
 					internal.Logger.Printf(
 						ctx, "redis: %v channel is full for %s (message is dropped)",
-						c, c.chanSendTimeout)
+						c, c.chanSendTimeout,
+					)
 				}
 			default:
 				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)
@@ -902,7 +946,8 @@ func (c *channel) initAllChan() {
 				case <-timer.C:
 					internal.Logger.Printf(
 						ctx, "redis: %v channel is full for %s (message is dropped)",
-						c, c.chanSendTimeout)
+						c, c.chanSendTimeout,
+					)
 				}
 			default:
 				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)

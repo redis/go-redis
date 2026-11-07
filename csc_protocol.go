@@ -16,10 +16,14 @@ var (
 )
 
 func (c *baseClient) cscFlag(cmd Cmder, store bool) byte {
-	if !c.cscTrackingRequested() || cmd.cacheState().has(cscAsk) {
+	// ASK redirects must not carry a caching prefix. OPTIN YES still requires
+	// live client-level CSC; OPTOUT NO is decided by the caller against the
+	// connection's init generation so already-tracked sockets keep receiving
+	// NO after a mid-life disableCSCServing (see #4236 item 1).
+	if cmd.cacheState().has(cscAsk) {
 		return 0
 	}
-	if c.cscPolicy.mode == TrackingModeOptIn && store {
+	if c.cscPolicy.mode == TrackingModeOptIn && store && c.cscTrackingRequested() {
 		return 'Y'
 	}
 	if c.cscPolicy.mode == TrackingModeOptOut && !store && c.cscTrackable(cmd) {
@@ -71,7 +75,10 @@ func (c *baseClient) readCSCAck(ctx context.Context, cn *pool.Conn, rd *proto.Re
 // a tracked main-pool connection. Dedicated pipeline connections are untracked.
 // Capture the flags once so metadata refresh cannot change the reply count.
 func (c *baseClient) cscPipelineFlags(cn *pool.Conn, cmds []Cmder) []byte {
-	if c.cscPolicy.mode != TrackingModeOptOut || !c.cscTrackingRequested() || c.cscConnInitGen(cn.GetID()) == 0 {
+	// Gate on the connection's init generation, not live client-level CSC: a
+	// mid-life disable must still prefix uncached OPTOUT commands on sockets
+	// that were initialized with TRACKING ON (#4236 item 1).
+	if c.cscPolicy.mode != TrackingModeOptOut || c.cscConnInitGen(cn.GetID()) == 0 {
 		return nil
 	}
 	var flags []byte

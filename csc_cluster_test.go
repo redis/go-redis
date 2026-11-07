@@ -2535,8 +2535,19 @@ func TestClusterCSCLive(t *testing.T) {
 			t.Fatal(err)
 		}
 		clusterCSCLiveEventually(t, func() bool { return replica.Get(ctx, key).Val() == "before" })
-		if err := replica.ClusterFailover(ctx).Err(); err != nil {
-			t.Fatal(err)
+		// A plain CLUSTER FAILOVER fails with "Master is down or failed"
+		// until the replica's cluster-bus link to its master is up. The
+		// previous subtests reshape the cluster, so retry until it is accepted.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			err := replica.ClusterFailover(ctx).Err()
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal(err)
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 		clusterCSCLiveEventually(t, func() bool {
 			_, e := c.state.Reload(ctx)
