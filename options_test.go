@@ -492,6 +492,11 @@ func TestParseURLErrorRedactsPassword(t *testing.T) {
 		"redis://user:%s3@localhost/0",
 		"redis://sentinel:pass@localhost:bad?password=s3cr3t",
 		"redis://sentinel:pass@localhost:bad?password=app@s3cr3t",
+		"redis://user:/s3cr3t@localhost/0",
+		"redis://user:/s3cr3t@localhost",
+		"redis://user:?s3cr3t@localhost/0",
+		"redis://user:6379?s3=cr3t@localhost/0",
+		"redis:/%zz?password=s3cr3t://foo",
 	}
 	parsers := map[string]func(string) error{
 		"ParseURL":         func(u string) error { _, err := ParseURL(u); return err },
@@ -501,6 +506,9 @@ func TestParseURLErrorRedactsPassword(t *testing.T) {
 	for name, parse := range parsers {
 		for _, u := range urls {
 			err := parse(u)
+			if err == nil && name == "ParseClusterURL" {
+				continue // ParseClusterURL ignores the path
+			}
 			if err == nil {
 				t.Fatalf("%s(%q): expected an error", name, u)
 			}
