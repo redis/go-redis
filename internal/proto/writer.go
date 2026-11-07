@@ -217,11 +217,19 @@ func (w *Writer) WriteArg(v interface{}) error {
 }
 
 func (w *Writer) bytes(b []byte) error {
-	if err := w.WriteByte(RespString); err != nil {
+	w.lenBuf = append(w.lenBuf[:0], RespString)
+	w.lenBuf = strconv.AppendUint(w.lenBuf, uint64(len(b)), 10)
+	w.lenBuf = append(w.lenBuf, '\r', '\n')
+
+	// Short values go out with the header in one Write.
+	if len(b) <= 32 {
+		w.lenBuf = append(w.lenBuf, b...)
+		w.lenBuf = append(w.lenBuf, '\r', '\n')
+		_, err := w.Write(w.lenBuf)
 		return err
 	}
 
-	if err := w.writeLen(len(b)); err != nil {
+	if _, err := w.Write(w.lenBuf); err != nil {
 		return err
 	}
 
