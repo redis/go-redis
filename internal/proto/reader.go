@@ -229,7 +229,7 @@ func parsePushNotificationName(buf []byte) (string, bool, error) {
 		RespBigInt, RespArray, RespMap, RespSet, RespAttr, RespPush:
 		// A RESP type other than a string: the header parsed, the frame just
 		// has no name. Only the type byte is checked, not the value behind it.
-		return "", false, fmt.Errorf("%w: %q", ErrPushNotificationNameNotString, buf[pos:])
+		return "", false, fmt.Errorf("%w: %.64q", ErrPushNotificationNameNotString, buf[pos:])
 	default:
 		return "", false, fmt.Errorf("redis: can't parse push notification name: %q", buf[pos:])
 	}
