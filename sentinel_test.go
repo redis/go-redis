@@ -1500,7 +1500,7 @@ func TestSentinelFailover_RotateSentinelAddr_SliceIntegrity(t *testing.T) {
 		}
 	})
 
-	t.Run("rotates unknown element (falls back to index 0)", func(t *testing.T) {
+	t.Run("unknown element leaves slice unchanged", func(t *testing.T) {
 		initial := []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379"}
 		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
 			MasterName:    "mymaster",
@@ -1510,7 +1510,7 @@ func TestSentinelFailover_RotateSentinelAddr_SliceIntegrity(t *testing.T) {
 
 		failover.RotateSentinelAddr("unknown:26379")
 		got := failover.SentinelAddrs()
-		want := []string{"10.0.0.2:26379", "10.0.0.3:26379", "10.0.0.1:26379"}
+		want := []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379"}
 		if !slices.Equal(got, want) {
 			t.Fatalf("want %v, got %v", want, got)
 		}
@@ -1777,3 +1777,159 @@ func TestSentinelFailover_ConcurrentFailover_MixedContexts(t *testing.T) {
 		t.Fatalf("want 127.0.0.1:6379, got %s", freshAddr)
 	}
 }
+
+// TestSentinelFailover_CanceledContextPreservesCachedSentinel verifies that when
+// MasterAddr or ReplicaAddrs fails due to caller context cancellation (both pre-canceled
+// and canceled during query execution), the cached sentinel connection is not closed or
+// cleared, and the address list is not rotated.
+func TestSentinelFailover_CanceledContextPreservesCachedSentinel(t *testing.T) {
+	t.Run("MasterAddr", func(t *testing.T) {
+		silentLn := newTestSilentSentinelServer(t)
+		defer silentLn.Close()
+
+		healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+		defer healthyServer.Close()
+
+		initialAddrs := []string{silentLn.Addr().String(), healthyServer.Addr()}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initialAddrs,
+			DialTimeout:   500 * time.Millisecond,
+			ReadTimeout:   500 * time.Millisecond,
+		}, initialAddrs)
+		defer failover.Close()
+
+		silentCli := redis.NewSentinelClient(&redis.Options{
+			Addr:        silentLn.Addr().String(),
+			DialTimeout: 500 * time.Millisecond,
+			ReadTimeout: 500 * time.Millisecond,
+		})
+		failover.SetSentinel(silentCli)
+
+		// 1. Pre-canceled context returns immediately with context.Canceled.
+		preCanceledCtx, cancelPre := context.WithCancel(context.Background())
+		cancelPre()
+
+		_, err := failover.MasterAddr(preCanceledCtx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+		if !failover.HasSentinel() || failover.Sentinel() != silentCli {
+			t.Fatal("pre-canceled context must not clear or replace cached sentinel")
+		}
+		if !slices.Equal(failover.SentinelAddrs(), initialAddrs) {
+			t.Fatalf("pre-canceled context must not rotate sentinelAddrs, got %v", failover.SentinelAddrs())
+		}
+
+		// 2. Context canceled while query is in-flight must skip teardown and rotation.
+		inFlightCtx, cancelInFlight := context.WithCancel(context.Background())
+		time.AfterFunc(20*time.Millisecond, cancelInFlight)
+
+		_, err = failover.MasterAddr(inFlightCtx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+		if !failover.HasSentinel() || failover.Sentinel() != silentCli {
+			t.Fatal("context canceled in-flight must not clear or replace cached sentinel")
+		}
+		if !slices.Equal(failover.SentinelAddrs(), initialAddrs) {
+			t.Fatalf("context canceled in-flight must not rotate sentinelAddrs, got %v", failover.SentinelAddrs())
+		}
+	})
+
+	t.Run("ReplicaAddrs", func(t *testing.T) {
+		silentLn := newTestSilentSentinelServer(t)
+		defer silentLn.Close()
+
+		healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+		defer healthyServer.Close()
+
+		initialAddrs := []string{silentLn.Addr().String(), healthyServer.Addr()}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initialAddrs,
+			DialTimeout:   500 * time.Millisecond,
+			ReadTimeout:   500 * time.Millisecond,
+		}, initialAddrs)
+		defer failover.Close()
+
+		silentCli := redis.NewSentinelClient(&redis.Options{
+			Addr:        silentLn.Addr().String(),
+			DialTimeout: 500 * time.Millisecond,
+			ReadTimeout: 500 * time.Millisecond,
+		})
+		failover.SetSentinel(silentCli)
+
+		// 1. Pre-canceled context returns immediately with context.Canceled.
+		preCanceledCtx, cancelPre := context.WithCancel(context.Background())
+		cancelPre()
+
+		_, err := failover.ReplicaAddrs(preCanceledCtx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+		if !failover.HasSentinel() || failover.Sentinel() != silentCli {
+			t.Fatal("pre-canceled context must not clear or replace cached sentinel")
+		}
+		if !slices.Equal(failover.SentinelAddrs(), initialAddrs) {
+			t.Fatalf("pre-canceled context must not rotate sentinelAddrs, got %v", failover.SentinelAddrs())
+		}
+
+		// 2. Context canceled while query is in-flight must skip teardown and rotation.
+		inFlightCtx, cancelInFlight := context.WithCancel(context.Background())
+		time.AfterFunc(20*time.Millisecond, cancelInFlight)
+
+		_, err = failover.ReplicaAddrs(inFlightCtx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+		if !failover.HasSentinel() || failover.Sentinel() != silentCli {
+			t.Fatal("context canceled in-flight must not clear or replace cached sentinel")
+		}
+		if !slices.Equal(failover.SentinelAddrs(), initialAddrs) {
+			t.Fatalf("context canceled in-flight must not rotate sentinelAddrs, got %v", failover.SentinelAddrs())
+		}
+	})
+
+	t.Run("HealthySentinelSurvivesCanceledContext", func(t *testing.T) {
+		healthyServer := newTestMockSentinelServer(t, "127.0.0.1:6379")
+		defer healthyServer.Close()
+
+		initialAddrs := []string{healthyServer.Addr()}
+		failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: initialAddrs,
+			DialTimeout:   500 * time.Millisecond,
+			ReadTimeout:   500 * time.Millisecond,
+		}, initialAddrs)
+		defer failover.Close()
+
+		healthyCli := redis.NewSentinelClient(&redis.Options{
+			Addr:        healthyServer.Addr(),
+			DialTimeout: 500 * time.Millisecond,
+			ReadTimeout: 500 * time.Millisecond,
+		})
+		failover.SetSentinel(healthyCli)
+
+		// Pre-canceled MasterAddr call.
+		preCanceledCtx, cancelPre := context.WithCancel(context.Background())
+		cancelPre()
+		_, err := failover.MasterAddr(preCanceledCtx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+
+		// MasterAddr with background context must succeed immediately using same sentinel.
+		addr, err := failover.MasterAddr(context.Background())
+		if err != nil {
+			t.Fatalf("MasterAddr failed: %v", err)
+		}
+		if addr != "127.0.0.1:6379" {
+			t.Fatalf("want 127.0.0.1:6379, got %s", addr)
+		}
+		if failover.Sentinel() != healthyCli {
+			t.Fatal("expected original healthy sentinel pointer to be preserved")
+		}
+	})
+}
+
