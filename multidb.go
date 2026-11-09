@@ -926,32 +926,18 @@ func (c *MultiDBClient) AddHook(hook Hook) {
 // autopipeliner's batch dispatch; a control call from there can deadlock or
 // corrupt the failover accounting.
 //
-// A member hook's outcome is the member's outcome. MultiDB records what
-// comes back from the member's hook chain on the member's circuit breaker
-// and on the failure detector:
-//   - A single command answered by the hook without calling next (a cache
-//     serving reads locally, an error synthesized before the wire) counts as
-//     if the database had answered: the single-command path cannot tell the
-//     two apart.
-//   - A batch (pipeline or transaction) that the hook answers with a nil
-//     error without calling next records nothing: the batch path sees that
-//     no command reached the wire, and a local answer is no proof the
-//     database is healthy. An error returned without calling next still
-//     counts as a failure: it looks the same as a failed dial.
+// MultiDB accounts for the result of the member hook chain. If a hook answers
+// a command, pipeline or transaction locally and returns nil without calling
+// next, it records no health outcome and releases any reserved probe slot.
+// A non-nil error still follows the usual failure classification.
 //
-// A hook that answers locally belongs on the MultiDBClient (AddHook): it
-// then runs before the gate and records nothing.
+// A hook that answers locally belongs on the MultiDBClient (AddHook), where
+// it runs before member selection and circuit admission. On a full-duplex
+// autopipeliner the command is already sent when the member hook runs.
 //
-// A member hook must pass the context it receives — or one derived from it —
-// to next. MultiDB carries per-batch execution tracking in context values:
-// the pipeline paths attach it before entering the member's hook chain and
-// the wire path reads it back to mark commands as executed. A hook that
-// substitutes an unrelated context (context.Background() to detach
-// cancellation, a freshly built deadline context) drops that value, so a batch
-// that executed successfully is indistinguishable from one a hook served
-// locally and records no success for the circuit breaker or failure detector.
-// The effect is under-recording only — slower recovery of a half-open member,
-// failures not reset — never a phantom success or a replay.
+// A member hook must pass the context it receives, or one derived from it,
+// to next so MultiDB can track execution. Replacing the context can cause a
+// successful command or batch to be treated as a local answer for accounting.
 //
 // For a cluster member this installs the hook on the *ClusterClient's own
 // process and pipeline chains only. It does not reach the per-node *Client

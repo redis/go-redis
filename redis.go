@@ -128,6 +128,26 @@ func (hs *hooksMixin) initHooks(hooks hooks) {
 	hs.state.Store(state)
 }
 
+type memberCommandExecutedKey struct{}
+
+// trackMemberCommandExecution marks the terminal process hook for MultiDB.
+func (hs *hooksMixin) trackMemberCommandExecution() {
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
+
+	old := hs.state.Load()
+	state := &hooksState{slice: old.slice, initial: old.initial}
+	process := state.initial.process
+	state.initial.process = func(ctx context.Context, cmd Cmder) error {
+		if executed, ok := ctx.Value(memberCommandExecutedKey{}).(*atomic.Bool); ok {
+			executed.Store(true)
+		}
+		return process(ctx, cmd)
+	}
+	state.rebuild()
+	hs.state.Store(state)
+}
+
 type hooks struct {
 	dial       DialHook
 	process    ProcessHook
@@ -779,14 +799,19 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 
 // initPooledConnLimited runs initPooledConn as one admitted operation against
 // Options.Limiter, for a caller that leases outside getConnLimited. A denial
-// removes the leased conn, the same disposition as a failed init.
-func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) error {
+// removes the leased conn, the same disposition as a failed init. limited is
+// true only when Allow rejects, so callers can avoid falling back on a denial.
+func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) (limited bool, err error) {
 	if cn.IsInited() {
-		return nil
+		return false, nil
 	}
-	return admitted(c.limiter(), func(err error) { p.Remove(ctx, cn, err) }, func() error {
+	err = admitted(c.limiter(), func(err error) {
+		limited = true
+		p.Remove(ctx, cn, err)
+	}, func() error {
 		return c.initPooledConn(ctx, p, cn)
 	})
+	return limited, err
 }
 
 // initPooledConn brings a conn freshly obtained from p to a usable state: it
@@ -1071,6 +1096,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	//    - We're already in INITIALIZING, so just proceed with initialization
 
 	currentState := cn.GetStateMachine().GetState()
+	if currentState == pool.StateClosed {
+		return pool.ErrClosed
+	}
 
 	// Fast path: Check if already initialized (IDLE or IN_USE)
 	if currentState == pool.StateIdle || currentState == pool.StateInUse {
@@ -1202,10 +1230,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			}
 		}
 		cn.SetOnClose(onClose)
-
-		// Close may have run while subscription setup was waiting, before
-		// onClose was installed. Re-run teardown in that case; Conn.Close
-		// atomically claims callbacks, so unsubscribe still runs only once.
+		// Close may have consumed the callback before Subscribe returned.
+		// Re-run teardown after publishing it so a late subscription is not lost.
 		if cn.IsClosed() {
 			_ = cn.Close()
 			return fmt.Errorf("connection closed during streaming credentials setup: %w", pool.ErrClosed)
@@ -1464,7 +1490,16 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// This marks the connection as initialized and ready for use
 	// NOTE: The connection is still owned by the calling goroutine at this point
 	// and won't be available to other goroutines until it's Put() back into the pool
-	cn.GetStateMachine().Transition(pool.StateIdle)
+	// Do not overwrite a Close that raced the final handshake reply.
+	for {
+		state := cn.GetStateMachine().GetState()
+		if state == pool.StateClosed {
+			return pool.ErrClosed
+		}
+		if _, err := cn.GetStateMachine().TryTransition([]pool.ConnState{state}, pool.StateIdle); err == nil {
+			break
+		}
+	}
 
 	// Call OnConnect hook if configured
 	// The connection is in IDLE state but still owned by this goroutine

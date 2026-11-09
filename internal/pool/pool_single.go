@@ -53,13 +53,21 @@ func (p *SingleConnPool) Get(_ context.Context) (*Conn, error) {
 	// - During initialization (connection is in INITIALIZING state)
 	// - During re-authentication (connection is in UNUSABLE state)
 	// - For transactions (connection might be in various states)
-	// Force IN_USE for the command, rather than TryTransition() which would fail
-	// if the connection is not in IDLE/CREATED state, and remember the state to
-	// restore on Put.
-	p.ownerState = p.cn.stateMachine.GetState()
-	p.cn.stateMachine.Transition(StateInUse)
-	p.cn.SetUsedAt(time.Now())
-	return p.cn, nil
+	// Preserve the owner's state, but do not acquire a connection that has
+	// already been closed. The CAS also ensures a concurrent Close is not
+	// overwritten by the transition to IN_USE.
+	for {
+		ownerState := p.cn.stateMachine.GetState()
+		if ownerState == StateClosed {
+			return nil, ErrClosed
+		}
+		if p.cn.stateMachine.state.CompareAndSwap(uint32(ownerState), uint32(StateInUse)) {
+			p.ownerState = ownerState
+			p.cn.stateMachine.notifyWaiters()
+			p.cn.SetUsedAt(time.Now())
+			return p.cn, nil
+		}
+	}
 }
 
 // restoreOwnerState hands the connection back to its owner's state. It must
