@@ -220,6 +220,7 @@ func (c *PubSub) closeTheCn(reason error) error {
 	}
 	c.cn.SetPubSubReAuth(nil)
 	c.authPending = 0
+	c.cmd = nil
 	err := c.closeConn(c.cn)
 	c.cn = nil
 	return err
@@ -510,8 +511,13 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		return nil, err
 	}
 
+	var cmd *Cmd
 	for {
-		c.cmd = NewCmd(ctx)
+		cmd = NewCmd(ctx)
+		c.mu.Lock()
+		c.cmd = cmd
+		c.mu.Unlock()
+
 		err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
@@ -519,7 +525,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 				// Push notification processing errors shouldn't break normal Redis operations
 				internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
 			}
-			return c.cmd.readReply(rd)
+			return cmd.readReply(rd)
 		})
 
 		if err != nil {
@@ -539,7 +545,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 
 		c.mu.Lock()
 		if c.authPending > 0 {
-			if val, ok := c.cmd.Val().(string); ok && strings.EqualFold(val, "OK") {
+			if val, ok := cmd.Val().(string); ok && strings.EqualFold(val, "OK") {
 				c.authPending--
 				c.mu.Unlock()
 				continue
@@ -556,7 +562,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		return nil, err
 	}
 
-	return c.newMessage(ctx, cn, c.cmd.Val())
+	return c.newMessage(ctx, cn, cmd.Val())
 }
 
 // Receive returns a message as a Subscription, Message, Pong or error.
@@ -597,6 +603,9 @@ func (c *PubSub) ReceiveMessage(ctx context.Context) (*Message, error) {
 }
 
 func (c *PubSub) getContext() context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.cmd != nil {
 		return c.cmd.ctx
 	}

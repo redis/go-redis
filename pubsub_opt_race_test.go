@@ -1,8 +1,11 @@
 package redis
 
 import (
+	"context"
+	"net"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Client.pubSub / SentinelClient.pubSub used to alias the client's *Options
@@ -50,4 +53,80 @@ func TestPubSubDoesNotAliasClientOptions(t *testing.T) {
 	if ps.opt == client.opt {
 		t.Fatal("PubSub aliases the client's *Options; reconnect races the pool dialer")
 	}
+}
+
+// TestPubSubGetContextRace pins synchronization between PubSub.ReceiveTimeout
+// writing c.cmd and concurrent readers of c.getContext() (such as sentinelFailover.listen).
+func TestPubSubGetContextRace(t *testing.T) {
+	pubsub := &PubSub{}
+	pubsub.init()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const iters = 100000
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Writer: mirrors PubSub.ReceiveTimeout updating c.cmd under c.mu.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			cmd := NewCmd(ctx)
+			pubsub.mu.Lock()
+			pubsub.cmd = cmd
+			pubsub.mu.Unlock()
+		}
+	}()
+
+	// Reader: mirrors sentinelFailover.listen calling pubsub.getContext().
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			_ = pubsub.getContext()
+		}
+	}()
+
+	wg.Wait()
+}
+
+// TestPubSubReceiveTimeoutGetContextRace verifies that active execution of ReceiveTimeout
+// synchronizes c.cmd updates with concurrent getContext reads.
+func TestPubSubReceiveTimeoutGetContextRace(t *testing.T) {
+	pubsub := &PubSub{
+		opt: &Options{},
+	}
+	pubsub.init()
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	pubsub.SetNetConn(c1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const iters = 500
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Writer: actively invokes ReceiveTimeout which writes c.cmd in its reader loop.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			_, _ = pubsub.ReceiveTimeout(ctx, time.Microsecond)
+		}
+	}()
+
+	// Reader: mirrors sentinelFailover.listen calling pubsub.getContext().
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			_ = pubsub.getContext()
+		}
+	}()
+
+	wg.Wait()
 }
