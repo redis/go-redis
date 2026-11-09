@@ -3311,7 +3311,6 @@ func TestClusterConcreteCommandRouting(t *testing.T) {
 
 			wantCalls := map[string]int{"dbsize": 2, "script load": 3, "script flush": 3, "script exists": 2}
 			wantReplicaExistsCalls := 0
-			wantFlush := "OK"
 			if mode == "custom" {
 				for name := range wantCalls {
 					wantCalls[name] = 1
@@ -3319,7 +3318,6 @@ func TestClusterConcreteCommandRouting(t *testing.T) {
 			} else if mode == "disabled" {
 				wantCalls["script exists"] = 3
 				wantReplicaExistsCalls = 1
-				wantFlush = "" // Legacy fanout returns only an error.
 			}
 			if got, err := c.DBSize(ctx).Result(); err != nil || got != int64(wantCalls["dbsize"]) {
 				t.Fatalf("DBSize=%d err=%v", got, err)
@@ -3327,7 +3325,7 @@ func TestClusterConcreteCommandRouting(t *testing.T) {
 			if got, err := c.ScriptLoad(ctx, "return 1").Result(); err != nil || got != "sha" {
 				t.Fatalf("ScriptLoad=%q err=%v", got, err)
 			}
-			if got, err := c.ScriptFlush(ctx).Result(); err != nil || got != wantFlush {
+			if got, err := c.ScriptFlush(ctx).Result(); err != nil || got != "OK" {
 				t.Fatalf("ScriptFlush=%q err=%v", got, err)
 			}
 			if got, err := c.ScriptExists(ctx, "sha").Result(); err != nil || !reflect.DeepEqual(got, []bool{true}) {

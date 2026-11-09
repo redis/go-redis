@@ -65,10 +65,11 @@ func (hc *fakeHealthCheck) CheckClusterHealth(ctx context.Context, client *redis
 // customErr lets a test inject an arbitrary error from the hook.
 type customErr struct{ err error }
 
-// hookedDB is a process hook that short-circuits every command (never dials),
-// recording the commands it saw and failing while `fail` is set.
+// hookedDB records the commands it sees and fails while fail is set.
+// Successful commands are answered locally unless forward is set.
 type hookedDB struct {
 	name     string
+	forward  bool
 	fail     atomic.Bool
 	custom   atomic.Pointer[customErr]
 	commands atomic.Int64
@@ -90,6 +91,9 @@ func (h *hookedDB) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 			err := fmt.Errorf("hooked: %s down: %w", h.name, io.EOF)
 			cmd.SetErr(err)
 			return err
+		}
+		if h.forward {
+			return next(ctx, cmd)
 		}
 		return nil
 	}
@@ -1764,7 +1768,8 @@ func TestMultiDBCanceledPreFailoverProbeNotChargedAsAttempt(t *testing.T) {
 }
 
 func TestMultiDBSuccessResetsFailoverEscalation(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 0.5, true)
+	dbA := newTestDB("a", redis.NewTestRedisAddr(t), 0.5, true)
+	dbA.hook.forward = true
 	opts := baseOptions()
 	opts.CommandRetries = 1
 	opts.MaxFailoverAttempts = 2
@@ -1787,7 +1792,7 @@ func TestMultiDBSuccessResetsFailoverEscalation(t *testing.T) {
 	// the breaker again.
 	dbA.hook.fail.Store(false)
 	time.Sleep(50 * time.Millisecond)
-	if err := mdb.Get(ctx, "k").Err(); err != nil {
+	if err := mdb.Set(ctx, "k", "value", 0).Err(); err != nil {
 		t.Fatalf("recovery command: %v", err)
 	}
 

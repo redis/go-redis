@@ -483,6 +483,7 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 				opt.MaxRetries = -1
 			}
 			db.c = NewClient(&opt)
+			db.c.trackMemberCommandExecution()
 			// Derive the FQDN from the normalized address: NewClient defaults an
 			// empty Addr to localhost:6379, so capturing it before construction
 			// (cfg.fqdn) would record an empty host in logs/metrics.
@@ -500,6 +501,7 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 				opt.OTelRecorder = c.opts.OTelRecorder
 			}
 			db.cc = NewClusterClient(&opt)
+			db.cc.trackMemberCommandExecution()
 		}
 	}()
 	if buildErr != nil {
@@ -1157,10 +1159,16 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		}
 		attempt++
 		pendingDB, pendingRes = db, res
-		err := db.process(ctx, cmd)
+		var executed atomic.Bool
+		err := db.process(context.WithValue(ctx, memberCommandExecutedKey{}, &executed), cmd)
 		// Back from the member: every path below settles the admission
 		// itself, so the deferred release must stand down.
 		pendingDB = nil
+		if err == nil && !executed.Load() {
+			// A locally answered command is no evidence of member recovery.
+			db.cb.ReleaseFor(res)
+			return nil
+		}
 		if callerEnded(ctx, err, db.ctxTimeouts()) {
 			// The caller's own context ended (deadline/cancel) while the
 			// command ran — typically cutting a dial short, which surfaces as

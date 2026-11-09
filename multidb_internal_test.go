@@ -1220,18 +1220,23 @@ func TestRecordBatchOutcomesSkipsDetectorAfterReset(t *testing.T) {
 }
 
 // reselectHook force-reselects the current active member from inside the
-// command (resetting breaker and detector) and then completes the command with
-// err — the in-flight-command-vs-same-member-reselect race, on either outcome.
+// command (resetting breaker and detector) and then returns err if set or
+// delegates to the member.
 type reselectHook struct {
 	core *multidbCore
 	err  error
 }
 
 func (reselectHook) DialHook(next DialHook) DialHook { return next }
-func (h reselectHook) ProcessHook(ProcessHook) ProcessHook {
+func (h reselectHook) ProcessHook(next ProcessHook) ProcessHook {
 	return func(ctx context.Context, cmd Cmder) error {
-		_ = h.core.setActiveDatabase(ctx, 0, false)
-		return h.err
+		if err := h.core.setActiveDatabase(ctx, 0, false); err != nil {
+			return err
+		}
+		if h.err != nil {
+			return h.err
+		}
+		return next(ctx, cmd)
 	}
 }
 
@@ -1268,21 +1273,20 @@ func TestProcessSkipsDetectorAfterSameMemberReselect(t *testing.T) {
 // no window semantics, so it must be set even when the detector write is
 // skipped for being outside the sampled window.
 func TestProcessSameMemberReselectStillBreaksEscalation(t *testing.T) {
+	server := newFDStateServer(t)
 	det := &countingFD{}
-	core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
-	a := NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1})
-	t.Cleanup(func() { _ = a.Close() })
-	a.AddHook(reselectHook{core: core, err: nil})
-	db := &multidbDatabase{id: 0, weight: 1, c: a, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
-		FailureThreshold: 5,
-		SuccessThreshold: 1,
-	})}
-	core.dbs[0] = db
-	core.active.Store(0)
+	mdb := newLifecycleTestClient(t, func(opts *MultiDBOptions) {
+		opts.FailureDetector = det
+		opts.HealthChecks = []MultiDBHealthCheck{okLivenessCheck{}}
+	}, member(server.addr(), 1))
+	core := mdb.core
+	if err := mdb.AddDatabaseHook(0, reselectHook{core: core}); err != nil {
+		t.Fatal(err)
+	}
 	core.successSinceFailover.Store(false)
 
-	if err := core.process(context.Background(), NewStatusCmd(context.Background(), "ping")); err != nil {
-		t.Fatalf("process: %v", err)
+	if err := mdb.Set(context.Background(), "key", "value", 0).Err(); err != nil {
+		t.Fatalf("SET: %v", err)
 	}
 	if !core.successSinceFailover.Load() {
 		t.Fatal("a success on the active must break the failed-failover chain even when its detector write is outside the sampled window")
@@ -2935,19 +2939,21 @@ func (d *resetInsideRecordSuccessFD) Reset()               { d.successes.Store(0
 // write must not survive in the fresh window either: many such stale
 // successes would dilute the new member's failure rate.
 func TestProcessDetectorSuccessAfterConcurrentResetIsWiped(t *testing.T) {
+	server := newFDStateServer(t)
 	fd := &resetInsideRecordSuccessFD{}
-	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second, FailoverStrategy: WeightBasedFailoverStrategy{}, FailureDetector: fd})
+	mdb := newLifecycleTestClient(t, func(opts *MultiDBOptions) {
+		opts.FailureDetector = fd
+		opts.HealthChecks = []MultiDBHealthCheck{okLivenessCheck{}}
+	}, member(server.addr(), 1))
+	core := mdb.core
 	fd.core = core
-	member := newLazyMember(0)
-	t.Cleanup(func() { _ = member.c.Close() })
-	pings := 0
-	member.c.AddHook(pongHook{pings: &pings})
-	core.dbs[0] = member
-	core.active.Store(0)
+	gen := core.detectorGen.Load()
 
-	cmd := NewStatusCmd(context.Background(), "ping")
-	if err := core.process(context.Background(), cmd); err != nil {
-		t.Fatalf("process: %v", err)
+	if err := mdb.Set(context.Background(), "key", "value", 0).Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if core.detectorGen.Load() == gen {
+		t.Fatal("successful SET did not trigger the detector reset")
 	}
 	if got := fd.successes.Load(); got != 0 {
 		t.Fatalf("%d pre-reset success(es) survived in the detector's fresh window, want 0", got)

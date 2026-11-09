@@ -5,11 +5,17 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"testing"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+func NewTestRedisAddr(t *testing.T) string {
+	t.Helper()
+	return newFDStateServer(t).addr()
+}
 
 func (c *baseClient) Pool() pool.Pooler {
 	return c.connPool

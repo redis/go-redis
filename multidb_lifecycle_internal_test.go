@@ -868,6 +868,120 @@ func TestMultiDBFailureDetectorConfigHonored(t *testing.T) {
 	}
 }
 
+func TestMultiDBLocalCommandDoesNotRecordRecovery(t *testing.T) {
+	for _, cluster := range []bool{false, true} {
+		name := "standalone"
+		member := MultiDBClientConfig{Weight: 1, HealthChecks: []MultiDBHealthCheck{okLivenessCheck{}}}
+		if cluster {
+			name = "cluster"
+			member.ClusterOptions = &ClusterOptions{Addrs: []string{"127.0.0.1:1"}}
+		} else {
+			member.Options = &Options{Addr: "127.0.0.1:1"}
+		}
+		t.Run(name, func(t *testing.T) {
+			mdb := newLifecycleTestClient(t, func(opts *MultiDBOptions) {
+				opts.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{
+					FailureThreshold: 1,
+					GracePeriod:      20 * time.Millisecond,
+					SuccessThreshold: 1,
+				}
+			}, member)
+			var calls atomic.Int64
+			if err := mdb.AddDatabaseHook(0, countingHook{n: &calls}); err != nil {
+				t.Fatal(err)
+			}
+			db := mdb.core.dbByID(0)
+			db.cb.ForceOpen()
+			time.Sleep(30 * time.Millisecond)
+			if st := db.cb.CheckState(); st != imultidb.CircuitHalfOpen {
+				t.Fatalf("breaker state = %v, want half-open", st)
+			}
+			for range 2 {
+				if err := mdb.Get(context.Background(), "local").Err(); err != nil {
+					t.Fatalf("local GET: %v", err)
+				}
+				if st := db.cb.State(); st != imultidb.CircuitHalfOpen {
+					t.Errorf("local result changed breaker to %v, want half-open", st)
+				}
+			}
+			if mdb.core.successSinceFailover.Load() {
+				t.Error("local result counted as recovery traffic")
+			}
+			if n := calls.Load(); n != 2 {
+				t.Errorf("hook called %d times, want 2 with the half-open slot released", n)
+			}
+		})
+	}
+}
+
+func TestMultiDBCommandThroughHookRecordsRecovery(t *testing.T) {
+	server := newFDStateServer(t)
+	mdb := newLifecycleTestClient(t, func(opts *MultiDBOptions) {
+		opts.HealthChecks = []MultiDBHealthCheck{okLivenessCheck{}}
+		opts.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{
+			FailureThreshold: 1,
+			GracePeriod:      20 * time.Millisecond,
+			SuccessThreshold: 1,
+		}
+	}, member(server.addr(), 1))
+	if err := mdb.AddDatabaseHook(0, fdProcessFuncHook{process: func(next ProcessHook) ProcessHook {
+		return func(ctx context.Context, cmd Cmder) error {
+			child, cancel := context.WithCancel(ctx)
+			defer cancel()
+			return next(child, cmd)
+		}
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	db := mdb.core.dbByID(0)
+	db.cb.ForceOpen()
+	time.Sleep(30 * time.Millisecond)
+	if err := mdb.Set(context.Background(), "wire", "value", 0).Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if st := db.cb.State(); st != imultidb.CircuitClosed || !mdb.core.successSinceFailover.Load() {
+		t.Fatalf("wire reply did not record recovery: breaker state = %v", st)
+	}
+}
+
+func TestMultiDBFullDuplexLocalHookStillUsesWire(t *testing.T) {
+	server := newFDStateServer(t)
+	mdb := newLifecycleTestClient(t, func(opts *MultiDBOptions) {
+		opts.HealthChecks = []MultiDBHealthCheck{okLivenessCheck{}}
+	}, member(server.addr(), 1))
+	var calls atomic.Int64
+	if err := mdb.AddDatabaseHook(0, fdProcessFuncHook{process: func(next ProcessHook) ProcessHook {
+		return func(ctx context.Context, cmd Cmder) error {
+			if cmd.Name() == "set" {
+				calls.Add(1)
+				return nil
+			}
+			return next(ctx, cmd)
+		}
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ap, err := mdb.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ap.Close() })
+	if !ap.Config().FullDuplex || ap.mdbFD == nil {
+		t.Fatal("MultiDB full-duplex path did not engage")
+	}
+	mdb.core.successSinceFailover.Store(false)
+	if err := ap.Set(context.Background(), "wire", "value", 0).Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.setCalls.Load(); got != 1 {
+		t.Errorf("server received %d writes, want 1 even when the FD hook skips next", got)
+	}
+	if n := calls.Load(); n != 1 || !mdb.core.successSinceFailover.Load() {
+		t.Errorf("full-duplex hook calls = %d, expected one call and a recorded success", n)
+	}
+}
+
 // A low detector threshold fails a command over to the next member inside
 // the same command, before the breaker (threshold 5) opens.
 func TestMultiDBFailureDetectorConfigTripsFailover(t *testing.T) {

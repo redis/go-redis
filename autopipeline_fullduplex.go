@@ -1816,7 +1816,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// Without CSC, spill on ANY acquisition failure EXCEPT a hard stop — saturation (ErrPoolTryFull
 	// / ErrPoolExhausted) AND a transient DIAL error while the pipeline pool is growing
 	// a connection (TryGet dials when the pool has no idle conn), plus a pipeline-conn
-	// init failure below. Only a cancelled ap.ctx (Close) or a closed pool surface as
+	// init failure below. A Limiter denial, a cancelled ap.ctx (Close), or a closed pool surface as
 	// fdLeaseErr, because the main pool would fail the same way; every other error may
 	// clear on the main pool, which can hand back an idle conn or dial cleanly, so it
 	// must not fail the accepted backlog (codex on #4002 — a deny-list, not an
@@ -1847,9 +1847,9 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 				return carry, fdLeaseErr, aerr
 			}
 			spill = true
-		} else if e := fd.client.initPooledConnLimited(initCtx, ref.pool, cn); e != nil {
+		} else if limited, e := fd.client.initPooledConnLimited(initCtx, ref.pool, cn); e != nil {
 			cn = nil // initPooledConn already Removed it from the pipeline pool
-			if untracked {
+			if untracked || limited {
 				return carry, fdLeaseErr, e
 			}
 			spill = true
@@ -1861,7 +1861,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 				return carry, fdLeaseErr, aerr
 			}
 			connPool = fd.client.connPool
-			if e := fd.client.initPooledConnLimited(initCtx, fd.client.connPool, cn); e != nil {
+			if _, e := fd.client.initPooledConnLimited(initCtx, fd.client.connPool, cn); e != nil {
 				cn = nil // initPooledConn already Removed it from the main pool
 				return carry, fdLeaseErr, e
 			}
@@ -1874,7 +1874,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 			cn = nil
 			return carry, fdLeaseErr, aerr
 		}
-		if e := fd.client.initPooledConnLimited(initCtx, fd.pool, cn); e != nil {
+		if _, e := fd.client.initPooledConnLimited(initCtx, fd.pool, cn); e != nil {
 			cn = nil // initPooledConn already Removed it
 			return carry, fdLeaseErr, e
 		}
