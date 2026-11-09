@@ -296,10 +296,15 @@ reuses that path and returns the recorder instead of installing it. The only
 additions:
 
 - the meter comes from `cfg.MeterProvider`, else from the provider `Init` used;
-- `customAttributes` is `Init`'s list followed by `cfg`'s;
-- when the provider is the one `Init` used, the recorder shares the global
-  recorder's asynchronous recording queue (the operation-duration histogram is
-  the same deduplicated instrument), so no extra goroutine is started;
+- `customAttributes` is `Init`'s list followed by `cfg`'s. The `Init` layer is
+  the global recorder's own copy of the attributes, not the caller-owned
+  `Config`, so mutating that `Config` after `Init` changes nothing;
+- when the provider is the one `Init` used (nil, or the same value passed
+  explicitly; providers of a non-comparable dynamic type count as distinct),
+  the recorder shares the global recorder's asynchronous recording queue (the
+  operation-duration histogram is the same deduplicated instrument), so no
+  extra goroutine is started. A recorder on another provider gets its own
+  queue, which the instance tracks and stops in `Shutdown`;
 - every recorder of one `Init` (the global one and those `NewRecorder`
   issued) shares a stop flag that `Shutdown` sets; `Enabled()` reports it and
   every record method returns early on it, except the two UpDown counters
@@ -358,7 +363,8 @@ well, which the existing code comments already list as the intended follow-up.
 - **Lifecycle**: `NewRecorder` before `Init` returns an error; a recorder
   records after `Init`, and after `Shutdown` records nothing but UpDown
   deltas; `cfg.Enabled` has no effect; a nil `cfg.MeterProvider` uses the
-  `Init` provider; a recorder on another provider gets its own queue.
+  `Init` provider; a recorder on another provider gets its own queue, which
+  `Shutdown` stops; the `Init` attribute layer is a snapshot taken at `Init`.
 - **UpDown balance** (`internal/pool`): a pool built with its own table keeps
   its `connection.count` across install and uninstall of the global table and
   returns to zero on `Close`; a pool following the global moves its count from

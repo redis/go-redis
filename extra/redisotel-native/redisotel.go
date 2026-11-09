@@ -3,6 +3,7 @@ package redisotel
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -68,7 +69,10 @@ type ObservabilityInstance struct {
 	provider metric.MeterProvider
 	// stopped is shared by the global recorder and every recorder NewRecorder
 	// issued since Init; Shutdown sets it so they all stop recording together.
-	stopped     *atomic.Bool
+	stopped *atomic.Bool
+	// ownQueues are the operation-duration queues of recorders NewRecorder
+	// built on another provider; Shutdown stops them with the global one.
+	ownQueues   []*opQueue
 	initialized bool
 }
 
@@ -127,30 +131,47 @@ func (o *ObservabilityInstance) Init(cfg *Config) error {
 // and pool events are recorded to it instead of the global recorder.
 //
 // Its metrics go to cfg.MeterProvider, or to the provider Init used when nil,
-// and carry the custom attributes of Init's config followed by cfg's own, so
-// a per-client attribute overrides a global one with the same key, which in
-// turn overrides a built-in one. cfg.Enabled is ignored: Init decides whether
-// the process records. Histogram settings that differ from Init's on a shared
-// provider are subject to the SDK's duplicate-instrument rule (the first
+// and carry the custom attributes Init was configured with followed by cfg's
+// own, so a per-client attribute overrides a global one with the same key,
+// which in turn overrides a built-in one. cfg.Enabled is ignored: Init decides
+// whether the process records. Histogram settings that differ from Init's on a
+// shared provider are subject to the SDK's duplicate-instrument rule (the first
 // registration wins). The recorder stops recording when Shutdown is called.
 //
 // NewRecorder returns an error until Init has been called with an enabled
 // config.
 func (o *ObservabilityInstance) NewRecorder(cfg *Config) (redis.OTelRecorder, error) {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if !o.initialized {
 		return nil, errors.New("redisotel: not initialized, call Init() with an enabled config first")
 	}
 	provider := cfg.MeterProvider
 	var shared *opQueue
-	if provider == nil || provider == o.provider {
+	if provider == nil || sameProvider(provider, o.provider) {
 		// Same provider, same instruments: share the global recorder's queue
 		// instead of starting another goroutine and gauge callback per client.
 		provider = o.provider
 		shared = o.recorder.opq
 	}
-	return o.newRecorder(cfg, o.config.CustomAttributes, provider, shared)
+	// The base layer is the global recorder's own copy of Init's attributes,
+	// not the caller-owned Config, which may have been mutated since Init.
+	rec, err := o.newRecorder(cfg, o.recorder.cfg.customAttributes, provider, shared)
+	if err != nil {
+		return nil, err
+	}
+	if shared == nil && rec.opq != nil {
+		o.ownQueues = append(o.ownQueues, rec.opq)
+	}
+	return rec, nil
+}
+
+// sameProvider reports whether a and b are the same provider. Interface
+// equality panics on a non-comparable dynamic type, so such providers are
+// treated as distinct.
+func sameProvider(a, b metric.MeterProvider) bool {
+	ta := reflect.TypeOf(a)
+	return ta == reflect.TypeOf(b) && ta.Comparable() && a == b
 }
 
 // newRecorder builds a recorder for cfg on provider. Its custom attributes are
@@ -200,6 +221,10 @@ func (o *ObservabilityInstance) shutdownLocked() error {
 	if o.recorder != nil && o.recorder.opq != nil {
 		o.recorder.opq.stop() // record what is queued
 	}
+	for _, q := range o.ownQueues {
+		q.stop()
+	}
+	o.ownQueues = nil
 
 	// Note: We don't shutdown the MeterProvider since it's owned by the application
 	// The application should call provider.Shutdown() when appropriate

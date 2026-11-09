@@ -867,6 +867,9 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
+	// Close unregisters them, so register here as NewClient does.
+	otel.RegisterPools(c.recorder(), c.connPool, c.pubSubPool, nil, opt.Addr)
+
 	return c
 }
 

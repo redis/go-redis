@@ -165,3 +165,62 @@ func TestNewRecorderStopsOnShutdown(t *testing.T) {
 		t.Fatalf("connection count series = %d, want 1", len(sets))
 	}
 }
+
+// TestNewRecorderSnapshotsInitAttributes pins that the base layer is Init's
+// attributes as they were at Init, not the caller-owned Config read later.
+func TestNewRecorderSnapshotsInitAttributes(t *testing.T) {
+	resetObservabilityForTest()
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+	inst := GetObservabilityInstance()
+	cfg := NewConfig().WithEnabled(true).WithMeterProvider(provider).
+		WithCustomAttributes(attribute.String("deployment.environment", "prod"))
+	if err := inst.Init(cfg); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = inst.Shutdown()
+		_ = provider.Shutdown(context.Background())
+		resetObservabilityForTest()
+	})
+	cfg.CustomAttributes[0] = attribute.String("deployment.environment", "mutated")
+
+	// The same provider passed explicitly is still the Init provider.
+	rec, err := inst.NewRecorder(NewConfig().WithMeterProvider(provider))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	if rec.(*metricsRecorder).opq != inst.recorder.opq {
+		t.Fatal("explicit Init provider did not share the operation-duration queue")
+	}
+	rec.RecordError(context.Background(), "ERR", nil, "ERR", false, 0)
+	sets := collectAttrs(t, reader, MetricClientErrors)
+	if len(sets) != 1 {
+		t.Fatalf("error series = %d, want 1", len(sets))
+	}
+	requireAttr(t, sets[0], "deployment.environment", "prod")
+}
+
+// TestShutdownStopsOwnQueues pins that Shutdown ends the worker of a recorder
+// built on another provider, as it does for the global recorder.
+func TestShutdownStopsOwnQueues(t *testing.T) {
+	inst, _ := initForTest(t)
+	provider := metric.NewMeterProvider(metric.WithReader(metric.NewManualReader()))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	rec, err := inst.NewRecorder(NewConfig().WithMeterProvider(provider))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	q := rec.(*metricsRecorder).opq
+	if q == nil {
+		t.Fatal("recorder on its own provider has no queue")
+	}
+	if err := inst.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case <-q.exit:
+	case <-time.After(time.Second):
+		t.Fatal("own queue worker still running after Shutdown")
+	}
+}
