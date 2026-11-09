@@ -502,12 +502,7 @@ func (mc *cscMissCoalescer) emitReplyErr(ctx context.Context, req *cscMissReq, e
 	if errors.As(err, &sessErr) {
 		return
 	}
-	errorCallback := pool.GetMetricErrorCallback()
-	if errorCallback == nil {
-		return
-	}
-	errorType, statusCode, isInternal := classifyCommandError(err)
-	errorCallback(ctx, errorType, req.servedBy, statusCode, isInternal, 0)
+	mc.c.recordCommandError(ctx, err, req.servedBy, 0)
 }
 
 func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64, view *commandMetadataView, redisKeys []string) (served *pool.Conn, err error) {
@@ -662,10 +657,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// servedBy, which would race the session's write): if the command was already
 		// sent, Redis received it, so report that conn; nil only for a true pre-send cancel.
 		sentConn := req.sentConn.Load()
-		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-			errorType, statusCode, isInternal := classifyCommandError(ctx.Err())
-			errorCallback(ctx, errorType, sentConn, statusCode, isInternal, 0)
-		}
+		mc.c.recordCommandError(ctx, ctx.Err(), sentConn, 0)
 		// Lost the interlock: the reader claimed cmd and is mid-apply — wait (the receive
 		// is a happens-before edge) rather than race by reusing cmd, and return its
 		// result. Won it: the reader skips the cmd write; in the LIVE case it still

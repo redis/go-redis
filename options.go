@@ -496,6 +496,11 @@ type Options struct {
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
 
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. The client's connection pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
+
 	// Client-side caching is eventually consistent. A cached value may be
 	// stale until its invalidation arrives, and reads are not guaranteed to
 	// be monotonic: a value observed through an uncached path can be newer
@@ -1305,6 +1310,7 @@ func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 	poolName string,
+	metrics *pool.MetricCallbacks,
 ) (*pool.ConnPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -1348,6 +1354,7 @@ func newConnPool(
 		WriteBufferSize:          opt.WriteBufferSize,
 		PushNotificationsEnabled: opt.Protocol == 3,
 		Name:                     poolName,
+		Metrics:                  metrics,
 	}), nil
 }
 
@@ -1355,6 +1362,7 @@ func newPubSubPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 	poolName string,
+	metrics *pool.MetricCallbacks,
 ) (*pool.PubSubPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -1395,5 +1403,6 @@ func newPubSubPool(
 		WriteBufferSize:          32 * 1024,
 		PushNotificationsEnabled: opt.Protocol == 3,
 		Name:                     poolName,
+		Metrics:                  metrics,
 	}, dialer), nil
 }

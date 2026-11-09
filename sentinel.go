@@ -248,6 +248,11 @@ type FailoverOptions struct {
 	// If nil, maintnotifications upgrades are disabled.
 	// (however if Mode is nil, it defaults to "auto" - enable if server supports it)
 	// MaintNotificationsConfig *maintnotifications.Config
+
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. The failover client, its sentinel clients and their pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -310,6 +315,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		PushNotificationProcessor: opt.PushNotificationProcessor,
 		CommandMetadata:           opt.CommandMetadata,
 
+		OTelRecorder: opt.OTelRecorder,
+
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
 		},
@@ -365,6 +372,8 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		IdentitySuffix:            opt.IdentitySuffix,
 		UnstableResp3:             opt.UnstableResp3,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
+
+		OTelRecorder: opt.OTelRecorder,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
@@ -441,6 +450,8 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		FailingTimeoutSeconds:     opt.FailingTimeoutSeconds,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
 		CommandMetadata:           opt.CommandMetadata,
+
+		OTelRecorder: opt.OTelRecorder,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
@@ -666,6 +677,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			himport:   newHImportRegistry(),
 		},
 	}
+	rdb.rec, rdb.poolMetrics = clientRecorder(opt.OTelRecorder)
 	rdb.init()
 
 	// Registered first (at construction), so onClose.run's LIFO order invokes it LAST —
@@ -716,12 +728,12 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// keeps the field nil on failure. (pubSubPool is a concrete *pool.PubSubPool
 	// whose nil is caught correctly by the != nil check, but assign it the same
 	// way to keep this constructor identical to NewClient.)
-	connPool, err := newConnPool(opt, rdb.dialHook, mainPoolName)
+	connPool, err := newConnPool(opt, rdb.dialHook, mainPoolName, rdb.poolMetrics)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
 	rdb.connPool = connPool
-	pubSubPool, err := newPubSubPool(opt, rdb.dialHook, pubsubPoolName)
+	pubSubPool, err := newPubSubPool(opt, rdb.dialHook, pubsubPoolName, rdb.poolMetrics)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
@@ -743,7 +755,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// failover client previously registered none, so pool gauges were silent
 	// for the identical standalone setup). The pipeline pool is nil when not
 	// configured.
-	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
+	otel.RegisterPools(rdb.recorder(), rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
@@ -829,6 +841,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 			onClose:  &onCloseHooks{},
 		},
 	}
+	c.rec, c.poolMetrics = clientRecorder(opt.OTelRecorder)
 
 	// Initialize push notification processor using shared helper
 	// Use void processor for Sentinel clients
@@ -845,11 +858,11 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
 
 	var err error
-	c.connPool, err = newConnPool(opt, c.dialHook, mainPoolName)
+	c.connPool, err = newConnPool(opt, c.dialHook, mainPoolName, c.poolMetrics)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
-	c.pubSubPool, err = newPubSubPool(opt, c.dialHook, pubsubPoolName)
+	c.pubSubPool, err = newPubSubPool(opt, c.dialHook, pubsubPoolName, c.poolMetrics)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
@@ -879,6 +892,7 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
+		rec: c.rec,
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			return c.newPubSubConn(ctx, addr, channels)
 		},

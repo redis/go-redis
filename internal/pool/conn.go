@@ -148,7 +148,8 @@ type Conn struct {
 	pubsub    bool
 	createdAt time.Time
 	expiresAt time.Time
-	poolName  string // Name of the pool this connection belongs to (for metrics)
+	poolName  string           // Name of the pool this connection belongs to (for metrics)
+	metrics   *MetricCallbacks // the dialing pool's Options.Metrics; nil means the global table
 
 	// preparedFieldsets tracks HIMPORT fieldsets prepared on this
 	// connection's current server session: fieldset name -> client-side

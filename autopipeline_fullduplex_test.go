@@ -3423,10 +3423,8 @@ func (fdPanicErrorStr) Error() string { panic("boom: error Error() panic") }
 // Red-check: revert classifyCommandErrorGuarded back to classifyCommandError — the panic
 // escapes failReqs and the command below never completes (test times out).
 func TestFDFailReqsClassifyPanicStillCompletes(t *testing.T) {
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {},
-	})
-	defer pool.SetAllMetricCallbacks(nil)
+	setTestErrorRecorder(func(context.Context, string, *pool.Conn, string, bool, int) {})
+	defer otel.SetGlobalRecorder(nil)
 
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
 	done := make(chan struct{})
@@ -3785,13 +3783,11 @@ func TestFDLimiterReportPanicOnWriteFailureNoCrash(t *testing.T) {
 // the caller completes normally.
 func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(_ context.Context, _ string, _ *pool.Conn, _ string, _ bool, _ int) {
-			calls.Add(1)
-			panic("boom from a user metric callback")
-		},
+	setTestErrorRecorder(func(_ context.Context, _ string, _ *pool.Conn, _ string, _ bool, _ int) {
+		calls.Add(1)
+		panic("boom from a user metric callback")
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
 	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), attempts: 1}
@@ -3817,13 +3813,11 @@ func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 func TestFDReportReplyMetricsNilReplyType(t *testing.T) {
 	var gotType atomic.Value
 	var gotInternal atomic.Bool
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(_ context.Context, errorType string, _ *pool.Conn, _ string, isInternal bool, _ int) {
-			gotType.Store(errorType)
-			gotInternal.Store(isInternal)
-		},
+	setTestErrorRecorder(func(_ context.Context, errorType string, _ *pool.Conn, _ string, isInternal bool, _ int) {
+		gotType.Store(errorType)
+		gotInternal.Store(isInternal)
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
 	req := fdReq{cmd: NewStringCmd(context.Background(), "get", "k"), attempts: 1}
@@ -3843,13 +3837,11 @@ func TestFDReportReplyMetricsNilReplyType(t *testing.T) {
 // server.
 func TestFDFailReqsRecoversMetricCallbackPanic(t *testing.T) {
 	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
-			calls.Add(1)
-			panic("boom from a user metric callback")
-		},
+	setTestErrorRecorder(func(context.Context, string, *pool.Conn, string, bool, int) {
+		calls.Add(1)
+		panic("boom from a user metric callback")
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	ctx := context.Background()
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
@@ -3895,13 +3887,11 @@ func TestFDFailReqsRecoversMetricCallbackPanic(t *testing.T) {
 // server.
 func TestFDFailQueueRecoversMetricCallbackPanic(t *testing.T) {
 	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
-			calls.Add(1)
-			panic("boom from a user metric callback")
-		},
+	setTestErrorRecorder(func(context.Context, string, *pool.Conn, string, bool, int) {
+		calls.Add(1)
+		panic("boom from a user metric callback")
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	ctx := context.Background()
 	const n = 3
@@ -6038,12 +6028,10 @@ func TestFDSubmitBatchNotStarvedBySingles(t *testing.T) {
 // command in the same backlog is still reported.
 func TestFDFailQueueSkipsPipelinedErrorMetric(t *testing.T) {
 	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
-			calls.Add(1)
-		},
+	setTestErrorRecorder(func(context.Context, string, *pool.Conn, string, bool, int) {
+		calls.Add(1)
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	ctx := context.Background()
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}, q: newFDQueue(4)}

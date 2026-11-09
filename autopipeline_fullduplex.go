@@ -1200,8 +1200,11 @@ func (fd *fdEngine) emitMetricsGuarded(octx context.Context, emit func()) {
 // curGoroutineID (runtime.Stack) once per reply capped the reader at about a
 // tenth of its throughput with OTel metrics on.
 func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error, cn *pool.Conn, gid int64) {
+	if fd.client == nil { // an engine built without a client (tests) has nowhere to record
+		return
+	}
 	fd.emitMetricsGuarded(octx, func() {
-		if cb := otel.GetOperationDurationCallback(); cb != nil {
+		if otel.Enabled(fd.client.recorder()) {
 			// The reader has set req.cmd's final result but has NOT completed the
 			// batch yet — req.complete() runs only after this returns. A custom
 			// duration callback that reads its own command (cmd.Err()/cmd.String())
@@ -1221,13 +1224,10 @@ func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error,
 				req.batch.addExecutor(gid)
 				defer req.batch.removeExecutor(gid)
 			}
-			cb(octx, fd.sinceWritten(req.writtenOff), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
+			fd.client.recordCommand(octx, fd.sinceWritten(req.writtenOff), req.cmd, req.attempts, e, cn)
 		}
 		if e != nil {
-			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-				errorType, statusCode, isInternal := classifyCommandError(e)
-				errorCallback(octx, errorType, cn, statusCode, isInternal, req.attempts-1)
-			}
+			fd.client.recordCommandError(octx, e, cn, req.attempts-1)
 		}
 	})
 }
@@ -3173,6 +3173,15 @@ func (fd *fdEngine) settleTail(reqs []fdReq, err error) []fdReq {
 // is not in the in-flight queue, so an escaping panic here would leave every caller
 // blocked forever (session recovery cannot reclaim it). On panic, fall back to empty
 // classification so the requests still settle.
+// recorder returns the owning client's recorder; an engine built without a
+// client (tests) records to the global recorder.
+func (fd *fdEngine) recorder() otel.Recorder {
+	if fd.client == nil {
+		return otel.Scoped(nil)
+	}
+	return fd.client.recorder()
+}
+
 func classifyCommandErrorGuarded(err error) (errorType, statusCode string, isInternal bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -3242,10 +3251,11 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 	// completion, so emit the native error callback per command. One classification
 	// for the whole set (every req fails with the same err), and no duration metric
 	// — many of these were never written.
-	errorCallback := pool.GetMetricErrorCallback()
+	rec := fd.recorder()
+	recordErrors := otel.Enabled(rec)
 	var errorType, statusCode string
 	var isInternal bool
-	if errorCallback != nil && len(reqs) > 0 {
+	if recordErrors && len(reqs) > 0 {
 		errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 	}
 	// One settle: reqs failing with the same error share a failure group.
@@ -3266,7 +3276,7 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 		}
 		// A pipelined command's failure is reported once for its batch
 		// (fdPipelineMetrics), as an ordinary pipeline does.
-		if errorCallback != nil && !reqs[i].pipelined {
+		if recordErrors && !reqs[i].pipelined {
 			octx := reqs[i].ctx
 			if octx == nil {
 				octx = context.Background()
@@ -3277,7 +3287,7 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 			// panicking callback still lets THIS req and every later one settle below.
 			retries := max(0, reqs[i].attempts-1)
 			fd.emitMetricsGuarded(octx, func() {
-				errorCallback(octx, errorType, nil, statusCode, isInternal, retries)
+				rec.RecordError(octx, errorType, nil, statusCode, isInternal, retries)
 			})
 		}
 		if account {
@@ -3664,7 +3674,8 @@ func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries in
 // channel receive is safe against a concurrent submit send, so no lock is taken
 // here.
 func (fd *fdEngine) failQueue(err error) {
-	errorCallback := pool.GetMetricErrorCallback()
+	rec := fd.recorder()
+	recordErrors := otel.Enabled(rec)
 	var errorType, statusCode string
 	var isInternal bool
 	classified := false
@@ -3677,7 +3688,7 @@ func (fd *fdEngine) failQueue(err error) {
 		fdSetErrSafe(r.cmd, err)
 		// A pipelined command's failure is reported once for its batch
 		// (fdPipelineMetrics), as in failReqs.
-		if errorCallback != nil && !r.pipelined {
+		if recordErrors && !r.pipelined {
 			if !classified {
 				errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 				classified = true
@@ -3688,7 +3699,7 @@ func (fd *fdEngine) failQueue(err error) {
 			}
 			// Guarded per-req so a panicking callback still lets r.complete() run.
 			fd.emitMetricsGuarded(octx, func() {
-				errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
+				rec.RecordError(octx, errorType, nil, statusCode, isInternal, 0)
 			})
 		}
 		fd.finish(r)

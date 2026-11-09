@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
@@ -1598,14 +1599,12 @@ func TestProcessCached_CoalescerBailCarriesAttempt(t *testing.T) {
 				callsMu sync.Mutex
 				calls   []errCall
 			)
-			pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-				Error: func(_ context.Context, _ string, cn *pool.Conn, _ string, _ bool, retries int) {
-					callsMu.Lock()
-					calls = append(calls, errCall{cn, retries})
-					callsMu.Unlock()
-				},
+			setTestErrorRecorder(func(_ context.Context, _ string, cn *pool.Conn, _ string, _ bool, retries int) {
+				callsMu.Lock()
+				calls = append(calls, errCall{cn, retries})
+				callsMu.Unlock()
 			})
-			t.Cleanup(func() { pool.SetAllMetricCallbacks(nil) })
+			t.Cleanup(func() { otel.SetGlobalRecorder(nil) })
 			failOnSession(f.mc, cn)
 			cmd, state, err := run(t, f.c, tc.start)
 			if err != sessErr {

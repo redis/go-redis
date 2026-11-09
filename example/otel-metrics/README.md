@@ -73,6 +73,46 @@ config := redisotel.NewConfig().
     )
 ```
 
+### Per-client recorders
+
+One process can carry clients that belong to different tenants, shards or
+roles. Give each its own recorder with `NewRecorder` and pass it in that
+client's options; everything the client does (commands, errors, Pub/Sub,
+stream lag, pool and connection events) is recorded to it instead of the
+global recorder:
+
+```go
+inst := redisotel.GetObservabilityInstance()
+_ = inst.Init(redisotel.NewConfig().
+    WithEnabled(true).
+    WithCustomAttributes(attribute.String("deployment.environment", "prod")))
+defer inst.Shutdown()
+
+rec, err := inst.NewRecorder(redisotel.NewConfig().
+    WithCustomAttributes(attribute.String("tenant", "acme")))
+if err != nil { /* Init has not run */ }
+
+acme := redis.NewClient(&redis.Options{Addr: "acme:6379", OTelRecorder: rec})
+```
+
+`ClusterOptions`, `RingOptions`, `FailoverOptions`, `UniversalOptions` and
+`MultiDBOptions` carry the same `OTelRecorder` field; cluster nodes, ring
+shards, sentinel clients and MultiDB members inherit it. Attribute precedence,
+lowest to highest:
+
+| Layer | Source |
+|-------|--------|
+| built-in | semantic-convention attributes set by the recorder |
+| global | `Init` config `WithCustomAttributes` |
+| per-client | `NewRecorder` config `WithCustomAttributes` |
+
+Two caveats: the per-client config's `Enabled` flag is ignored (`Init` decides
+whether the process records), and histogram settings that differ from `Init`'s
+on a shared meter provider hit the SDK's duplicate-instrument rule (the first
+registration wins). Any `redis.OTelRecorder` implementation can be used the
+same way, globally through `redis.SetOTelRecorder` or per client through the
+options field.
+
 ## See Also
 
 - [OpenTelemetry Go SDK](https://opentelemetry.io/docs/languages/go/)

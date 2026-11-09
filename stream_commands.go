@@ -3,11 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
-	"strconv"
-	"strings"
 	"time"
-
-	"github.com/redis/go-redis/v9/internal/otel"
 )
 
 // XTrimLimitDisabled is a sentinel value for the LIMIT argument of stream
@@ -401,32 +397,8 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	cmd.SetFirstKeyPos(keyPos)
 	_ = c(ctx, cmd)
 
-	// Record stream lag for each message (if command succeeded). Gated on the
-	// result being readable WITHOUT blocking: this command carries a
-	// read-timeout marker, so on the deferred autopipeline face it is diverted
-	// and still running when we get here — and the default Block: 0 form can
-	// wait indefinitely for messages, so reading the outcome would block the
-	// submit call instead of returning a future (review finding by codex on
-	// #3942). Skipped for a submission that has not executed yet; emitting
-	// this from the execution path is a follow-up in the OTel wiring.
-	if otel.Enabled() && cmd.resultReady() && cmd.rawErr() == nil {
-		streams := cmd.Val()
-		for _, stream := range streams {
-			for _, msg := range stream.Messages {
-				// Parse message ID to extract timestamp (format: "millisecondsTime-sequenceNumber")
-				if parts := strings.SplitN(msg.ID, "-", 2); len(parts) == 2 {
-					if timestampMs, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
-						// Calculate lag (time since message was created)
-						messageTime := time.Unix(0, timestampMs*int64(time.Millisecond))
-						lag := time.Since(messageTime)
-						// Record lag metric
-						otel.RecordStreamLag(ctx, lag, nil, stream.Stream, a.Group, a.Consumer)
-					}
-				}
-			}
-		}
-	}
-
+	// Stream lag is recorded on the execution path (baseClient.recordCommand),
+	// so the async autopipeline face counts too.
 	return cmd
 }
 

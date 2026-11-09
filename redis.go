@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -443,6 +444,13 @@ type baseClient struct {
 	pipelinePool *pipelinePoolRef
 	hooksMixin
 
+	// rec is where this client's metrics go: its Options.OTelRecorder, or a view
+	// of the global recorder (see clientRecorder). poolMetrics is the matching
+	// pool callback table, nil when rec is the global view. Both are set before
+	// the pools are built and never change.
+	rec         otel.Recorder
+	poolMetrics *pool.MetricCallbacks
+
 	// onClose holds named callbacks invoked when the client is closed.
 	// Registering a new callback never removes previously registered ones;
 	// only re-registering the same id replaces the existing callback. This
@@ -552,9 +560,11 @@ func (c *baseClient) clone() *baseClient {
 	c.maintNotificationsManagerLock.RUnlock()
 
 	clone := &baseClient{
-		apClosed: c.apClosed,
-		opt:      c.opt,
-		connPool: c.connPool,
+		apClosed:    c.apClosed,
+		opt:         c.opt,
+		rec:         c.rec,
+		poolMetrics: c.poolMetrics,
+		connPool:    c.connPool,
 		// Pointer copy on purpose: the clone shares the parent's already-created
 		// pipeline pool over the one shared pool set, rather than building its own.
 		pipelinePool:                c.pipelinePool,
@@ -798,11 +808,8 @@ func (c *baseClient) initPooledConn(ctx context.Context, p pool.Pooler, cn *pool
 		return err
 	}
 
-	if dialStartNs := cn.GetDialStartNs(); dialStartNs > 0 {
-		if cb := pool.GetMetricConnectionCreateTimeCallback(); cb != nil {
-			duration := time.Duration(time.Now().UnixNano() - dialStartNs)
-			cb(ctx, duration, cn)
-		}
+	if dialStartNs := cn.GetDialStartNs(); dialStartNs > 0 && otel.Enabled(c.recorder()) {
+		c.recorder().RecordConnectionCreateTime(ctx, time.Duration(time.Now().UnixNano()-dialStartNs), cn)
 	}
 
 	// initConn will transition to IDLE state, so we need to acquire it
@@ -936,7 +943,7 @@ func pipelinePoolOptions(opt *Options) *Options {
 // options as resolved by pipelinePoolOptions. Shared by the NewClient and
 // NewFailoverClient creation paths so they cannot drift.
 func (c *baseClient) buildPipelinePool(poolName string) (*pipelinePoolRef, error) {
-	p, err := newConnPool(pipelinePoolOptions(c.opt), c.dialHook, poolName)
+	p, err := newConnPool(pipelinePoolOptions(c.opt), c.dialHook, poolName, c.poolMetrics)
 	if err != nil {
 		return nil, err
 	}
@@ -1366,9 +1373,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		if maintNotifMode == maintnotifications.ModeEnabled {
 			// Explicitly requested - fail fast with a clear reason.
 			cn.GetStateMachine().Transition(pool.StateClosed)
-			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-				errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
-			}
+			c.recorder().RecordError(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
 			return fmt.Errorf("failed to enable maintnotifications: server does not support RESP3 (HELLO command failed)")
 		}
 		// auto/other modes: silently disable maintnotifications for this client.
@@ -1416,9 +1421,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				cn.GetStateMachine().Transition(pool.StateClosed)
 
 				// Record handshake failure metric
-				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-					errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
-				}
+				c.recorder().RecordError(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
 
 				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
@@ -1796,8 +1799,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 // already includes the FD attempt). A zero start defaults to now, so the normal
 // path measures from here.
 func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAttempt int, start time.Time) error {
-	opDurationCallback := otel.GetOperationDurationCallback()
-	if opDurationCallback == nil {
+	if !otel.Enabled(c.recorder()) {
 		return c.processCommand(ctx, cmd, nil, startAttempt)
 	}
 
@@ -1806,8 +1808,64 @@ func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAtte
 	}
 	var state processState
 	err := c.processCommand(ctx, cmd, &state, startAttempt)
-	opDurationCallback(ctx, time.Since(start), cmd, state.attempts, err, state.lastConn, c.opt.DB)
+	c.recordCommand(ctx, time.Since(start), cmd, state.attempts, err, state.lastConn)
 	return err
+}
+
+// recordCommand records a finished command to the client's recorder: its
+// duration and, for a successful PUBLISH/SPUBLISH or XREADGROUP, the "sent"
+// Pub/Sub message or the stream lag of every message read. It runs on the
+// execution path, so the async autopipeline face records them too, and reads
+// only the raw result (never Val()/Err(), which on the FD reader would await
+// the batch this call completes).
+func (c *baseClient) recordCommand(ctx context.Context, d time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn) {
+	c.recorder().RecordOperationDuration(ctx, d, cmd, attempts, err, cn, c.opt.DB)
+	if err != nil {
+		return
+	}
+	switch cmd.Name() {
+	case "publish", "spublish":
+		if args := cmd.Args(); len(args) > 1 {
+			if channel, ok := args[1].(string); ok {
+				c.recorder().RecordPubSubMessage(ctx, cn, "sent", channel, cmd.Name() == "spublish")
+			}
+		}
+	case "xreadgroup":
+		if x, ok := cmd.(*XStreamSliceCmd); ok {
+			c.recordStreamLag(ctx, cn, x)
+		}
+	}
+}
+
+// recordStreamLag records, for each message read by an XREADGROUP, the time
+// since the message was created (its ID's millisecond timestamp).
+func (c *baseClient) recordStreamLag(ctx context.Context, cn *pool.Conn, cmd *XStreamSliceCmd) {
+	args := cmd.Args() // xreadgroup group <group> <consumer> ...
+	if len(args) < 4 {
+		return
+	}
+	group, _ := args[2].(string)
+	consumer, _ := args[3].(string)
+	for _, stream := range cmd.val {
+		for _, msg := range stream.Messages {
+			ms, _, found := strings.Cut(msg.ID, "-")
+			if !found {
+				continue
+			}
+			if created, err := strconv.ParseInt(ms, 10, 64); err == nil {
+				c.recorder().RecordStreamLag(ctx, time.Since(time.UnixMilli(created)), cn, stream.Stream, group, consumer)
+			}
+		}
+	}
+}
+
+// recorder returns where the client's metrics go. A hand-built value (tests) leaves
+// rec nil, which means the global recorder.
+func (c *baseClient) recorder() otel.Recorder {
+	if c.rec == nil {
+		return otel.Scoped(nil)
+	}
+	return c.rec
 }
 
 type processState struct {
@@ -1913,7 +1971,7 @@ func (c *baseClient) processWithRetry(
 		// (NoRetry guards against a SECOND execution of a possibly-written command).
 		if err == nil || !retry || (cmd.NoRetry() && !forced) {
 			if err != nil {
-				recordCommandError(ctx, err, lastConn, totalAttempts-1)
+				c.recordCommandError(ctx, err, lastConn, totalAttempts-1)
 			}
 			return err
 		}
@@ -1922,7 +1980,7 @@ func (c *baseClient) processWithRetry(
 	}
 
 	// Record error metric for exhausted retries
-	recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
+	c.recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
 
 	return lastErr
 }
@@ -1932,13 +1990,12 @@ func (c *baseClient) processWithRetry(
 // none did), and the retries spent (attempts beyond the first). Every exit that
 // ends a command with an error shares it: the two in processWithRetry and the
 // exhausted-budget return in processCached.
-func recordCommandError(ctx context.Context, err error, cn *pool.Conn, retries int) {
-	errorCallback := pool.GetMetricErrorCallback()
-	if errorCallback == nil {
+func (c *baseClient) recordCommandError(ctx context.Context, err error, cn *pool.Conn, retries int) {
+	if !otel.Enabled(c.recorder()) {
 		return
 	}
 	errorType, statusCode, isInternal := classifyCommandError(err)
-	errorCallback(ctx, errorType, cn, statusCode, isInternal, retries)
+	c.recorder().RecordError(ctx, errorType, cn, statusCode, isInternal, retries)
 }
 
 // classifyCommandError classifies an error for metrics reporting.
@@ -2332,7 +2389,7 @@ func (c *baseClient) closeResources() error {
 	}
 
 	// Unregister pools from OTel before closing them
-	otel.UnregisterPools(c.connPool, c.pubSubPool, c.getPipelinePool())
+	otel.UnregisterPools(c.recorder(), c.connPool, c.pubSubPool, c.getPipelinePool())
 
 	if c.connPool != nil {
 		if err := c.connPool.Close(); err != nil && firstErr == nil {
@@ -2427,17 +2484,17 @@ func (c *baseClient) generalProcessPipelineFrom(
 			return err
 		}
 	}
-	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
+	// Only call time.Now() if a recorder is enabled to avoid overhead
 	var operationStart time.Time
-	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
-	if pipelineOpDurationCallback != nil {
+	recordDuration := otel.Enabled(c.recorder())
+	if recordDuration {
 		operationStart = start
 		if operationStart.IsZero() {
 			if priorAttempts > 0 {
 				// A continued operation (a full-duplex attempt) that began
-				// with no duration callback: its start is unknown, so record
+				// with no recorder: its start is unknown, so record
 				// no duration, as the FD path does.
-				pipelineOpDurationCallback = nil
+				recordDuration = false
 			} else {
 				operationStart = time.Now()
 			}
@@ -2455,9 +2512,8 @@ func (c *baseClient) generalProcessPipelineFrom(
 			// would: 0 for an ordinary pipeline.
 			if err := internal.Sleep(ctx, c.retryBackoff(priorAttempts+attempt)); err != nil {
 				setCmdsErr(cmds, err)
-				if pipelineOpDurationCallback != nil {
-					operationDuration := time.Since(operationStart)
-					pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
+				if recordDuration {
+					c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
 				}
 				return err
 			}
@@ -2493,16 +2549,12 @@ func (c *baseClient) generalProcessPipelineFrom(
 			if pipelineErrShouldStamp(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
-			if pipelineOpDurationCallback != nil {
-				operationDuration := time.Since(operationStart)
-				pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
+			if recordDuration {
+				c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
 			}
 
 			if lastErr != nil {
-				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-					errorType, statusCode, isInternal := classifyCommandError(lastErr)
-					errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
-				}
+				c.recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
 			}
 			return lastErr
 		}
@@ -2519,15 +2571,11 @@ func (c *baseClient) generalProcessPipelineFrom(
 		setCmdsErr(cmds, lastErr)
 	}
 
-	if pipelineOpDurationCallback != nil {
-		operationDuration := time.Since(operationStart)
-		pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
+	if recordDuration {
+		c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
 	}
 
-	if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-		errorType, statusCode, isInternal := classifyCommandError(lastErr)
-		errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
-	}
+	c.recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
 
 	return lastErr
 }
@@ -2884,6 +2932,7 @@ func NewClient(opt *Options) *Client {
 			himport:   newHImportRegistry(),
 		},
 	}
+	c.rec, c.poolMetrics = clientRecorder(opt.OTelRecorder)
 	c.init()
 
 	// Close a partially-built client if a construction step below panics before
@@ -2920,12 +2969,12 @@ func NewClient(opt *Options) *Client {
 	// panic-cleanup defer above would nil-deref inside ConnPool.Close instead of
 	// surfacing the original construction error. A local var keeps the field nil
 	// on failure. The pipeline pool below already follows this pattern.
-	connPool, err := newConnPool(opt, c.dialHook, mainPoolName)
+	connPool, err := newConnPool(opt, c.dialHook, mainPoolName, c.poolMetrics)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
 	c.connPool = connPool
-	pubSubPool, err := newPubSubPool(opt, c.dialHook, pubsubPoolName)
+	pubSubPool, err := newPubSubPool(opt, c.dialHook, pubsubPoolName, c.poolMetrics)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
@@ -3012,7 +3061,7 @@ func NewClient(opt *Options) *Client {
 
 	// Register pools with OTel recorder if it supports pool registration
 	// This allows async gauge metrics to pull stats from pools periodically
-	otel.RegisterPools(c.connPool, c.pubSubPool, c.getPipelinePool(), opt.Addr)
+	otel.RegisterPools(c.recorder(), c.connPool, c.pubSubPool, c.getPipelinePool(), opt.Addr)
 
 	built = true
 	return &c
@@ -3391,6 +3440,7 @@ func (c *baseClient) removeStreamingCredentialsState(cn *pool.Conn) {
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
+		rec: c.rec,
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			return c.newPubSubConn(ctx, addr, channels)
 		},
@@ -3484,6 +3534,9 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin, himpor
 		baseClient: baseClient{
 			apClosed: &atomic.Bool{},
 			opt:      opt,
+			// The handshake commands run through here record where the owning
+			// client does; opt is the client's (or a copy of it).
+			rec:      scopedRecorder(opt.OTelRecorder),
 			connPool: connPool,
 			onClose:  &onCloseHooks{},
 			himport:  himport,

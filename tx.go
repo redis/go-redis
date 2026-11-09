@@ -43,6 +43,7 @@ func (c *Client) newTx() *Tx {
 	tx := Tx{
 		baseClient: baseClient{
 			opt:           c.cloneOpt(), // Clone options under optLock to avoid race with initConn
+			rec:           c.rec,
 			connPool:      c.baseClient.newStickyConnPool(),
 			hooksMixin:    c.hooksMixin.clone(),
 			pushProcessor: c.pushProcessor, // Copy push processor from parent client

@@ -30,6 +30,9 @@ func (r *metricsRecorder) RecordMultiDBFailover(
 	fromFQDN, toFQDN, reason string,
 	duration time.Duration,
 ) {
+	if r.off() {
+		return
+	}
 	if r.multiDBFailovers == nil && r.multiDBFailoverDuration == nil {
 		return
 	}
@@ -50,6 +53,9 @@ func (r *metricsRecorder) RecordMultiDBFailover(
 // RecordMultiDBActiveDatabaseChange records a change of the active member
 // database (failover, fallback or manual selection).
 func (r *metricsRecorder) RecordMultiDBActiveDatabaseChange(ctx context.Context, fromFQDN, toFQDN string) {
+	if r.off() {
+		return
+	}
 	if r.multiDBActiveDatabaseChanges == nil {
 		return
 	}
@@ -64,6 +70,9 @@ func (r *metricsRecorder) RecordMultiDBActiveDatabaseChange(ctx context.Context,
 // RecordMultiDBCircuitStateChange records a member circuit breaker state
 // transition ("closed", "open", "half-open").
 func (r *metricsRecorder) RecordMultiDBCircuitStateChange(ctx context.Context, dbFQDN, fromState, toState string) {
+	if r.off() {
+		return
+	}
 	if r.multiDBCircuitStateChanges == nil {
 		return
 	}
@@ -79,6 +88,9 @@ func (r *metricsRecorder) RecordMultiDBCircuitStateChange(ctx context.Context, d
 // RecordMultiDBHealthCheck records the outcome and wall time of one member
 // health check.
 func (r *metricsRecorder) RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, duration time.Duration) {
+	if r.off() {
+		return
+	}
 	if r.multiDBHealthChecks == nil && r.multiDBHealthCheckDuration == nil {
 		return
 	}

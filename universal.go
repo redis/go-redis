@@ -191,6 +191,11 @@ type UniversalOptions struct {
 	// MaintNotificationsConfig provides configuration for maintnotifications upgrades.
 	MaintNotificationsConfig *maintnotifications.Config
 
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. Every client built from these options and its pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
+
 	// ClientSideCacheConfig enables client-side caching when NewUniversalClient
 	// selects a standalone Client or ClusterClient. Cluster limits apply per node.
 	// Sentinel-backed ClusterClients are supported; single-node failover clients
@@ -259,6 +264,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 	return &ClusterOptions{
 		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		OTelRecorder:                           o.OTelRecorder,
 		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,
 		ClientSideCacheable:                    o.ClientSideCacheable,
 		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
@@ -337,6 +343,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 
 	return &FailoverOptions{
 		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		OTelRecorder:                           o.OTelRecorder,
 		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,
 		ClientSideCacheable:                    o.ClientSideCacheable,
 		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
@@ -476,6 +483,7 @@ func (o *UniversalOptions) Simple() *Options {
 		UnstableResp3:               o.UnstableResp3,
 		PushNotificationProcessor:   o.PushNotificationProcessor,
 		MaintNotificationsConfig:    o.MaintNotificationsConfig,
+		OTelRecorder:                o.OTelRecorder,
 		ClientSideCacheConfig:       o.ClientSideCacheConfig,
 		ClientSideCacheTrackingMode: o.ClientSideCacheTrackingMode,
 		ClientSideCacheable:         o.ClientSideCacheable,

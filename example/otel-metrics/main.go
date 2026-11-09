@@ -77,6 +77,22 @@ func main() {
 		Addr: "localhost:6379",
 	})
 	defer rdb.Close()
+
+	// A client with its own recorder: its metrics carry the global
+	// attributes from Init plus this one, which wins on a duplicate key.
+	tenantRecorder, err := otelInstance.NewRecorder(redisotel.NewConfig().
+		WithCustomAttributes(attribute.String("tenant", "acme")))
+	if err != nil {
+		log.Fatalf("Failed to create per-client recorder: %v", err)
+	}
+	tenantClient := redis.NewClient(&redis.Options{
+		Addr:         "localhost:6379",
+		OTelRecorder: tenantRecorder,
+	})
+	defer tenantClient.Close()
+	if err := tenantClient.Ping(ctx).Err(); err != nil {
+		log.Printf("tenant client ping: %v", err)
+	}
 	// STEP_END
 
 	// STEP_START redis_operations

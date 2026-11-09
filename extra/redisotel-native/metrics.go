@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -80,20 +82,37 @@ type metricsRecorder struct {
 	// opq records success-path operation durations off the caller's goroutine
 	// (op_queue.go); nil records them inline.
 	opq *opQueue
+
+	// stopped is set by ObservabilityInstance.Shutdown (shared with every
+	// recorder of that Init); nil for a recorder built outside Init.
+	stopped *atomic.Bool
 }
+
+// Enabled reports whether the recorder still records; false after Shutdown.
+// go-redis checks it before metric work whose inputs are expensive to obtain.
+func (r *metricsRecorder) Enabled() bool { return !r.off() }
+
+// off reports whether Shutdown has stopped this recorder. Every Record method
+// except the UpDown counters (connection.count, pending_requests) returns early
+// when it is set; those two keep flowing so a client closed after Shutdown
+// still brings its counts back to zero.
+func (r *metricsRecorder) off() bool { return r.stopped != nil && r.stopped.Load() }
 
 // withAttrs returns the measurement option for attrs followed by the
 // configured custom attributes. Custom attributes come last so one with the
 // same key as a built-in attribute wins (attribute.NewSet keeps the last value
 // for a duplicate key).
 func (r *metricsRecorder) withAttrs(attrs []attribute.KeyValue) metric.MeasurementOption {
+	return metric.WithAttributes(r.customAttrs(attrs)...)
+}
+
+// customAttrs returns builtin followed by the configured custom attributes,
+// in a fresh slice; builtin itself when there are none.
+func (r *metricsRecorder) customAttrs(builtin []attribute.KeyValue) []attribute.KeyValue {
 	if r.cfg == nil || len(r.cfg.customAttributes) == 0 {
-		return metric.WithAttributes(attrs...)
+		return builtin
 	}
-	all := make([]attribute.KeyValue, 0, len(attrs)+len(r.cfg.customAttributes))
-	all = append(all, attrs...)
-	all = append(all, r.cfg.customAttributes...)
-	return metric.WithAttributes(all...)
+	return slices.Concat(builtin, r.cfg.customAttributes)
 }
 
 // RecordOperationDuration records db.client.operation.duration metric
@@ -106,6 +125,9 @@ func (r *metricsRecorder) RecordOperationDuration(
 	cn redis.ConnInfo,
 	dbIndex int,
 ) {
+	if r.off() {
+		return
+	}
 	if r.operationDuration == nil {
 		return
 	}
@@ -158,7 +180,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 	}
 
 	// Record the histogram
-	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+	r.operationDuration.Record(ctx, durationSeconds, r.withAttrs(attrs))
 }
 
 // maxOpAttrSets bounds the success-path attribute-set cache: past it the
@@ -189,7 +211,7 @@ func (r *metricsRecorder) storeOpAttrs(key opAttrKey, addr net.Addr) any {
 		r.opAttrs.Clear()
 		r.opAttrsLen = 0
 	}
-	set := attribute.NewSet(operationAttrs(key.op, key.attempts, addrString(addr), key.db)...)
+	set := attribute.NewSet(r.customAttrs(operationAttrs(key.op, key.attempts, addrString(addr), key.db))...)
 	r.opAttrs.Store(key, set)
 	r.opAttrsLen++
 	return set
@@ -253,6 +275,9 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	cn redis.ConnInfo,
 	dbIndex int,
 ) {
+	if r.off() {
+		return
+	}
 	if r.operationDuration == nil {
 		return
 	}
@@ -636,6 +661,9 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 	duration time.Duration,
 	cn redis.ConnInfo,
 ) {
+	if r.off() {
+		return
+	}
 	if r.connectionCreateTime == nil {
 		return
 	}
@@ -669,6 +697,9 @@ func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
 	cn redis.ConnInfo,
 	poolName, notificationType string,
 ) {
+	if r.off() {
+		return
+	}
 	if r.connectionRelaxedTimeout == nil {
 		return
 	}
@@ -700,6 +731,9 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 	cn redis.ConnInfo,
 	poolName string,
 ) {
+	if r.off() {
+		return
+	}
 	if r.connectionHandoff == nil {
 		return
 	}
@@ -730,6 +764,9 @@ func (r *metricsRecorder) RecordError(
 	isInternal bool,
 	retryAttempts int,
 ) {
+	if r.off() {
+		return
+	}
 	if r.clientErrors == nil {
 		return
 	}
@@ -780,6 +817,9 @@ func (r *metricsRecorder) RecordMaintenanceNotification(
 	cn redis.ConnInfo,
 	notificationType string,
 ) {
+	if r.off() {
+		return
+	}
 	if r.maintenanceNotifications == nil {
 		return
 	}
@@ -818,6 +858,9 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 	duration time.Duration,
 	cn redis.ConnInfo,
 ) {
+	if r.off() {
+		return
+	}
 	if r.connectionWaitTime == nil {
 		return
 	}
@@ -847,6 +890,9 @@ func (r *metricsRecorder) RecordConnectionClosed(
 	reason string,
 	err error,
 ) {
+	if r.off() {
+		return
+	}
 	if r.connectionClosed == nil {
 		return
 	}
@@ -893,6 +939,9 @@ func (r *metricsRecorder) RecordPubSubMessage(
 	channel string,
 	sharded bool,
 ) {
+	if r.off() {
+		return
+	}
 	if r.pubsubMessages == nil {
 		return
 	}
@@ -939,6 +988,9 @@ func (r *metricsRecorder) RecordStreamLag(
 	consumerGroup string,
 	consumerName string,
 ) {
+	if r.off() {
+		return
+	}
 	if r.streamLag == nil {
 		return
 	}
