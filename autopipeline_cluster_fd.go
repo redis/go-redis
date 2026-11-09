@@ -189,6 +189,12 @@ func (r *clusterFDRouter) slotTableDrop(cmd Cmder, ch *AutoPipeliner) {
 // be FD-capable) it falls back to the normal cluster Process path — correct,
 // just not pipelined.
 func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
+	return r.submitToken(ctx, cmd, fdOutcomeToken{})
+}
+
+// submitToken is submit with the owner admission token handed to the node
+// child's FD engine (see AutoPipelineOptions.fdOutcome).
+func (r *clusterFDRouter) submitToken(ctx context.Context, cmd Cmder, token fdOutcomeToken) AutoFuture {
 	// Mirror enqueue's closed contract: reject once the parent is closing rather
 	// than route to a child that Close is tearing down.
 	if r.parent.isClosed() {
@@ -213,7 +219,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// re-run that same classification, hit its nil routing callback, and build a finish
 	// closure: pure per-command CPU on the hot path (measured ~1/3 of submit cost is
 	// this second pass). child.fd is non-nil (getOrCreateChild screened it).
-	b := child.fd.submit(ctx, cmd)
+	b := child.fd.submitToken(ctx, cmd, token)
 	if b == completedBatch && errors.Is(cmd.Err(), ErrClosed) {
 		// Topology GC (a cluster reload dropping this node, or the node's own pool
 		// close hook) can close this child at any point up to and including while
@@ -252,7 +258,7 @@ func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// inline completion unconditionally overwrites cmd's error with the
 		// reply outcome.
 		cmd.SetErr(nil)
-		b = child.fd.submit(ctx, cmd)
+		b = child.fd.submitToken(ctx, cmd, token)
 	}
 	if b == completedBatch {
 		cmd.setClusterRoutingDecision(nil)

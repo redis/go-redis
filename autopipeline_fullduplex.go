@@ -216,6 +216,11 @@ type fdReq struct {
 	// ctx is the caller's submit context, kept so the per-command OTel metric can
 	// be recorded against it (span/baggage correlation), mirroring process().
 	ctx context.Context
+	// ownerToken is the owner-supplied admission handle (see
+	// AutoPipelineOptions.fdOutcome), carried to the outcome report so an
+	// outcome that outlives a reselect of the same member settles in the
+	// episode it was admitted to. Zero for owners that do not account.
+	ownerToken fdOutcomeToken
 	// writtenOff is stamped at the command's FIRST flush to the wire and kept across
 	// replays; the reader uses write→reply as the command's operation duration for
 	// the OTel metric. Anchoring on the first write (not the last replay) makes the
@@ -722,7 +727,7 @@ type fdEngine struct {
 	// outcome, when set by the engine's owner (AutoPipelineOptions.fdOutcome),
 	// receives every command's final outcome the engine itself settles (see
 	// finish). Set once in newFDEngine.
-	outcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup)
+	outcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup, token fdOutcomeToken)
 	// ownerRetries / ownerRetryBudget: the owner's retry policy
 	// (AutoPipelineOptions.fdOwnerRetries / fdRetryBudget). When set,
 	// retryBudget returns ownerRetryBudget and a failed lease reroutes at once.
@@ -895,7 +900,7 @@ func (fd *fdEngine) finishGrouped(r fdReq, grp *fdFailGroup) {
 			r.batch.fdOutcomeOwed = true
 			r.batch.fdOutcomeGroup = grp
 		} else {
-			fd.reportOutcome(r.ctx, r.cmd, nil, grp)
+			fd.reportOutcome(r.ctx, r.cmd, nil, grp, r.ownerToken)
 		}
 	}
 	r.complete()
@@ -947,7 +952,7 @@ func fdGroupsByErr() func(err error) *fdFailGroup {
 // nil. The owner's callback and a custom Cmder's Err are user code running on
 // the reader or engine goroutine, so a panic is contained here (logged) and the
 // command still completes.
-func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup) {
+func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup, token fdOutcomeToken) {
 	defer func() {
 		if r := recover(); r != nil {
 			internal.Logger.Printf(context.Background(), "autopipeline: recovered full-duplex outcome panic: %v", r)
@@ -959,7 +964,7 @@ func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp
 		// itself.
 		err = cmd.rawErr()
 	}
-	fd.outcome(ctx, cmd, err, grp)
+	fd.outcome(ctx, cmd, err, grp, token)
 }
 
 // submit enqueues a command onto the ordered stream and returns its batch.
@@ -969,6 +974,12 @@ func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp
 // (see hostHook) and ctx parents its span; the hook-free path skips that
 // goroutine and channel entirely.
 func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
+	return fd.submitToken(ctx, cmd, fdOutcomeToken{})
+}
+
+// submitToken is submit with the owner admission token recorded on the request
+// (see AutoPipelineOptions.fdOutcome).
+func (fd *fdEngine) submitToken(ctx context.Context, cmd Cmder, token fdOutcomeToken) *apBatch {
 	if fd.ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return completedBatch
@@ -991,7 +1002,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	} else {
 		b = newAPBatch()
 	}
-	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx, attempts: 1}
+	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx, attempts: 1, ownerToken: token}
 
 	// Send under RLock and re-check closed so a send can never win the race with
 	// run()'s shutdown drain (takeQueue: WLock, set closed, drain fd.ch). Once the
@@ -1038,7 +1049,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 			// FullDuplex contract forbids it (see the FullDuplex field doc).
 			if hookDone != nil {
 				fd.hostWg.Add(1)
-				go fd.hostHook(ctx, cmd, b, hookDone)
+				go fd.hostHook(ctx, cmd, b, hookDone, token)
 			}
 			fd.submitMu.RUnlock()
 			return b
@@ -1088,7 +1099,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 // hookDone, so an observing hook spans the command's real write→reply latency and
 // a hook that rewrites the result is honored before the waiter wakes. Each
 // command is reported individually (withProcessHook), not as a pipeline batch.
-func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}) {
+func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}, token fdOutcomeToken) {
 	// Declared first so it runs last: Close waits hostWg (via run()), and the host
 	// is done only after the recover defer below has also run.
 	defer fd.hostWg.Done()
@@ -1129,7 +1140,7 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 			}
 			internal.Logger.Printf(ctx, "autopipeline: recovered full-duplex hook panic: %v\n%s", r, debug.Stack())
 			if b.fdOutcomeOwed {
-				fd.reportOutcome(ctx, cmd, nil, b.fdOutcomeGroup)
+				fd.reportOutcome(ctx, cmd, nil, b.fdOutcomeGroup, token)
 			}
 			b.close()
 		}
@@ -1154,7 +1165,7 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	fdSetErrSafe(cmd, err) // honor a hook that rewrote / short-circuited the result
 	if b.fdOutcomeOwed {
 		// The owner's report, on the chain's final result (see finish).
-		fd.reportOutcome(ctx, cmd, err, b.fdOutcomeGroup)
+		fd.reportOutcome(ctx, cmd, err, b.fdOutcomeGroup, token)
 	}
 	b.close() // now wake the waiter
 }
@@ -1432,7 +1443,7 @@ func (fd *fdEngine) runReplyReroutes(done chan struct{}) {
 			// Each reply is a failed attempt on this member: report it first,
 			// as rerouteReqs does; the owner's path settles the rerouted one.
 			if fd.outcome != nil {
-				fd.reportOutcome(r.req.ctx, r.req.cmd, r.cause, nil)
+				fd.reportOutcome(r.req.ctx, r.req.cmd, r.cause, nil, r.req.ownerToken)
 			}
 			reqs = append(reqs, r.req)
 		}
@@ -3494,7 +3505,7 @@ func (fd *fdEngine) rerouteReqs(bg context.Context, reqs []fdReq, cause error) {
 		grp := &fdFailGroup{}
 		for i := range reqs {
 			if reqs[i].sent {
-				fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause, grp)
+				fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause, grp, reqs[i].ownerToken)
 			}
 		}
 	}
