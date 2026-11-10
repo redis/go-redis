@@ -1,0 +1,47 @@
+[
+  {
+    "package": "internal",
+    "entity": "RetryBackoff",
+    "detail": "panic(\"not reached\")"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.Len",
+    "detail": "panic(\"not reached\")"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.pubSub",
+    "detail": "panic(\"node != nil\")"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONDebugMemory",
+    "detail": "panic(\"not implemented\")"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONSetWithArgs",
+    "detail": "panic(\"redis: JSON.SET mode must be NX or XX\")"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Quit",
+    "detail": "panic(\"not implemented\")"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Sync",
+    "detail": "panic(\"not implemented\")"
+  },
+  {
+    "package": "redis",
+    "entity": "statefulCmdable.ClientSetInfo",
+    "detail": "panic(err.Error())"
+  },
+  {
+    "package": "redis",
+    "entity": "wrapMultiExec",
+    "detail": "panic(\"not reached\")"
+  }
+]

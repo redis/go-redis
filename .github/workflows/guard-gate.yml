@@ -1,0 +1,95 @@
+name: Guard gate
+
+# Required check for the behavioral regression guard (docs/negative-test.md).
+#
+# Runs on pull_request_target so the workflow, the scripts and the guard code
+# come from the base branch. The PR is checked out only as data and none of
+# its code is executed (a PR that changes internal/guard is not executed
+# either; see scripts/guard-run.sh). No secrets are used here.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guard-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  provenance:
+    name: guard-provenance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base (trusted code)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Checkout PR (data only)
+        uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify PR head
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$(git -C pr rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "PR head moved during checkout; a newer run will check it" >&2
+            exit 1
+          fi
+
+      - name: Check golden provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GUARD_BOT_LOGIN: ${{ vars.GUARD_BOT_LOGIN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash base/scripts/guard-provenance.sh pr "$BASE_SHA" "$HEAD_SHA"
+
+  check:
+    name: guard-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base (trusted code)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Checkout PR (data only)
+        uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify PR head
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$(git -C pr rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "PR head moved during checkout; a newer run will check it" >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable # the guard needs no matrix: one Go, no Redis
+          cache: false # a pull_request_target cache write would land in the base scope
+
+      - name: Run guard (base guard code, PR sources and goldens)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash base/scripts/guard-run.sh check base pr "$BASE_SHA"

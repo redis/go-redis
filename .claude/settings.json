@@ -19,6 +19,15 @@
       "Bash(git status)",
       "Bash(git diff:*)",
       "Bash(git log:*)"
+    ],
+    "deny": [
+      "Bash(make guard.update)",
+      "Bash(make guard.update:*)",
+      "Bash(*guard.update*)",
+      "Edit(internal/guard/testdata/**)",
+      "Write(internal/guard/testdata/**)",
+      "Edit(scripts/apidiff-allow.txt)",
+      "Write(scripts/apidiff-allow.txt)"
     ]
   }
 }

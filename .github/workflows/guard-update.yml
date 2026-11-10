@@ -1,0 +1,195 @@
+name: Guard update
+
+# Regenerates the guard goldens for a PR and pushes them as the guard bot.
+# This is the only accepted way to change internal/guard/testdata (enforced
+# by the guard-provenance check in guard-gate.yml).
+#
+# Trigger: add the "guard-update" label to the PR (needs triage access), or
+# run this workflow manually with the PR number (needs write access).
+#
+# Jobs:
+#   resolve   reads PR metadata.
+#   generate  runs the base branch's guard code against the PR as data and
+#             uploads the goldens. No secrets.
+#   push      validates the artifact, commits it signed as the bot and pushes.
+#             Runs no PR code and no Go.
+#
+# Setup (repository settings):
+#   vars:     GUARD_BOT_LOGIN, GUARD_BOT_NAME, GUARD_BOT_EMAIL, GUARD_BOT_SIGNING_KEY
+#   secrets (environment "guard-bot"): GUARD_BOT_TOKEN (PAT of the bot user,
+#             contents: write), GUARD_BOT_GPG_PRIVATE_KEY (armored, no passphrase)
+
+on:
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number
+        required: true
+      trust_pr_guard_code:
+        description: Use the PR's internal/guard code (only after reviewing the guard diff)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guard-update-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'guard-update'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      number: ${{ steps.pr.outputs.number }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      head_repo: ${{ steps.pr.outputs.head_repo }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
+      can_modify: ${{ steps.pr.outputs.can_modify }}
+    steps:
+      - name: Resolve PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          set -euo pipefail
+          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "bad PR number: $PR" >&2; exit 1; }
+          json="$(gh api "repos/$REPO/pulls/$PR")"
+          [[ "$(jq -r .state <<<"$json")" == open ]] || { echo "PR #$PR is not open" >&2; exit 1; }
+          {
+            echo "number=$PR"
+            echo "head_sha=$(jq -r .head.sha <<<"$json")"
+            echo "head_repo=$(jq -r .head.repo.full_name <<<"$json")"
+            echo "head_ref=$(jq -r .head.ref <<<"$json")"
+            echo "base_sha=$(jq -r .base.sha <<<"$json")"
+            echo "can_modify=$(jq -r .maintainer_can_modify <<<"$json")"
+          } >>"$GITHUB_OUTPUT"
+
+  generate:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout base (trusted code)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.base_sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Checkout PR (data only)
+        uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ needs.resolve.outputs.number }}/head
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify PR head
+        env:
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: test "$(git -C pr rev-parse HEAD)" = "$HEAD_SHA"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Regenerate goldens
+        env:
+          BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+          # PR guard code runs only on an explicit manual request.
+          GUARD_TRUST_PR_CODE: ${{ (github.event_name == 'workflow_dispatch' && inputs.trust_pr_guard_code) && '1' || '' }}
+        run: bash base/scripts/guard-run.sh update base pr "$BASE_SHA" "$RUNNER_TEMP/goldens"
+
+      - name: Upload goldens
+        uses: actions/upload-artifact@v4
+        with:
+          name: guard-goldens
+          path: ${{ runner.temp }}/goldens
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    needs: [resolve, generate]
+    runs-on: ubuntu-latest
+    environment: guard-bot
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check push access
+        env:
+          HEAD_REPO: ${{ needs.resolve.outputs.head_repo }}
+          CAN_MODIFY: ${{ needs.resolve.outputs.can_modify }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ "$HEAD_REPO" != "$REPO" && "$CAN_MODIFY" != "true" ]]; then
+            echo "The PR branch is in $HEAD_REPO and does not allow edits by maintainers." >&2
+            echo "Enable 'Allow edits by maintainers' on the PR, then add the label again." >&2
+            exit 1
+          fi
+
+      - name: Checkout base (trusted scripts)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.base_sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ needs.resolve.outputs.head_repo }}
+          ref: ${{ needs.resolve.outputs.head_sha }}
+          path: pr
+          persist-credentials: false
+
+      - name: Download goldens
+        uses: actions/download-artifact@v4
+        with:
+          name: guard-goldens
+          path: ${{ runner.temp }}/goldens
+
+      - name: Import bot signing key
+        env:
+          KEY: ${{ secrets.GUARD_BOT_GPG_PRIVATE_KEY }}
+        run: printf '%s\n' "$KEY" | gpg --batch --import
+
+      - name: Commit and push
+        env:
+          GUARD_BOT_LOGIN: ${{ vars.GUARD_BOT_LOGIN }}
+          GUARD_BOT_NAME: ${{ vars.GUARD_BOT_NAME }}
+          GUARD_BOT_EMAIL: ${{ vars.GUARD_BOT_EMAIL }}
+          GUARD_BOT_SIGNING_KEY: ${{ vars.GUARD_BOT_SIGNING_KEY }}
+          GUARD_BOT_TOKEN: ${{ secrets.GUARD_BOT_TOKEN }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          HEAD_REPO: ${{ needs.resolve.outputs.head_repo }}
+          HEAD_REF: ${{ needs.resolve.outputs.head_ref }}
+        run: bash base/scripts/guard-commit.sh pr "$RUNNER_TEMP/goldens" "$HEAD_SHA" "$HEAD_REPO" "$HEAD_REF"
+
+  unlabel:
+    # One label = one regeneration.
+    needs: [resolve, push]
+    if: always() && github.event_name == 'pull_request_target' && github.event.label.name == 'guard-update'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove guard-update label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh api -X DELETE "repos/$REPO/issues/$PR/labels/guard-update" || true

@@ -209,6 +209,28 @@ markdown any tool or editor can open:
 - Version-gate Redis-version-specific tests with `SkipBeforeRedisVersion` /
   `SkipAfterRedisVersion` rather than skipping at the suite level.
 
+### Behavioral guard and API check
+
+`internal/guard` and `scripts/apidiff.sh` detect unintended changes to
+constants, defaults, error strings, logs, error policy, panics, dependencies,
+imports, tests and command tokens (`docs/negative-test.md`).
+
+- Run the guard with `make guard` (tests are behind the `guard` build tag;
+  plain `go test ./...` skips them). It needs no Redis.
+- **Never** run `make guard.update` or `go test -tags guard ./internal/guard -guard.update`,
+  and never edit, regenerate, delete or copy files in `internal/guard/testdata/`.
+  Only the CI guard bot may change them; CI rejects golden commits from
+  anyone else.
+- **Never** add entries to `scripts/apidiff-allow.txt`.
+- When `make guard` or `make apidiff` fails, do not try to make it pass.
+  Report the diff to the user and say whether the change is intended. A
+  maintainer accepts intended changes with the `guard-update` label.
+- New tests pass the guard without any update. Adding a skip, a `//nolint`,
+  a focused or pending spec, or removing a test does not; justify it to the
+  user instead.
+- Do not change `internal/guard/*.go` unless the task is about the guard.
+  Such changes go in their own PR.
+
 ### Commits and PRs
 
 Conventional Commits, short and exact — `<type>(<scope>): <imperative summary>`.

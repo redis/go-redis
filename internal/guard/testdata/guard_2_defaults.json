@@ -1,0 +1,4287 @@
+[
+  {
+    "package": "auth",
+    "entity": "NewBasicCredentials",
+    "detail": "field:password = password"
+  },
+  {
+    "package": "auth",
+    "entity": "NewBasicCredentials",
+    "detail": "field:username = username"
+  },
+  {
+    "package": "auth",
+    "entity": "NewReAuthCredentialsListener",
+    "detail": "field:onErr = onErr"
+  },
+  {
+    "package": "auth",
+    "entity": "NewReAuthCredentialsListener",
+    "detail": "field:reAuth = reAuth"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "*Config.applyDefaults",
+    "detail": "assign:c.FailureThreshold = 5"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "*Config.applyDefaults",
+    "detail": "assign:c.MaxHalfOpenRequests = c.SuccessThreshold"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "*Config.applyDefaults",
+    "detail": "assign:c.OpenTimeout = 60 * time.Second"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "*Config.applyDefaults",
+    "detail": "assign:c.SuccessThreshold = 2"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "DefaultConfig",
+    "detail": "field:FailureThreshold = 5"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "DefaultConfig",
+    "detail": "field:MaxHalfOpenRequests = 0"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "DefaultConfig",
+    "detail": "field:OpenTimeout = 60 * time.Second"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "DefaultConfig",
+    "detail": "field:SuccessThreshold = 2"
+  },
+  {
+    "package": "circuitbreaker",
+    "entity": "New",
+    "detail": "field:config = config"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "*CommandFailureDetectorConfig.applyDefaults",
+    "detail": "assign:c.FailureDetectionWindow = defaultFailureDetectionWindow"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "*CommandFailureDetectorConfig.applyDefaults",
+    "detail": "assign:c.FailureRateThreshold = defaultFailureRateThreshold"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "*CommandFailureDetectorConfig.applyDefaults",
+    "detail": "assign:c.MinNumFailures = defaultMinNumFailures"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "*CommandFailureDetectorConfig.applyDefaults",
+    "detail": "assign:c.NumBuckets = defaultNumBuckets"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "DefaultCommandFailureDetectorConfig",
+    "detail": "field:FailureDetectionWindow = defaultFailureDetectionWindow"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "DefaultCommandFailureDetectorConfig",
+    "detail": "field:FailureRateThreshold = defaultFailureRateThreshold"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "DefaultCommandFailureDetectorConfig",
+    "detail": "field:MinNumFailures = defaultMinNumFailures"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "DefaultCommandFailureDetectorConfig",
+    "detail": "field:NumBuckets = defaultNumBuckets"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "NewCommandFailureDetector",
+    "detail": "field:bucketWidthNano = bucketWidthNano"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "NewCommandFailureDetector",
+    "detail": "field:buckets = make([]bucket, config.NumBuckets)"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "NewCommandFailureDetector",
+    "detail": "field:config = config"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "NewCommandFailureDetector",
+    "detail": "field:nowNano = (func() int64 literal)"
+  },
+  {
+    "package": "failuredetector",
+    "entity": "NewCommandFailureDetector",
+    "detail": "field:windowNano = int64(config.FailureDetectionWindow)"
+  },
+  {
+    "package": "hashtag",
+    "entity": "NewRendezvousHash",
+    "detail": "field:hash = xxhash.Sum64String(s)"
+  },
+  {
+    "package": "hashtag",
+    "entity": "NewRendezvousHash",
+    "detail": "field:name = s"
+  },
+  {
+    "package": "hashtag",
+    "entity": "NewRendezvousHash",
+    "detail": "field:nodes = n"
+  },
+  {
+    "package": "internal",
+    "entity": "NewDefaultLogger",
+    "detail": "field:calldepth = calldepth"
+  },
+  {
+    "package": "internal",
+    "entity": "NewDefaultLogger",
+    "detail": "field:log = log.New(os.Stderr, \"redis: \", log.LstdFlags | log.Lshortfile)"
+  },
+  {
+    "package": "internal",
+    "entity": "NewFIFOSemaphore",
+    "detail": "field:max = capacity"
+  },
+  {
+    "package": "internal",
+    "entity": "NewFIFOSemaphore",
+    "detail": "field:tokens = ch"
+  },
+  {
+    "package": "internal",
+    "entity": "NewFastSemaphore",
+    "detail": "field:max = capacity"
+  },
+  {
+    "package": "internal",
+    "entity": "NewFastSemaphore",
+    "detail": "field:tokens = ch"
+  },
+  {
+    "package": "logging",
+    "entity": "NewBlacklistLogger",
+    "detail": "field:blacklist = true"
+  },
+  {
+    "package": "logging",
+    "entity": "NewBlacklistLogger",
+    "detail": "field:logger = l"
+  },
+  {
+    "package": "logging",
+    "entity": "NewBlacklistLogger",
+    "detail": "field:substr = substr"
+  },
+  {
+    "package": "logging",
+    "entity": "NewWhitelistLogger",
+    "detail": "field:blacklist = false"
+  },
+  {
+    "package": "logging",
+    "entity": "NewWhitelistLogger",
+    "detail": "field:logger = l"
+  },
+  {
+    "package": "logging",
+    "entity": "NewWhitelistLogger",
+    "detail": "field:substr = substr"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.CircuitBreakerFailureThreshold = c.CircuitBreakerFailureThreshold"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.CircuitBreakerFailureThreshold = defaults.CircuitBreakerFailureThreshold"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.CircuitBreakerMaxRequests = c.CircuitBreakerMaxRequests"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.CircuitBreakerMaxRequests = defaults.CircuitBreakerMaxRequests"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.CircuitBreakerResetTimeout = c.CircuitBreakerResetTimeout"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.CircuitBreakerResetTimeout = defaults.CircuitBreakerResetTimeout"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.EndpointType = c.EndpointType"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.EndpointType = defaults.EndpointType"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.HandoffQueueSize = 2"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.HandoffQueueSize = max(200, c.HandoffQueueSize)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.HandoffQueueSize = max(workerBasedSize, poolBasedSize)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.HandoffQueueSize = min(result.HandoffQueueSize, queueCap)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.HandoffTimeout = c.HandoffTimeout"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.HandoffTimeout = defaults.HandoffTimeout"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.MaxHandoffRetries = c.MaxHandoffRetries"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.MaxHandoffRetries = defaults.MaxHandoffRetries"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.MaxWorkers = c.MaxWorkers"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.Mode = c.Mode"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.Mode = defaults.Mode"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.PostHandoffRelaxedDuration = c.PostHandoffRelaxedDuration"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.PostHandoffRelaxedDuration = result.RelaxedTimeout * 2"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.RelaxedTimeout = c.RelaxedTimeout"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.ApplyDefaultsWithPoolConfig",
+    "detail": "assign:result.RelaxedTimeout = defaults.RelaxedTimeout"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.applyWorkerDefaults",
+    "detail": "assign:c.MaxWorkers = 1"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.applyWorkerDefaults",
+    "detail": "assign:c.MaxWorkers = max(poolSize / 2, originalMaxWorkers)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*Config.applyWorkerDefaults",
+    "detail": "assign:c.MaxWorkers = min(poolSize / 2, max(10, poolSize / 3))"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:CircuitBreakerFailureThreshold = 5"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:CircuitBreakerMaxRequests = 3"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:CircuitBreakerResetTimeout = 60 * time.Second"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:EndpointType = EndpointTypeAuto"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:HandoffQueueSize = 0"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:HandoffTimeout = 15 * time.Second"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:MaxHandoffRetries = 3"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:MaxWorkers = 0"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:Mode = ModeAuto"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:PostHandoffRelaxedDuration = 0"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "DefaultConfig",
+    "detail": "field:RelaxedTimeout = 10 * time.Second"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewLoggingHook",
+    "detail": "field:LogLevel = logLevel"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewManager",
+    "detail": "field:client = client"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewManager",
+    "detail": "field:config = config.Clone()"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewManager",
+    "detail": "field:hooks = make([]NotificationHook, 0)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewManager",
+    "detail": "field:options = client.GetOptions()"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewManager",
+    "detail": "field:pool = pool"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewManager",
+    "detail": "field:shutdownTimeout = 10 * time.Second"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewMetricsHook",
+    "detail": "field:ErrorCounts = make(map[string]int64)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewMetricsHook",
+    "detail": "field:NotificationCounts = make(map[string]int64)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewMetricsHook",
+    "detail": "field:ProcessingTimes = make(map[string]time.Duration)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewPoolHookWithPoolSize",
+    "detail": "assign:ph.workerManager = newHandoffWorkerManager(config, ph)"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewPoolHookWithPoolSize",
+    "detail": "field:baseDialer = baseDialer"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewPoolHookWithPoolSize",
+    "detail": "field:config = config"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewPoolHookWithPoolSize",
+    "detail": "field:network = network"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "NewPoolHookWithPoolSize",
+    "detail": "field:operationsManager = operationsManager"
+  },
+  {
+    "package": "multidb",
+    "entity": "DefaultCircuitBreakerConfig",
+    "detail": "field:FailureThreshold = 5"
+  },
+  {
+    "package": "multidb",
+    "entity": "DefaultCircuitBreakerConfig",
+    "detail": "field:GracePeriod = 60 * time.Second"
+  },
+  {
+    "package": "multidb",
+    "entity": "DefaultCircuitBreakerConfig",
+    "detail": "field:SuccessThreshold = 2"
+  },
+  {
+    "package": "multidb",
+    "entity": "DefaultHealthCheckConfig",
+    "detail": "field:Delay = DefaultHealthCheckDelay"
+  },
+  {
+    "package": "multidb",
+    "entity": "DefaultHealthCheckConfig",
+    "detail": "field:Probes = DefaultHealthCheckProbes"
+  },
+  {
+    "package": "multidb",
+    "entity": "DefaultHealthCheckConfig",
+    "detail": "field:Timeout = DefaultHealthCheckTimeout"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "assign:config.FailureThreshold = def.FailureThreshold"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "assign:config.GracePeriod = def.GracePeriod"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "assign:config.SuccessThreshold = def.SuccessThreshold"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "field:CircuitBreaker = circuitbreaker.New(circuitbreaker.Config{…})"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "field:FailureThreshold = config.FailureThreshold"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "field:MaxHalfOpenRequests = config.SuccessThreshold"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "field:OpenTimeout = config.GracePeriod"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "field:SuccessThreshold = config.SuccessThreshold"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewCircuitBreaker",
+    "detail": "field:config = config"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewLagAwareHealthCheck",
+    "detail": "assign:h.httpClient = &http.Client{…}"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewLagAwareHealthCheck",
+    "detail": "assign:transport.TLSClientConfig = h.tlsConfig.Clone()"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewLagAwareHealthCheck",
+    "detail": "field:Timeout = httpTimeout"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewLagAwareHealthCheck",
+    "detail": "field:Transport = transport"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewLagAwareHealthCheck",
+    "detail": "field:config = DefaultHealthCheckConfig()"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewLagAwareHealthCheck",
+    "detail": "field:lagTolerance = DefaultLagTolerance"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewLagAwareHealthCheck",
+    "detail": "field:restAPIPort = DefaultRESTAPIPort"
+  },
+  {
+    "package": "multidb",
+    "entity": "NewPingHealthCheck",
+    "detail": "field:config = applyOptions(opts)"
+  },
+  {
+    "package": "pool",
+    "entity": "*PubSubPool.NewConn",
+    "detail": "assign:cn.pubsub = true"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.NewConnOnGet",
+    "detail": "assign:p.newConnOnGet = true"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnPool",
+    "detail": "field:cfg = opt"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnPool",
+    "detail": "field:closedCh = make(chan struct{})"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnPool",
+    "detail": "field:conns = make(map[uint64]*Conn)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnPool",
+    "detail": "field:dialsInProgress = make(chan struct{}, opt.MaxConcurrentDials)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnPool",
+    "detail": "field:dialsQueue = newWantConnQueue()"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnPool",
+    "detail": "field:idleConns = make([]*Conn, 0, opt.PoolSize)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnPool",
+    "detail": "field:semaphore = internal.NewFastSemaphore(opt.PoolSize)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnStateMachine",
+    "detail": "field:waiters = list.New()"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "assign:cn.bw = bufio.NewWriterSize(netConn, proto.DefaultBufferSize)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "assign:cn.bw = bufio.NewWriterSize(netConn, writeBufSize)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "assign:cn.rd = proto.NewReader(netConn)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "assign:cn.rd = proto.NewReaderSize(netConn, readBufSize)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "assign:cn.wr = proto.NewWriter(cn.bw)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "field:Endpoint = \"\""
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "field:SeqID = 0"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "field:ShouldHandoff = false"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "field:conn = netConn"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "field:createdAt = now"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "field:id = generateConnID()"
+  },
+  {
+    "package": "pool",
+    "entity": "NewConnWithBufferSize",
+    "detail": "field:stateMachine = NewConnStateMachine()"
+  },
+  {
+    "package": "pool",
+    "entity": "NewPoolHookManager",
+    "detail": "field:hooks = make([]PoolHook, 0)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewPubSubPool",
+    "detail": "field:netDialer = netDialer"
+  },
+  {
+    "package": "pool",
+    "entity": "NewPubSubPool",
+    "detail": "field:opt = opt"
+  },
+  {
+    "package": "pool",
+    "entity": "NewSingleConnPool",
+    "detail": "field:cn = cn"
+  },
+  {
+    "package": "pool",
+    "entity": "NewSingleConnPool",
+    "detail": "field:pool = pool"
+  },
+  {
+    "package": "pool",
+    "entity": "NewStickyConnPool",
+    "detail": "field:ch = make(chan *Conn, 1)"
+  },
+  {
+    "package": "pool",
+    "entity": "NewStickyConnPool",
+    "detail": "field:pool = pool"
+  },
+  {
+    "package": "proto",
+    "entity": "NewAskError",
+    "detail": "field:addr = addr"
+  },
+  {
+    "package": "proto",
+    "entity": "NewAskError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewAuthError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewClusterDownError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewExecAbortError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewLoadingError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewMasterDownError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewMaxClientsError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewMovedError",
+    "detail": "field:addr = addr"
+  },
+  {
+    "package": "proto",
+    "entity": "NewMovedError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewNoReplicasError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewOOMError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewPermissionError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewReadOnlyError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewReader",
+    "detail": "field:rd = bufio.NewReaderSize(rd, DefaultBufferSize)"
+  },
+  {
+    "package": "proto",
+    "entity": "NewReaderSize",
+    "detail": "field:rd = bufio.NewReaderSize(rd, size)"
+  },
+  {
+    "package": "proto",
+    "entity": "NewTryAgainError",
+    "detail": "field:msg = msg"
+  },
+  {
+    "package": "proto",
+    "entity": "NewWriter",
+    "detail": "field:lenBuf = make([]byte, 64)"
+  },
+  {
+    "package": "proto",
+    "entity": "NewWriter",
+    "detail": "field:numBuf = make([]byte, 64)"
+  },
+  {
+    "package": "proto",
+    "entity": "NewWriter",
+    "detail": "field:writer = wr"
+  },
+  {
+    "package": "push",
+    "entity": "NewHandlerError",
+    "detail": "field:Err = err"
+  },
+  {
+    "package": "push",
+    "entity": "NewHandlerError",
+    "detail": "field:Operation = operation"
+  },
+  {
+    "package": "push",
+    "entity": "NewHandlerError",
+    "detail": "field:PushNotificationName = pushNotificationName"
+  },
+  {
+    "package": "push",
+    "entity": "NewHandlerError",
+    "detail": "field:Reason = reason"
+  },
+  {
+    "package": "push",
+    "entity": "NewProcessor",
+    "detail": "field:registry = NewRegistry()"
+  },
+  {
+    "package": "push",
+    "entity": "NewProcessorError",
+    "detail": "field:Err = err"
+  },
+  {
+    "package": "push",
+    "entity": "NewProcessorError",
+    "detail": "field:Operation = operation"
+  },
+  {
+    "package": "push",
+    "entity": "NewProcessorError",
+    "detail": "field:ProcessorType = processorType"
+  },
+  {
+    "package": "push",
+    "entity": "NewProcessorError",
+    "detail": "field:PushNotificationName = pushNotificationName"
+  },
+  {
+    "package": "push",
+    "entity": "NewProcessorError",
+    "detail": "field:Reason = reason"
+  },
+  {
+    "package": "push",
+    "entity": "NewRegistry",
+    "detail": "field:handlers = make(map[string]NotificationHandler)"
+  },
+  {
+    "package": "push",
+    "entity": "NewRegistry",
+    "detail": "field:protected = make(map[string]bool)"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAggregateBuilder",
+    "detail": "field:LimitOffset = -1"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAggregateBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAggregateBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAggregateBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAggregateBuilder",
+    "detail": "field:options = &FTAggregateOptions{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAggregateBuilder",
+    "detail": "field:query = query"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAliasBuilder",
+    "detail": "field:alias = alias"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAliasBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewAliasBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewCreateIndexBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewCreateIndexBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewCreateIndexBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewCreateIndexBuilder",
+    "detail": "field:options = &FTCreateOptions{}"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewCursorBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewCursorBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewCursorBuilder",
+    "detail": "field:cursorId = cursorId"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewCursorBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewDictBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewDictBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewDictBuilder",
+    "detail": "field:dict = dict"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewDropIndexBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewDropIndexBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewDropIndexBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewDropIndexBuilder",
+    "detail": "field:options = &FTDropIndexOptions{}"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewExplainBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewExplainBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewExplainBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewExplainBuilder",
+    "detail": "field:options = &FTExplainOptions{}"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewExplainBuilder",
+    "detail": "field:query = query"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchBuilder",
+    "detail": "field:LimitOffset = -1"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchBuilder",
+    "detail": "field:options = &FTSearchOptions{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchBuilder",
+    "detail": "field:query = query"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchInfoBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchInfoBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSearchInfoBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSpellCheckBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSpellCheckBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSpellCheckBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSpellCheckBuilder",
+    "detail": "field:options = &FTSpellCheckOptions{}"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSpellCheckBuilder",
+    "detail": "field:query = query"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSynUpdateBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSynUpdateBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSynUpdateBuilder",
+    "detail": "field:groupId = groupId"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSynUpdateBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewSynUpdateBuilder",
+    "detail": "field:options = &FTSynUpdateOptions{}"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewTagValsBuilder",
+    "detail": "field:c = c"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewTagValsBuilder",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewTagValsBuilder",
+    "detail": "field:field = field"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.NewTagValsBuilder",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.ClusterStateReloadInterval = 60 * time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.DialTimeout = 5 * time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.DialerRetries = 5"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.DialerRetryTimeout = 100 * time.Millisecond"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.FailingTimeoutSeconds = 15"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.MaxRedirects = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.MaxRedirects = 3"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.MaxRetries = -1"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.MaxRetryBackoff = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.MaxRetryBackoff = time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.MinRetryBackoff = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.MinRetryBackoff = 10 * time.Millisecond"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.NewClient = NewClient"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.PoolSize = 5 * runtime.GOMAXPROCS(0)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.ReadBufferSize = proto.DefaultBufferSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.ReadOnly = true"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.ReadTimeout = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.ReadTimeout = 5 * time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.ShardPicker = &routing.RoundRobinPicker{}"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.WriteBufferSize = proto.DefaultBufferSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.WriteTimeout = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterOptions.init",
+    "detail": "assign:opt.WriteTimeout = opt.ReadTimeout"
+  },
+  {
+    "package": "redis",
+    "entity": "*CreateIndexBuilder.DefaultLanguage",
+    "detail": "assign:b.options.DefaultLanguage = lang"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.AutoFallbackInterval = defaultMultiDBAutoFallback"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.CircuitBreakerConfig = &MultiDBCircuitBreakerConfig{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.CommandRetries = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.CommandRetries = defaultMultiDBCommandRetries"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.FailoverAttemptDelay = defaultMultiDBFailoverDelay"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.FailoverStrategy = WeightBasedFailoverStrategy{}"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.HealthCheckInterval = defaultMultiDBHealthCheckInterval"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.HealthCheckPolicy = defaultMultiDBPolicy{}"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.HealthCheckTimeout = defaultMultiDBHealthCheckTimeout"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.HealthCheckTimeout = opt.HealthCheckInterval / 2"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.InitialDBState = InitialDBStateMajorityAvailable"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "assign:opt.MaxFailoverAttempts = defaultMultiDBMaxFailoverAttempts"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "field:FailureThreshold = def.FailureThreshold"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "field:GracePeriod = def.GracePeriod"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBOptions.init",
+    "detail": "field:SuccessThreshold = def.SuccessThreshold"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.Addr = \"localhost:6379\""
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ClientSideCache = nil"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ClientSideCacheConfig = nil"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ClientSideCacheStrategy = CSCStrategySharedTracking"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ClientSideCacheTrackingMode = TrackingModePlain"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ClientSideCacheable = nil"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ConnMaxIdleTime = 30 * time.Minute"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ConnMaxLifetimeJitter = min(opt.ConnMaxLifetimeJitter, opt.ConnMaxLifetime)"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.DialTimeout = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.DialTimeout = 5 * time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.Dialer = NewDialer(opt)"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.DialerRetries = 5"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.DialerRetryTimeout = 100 * time.Millisecond"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.FailingTimeoutSeconds = 15"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(maintPoolSize, maintMaxActive)"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MaintNotificationsConfig.EndpointType = endpointType"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MaxConcurrentDials = opt.PoolSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MaxConcurrentDials = opt.PoolSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MaxRetries = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MaxRetries = 3"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MaxRetryBackoff = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MaxRetryBackoff = time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MinRetryBackoff = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.MinRetryBackoff = 10 * time.Millisecond"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.Network = \"tcp\""
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.Network = \"unix\""
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.NodeAddress = opt.Addr"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.PoolSize = 10 * runtime.GOMAXPROCS(0)"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.PoolTimeout = 30 * time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.PoolTimeout = opt.ReadTimeout + time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.Protocol = 3"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ReadBufferSize = proto.DefaultBufferSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ReadBufferSize = proto.MinRESP3ReadBufferSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ReadTimeout = -1"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ReadTimeout = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.ReadTimeout = 5 * time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.WriteBufferSize = proto.DefaultBufferSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.WriteTimeout = -1"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.WriteTimeout = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.WriteTimeout = opt.ReadTimeout"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.cscDisabled = true"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.maxConcurrentDialsInit = true"
+  },
+  {
+    "package": "redis",
+    "entity": "*Options.init",
+    "detail": "assign:opt.maxConcurrentDialsSet = opt.MaxConcurrentDials > 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.HeartbeatFn = defaultHeartbeatFn"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.HeartbeatFrequency = 500 * time.Millisecond"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.MaxRetries = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.MaxRetries = 3"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.MaxRetryBackoff = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.MaxRetryBackoff = time.Second"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.MinRetryBackoff = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.MinRetryBackoff = 10 * time.Millisecond"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.NewClient = (func(opt *Options) *Client literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.NewConsistentHash = newRendezvous"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.ReadBufferSize = proto.DefaultBufferSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*RingOptions.init",
+    "detail": "assign:opt.WriteBufferSize = proto.DefaultBufferSize"
+  },
+  {
+    "package": "redis",
+    "entity": "*hooks.setDefaults",
+    "detail": "assign:h.dial = (func(ctx context.Context, network, addr string) (net.Conn, error) literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "*hooks.setDefaults",
+    "detail": "assign:h.pipeline = (func(ctx context.Context, cmds []Cmder) error literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "*hooks.setDefaults",
+    "detail": "assign:h.process = (func(ctx context.Context, cmd Cmder) error literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "*hooks.setDefaults",
+    "detail": "assign:h.txPipeline = (func(ctx context.Context, cmds []Cmder) error literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultAutoPipelineOptions",
+    "detail": "field:MaxBatchBytes = 128 * 1024"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultAutoPipelineOptions",
+    "detail": "field:MaxBatchSize = 200"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultAutoPipelineOptions",
+    "detail": "field:MaxConcurrentBatches = 1"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultAutoPipelineOptions",
+    "detail": "field:MaxFlushDelay = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultBlockingAutoPipelineOptions",
+    "detail": "field:MaxBatchBytes = 128 * 1024"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultBlockingAutoPipelineOptions",
+    "detail": "field:MaxBatchSize = 300"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultBlockingAutoPipelineOptions",
+    "detail": "field:MaxConcurrentBatches = 1"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultMultiDBFailureDetectorConfig",
+    "detail": "field:FailureRateThreshold = def.FailureRateThreshold"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultMultiDBFailureDetectorConfig",
+    "detail": "field:MinNumFailures = int(def.MinNumFailures)"
+  },
+  {
+    "package": "redis",
+    "entity": "DefaultMultiDBFailureDetectorConfig",
+    "detail": "field:Window = def.FailureDetectionWindow"
+  },
+  {
+    "package": "redis",
+    "entity": "NewACLLogCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewACLLogCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewACLLogCmd",
+    "detail": "field:cmdType = CmdTypeACLLog"
+  },
+  {
+    "package": "redis",
+    "entity": "NewACLLogCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewAREntrySliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewAREntrySliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewAREntrySliceCmd",
+    "detail": "field:cmdType = CmdTypeAREntrySlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewAREntrySliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewAggregateCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewAggregateCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewAggregateCmd",
+    "detail": "field:cmdType = CmdTypeAggregate"
+  },
+  {
+    "package": "redis",
+    "entity": "NewAggregateCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBFInfoCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBFInfoCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBFInfoCmd",
+    "detail": "field:cmdType = CmdTypeBFInfo"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBFInfoCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolCmd",
+    "detail": "field:cmdType = CmdTypeBool"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolSliceCmd",
+    "detail": "field:cmdType = CmdTypeBoolSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewBoolSliceResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCFInfoCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCFInfoCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCFInfoCmd",
+    "detail": "field:cmdType = CmdTypeCFInfo"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCFInfoCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCMSInfoCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCMSInfoCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCMSInfoCmd",
+    "detail": "field:cmdType = CmdTypeCMSInfo"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCMSInfoCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.baseClient.cscClientWeak = weak.Make(&c)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.baseClient.cscOwnsCache = true"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.baseClient.metadataSource = opt.cscMetadataSource"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.connPool = connPool"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.opt.PushNotificationProcessor = c.pushProcessor"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.pipelinePool = ref"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.pubSubPool = pubSubPool"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "assign:c.pushProcessor = initializePushProcessor(opt)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "field:apClosed = &atomic.Bool{}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "field:baseClient = &baseClient{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "field:cscPolicy = opt.cachePolicy()"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "field:himport = newHImportRegistry()"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "field:onClose = &onCloseHooks{}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClient",
+    "detail": "field:opt = opt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClientInfoCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClientInfoCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClientInfoCmd",
+    "detail": "field:cmdType = CmdTypeClientInfo"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClientInfoCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:c.captureCacheIntent = opt.ClientSideCacheConfig != nil || opt.cscCustomFactory"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:c.cmdMeta = newCommandMetadataStoreForLive(metadataConfig, (func(ctx context.Context) (commandMetadataFetchResult, error) literal))"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:c.cmdable = c.Process"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:c.nodes.onServerHello = c.cmdMeta.onClusterServerHelloReply"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:c.state = newClusterStateHolder(c.loadState, opt.ClusterStateReloadInterval)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:c.state.beforeReload = (func(_, _ *clusterState) literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:c.state.onReload = (func(current, previous *clusterState) literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:nodeClient.himport = registry"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:opt.ClientSideCacheConfig = nil"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:opt.ClientSideCacheTrackingMode = TrackingModePlain"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:opt.ClientSideCacheable = nil"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:opt.cscCustomFactory = opt.NewClient != nil"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:opt.cscDisabled = true"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:opt.cscMetadataSource = c.cmdMeta"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "assign:optCopy.ClientSideCacheConfig = &cfg"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:autopipelinerMu = &sync.Mutex{}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:dial = nil"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:himport = newHImportRegistry()"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:nodes = newClusterNodes(opt)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:onClose = &onCloseHooks{}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:opt = opt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:pipeline = c.processPipeline"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:process = c.process"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterClient",
+    "detail": "field:txPipeline = c.processTxPipeline"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterLinksCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterLinksCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterLinksCmd",
+    "detail": "field:cmdType = CmdTypeClusterLinks"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterLinksCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterShardsCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterShardsCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterShardsCmd",
+    "detail": "field:cmdType = CmdTypeClusterShards"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterShardsCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterSlotsCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterSlotsCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterSlotsCmd",
+    "detail": "field:cmdType = CmdTypeClusterSlots"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterSlotsCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewClusterSlotsCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCmd",
+    "detail": "field:cmdType = CmdTypeGeneric"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCollectReducer",
+    "detail": "field:Args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCollectReducer",
+    "detail": "field:As = o.As"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCollectReducer",
+    "detail": "field:Reducer = SearchCollect"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCommandInfoResolver",
+    "detail": "field:resolveFunc = resolveFunc"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCommandsInfoCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCommandsInfoCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCommandsInfoCmd",
+    "detail": "field:cmdType = CmdTypeCommandsInfo"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCommandsInfoCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewCommandsInfoCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDefaultCommandPolicyResolver",
+    "detail": "assign:r.legacyDefault = true"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDialer",
+    "detail": "field:Config = opt.TLSConfig"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDialer",
+    "detail": "field:KeepAliveConfig = defaultKeepAliveConfig"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDialer",
+    "detail": "field:NetDialer = netDialer"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDialer",
+    "detail": "field:Timeout = timeout"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDigestCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDigestCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDigestCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDurationCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDurationCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDurationCmd",
+    "detail": "field:cmdType = CmdTypeDuration"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDurationCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDurationCmd",
+    "detail": "field:precision = precision"
+  },
+  {
+    "package": "redis",
+    "entity": "NewDurationResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFTSynDumpCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFTSynDumpCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFTSynDumpCmd",
+    "detail": "field:cmdType = CmdTypeFTSynDump"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFTSynDumpCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "assign:failover.onFailover = (func(ctx context.Context, addr string) literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "assign:opt.Dialer = masterReplicaDialer(failover, opt)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "assign:rdb.connPool = connPool"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "assign:rdb.pipelinePool = ref"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "assign:rdb.pubSubPool = pubSubPool"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "assign:rdb.pushProcessor = initializePushProcessor(opt)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "field:apClosed = &atomic.Bool{}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "field:baseClient = &baseClient{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "field:cscPolicy = opt.cachePolicy()"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "field:himport = newHImportRegistry()"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "field:onClose = &onCloseHooks{}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "field:opt = failoverOpt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "field:opt = opt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClient",
+    "detail": "field:sentinelAddrs = sentinelAddrs"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "assign:failover.onUpdate = (func(ctx context.Context) literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "assign:nodeOpt.DB = failoverOpt.DB"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "assign:opt.ClusterSlots = (func(ctx context.Context) ([]ClusterSlot, error) literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "assign:opt.NewClient = (func(nodeOpt *Options) *Client literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "assign:opt.OnConnect = (func(ctx context.Context, cn *Conn) error literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "field:Addr = masterAddr"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "field:Addr = replicaAddr"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "field:End = 16383"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "field:Nodes = nodes"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "field:Start = 0"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "field:opt = failoverOpt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFailoverClusterClient",
+    "detail": "field:sentinelAddrs = sentinelAddrs"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatCmd",
+    "detail": "field:cmdType = CmdTypeFloat"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatSliceCmd",
+    "detail": "field:cmdType = CmdTypeFloatSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFloatSliceResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFunctionListCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFunctionListCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFunctionListCmd",
+    "detail": "field:cmdType = CmdTypeFunctionList"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFunctionListCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFunctionStatsCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFunctionStatsCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFunctionStatsCmd",
+    "detail": "field:cmdType = CmdTypeFunctionStats"
+  },
+  {
+    "package": "redis",
+    "entity": "NewFunctionStatsCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoLocationCmd",
+    "detail": "assign:cmd.args = geoLocationArgs(&cmd.q, args...)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoLocationCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoLocationCmd",
+    "detail": "field:cmdType = CmdTypeGeoLocation"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoLocationCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoLocationCmd",
+    "detail": "field:q = *q"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoLocationCmdResult",
+    "detail": "assign:cmd.locations = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoPosCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoPosCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoPosCmd",
+    "detail": "field:cmdType = CmdTypeGeoPos"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoPosCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoPosCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoSearchLocationCmd",
+    "detail": "assign:cmd.args = geoSearchLocationArgs(&cmd.opt, args)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoSearchLocationCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoSearchLocationCmd",
+    "detail": "field:cmdType = CmdTypeGeoSearchLocation"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoSearchLocationCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewGeoSearchLocationCmd",
+    "detail": "field:opt = *opt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardAllCmd",
+    "detail": "field:IntCmd = IntCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardAllCmd",
+    "detail": "field:args = []interface{}{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardAllCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardAllCmd",
+    "detail": "field:cmdType = CmdTypeInt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardAllCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardCmd",
+    "detail": "field:IntCmd = IntCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardCmd",
+    "detail": "field:args = []interface{}{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardCmd",
+    "detail": "field:cmdType = CmdTypeInt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportDiscardCmd",
+    "detail": "field:fieldsetName = fieldsetName"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportPrepareCmd",
+    "detail": "field:StatusCmd = StatusCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportPrepareCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportPrepareCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportPrepareCmd",
+    "detail": "field:cmdType = CmdTypeStatus"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportPrepareCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportPrepareCmd",
+    "detail": "field:fields = append([]string(nil), fields...)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportPrepareCmd",
+    "detail": "field:fieldsetName = fieldsetName"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportSetCmd",
+    "detail": "field:StatusCmd = StatusCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportSetCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportSetCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportSetCmd",
+    "detail": "field:cmdType = CmdTypeStatus"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportSetCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHImportSetCmd",
+    "detail": "field:fieldsetName = fieldsetName"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHotKeysCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHotKeysCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHotKeysCmd",
+    "detail": "field:cmdType = CmdTypeHotKeys"
+  },
+  {
+    "package": "redis",
+    "entity": "NewHotKeysCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIncrEXFloatCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIncrEXFloatCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIncrEXFloatCmd",
+    "detail": "field:cmdType = CmdTypeIncrEXFloat"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIncrEXFloatCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIncrEXIntCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIncrEXIntCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIncrEXIntCmd",
+    "detail": "field:cmdType = CmdTypeIncrEXInt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIncrEXIntCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewInfoCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewInfoCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewInfoCmd",
+    "detail": "field:cmdType = CmdTypeInfo"
+  },
+  {
+    "package": "redis",
+    "entity": "NewInfoCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntCmd",
+    "detail": "field:cmdType = CmdTypeInt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntPointerSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntPointerSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntPointerSliceCmd",
+    "detail": "field:cmdType = CmdTypeIntPointerSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntPointerSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntSliceCmd",
+    "detail": "field:cmdType = CmdTypeIntSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewIntSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewJSONSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewJSONSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewJSONSliceCmd",
+    "detail": "field:cmdType = CmdTypeJSONSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewJSONSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyFlagsCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyFlagsCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyFlagsCmd",
+    "detail": "field:cmdType = CmdTypeKeyFlags"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyFlagsCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyValueSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyValueSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyValueSliceCmd",
+    "detail": "field:cmdType = CmdTypeKeyValueSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyValueSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyValuesCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyValuesCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyValuesCmd",
+    "detail": "field:cmdType = CmdTypeKeyValues"
+  },
+  {
+    "package": "redis",
+    "entity": "NewKeyValuesCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLCSCmd",
+    "detail": "assign:cmd.baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLCSCmd",
+    "detail": "assign:cmd.readType = 2"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLCSCmd",
+    "detail": "assign:cmd.readType = 3"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLCSCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLCSCmd",
+    "detail": "field:cmdType = CmdTypeLCS"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLCSCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLCSCmd",
+    "detail": "field:readType = 1"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLatencyCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLatencyCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLatencyCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "assign:s.byConnID = make(map[uint64]map[string]struct{})"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "assign:s.byRedisKey = make(map[string]map[string]struct{})"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "assign:s.entries = make(map[string]*cacheEntry)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "assign:s.maxEntries = maxEntries / shardCount"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "assign:s.maxMemoryBytes = maxMemoryBytes / int64(shardCount)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "assign:s.maxStaleness = cfg.MaxStaleness"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "assign:s.sizer = sizer"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "assign:s.staleTimeout = staleTimeout"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "field:shardCount = uint32(shardCount)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "field:shardMask = uint32(shardCount - 1)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "field:shards = make([]cacheShard, shardCount)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewLocalCache",
+    "detail": "field:sizer = sizer"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapMapStringInterfaceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapMapStringInterfaceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapMapStringInterfaceCmd",
+    "detail": "field:cmdType = CmdTypeMapMapStringInterface"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapMapStringInterfaceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringIntCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringIntCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringIntCmd",
+    "detail": "field:cmdType = CmdTypeMapStringInt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringIntCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringIntCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringInterfaceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringInterfaceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringInterfaceCmd",
+    "detail": "field:cmdType = CmdTypeMapStringInterface"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringInterfaceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringInterfaceSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringInterfaceSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringInterfaceSliceCmd",
+    "detail": "field:cmdType = CmdTypeMapStringInterfaceSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringInterfaceSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringSliceInterfaceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringSliceInterfaceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringSliceInterfaceCmd",
+    "detail": "field:cmdType = CmdTypeMapStringInterfaceSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringSliceInterfaceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringCmd",
+    "detail": "field:cmdType = CmdTypeMapStringString"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringSliceCmd",
+    "detail": "field:cmdType = CmdTypeMapStringStringSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMapStringStringSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "assign:c.cmdable = c.Process"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "assign:core.ready = make(chan struct{})"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "assign:private.CircuitBreakerConfig = &cbc"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "assign:private.Clients = append([]MultiDBClientConfig(nil), opts.Clients...)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "assign:private.FailureDetectorConfig = &fdc"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "assign:private.HealthChecks = append([]MultiDBHealthCheck(nil), opts.HealthChecks...)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "field:autopipelinerMu = new(sync.Mutex)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "field:core = core"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "field:pipeline = core.processPipeline"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "field:process = core.process"
+  },
+  {
+    "package": "redis",
+    "entity": "NewMultiDBClient",
+    "detail": "field:txPipeline = core.processTxPipeline"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRankWithScoreCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRankWithScoreCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRankWithScoreCmd",
+    "detail": "field:cmdType = CmdTypeRankWithScore"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRankWithScoreCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawCmd",
+    "detail": "field:cmdType = CmdTypeGeneric"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawWriteToCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawWriteToCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawWriteToCmd",
+    "detail": "field:cmdType = CmdTypeGeneric"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawWriteToCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRawWriteToCmd",
+    "detail": "field:w = w"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "assign:opt.himport = newHImportRegistry()"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "assign:ring.captureCacheIntent = customFactory"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "assign:ring.cmdable = ring.Process"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "assign:ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "field:heartbeatCancelFn = hbCancel"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "field:opt = opt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "field:pipeline = (func(ctx context.Context, cmds []Cmder) error literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "field:process = ring.process"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "field:sharding = newRingSharding(opt)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewRing",
+    "detail": "field:txPipeline = (func(ctx context.Context, cmds []Cmder) error literal)"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScanCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScanCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScanCmd",
+    "detail": "field:cmdType = CmdTypeScan"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScanCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScanCmd",
+    "detail": "field:process = process"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScanCmdResult",
+    "detail": "assign:cmd.cursor = cursor"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScanCmdResult",
+    "detail": "assign:cmd.page = keys"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScript",
+    "detail": "field:hash = hex.EncodeToString(h.Sum(nil))"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScript",
+    "detail": "field:serverSHA = false"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScript",
+    "detail": "field:src = src"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScriptServerSHA",
+    "detail": "field:serverSHA = true"
+  },
+  {
+    "package": "redis",
+    "entity": "NewScriptServerSHA",
+    "detail": "field:src = src"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSentinelClient",
+    "detail": "assign:c.pushProcessor = NewVoidPushNotificationProcessor()"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSentinelClient",
+    "detail": "field:apClosed = &atomic.Bool{}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSentinelClient",
+    "detail": "field:baseClient = &baseClient{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSentinelClient",
+    "detail": "field:dial = c.baseClient.dial"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSentinelClient",
+    "detail": "field:onClose = &onCloseHooks{}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSentinelClient",
+    "detail": "field:opt = opt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSentinelClient",
+    "detail": "field:process = c.baseClient.process"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSliceCmd",
+    "detail": "field:cmdType = CmdTypeSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSliceResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSlowLogCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSlowLogCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSlowLogCmd",
+    "detail": "field:cmdType = CmdTypeSlowLog"
+  },
+  {
+    "package": "redis",
+    "entity": "NewSlowLogCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStatusCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStatusCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStatusCmd",
+    "detail": "field:cmdType = CmdTypeStatus"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStatusCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStatusResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringCmd",
+    "detail": "field:cmdType = CmdTypeString"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringSliceCmd",
+    "detail": "field:cmdType = CmdTypeStringSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringSliceResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringSliceSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringSliceSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringSliceSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringStructMapCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringStructMapCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringStructMapCmd",
+    "detail": "field:cmdType = CmdTypeStringStructMap"
+  },
+  {
+    "package": "redis",
+    "entity": "NewStringStructMapCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTDigestInfoCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTDigestInfoCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTDigestInfoCmd",
+    "detail": "field:cmdType = CmdTypeTDigestInfo"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTDigestInfoCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTimeCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTimeCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTimeCmd",
+    "detail": "field:cmdType = CmdTypeTime"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTimeCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTimeCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTopKInfoCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTopKInfoCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTopKInfoCmd",
+    "detail": "field:cmdType = CmdTypeTopKInfo"
+  },
+  {
+    "package": "redis",
+    "entity": "NewTopKInfoCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewUintCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewUintCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewUintCmd",
+    "detail": "field:cmdType = CmdTypeUint"
+  },
+  {
+    "package": "redis",
+    "entity": "NewUintCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewUintSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewUintSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewUintSliceCmd",
+    "detail": "field:cmdType = CmdTypeUintSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewUintSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorAttribSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorAttribSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorAttribSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreAttribSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreAttribSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreAttribSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreSliceSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreSliceSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewVectorScoreSliceSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimCmd",
+    "detail": "field:cmdType = CmdTypeXAutoClaim"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimJustIDCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimJustIDCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimJustIDCmd",
+    "detail": "field:cmdType = CmdTypeXAutoClaimJustID"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimJustIDCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimWithDeletedCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimWithDeletedCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimWithDeletedCmd",
+    "detail": "field:cmdType = CmdTypeXAutoClaimWithDeleted"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXAutoClaimWithDeletedCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoConsumersCmd",
+    "detail": "field:args = []interface{}{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoConsumersCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoConsumersCmd",
+    "detail": "field:cmdType = CmdTypeXInfoConsumers"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoConsumersCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoGroupsCmd",
+    "detail": "field:args = []interface{}{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoGroupsCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoGroupsCmd",
+    "detail": "field:cmdType = CmdTypeXInfoGroups"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoGroupsCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoStreamCmd",
+    "detail": "field:args = []interface{}{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoStreamCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoStreamCmd",
+    "detail": "field:cmdType = CmdTypeXInfoStream"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoStreamCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoStreamFullCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoStreamFullCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoStreamFullCmd",
+    "detail": "field:cmdType = CmdTypeXInfoStreamFull"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXInfoStreamFullCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXMessageSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXMessageSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXMessageSliceCmd",
+    "detail": "field:cmdType = CmdTypeXMessageSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXMessageSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXMessageSliceCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingCmd",
+    "detail": "field:cmdType = CmdTypeXPending"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingExtCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingExtCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingExtCmd",
+    "detail": "field:cmdType = CmdTypeXPendingExt"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingExtCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXPendingResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXStreamSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXStreamSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXStreamSliceCmd",
+    "detail": "field:cmdType = CmdTypeXStreamSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXStreamSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewXStreamSliceCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceCmd",
+    "detail": "field:cmdType = CmdTypeZSlice"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceWithKeyCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceWithKeyCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceWithKeyCmd",
+    "detail": "field:cmdType = CmdTypeZSliceWithKey"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZSliceWithKeyCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZWithKeyCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZWithKeyCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZWithKeyCmd",
+    "detail": "field:cmdType = CmdTypeZWithKey"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZWithKeyCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZWithKeyCmdResult",
+    "detail": "assign:cmd.val = val"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZeroCopyStringCmd",
+    "detail": "field:args = args"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZeroCopyStringCmd",
+    "detail": "field:baseCmd = baseCmd{…}"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZeroCopyStringCmd",
+    "detail": "field:buf = buf"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZeroCopyStringCmd",
+    "detail": "field:cmdType = CmdTypeString"
+  },
+  {
+    "package": "redis",
+    "entity": "NewZeroCopyStringCmd",
+    "detail": "field:ctx = ctx"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:BucketsConnectionCreateTime = defaultHistogramBuckets()"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:BucketsConnectionWaitTime = defaultHistogramBuckets()"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:BucketsOperationDuration = defaultHistogramBuckets()"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:BucketsStreamLag = defaultHistogramBuckets()"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:Enabled = false"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:ExcludeCommands = nil"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:HidePubSubChannelNames = false"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:HideStreamNames = false"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:HistogramAggregation = HistogramAggregationExplicitBucket"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:IncludeCommands = nil"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:MeterProvider = nil"
+  },
+  {
+    "package": "redisotel",
+    "entity": "NewConfig",
+    "detail": "field:MetricGroups = MetricGroupAll"
+  },
+  {
+    "package": "redisprometheus",
+    "entity": "NewCollector",
+    "detail": "field:getter = getter"
+  },
+  {
+    "package": "redisprometheus",
+    "entity": "NewCollector",
+    "detail": "field:hitDesc = prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, \"pool_hit_total\"), \"Number of times a connection was found in the pool\", nil, nil)"
+  },
+  {
+    "package": "redisprometheus",
+    "entity": "NewCollector",
+    "detail": "field:idleDesc = prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, \"pool_conn_idle_current\"), \"Current number of idle connections in the pool\", nil, nil)"
+  },
+  {
+    "package": "redisprometheus",
+    "entity": "NewCollector",
+    "detail": "field:missDesc = prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, \"pool_miss_total\"), \"Number of times a connection was not found in the pool\", nil, nil)"
+  },
+  {
+    "package": "redisprometheus",
+    "entity": "NewCollector",
+    "detail": "field:staleDesc = prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, \"pool_conn_stale_total\"), \"Number of times a connection was removed from the pool because it was stale\", nil, nil)"
+  },
+  {
+    "package": "redisprometheus",
+    "entity": "NewCollector",
+    "detail": "field:timeoutDesc = prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, \"pool_timeout_total\"), \"Number of times a timeout occurred when looking for a connection in the pool\", nil, nil)"
+  },
+  {
+    "package": "redisprometheus",
+    "entity": "NewCollector",
+    "detail": "field:totalDesc = prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, \"pool_conn_total_current\"), \"Current number of connections in the pool\", nil, nil)"
+  },
+  {
+    "package": "routing",
+    "entity": "NewDefaultAggregator",
+    "detail": "field:results = make(map[string]interface{})"
+  },
+  {
+    "package": "routing",
+    "entity": "NewDefaultKeyedAggregator",
+    "detail": "field:keyOrder = keyOrder"
+  },
+  {
+    "package": "routing",
+    "entity": "NewDefaultKeyedAggregator",
+    "detail": "field:results = make(map[string]interface{})"
+  },
+  {
+    "package": "routing",
+    "entity": "NewResponseAggregator",
+    "detail": "field:results = make([]interface{}, 0)"
+  },
+  {
+    "package": "routing",
+    "entity": "NewResponseAggregator",
+    "detail": "field:results = make(map[string]interface{})"
+  },
+  {
+    "package": "routing",
+    "entity": "NewSpecialAggregator",
+    "detail": "assign:agg.aggregatorFunc = fn"
+  },
+  {
+    "package": "routing",
+    "entity": "NewStaticShardPicker",
+    "detail": "field:index = index"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewCredentialsListeners",
+    "detail": "field:listeners = make(map[uint64]auth.CredentialsListener)"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewManagerWithWorkers",
+    "detail": "assign:m.poolHookRef.manager = m"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewManagerWithWorkers",
+    "detail": "field:credentialsListeners = NewCredentialsListeners()"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewManagerWithWorkers",
+    "detail": "field:pool = pl"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewManagerWithWorkers",
+    "detail": "field:poolHookRef = NewReAuthPoolHook(workers, reAuthTimeout)"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewReAuthPoolHook",
+    "detail": "field:reAuthTimeout = reAuthTimeout"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewReAuthPoolHook",
+    "detail": "field:scheduledReAuth = make(map[uint64]bool)"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewReAuthPoolHook",
+    "detail": "field:shouldReAuth = make(map[uint64]func(error))"
+  },
+  {
+    "package": "streaming",
+    "entity": "NewReAuthPoolHook",
+    "detail": "field:workers = internal.NewFastSemaphore(int32(poolSize))"
+  }
+]

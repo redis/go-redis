@@ -1,0 +1,2872 @@
+[
+  {
+    "package": "redis",
+    "entity": "*Client.HotKeysGet",
+    "detail": "hotkeys get"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.HotKeysReset",
+    "detail": "hotkeys reset"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.HotKeysStart",
+    "detail": "hotkeys start metrics count duration sample slots"
+  },
+  {
+    "package": "redis",
+    "entity": "*Client.HotKeysStop",
+    "detail": "hotkeys stop"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.DBSize",
+    "detail": "dbsize"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.ScriptExists",
+    "detail": "script exists"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.ScriptFlush",
+    "detail": "script flush"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.ScriptLoad",
+    "detail": "script load"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBClient.DBSize",
+    "detail": "dbsize dbsize"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBClient.ScriptFlush",
+    "detail": "script flush script flush"
+  },
+  {
+    "package": "redis",
+    "entity": "*MultiDBClient.ScriptLoad",
+    "detail": "script load script load"
+  },
+  {
+    "package": "redis",
+    "entity": "*PubSub.ClientSetName",
+    "detail": "client setname"
+  },
+  {
+    "package": "redis",
+    "entity": "*Ring.Publish",
+    "detail": "publish"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.CkQuorum",
+    "detail": "sentinel ckquorum"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Failover",
+    "detail": "sentinel failover"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.FlushConfig",
+    "detail": "sentinel flushconfig"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.GetMasterAddrByName",
+    "detail": "sentinel get-master-addr-by-name"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Master",
+    "detail": "sentinel master"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Masters",
+    "detail": "sentinel masters"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Monitor",
+    "detail": "sentinel monitor"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Ping",
+    "detail": "ping"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Remove",
+    "detail": "sentinel remove"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Replicas",
+    "detail": "sentinel replicas"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Reset",
+    "detail": "sentinel reset"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Sentinels",
+    "detail": "sentinel sentinels"
+  },
+  {
+    "package": "redis",
+    "entity": "*SentinelClient.Set",
+    "detail": "sentinel set"
+  },
+  {
+    "package": "redis",
+    "entity": "*Tx.Unwatch",
+    "detail": "unwatch"
+  },
+  {
+    "package": "redis",
+    "entity": "*Tx.watch",
+    "detail": "watch"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.fetchCommandMetadata",
+    "detail": "command"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.fetchMetadataIdentity",
+    "detail": "hello info server module list name ver version Server redis_version modules"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLCat",
+    "detail": "acl cat"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLCatArgs",
+    "detail": "acl cat"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLDelUser",
+    "detail": "acl deluser"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLDryRun",
+    "detail": "acl dryrun"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLGenPass",
+    "detail": "acl genpass"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLList",
+    "detail": "acl list"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLLog",
+    "detail": "acl log"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLLogReset",
+    "detail": "acl log reset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLSetUser",
+    "detail": "acl setuser"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLUsers",
+    "detail": "acl users"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ACLWhoAmI",
+    "detail": "acl whoami"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARCount",
+    "detail": "arcount"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARDel",
+    "detail": "ardel"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARDelRange",
+    "detail": "ardelrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARGet",
+    "detail": "arget"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARGetRange",
+    "detail": "argetrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARGrep",
+    "detail": "argrep"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARGrepWithValues",
+    "detail": "argrep withvalues"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARInfo",
+    "detail": "arinfo"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARInfoFull",
+    "detail": "arinfo full"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARInsert",
+    "detail": "arinsert"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARLastItems",
+    "detail": "arlastitems rev"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARLen",
+    "detail": "arlen"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARMGet",
+    "detail": "armget"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARMSet",
+    "detail": "armset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARNext",
+    "detail": "arnext"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.AROpAnd",
+    "detail": "arop AND"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.AROpMatch",
+    "detail": "arop MATCH"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.AROpMax",
+    "detail": "arop MAX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.AROpMin",
+    "detail": "arop MIN"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.AROpOr",
+    "detail": "arop OR"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.AROpSum",
+    "detail": "arop SUM"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.AROpUsed",
+    "detail": "arop USED"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.AROpXor",
+    "detail": "arop XOR"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARRing",
+    "detail": "arring"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARScan",
+    "detail": "arscan limit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARSeek",
+    "detail": "arseek"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ARSet",
+    "detail": "arset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Append",
+    "detail": "append"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFAdd",
+    "detail": "BF.ADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFCard",
+    "detail": "BF.CARD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFExists",
+    "detail": "BF.EXISTS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFInfo",
+    "detail": "BF.INFO"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFInfoArg",
+    "detail": "BF.INFO"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFInsert",
+    "detail": "BF.INSERT CAPACITY ERROR EXPANSION NOCREATE NONSCALING ITEMS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFLoadChunk",
+    "detail": "BF.LOADCHUNK"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFMAdd",
+    "detail": "BF.MADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFMExists",
+    "detail": "BF.MEXISTS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFReserve",
+    "detail": "BF.RESERVE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFReserveExpansion",
+    "detail": "BF.RESERVE EXPANSION"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFReserveNonScaling",
+    "detail": "BF.RESERVE NONSCALING"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BFReserveWithArgs",
+    "detail": "BF.RESERVE EXPANSION NONSCALING"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BLMPop",
+    "detail": "blmpop count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BLMove",
+    "detail": "blmove"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BLMoveM",
+    "detail": "blmovem"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BLPop",
+    "detail": "blpop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BRPop",
+    "detail": "brpop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BRPopLPush",
+    "detail": "brpoplpush"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BZMPop",
+    "detail": "bzmpop count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BZPopMax",
+    "detail": "bzpopmax"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BZPopMin",
+    "detail": "bzpopmin"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BgRewriteAOF",
+    "detail": "bgrewriteaof"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BgSave",
+    "detail": "bgsave"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BitCount",
+    "detail": "bitcount"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BitField",
+    "detail": "bitfield"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BitFieldRO",
+    "detail": "BITFIELD_RO GET"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BitPos",
+    "detail": "bitpos"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BitPosSpan",
+    "detail": "bitpos"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BitRangeIntArrayWithArgs",
+    "detail": "bitrangeintarray limit zeros"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BlessClear",
+    "detail": "bless clear"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BlessGet",
+    "detail": "bless get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BlessScan",
+    "detail": "bless scan count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.BlessSet",
+    "detail": "bless set"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFAdd",
+    "detail": "CF.ADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFAddNX",
+    "detail": "CF.ADDNX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFCompact",
+    "detail": "CF.COMPACT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFCount",
+    "detail": "CF.COUNT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFDel",
+    "detail": "CF.DEL"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFExists",
+    "detail": "CF.EXISTS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFInfo",
+    "detail": "CF.INFO"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFInsert",
+    "detail": "CF.INSERT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFInsertNX",
+    "detail": "CF.INSERTNX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFLoadChunk",
+    "detail": "CF.LOADCHUNK"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFMExists",
+    "detail": "CF.MEXISTS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFReserve",
+    "detail": "CF.RESERVE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFReserveBucketSize",
+    "detail": "CF.RESERVE BUCKETSIZE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFReserveExpansion",
+    "detail": "CF.RESERVE EXPANSION"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFReserveMaxIterations",
+    "detail": "CF.RESERVE MAXITERATIONS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CFReserveWithArgs",
+    "detail": "CF.RESERVE BUCKETSIZE MAXITERATIONS EXPANSION"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSIncrBy",
+    "detail": "CMS.INCRBY"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSInfo",
+    "detail": "CMS.INFO"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSInitByDim",
+    "detail": "CMS.INITBYDIM"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSInitByDimCellSize",
+    "detail": "CMS.INITBYDIM CELL_SIZE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSInitByProb",
+    "detail": "CMS.INITBYPROB"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSInitByProbCellSize",
+    "detail": "CMS.INITBYPROB CELL_SIZE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSMerge",
+    "detail": "CMS.MERGE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSMergeWithWeight",
+    "detail": "CMS.MERGE WEIGHTS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CMSQuery",
+    "detail": "CMS.QUERY"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientGetName",
+    "detail": "client getname"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientID",
+    "detail": "client id"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientInfo",
+    "detail": "client info"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientKill",
+    "detail": "client kill"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientKillByFilter",
+    "detail": "client kill"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientList",
+    "detail": "client list"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientMaintNotifications",
+    "detail": "client maint_notifications none on moving-endpoint-type off"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientPause",
+    "detail": "client pause"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientTrackingOff",
+    "detail": "client tracking off"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientTrackingOn",
+    "detail": "client tracking on"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientUnblock",
+    "detail": "client unblock"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientUnblockWithError",
+    "detail": "client unblock error"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClientUnpause",
+    "detail": "client unpause"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterAddSlots",
+    "detail": "cluster addslots"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterCountFailureReports",
+    "detail": "cluster count-failure-reports"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterCountKeysInSlot",
+    "detail": "cluster countkeysinslot"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterDelSlots",
+    "detail": "cluster delslots"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterFailover",
+    "detail": "cluster failover"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterForget",
+    "detail": "cluster forget"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterGetKeysInSlot",
+    "detail": "cluster getkeysinslot"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterInfo",
+    "detail": "cluster info"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterKeySlot",
+    "detail": "cluster keyslot"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterLinks",
+    "detail": "cluster links"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterMeet",
+    "detail": "cluster meet"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterMyID",
+    "detail": "cluster myid"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterMyShardID",
+    "detail": "cluster myshardid"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterNodes",
+    "detail": "cluster nodes"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterReplicate",
+    "detail": "cluster replicate"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterResetHard",
+    "detail": "cluster reset hard"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterResetSoft",
+    "detail": "cluster reset soft"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterSaveConfig",
+    "detail": "cluster saveconfig"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterShards",
+    "detail": "cluster shards"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterSlaves",
+    "detail": "cluster slaves"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ClusterSlots",
+    "detail": "cluster slots"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Command",
+    "detail": "command"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CommandGetKeys",
+    "detail": "command getkeys"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CommandGetKeysAndFlags",
+    "detail": "command getkeysandflags"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.CommandList",
+    "detail": "command list filterby module filterby aclcat filterby pattern"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ConfigGet",
+    "detail": "config get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ConfigResetStat",
+    "detail": "config resetstat"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ConfigRewrite",
+    "detail": "config rewrite"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ConfigSet",
+    "detail": "config set"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Copy",
+    "detail": "copy DB REPLACE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.DBSize",
+    "detail": "dbsize"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.DebugObject",
+    "detail": "debug object"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Decr",
+    "detail": "decr"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.DecrBy",
+    "detail": "decrby"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Del",
+    "detail": "del"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.DelExArgs",
+    "detail": "delex ifeq IFEQ ifne IFNE ifdeq IFDEQ ifdne IFDNE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Digest",
+    "detail": "digest"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Dump",
+    "detail": "dump"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Echo",
+    "detail": "echo"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Exists",
+    "detail": "exists"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ExpireAt",
+    "detail": "expireat"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ExpireTime",
+    "detail": "expiretime"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTAggregate",
+    "detail": "FT.AGGREGATE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTAggregateWithArgs",
+    "detail": "FT.AGGREGATE VERBATIM SCORER ADDSCORES LOAD LOAD AS TIMEOUT APPLY AS GROUPBY REDUCE AS SORTBY ASC DESC MAX LIMIT FILTER WITHCURSOR COUNT MAXIDLE PARAMS DIALECT DIALECT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTAliasAdd",
+    "detail": "FT.ALIASADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTAliasDel",
+    "detail": "FT.ALIASDEL"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTAliasList",
+    "detail": "FT.ALIASLIST"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTAliasUpdate",
+    "detail": "FT.ALIASUPDATE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTAlter",
+    "detail": "FT.ALTER SKIPINITIALSCAN SCHEMA ADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTConfigGet",
+    "detail": "FT.CONFIG GET"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTConfigSet",
+    "detail": "FT.CONFIG SET"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTCreate",
+    "detail": "FT.CREATE ON HASH ON JSON PREFIX FILTER LANGUAGE LANGUAGE_FIELD SCORE SCORE_FIELD PAYLOAD_FIELD MAXTEXTFIELDS NOOFFSETS TEMPORARY NOHL NOFIELDS NOFREQS STOPWORDS SKIPINITIALSCAN SCHEMA AS FLAT TYPE DIM DISTANCE_METRIC INITIAL_CAP BLOCK_SIZE HNSW TYPE DIM DISTANCE_METRIC INITIAL_CAP M EF_CONSTRUCTION EF_RUNTIME EPSILON FALSE TRUE RERANK COMPRESSION TRAINING_THRESHOLD SVS-VAMANA TYPE DIM DISTANCE_METRIC COMPRESSION CONSTRUCTION_WINDOW_SIZE GRAPH_MAX_DEGREE SEARCH_WINDOW_SIZE EPSILON TRAINING_THRESHOLD REDUCE NOSTEM PHONETIC WEIGHT SEPARATOR CASESENSITIVE WITHSUFFIXTRIE INDEXEMPTY INDEXMISSING SORTABLE UNF NOINDEX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTCursorDel",
+    "detail": "FT.CURSOR DEL"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTCursorRead",
+    "detail": "FT.CURSOR READ COUNT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTDictAdd",
+    "detail": "FT.DICTADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTDictDel",
+    "detail": "FT.DICTDEL"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTDictDump",
+    "detail": "FT.DICTDUMP"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTDropIndex",
+    "detail": "FT.DROPINDEX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTDropIndexWithArgs",
+    "detail": "FT.DROPINDEX DD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTExplain",
+    "detail": "FT.EXPLAIN"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTExplainWithArgs",
+    "detail": "FT.EXPLAIN DIALECT DIALECT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTSynDump",
+    "detail": "FT.SYNDUMP"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTSynUpdate",
+    "detail": "FT.SYNUPDATE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTSynUpdateWithArgs",
+    "detail": "FT.SYNUPDATE SKIPINITIALSCAN"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FTTagVals",
+    "detail": "FT.TAGVALS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FT_List",
+    "detail": "FT._LIST"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FlushAll",
+    "detail": "flushall"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FlushAllAsync",
+    "detail": "flushall async"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FlushDB",
+    "detail": "flushdb"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FlushDBAsync",
+    "detail": "flushdb async"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionDelete",
+    "detail": "function delete"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionDump",
+    "detail": "function dump"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionFlush",
+    "detail": "function flush"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionFlushAsync",
+    "detail": "function flush async"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionKill",
+    "detail": "function kill"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionList",
+    "detail": "function list libraryname withcode"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionLoad",
+    "detail": "function load"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionLoadReplace",
+    "detail": "function load replace"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionRestore",
+    "detail": "function restore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.FunctionStats",
+    "detail": "function stats"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoAdd",
+    "detail": "geoadd"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoDist",
+    "detail": "km geodist"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoHash",
+    "detail": "geohash"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoPos",
+    "detail": "geopos"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoRadius",
+    "detail": "georadius_ro"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoRadiusByMember",
+    "detail": "georadiusbymember_ro"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoRadiusByMemberStore",
+    "detail": "georadiusbymember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoRadiusStore",
+    "detail": "georadius"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoSearch",
+    "detail": "geosearch"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoSearchLocation",
+    "detail": "geosearch"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GeoSearchStore",
+    "detail": "geosearchstore storedist"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Get",
+    "detail": "get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GetBit",
+    "detail": "getbit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GetDel",
+    "detail": "getdel"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GetEx",
+    "detail": "getex px ex persist"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GetRange",
+    "detail": "getrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GetSet",
+    "detail": "getset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.GetToBuffer",
+    "detail": "get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HDel",
+    "detail": "hdel"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HExists",
+    "detail": "hexists"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HExpire",
+    "detail": "HEXPIRE FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HExpireAt",
+    "detail": "HEXPIREAT FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HExpireAtWithArgs",
+    "detail": "HEXPIREAT NX XX GT LT FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HExpireTime",
+    "detail": "HEXPIRETIME FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HExpireWithArgs",
+    "detail": "HEXPIRE NX XX GT LT FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HGet",
+    "detail": "hget"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HGetAll",
+    "detail": "hgetall"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HGetDel",
+    "detail": "HGETDEL FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HGetEX",
+    "detail": "HGETEX FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HGetEXWithArgs",
+    "detail": "HGETEX FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HIncrBy",
+    "detail": "hincrby"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HIncrByFloat",
+    "detail": "hincrbyfloat"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HKeys",
+    "detail": "hkeys"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HLen",
+    "detail": "hlen"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HMGet",
+    "detail": "hmget"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HMSet",
+    "detail": "hmset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HPExpire",
+    "detail": "HPEXPIRE FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HPExpireAt",
+    "detail": "HPEXPIREAT FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HPExpireAtWithArgs",
+    "detail": "HPEXPIREAT NX XX GT LT FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HPExpireTime",
+    "detail": "HPEXPIRETIME FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HPExpireWithArgs",
+    "detail": "HPEXPIRE NX XX GT LT FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HPTTL",
+    "detail": "HPTTL FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HPersist",
+    "detail": "HPERSIST FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HRandField",
+    "detail": "hrandfield"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HRandFieldWithValues",
+    "detail": "hrandfield withvalues"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HScan",
+    "detail": "hscan match count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HScanNoValues",
+    "detail": "hscan match count novalues"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HSet",
+    "detail": "hset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HSetEX",
+    "detail": "HSETEX FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HSetEXWithArgs",
+    "detail": "HSETEX FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HSetNX",
+    "detail": "hsetnx"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HStrLen",
+    "detail": "hstrlen"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HTTL",
+    "detail": "HTTL FIELDS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.HVals",
+    "detail": "hvals"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Incr",
+    "detail": "incr"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.IncrBy",
+    "detail": "incrby"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.IncrByFloat",
+    "detail": "incrbyfloat"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.IncrEXFloat",
+    "detail": "increx byfloat lbound ubound saturate"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.IncrEXInt",
+    "detail": "increx byint lbound ubound saturate"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Info",
+    "detail": "info"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.InfoMap",
+    "detail": "info"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONArrAppend",
+    "detail": "JSON.ARRAPPEND"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONArrIndex",
+    "detail": "JSON.ARRINDEX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONArrIndexWithArgs",
+    "detail": "JSON.ARRINDEX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONArrInsert",
+    "detail": "JSON.ARRINSERT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONArrLen",
+    "detail": "JSON.ARRLEN"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONArrPop",
+    "detail": "JSON.ARRPOP"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONArrTrim",
+    "detail": "JSON.ARRTRIM"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONArrTrimWithArgs",
+    "detail": "JSON.ARRTRIM"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONClear",
+    "detail": "JSON.CLEAR"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONDel",
+    "detail": "JSON.DEL"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONForget",
+    "detail": "JSON.FORGET"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONMGet",
+    "detail": "JSON.MGET"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONMSet",
+    "detail": "JSON.MSET"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONMSetArgs",
+    "detail": "JSON.MSET"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONMerge",
+    "detail": "JSON.MERGE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONObjKeys",
+    "detail": "JSON.OBJKEYS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONObjLen",
+    "detail": "JSON.OBJLEN"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONSetWithArgs",
+    "detail": "JSON.SET XX NX FPHA"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONStrAppend",
+    "detail": "JSON.STRAPPEND"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONStrLen",
+    "detail": "JSON.STRLEN"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONToggle",
+    "detail": "JSON.TOGGLE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.JSONType",
+    "detail": "JSON.TYPE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Keys",
+    "detail": "keys"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LIndex",
+    "detail": "lindex"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LInsert",
+    "detail": "linsert"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LInsertAfter",
+    "detail": "linsert after"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LInsertBefore",
+    "detail": "linsert before"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LLen",
+    "detail": "llen"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LMPop",
+    "detail": "lmpop count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LMove",
+    "detail": "lmove"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LMoveM",
+    "detail": "lmovem"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LPop",
+    "detail": "lpop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LPopCount",
+    "detail": "lpop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LPos",
+    "detail": "lpos rank maxlen"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LPosCount",
+    "detail": "lpos count rank maxlen"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LPush",
+    "detail": "lpush"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LPushX",
+    "detail": "lpushx"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LRange",
+    "detail": "lrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LRem",
+    "detail": "lrem"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LSet",
+    "detail": "lset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LTrim",
+    "detail": "ltrim"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LastSave",
+    "detail": "lastsave"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Latency",
+    "detail": "latency latest"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.LatencyReset",
+    "detail": "latency reset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.MGet",
+    "detail": "mget"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.MSet",
+    "detail": "mset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.MSetEX",
+    "detail": "msetex ex px exat pxat keepttl"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.MSetNX",
+    "detail": "msetnx"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.MemoryUsage",
+    "detail": "memory usage SAMPLES"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Migrate",
+    "detail": "migrate"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Move",
+    "detail": "move"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ObjectEncoding",
+    "detail": "object encoding"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ObjectFreq",
+    "detail": "object freq"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ObjectIdleTime",
+    "detail": "object idletime"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ObjectRefCount",
+    "detail": "object refcount"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PExpire",
+    "detail": "pexpire"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PExpireAt",
+    "detail": "pexpireat"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PExpireTime",
+    "detail": "pexpiretime"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PFAdd",
+    "detail": "pfadd"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PFCount",
+    "detail": "pfcount"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PFMerge",
+    "detail": "pfmerge"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PTTL",
+    "detail": "pttl"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Persist",
+    "detail": "persist"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Ping",
+    "detail": "ping"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PubSubChannels",
+    "detail": "pubsub channels"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PubSubNumPat",
+    "detail": "pubsub numpat"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PubSubNumSub",
+    "detail": "pubsub numsub"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PubSubShardChannels",
+    "detail": "pubsub shardchannels"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.PubSubShardNumSub",
+    "detail": "pubsub shardnumsub"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Publish",
+    "detail": "publish sent"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.RPop",
+    "detail": "rpop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.RPopCount",
+    "detail": "rpop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.RPopLPush",
+    "detail": "rpoplpush"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.RPush",
+    "detail": "rpush"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.RPushX",
+    "detail": "rpushx"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.RandomKey",
+    "detail": "randomkey"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ReadOnly",
+    "detail": "readonly"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ReadWrite",
+    "detail": "readwrite"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Rename",
+    "detail": "rename"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.RenameNX",
+    "detail": "renamenx"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ReplicaOf",
+    "detail": "replicaof"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Restore",
+    "detail": "restore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.RestoreReplace",
+    "detail": "restore replace"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SAdd",
+    "detail": "sadd"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SAddEXWithArgs",
+    "detail": "saddex"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SCard",
+    "detail": "scard"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SDiff",
+    "detail": "sdiff"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SDiffCard",
+    "detail": "sdiffcard limit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SDiffStore",
+    "detail": "sdiffstore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SInter",
+    "detail": "sinter"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SInterCard",
+    "detail": "sintercard limit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SInterStore",
+    "detail": "sinterstore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SIsMember",
+    "detail": "sismember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SMIsMember",
+    "detail": "smismember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SMembers",
+    "detail": "smembers"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SMembersMap",
+    "detail": "smembers"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SMove",
+    "detail": "smove"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SPop",
+    "detail": "spop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SPopN",
+    "detail": "spop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SPublish",
+    "detail": "spublish sent"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SRandMember",
+    "detail": "srandmember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SRandMemberN",
+    "detail": "srandmember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SRem",
+    "detail": "srem"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SScan",
+    "detail": "sscan match count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SUnion",
+    "detail": "sunion"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SUnionCard",
+    "detail": "sunioncard approx limit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SUnionStore",
+    "detail": "sunionstore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Save",
+    "detail": "save"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Scan",
+    "detail": "scan match count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ScanType",
+    "detail": "scan match count type"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ScriptExists",
+    "detail": "script exists"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ScriptFlush",
+    "detail": "script flush"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ScriptKill",
+    "detail": "script kill"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ScriptLoad",
+    "detail": "script load"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Set",
+    "detail": "set px ex keepttl"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetArgs",
+    "detail": "set keepttl pxat exat px ex ifeq IFEQ ifne IFNE ifdeq IFDEQ ifdne IFDNE get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetBit",
+    "detail": "setbit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetEx",
+    "detail": "setex"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetFromBuffer",
+    "detail": "set"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetIFDEQ",
+    "detail": "set px ex keepttl ifdeq"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetIFDEQGet",
+    "detail": "set px ex keepttl ifdeq get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetIFDNE",
+    "detail": "set px ex keepttl ifdne"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetIFDNEGet",
+    "detail": "set px ex keepttl ifdne get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetIFEQ",
+    "detail": "set px ex keepttl ifeq"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetIFEQGet",
+    "detail": "set px ex keepttl ifeq get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetIFNE",
+    "detail": "set px ex keepttl ifne"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetIFNEGet",
+    "detail": "set px ex keepttl ifne get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetNX",
+    "detail": "set nx set keepttl nx set px nx set ex nx"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetRange",
+    "detail": "setrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SetXX",
+    "detail": "set xx set keepttl xx set px xx set ex xx"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SlaveOf",
+    "detail": "slaveof"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SlowLogGet",
+    "detail": "slowlog get"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SlowLogLen",
+    "detail": "slowlog len"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SlowLogReset",
+    "detail": "slowlog reset"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Sort",
+    "detail": "sort"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SortInterfaces",
+    "detail": "sort"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SortRO",
+    "detail": "sort_ro"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.SortStore",
+    "detail": "sort store"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.StrLen",
+    "detail": "strlen"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestAdd",
+    "detail": "TDIGEST.ADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestByRank",
+    "detail": "TDIGEST.BYRANK"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestByRevRank",
+    "detail": "TDIGEST.BYREVRANK"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestCDF",
+    "detail": "TDIGEST.CDF"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestCreate",
+    "detail": "TDIGEST.CREATE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestCreateWithCompression",
+    "detail": "TDIGEST.CREATE COMPRESSION"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestInfo",
+    "detail": "TDIGEST.INFO"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestMax",
+    "detail": "TDIGEST.MAX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestMerge",
+    "detail": "TDIGEST.MERGE COMPRESSION OVERRIDE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestMin",
+    "detail": "TDIGEST.MIN"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestQuantile",
+    "detail": "TDIGEST.QUANTILE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestRank",
+    "detail": "TDIGEST.RANK"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestReset",
+    "detail": "TDIGEST.RESET"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestRevRank",
+    "detail": "TDIGEST.REVRANK"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TDigestTrimmedMean",
+    "detail": "TDIGEST.TRIMMED_MEAN"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSAdd",
+    "detail": "TS.ADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSAddWithArgs",
+    "detail": "TS.ADD RETENTION CHUNK_SIZE ENCODING DUPLICATE_POLICY IGNORE LABELS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSAlter",
+    "detail": "TS.ALTER RETENTION CHUNK_SIZE DUPLICATE_POLICY IGNORE LABELS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSCreate",
+    "detail": "TS.CREATE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSCreateRule",
+    "detail": "TS.CREATERULE AGGREGATION"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSCreateRuleWithArgs",
+    "detail": "TS.CREATERULE AGGREGATION"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSCreateWithArgs",
+    "detail": "TS.CREATE RETENTION CHUNK_SIZE ENCODING DUPLICATE_POLICY IGNORE LABELS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSDecrBy",
+    "detail": "TS.DECRBY"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSDecrByWithArgs",
+    "detail": "TS.DECRBY TIMESTAMP RETENTION CHUNK_SIZE UNCOMPRESSED DUPLICATE_POLICY IGNORE LABELS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSDel",
+    "detail": "TS.DEL"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSDeleteRule",
+    "detail": "TS.DELETERULE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSIncrBy",
+    "detail": "TS.INCRBY"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSIncrByWithArgs",
+    "detail": "TS.INCRBY TIMESTAMP RETENTION CHUNK_SIZE UNCOMPRESSED DUPLICATE_POLICY IGNORE LABELS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSInfo",
+    "detail": "TS.INFO"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSInfoWithArgs",
+    "detail": "TS.INFO DEBUG"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSMAdd",
+    "detail": "TS.MADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSMGet",
+    "detail": "TS.MGET FILTER"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSMGetWithArgs",
+    "detail": "TS.MGET LATEST WITHLABELS SELECTED_LABELS FILTER"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSMRange",
+    "detail": "TS.MRANGE FILTER"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSMRangeWithArgs",
+    "detail": "TS.MRANGE LATEST FILTER_BY_TS FILTER_BY_VALUE WITHLABELS SELECTED_LABELS COUNT ALIGN AGGREGATION BUCKETTIMESTAMP EMPTY EXCLUDEEMPTY FILTER GROUPBY REDUCE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSMRevRange",
+    "detail": "TS.MREVRANGE FILTER"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSMRevRangeWithArgs",
+    "detail": "TS.MREVRANGE LATEST FILTER_BY_TS FILTER_BY_VALUE WITHLABELS SELECTED_LABELS COUNT ALIGN AGGREGATION BUCKETTIMESTAMP EMPTY EXCLUDEEMPTY FILTER GROUPBY REDUCE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSQueryIndex",
+    "detail": "TS.QUERYINDEX"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSQueryLabelValues",
+    "detail": "TS.QUERYLABELS VALUES"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TSQueryLabels",
+    "detail": "TS.QUERYLABELS LABELS"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TTL",
+    "detail": "ttl"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Time",
+    "detail": "time"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKAdd",
+    "detail": "TOPK.ADD"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKCount",
+    "detail": "TOPK.COUNT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKIncrBy",
+    "detail": "TOPK.INCRBY"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKInfo",
+    "detail": "TOPK.INFO"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKList",
+    "detail": "TOPK.LIST"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKListWithCount",
+    "detail": "TOPK.LIST WITHCOUNT"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKQuery",
+    "detail": "TOPK.QUERY"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKReserve",
+    "detail": "TOPK.RESERVE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.TopKReserveWithOptions",
+    "detail": "TOPK.RESERVE"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Touch",
+    "detail": "touch"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Type",
+    "detail": "type"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Unlink",
+    "detail": "unlink"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VAddWithArgs",
+    "detail": "vadd reduce"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VCard",
+    "detail": "vcard"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VClearAttributes",
+    "detail": "vsetattr"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VDim",
+    "detail": "vdim"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VEmb",
+    "detail": "vemb raw"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VGetAttr",
+    "detail": "vgetattr"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VInfo",
+    "detail": "vinfo"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VIsMember",
+    "detail": "vismember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VLinks",
+    "detail": "vlinks"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VLinksWithScores",
+    "detail": "vlinks withscores"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VRandMember",
+    "detail": "vrandmember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VRandMemberCount",
+    "detail": "vrandmember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VRange",
+    "detail": "vrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VRem",
+    "detail": "vrem"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VSetAttr",
+    "detail": "vsetattr vsetattr"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VSimWithArgs",
+    "detail": "vsim"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VSimWithArgsWithAttribs",
+    "detail": "vsim withattribs"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VSimWithArgsWithScores",
+    "detail": "vsim withscores"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.VSimWithArgsWithScoresWithAttribs",
+    "detail": "vsim withscores withattribs"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.Wait",
+    "detail": "wait"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.WaitAOF",
+    "detail": "waitAOF"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XAck",
+    "detail": "xack"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XAckDel",
+    "detail": "xackdel ids"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XAdd",
+    "detail": "xadd nomkstream idmpauto idmp maxlen maxlen minid minid"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XAutoClaimJustID",
+    "detail": "justid"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XCfgSet",
+    "detail": "xcfgset idmp-duration idmp-maxsize"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XClaimJustID",
+    "detail": "justid"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XDel",
+    "detail": "xdel"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XDelEx",
+    "detail": "xdelex ids"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XGroupCreate",
+    "detail": "xgroup create"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XGroupCreateConsumer",
+    "detail": "xgroup createconsumer"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XGroupCreateMkStream",
+    "detail": "xgroup create mkstream"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XGroupDelConsumer",
+    "detail": "xgroup delconsumer"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XGroupDestroy",
+    "detail": "xgroup destroy"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XGroupSetID",
+    "detail": "xgroup setid"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XInfoStreamFull",
+    "detail": "xinfo stream full count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XLen",
+    "detail": "xlen"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XNack",
+    "detail": "xnack ids retrycount force"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XPending",
+    "detail": "xpending"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XPendingExt",
+    "detail": "xpending idle"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XRange",
+    "detail": "xrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XRangeN",
+    "detail": "xrange count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XRead",
+    "detail": "xread count maxcount maxsize block streams"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XReadGroup",
+    "detail": "xreadgroup group count maxcount maxsize block noack claim streams"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XRevRange",
+    "detail": "xrevrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.XRevRangeN",
+    "detail": "xrevrange count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZCard",
+    "detail": "zcard"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZCount",
+    "detail": "zcount"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZDiff",
+    "detail": "zdiff"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZDiffStore",
+    "detail": "zdiffstore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZDiffWithScores",
+    "detail": "zdiff withscores"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZIncrBy",
+    "detail": "zincrby"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZInter",
+    "detail": "zinter"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZInterCard",
+    "detail": "zintercard limit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZInterStore",
+    "detail": "zinterstore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZInterWithScores",
+    "detail": "zinter withscores"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZLexCount",
+    "detail": "zlexcount"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZMPop",
+    "detail": "zmpop count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZMScore",
+    "detail": "zmscore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZPopMax",
+    "detail": "zpopmax"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZPopMin",
+    "detail": "zpopmin"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRandMember",
+    "detail": "zrandmember"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRandMemberWithScores",
+    "detail": "zrandmember withscores"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRangeArgs",
+    "detail": "zrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRangeArgsWithScores",
+    "detail": "zrange withscores"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRangeByScoreWithScores",
+    "detail": "zrangebyscore withscores limit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRangeStore",
+    "detail": "zrangestore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRank",
+    "detail": "zrank"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRankWithScore",
+    "detail": "zrank withscore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRem",
+    "detail": "zrem"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRemRangeByLex",
+    "detail": "zremrangebylex"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRemRangeByRank",
+    "detail": "zremrangebyrank"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRemRangeByScore",
+    "detail": "zremrangebyscore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRevRange",
+    "detail": "zrevrange"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRevRangeByScoreWithScores",
+    "detail": "zrevrangebyscore withscores limit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRevRangeWithScores",
+    "detail": "zrevrange withscores"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRevRank",
+    "detail": "zrevrank"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZRevRankWithScore",
+    "detail": "zrevrank withscore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZScan",
+    "detail": "zscan match count"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZScore",
+    "detail": "zscore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZUnion",
+    "detail": "zunion"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZUnionStore",
+    "detail": "zunionstore"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.ZUnionWithScores",
+    "detail": "zunion withscores"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.bitOp",
+    "detail": "bitop"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.expire",
+    "detail": "expire"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.shutdown",
+    "detail": "shutdown shutdown"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.xTrim",
+    "detail": "xtrim"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.xTrimMode",
+    "detail": "xtrim"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.zRangeBy",
+    "detail": "withscores limit"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.zRevRangeBy",
+    "detail": "limit"
+  },
+  {
+    "package": "redis",
+    "entity": "himportFanOutPrepare",
+    "detail": "OK"
+  },
+  {
+    "package": "redis",
+    "entity": "statefulCmdable.Auth",
+    "detail": "auth"
+  },
+  {
+    "package": "redis",
+    "entity": "statefulCmdable.AuthACL",
+    "detail": "auth"
+  },
+  {
+    "package": "redis",
+    "entity": "statefulCmdable.ClientSetInfo",
+    "detail": "client setinfo LIB-NAME client setinfo LIB-VER"
+  },
+  {
+    "package": "redis",
+    "entity": "statefulCmdable.ClientSetName",
+    "detail": "client setname"
+  },
+  {
+    "package": "redis",
+    "entity": "statefulCmdable.Select",
+    "detail": "select"
+  },
+  {
+    "package": "redis",
+    "entity": "statefulCmdable.SwapDB",
+    "detail": "swapdb"
+  },
+  {
+    "package": "redis",
+    "entity": "statefulCmdable.hello",
+    "detail": "hello default auth setname"
+  },
+  {
+    "package": "redis",
+    "entity": "wrapMultiExec",
+    "detail": "multi exec"
+  }
+]

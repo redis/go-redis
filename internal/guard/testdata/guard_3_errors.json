@@ -1,0 +1,5444 @@
+[
+  {
+    "package": "hscan",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"args should have the same number of keys and vals\""
+    ]
+  },
+  {
+    "package": "hscan",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"cannot scan redis.result %s into struct field %s.%s of type %s, error-%s\"",
+      "value",
+      "t.Name()",
+      "t.Field(field.index).Name",
+      "t.Field(field.index).Type",
+      "err.Error()"
+    ]
+  },
+  {
+    "package": "hscan",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis.Scan(non-pointer %T)\"",
+      "dst"
+    ]
+  },
+  {
+    "package": "hscan",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis.Scan(non-struct %T)\"",
+      "dst"
+    ]
+  },
+  {
+    "package": "hscan",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis.Scan(unexported field %s.%s)\"",
+      "t.Name()",
+      "t.Field(field.index).Name"
+    ]
+  },
+  {
+    "package": "hscan",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis.Scan(unsupported %s)\"",
+      "v.Type()"
+    ]
+  },
+  {
+    "package": "internal",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"not reached\""
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.CircuitBreakerOpenErrorMessage"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.ConnectionInvalidHandoffStateErrorMessage"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.ConnectionMarkedForHandoffErrorMessage"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.ConnectionMarkedForHandoffErrorMessage + \" with state\""
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.ConnectionNotMarkedForHandoffError(conn.GetID())"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.FailedToRegisterHandler(notificationType, err)"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.HandoffQueueFullError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidCircuitBreakerFailureThresholdError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidCircuitBreakerMaxRequestsError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidCircuitBreakerResetTimeoutError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidClientError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidEndpointTypeError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidHandoffQueueSizeError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidHandoffRetriesError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidHandoffTimeoutError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidHandoffWorkersError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidMaintNotificationsError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidNotificationError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidPostHandoffRelaxedDurationError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.InvalidRelaxedTimeoutError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.ManagerNotInitialized()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.MaxHandoffRetriesReachedError()"
+    ]
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "logs.ShutdownError()"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: REST API returned status %d\"",
+      "resp.StatusCode"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: availability check returned status %d\"",
+      "resp.StatusCode"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: cannot derive REST API host from address %q\"",
+      "addr"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: cannot derive REST API host from address %q\"",
+      "addr"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: cannot derive REST API host from address %q\"",
+      "client.Options().Addr"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: cluster client has no addresses\""
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: cluster has no masters to ping\""
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: failed to load client certificate from files: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: failed to load client certificate: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: failed to parse root CA PEM from file %q\"",
+      "caFile"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: failed to parse root CA PEM\""
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: failed to read root CA file %q: %w\"",
+      "caFile",
+      "err"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: master %s did not pass the lag check\"",
+      "t.addr"
+    ]
+  },
+  {
+    "package": "multidb",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"multidb: no matching bdb found for host %q\"",
+      "dbHost"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"not reached\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"not reached\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"connection evicted: idle pool at capacity\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"connection is already marked for handoff\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"connection not pooled\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"connection was not marked for handoff\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"handoff state changed during marking\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"hook requested removal\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"invalid state transition\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"panic in queuedNewConn\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: StickyConnPool does not have a Conn\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: StickyConnPool.Close: infinite loop\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: client is closed\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: connection not available for write operation\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: connection not available\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: connection pool exhausted\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: connection pool has no free turn\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: connection pool timeout\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: timed out trying to mark connection as unusable\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"state machine is closed\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"state transition timeout\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"unexpected read from socket\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"unexpected read from socket\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "CloseReasonFailover"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "CloseReasonStale"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "reason"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "reason"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "reason"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "reason"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "reason"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "reason"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: cannot transition from %s to %s (valid from: %v)\"",
+      "ErrInvalidStateTransition",
+      "currentState",
+      "targetState",
+      "validFromStates"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"cannot initialize connection from state %s: %w\"",
+      "finalState",
+      "err"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to mark connection as unusable: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: StickyConnPool.Get: infinite loop\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't peek reply type, no data available\""
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid StickyConnPool state: %d\"",
+      "state"
+    ]
+  },
+  {
+    "package": "pool",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: no initConnFunc set for conn[%d]\"",
+      "cn.GetID()"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: invalid line\""
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: invalid verbatim string\""
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: push notification name exceeds peek window\""
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %q\"",
+      "ErrInvalidVerbatimString",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"bigInt(%s) value out of range\"",
+      "b.String()"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"bigInt(%s) value out of range\"",
+      "b.String()"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"expected digit or CRLF, got %q\"",
+      "buf[pos]"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: RESP3 map key must be a scalar type, got %T\"",
+      "k"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: Scan(nil)\""
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: ScanSlice index=%d value=%q failed: %w\"",
+      "i",
+      "s",
+      "err"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: ScanSlice(nil)\""
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: ScanSlice(non-pointer %T)\"",
+      "slice"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: ScanSlice(non-slice %T)\"",
+      "slice"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: buffer too small: need %d bytes, have %d\"",
+      "len(s)",
+      "len(buf)"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: buffer too small: need %d bytes, have %d\"",
+      "len(s)",
+      "len(buf)"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: buffer too small: need %d bytes, have %d\"",
+      "n",
+      "len(buf)"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't marshal %T (implement encoding.BinaryMarshaler)\"",
+      "v"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse array/set/push reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse array/set/push reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse attribute reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse bigInt reply: %q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse bool reply: %q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse float reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse int reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse map reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse push notification name length: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse push notification name: %q\"",
+      "buf[pos:]"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse push notification: %q\"",
+      "buf"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse push notification: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse reply=%.100q reading string into buffer\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse reply=%.100q reading string\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse uint reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't peek push notification name, next reply is not a push notification\""
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't read raw reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't read raw reply: %.100q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't unmarshal %T (consider implementing BinaryUnmarshaler)\"",
+      "v"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: empty push notification array length\""
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: empty push notification name length\""
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the array, wanted %d\"",
+      "n",
+      "fixedLen"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the map, wanted %d\"",
+      "n",
+      "fixedLen"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid push notification name length %q: %w\"",
+      "buf[lenStart:next - 2]",
+      "err"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid reply: %q\"",
+      "b"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid reply: %q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: negative push notification name length: %d\"",
+      "nameLen"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: the length of the array must be a multiple of 2, got: %d\"",
+      "n"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewAskError",
+    "raw_args": [
+      "msg",
+      "addr"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewAuthError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewClusterDownError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewExecAbortError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewLoadingError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewMasterDownError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewMaxClientsError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewMovedError",
+    "raw_args": [
+      "msg",
+      "addr"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewNoReplicasError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewOOMError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewPermissionError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewReadOnlyError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "proto",
+    "entity": "func",
+    "detail": "NewTryAgainError",
+    "raw_args": [
+      "msg"
+    ]
+  },
+  {
+    "package": "push",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "ReasonHandlerNil"
+    ]
+  },
+  {
+    "package": "push",
+    "entity": "func",
+    "detail": "NewHandlerError",
+    "raw_args": [
+      "ProcessorOperationRegister",
+      "pushNotificationName",
+      "ReasonHandlerExists",
+      "nil"
+    ]
+  },
+  {
+    "package": "push",
+    "entity": "func",
+    "detail": "NewHandlerError",
+    "raw_args": [
+      "ProcessorOperationUnregister",
+      "pushNotificationName",
+      "ReasonHandlerProtected",
+      "nil"
+    ]
+  },
+  {
+    "package": "push",
+    "entity": "func",
+    "detail": "NewProcessorError",
+    "raw_args": [
+      "ProcessorTypeVoidProcessor",
+      "ProcessorOperationRegister",
+      "pushNotificationName",
+      "ReasonPushNotificationsDisabled",
+      "nil"
+    ]
+  },
+  {
+    "package": "push",
+    "entity": "func",
+    "detail": "NewProcessorError",
+    "raw_args": [
+      "ProcessorTypeVoidProcessor",
+      "ProcessorOperationUnregister",
+      "pushNotificationName",
+      "ReasonPushNotificationsDisabled",
+      "nil"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"node != nil\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"not implemented\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"not implemented\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"not implemented\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"not reached\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"not reached\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"redis: JSON.SET mode must be NX or XX\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"redis: NewClient nil options\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"redis: NewClusterClient nil options\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"redis: NewFailoverClient nil options\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"redis: NewFailoverClusterClient nil options\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"redis: NewRing nil options\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"redis: NewSentinelClient nil options\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"redis: NewUniversalClient nil options\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"to route commands by latency, use NewFailoverClusterClient\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "\"to route commands randomly, use NewFailoverClusterClient\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "err.Error()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"failed to enable maintnotifications: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"redis: failed to create connection pool: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"redis: failed to create connection pool: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"redis: failed to create connection pool: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"redis: failed to create pipeline connection pool: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"redis: failed to create pipeline connection pool: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"redis: failed to create pubsub pool: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"redis: failed to create pubsub pool: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Errorf(\"redis: failed to create pubsub pool: %w\", err)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "pv"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"BitFieldRO: invalid number of arguments, must be even\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"GeoRadius does not support Store or StoreDist\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"GeoRadiusByMember does not support Store or StoreDist\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"GeoRadiusByMemberStore requires Store or StoreDist\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"GeoRadiusStore requires Store or StoreDist\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"MemoryUsage expects single sample count\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"at least one of LibName and LibVer should be set\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"both LibName and LibVer cannot be set at the same time\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"handler must implement push.NotificationHandler\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"invalid command type\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"invalid pool type\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"multidb: active database changed\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"must be non-negative\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"null endpoint without a usable origin address\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"opt is nil\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: AUTH is not allowed when client-side caching is enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: AutoPipeline is not supported by Ring\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: AutoPipeliner.Do requires at least one argument\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: CLIENT CACHING is not allowed when client-side caching is enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: CLIENT TRACKING BCAST cannot be combined with OPTIN or OPTOUT\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: CLIENT TRACKING OPTIN and OPTOUT are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: CLIENT TRACKING PREFIX requires BCAST\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: CLIENT TRACKING is not allowed when client-side caching is enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: CLUSTER SHARDS returned no slot ranges\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: CLUSTER SHARDS shard has multiple online masters\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: EXCLUDEEMPTY is not allowed with GROUPBY\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: FDPipelined batch has keys on different full-duplex engines\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: FDPipelined batch is larger than the full-duplex submit queue\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: FDPipelined got a command that must be diverted off the full-duplex pipe\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: FDPipelined requires a full-duplex autopipeliner on a standalone Client\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: FT.CURSOR command requires at least 4 arguments\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: GROUPBY is not allowed when multiple aggregators are specified\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: HELLO with arguments is not allowed when client-side caching is enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: ModuleLoadex nil config\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: RESET is not allowed when client-side caching is enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: SCRIPT LOAD has not returned a digest yet\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: SCRIPT LOAD returned a digest that does not match the client-computed SHA-1\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: SELECT is not allowed when client-side caching is enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: Submit requires the deferred autopipeliner (AsyncAutoPipeline); on the blocking face use the typed methods or Do\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: Wait on a zero AutoFuture\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: Watch requires all keys to be in the same slot\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: Watch requires at least one key\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: XRead IDs length must match Streams length\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: all ring shards are down\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: all sentinels specified in configuration are unreachable\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: at least one metric must be specified for HOTKEYS START\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: autopipeline full-duplex reader exited\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: autopipeline: full-duplex connection max-hold reached\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: autopipeline: full-duplex connection moving\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: autopipeline: full-duplex panic recovered\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: autopipeline: full-duplex push drain failed\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: autopipeline: queue full (MaxQueuedCommands reached)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: autopipeline: retry budget exhausted before shutdown flush\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: cluster command metadata has no server identity\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: cluster command metadata is unusable\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: cluster has no nodes\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: cluster topology contains a node that is not online\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: command requires an unsupported special routing policy\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: command token cannot be verified safely when client-side caching is enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: connection has unread transaction replies\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: connection init panic\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: connection unusable (reply stream desynchronized)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: csc miss-coalescer disabled mid-fetch; retry uncached\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: empty unix socket path\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: invalid bitcount index\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: invalid bitrangeintarray unit\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: invalid cell size (must be 1, 2, 4 or 8)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: invalid command pointer\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: invalid cursor ID type\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: live command metadata verification is pending\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: FailureDetector and FailureDetectorConfig are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: FailureDetectorConfig needs MinNumFailures or FailureRateThreshold\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: PubSub requires a standalone active database\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: RouteByLatency/RouteRandomly/ReadOnly are not supported for cluster member databases (health checks probe masters only)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: active database changed concurrently, retry\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: at least one database must be configured\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: cannot remove the active database\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: cluster reported no masters to health-check\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: database is disabled (weight -1)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: every database is disabled (weight -1); at least one must be enabled\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: insufficient healthy databases on initialization\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: nil options\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: no database with the given id\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: no healthy database available (permanently)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: no healthy database available (temporarily)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: multidb: target database is unhealthy\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: no commands to aggregate\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: no results to aggregate\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: no sentinels configured\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: please enter the command to be executed\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: setting both Aggregator and Aggregators is not allowed; use Aggregators instead because Aggregator is deprecated\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: the shard is not in the ring\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"too many arguments\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"too many arguments\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"too many arguments\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"unknown endpoint\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"zero port without a usable origin address\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "`csc: a different \"invalidate\" push handler is already registered`"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "cmd.val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w for command %s\"",
+      "errClusterCommandMetadataUnusable",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %d\"",
+      "ErrDatabaseDisabled",
+      "index"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %d\"",
+      "ErrDatabaseDisabled",
+      "index"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %d\"",
+      "ErrDatabaseNotFound",
+      "id"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %d\"",
+      "ErrDatabaseNotFound",
+      "id"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %d\"",
+      "ErrDatabaseNotFound",
+      "id"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %d\"",
+      "ErrDatabaseNotFound",
+      "id"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %d\"",
+      "ErrDatabaseNotFound",
+      "index"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %s is %s\"",
+      "ErrClusterTopologyUnhealthy",
+      "node",
+      "c.health[node]"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: %w\"",
+      "errFDPushDrainFailed",
+      "perr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: Args() sizing: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: Args: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: encoding batch: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: full-duplex attempt: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: full-duplex session: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: got %q, want %q\"",
+      "ErrScriptDigestMismatch",
+      "v",
+      "s.hash"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: limiter Allow: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: panic: %v\"",
+      "errConnUnusable",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: panic: %v\"",
+      "errConnUnusable",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: pipeline CLIENT CACHING reply: %w\"",
+      "errConnUnusable",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: pipeline push drain: %w\"",
+      "errConnUnusable",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: pipeline push drain: %w\"",
+      "errConnUnusable",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: push handler: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: reader: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: release: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: reply decoder: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: request policy %d for command %s\"",
+      "errUnsupportedRoutingPolicy",
+      "d.policy.Request",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: request policy %d\"",
+      "errUnsupportedRoutingPolicy",
+      "policy.Request"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: response policy %d for command %s\"",
+      "errUnsupportedRoutingPolicy",
+      "d.policy.Response",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: shutdown flush: %v\"",
+      "errFDPanicRecovered",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: slot %d master %s is %s\"",
+      "ErrClusterTopologyUnhealthy",
+      "slot",
+      "nodes[0]",
+      "c.health[nodes[0]]"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"%w: txpipeline push drain: %w\"",
+      "errConnUnusable",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: ASC and DESC are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: ASC and DESC are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: ASC and DESC are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: Collect must follow a GroupBy step\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: LOADALL and LOAD are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: LOADALL and LOAD are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: Reduce must follow a GroupBy step\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: ReduceAs must follow a GroupBy step\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: SortByMax must follow a SortBy step\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: Steps cannot be combined with the deprecated Load, Apply, GroupBy, SortBy and SortByMax fields\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.AGGREGATE: each step must set exactly one of Load, Apply, GroupBy, SortBy, Filter, Limit (got %d)\"",
+      "set"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: ON HASH and ON JSON are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: SCHEMA FieldName and FieldType are required\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: SCHEMA FieldType GEOSHAPE is required for GeoShapeFieldType\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: SCHEMA FieldType VECTOR is required for VectorArgs\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: SCHEMA VectorArgs must have exactly one of FlatOptions, HNSWOptions, or VamanaOptions\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: SCHEMA is required\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR FLAT\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR HNSW\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.CREATE: Type, Dim and DistanceMetric are required for VECTOR VAMANA\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.HYBRID: ASC and DESC are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.HYBRID: SHARD_K_RATIO must be between 0.1 and 1.0\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.HYBRID: SHARD_K_RATIO requires KNN method\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.HYBRID: unsupported vector type %T\"",
+      "v"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.HYBRID: vector Value must contain a blob at index 1\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.HYBRID: vector blob is required\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.HYBRID: vector data is required\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.SEARCH: ASC and DESC are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FT.SEARCH: ASC and DESC are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"FTExplainCli is not implemented\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"command metadata MODULE LIST reply has no module name or version\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"command metadata reply has no server version\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"command metadata server changed during publication\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"command metadata server changed during refresh\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"command metadata server changed: got %q, want %q\"",
+      "actualFp",
+      "expectedFp"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"connection closed during streaming credentials setup: %w\"",
+      "pool.ErrClosed"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"connection in unexpected state after initialization: %s\"",
+      "finalState"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"csc: apply panic: %v\"",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"expected boolean array element, got %T\"",
+      "value"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"expected boolean array, got %T\"",
+      "value"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"expected integer array element, got %T\"",
+      "value"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"expected integer array, got %T\"",
+      "value"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to authenticate: %w\"",
+      "initErr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create credentials listener: %w\"",
+      "initErr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to enable maintnotifications: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to enable maintnotifications: %w\"",
+      "maintNotifHandshakeErr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to enable maintnotifications: server does not support RESP3 (HELLO command failed)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to initialize connection options: %w\"",
+      "initErr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to resolve credentials: %w\"",
+      "initErr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to subscribe to streaming credentials: %w\"",
+      "initErr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"got %d elements in cluster info address, expected 2, 3, or 4\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid cursor result format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid document ID format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid document fields format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid execution_time format: %v\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid field key format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid field key format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid field value format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid item key format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid key type at index %d\"",
+      "i"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid origin port %q\"",
+      "originPort"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid port %d\"",
+      "port"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid result item format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid results format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid results format: expected map, got %T\"",
+      "resultsData"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid row format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid score format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid suggestion format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid suggestion format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid suggestion score format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid suggestion score value\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid suggestions format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid synonym format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid synonyms format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid term format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid term format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid term format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid total format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid total results format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"invalid total_results format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"no data returned\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"odd-length key/value array of length %d\"",
+      "len(m)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"panic during command metadata refresh: %v\"",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"pubsub: connection is not usable\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.%s=%d needs a pipeline pool of at \" + \"least %d connections (each full-duplex pipe holds one), but \" + \"PipelinePoolSize gives %d; raise Options.PipelinePoolSize or lower \" + \"%s\"",
+      "field",
+      "n",
+      "n",
+      "pp.Size()",
+      "field"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.AdaptiveDelay requires MaxFlushDelay > 0 \" + \"(adaptive delay scales MaxFlushDelay by queue fill; with no MaxFlushDelay it would \" + \"silently disable batch accumulation entirely)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.FullDuplex requires MaxConcurrentBatches<=1 \" + \"(an ordered single stream); got %d\"",
+      "cfg.MaxConcurrentBatches"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.FullDuplex requires an ordered stream \" + \"(Unordered:false); full-duplex matches replies by in-flight FIFO position, which \" + \"Unordered breaks\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.FullDuplexIdleTimeout=%s must be >= 0 (0 = default)\"",
+      "cfg.FullDuplexIdleTimeout"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.FullDuplexMaxHold=%s must be >= 0 (0 = default)\"",
+      "cfg.FullDuplexMaxHold"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.FullDuplexPipes=%d and NumShards=%d disagree; \" + \"set only FullDuplexPipes (NumShards is the older spelling of the full-duplex pipe count)\"",
+      "cfg.FullDuplexPipes",
+      "cfg.NumShards"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.FullDuplexPipes=%d must be >= 0 (0 = one pipe)\"",
+      "cfg.FullDuplexPipes"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.FullDuplexWindow=%d must be >= 0 (0 = default)\"",
+      "cfg.FullDuplexWindow"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.MaxBatchBytes=%d must be >= 0\"",
+      "cfg.MaxBatchBytes"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.MaxBatchSize=%d must be >= 0\"",
+      "cfg.MaxBatchSize"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.MaxConcurrentBatches=%d must be >= 0\"",
+      "cfg.MaxConcurrentBatches"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.MaxConcurrentBatches=%d requires Unordered:true \" + \"(parallel batches do not preserve command ordering); set Unordered:true to allow it, \" + \"or keep MaxConcurrentBatches=1 for an ordered stream\"",
+      "cfg.MaxConcurrentBatches"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.MaxFlushDelay=%s must be >= 0\"",
+      "cfg.MaxFlushDelay"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.MaxQueuedCommands=%d must be >= 0\"",
+      "cfg.MaxQueuedCommands"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.NumShards=%d must be >= 0\"",
+      "cfg.NumShards"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face \" + \"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)\"",
+      "config.NumShards"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: BLOOM.INFO invalid argument key type\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: BLOOM.INFO unexpected key %s\"",
+      "key"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: CLUSTER SHARDS node %q has unknown health %q\"",
+      "node.ID",
+      "node.Health"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: CLUSTER SHARDS shard %d has invalid slot range %d-%d\"",
+      "shardIndex",
+      "slotRange.Start",
+      "slotRange.End"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: CLUSTER SHARDS shard %d has no master\"",
+      "shardIndex"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: CLUSTER SHARDS shard %d has unknown node role %q\"",
+      "shardIndex",
+      "shardNode.Role"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: CLUSTER SHARDS shard has %d masters and no online owner\"",
+      "masters"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: COLLECT entry %d: %w\"",
+      "i",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: COLLECT value has type %T, want array of entries\"",
+      "v"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: COMMAND metadata exceeds maximum nesting depth %d\"",
+      "maxCommandInfoDepth"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: COMMAND metadata exceeds maximum nesting depth %d\"",
+      "maxCommandInfoDepth"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: COMMAND reply has type %q, wanted array\"",
+      "typ"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: COMMAND subcommands exceed maximum depth %d\"",
+      "maxCommandInfoDepth"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: EXEC returned %q for %d commands\"",
+      "line",
+      "len(cmds)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: EXEC returned %q for %d commands\"",
+      "line",
+      "len(cmds)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: FILTER_BY_VALUE requires exactly 2 elements [min, max], got %d\"",
+      "len(filterByValue)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: FT.AGGREGATE COLLECT requires FieldsAll or a non-empty Fields list\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: FT.AGGREGATE COLLECT: ASC and DESC are mutually exclusive\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: FT.AGGREGATE COLLECT: empty field name in Fields\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: FT.AGGREGATE COLLECT: empty field name in SortBy\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: TS.NRANGE/TS.NREVRANGE requires exactly %d aggregator spec(s), got %d\"",
+      "len(keys)",
+      "len(aggregators)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: VectorScoreSliceCmd expects even number of elements, got %d\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: Watch requires all keys to be in the same shard\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: Watch requires at least one key\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: Watch requires at least one shard\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: ZeroCopyStringCmd cannot be cloned (cmd writes into caller-owned memory)\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: all sentinels specified in configuration are unreachable: %w\"",
+      "errors.Join(errs...)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: at least one channel is required\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: at least one channel is required\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: at least one channel is required\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: autopipeline: Close timed out after %s with %s still in flight; \" + \"they hold pooled connections until the server or the OS ends them \" + \"(most often a blocking command with no timeout, or ReadTimeout disabled)\"",
+      "timeout",
+      "strings.Join(outstanding, \" and \")"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: autopipeline: panic during dispatch: %v\"",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: autopipeline: panic in full-duplex off-pipe retry: %v\"",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: autopipeline: panic in full-duplex process hook: %v\"",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse map-string-slice-interface reply: unexpected type %c\"",
+      "readType"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: can't parse reply=%T reading string\"",
+      "v"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot aggregate command %s shard %d: %w\"",
+      "cmd.Name()",
+      "shardIndex",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot aggregate command %s shard %d: %w\"",
+      "cmd.Name()",
+      "shardIndex",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot aggregate command %s: expected %s, got %T\"",
+      "cmd.Name()",
+      "expected",
+      "value"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot aggregate command %s: integer overflow\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot aggregate command %s: shard result length %d does not match %d\"",
+      "cmd.Name()",
+      "len(values)",
+      "len(result)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot aggregate command %s: shard result length %d does not match %d\"",
+      "cmd.Name()",
+      "len(values)",
+      "len(result)"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot aggregate command %s: unsupported command type %d\"",
+      "cmd.Name()",
+      "cmd.GetCmdType()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot determine all key arguments for multi-shard command %s\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot determine all key arguments for multi-shard command %s\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot determine all key arguments for transaction command %s\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot determine the routing key for command %s\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot determine the routing key for command %s\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot determine the routing key for command %s\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot determine the routing key for command %s\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot encode key argument at position %d for transaction command %s\"",
+      "pos",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot encode key at position %d for command %s\"",
+      "pos",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot execute transaction command %q with request policy %s\"",
+      "cmd.Name()",
+      "decision.policy.Request"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot fan out streaming, raw, or non-repeatable command %q safely\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard/ReqSpecial; Note: This behavior is subject to change in the future\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot reproduce the routing key for command %s\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cannot route command %q outside ordered AsyncAutoPipeline; use Unordered or await pending commands and use ClusterClient\"",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cluster command metadata identities differ: got %q, want %q\"",
+      "identity.serverFingerprint",
+      "fingerprint"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cluster command metadata server changed: got %q, want %q\"",
+      "changedFingerprint",
+      "expected"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cluster topology changed during command metadata fetch\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: cluster topology changed during command metadata verification\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: command %T does not have SetVal method\"",
+      "cmd"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: command %T does not have a compatible SetVal method\"",
+      "cmd"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: connection is not usable\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: empty timeseries aggregator spec at index %d\"",
+      "i"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: expected '*', but got line %q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to create connection pool: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to create connection pool: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to create connection pool: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to create pipeline connection pool: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to create pipeline connection pool: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to create pubsub pool: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to create pubsub pool: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to create pubsub pool: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: failed to set command value: %v\"",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: function list unexpected key %s\"",
+      "key"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: function list unexpected key %s\"",
+      "key"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: function stats unexpected %s engine map length\"",
+      "engine.Language"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: function stats unexpected key %s\"",
+      "key"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: function stats unexpected running_script key %s\"",
+      "key"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements commands reply in slowlog get, expected at least 1\"",
+      "cmdLen"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in GEOSEARCH reply, expected at least %d\"",
+      "nn",
+      "withLen"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in XAutoClaim reply, wanted 2/3\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in XAutoClaim reply, wanted 2/3\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in XAutoClaimJustID reply, wanted 2/3\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in cluster info, expected at least 2\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in latency get, expected at least 4\"",
+      "nn"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in map-string-slice-interface entry, expected at least 1\"",
+      "itemLen"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in slowlog get, expected at least 4\"",
+      "nn"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the VLINKS array, wanted a multiple of 2\"",
+      "innerLen"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the VSIM array, wanted a multiple of 2\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the VSIM array, wanted a multiple of 3\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the XMessage array, expected 2 or 4\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the key-value array, wanted a multiple of 2\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the sorted set array, wanted a multiple of 2\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in the sorted set array, wanted a multiple of 2\"",
+      "n"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: got %d elements in timeseries sample, expected at least 1\"",
+      "itemLen"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: incomplete key argument group at position %d for command %s\"",
+      "pos",
+      "cmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid %s boolean: expected true/false/1/0 or an empty string, got %q\"",
+      "name",
+      "s"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid %s duration: %w\"",
+      "name",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid %s duration: %w\"",
+      "name",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid %s number: %s\"",
+      "name",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid %s number: must be non-negative\"",
+      "name"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid CLIENT CACHING reply type %q\"",
+      "typ"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid CLIENT CACHING status %q\"",
+      "status"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid CLUSTER SHARDS node in shard %d: %w\"",
+      "shardIndex",
+      "addrErr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid CLUSTER SHARDS node in shard %d: %w\"",
+      "shardIndex",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid CLUSTER SHARDS shard %d: %w\"",
+      "shardIndex",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid SLOWLOG GET count %q\"",
+      "arg"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid URL path: %s\"",
+      "u.Path"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid URL path: %s\"",
+      "u.Path"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid URL scheme: %s\"",
+      "u.Scheme"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid URL scheme: %s\"",
+      "u.Scheme"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid URL scheme: %s\"",
+      "u.Scheme"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid database number: %q\"",
+      "f[0]"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid database number: %q\"",
+      "f[0]"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid database number: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid database number: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid key plan for multi-shard command %s\"",
+      "originalCmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid map key %#v\"",
+      "finalArr[i]"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid map key %#v\"",
+      "k"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid numkeys position for multi-shard command %s\"",
+      "originalCmd.Name()"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid slot range %d..%d: max is below min\"",
+      "min",
+      "max"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid slot range %d..%d: range is too large\"",
+      "min",
+      "max"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid timeseries aggregator at index %d: %d\"",
+      "i",
+      "agg"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid timeseries aggregator at index %d: Invalid (%d)\"",
+      "i",
+      "agg"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid timeseries aggregator at index %d[%d]: %d\"",
+      "i",
+      "j",
+      "agg"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid timeseries aggregator at index %d[%d]: Invalid (%d)\"",
+      "i",
+      "j",
+      "agg"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: invalid timeseries aggregator: %d\"",
+      "aggregator"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: live command metadata fetch is unavailable\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: building member client panicked: %v\"",
+      "r"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: cannot disable database %d; it is the last enabled member\"",
+      "id"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: cannot disable the active database %d; switch away first\"",
+      "id"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: cannot remove database %d; it is the last enabled member\"",
+      "id"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: database %s: %s waits %v between its %d probes, not below its %v timeout, so it never passes; \" + \"lower the probes or the delay (multidb.WithProbes, multidb.WithDelay) or raise HealthCheckInterval\"",
+      "name",
+      "what",
+      "need",
+      "pc.Probes",
+      "limit"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: exactly one of Options or ClusterOptions must be set per database (got %d)\"",
+      "set"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: invalid CommandRetries %d (use -1 to disable retries)\"",
+      "opt.CommandRetries"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: invalid FailureDetectorConfig.FailureRateThreshold %v (want 0 or a value in (0, 1])\"",
+      "fdc.FailureRateThreshold"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: invalid FailureDetectorConfig.MinNumFailures %d\"",
+      "fdc.MinNumFailures"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: invalid FailureDetectorConfig.Window %v\"",
+      "fdc.Window"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: invalid InitialDBState %q\"",
+      "opt.InitialDBState"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: multidb: invalid database weight %v (want -1 to disable, 0 for the default 1.0, or a value in (0, 1])\"",
+      "w"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: pubsub failed\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: tx pipeline produced no outcome\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unable to parse addr param: %s\"",
+      "addr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unable to parse addr param: %s\"",
+      "addr"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected EXEC reply %q\"",
+      "line"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected client info data (%s)\"",
+      "s"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected key %q in CLUSTER LINKS reply\"",
+      "key"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected option: %s\"",
+      "strings.Join(r, \", \")"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected option: %s\"",
+      "strings.Join(r, \", \")"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected option: %s\"",
+      "strings.Join(r, \", \")"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected response %#v\"",
+      "data"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected response %#v\"",
+      "data"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected response %#v\"",
+      "data"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected type=%T for Bool\"",
+      "val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected type=%T for Float32\"",
+      "val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected type=%T for Float64\"",
+      "val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected type=%T for Int\"",
+      "val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected type=%T for Int64\"",
+      "val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected type=%T for Slice\"",
+      "val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected type=%T for String\"",
+      "val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unexpected type=%T for Uint64\"",
+      "val"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unknown message: %T\"",
+      "msg"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unsupported pubsub message payload: %T\"",
+      "payload"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unsupported pubsub message: %#v\"",
+      "reply"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: unsupported pubsub message: %q\"",
+      "kind"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected RESP3 response type: %T\"",
+      "cmd.rawVal"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected RESP3 response type: %T\"",
+      "cmd.rawVal"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected RESP3 response type: %T\"",
+      "cmd.rawVal"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected RESP3 response type: %T\"",
+      "cmd.rawVal"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected RESP3 response type: %T\"",
+      "cmd.rawVal"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected RESP3 response type: %T\"",
+      "cmd.rawVal"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected response type: %T\"",
+      "data"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected response type: %T\"",
+      "data"
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected search result format\""
+    ]
+  },
+  {
+    "package": "redis",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"unexpected type %T, want map or key/value array\"",
+      "e"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redisotel: already initialized, call Shutdown() before reinitializing\""
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create Pub/Sub messages metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create client errors metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create connection closed metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create connection count metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create connection create time histogram: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create connection handoff metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create connection pending requests metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create connection relaxed timeout metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create connection wait time histogram: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create maintenance notifications metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create metrics recorder: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create multidb active database changes metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create multidb circuit breaker state changes metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create multidb failover duration histogram: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create multidb failovers metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create multidb health check duration histogram: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create multidb health checks metric: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create operation duration histogram: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"failed to create stream lag histogram: %w\"",
+      "err"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redisotel: %T not supported\"",
+      "rdb"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redisotel: %T not supported\"",
+      "rdb"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redisotel: %T not supported\"",
+      "rdb"
+    ]
+  },
+  {
+    "package": "redisotel",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redisotel: invalid pool stats: idle connections (%d) exceed total connections (%d)\"",
+      "stats.IdleConns",
+      "stats.TotalConns"
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"integer overflow during numeric aggregation\""
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: no valid results to aggregate for logical AND operation\""
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: no valid results to aggregate for logical OR operation\""
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: no valid results to aggregate for max operation\""
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"redis: no valid results to aggregate for min operation\""
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"cannot convert %T to bool\"",
+      "val"
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"cannot convert %T to number\"",
+      "value"
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"integer aggregate overflows int64: %d\"",
+      "value"
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"routing: unknown request_policy %q\"",
+      "raw"
+    ]
+  },
+  {
+    "package": "routing",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"routing: unknown response_policy %q\"",
+      "raw"
+    ]
+  },
+  {
+    "package": "streaming",
+    "entity": "errors",
+    "detail": "New",
+    "raw_args": [
+      "\"poolCn cannot be nil\""
+    ]
+  },
+  {
+    "package": "util",
+    "entity": "builtin",
+    "detail": "panic",
+    "raw_args": [
+      "fmt.Sprintf(\"redis: failed to parse float %q: %v\", s, err)"
+    ]
+  },
+  {
+    "package": "util",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: %s value %d exceeds maximum allowed value %d\"",
+      "fieldName",
+      "value",
+      "math.MaxInt32"
+    ]
+  },
+  {
+    "package": "util",
+    "entity": "fmt",
+    "detail": "Errorf",
+    "raw_args": [
+      "\"redis: %s value %d is below minimum allowed value %d\"",
+      "fieldName",
+      "value",
+      "math.MinInt32"
+    ]
+  }
+]

@@ -113,6 +113,19 @@ bench:
 	export REDIS_VERSION=$(REDIS_VERSION) && \
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem -skip Example -timeout 11m
 
+# Behavioral regression guard (docs/negative-test.md). No Redis needed.
+guard:
+	go test -tags guard -count=1 ./internal/guard
+
+# Regenerate goldens locally to inspect a change. Do not commit the result:
+# only the guard bot may change them (add the guard-update label to the PR).
+guard.update:
+	go test -tags guard -count=1 ./internal/guard -guard.update
+
+# Exported API vs. the latest v9 release (override: make apidiff BASE=v9.22.0).
+apidiff:
+	./scripts/apidiff.sh $(BASE)
+
 test.e2e:
 	@echo "Running E2E tests with auto-start proxy..."
 	$(MAKE) docker.e2e.start
@@ -148,7 +161,7 @@ test.e2e.logic:
 		go test -v -run "TestCreateTestFaultInjectorLogic|TestFaultInjectorClientCreation" ./maintnotifications/e2e/
 	@echo "Logic tests completed!"
 
-.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench fmt test.e2e test.e2e.logic test.multidb.e2e docker.e2e.start docker.e2e.stop
+.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench guard guard.update apidiff fmt test.e2e test.e2e.logic test.multidb.e2e docker.e2e.start docker.e2e.stop
 
 build:
 	export RE_CLUSTER=$(RE_CLUSTER) && \

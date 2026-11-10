@@ -1,0 +1,1872 @@
+[
+  {
+    "package": "maintnotifications",
+    "entity": "*Manager.retireMaintNotificationsConns",
+    "detail": "dispose: pl.CloseConn(ctx, cn, pool.CloseReasonMaintNotificationsDisabled, pool.MetricStateIdle) when loop && loop"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*NotificationHandler.handleMoving",
+    "detail": "dispose: owner.pool.RemoveWithoutTurn(context.Background(), poolConn, err) when newEndpoint == \"\" || newEndpoint == internal.RedisNull && func literal && poolConn.GetStateMachine().GetState() == pool.StateIdle && ok && err != nil && owner.pool != nil"
+  },
+  {
+    "package": "maintnotifications",
+    "entity": "*handoffWorkerManager.closeConnFromRequest",
+    "detail": "dispose: pooler.RemoveWithoutTurn(ctx, conn, err) when pooler != nil"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.Close",
+    "detail": "dispose: p.closeConn(cn) when loop"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.CloseConn",
+    "detail": "dispose: p.removeConnWithLock(cn) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.CloseConn",
+    "detail": "dispose: p.closeConn(cn) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.DrainIdleConns",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, err, true) when loop && func literal && err != nil"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.Filter",
+    "detail": "dispose: p.removeConn(cn) when loop && fn(cn) && isIdle"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.Filter",
+    "detail": "dispose: p.closeConn(cn) when loop"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.Remove",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, reason, true) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.RemoveWithoutTurn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, reason, false) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.RetireConns",
+    "detail": "dispose: p.removeConn(cn) when loop && isIdle"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.RetireConns",
+    "detail": "dispose: p.closeConn(cn) when loop"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.getConn",
+    "detail": "dispose: p.CloseConn(ctx, cn, CloseReasonStale, MetricStateUsed) when loop && !p.isHealthyConn(cn, nowNs)"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.getConn",
+    "detail": "dispose: p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateUsed) when loop && hookManager != nil && hookErr != nil || !acceptConn && hookErr != nil"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.getConn",
+    "detail": "dispose: p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateUsed) when hookManager != nil && err != nil || !acceptConn"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn) when reason != \"\""
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, err, freeTurn) when cn.HasBufferedData() && err != nil || replyType != proto.RespPush"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, err, freeTurn) when hookManager != nil && err != nil"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, errHookRequestedRemoval, freeTurn) when shouldRemove || !shouldPool"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn) when !cn.pooled"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn) when p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns && !transitionedToIdle && !handedOff && sm == nil"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnWithLock(cn) when p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns && !transitionedToIdle && !handedOff && currentState == StateClosed"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn) when p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns && !shouldCloseConn && !cn.IsUsable() && reason != \"\""
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn) when p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns && !(!shouldCloseConn && !cn.IsUsable()) && !shouldCloseConn && reason != \"\""
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.removeConnWithLock(cn) when !(p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns)"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putConn",
+    "detail": "dispose: p.closeConn(cn) when shouldCloseConn"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.putIdleConn",
+    "detail": "check: w.tryDeliver(cn, nil)"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.queuedNewConn",
+    "detail": "check: w.tryDeliver(nil, errPanicInQueuedNewConn)"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.queuedNewConn",
+    "detail": "check: w.tryDeliver(nil, cnErr)"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.queuedNewConn",
+    "detail": "check: w.tryDeliver(cn, cnErr)"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.refreshStaleSpare",
+    "detail": "dispose: p.removeConn(oldest) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.refreshStaleSpare",
+    "detail": "dispose: p.closeConn(oldest) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.removeConnInternal",
+    "detail": "dispose: p.removeConn(cn) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.removeConnInternal",
+    "detail": "dispose: p.closeConn(cn) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*ConnPool.removeConnWithLock",
+    "detail": "dispose: p.removeConn(cn) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*SingleConnPool.CloseConn",
+    "detail": "dispose: p.pool.CloseConn(ctx, cn, reason, fromState) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*SingleConnPool.RemoveWithoutTurn",
+    "detail": "dispose: p.Remove(ctx, cn, reason) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.CloseConn",
+    "detail": "dispose: p.pool.CloseConn(ctx, cn, reason, fromState) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.Get",
+    "detail": "dispose: p.removeConn(ctx, cn, ErrClosed) when loop && p.state.Load() == stateDefault"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.Remove",
+    "detail": "dispose: p.removeConn(ctx, cn, ErrClosed) when func literal && recover() != nil"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.RemoveWithoutTurn",
+    "detail": "dispose: p.Remove(ctx, cn, reason) when always"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.Reset",
+    "detail": "dispose: p.removeConn(ctx, cn, ErrClosed) when select"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.freeConn",
+    "detail": "dispose: p.removeConn(ctx, cn, err) when err != nil"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.freeConn",
+    "detail": "dispose: p.removeConn(ctx, cn, ErrClosed) when !(err != nil) && p.discardOnClose || p.newConnOnGet"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.removeConn",
+    "detail": "dispose: p.pool.RemoveWithoutTurn(ctx, cn, reason) when p.newConnOnGet"
+  },
+  {
+    "package": "pool",
+    "entity": "*StickyConnPool.removeConn",
+    "detail": "dispose: p.pool.Remove(ctx, cn, reason) when !(p.newConnOnGet)"
+  },
+  {
+    "package": "pool",
+    "entity": "*wantConn.tryDeliver",
+    "detail": "decide: w.done -> false"
+  },
+  {
+    "package": "pool",
+    "entity": "*wantConn.tryDeliver",
+    "detail": "decide: always -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsAuthError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsAuthError",
+    "detail": "decide: errors.As(err, &authErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsAuthError",
+    "detail": "decide: errors.As(err, &redisErr) -> strings.HasPrefix(s, \"NOAUTH \") || strings.HasPrefix(s, \"WRONGPASS \") || strings.Contains(s, \"unauthenticated\")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsAuthError",
+    "detail": "decide: always -> strings.HasPrefix(s, \"NOAUTH \") || strings.HasPrefix(s, \"WRONGPASS \") || strings.Contains(s, \"unauthenticated\")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsClusterDownError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsClusterDownError",
+    "detail": "decide: errors.As(err, &clusterDownErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsClusterDownError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"CLUSTERDOWN \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsClusterDownError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"CLUSTERDOWN \")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsExecAbortError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsExecAbortError",
+    "detail": "decide: errors.As(err, &execAbortErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsExecAbortError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"EXECABORT \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsExecAbortError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"EXECABORT \")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsLoadingError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsLoadingError",
+    "detail": "decide: errors.As(err, &loadingErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsLoadingError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"LOADING \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsLoadingError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"LOADING \")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsMasterDownError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsMasterDownError",
+    "detail": "decide: errors.As(err, &masterDownErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsMasterDownError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"MASTERDOWN \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsMasterDownError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"MASTERDOWN \")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsMaxClientsError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsMaxClientsError",
+    "detail": "decide: errors.As(err, &maxClientsErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsMaxClientsError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"ERR max number of clients reached\") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsMaxClientsError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"ERR max number of clients reached\")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsNoReplicasError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsNoReplicasError",
+    "detail": "decide: errors.As(err, &noReplicasErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsNoReplicasError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"NOREPLICAS \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsNoReplicasError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"NOREPLICAS \")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsOOMError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsOOMError",
+    "detail": "decide: errors.As(err, &oomErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsOOMError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"OOM \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsOOMError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"OOM \")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsPermissionError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsPermissionError",
+    "detail": "decide: errors.As(err, &permErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsPermissionError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"NOPERM \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsPermissionError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"NOPERM \")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsReadOnlyError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsReadOnlyError",
+    "detail": "decide: errors.As(err, &readOnlyErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsReadOnlyError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(s, \"READONLY \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsReadOnlyError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.Contains(s, \"-READONLY You can't write against a read only replica\") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsReadOnlyError",
+    "detail": "decide: strings.HasPrefix(s, \"READONLY \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsReadOnlyError",
+    "detail": "decide: always -> strings.Contains(s, \"-READONLY You can't write against a read only replica\")"
+  },
+  {
+    "package": "proto",
+    "entity": "IsTryAgainError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "proto",
+    "entity": "IsTryAgainError",
+    "detail": "decide: errors.As(err, &tryAgainErr) -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsTryAgainError",
+    "detail": "decide: errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), \"TRYAGAIN \") -> true"
+  },
+  {
+    "package": "proto",
+    "entity": "IsTryAgainError",
+    "detail": "decide: always -> strings.HasPrefix(err.Error(), \"TRYAGAIN \")"
+  },
+  {
+    "package": "push",
+    "entity": "*Processor.processPendingNotifications",
+    "detail": "check: isTimeoutError(err)"
+  },
+  {
+    "package": "push",
+    "entity": "*Processor.processPendingNotifications",
+    "detail": "check: isTimeoutError(err)"
+  },
+  {
+    "package": "push",
+    "entity": "IsHandlerExistsError",
+    "detail": "decide: errors.As(err, &handlerErr) -> handlerErr.Operation == ProcessorOperationRegister && handlerErr.Reason == ReasonHandlerExists"
+  },
+  {
+    "package": "push",
+    "entity": "IsHandlerExistsError",
+    "detail": "decide: always -> false"
+  },
+  {
+    "package": "push",
+    "entity": "IsHandlerNilError",
+    "detail": "decide: always -> errors.Is(err, ErrHandlerNil)"
+  },
+  {
+    "package": "push",
+    "entity": "IsProtectedHandlerError",
+    "detail": "decide: errors.As(err, &handlerErr) -> handlerErr.Operation == ProcessorOperationUnregister && handlerErr.Reason == ReasonHandlerProtected"
+  },
+  {
+    "package": "push",
+    "entity": "IsProtectedHandlerError",
+    "detail": "decide: always -> false"
+  },
+  {
+    "package": "push",
+    "entity": "IsVoidProcessorError",
+    "detail": "decide: errors.As(err, &procErr) -> procErr.ProcessorType == ProcessorTypeVoidProcessor && procErr.Reason == ReasonPushNotificationsDisabled"
+  },
+  {
+    "package": "push",
+    "entity": "IsVoidProcessorError",
+    "detail": "decide: always -> false"
+  },
+  {
+    "package": "push",
+    "entity": "isTimeoutError",
+    "detail": "decide: always -> errors.As(err, &timeoutErr) && timeoutErr.Timeout()"
+  },
+  {
+    "package": "redis",
+    "entity": "*AutoPipeliner.dispatchSequential",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*AutoPipeliner.fdPipelineExec",
+    "detail": "check: isRedisError(e)"
+  },
+  {
+    "package": "redis",
+    "entity": "*AutoPipeliner.fdPipelineExec",
+    "detail": "check: shouldRetry(e, false)"
+  },
+  {
+    "package": "redis",
+    "entity": "*AutoPipeliner.fdPipelineMetrics",
+    "detail": "check: classifyCommandErrorGuarded(perr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*BoolSliceCmd.readReply",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.Watch",
+    "detail": "check: isMovedError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.Watch",
+    "detail": "check: isReadOnlyError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.Watch",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.checkMovedErr",
+    "detail": "check: isMovedError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.classifyExecError",
+    "detail": "check: isMovedError(execErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.classifyExecError",
+    "detail": "check: proto.IsTryAgainError(execErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.classifyExecError",
+    "detail": "check: proto.IsClusterDownError(execErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.classifyExecError",
+    "detail": "check: proto.IsExecAbortError(execErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeCursorCommand",
+    "detail": "check: isMovedError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeMultiSlotCommand",
+    "detail": "check: c.reloadTopologyForRetry(ctx, err, attempt)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeMultiSlotCommand",
+    "detail": "check: isReadOnlyError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeMultiSlotCommand",
+    "detail": "check: isLoadingError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeMultiSlotCommand",
+    "detail": "check: isMovedError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeMultiSlotCommand",
+    "detail": "check: shouldRetry(lastErr, cmd.readTimeout() == nil)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeParallelTarget",
+    "detail": "check: isReadOnlyError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeParallelTarget",
+    "detail": "check: isMovedError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.executeParallelTarget",
+    "detail": "check: shouldRetry(lastErr, cmd.readTimeout() == nil)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.himportRequeueFailedSets",
+    "detail": "check: himportNoSuchFieldset(set.rawErr())"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.loadState",
+    "detail": "check: isTimeoutError(shardsErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.loadState",
+    "detail": "check: isContextError(shardsErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.pipelineReadCmdsInView",
+    "detail": "check: isBadConn(err, false, node.Client.getAddr())"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.pipelineReadCmdsInView",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.pipelineReadCmdsInView",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.pipelineReadCmdsInView",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.process",
+    "detail": "check: c.reloadTopologyForRetry(ctx, err, attempt)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.process",
+    "detail": "check: c.reloadTopologyForRetry(ctx, lastErr, attempt)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.process",
+    "detail": "check: isReadOnlyError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.process",
+    "detail": "check: isLoadingError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.process",
+    "detail": "check: isMovedError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.process",
+    "detail": "check: shouldRetry(lastErr, cmd.readTimeout() == nil)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processPipelineNode",
+    "detail": "check: isContextError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processPipelineNodeConn",
+    "detail": "check: isBadConn(err, false, node.Client.getAddr())"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processPipelineNodeConn",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processPipelineNodeConn",
+    "detail": "check: isBadConn(err, false, node.Client.getAddr())"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processPipelineNodeConn",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processPipelineNodeConn",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processPipelineNodeConn",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processPipelineRetries",
+    "detail": "check: c.reloadTopologyForRetry(ctx, mapErr, attempt)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processTxPipeline",
+    "detail": "check: c.reloadTopologyForRetry(ctx, err, attempt)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processTxPipelineNode",
+    "detail": "check: isRedisError(outcome.err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processTxPipelineNode",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.processTxPipelineNodeConn",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.readTxPipelineReplies",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.readTxPipelineReplies",
+    "detail": "check: isMovedSameConnAddr(err, connAddr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.readTxPipelineReplies",
+    "detail": "check: isMovedError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.readTxPipelineReplies",
+    "detail": "check: proto.IsTryAgainError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.readTxPipelineReplies",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.readTxPipelineReplies",
+    "detail": "check: isMovedSameConnAddr(err, connAddr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.readTxPipelineReplies",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.reloadTopologyForRetry",
+    "detail": "decide: !errors.Is(err, ErrClusterTopologyUnhealthy) || attempt >= c.opt.MaxRedirects -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.reloadTopologyForRetry",
+    "detail": "decide: always -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.txPreQueueErrorOutcome",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*ClusterClient.txPreQueueErrorOutcome",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*FloatSliceCmd.readReply",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*IntSliceCmd.readReply",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*PubSub.closeTheCn",
+    "detail": "dispose: c.closeConn(c.cn) when always"
+  },
+  {
+    "package": "redis",
+    "entity": "*PubSub.conn",
+    "detail": "dispose: c.closeConn(cn) when err != nil"
+  },
+  {
+    "package": "redis",
+    "entity": "*PubSub.releaseConn",
+    "detail": "check: isBadConn(err, allowTimeout, c.opt.Addr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*Ring.process",
+    "detail": "check: shouldRetry(lastErr, cmd.readTimeout() == nil)"
+  },
+  {
+    "package": "redis",
+    "entity": "*Script.EvalSha",
+    "detail": "check: HasErrorPrefix(r.Err(), \"NOSCRIPT\")"
+  },
+  {
+    "package": "redis",
+    "entity": "*Script.EvalShaRO",
+    "detail": "check: HasErrorPrefix(r.Err(), \"NOSCRIPT\")"
+  },
+  {
+    "package": "redis",
+    "entity": "*Script.Run",
+    "detail": "check: isNoScriptErr(r.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*Script.RunRO",
+    "detail": "check: isNoScriptErr(r.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*StringSliceCmd.readReply",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*Tx.TxPipeline",
+    "detail": "check: IsExecAbortError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*UintSliceCmd.readReply",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient._process",
+    "detail": "check: himportNoSuchFieldset(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient._process",
+    "detail": "check: himportNoSuchFieldset(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient._process",
+    "detail": "check: shouldRetry(err, retryTimeout.Load() == 1)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.cscEvictOnRedirect",
+    "detail": "check: isMovedError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.drainPushNotifications",
+    "detail": "check: isTimeoutError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.drainPushNotifications",
+    "detail": "check: isTimeoutError(perr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.drainPushNotifications",
+    "detail": "check: isBadConn(err, false, c.opt.Addr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.fetchMetadataIdentity",
+    "detail": "check: isRedisError(helloCmd.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.generalProcessPipelineFrom",
+    "detail": "check: shouldRetry(lastErr, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.generalProcessPipelineFrom",
+    "detail": "check: pipelineErrShouldStamp(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.generalProcessPipelineFrom",
+    "detail": "check: classifyCommandError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.generalProcessPipelineFrom",
+    "detail": "check: pipelineErrShouldStamp(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.generalProcessPipelineFrom",
+    "detail": "check: classifyCommandError(lastErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.himportAfterBatch",
+    "detail": "check: himportNoSuchFieldset(set.rawErr())"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.himportAfterBatch",
+    "detail": "check: himportNoSuchFieldset(set.rawErr())"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.himportReadInjectedReplies",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.himportRetryFailedSets",
+    "detail": "check: himportNoSuchFieldset(set.rawErr())"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.himportRetryFailedSets",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.himportShouldRetrySet",
+    "detail": "decide: !ok || !himportNoSuchFieldset(err) -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.himportShouldRetrySet",
+    "detail": "decide: always -> registered"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.initConn",
+    "detail": "check: isRedisError(initErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.initConn",
+    "detail": "check: isRedisError(trackingCmd.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.initConn",
+    "detail": "check: isRedisError(maintNotifHandshakeErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.initConn",
+    "detail": "check: isRedisError(initErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.initPooledConn",
+    "detail": "dispose: p.Remove(ctx, cn, err) when err != nil"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.initPooledConn",
+    "detail": "dispose: p.Remove(ctx, cn, err) when !cn.TryAcquire()"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.initPooledConnLimited",
+    "detail": "dispose: p.Remove(ctx, cn, err) when func literal"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.onAuthenticationErr",
+    "detail": "check: isBadConn(err, false, c.opt.Addr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.onAuthenticationErr",
+    "detail": "check: IsAuthError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.onAuthenticationErr",
+    "detail": "check: IsPermissionError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.onAuthenticationErr",
+    "detail": "dispose: c.poolForConn(poolCn).CloseConn(context.Background(), poolCn, pool.CloseReasonAuthError, pool.MetricStateIdle) when func literal && err != nil && isBadConn(err, false, c.opt.Addr) || IsAuthError(err) || IsPermissionError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.pipelineProcessCmds",
+    "detail": "check: isRedisError(readErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.pipelineReadCmdsWithFlags",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.processCached",
+    "detail": "check: isCacheableReplyResult(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.processCached",
+    "detail": "check: isCacheableReplyResult(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.processCached",
+    "detail": "check: isCacheableReplyResult(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.processCached",
+    "detail": "check: isCacheableReplyResult(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.processWithRetry",
+    "detail": "check: c.himportShouldRetrySet(cmd, err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.pushDrainWithin",
+    "detail": "check: isTimeoutError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.readCSCAck",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.releaseConnToPool",
+    "detail": "check: isBadConn(err, false, connAddr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.releaseConnToPool",
+    "detail": "dispose: p.Remove(ctx, cn, err) when isBadConn(err, false, connAddr) || errors.Is(err, errConnUnusable)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.releaseConnToPool",
+    "detail": "dispose: p.Remove(ctx, cn, err) when err != nil"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.txPipelineProcessCmds",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*baseClient.txPipelineReadQueued",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*clusterNode.Loading",
+    "detail": "check: isLoadingError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*cscMissCoalescer.applyAndSettle",
+    "detail": "check: isCacheableReplyResult(applyErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "*cscMissCoalescer.emitReplyErr",
+    "detail": "check: classifyCommandError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*cscMissCoalescer.fetch",
+    "detail": "check: classifyCommandError(ctx.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.acquireRetrySlot",
+    "detail": "decide: select && select -> false, false"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.acquireRetrySlot",
+    "detail": "decide: select && !(fd.curConnSpilled.Load()) && select -> false, false"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.acquireRetrySlot",
+    "detail": "decide: always -> slot, true"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.attempt",
+    "detail": "dispose: connPool.Remove(bg, cn, aerr) when func literal && result == fdConnErr"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.attempt",
+    "detail": "dispose: connPool.Remove(bg, cn, fmt.Errorf(\"%w: release: %v\", errFDPanicRecovered, r)) when func literal && !(result == fdConnErr) && func literal && func literal && r != nil"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.attempt",
+    "detail": "dispose: connPool.Remove(bg, cn, aerr) when func literal && r != nil && cn != nil"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.failQueue",
+    "detail": "check: classifyCommandErrorGuarded(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.failReqsAcct",
+    "detail": "check: classifyCommandErrorGuarded(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.flushReqsVia",
+    "detail": "check: pipelineErrShouldStamp(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.reportReplyMetrics",
+    "detail": "check: classifyCommandError(e)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.rerouteReplyToOwner",
+    "detail": "check: fd.acquireRetrySlot(req, cause)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.retryOnNormalConn",
+    "detail": "check: fd.acquireRetrySlot(req, ErrClosed)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.run",
+    "detail": "check: shouldRetry(aerr, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.run",
+    "detail": "check: shouldRetry(aerr, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.runReroute",
+    "detail": "check: pipelineErrShouldStamp(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.runReroute",
+    "detail": "check: pipelineErrShouldStamp(e)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.session",
+    "detail": "check: fdReplyIsFatal(req.cmd, e)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.session",
+    "detail": "check: isMovedError(e)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.session",
+    "detail": "check: shouldRetry(e, false)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.session",
+    "detail": "check: shouldRetry(e, false)"
+  },
+  {
+    "package": "redis",
+    "entity": "*fdEngine.session",
+    "detail": "check: shouldRetry(e, false)"
+  },
+  {
+    "package": "redis",
+    "entity": "*multidbCore.process",
+    "detail": "check: callerEnded(ctx, err, db.ctxTimeouts())"
+  },
+  {
+    "package": "redis",
+    "entity": "*multidbCore.process",
+    "detail": "check: shouldRetry(err, retryTimeout)"
+  },
+  {
+    "package": "redis",
+    "entity": "*multidbCore.processPipelineRetries",
+    "detail": "check: shouldRetry(err, true)"
+  },
+  {
+    "package": "redis",
+    "entity": "*multidbCore.recordBatchOutcomes",
+    "detail": "check: callerEnded(ctx, cmd.rawErr(), ctxTimeouts)"
+  },
+  {
+    "package": "redis",
+    "entity": "*multidbCore.recordBatchOutcomes",
+    "detail": "check: sameErr(err, e)"
+  },
+  {
+    "package": "redis",
+    "entity": "*multidbCore.settleFDOutcome",
+    "detail": "check: callerEnded(ctx, err, false)"
+  },
+  {
+    "package": "redis",
+    "entity": "*sentinelFailover.MasterAddr",
+    "detail": "check: isContextError(ctx.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*sentinelFailover.MasterAddr",
+    "detail": "check: isContextError(ctx.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*sentinelFailover.replicaAddrs",
+    "detail": "check: isContextError(ctx.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*sentinelFailover.replicaAddrs",
+    "detail": "check: isContextError(ctx.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "*sentinelFailover.replicaAddrs",
+    "detail": "check: isContextError(ctx.Err())"
+  },
+  {
+    "package": "redis",
+    "entity": "HasErrorPrefix",
+    "detail": "decide: !errors.As(err, &rErr) -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "HasErrorPrefix",
+    "detail": "decide: always -> strings.HasPrefix(msg, prefix)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsAskError",
+    "detail": "decide: isAskErr -> askErr.Addr(), true"
+  },
+  {
+    "package": "redis",
+    "entity": "IsAskError",
+    "detail": "decide: always -> \"\", false"
+  },
+  {
+    "package": "redis",
+    "entity": "IsAuthError",
+    "detail": "decide: always -> proto.IsAuthError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsClusterDownError",
+    "detail": "decide: always -> proto.IsClusterDownError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsExecAbortError",
+    "detail": "decide: always -> proto.IsExecAbortError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsLoadingError",
+    "detail": "decide: always -> proto.IsLoadingError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsMasterDownError",
+    "detail": "decide: always -> proto.IsMasterDownError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsMaxClientsError",
+    "detail": "decide: always -> proto.IsMaxClientsError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsMovedError",
+    "detail": "decide: isMovedErr -> movedErr.Addr(), true"
+  },
+  {
+    "package": "redis",
+    "entity": "IsMovedError",
+    "detail": "decide: always -> \"\", false"
+  },
+  {
+    "package": "redis",
+    "entity": "IsNoReplicasError",
+    "detail": "decide: always -> proto.IsNoReplicasError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsOOMError",
+    "detail": "decide: always -> proto.IsOOMError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsPermissionError",
+    "detail": "decide: always -> proto.IsPermissionError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsReadOnlyError",
+    "detail": "decide: always -> proto.IsReadOnlyError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "IsTryAgainError",
+    "detail": "decide: always -> proto.IsTryAgainError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "batchOutcomeFunc",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "batchOutcomeFunc",
+    "detail": "check: sameErr(err, s)"
+  },
+  {
+    "package": "redis",
+    "entity": "batchOutcomeFunc",
+    "detail": "check: sameErr(err, origin)"
+  },
+  {
+    "package": "redis",
+    "entity": "callerEnded",
+    "detail": "decide: err == nil || ctx == nil -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "callerEnded",
+    "detail": "decide: ctx.Err() == nil && !ctxTimeouts || !ok || time.Now().Before(dl) -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "callerEnded",
+    "detail": "decide: errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "callerEnded",
+    "detail": "decide: errors.As(err, &opErr) && opErr.Op == \"dial\" -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "callerEnded",
+    "detail": "decide: ctxTimeouts -> errors.As(err, &nerr) && nerr.Timeout()"
+  },
+  {
+    "package": "redis",
+    "entity": "callerEnded",
+    "detail": "decide: always -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandError",
+    "detail": "decide: err == nil -> \"\", \"\", false"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandError",
+    "detail": "decide: errors.Is(err, Nil) -> ErrorTypeNil, ErrorTypeNil, false"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandError",
+    "detail": "decide: ok && netErr.Timeout() -> \"TIMEOUT\", \"TIMEOUT\", true"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandError",
+    "detail": "decide: ok -> \"NETWORK\", \"NETWORK\", true"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandError",
+    "detail": "decide: errors.Is(err, context.Canceled) -> \"CONTEXT_CANCELED\", \"CONTEXT_CANCELED\", true"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandError",
+    "detail": "decide: errors.Is(err, context.DeadlineExceeded) -> \"CONTEXT_TIMEOUT\", \"CONTEXT_TIMEOUT\", true"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandError",
+    "detail": "decide: len(errStr) > 0 && isUppercase && len(prefix) > 0 -> prefix, prefix, false"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandError",
+    "detail": "decide: always -> \"UNKNOWN\", \"UNKNOWN\", true"
+  },
+  {
+    "package": "redis",
+    "entity": "classifyCommandErrorGuarded",
+    "detail": "decide: always -> classifyCommandError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "cmdable.eval",
+    "detail": "check: HasErrorPrefix(err, \"NOSCRIPT\")"
+  },
+  {
+    "package": "redis",
+    "entity": "cscRefreshReplyCacheable",
+    "detail": "check: isCacheableReplyResult(classifyCachedReply(raw))"
+  },
+  {
+    "package": "redis",
+    "entity": "fdGroupsByErr",
+    "detail": "check: sameErr(err, e.err)"
+  },
+  {
+    "package": "redis",
+    "entity": "fdPipelineTransportErr",
+    "detail": "check: isRedisError(e)"
+  },
+  {
+    "package": "redis",
+    "entity": "fdReplyIsFatal",
+    "detail": "decide: ok -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "fdReplyIsFatal",
+    "detail": "decide: always -> errors.Is(e, errFDPushDrainFailed) || !isRedisError(e)"
+  },
+  {
+    "package": "redis",
+    "entity": "himportFanOutPrepare",
+    "detail": "check: isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "himportNoSuchFieldset",
+    "detail": "decide: always -> isRedisError(err) && strings.Contains(err.Error(), \"no such fieldset\")"
+  },
+  {
+    "package": "redis",
+    "entity": "isBadConn",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "isBadConn",
+    "detail": "decide: errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "isBadConn",
+    "detail": "decide: errors.Is(err, pool.ErrConnUnusableTimeout) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "isBadConn",
+    "detail": "decide: isRedisError(err) && isReadOnlyError(err) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "isBadConn",
+    "detail": "decide: isRedisError(err) && isMovedSameConnAddr(err, addr) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "isBadConn",
+    "detail": "decide: isRedisError(err) && default -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "isBadConn",
+    "detail": "decide: allowTimeout && errors.As(err, &netErr) && netErr.Timeout() -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "isBadConn",
+    "detail": "decide: always -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "isCacheableReplyResult",
+    "detail": "decide: always -> err == nil || err == Nil"
+  },
+  {
+    "package": "redis",
+    "entity": "isContextError",
+    "detail": "decide: always -> errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)"
+  },
+  {
+    "package": "redis",
+    "entity": "isLoadingError",
+    "detail": "decide: always -> proto.IsLoadingError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedError",
+    "detail": "decide: ok -> true, false, addr"
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedError",
+    "detail": "decide: ok -> false, true, addr"
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedError",
+    "detail": "decide: strings.HasPrefix(s, \"MOVED \") && len(parts) == 3 -> true, false, addr"
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedError",
+    "detail": "decide: strings.HasPrefix(s, \"ASK \") && len(parts) == 3 -> false, true, addr"
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedError",
+    "detail": "decide: always -> false, false, \"\""
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedSameConnAddr",
+    "detail": "decide: !ok -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedSameConnAddr",
+    "detail": "decide: err != nil -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedSameConnAddr",
+    "detail": "decide: err != nil || movedPort != connPort -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "isMovedSameConnAddr",
+    "detail": "decide: always -> movedHost == \"\" || strings.EqualFold(movedHost, connHost)"
+  },
+  {
+    "package": "redis",
+    "entity": "isNoScriptErr",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "isNoScriptErr",
+    "detail": "decide: always -> errors.Is(err, ErrNoScript) || HasErrorPrefix(err, \"NOSCRIPT\")"
+  },
+  {
+    "package": "redis",
+    "entity": "isReadOnlyError",
+    "detail": "decide: always -> proto.IsReadOnlyError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "isRedirectReply",
+    "detail": "decide: always -> moved || ask"
+  },
+  {
+    "package": "redis",
+    "entity": "isRedisError",
+    "detail": "decide: errors.As(err, &redisErr) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "isRedisError",
+    "detail": "decide: always -> errors.As(err, &protoRedisErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "isRedisReplyError",
+    "detail": "decide: always -> errors.As(err, &redisErr)"
+  },
+  {
+    "package": "redis",
+    "entity": "isTimeoutError",
+    "detail": "decide: errors.As(err, &te) -> true, te.Timeout()"
+  },
+  {
+    "package": "redis",
+    "entity": "isTimeoutError",
+    "detail": "decide: errors.As(err, &netErr) -> true, netErr.Timeout()"
+  },
+  {
+    "package": "redis",
+    "entity": "isTimeoutError",
+    "detail": "decide: always -> false, false"
+  },
+  {
+    "package": "redis",
+    "entity": "movedToSameConnAddr",
+    "detail": "check: isMovedSameConnAddr(err, addr)"
+  },
+  {
+    "package": "redis",
+    "entity": "pipelineErrShouldStamp",
+    "detail": "decide: always -> errors.Is(err, errConnUnusable) || !isRedisError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "recordCommandError",
+    "detail": "check: classifyCommandError(err)"
+  },
+  {
+    "package": "redis",
+    "entity": "sameErr",
+    "detail": "decide: t != reflect.TypeOf(b) || t == nil || !t.Comparable() -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "sameErr",
+    "detail": "decide: always -> a == b"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: errors.As(err, &opErr) && opErr.Op == \"dial\" -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: errors.Is(err, pool.ErrPoolTimeout) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: isTimeout && hasTimeoutFlag -> retryTimeout"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: isTimeout -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: proto.IsMaxClientsError(err) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: proto.IsLoadingError(err) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: proto.IsReadOnlyError(err) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: proto.IsMasterDownError(err) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: proto.IsClusterDownError(err) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: proto.IsTryAgainError(err) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: proto.IsNoReplicasError(err) -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: strings.HasPrefix(s, \"ERR max number of clients reached\") -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: strings.HasPrefix(s, \"LOADING \") -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: strings.HasPrefix(s, \"READONLY \") -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: strings.Contains(s, \"-READONLY You can't write against a read only replica\") -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: strings.HasPrefix(s, \"CLUSTERDOWN \") -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: strings.HasPrefix(s, \"TRYAGAIN \") -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: strings.HasPrefix(s, \"MASTERDOWN \") -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: strings.HasPrefix(s, \"NOREPLICAS \") -> true"
+  },
+  {
+    "package": "redis",
+    "entity": "shouldRetry",
+    "detail": "decide: always -> false"
+  },
+  {
+    "package": "redis",
+    "entity": "wrapServingEndpoint",
+    "detail": "check: isMovedError(err)"
+  },
+  {
+    "package": "redisotel",
+    "entity": "*metricsRecorder.RecordOperationDuration",
+    "detail": "check: r.skipNilReply(err)"
+  },
+  {
+    "package": "redisotel",
+    "entity": "*metricsRecorder.RecordPipelineOperationDuration",
+    "detail": "check: r.skipNilReply(err)"
+  },
+  {
+    "package": "redisotel",
+    "entity": "*metricsRecorder.skipNilReply",
+    "detail": "decide: always -> !r.recordNilErrors() && errors.Is(err, redis.Nil)"
+  },
+  {
+    "package": "redisotel",
+    "entity": "classifyError",
+    "detail": "check: isTimeoutError(err)"
+  },
+  {
+    "package": "redisotel",
+    "entity": "classifyError",
+    "detail": "check: isNetworkError(err)"
+  },
+  {
+    "package": "redisotel",
+    "entity": "getErrorCategory",
+    "detail": "check: isNetworkError(err)"
+  },
+  {
+    "package": "redisotel",
+    "entity": "getErrorCategory",
+    "detail": "check: isTimeoutError(err)"
+  },
+  {
+    "package": "redisotel",
+    "entity": "isNetworkError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "redisotel",
+    "entity": "isNetworkError",
+    "detail": "decide: always -> ok"
+  },
+  {
+    "package": "redisotel",
+    "entity": "isTimeoutError",
+    "detail": "decide: err == nil -> false"
+  },
+  {
+    "package": "redisotel",
+    "entity": "isTimeoutError",
+    "detail": "decide: errors.As(err, &te) -> te.Timeout()"
+  },
+  {
+    "package": "redisotel",
+    "entity": "isTimeoutError",
+    "detail": "decide: errors.As(err, &netErr) -> netErr.Timeout()"
+  },
+  {
+    "package": "redisotel",
+    "entity": "isTimeoutError",
+    "detail": "decide: always -> false"
+  },
+  {
+    "package": "streaming",
+    "entity": "*Manager.RemoveConn",
+    "detail": "dispose: m.poolHookRef.removeConn(connID) when always"
+  },
+  {
+    "package": "streaming",
+    "entity": "*ReAuthPoolHook.OnRemove",
+    "detail": "dispose: r.removeConn(conn.GetID()) when always"
+  }
+]
