@@ -23,6 +23,7 @@ func TestRendezvousHashSingleNode(t *testing.T) {
 		}
 	}
 }
+
 func TestRendezvousHashDeterministicMultipleNodes(t *testing.T) {
 	nodes := []string{"node-0", "node-1", "node-2"}
 	h := NewRendezvousHash(nodes)
@@ -60,6 +61,7 @@ func TestRendezvousHashDeterministicMultipleNodes(t *testing.T) {
 		})
 	}
 }
+
 func TestRendezvousHashPerInstanceDeterminism(t *testing.T) {
 	nodes := []string{"node-a", "node-b", "node-c"}
 	h := NewRendezvousHash(nodes)
@@ -87,6 +89,7 @@ func TestRendezvousHashPerInstanceDeterminism(t *testing.T) {
 		})
 	}
 }
+
 func TestRendezvousHashDistributeKeysAcrossNodes(t *testing.T) {
 	nodes := []string{"node-0", "node-1", "node-2", "node-3", "node-4"}
 	h := NewRendezvousHash(nodes)
@@ -127,6 +130,7 @@ func TestRendezvousHashDistributeKeysAcrossNodes(t *testing.T) {
 		})
 	}
 }
+
 func TestRendezvousHashArbitraryNodeNames(t *testing.T) {
 	nodes := []string{
 		"redis-cluster-node-1.example.com:6379",
@@ -152,6 +156,7 @@ func TestRendezvousHashArbitraryNodeNames(t *testing.T) {
 		)
 	}
 }
+
 func TestRendezvousHashStableWhenNodesChange(t *testing.T) {
 	// When removing one node, keys should redistribute to other nodes
 	nodes := []string{"node-0", "node-1", "node-2"}
