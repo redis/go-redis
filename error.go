@@ -233,6 +233,19 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 }
 
 func isMovedError(err error) (moved bool, ask bool, addr string) {
+	// Unwrap serving-endpoint / redirect-from-node wrappers so typed and
+	// string MOVED/ASK checks still see the Redis error (#4233).
+	for {
+		switch e := err.(type) {
+		case *errWithServingEndpoint:
+			err = e.err
+		case *redirectFromNodeError:
+			err = e.err
+		default:
+			goto movedCheck
+		}
+	}
+movedCheck:
 	// Check for typed MovedError
 	if movedErr, ok := proto.IsMovedError(err); ok {
 		addr = movedErr.Addr()

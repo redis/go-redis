@@ -355,6 +355,17 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		} else {
 			lastErr = node.Client.Process(ctx, cmd)
 		}
+		// Walk wrappers the same way process/Watch do so a hook-wrapped
+		// MOVED/ASK still carries the handoff host (#4233 Bugbot).
+		servingEp := servingEndpointFromErr(lastErr)
+		if e, ok := lastErr.(*errWithServingEndpoint); ok {
+			lastErr = e.err
+		} else if e, ok := lastErr.(*redirectFromNodeError); ok {
+			lastErr = e.err
+			if e.endpoint != "" {
+				servingEp = e.endpoint
+			}
+		}
 		if lastErr == nil {
 			return nil
 		}
@@ -378,7 +389,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			redirected = true
 			c.state.LazyReload()
 			recordClusterRedirectMetric(ctx, ask)
-			redirected, err := c.nodes.GetOrCreate(redirectAddr(addr, node))
+			redirected, err := c.nodes.GetOrCreate(redirectAddr(addr, node, servingEp))
 			if err != nil {
 				return err
 			}
@@ -481,7 +492,7 @@ func (c *ClusterClient) executeCursorCommand(
 	err = node.Client.Process(ctx, cmd)
 	if err != nil {
 		if moved, ask, _ := isMovedError(err); moved || ask {
-			return &redirectFromNodeError{node: node, err: err}
+			return &redirectFromNodeError{node: node, endpoint: servingEndpointFromErr(err), err: err}
 		}
 	}
 	return err

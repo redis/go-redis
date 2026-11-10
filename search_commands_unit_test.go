@@ -843,3 +843,52 @@ func TestFTSynUpdateWithArgsNilOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestFTSearchQueryLimit verifies that FTSearchQuery builds the same LIMIT
+// arguments as FTSearchWithArgs, including CountOnly and an offset without a
+// limit.
+func TestFTSearchQueryLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		options *FTSearchOptions
+		want    []interface{}
+	}{
+		{
+			name:    "count_only",
+			options: &FTSearchOptions{CountOnly: true, LimitOffset: 5, Limit: 10},
+			want:    []interface{}{"*", "LIMIT", 0, 0, "DIALECT", 2},
+		},
+		{
+			name:    "offset_and_limit",
+			options: &FTSearchOptions{LimitOffset: 5, Limit: 10},
+			want:    []interface{}{"*", "LIMIT", 5, 10, "DIALECT", 2},
+		},
+		{
+			name:    "offset_without_limit",
+			options: &FTSearchOptions{LimitOffset: 5},
+			want:    []interface{}{"*", "LIMIT", 5, 0, "DIALECT", 2},
+		},
+		{
+			name:    "no_limit",
+			options: &FTSearchOptions{},
+			want:    []interface{}{"*", "DIALECT", 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FTSearchQuery("*", tt.options)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual([]interface{}(got), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", got, tt.want)
+			}
+
+			cmd := captureCmdable(new(Cmder)).FTSearchWithArgs(context.Background(), "idx", "*", tt.options)
+			if want := append([]interface{}{"FT.SEARCH", "idx"}, tt.want...); !reflect.DeepEqual(cmd.Args(), want) {
+				t.Errorf("FTSearchWithArgs args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
+			}
+		})
+	}
+}

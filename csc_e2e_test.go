@@ -612,6 +612,55 @@ func TestCSCModuleReadsCacheAndInvalidate(t *testing.T) {
 	}
 }
 
+func TestCSCBareClientReturnsServerError(t *testing.T) {
+	c, plain, _ := newTrackedCSCClient(t)
+	ctx := context.Background()
+	if !rawClientHasTrackingFlag(t, c) {
+		t.Fatal("CSC connection must have tracking enabled")
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(*redis.Client) error
+	}{
+		{"Do", func(c *redis.Client) error {
+			return c.Do(ctx, "CLIENT").Err()
+		}},
+		{"Pipeline", func(c *redis.Client) error {
+			_, err := c.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Do(ctx, "CLIENT")
+				return nil
+			})
+			return err
+		}},
+		{"TxPipeline", func(c *redis.Client) error {
+			_, err := c.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Do(ctx, "CLIENT")
+				return nil
+			})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.run(plain)
+			var serverErr redis.Error
+			if !errors.As(want, &serverErr) {
+				t.Fatalf("plain CLIENT error = %v, want a server error", want)
+			}
+			got := tc.run(c)
+			if !errors.As(got, &serverErr) || got.Error() != want.Error() {
+				t.Fatalf("CSC CLIENT error = %v, want %v", got, want)
+			}
+			if err := c.Ping(ctx).Err(); err != nil {
+				t.Fatalf("PING after CLIENT error: %v", err)
+			}
+			if !rawClientHasTrackingFlag(t, c) {
+				t.Fatal("CLIENT error disabled tracking")
+			}
+		})
+	}
+}
+
 func TestCSCServerErrorsAreNotCached(t *testing.T) {
 	c, mutator, cache := newTrackedCSCClient(t)
 	ctx := context.Background()

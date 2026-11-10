@@ -592,7 +592,9 @@ var _ = Describe("ClusterClient", func() {
 			val, _ := client.ScriptExists(ctx, script.Hash()).Result()
 			Expect(val).To(Equal([]bool{true}))
 
-			client.ScriptFlush(ctx)
+			res, err := client.ScriptFlush(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("OK"))
 
 			val, _ = client.ScriptExists(ctx, script.Hash()).Result()
 			Expect(val).To(Equal([]bool{false}))

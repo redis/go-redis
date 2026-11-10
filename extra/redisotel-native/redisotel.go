@@ -137,6 +137,9 @@ func (o *ObservabilityInstance) shutdownLocked() error {
 	}
 
 	redis.SetOTelRecorder(nil)
+	if o.recorder != nil && o.recorder.opq != nil {
+		o.recorder.opq.stop() // record what is queued
+	}
 
 	// Note: We don't shutdown the MeterProvider since it's owned by the application
 	// The application should call provider.Shutdown() when appropriate
@@ -416,8 +419,18 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 	}
 
+	// The queue starts a goroutine: create it last, after every instrument
+	// above succeeded, so a failed Init leaves nothing running. It is only an
+	// optimization: a provider that rejects its gauge or callback gets inline
+	// recording (opq == nil), not a failed Init.
+	var opq *opQueue
+	if operationDuration != nil {
+		opq, _ = newOpQueue(meter, operationDuration)
+	}
+
 	// Create recorder
 	recorder := &metricsRecorder{
+		opq:                      opq,
 		operationDuration:        operationDuration,
 		connectionCount:          connectionCount,
 		connectionCreateTime:     connectionCreateTime,

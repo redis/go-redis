@@ -157,6 +157,14 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 				return
 			}
 
+			// PubSub owns reconnect + resubscribe. The handoff worker only dials
+			// and re-inits the socket, which leaves the subscription silently
+			// dead (Ping still succeeds). Keep the timeS/2 delay, mark only, and
+			// let PubSub reconnect itself. See #4245.
+			if poolConn.IsPubSub() {
+				return
+			}
+
 			// Queue the handoff immediately if the connection is idle in the pool.
 			// If the connection is in use (StateInUse), it will be queued when returned to the pool via OnPut.
 			// This handles the case where the connection is idle and might never be retrieved again.

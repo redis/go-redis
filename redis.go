@@ -127,6 +127,26 @@ func (hs *hooksMixin) initHooks(hooks hooks) {
 	hs.state.Store(state)
 }
 
+type memberCommandExecutedKey struct{}
+
+// trackMemberCommandExecution marks the terminal process hook for MultiDB.
+func (hs *hooksMixin) trackMemberCommandExecution() {
+	hs.hooksMu.Lock()
+	defer hs.hooksMu.Unlock()
+
+	old := hs.state.Load()
+	state := &hooksState{slice: old.slice, initial: old.initial}
+	process := state.initial.process
+	state.initial.process = func(ctx context.Context, cmd Cmder) error {
+		if executed, ok := ctx.Value(memberCommandExecutedKey{}).(*atomic.Bool); ok {
+			executed.Store(true)
+		}
+		return process(ctx, cmd)
+	}
+	state.rebuild()
+	hs.state.Store(state)
+}
+
 type hooks struct {
 	dial       DialHook
 	process    ProcessHook
@@ -511,10 +531,11 @@ type baseClient struct {
 	// initConn's internal conn wrapper: the handshake it runs (HELLO, AUTH,
 	// SELECT, CLIENT SETINFO, CLIENT MAINT_NOTIFICATIONS) belongs to the
 	// command that dials the connection, which the caller already admitted and
-	// reports as one operation. Admitting each handshake command again double
-	// counts against a rate limiter and, with a circuit breaker in half-open,
-	// lets a handshake exhaust the probe budget and report the breaker's own
-	// rejection back as a failure, so the breaker never closes.
+	// reports as one operation. The OnConnect callback is exempt for the same
+	// reason: it sends its commands on that wrapper. Admitting each handshake
+	// command again double counts against a rate limiter and, with a circuit
+	// breaker in half-open, lets a handshake exhaust the probe budget and report
+	// the breaker's own rejection back as a failure, so the breaker never closes.
 	limiterExempt bool
 
 	// The following are OWNER-ONLY and NOT copied by clone(): derived clients
@@ -773,14 +794,19 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 
 // initPooledConnLimited runs initPooledConn as one admitted operation against
 // Options.Limiter, for a caller that leases outside getConnLimited. A denial
-// removes the leased conn, the same disposition as a failed init.
-func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) error {
+// removes the leased conn, the same disposition as a failed init. limited is
+// true only when Allow rejects, so callers can avoid falling back on a denial.
+func (c *baseClient) initPooledConnLimited(ctx context.Context, p pool.Pooler, cn *pool.Conn) (limited bool, err error) {
 	if cn.IsInited() {
-		return nil
+		return false, nil
 	}
-	return admitted(c.limiter(), func(err error) { p.Remove(ctx, cn, err) }, func() error {
+	err = admitted(c.limiter(), func(err error) {
+		limited = true
+		p.Remove(ctx, cn, err)
+	}, func() error {
 		return c.initPooledConn(ctx, p, cn)
 	})
+	return limited, err
 }
 
 // initPooledConn brings a conn freshly obtained from p to a usable state: it
@@ -1081,6 +1107,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	//    - We're already in INITIALIZING, so just proceed with initialization
 
 	currentState := cn.GetStateMachine().GetState()
+	if currentState == pool.StateClosed {
+		return pool.ErrClosed
+	}
 
 	// Fast path: Check if already initialized (IDLE or IN_USE)
 	if currentState == pool.StateIdle || currentState == pool.StateInUse {
@@ -1173,8 +1202,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			return fmt.Errorf("failed to create credentials listener: %w", initErr)
 		}
 
-		credentials, unsubscribeFromCredentialsProvider, initErr := c.opt.StreamingCredentialsProvider.
-			Subscribe(credListener)
+		credentials, unsubscribeFromCredentialsProvider, initErr := subscribeStreamingCredentials(
+			ctx, c.opt.StreamingCredentialsProvider, credListener,
+		)
 		if initErr != nil {
 			cn.GetStateMachine().Transition(pool.StateClosed)
 			return fmt.Errorf("failed to subscribe to streaming credentials: %w", initErr)
@@ -1211,6 +1241,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			}
 		}
 		cn.SetOnClose(onClose)
+		// Close may have consumed the callback before Subscribe returned.
+		// Re-run teardown after publishing it so a late subscription is not lost.
+		if cn.IsClosed() {
+			_ = cn.Close()
+			return fmt.Errorf("connection closed during streaming credentials setup: %w", pool.ErrClosed)
+		}
 
 		username, password = credentials.BasicAuth()
 	} else {
@@ -1284,6 +1320,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// already bumped and evicted through onCscReinit before replacing the
 		// socket, so it must not bump a second time here.
 		c.cscEvictOwnedEntries(cn.GetID())
+	} else if !trackingEnabled && c.cscConnInitGen(cn.GetID()) != 0 {
+		// A re-init after CSC stopped skips TRACKING ON: the new socket is
+		// untracked, so it must not keep the OPTOUT NO prefix (#4236).
+		c.cscForgetConn(cn.GetID())
 	}
 	var trackingCmd *StatusCmd
 	initCmds, initErr := conn.Pipelined(ctx, func(pipe Pipeliner) error {
@@ -1459,14 +1499,23 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	}
 
 	// Set the connection initialization function for potential reconnections
-	// This must be set before transitioning to IDLE so that handoff/reauth can use it
+	// This must be set before transitioning to IDLE so that a handoff can use it
 	cn.SetInitConnFunc(c.createInitConnFunc())
 
 	// Initialization succeeded - transition to IDLE state
 	// This marks the connection as initialized and ready for use
 	// NOTE: The connection is still owned by the calling goroutine at this point
 	// and won't be available to other goroutines until it's Put() back into the pool
-	cn.GetStateMachine().Transition(pool.StateIdle)
+	// Do not overwrite a Close that raced the final handshake reply.
+	for {
+		state := cn.GetStateMachine().GetState()
+		if state == pool.StateClosed {
+			return pool.ErrClosed
+		}
+		if _, err := cn.GetStateMachine().TryTransition([]pool.ConnState{state}, pool.StateIdle); err == nil {
+			break
+		}
+	}
 
 	// Call OnConnect hook if configured
 	// The connection is in IDLE state but still owned by this goroutine
@@ -1512,6 +1561,46 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	c.releaseConnToPool(ctx, c.connPool, cn, err)
 }
 
+// errWithServingEndpoint wraps a MOVED/ASK (or other) error with the logical
+// endpoint of the connection that produced it. Cluster redirect resolution
+// prefers this over Options.Addr after a maintenance-notification handoff
+// (#4230 / #4233 review). Allocates only on the redirect error path.
+type errWithServingEndpoint struct {
+	endpoint string
+	err      error
+}
+
+func (e *errWithServingEndpoint) Error() string { return e.err.Error() }
+
+func (e *errWithServingEndpoint) Unwrap() error { return e.err }
+
+// RedisError keeps typed redis.Error checks working if a caller still sees the
+// wrapper (hooks / Process return value). Prefer storing the unwrapped error on
+// cmd.Err(); see Client.Process and pipelineReadCmdsWithFlags.
+func (e *errWithServingEndpoint) RedisError() {}
+
+func unwrapServingEndpoint(err error) error {
+	if e, ok := err.(*errWithServingEndpoint); ok {
+		return e.err
+	}
+	return err
+}
+
+func wrapServingEndpoint(cn *pool.Conn, err error) error {
+	if err == nil || cn == nil {
+		return err
+	}
+	moved, ask, _ := isMovedError(err)
+	if !moved && !ask {
+		return err
+	}
+	ep := cn.ServingEndpoint()
+	if ep == "" {
+		return err
+	}
+	return &errWithServingEndpoint{endpoint: ep, err: err}
+}
+
 // releaseConnToPool returns a conn to p after a command or pipeline ran on
 // it: bad conns are Removed, pending push notifications are drained (a
 // mid-frame drain failure also Removes — the reply stream may be
@@ -1524,7 +1613,11 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 	// a push-notification drain that consumed part of a RESP3 frame, or a panic
 	// while serializing a command's args mid-write. Such a conn MUST be removed —
 	// reusing it would decode leftover bytes as the next caller's replies.
-	if isBadConn(err, false, c.opt.Addr) || errors.Is(err, errConnUnusable) {
+	connAddr := c.opt.Addr
+	if ep := cn.ServingEndpoint(); ep != "" {
+		connAddr = ep
+	}
+	if isBadConn(err, false, connAddr) || errors.Is(err, errConnUnusable) {
 		p.Remove(ctx, cn, err)
 		return
 	}
@@ -2017,9 +2110,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		}
 		// Borrowed Conn/Tx wrappers do not serve cache hits, but can still hold
 		// a tracked connection and need NO for an ordinary uncached OPTOUT read.
+		// Per-socket init generation (not live client-level CSC) decides whether
+		// the socket still carries TRACKING after disableCSCServing (#4236 item 1).
 		flag := byte(0)
 		if c.cscPolicy.mode != TrackingModePlain {
-			tracked := c.cscTrackingRequested() && c.cscConnInitGen(cn.GetID()) != 0
+			tracked := c.cscConnInitGen(cn.GetID()) != 0
 			if capture != nil && !tracked {
 				capture.noStore = true
 			}
@@ -2142,7 +2237,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 			} else {
 				retryTimeout.Store(0)
 			}
-			return readErr
+			// Carry the held connection's logical endpoint with hostless redirects
+			// so ClusterClient can resolve them after release (#4233 review).
+			return wrapServingEndpoint(cn, readErr)
 		}
 		if capture != nil {
 			// Attribute while the conn is still held: once it is released, a
@@ -2190,8 +2287,11 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 }
 
 // createInitConnFunc creates a connection initialization function that can be used for reconnections.
-// A reconnect (a maintenance handoff or a re-auth) dials outside getConnLimited,
-// so the handshake it runs is admitted once and reported once against Options.Limiter.
+// Only the maintenance handoff runs it, through SetNetConnAndInitConn: it dials outside
+// getConnLimited, so the handshake it runs is admitted once and reported once against
+// Options.Limiter. Streaming re-auth does not come through here: it sends AUTH on the
+// pooled connection through the Conn built by reAuthConnection, which getConnLimited
+// admits per command.
 func (c *baseClient) createInitConnFunc() func(context.Context, *pool.Conn) error {
 	return func(ctx context.Context, cn *pool.Conn) error {
 		closeConn := func(error) { cn.GetStateMachine().Transition(pool.StateClosed) }
@@ -2486,6 +2586,72 @@ func (c *baseClient) generalProcessPipelineFrom(
 	return lastErr
 }
 
+// pipelineExecutedKey carries an *executedCmds that execution paths populate
+// the moment a batch's commands may have reached the server. MultiDBClient uses
+// it to distinguish "a hook aborted before execution" from "the batch executed
+// and a hook then replaced the error": command state alone cannot tell those
+// apart, and confusing them either fabricates phantom outcomes or replays
+// writes that already applied.
+type pipelineExecutedKey struct{}
+
+// executedCmds records which commands of a batch actually reached (or
+// attempted) the server. It is per-command, not a single flag, because a
+// cluster pipeline fans one batch out into independent node sub-batches: one
+// node executing must not make another node's short-circuited (untouched,
+// nil-error) commands look like served database successes.
+type executedCmds struct {
+	mu sync.Mutex
+	// Keyed by the command's embedded baseCmd, not by the Cmder interface
+	// value: a value-type decorator that embeds a command plus a slice or map
+	// field is not comparable and cannot be a map key, and skipping such
+	// commands left a batch of them looking never-executed after a transport
+	// error, so a retry could replay writes that had applied. Every command
+	// embeds a baseCmd, and a decorator promotes base() from the command it
+	// embeds, so this key identifies the command that executed.
+	done map[*baseCmd]struct{}
+}
+
+func newExecutedCmds(size int) *executedCmds {
+	return &executedCmds{done: make(map[*baseCmd]struct{}, size)}
+}
+
+func (e *executedCmds) mark(cmds []Cmder) {
+	e.mu.Lock()
+	for _, cmd := range cmds {
+		if cmd == nil {
+			continue
+		}
+		e.done[cmd.base()] = struct{}{}
+	}
+	e.mu.Unlock()
+}
+
+func (e *executedCmds) has(cmd Cmder) bool {
+	if cmd == nil {
+		return false
+	}
+	e.mu.Lock()
+	_, ok := e.done[cmd.base()]
+	e.mu.Unlock()
+	return ok
+}
+
+func (e *executedCmds) any() bool {
+	e.mu.Lock()
+	n := len(e.done)
+	e.mu.Unlock()
+	return n > 0
+}
+
+// markPipelineExecuted records that cmds reached (or attempted) the server for
+// the batch tracked in ctx, if any. Safe to call from multiple cluster-node
+// goroutines concurrently.
+func markPipelineExecuted(ctx context.Context, cmds []Cmder) {
+	if ec, ok := ctx.Value(pipelineExecutedKey{}).(*executedCmds); ok {
+		ec.mark(cmds)
+	}
+}
+
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
@@ -2500,6 +2666,7 @@ func (c *baseClient) pipelineProcessCmds(
 		setCmdsErr(cmds, err)
 		return false, err
 	}
+	markPipelineExecuted(ctx, cmds)
 
 	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
 	// for registered fieldsets the batch references get written ahead of
@@ -2590,13 +2757,15 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
 			setCmdsErr(cmds[i+1:], err)
-			return err
+			return wrapServingEndpoint(cn, err)
 		}
 	}
 	// Retry errors like "LOADING redis is loading the dataset in memory".
 	// rawErr: this runs on the execution path; never await here (an async
 	// autopipeline command's ready channel is closed by this very batch).
-	return cmds[0].rawErr()
+	// Wrap the batch error so hostless MOVED/ASK from a handed-off connection
+	// still carry the serving endpoint for ClusterClient (#4233 review).
+	return wrapServingEndpoint(cn, cmds[0].rawErr())
 }
 
 func (c *baseClient) txPipelineProcessCmds(
@@ -2611,6 +2780,7 @@ func (c *baseClient) txPipelineProcessCmds(
 		setCmdsErr(cmds, err)
 		return false, err
 	}
+	markPipelineExecuted(ctx, cmds)
 
 	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
 	// for registered fieldsets the transaction references get written ahead
@@ -3083,7 +3253,9 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
-	cmd.SetErr(err)
+	// Keep serving-endpoint metadata on the returned error for ClusterClient,
+	// but never expose the wrapper via cmd.Err() (#4233 review).
+	cmd.SetErr(unwrapServingEndpoint(err))
 	return err
 }
 
@@ -3394,7 +3566,8 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin, himpor
 
 func (c *Conn) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
-	cmd.SetErr(err)
+	// Same as Client.Process: keep the serving-endpoint wrapper off cmd.Err().
+	cmd.SetErr(unwrapServingEndpoint(err))
 	return err
 }
 

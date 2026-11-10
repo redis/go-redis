@@ -63,6 +63,13 @@ const (
 
 	// Slot migrate action (OSS Cluster API testing)
 	ActionSlotMigrate ActionType = "slot_migrate"
+
+	// ActionNetworkFailure is used by multidb/e2e's Active-Active failover
+	// scenarios. Verified against the real service's source
+	// (re_fault_injector/actions/network_failure.py): blocks ingress/egress
+	// on every node hosting a bdb within a cluster/region for a duration,
+	// then restores automatically.
+	ActionNetworkFailure ActionType = "network_failure"
 )
 
 // SlotMigrateEffect represents the effect type for slot migration
@@ -214,6 +221,21 @@ func (c *FaultInjectorClient) TriggerAction(ctx context.Context, action ActionRe
 	fmt.Printf("[FI] Triggering action: %+v\n", action)
 	err := c.request(ctx, "POST", "/action", action, &response)
 	return &response, err
+}
+
+// TriggerNetworkFailure triggers a network_failure action: blocks traffic to
+// every node hosting bdbID within the cluster/region at clusterIndex for
+// delaySeconds, then restores automatically. Used by multidb/e2e's
+// Active-Active failover scenarios.
+func (c *FaultInjectorClient) TriggerNetworkFailure(ctx context.Context, bdbID, clusterIndex, delaySeconds int) (*ActionResponse, error) {
+	return c.TriggerAction(ctx, ActionRequest{
+		Type: ActionNetworkFailure,
+		Parameters: map[string]interface{}{
+			"bdb_id":        bdbID,
+			"cluster_index": clusterIndex,
+			"delay":         delaySeconds,
+		},
+	})
 }
 
 func (c *FaultInjectorClient) TriggerSequence(ctx context.Context, bdbID int, actions []SequenceAction) (*ActionResponse, error) {

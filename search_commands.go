@@ -3524,8 +3524,12 @@ func FTSearchQuery(query string, options *FTSearchOptions) (SearchQuery, error) 
 				queryArgs = append(queryArgs, "WITHCOUNT")
 			}
 		}
-		if options.LimitOffset >= 0 && options.Limit > 0 {
-			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
+		if options.CountOnly {
+			queryArgs = append(queryArgs, "LIMIT", 0, 0)
+		} else {
+			if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
+				queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
+			}
 		}
 		if options.Params != nil {
 			queryArgs = append(queryArgs, "PARAMS", len(options.Params)*2)

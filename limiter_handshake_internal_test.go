@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 // TestHandshakeDoesNotConsumeLimiter pins that the connection handshake
@@ -290,6 +291,154 @@ func TestReconnectDeniedByLimiter(t *testing.T) {
 	}
 	if got := br.reports.Load() - reports; got != 0 {
 		t.Fatalf("denied reconnect: Limiter.ReportResult called %d times, want 0", got)
+	}
+}
+
+func TestFullDuplexInitDenialDoesNotSpill(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		warmMain bool
+	}{
+		{name: "empty main pool"},
+		{name: "warm main pool", warmMain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s := newCSCPolicyServer(t, nil)
+			br := &fakeBreaker{}
+			var dials atomic.Int64
+			client := NewClient(&Options{
+				Addr:                     s.addr,
+				Protocol:                 3,
+				PoolSize:                 1,
+				PipelinePoolSize:         1,
+				MaxRetries:               -1,
+				Limiter:                  br,
+				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+				Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					dials.Add(1)
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				},
+			})
+			defer client.Close()
+			if tc.warmMain {
+				if err := client.Ping(ctx).Err(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mainHook := &fdCountHook{}
+			client.connPool.AddPoolHook(mainHook)
+			beforeDials, beforeReports := dials.Load(), br.reports.Load()
+			br.open.Store(true)
+			ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ap.Close()
+			if ap.fd == nil {
+				t.Fatal("full-duplex engine is not active")
+			}
+			if err := ap.Get(ctx, "key").Err(); err != errBreakerOpen {
+				t.Fatalf("GET error = %v, want the original Limiter denial %v", err, errBreakerOpen)
+			}
+			if got := dials.Load() - beforeDials; got != 1 {
+				t.Errorf("dial attempts = %d, want 1", got)
+			}
+			if got := mainHook.gets.Load(); got != 0 {
+				t.Errorf("main-pool gets = %d, want 0", got)
+			}
+			if got := br.denies.Load(); got != 1 {
+				t.Errorf("Limiter denials = %d, want 1", got)
+			}
+			if got := br.reports.Load() - beforeReports; got != 0 {
+				t.Errorf("denial reported %d times, want 0", got)
+			}
+			if got := s.count("get"); got != 0 {
+				t.Errorf("GET reached the server %d times after denial, want 0", got)
+			}
+			if got := client.getPipelinePool().Stats().TotalConns; got != 0 {
+				t.Errorf("connections retained after denial = %d, want 0", got)
+			}
+
+			br.open.Store(false)
+			if got, err := ap.Get(ctx, "key").Result(); err != nil || got != "v" {
+				t.Fatalf("GET after Limiter recovery = %q, %v; want v, nil", got, err)
+			}
+		})
+	}
+}
+
+func TestFullDuplexInitFailureStillSpills(t *testing.T) {
+	for _, withLimiter := range []bool{false, true} {
+		name := "without limiter"
+		if withLimiter {
+			name = "admitted init returns limiter error"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s := newCSCPolicyServer(t, nil)
+			br := &fakeBreaker{}
+			var dials, inits atomic.Int64
+			opt := &Options{
+				Addr:                     s.addr,
+				Protocol:                 3,
+				PoolSize:                 1,
+				PipelinePoolSize:         1,
+				MaxRetries:               -1,
+				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+				Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					dials.Add(1)
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				},
+				OnConnect: func(context.Context, *Conn) error {
+					if inits.Add(1) == 1 {
+						// The error value alone cannot identify an admission denial.
+						return errBreakerOpen
+					}
+					return nil
+				},
+			}
+			if withLimiter {
+				opt.Limiter = br
+			}
+			client := NewClient(opt)
+			defer client.Close()
+			mainHook := &fdCountHook{}
+			client.connPool.AddPoolHook(mainHook)
+			ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ap.Close()
+			if ap.fd == nil {
+				t.Fatal("full-duplex engine is not active")
+			}
+			if got, err := ap.Get(ctx, "key").Result(); err != nil || got != "v" {
+				t.Fatalf("GET after init failure = %q, %v; want v, nil", got, err)
+			}
+			if err := ap.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := dials.Load(); got != 2 {
+				t.Errorf("dial attempts = %d, want 2", got)
+			}
+			if got := mainHook.gets.Load(); got != 1 {
+				t.Errorf("main-pool gets = %d, want 1", got)
+			}
+			if got := s.count("get"); got != 1 {
+				t.Errorf("GET reached the server %d times, want 1", got)
+			}
+			if withLimiter {
+				if a, r := br.allows.Load(), br.reports.Load(); a != 3 || r != 3 {
+					t.Errorf("Limiter allows=%d reports=%d, want 3 each (two inits and one chunk)", a, r)
+				}
+				if got := br.errReports.Load(); got != 1 {
+					t.Errorf("failed init reported %d times, want 1", got)
+				}
+			}
+		})
 	}
 }
 
