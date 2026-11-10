@@ -96,7 +96,7 @@ type TSAlterOptions struct {
 }
 
 type TSCreateRuleOptions struct {
-	alignTimestamp int64
+	AlignTimestamp int64
 }
 
 type TSGetOptions struct {
@@ -445,13 +445,13 @@ func (c cmdable) TSCreateRule(ctx context.Context, sourceKey string, destKey str
 
 // TSCreateRuleWithArgs - Creates a compaction rule from sourceKey to destKey with additional option.
 // This function allows for specifying additional option such as:
-// alignTimestamp.
+// AlignTimestamp.
 // For more information - https://redis.io/commands/ts.createrule/
 func (c cmdable) TSCreateRuleWithArgs(ctx context.Context, sourceKey string, destKey string, aggregator Aggregator, bucketDuration int, options *TSCreateRuleOptions) *StatusCmd {
 	args := []interface{}{"TS.CREATERULE", sourceKey, destKey, "AGGREGATION", aggregator.String(), bucketDuration}
 	if options != nil {
-		if options.alignTimestamp != 0 {
-			args = append(args, options.alignTimestamp)
+		if options.AlignTimestamp != 0 {
+			args = append(args, options.AlignTimestamp)
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
