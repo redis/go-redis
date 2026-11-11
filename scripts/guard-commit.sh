@@ -70,6 +70,11 @@ g -c user.name="$GUARD_BOT_NAME" -c user.email="$GUARD_BOT_EMAIL" \
 g verify-commit HEAD
 
 auth="$(printf '%s:%s' "$GUARD_BOT_LOGIN" "$GUARD_BOT_TOKEN" | base64 | tr -d '\n')"
+# Actions masks the raw secret, not its base64 form; mask that too.
+if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+  echo "::add-mask::$auth"
+fi
+unset GUARD_BOT_TOKEN
 url="https://github.com/$HEAD_REPO.git"
 remote_head="$(g -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote "$url" "refs/heads/$HEAD_REF" | cut -f1)"
 if [[ "$remote_head" != "$EXPECTED" ]]; then

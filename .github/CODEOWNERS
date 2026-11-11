@@ -1,7 +1,7 @@
 doctests/* @dmaier-redislabs
 
 # Behavioral regression guard, API check and the CI that runs them
-# (docs/negative-test.md). Goldens in internal/guard/testdata are written
+# (internal/guard/doc.go). Goldens in internal/guard/testdata are written
 # only by the guard bot.
 /internal/guard/ @ndyakov
 /scripts/guard-*.sh @ndyakov

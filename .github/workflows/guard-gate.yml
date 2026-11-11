@@ -1,6 +1,6 @@
 name: Guard gate
 
-# Required check for the behavioral regression guard (docs/negative-test.md).
+# Required check for the behavioral regression guard (internal/guard/doc.go).
 #
 # Runs on pull_request_target so the workflow, the scripts and the guard code
 # come from the base branch. The PR is checked out only as data and none of

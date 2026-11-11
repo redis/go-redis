@@ -213,7 +213,7 @@ markdown any tool or editor can open:
 
 `internal/guard` and `scripts/apidiff.sh` detect unintended changes to
 constants, defaults, error strings, logs, error policy, panics, dependencies,
-imports, tests and command tokens (`docs/negative-test.md`).
+imports, tests and command tokens (`internal/guard/doc.go`).
 
 - Run the guard with `make guard` (tests are behind the `guard` build tag;
   plain `go test ./...` skips them). It needs no Redis.

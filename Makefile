@@ -113,7 +113,7 @@ bench:
 	export REDIS_VERSION=$(REDIS_VERSION) && \
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem -skip Example -timeout 11m
 
-# Behavioral regression guard (docs/negative-test.md). No Redis needed.
+# Behavioral regression guard (internal/guard/doc.go). No Redis needed.
 guard:
 	go test -tags guard -count=1 ./internal/guard
 
