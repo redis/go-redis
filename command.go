@@ -8609,6 +8609,9 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 				if err != nil {
 					return err
 				}
+				if l%2 != 0 {
+					return fmt.Errorf("redis: got %d elements in the CLUSTER SHARDS slots array, wanted a multiple of 2", l)
+				}
 				for k := 0; k < l; k += 2 {
 					start, err := rd.ReadInt()
 					if err != nil {
