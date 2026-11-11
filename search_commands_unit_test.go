@@ -866,7 +866,7 @@ func TestFTSearchQueryLimit(t *testing.T) {
 		{
 			name:    "offset_without_limit",
 			options: &FTSearchOptions{LimitOffset: 5},
-			want:    []interface{}{"*", "LIMIT", 5, 0, "DIALECT", 2},
+			want:    []interface{}{"*", "LIMIT", 5, 10, "DIALECT", 2},
 		},
 		{
 			name:    "no_limit",
@@ -890,5 +890,28 @@ func TestFTSearchQueryLimit(t *testing.T) {
 				t.Errorf("FTSearchWithArgs args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
 			}
 		})
+	}
+}
+
+func TestFTHybridWithArgsOffsetWithoutLimitUsesDefaultPageSize(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	cmd := c.FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+		SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+		LimitOffset:       5,
+	})
+	if cmd.Err() != nil {
+		t.Fatalf("unexpected error: %v", cmd.Err())
+	}
+	if m.lastCmd == nil {
+		t.Fatalf("expected command to be executed")
+	}
+	gotCmd, ok := m.lastCmd.(*FTHybridCmd)
+	if !ok {
+		t.Fatalf("expected FTHybridCmd, got %T", m.lastCmd)
+	}
+	want := []interface{}{"FT.HYBRID", "idx", "SEARCH", "*", "LIMIT", 5, 10}
+	if !reflect.DeepEqual(gotCmd.args, want) {
+		t.Errorf("args mismatch\n got: %#v\nwant: %#v", gotCmd.args, want)
 	}
 }
