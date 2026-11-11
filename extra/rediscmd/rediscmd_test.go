@@ -96,6 +96,24 @@ var _ = Describe("CmdString", func() {
 		Expect(summary).To(Equal("set"))
 		Expect(stmt).To(ContainSubstring("…"))
 	})
+
+	It("safely recovers from panicking Stringer methods", func() {
+		cmd := redis.NewCmd(context.Background(), "SET", "k", panicStringer{})
+		Expect(CmdString(cmd)).To(ContainSubstring("PANIC=String method: test panic"))
+		Expect(CmdStringLimit(cmd, 64)).To(ContainSubstring("PANIC=String method"))
+	})
+
+	It("returns command summary via CmdsSummary without formatting arguments", func() {
+		cmd1 := redis.NewCmd(context.Background(), "SET", "k", "v")
+		cmd2 := redis.NewCmd(context.Background(), "GET", "k")
+		cmd3 := redis.NewCmd(context.Background(), "SET", "k2", "v2")
+		Expect(CmdsSummary([]redis.Cmder{cmd1, cmd2, cmd3})).To(Equal("set get"))
+	})
+
+	It("uses bounded placeholder for non-struct custom types when truncated", func() {
+		cmd := redis.NewCmd(context.Background(), "SET", "k", testBlob{})
+		Expect(CmdStringLimit(cmd, 64)).To(Equal("SET k <rediscmd.testBlob>"))
+	})
 })
 
 type testSecret string
@@ -106,5 +124,21 @@ func (s testSecret) String() string {
 
 func (s testSecret) MarshalBinary() ([]byte, error) {
 	return []byte(s), nil
+}
+
+type panicStringer struct{}
+
+func (panicStringer) String() string {
+	panic("test panic")
+}
+
+func (panicStringer) MarshalBinary() ([]byte, error) {
+	return []byte("safe"), nil
+}
+
+type testBlob [1024]byte
+
+func (b testBlob) MarshalBinary() ([]byte, error) {
+	return b[:], nil
 }
 

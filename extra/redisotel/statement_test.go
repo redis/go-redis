@@ -363,6 +363,19 @@ func TestTracingHook_StatementTruncation_Pipeline(t *testing.T) {
 		expected := expectedCmd0 + "\n…"
 		assertEqual(t, expected, stmt)
 	})
+
+	t.Run("pipeline summary derives names without formatting payload", func(t *testing.T) {
+		defer imsb.Reset()
+
+		payload := strings.Repeat("x", 1024*1024)
+		cmds := []redis.Cmder{
+			redis.NewCmd(context.Background(), "SET", "key1", payload),
+			redis.NewCmd(context.Background(), "GET", "key1"),
+			redis.NewCmd(context.Background(), "SET", "key2", "val2"),
+		}
+		summary := pipelineSummary(cmds)
+		assertEqual(t, "set get", summary)
+	})
 }
 
 func TestTracingHook_StatementTruncation_Binary(t *testing.T) {
@@ -573,6 +586,25 @@ func TestTracingHook_StatementTruncation_CustomTypes(t *testing.T) {
 		stmt := getDBStatement(imsb.GetSpans()[0])
 		assertEqual(t, "SET mykey ***", stmt)
 	})
+
+	t.Run("panicking Stringer does not escape tracing hook", func(t *testing.T) {
+		defer imsb.Reset()
+
+		cmd := redis.NewCmd(context.Background(), "SET", "mykey", testPanicStringer{})
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			return nil
+		})
+
+		if err := processHook(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+
+		assertEqual(t, 1, len(imsb.GetSpans()))
+		stmt := getDBStatement(imsb.GetSpans()[0])
+		if !strings.Contains(stmt, "PANIC=String method") {
+			t.Fatalf("expected panic recovery output in statement, got %q", stmt)
+		}
+	})
 }
 
 type testSecretType string
@@ -583,4 +615,14 @@ func (s testSecretType) String() string {
 
 func (s testSecretType) MarshalBinary() ([]byte, error) {
 	return []byte(s), nil
+}
+
+type testPanicStringer struct{}
+
+func (testPanicStringer) String() string {
+	panic("tracing hook panic test")
+}
+
+func (testPanicStringer) MarshalBinary() ([]byte, error) {
+	return []byte("marshaled"), nil
 }

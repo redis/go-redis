@@ -31,6 +31,28 @@ func CmdsString(cmds []redis.Cmder) (string, string) {
 	return CmdsStringLimit(cmds, 0)
 }
 
+// CmdsSummary returns a space-separated summary of up to 10 unique command names in cmds
+// without formatting or allocating command arguments.
+func CmdsSummary(cmds []redis.Cmder) string {
+	const numNameLimit = 10
+
+	seen := make(map[string]struct{}, numNameLimit)
+	unqNames := make([]string, 0, numNameLimit)
+
+	for _, cmd := range cmds {
+		name := cmd.FullName()
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			unqNames = append(unqNames, name)
+			if len(unqNames) >= numNameLimit {
+				break
+			}
+		}
+	}
+
+	return strings.Join(unqNames, " ")
+}
+
 // CmdsStringLimit returns a summary and string representation of a pipeline of commands with credentials redacted
 // and total length bounded by maxLen. If maxLen <= 0, no truncation is applied.
 func CmdsStringLimit(cmds []redis.Cmder, maxLen int) (string, string) {
@@ -315,7 +337,7 @@ func appendArgLimit(b []byte, v interface{}, limit int) []byte {
 				if v == nil || (reflect.ValueOf(v).Kind() == reflect.Pointer && reflect.ValueOf(v).IsNil()) {
 					return append(b, "<nil>"...)
 				}
-				return appendStringTruncated(b, s.String(), limit)
+				return appendStringTruncated(b, safeString(s), limit)
 			}
 		}
 	}
@@ -460,10 +482,14 @@ func appendArgLimit(b []byte, v interface{}, limit int) []byte {
 		if val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.Uint8 {
 			return appendBytesTruncated(b, val.Bytes(), limit)
 		}
+		if val.Kind() == reflect.Pointer && val.IsNil() {
+			return append(b, "<nil>"...)
+		}
 	}
 
-	// For struct-backed values when truncation is enabled, use a bounded type placeholder to avoid large memory allocations.
-	if limit > 0 && val.IsValid() && (val.Kind() == reflect.Struct || (val.Kind() == reflect.Pointer && val.Elem().Kind() == reflect.Struct)) {
+	// When truncation is enabled, use a bounded type placeholder for non-string/non-[]byte
+	// custom values (structs, arrays, maps, etc.) to avoid large memory allocations.
+	if limit > 0 && val.IsValid() {
 		t := val.Type()
 		if t.Kind() == reflect.Pointer {
 			t = t.Elem()
@@ -474,6 +500,15 @@ func appendArgLimit(b []byte, v interface{}, limit int) []byte {
 
 	s := fmt.Sprint(v)
 	return appendStringTruncated(b, s, limit)
+}
+
+func safeString(s fmt.Stringer) (out string) {
+	defer func() {
+		if recover() != nil {
+			out = fmt.Sprint(s) // fmt recovers the panic itself
+		}
+	}()
+	return s.String()
 }
 
 func appendStringTruncated(b []byte, v string, limit int) []byte {

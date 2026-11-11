@@ -15,6 +15,5 @@ func buildPipelineStatement(cmds []redis.Cmder, maxLen int) string {
 }
 
 func pipelineSummary(cmds []redis.Cmder) string {
-	summary, _ := rediscmd.CmdsStringLimit(cmds, 0)
-	return summary
+	return rediscmd.CmdsSummary(cmds)
 }
