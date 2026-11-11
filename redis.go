@@ -1033,8 +1033,6 @@ func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
 			if poolCn.IsPubSub() {
-				poolCn.GetStateMachine().Transition(pool.StateClosed)
-				_ = poolCn.Close()
 				internal.Logger.Printf(context.Background(), "redis: pubsub re-authentication failed: %v", err)
 				return
 			}

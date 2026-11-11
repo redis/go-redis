@@ -1033,6 +1033,8 @@ func (c *PubSub) reauth(username, password string) error {
 	if err != nil {
 		return err
 	}
-	c.authPending++
+	if c.cn == cn {
+		c.authPending++
+	}
 	return nil
 }
