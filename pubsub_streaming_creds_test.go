@@ -552,7 +552,7 @@ func TestPubSubRESP3StreamingCredsEarlyRotation(t *testing.T) {
 	}
 }
 
-func TestPubSubRESP2StreamingCredsNoOp(t *testing.T) {
+func TestPubSubRESP2StreamingCredsReconnectOnRotation(t *testing.T) {
 	srv := newMockRESP3Server(t)
 	defer srv.Close()
 
@@ -585,10 +585,20 @@ func TestPubSubRESP2StreamingCredsNoOp(t *testing.T) {
 	// Trigger credential rotation under RESP2
 	provider.Update("resp2_new_user", "resp2_new_pass")
 
-	// Wait briefly and verify no AUTH was sent over pubsub socket
+	// Wait briefly and verify no in-place AUTH was sent over pubsub socket
 	time.Sleep(200 * time.Millisecond)
 	if srv.HasCommand("AUTH", "resp2_new_user") {
 		t.Fatal("expected RESP2 Pub/Sub socket NOT to issue in-place AUTH")
+	}
+
+	// Verify subscriber reconnects on rotation and receives messages
+	srv.Publish("resp2_channel", "payload_after_reconnect")
+	m, err := ps.ReceiveMessage(ctx)
+	if err != nil {
+		t.Fatalf("failed to receive message after reconnect: %v", err)
+	}
+	if m.Channel != "resp2_channel" || m.Payload != "payload_after_reconnect" {
+		t.Fatalf("unexpected message: %v", m)
 	}
 }
 

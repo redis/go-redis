@@ -539,12 +539,14 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		return nil, err
 	}
 
-	var cmd *Cmd
+	c.mu.Lock()
+	if c.cmd == nil {
+		c.cmd = NewCmd(ctx)
+	}
+	cmd := c.cmd
+	c.mu.Unlock()
+
 	for {
-		cmd = NewCmd(ctx)
-		c.mu.Lock()
-		c.cmd = cmd
-		c.mu.Unlock()
 
 		err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
