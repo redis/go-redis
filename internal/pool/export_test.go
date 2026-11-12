@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"net"
 	"time"
 )
@@ -47,6 +48,34 @@ func (p *ConnPool) QueueLen() int {
 
 func (p *ConnPool) DialsQueueLen() int {
 	return p.dialsQueue.len()
+}
+
+// DialWaitQueueLen returns the number of Get() callers currently parked waiting
+// for an idle connection after being throttled by the dial rate limiter.
+func (p *ConnPool) DialWaitQueueLen() int {
+	if p.dialWaitQueue == nil {
+		return 0
+	}
+	return p.dialWaitQueue.len()
+}
+
+// DialTokens returns the dial rate limiter's current token count (after
+// refill), or 0 when rate limiting is disabled.
+func (p *ConnPool) DialTokens() float64 {
+	l := p.dialLimiter
+	if l == nil {
+		return 0
+	}
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.refillLocked(now)
+	return l.tokens
+}
+
+// dialConn is dialConnTracked without dial tracking, for the dial retry tests.
+func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
+	return p.dialConnTracked(ctx, pooled, nil)
 }
 
 var NoExpiration = noExpiration

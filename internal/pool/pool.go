@@ -422,6 +422,13 @@ type Stats struct {
 	// when one is configured (PipelineReadBufferSize/PipelineWriteBufferSize).
 	// nil when pipelines share the main pool.
 	PipelineStats *Stats
+
+	// RateLimitedDials is the number of Get() calls that were throttled by the
+	// dial rate limiter and had to wait for an idle connection or a dial token
+	// instead of dialing immediately. Always 0 when DialRateLimit is unset.
+	// (Kept at the end of the struct to preserve the field order of the public
+	// redis.PoolStats type, which is a conversion of this struct.)
+	RateLimitedDials uint32
 }
 
 type ConnRetirer interface {
@@ -461,11 +468,31 @@ type Options struct {
 	ReadBufferSize  int
 	WriteBufferSize int
 
-	PoolFIFO                 bool
-	PoolSize                 int32
-	MaxConcurrentDials       int
-	DialTimeout              time.Duration
-	PoolTimeout              time.Duration
+	PoolFIFO           bool
+	PoolSize           int32
+	MaxConcurrentDials int
+	DialTimeout        time.Duration
+	PoolTimeout        time.Duration
+
+	// DialRateLimit is the maximum number of new connections created per second.
+	// When <= 0 (default) dial rate limiting is disabled and the pool behaves as
+	// before. When set, a Get() that would otherwise dial a new connection first
+	// tries to acquire a dial token; if none is available it parks and waits for
+	// an idle connection to be returned (preferring reuse over creation) until a
+	// token frees up or PoolTimeout elapses, after which it creates a connection.
+	// TryGet does not park: when throttled it returns ErrPoolTryFull at once.
+	//
+	// The limiter paces only connections created through the pool (Get() dials
+	// and the MinIdleConns refill); connections dialed outside the pool are not
+	// paced. The limit is soft: a Get() that waited a full PoolTimeout (or a 3s
+	// fallback when PoolTimeout <= 0) escapes and dials unpaced.
+	DialRateLimit int
+
+	// DialRateBurst is the maximum burst of new connections allowed before the
+	// DialRateLimit throttle engages. When <= 0 it defaults to DialRateLimit.
+	// Has no effect unless DialRateLimit > 0.
+	DialRateBurst int
+
 	MinIdleConns             int32
 	MaxIdleConns             int32
 	MaxActiveConns           int32
@@ -508,6 +535,13 @@ type ConnPool struct {
 	// Uses fast path optimization to avoid timer allocation when tokens are available
 	semaphore *internal.FastSemaphore
 
+	// dialLimiter paces the creation of new connections. It is nil (and adds
+	// zero overhead) unless DialRateLimit > 0. dialWaitQueue holds Get() callers
+	// that have been throttled and are waiting for an idle connection to be
+	// returned so they can reuse it instead of dialing.
+	dialLimiter   *dialLimiter
+	dialWaitQueue *dialWaitQueue
+
 	connsMu   sync.Mutex
 	conns     map[uint64]*Conn
 	idleConns []*Conn
@@ -516,8 +550,15 @@ type ConnPool struct {
 	// with conns it counts both pooled and dedicated connections, under connsMu.
 	pendingConns int
 
-	poolSize            atomic.Int32
-	idleConnsLen        atomic.Int32
+	poolSize     atomic.Int32
+	idleConnsLen atomic.Int32
+	// refillPending counts rate-limited min-idle refill workers that are still
+	// waiting for a dial token, dial slot, or pool turn. It bounds how many
+	// workers checkMinIdleConns spawns without inflating poolSize/idleConnsLen
+	// while no dial is underway: a waiting worker counted in poolSize would make
+	// a concurrent Get() dial an unpooled connection (newConn treats a full
+	// poolSize as "do not pool"). Always 0 when DialRateLimit is unset.
+	refillPending       atomic.Int32
 	idleCheckInProgress atomic.Bool
 	idleCheckNeeded     atomic.Bool
 
@@ -558,6 +599,13 @@ func NewConnPool(opt *Options) *ConnPool {
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
 		dialsQueue:      newWantConnQueue(),
 		idleConns:       make([]*Conn, 0, opt.PoolSize),
+	}
+
+	// Dial rate limiting is opt-in. When disabled, dialLimiter stays nil and the
+	// Get() hot path skips it with a single nil-check.
+	if opt.DialRateLimit > 0 {
+		p.dialLimiter = newDialLimiter(opt.DialRateLimit, opt.DialRateBurst)
+		p.dialWaitQueue = newDialWaitQueue()
 	}
 
 	wp := weak.Make(p)
@@ -744,7 +792,17 @@ func (p *ConnPool) checkMinIdleConns() {
 
 		// Only create idle connections if we haven't reached the total pool size limit
 		// MinIdleConns should be a subset of PoolSize, not additional connections
-		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < minIdle {
+		// refillPending is always 0 when dial rate limiting is disabled.
+		for p.poolSize.Load()+p.refillPending.Load() < p.cfg.PoolSize &&
+			p.idleConnsLen.Load()+p.refillPending.Load() < minIdle {
+			if p.dialLimiter != nil {
+				// The worker may sleep on the rate-limit token for a long
+				// time. Reserve the slot in refillPending instead of the live
+				// counters until the dial actually starts.
+				p.refillPending.Add(1)
+				go p.addIdleConnRateLimited()
+				continue
+			}
 			// Prewarm is opportunistic: never hold a pool turn while waiting
 			// behind dedicated dials, which do not acquire turns themselves.
 			if !p.tryAcquireDialSlot() {
@@ -808,6 +866,12 @@ func (p *ConnPool) checkMinIdleConns() {
 
 // addIdleConn is called with a dial slot already held by checkMinIdleConns.
 func (p *ConnPool) addIdleConn() error {
+	return p.addIdleConnTracked(nil)
+}
+
+// addIdleConnTracked is addIdleConn that reports whether a dial started (see
+// dialConnTracked).
+func (p *ConnPool) addIdleConnTracked(dialed *bool) error {
 	if err := p.reserveConn(); err != nil {
 		return err
 	}
@@ -818,7 +882,7 @@ func (p *ConnPool) addIdleConn() error {
 		}
 	}()
 	// Do not apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
-	cn, err := p.dialConn(context.Background(), true)
+	cn, err := p.dialConnTracked(context.Background(), true, dialed)
 	if err != nil {
 		return err
 	}
@@ -846,7 +910,103 @@ func (p *ConnPool) addIdleConn() error {
 		cb(context.Background(), 1, cn, "idle", false)
 	}
 
+	p.signalDialWaiter()
+
 	return nil
+}
+
+// addIdleConnRateLimited is the min-idle refill worker used when dial rate
+// limiting is enabled. checkMinIdleConns reserved one refillPending slot for
+// it. Refill dials count against the dial rate limit too: a failover that
+// drops every connection must not let the refill loop reconnect-storm the
+// server the limiter is protecting. The dial token is acquired BEFORE the dial
+// slot and pool turn, so a worker sleeping for a token never holds either.
+// When no pool turn is free, or the floor was met while it waited, the worker
+// refunds the token and exits; a later checkMinIdleConns retries the refill.
+func (p *ConnPool) addIdleConnRateLimited() {
+	counted := false  // live counters bumped, refillPending released
+	slotHeld := false // MaxConcurrentDials slot held
+	turnHeld := false // pool turn held
+	added := false
+	defer func() {
+		if !slotHeld {
+			return
+		}
+		// Continue filling a floor larger than the dial limit. Do not retry
+		// failed dials here, which could spin on persistent errors.
+		if added {
+			p.releaseDialSlotAndCheckMinIdleConns()
+		} else {
+			p.releaseDialSlot()
+		}
+	}()
+	defer func() {
+		if err := recover(); err != nil {
+			if counted {
+				p.poolSize.Add(-1)
+				p.idleConnsLen.Add(-1)
+			} else {
+				p.refillPending.Add(-1)
+			}
+			if turnHeld {
+				p.freeTurn()
+			}
+			internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
+		}
+	}()
+
+	if err := p.waitForDialToken(); err != nil {
+		// Pool closed while waiting.
+		p.refillPending.Add(-1)
+		return
+	}
+	// Wait for a dial slot rather than giving up: this worker holds no pool
+	// turn yet, and while it is counted in refillPending a slot holder's
+	// releaseDialSlotAndCheckMinIdleConns would not replay the refill.
+	if err := p.acquireDialSlot(context.Background()); err != nil {
+		// Pool closed while waiting.
+		p.refundDialToken(true)
+		p.refillPending.Add(-1)
+		return
+	}
+	slotHeld = true
+	if !p.semaphore.TryAcquire() {
+		p.refundDialToken(true)
+		p.refillPending.Add(-1)
+		return
+	}
+	turnHeld = true
+	// Token, slot and turn in hand: convert the reservation into live
+	// counters (bump live first so a concurrent check never sees both sides
+	// low and overspawns). The token wait may have been long: if the floor
+	// was met or the pool filled meanwhile, undo and skip the dial. Add-then-
+	// check keeps concurrent workers from overshooting together.
+	ps := p.poolSize.Add(1)
+	idle := p.idleConnsLen.Add(1)
+	p.refillPending.Add(-1)
+	if ps > p.cfg.PoolSize || idle > p.minIdleConns() {
+		p.poolSize.Add(-1)
+		p.idleConnsLen.Add(-1)
+		p.refundDialToken(true)
+		turnHeld = false
+		p.freeTurn()
+		return
+	}
+	counted = true
+
+	dialed := false
+	err := p.addIdleConnTracked(&dialed)
+	added = err == nil
+	if err != nil && !dialed {
+		// Failed before dialing (e.g. MaxActiveConns reached).
+		p.refundDialToken(true)
+	}
+	if err != nil && err != ErrClosed {
+		p.poolSize.Add(-1)
+		p.idleConnsLen.Add(-1)
+	}
+	turnHeld = false
+	p.freeTurn()
 }
 
 // NewConn creates a dedicated connection outside the idle pool. It counts
@@ -936,6 +1096,12 @@ func (p *ConnPool) cancelConnReservation() {
 }
 
 func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
+	return p.newConnTracked(ctx, pooled, nil)
+}
+
+// newConnTracked is newConn that reports whether a dial started (see
+// dialConnTracked).
+func (p *ConnPool) newConnTracked(ctx context.Context, pooled bool, dialed *bool) (*Conn, error) {
 	if err := p.reserveConn(); err != nil {
 		return nil, err
 	}
@@ -954,7 +1120,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	// Do not apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
 	// We still propagate ctx so callers can cancel explicitly.
-	cn, err := p.dialConn(ctx, pooled)
+	cn, err := p.dialConnTracked(ctx, pooled, dialed)
 	if err != nil {
 		return nil, err
 	}
@@ -1000,13 +1166,19 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	return cn, nil
 }
 
-func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
+// dialConnTracked dials a new connection and sets *dialed (if non-nil) once a
+// dial attempt starts, so a rate-limited caller can refund a token for a dial
+// that never started.
+func (p *ConnPool) dialConnTracked(ctx context.Context, pooled bool, dialed *bool) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
 
 	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
 		return nil, p.getLastDialError()
+	}
+	if dialed != nil {
+		*dialed = true
 	}
 
 	// Record dial start time for connection creation metric
@@ -1217,7 +1389,8 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	// PoolTimeout is one budget for both the pool turn and a drainer handoff.
 	poolDeadline := time.Now().Add(p.cfg.PoolTimeout)
 
-	// Connection wait time measures only semaphore acquisition.
+	// Connection wait time measures semaphore acquisition, plus any time a
+	// rate-limited Get() spent parked for a dial token or a returned conn.
 	var waitStart time.Time
 	var waitDuration time.Duration
 	waitTimeCallback := getMetricConnectionWaitTimeCallback()
@@ -1237,7 +1410,16 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
+	// Dial rate limiter state (unused when dialLimiter is nil). When throttled,
+	// this Get() parks for a returned idle connection and then jumps back to
+	// retryIdle to re-check the idle pool before deciding to dial.
+	var throttle dialThrottleState
+	// idleRejected: a hook rejected an idle conn this pass and put it back,
+	// so it stays acquirable but is not usable by this Get().
+	idleRejected := false
+
 retryIdle:
+	idleRejected = false
 	drainGeneration := p.drainGeneration.Load()
 	for attempts := 0; attempts < getAttempts; attempts++ {
 
@@ -1286,6 +1468,7 @@ retryIdle:
 					// Return connection to pool without freeing the turn that this Get() call holds.
 					// putConnWithoutTurn will emit used→idle transition.
 					p.putConnWithoutTurn(ctx, cn)
+					idleRejected = true
 					cn = nil
 				}
 				continue
@@ -1294,8 +1477,13 @@ retryIdle:
 
 		atomic.AddUint32(&p.stats.Hits, 1)
 
-		// Record wait time (use cached callback from above)
+		// Record wait time (use cached callback from above). If this Get()
+		// was throttled and parked, waitDuration (captured after waitTurn)
+		// is stale — refresh it so the metric includes the park time.
 		if waitTimeCallback != nil {
+			if throttle.parked {
+				waitDuration = time.Since(waitStart)
+			}
 			waitTimeCallback(ctx, waitDuration, cn)
 		}
 
@@ -1333,10 +1521,33 @@ retryIdle:
 		goto retryIdle
 	}
 
+	// No idle connection is available. When the dial rate limiter throttles
+	// this Get(), park for a returned idle connection so it can be reused
+	// instead of creating a new one.
+	if p.dialLimiter != nil {
+		var retry bool
+		if retry, err = p.throttleDial(ctx, wait, poolDeadline, idleRejected, &throttle); err != nil {
+			p.freeTurn()
+			return nil, err
+		}
+		if retry {
+			// Parks can be long: refresh the cached time for health checks.
+			nowNs = getCachedTimeNs()
+			goto retryIdle
+		}
+	}
+
 	atomic.AddUint32(&p.stats.Misses, 1)
 
+	// If this Get() was throttled and parked, waitDuration (captured after
+	// waitTurn) is stale — refresh it before dialing so the wait metric
+	// includes the park time but not the dial itself.
+	if waitTimeCallback != nil && throttle.parked {
+		waitDuration = time.Since(waitStart)
+	}
+
 	var newcn *Conn
-	newcn, err = p.queuedNewConn(ctx, wait)
+	newcn, err = p.queuedNewConn(ctx, wait, throttle.token)
 	if err != nil {
 		return nil, err
 	}
@@ -1385,12 +1596,15 @@ retryIdle:
 	return newcn, nil
 }
 
-func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) {
+// tokenHeld reports that the caller took a dial rate-limit token for this
+// dial. It is refunded on every path where no dial starts.
+func (p *ConnPool) queuedNewConn(ctx context.Context, wait, tokenHeld bool) (*Conn, error) {
 	if wait {
 		select {
 		case p.dialsInProgress <- struct{}{}:
 			// Got permission, proceed to create connection
 		case <-ctx.Done():
+			p.refundDialToken(tokenHeld)
 			p.freeTurn()
 			return nil, ctx.Err()
 		}
@@ -1403,6 +1617,7 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 		case p.dialsInProgress <- struct{}{}:
 			// Got permission, proceed to create connection
 		default:
+			p.refundDialToken(tokenHeld)
 			p.freeTurn()
 			return nil, ErrPoolTryFull
 		}
@@ -1447,8 +1662,14 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 		defer w.cancelCtx()
 
 		dialCtx := w.getCtxForDial()
-		cn, cnErr := p.newConn(dialCtx, true)
+		dialed := false
+		cn, cnErr := p.newConnTracked(dialCtx, true, &dialed)
 		if cnErr != nil {
+			if !dialed {
+				// Failed before dialing: MaxActiveConns reached, pool
+				// closed, or dial errors saturated (fast fail).
+				p.refundDialToken(tokenHeld)
+			}
 			w.tryDeliver(nil, cnErr) // deliver error to caller, notify connection creation failed
 			p.dialsQueue.discardDoneAtFront()
 			p.freeTurn()
@@ -1513,6 +1734,8 @@ func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) bool {
 		cb(ctx, 1, cn, "idle", false)
 	}
 
+	p.signalDialWaiter()
+
 	return true
 }
 
@@ -1551,6 +1774,272 @@ func (p *ConnPool) waitTurn(ctx context.Context, wait bool) error {
 
 func (p *ConnPool) freeTurn() {
 	p.semaphore.Release()
+}
+
+// dialThrottleState is the per-Get() dial rate limiter state.
+type dialThrottleState struct {
+	deadline time.Time // bound on the total wait of this Get(); zero until throttled
+	parked   bool      // this Get() actually slept in waitForDialSlot
+	counted  bool      // RateLimitedDials incremented for this Get()
+	escaped  bool      // the deadline escape already re-checked the idle pool once
+	token    bool      // a dial token was taken for the dial that follows
+}
+
+// throttleDial decides, for a Get() that found no idle connection, whether it
+// may dial now or must wait for a dial token or a returned idle connection.
+// It returns retry=true when the caller should re-check the idle pool, and
+// retry=false with a nil error when the caller should dial. The caller holds a
+// pool turn and frees it on error. TryGet (wait=false) never parks: when
+// throttled it returns ErrPoolTryFull so the caller can spill at once.
+// idleRejected reports that a hook rejected an idle conn on the last idle scan:
+// that conn stays acquirable, so the idle re-checks must not count it, or the
+// Get() would loop on it without parking.
+func (p *ConnPool) throttleDial(ctx context.Context, wait bool, poolDeadline time.Time, idleRejected bool, st *dialThrottleState) (retry bool, err error) {
+	// waitForDialSlot can return without reaching its ctx.Done case (deadline
+	// due, or a token due now), so check cancellation on every pass before
+	// taking a token or dialing.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	// Fairness: a fresh Get() must not steal a refilled token from callers
+	// already parked in the wait queue (they arrived earlier). Only a Get()
+	// that has genuinely parked (slept in waitForDialSlot) is
+	// queue-conditioned and may compete for tokens.
+	mayTakeToken := st.parked || p.dialWaitQueue.empty()
+	if mayTakeToken && p.dialLimiter.Allow() {
+		// A dial token was available: dial now. queuedNewConn refunds it if
+		// the dial does not start.
+		st.token = true
+		return false, nil
+	}
+
+	// Throttled. Count this Get() once (not once per park cycle).
+	if !st.counted {
+		atomic.AddUint32(&p.stats.RateLimitedDials, 1)
+		st.counted = true
+	}
+	if !wait {
+		return false, ErrPoolTryFull
+	}
+	if st.deadline.IsZero() {
+		// Bound the total time this Get() may spend waiting — including the
+		// time already spent in waitTurn — by the single PoolTimeout budget,
+		// so throttling never doubles the documented worst-case wait.
+		st.deadline = poolDeadline
+		if p.cfg.PoolTimeout <= 0 {
+			// Direct pool users may leave PoolTimeout unset (the redis
+			// clients always default it). A zero budget would put the
+			// deadline in the past and let every throttled Get() escape
+			// immediately, degrading the limiter to a burst-only gate.
+			// Fall back to a modest budget so pacing still applies.
+			st.deadline = poolDeadline.Add(3 * time.Second)
+		}
+	}
+
+	escape, parked, err := p.waitForDialSlot(ctx, st.deadline, mayTakeToken, idleRejected)
+	if parked {
+		st.parked = true
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if escape {
+		// Waited past PoolTimeout without a reusable connection or a dial
+		// token. Re-check the idle pool one final time: a connection may have
+		// been returned in the same instant the park timer fired (the select
+		// can win the timer race over the wakeup signal). If so, retry to grab
+		// it — with the deadline passed, the next waitForDialSlot escapes
+		// immediately. The re-check runs once per Get() and is skipped when
+		// the idle conn was hook-rejected, so this cannot spin. Otherwise
+		// create a new connection anyway: the pool is not full (we hold a
+		// turn), and the dial remains bounded by MaxActiveConns inside newConn.
+		if st.escaped || idleRejected {
+			return false, nil
+		}
+		st.escaped = true
+		return p.hasAcquirableIdleConn(), nil
+	}
+	// Woken because a connection was returned (or a token should now be
+	// free): re-check the idle pool, then re-try the limiter.
+	return true, nil
+}
+
+// refundDialToken returns a dial token taken for a dial that never started,
+// and wakes one parked Get() so the token is used now rather than at the
+// waiter's next timer.
+func (p *ConnPool) refundDialToken(tokenHeld bool) {
+	if tokenHeld && p.dialLimiter != nil {
+		p.dialLimiter.refund()
+		p.signalDialWaiter()
+	}
+}
+
+// hasAcquirableIdleConn reports whether the idle pool currently holds a
+// connection that popIdle could actually acquire (state IDLE or CREATED). It
+// deliberately does not use idleConnsLen: that counter also covers UNUSABLE
+// connections (handoff/re-auth) and min-idle prewarm slots whose dial has not
+// completed, which would make a throttled waiter believe a reusable connection
+// exists and busy-loop instead of parking.
+func (p *ConnPool) hasAcquirableIdleConn() bool {
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+	for _, cn := range p.idleConns {
+		if state := cn.stateMachine.GetState(); state == StateIdle || state == StateCreated {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForDialSlot parks a throttled Get() caller until either an idle
+// connection is returned to the pool (signaled via the dial wait queue), a dial
+// token is expected to be available, the caller's context is cancelled, or the
+// PoolTimeout deadline is reached.
+//
+// mayTakeToken tells the slot whether this caller is currently allowed to
+// consume a dial token (it has already parked, or no earlier waiters are
+// queued). A caller that may not take tokens must not return early just
+// because a token is available — that token belongs to an earlier waiter, and
+// returning would busy-spin; instead it parks briefly (at most one token
+// interval) and, having then genuinely parked, competes for tokens itself.
+//
+// It returns (escape=true, ...) when the deadline has been reached, meaning the
+// caller should create a new connection anyway, and (false, ...) when the
+// caller should loop back and re-check the idle pool / rate limiter. parked
+// reports whether the caller genuinely slept in the wait queue: only then may
+// it compete with other parked waiters for dial tokens (fairness). err is
+// non-nil if the context was cancelled while waiting.
+func (p *ConnPool) waitForDialSlot(ctx context.Context, deadline time.Time, mayTakeToken, skipIdleCheck bool) (escape bool, parked bool, err error) {
+	now := time.Now()
+	if !now.Before(deadline) {
+		// Deadline already reached: create a new connection.
+		return true, false, nil
+	}
+
+	remaining := deadline.Sub(now)
+	deadlinePark := false
+
+	delay := p.dialLimiter.delayUntilNext()
+	if delay <= 0 {
+		if mayTakeToken {
+			// A token is (now) available: loop back and let Allow() consume
+			// it. Not a park: the caller gains no token priority from this.
+			return false, false, nil
+		}
+		// A token is available but reserved for an earlier queued waiter.
+		// Park for at most one token interval — not the whole remaining
+		// budget: nothing signals this waiter when the earlier waiters drain
+		// and a token sits unused, so a full-budget park could oversleep to
+		// PoolTimeout and escape-dial while a token was free the whole time.
+		// After this genuine park the caller becomes token-eligible
+		// (hasParked) and loops back to re-run Allow().
+		delay = min(remaining, p.dialLimiter.tokenInterval())
+	} else if delay >= remaining {
+		// The next token won't arrive before the deadline; park only until the
+		// deadline and then escape to create a new connection.
+		delay = remaining
+		deadlinePark = true
+	}
+
+	w := &dialWaiter{ready: make(chan struct{}, 1)}
+	p.dialWaitQueue.enqueue(w)
+
+	// Double-check after enqueuing. A connection may have been returned (or the
+	// pool closed) between the caller's last popIdle and this enqueue; the
+	// corresponding signalNext/signalAll would then have found an empty queue
+	// and the wakeup would be lost. Because we enqueued first, any event from
+	// here on will signal us, so re-checking now closes the race. The idle
+	// check looks only at acquirable connections — see hasAcquirableIdleConn.
+	// skipIdleCheck: the caller's last idle scan found only hook-rejected
+	// conns, which would make this check return at once on every call.
+	if p.closed() || (!skipIdleCheck && p.hasAcquirableIdleConn()) {
+		if !p.dialWaitQueue.abandon(w) {
+			// signalNext raced us and delivered a wakeup meant for a pending
+			// waiter; consume it and pass it on so it isn't lost.
+			<-w.ready
+			p.dialWaitQueue.signalNext()
+		}
+		return false, false, nil
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-w.ready:
+		// A connection was returned to the pool (we were dequeued by
+		// signalNext); loop back to try to reuse it.
+		return false, true, nil
+	case <-timer.C:
+		if !p.dialWaitQueue.abandon(w) {
+			// A wakeup was delivered concurrently with the timer firing. Treat
+			// it as the wakeup: loop back to grab the returned idle connection
+			// instead of escaping to dial (which would waste both the signal
+			// and a dial).
+			<-w.ready
+			return false, true, nil
+		}
+		// If we parked all the way to the deadline, escape and create.
+		// Otherwise a token should now be available (or this caller just
+		// became token-eligible by parking): loop back to consume it. If the
+		// budget ran out in the meantime, the deadline check at the top of
+		// the next call escapes.
+		return deadlinePark, true, nil
+	case <-ctx.Done():
+		if !p.dialWaitQueue.abandon(w) {
+			// A wakeup was delivered concurrently with cancellation. We are
+			// leaving, so forward it to the next parked waiter.
+			<-w.ready
+			p.dialWaitQueue.signalNext()
+		}
+		return false, true, ctx.Err()
+	}
+}
+
+// signalDialWaiter wakes one Get() caller parked in waitForDialSlot, if any, so
+// it can retry acquiring the connection that was just returned to the idle
+// pool. It is a no-op (and takes no locks) when dial rate limiting is disabled.
+func (p *ConnPool) signalDialWaiter() {
+	if p.dialLimiter == nil {
+		return
+	}
+	p.dialWaitQueue.signalNext()
+}
+
+// waitForDialToken blocks until a dial token is available or the pool closes.
+// It is used by background dials (min-idle refill) that must respect the dial
+// rate limit but have no caller to hand an idle connection to, so unlike
+// waitForDialSlot it does not join the dial wait queue and has no deadline
+// escape. It defers to Get() callers already parked in the dial wait queue —
+// it takes a token only while that queue is empty — but once the queue drains
+// it competes with fresh foreground callers for tokens on equal terms.
+// Returns ErrClosed if the pool closes while waiting. No-op (nil) when rate
+// limiting is disabled.
+func (p *ConnPool) waitForDialToken() error {
+	if p.dialLimiter == nil {
+		return nil
+	}
+	for {
+		if p.closed() {
+			return ErrClosed
+		}
+		if p.dialWaitQueue.empty() && p.dialLimiter.Allow() {
+			return nil
+		}
+		// Sleep until the next token, in short slices so pool Close() is
+		// noticed promptly. Sleep a minimum slice even when a token is
+		// available but reserved for a parked foreground waiter.
+		delay := p.dialLimiter.delayUntilNext()
+		if delay > 100*time.Millisecond {
+			delay = 100 * time.Millisecond
+		} else if delay < 10*time.Millisecond {
+			delay = 10 * time.Millisecond
+		}
+		time.Sleep(delay)
+	}
 }
 
 func (p *ConnPool) beginDrainerBorrow() {
@@ -1827,6 +2316,12 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 				}
 				p.connsMu.Unlock()
 				p.idleConnsLen.Add(1)
+				// Best-effort wake for throttled waiters: the conn is UNUSABLE
+				// right now, but its background handoff/re-auth may complete
+				// before the woken waiter re-checks the idle pool. A spurious
+				// wake just re-parks; there is no signal at the moment the conn
+				// actually becomes usable, so this narrows that gap cheaply.
+				p.signalDialWaiter()
 			} else {
 				shouldCloseConn = true
 				p.connsMu.Unlock()
@@ -1850,6 +2345,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 				}
 				p.connsMu.Unlock()
 				p.idleConnsLen.Add(1)
+				p.signalDialWaiter()
 			} else {
 				shouldCloseConn = true
 				p.connsMu.Unlock()
@@ -2132,6 +2628,11 @@ func (p *ConnPool) HasFreeCapacity() bool {
 	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
 		return false
 	}
+	// Dial rate limit with no token: the Get would park in throttleDial (up to
+	// PoolTimeout) instead of dialing now.
+	if l := p.dialLimiter; l != nil && l.delayUntilNext() > 0 {
+		return false
+	}
 	return true
 }
 
@@ -2167,6 +2668,8 @@ func (p *ConnPool) Stats() *Stats {
 		Unusable:        atomic.LoadUint32(&p.stats.Unusable),
 		WaitDurationNs:  p.waitDurationNs.Load(),
 		PendingRequests: atomic.LoadUint32(&p.stats.PendingRequests),
+
+		RateLimitedDials: atomic.LoadUint32(&p.stats.RateLimitedDials),
 
 		TotalConns: uint32(totalConns),
 		IdleConns:  uint32(idleConns),
@@ -2407,6 +2910,13 @@ func (p *ConnPool) Close() error {
 		return ErrClosed
 	}
 	close(p.closedCh)
+
+	// Wake every Get() parked in waitForDialSlot so it observes the closed pool
+	// immediately instead of sleeping out its park timer. Waiters that enqueue
+	// after this drain see p.closed() in their post-enqueue double-check.
+	if p.dialLimiter != nil {
+		p.dialWaitQueue.signalAll()
+	}
 
 	var firstErr error
 	nowNs := time.Now().UnixNano()

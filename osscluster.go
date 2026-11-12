@@ -184,6 +184,13 @@ type ClusterOptions struct {
 	// each node's Options so the pipeline pool can widen its own dial cap.
 	MaxConcurrentDials int
 
+	// DialRateLimit is the maximum number of new connections created per second,
+	// per cluster node. See Options.DialRateLimit. Default: 0 (disabled).
+	DialRateLimit int
+	// DialRateBurst is the burst allowance for DialRateLimit. See
+	// Options.DialRateBurst. Default: DialRateLimit.
+	DialRateBurst int
+
 	PoolFIFO              bool
 	PoolSize              int // applies per cluster node and not for the whole cluster
 	PoolTimeout           time.Duration
@@ -483,6 +490,8 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
+	o.DialRateLimit = q.int("dial_rate_limit")
+	o.DialRateBurst = q.int("dial_rate_burst")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
@@ -584,6 +593,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,
 		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		DialRateLimit:         opt.DialRateLimit,
+		DialRateBurst:         opt.DialRateBurst,
 		PoolTimeout:           opt.PoolTimeout,
 		MinIdleConns:          opt.MinIdleConns,
 		MaxIdleConns:          opt.MaxIdleConns,
@@ -2474,6 +2485,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Timeouts += s.Timeouts
 		acc.WaitCount += s.WaitCount
 		acc.WaitDurationNs += s.WaitDurationNs
+		acc.RateLimitedDials += s.RateLimitedDials
 
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
@@ -2488,6 +2500,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 			pipe.Timeouts += ps.Timeouts
 			pipe.WaitCount += ps.WaitCount
 			pipe.WaitDurationNs += ps.WaitDurationNs
+			pipe.RateLimitedDials += ps.RateLimitedDials
 			pipe.TotalConns += ps.TotalConns
 			pipe.IdleConns += ps.IdleConns
 			pipe.StaleConns += ps.StaleConns
