@@ -121,3 +121,45 @@ func TestClusterShardsCmdAcceptsNullEndpoint(t *testing.T) {
 		t.Fatalf("null endpoint=%q, want empty origin marker", got)
 	}
 }
+
+func TestClusterShardsCmdRejectsOddSlotsArray(t *testing.T) {
+	// The CLUSTER SHARDS "slots" value is a flat array of start/end integer
+	// pairs, so its length is always even. readReply consumed it with a
+	// `for k := 0; k < l; k += 2` loop that reads two ints per iteration
+	// without checking l, so a malicious or MITM server declaring an odd
+	// length made the final iteration read one int past the array. That stray
+	// read fabricated a slot range from the next frame and desynced the pooled
+	// connection: readReply returned nil and the following reply was consumed
+	// as part of the slots array.
+	//
+	// Here the odd *3 slots array is followed by a separate :777 reply. On the
+	// unpatched parser readReply succeeds, invents the slot range {200, 777}
+	// from :777 and swallows it; the guard returns an error so the connection
+	// is dropped instead of reused desynced.
+	reply := "*1\r\n" + // 1 shard
+		"%1\r\n" + // shard map with 1 field
+		"$5\r\nslots\r\n" +
+		"*3\r\n:0\r\n:100\r\n:200\r\n" + // odd-length slots array
+		":777\r\n" // the next command's reply
+
+	cmd := NewClusterShardsCmd(context.Background())
+	if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err == nil {
+		t.Fatalf("odd-length slots array accepted; readReply returned nil (val=%+v)", cmd.val)
+	}
+}
+
+func TestClusterShardsCmdAcceptsEvenSlotsArray(t *testing.T) {
+	// A well-formed reply with multiple slot ranges still parses cleanly.
+	reply := "*1\r\n" +
+		"%1\r\n" +
+		"$5\r\nslots\r\n*4\r\n:0\r\n:100\r\n:200\r\n:300\r\n"
+
+	cmd := NewClusterShardsCmd(context.Background())
+	if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err != nil {
+		t.Fatal(err)
+	}
+	got := cmd.val[0].Slots
+	if len(got) != 2 || got[0] != (SlotRange{Start: 0, End: 100}) || got[1] != (SlotRange{Start: 200, End: 300}) {
+		t.Fatalf("unexpected slots: %+v", got)
+	}
+}

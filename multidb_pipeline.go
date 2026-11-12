@@ -80,10 +80,13 @@ func (c *multidbCore) recordBatchOutcomes(ctx context.Context, db *multidbDataba
 			return 0
 		}
 		// Execution never started: the batch error stands in for every
-		// command the aborting hook did not stamp itself (setCmdsErr fills
-		// only empty slots), so a partially-stamped abort cannot fabricate
-		// successes for the untouched commands.
-		setCmdsErr(cmds, batchErr)
+		// command the aborting hook did not stamp itself. Preserve results
+		// already supplied by a successful node hook.
+		for _, cmd := range cmds {
+			if cmd.rawErr() == nil && executed.state(cmd) != pipelineAnsweredLocally {
+				cmd.SetErr(batchErr)
+			}
+		}
 	}
 	// Blocking commands carry their own read timeout; their local deadlines
 	// are not retryable transport failures — the same per-command rule the
@@ -502,16 +505,22 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 				// when nothing executed are the per-command stand-in errors rewritten
 				// to match the aggregate; a partially executed batch keeps its results.
 				if !executed.any() {
-					resetCmds(cmds)
-					setCmdsErr(cmds, ErrTemporarilyNotAvailable)
+					for _, cmd := range cmds {
+						if executed.state(cmd) != pipelineAnsweredLocally {
+							cmd.SetErr(ErrTemporarilyNotAvailable)
+						}
+					}
 				}
 				return exitErr(ErrTemporarilyNotAvailable)
 			}
 			if err != nil && attempt < attempts && !executed.any() && shouldRetry(err, true) {
-				// A pool wait timeout before anything executed: neutral, so
-				// nothing was recorded, and replay is safe. Retry within
-				// CommandRetries as *Client does (#3289).
-				continue
+				// A pool wait timeout before any server attempt is neutral.
+				// Retry only commands that still need a result (#3289).
+				if next := unsettledCmds(cmds, executed); len(next) != 0 {
+					narrowed = narrowed || len(next) < len(cmds)
+					cmds = next
+					continue
+				}
 			}
 			// Only server replies (or clean success) — done, whatever the
 			// user-level outcome is.
@@ -1096,7 +1105,8 @@ func (c *MultiDBClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions
 // is a member failure (a transport error, or a retryable reply such as LOADING
 // or READONLY, which the server did not apply). A command with a reply (nil
 // error or any other Redis error reply) keeps its result and is not resent, so
-// a cluster member's healthy-node writes do not run twice. A standalone member
+// a cluster member's healthy-node writes do not run twice. Commands answered
+// by a node-level hook likewise keep their completed results. A standalone member
 // stamps a mid-pipeline drop on every command of the batch, replied or not, so
 // there the whole batch is resent, as before.
 //
@@ -1106,7 +1116,7 @@ func unsettledCmds(cmds []Cmder, executed *executedCmds) []Cmder {
 	outcome := batchOutcomeFunc(cmds)
 	out := make([]Cmder, 0, len(cmds))
 	for _, cmd := range cmds {
-		if !executed.has(cmd) || outcome(cmd) == outcomeFailure {
+		if executed.state(cmd) == pipelinePending || outcome(cmd) == outcomeFailure {
 			out = append(out, cmd)
 		}
 	}

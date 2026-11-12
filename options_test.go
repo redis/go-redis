@@ -257,6 +257,13 @@ func TestParseURL(t *testing.T) {
 		}, {
 			url: "redis://localhost/iamadatabase",
 			err: errors.New(`redis: invalid database number: "iamadatabase"`),
+		}, {
+			// a negative db parses as an int but fails on every SELECT
+			url: "redis://localhost/-1",
+			err: errors.New(`redis: invalid database number: "-1"`),
+		}, {
+			url: "redis://localhost/?db=-1",
+			err: errors.New(`redis: invalid database number: "-1"`),
 		},
 	}
 

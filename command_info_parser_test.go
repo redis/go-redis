@@ -744,3 +744,88 @@ func TestCommandsInfoPublicReplyDropsTombstones(t *testing.T) {
 		t.Fatalf("expected the snapshot record when the tombstone is hidden, got %+v", rec)
 	}
 }
+
+func commandInfoTestKeySpecSection(typ string, spec ...string) string {
+	return commandInfoTestMap(
+		commandInfoTestBulk("type"), commandInfoTestBulk(typ),
+		commandInfoTestBulk("spec"), commandInfoTestMap(spec...),
+	)
+}
+
+func TestKeySpecSectionRequiredAndDuplicateFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		beginSearch bool
+		typ         string
+		fields      []string
+		want        bool
+	}{
+		{"index", true, "index", []string{"index"}, true},
+		{"index missing", true, "index", nil, false},
+		{"index duplicate", true, "index", []string{"index", "index"}, false},
+		{"keyword", true, "keyword", []string{"keyword", "startfrom"}, true},
+		{"keyword missing keyword", true, "keyword", []string{"startfrom"}, false},
+		{"keyword missing startfrom", true, "keyword", []string{"keyword"}, false},
+		{"keyword duplicate keyword", true, "keyword", []string{"keyword", "startfrom", "keyword"}, false},
+		{"keyword duplicate startfrom", true, "keyword", []string{"startfrom", "keyword", "startfrom"}, false},
+		{"begin search ignores find keys field", true, "index", []string{"lastkey"}, false},
+		{"range", false, "range", []string{"lastkey", "keystep", "limit"}, true},
+		{"range missing lastkey", false, "range", []string{"keystep", "limit"}, false},
+		{"range missing keystep", false, "range", []string{"lastkey", "limit"}, false},
+		{"range missing limit", false, "range", []string{"lastkey", "keystep"}, false},
+		{"range duplicate limit", false, "range", []string{"lastkey", "keystep", "limit", "limit"}, false},
+		{"keynum", false, "keynum", []string{"keynumidx", "firstkey", "keystep"}, true},
+		{"keynum missing keynumidx", false, "keynum", []string{"firstkey", "keystep"}, false},
+		{"keynum missing firstkey", false, "keynum", []string{"keynumidx", "keystep"}, false},
+		{"keynum missing keystep", false, "keynum", []string{"keynumidx", "firstkey"}, false},
+		{"keynum duplicate firstkey", false, "keynum", []string{"keynumidx", "firstkey", "firstkey", "keystep"}, false},
+		{"find keys ignores begin search field", false, "keynum", []string{"keynumidx", "firstkey", "index"}, false},
+		{"find keys ignores keyword", false, "range", []string{"lastkey", "keystep", "limit", "keyword", "keyword"}, true},
+		{"unknown algorithm", false, "future", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := make([]string, 0, len(tt.fields)*2)
+			for _, name := range tt.fields {
+				value := commandInfoTestInt(1)
+				if name == "keyword" {
+					value = commandInfoTestBulk("STORE")
+				}
+				spec = append(spec, commandInfoTestBulk(name), value)
+			}
+			raw := commandInfoTestKeySpecSection(tt.typ, spec...) + commandInfoTestBulk("after")
+			rd := proto.NewReader(strings.NewReader(raw))
+			var ks KeySpec
+			got, err := readKeySpecSectionChecked(rd, &ks, tt.beginSearch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("valid = %v, want %v", got, tt.want)
+			}
+			after, err := rd.ReadString()
+			if err != nil || after != "after" {
+				t.Fatalf("next value = %q, %v; the section left the reader misaligned", after, err)
+			}
+		})
+	}
+}
+
+func BenchmarkReadKeySpecSection(b *testing.B) {
+	raw := commandInfoTestKeySpecSection("range",
+		commandInfoTestBulk("lastkey"), commandInfoTestInt(-1),
+		commandInfoTestBulk("keystep"), commandInfoTestInt(1),
+		commandInfoTestBulk("limit"), commandInfoTestInt(0),
+	)
+	src := strings.NewReader(raw)
+	rd := proto.NewReader(src)
+	b.ReportAllocs()
+	for b.Loop() {
+		src.Reset(raw)
+		rd.Reset(src)
+		var ks KeySpec
+		if valid, err := readKeySpecSectionChecked(rd, &ks, false); err != nil || !valid {
+			b.Fatalf("valid = %v, err = %v", valid, err)
+		}
+	}
+}

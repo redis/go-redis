@@ -5522,6 +5522,7 @@ bf.mexists
 bitcount
 bitfield_ro
 bitpos
+bitrangeintarray
 cf.count
 cf.exists
 cf.mexists
@@ -5569,12 +5570,14 @@ pfcount
 scard
 sdiff
 sdiffcard
+sexpiretime
 sinter
 sintercard
 sismember
 smembers
 smismember
 sort_ro
+spexpiretime
 strlen
 substr
 sunion
@@ -5651,7 +5654,7 @@ func TestCSCPerformanceCompatibility(t *testing.T) {
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("eligible commands changed: removed %v, added %v", removed, added)
 	}
-	if view.cscFingerprint != "789bd9d45282d1f83111e8ef96eaac1a" {
+	if view.cscFingerprint != "7ae8e649835982e6b9c6718365bc8da4" {
 		t.Fatalf("default CSC fingerprint changed: %s", view.cscFingerprint)
 	}
 	if path := os.Getenv("CSC_COMPATIBILITY_DUMP"); path != "" {

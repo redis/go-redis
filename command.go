@@ -6332,6 +6332,25 @@ func readKeySpec(rd *proto.Reader) (KeySpec, bool, error) {
 	return ks, valid && seenFlags && seenBeginSearch && seenFindKeys, nil
 }
 
+// keySpecField is a set of the spec fields seen in a key-spec section.
+type keySpecField uint8
+
+const (
+	keySpecFieldIndex keySpecField = 1 << iota
+	keySpecFieldKeyword
+	keySpecFieldStartFrom
+	keySpecFieldLastKey
+	keySpecFieldKeyStep
+	keySpecFieldLimit
+	keySpecFieldKeyNumIdx
+	keySpecFieldFirstKey
+)
+
+// has reports whether every field in want is in the set.
+func (f keySpecField) has(want keySpecField) bool {
+	return f&want == want
+}
+
 // readKeySpecSectionChecked parses a begin_search or find_keys section.
 func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) (bool, error) {
 	n, ok, err := readCommandInfoMapLen(rd)
@@ -6343,7 +6362,7 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 	}
 	valid := true
 	var seenType, seenSpec bool
-	seenSpecFields := make(map[string]bool)
+	var seenSpecFields keySpecField
 	for i := 0; i < n; i++ {
 		field, fieldOK, err := readCommandInfoString(rd)
 		if err != nil {
@@ -6408,10 +6427,10 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 						}
 						continue
 					}
-					if seenSpecFields[name] {
+					if seenSpecFields&keySpecFieldKeyword != 0 {
 						valid = false
 					}
-					seenSpecFields[name] = true
+					seenSpecFields |= keySpecFieldKeyword
 					keyword, keywordOK, err := readCommandInfoString(rd)
 					if err != nil {
 						return false, err
@@ -6423,25 +6442,26 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 					ks.Keyword = keyword
 				default:
 					var dst *int
+					var specField keySpecField
 					if beginSearch {
 						switch name {
 						case "index":
-							dst = &ks.Index
+							dst, specField = &ks.Index, keySpecFieldIndex
 						case "startfrom":
-							dst = &ks.StartFrom
+							dst, specField = &ks.StartFrom, keySpecFieldStartFrom
 						}
 					} else {
 						switch name {
 						case "lastkey":
-							dst = &ks.LastKey
+							dst, specField = &ks.LastKey, keySpecFieldLastKey
 						case "keystep":
-							dst = &ks.KeyStep
+							dst, specField = &ks.KeyStep, keySpecFieldKeyStep
 						case "limit":
-							dst = &ks.Limit
+							dst, specField = &ks.Limit, keySpecFieldLimit
 						case "keynumidx":
-							dst = &ks.KeyNumIdx
+							dst, specField = &ks.KeyNumIdx, keySpecFieldKeyNumIdx
 						case "firstkey":
-							dst = &ks.FirstKey
+							dst, specField = &ks.FirstKey, keySpecFieldFirstKey
 						}
 					}
 					if dst == nil {
@@ -6450,10 +6470,10 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 						}
 						continue
 					}
-					if seenSpecFields[name] {
+					if seenSpecFields&specField != 0 {
 						valid = false
 					}
-					seenSpecFields[name] = true
+					seenSpecFields |= specField
 					v, valueOK, err := readCommandInfoInt(rd)
 					if err != nil {
 						return false, err
@@ -6484,13 +6504,13 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 	valid = valid && seenType && seenSpec && typ != ""
 	switch {
 	case beginSearch && typ == "index":
-		valid = valid && seenSpecFields["index"]
+		valid = valid && seenSpecFields.has(keySpecFieldIndex)
 	case beginSearch && typ == "keyword":
-		valid = valid && seenSpecFields["keyword"] && seenSpecFields["startfrom"]
+		valid = valid && seenSpecFields.has(keySpecFieldKeyword|keySpecFieldStartFrom)
 	case !beginSearch && typ == "range":
-		valid = valid && seenSpecFields["lastkey"] && seenSpecFields["keystep"] && seenSpecFields["limit"]
+		valid = valid && seenSpecFields.has(keySpecFieldLastKey|keySpecFieldKeyStep|keySpecFieldLimit)
 	case !beginSearch && typ == "keynum":
-		valid = valid && seenSpecFields["keynumidx"] && seenSpecFields["firstkey"] && seenSpecFields["keystep"]
+		valid = valid && seenSpecFields.has(keySpecFieldKeyNumIdx|keySpecFieldFirstKey|keySpecFieldKeyStep)
 	default:
 		// Preserve unknown algorithms; generic consumers reject them.
 	}
@@ -8608,6 +8628,9 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 				l, err := rd.ReadArrayLen()
 				if err != nil {
 					return err
+				}
+				if l%2 != 0 {
+					return fmt.Errorf("redis: got %d elements in the CLUSTER SHARDS slots array, wanted a multiple of 2", l)
 				}
 				for k := 0; k < l; k += 2 {
 					start, err := rd.ReadInt()

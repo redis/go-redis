@@ -3965,6 +3965,46 @@ var _ = Describe("FT.HYBRID Commands", func() {
 		}
 	})
 
+	// RERANK on the KNN/RANGE clauses is only valid for disk-based indexes. The
+	// test image has none, so this checks that the token is placed where the
+	// server parses it (inside the counted method params).
+	It("should perform hybrid search with RERANK", Label("search", "fthybrid", "rerank"), func() {
+		SkipBeforeRedisVersion("8.12", "RERANK in KNN/RANGE is not parsed before 8.12 (not in 8.10.3)")
+		vector := &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})}
+
+		for _, tc := range []struct {
+			name   string
+			method string
+			params []interface{}
+			rerank redis.FTRerank
+		}{
+			{"knn enabled", "KNN", []interface{}{"K", 3}, redis.FTRerankEnabled},
+			{"knn disabled", "KNN", []interface{}{"K", 3}, redis.FTRerankDisabled},
+			{"range enabled", "RANGE", []interface{}{"RADIUS", 1000}, redis.FTRerankEnabled},
+			{"range disabled", "RANGE", []interface{}{"RADIUS", 1000}, redis.FTRerankDisabled},
+		} {
+			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", &redis.FTHybridOptions{
+				CountExpressions:  2,
+				SearchExpressions: []redis.FTHybridSearchExpression{{Query: "@color:{red}"}},
+				VectorExpressions: []redis.FTHybridVectorExpression{{
+					VectorField:  "embedding",
+					VectorData:   vector,
+					Method:       tc.method,
+					MethodParams: tc.params,
+					Rerank:       tc.rerank,
+				}},
+				Load: []string{"@__key", "@__score"},
+			}).Result()
+			if err != nil {
+				// Servers without disk-based indexes parse RERANK, then refuse it
+				// for the index. A misplaced token fails earlier with a parse error.
+				Expect(err.Error()).To(ContainSubstring("disk-based"), tc.name)
+				continue
+			}
+			Expect(res.TotalResults).To(BeNumerically(">", 0), tc.name)
+		}
+	})
+
 	It("should perform hybrid search with scorer", Label("search", "fthybrid", "scorer"), func() {
 		SkipBeforeRedisVersion("8.4", "no support")
 		// Test with TFIDF scorer

@@ -2630,11 +2630,17 @@ func (c *baseClient) generalProcessPipelineFrom(
 // writes that already applied.
 type pipelineExecutedKey struct{}
 
-// executedCmds records which commands of a batch actually reached (or
-// attempted) the server. It is per-command, not a single flag, because a
-// cluster pipeline fans one batch out into independent node sub-batches: one
-// node executing must not make another node's short-circuited (untouched,
-// nil-error) commands look like served database successes.
+type pipelineProgress uint8
+
+const (
+	pipelinePending pipelineProgress = iota
+	pipelineAttempted
+	pipelineAnsweredLocally
+)
+
+// executedCmds tracks per-command progress across the node sub-batches of a
+// cluster pipeline. A local answer can survive a retry without counting as
+// a successful server response.
 type executedCmds struct {
 	mu sync.Mutex
 	// Keyed by the command's embedded baseCmd, not by the Cmder interface
@@ -2644,39 +2650,49 @@ type executedCmds struct {
 	// error, so a retry could replay writes that had applied. Every command
 	// embeds a baseCmd, and a decorator promotes base() from the command it
 	// embeds, so this key identifies the command that executed.
-	done map[*baseCmd]struct{}
+	progress  map[*baseCmd]pipelineProgress
+	attempted bool
 }
 
 func newExecutedCmds(size int) *executedCmds {
-	return &executedCmds{done: make(map[*baseCmd]struct{}, size)}
+	return &executedCmds{progress: make(map[*baseCmd]pipelineProgress, size)}
 }
 
 func (e *executedCmds) mark(cmds []Cmder) {
+	e.markProgress(cmds, pipelineAttempted)
+}
+
+func (e *executedCmds) markProgress(cmds []Cmder, progress pipelineProgress) {
 	e.mu.Lock()
 	for _, cmd := range cmds {
 		if cmd == nil {
 			continue
 		}
-		e.done[cmd.base()] = struct{}{}
+		e.progress[cmd.base()] = progress
+		e.attempted = e.attempted || progress == pipelineAttempted
 	}
 	e.mu.Unlock()
 }
 
 func (e *executedCmds) has(cmd Cmder) bool {
+	return e.state(cmd) == pipelineAttempted
+}
+
+func (e *executedCmds) state(cmd Cmder) pipelineProgress {
 	if cmd == nil {
-		return false
+		return pipelinePending
 	}
 	e.mu.Lock()
-	_, ok := e.done[cmd.base()]
+	progress := e.progress[cmd.base()]
 	e.mu.Unlock()
-	return ok
+	return progress
 }
 
 func (e *executedCmds) any() bool {
 	e.mu.Lock()
-	n := len(e.done)
+	attempted := e.attempted
 	e.mu.Unlock()
-	return n > 0
+	return attempted
 }
 
 // markPipelineExecuted records that cmds reached (or attempted) the server for
