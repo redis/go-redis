@@ -428,6 +428,12 @@ type ConnRetirer interface {
 	RetireConns(ctx context.Context, conns []*Conn, reason string)
 }
 
+// PoolHookProcessor exposes pool hook processing for adapters that temporarily
+// own a connection while retaining the parent pool's lifecycle hooks.
+type PoolHookProcessor interface {
+	ProcessOnPut(ctx context.Context, conn *Conn) (shouldPool bool, shouldRemove bool, err error)
+}
+
 type Pooler interface {
 	NewConn(context.Context) (*Conn, error)
 	CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error
@@ -1679,19 +1685,27 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	return cn, nil
 }
 
+func (p *ConnPool) ProcessOnPut(ctx context.Context, cn *Conn) (bool, bool, error) {
+	hookManager := p.hookManager.Load()
+	if hookManager == nil {
+		return true, false, nil
+	}
+	return hookManager.ProcessOnPut(ctx, cn)
+}
+
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
-	p.putConn(ctx, cn, true)
+	p.putConn(ctx, cn, true, false)
 }
 
 // putConnWithoutTurn is an internal method that puts a connection back to the pool
 // without freeing a turn. This is used when returning a rejected connection from
 // within Get(), where the turn is still held by the Get() call.
 func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn) {
-	p.putConn(ctx, cn, false)
+	p.putConn(ctx, cn, false, false)
 }
 
 // putConn is the internal implementation of Put that optionally frees a turn.
-func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
+func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, preserveHandoff bool) {
 	// Guard against nil connection
 	if cn == nil {
 		internal.Logger.Printf(ctx, "putConn called with nil connection")
@@ -1711,7 +1725,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		return
 	}
 
-	if cn.HasBufferedData() {
+	if !preserveHandoff && cn.HasBufferedData() {
 		// Peek at the reply type to check if it's a push notification
 		if replyType, err := cn.PeekReplyTypeSafe(); err != nil || replyType != proto.RespPush {
 			// Not a push notification or error peeking, remove connection
@@ -1729,7 +1743,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	// connection to a handoff worker, which may start at once (see below).
 	ownerGen := cn.HandoffOwnerGen()
 
-	if hookManager != nil {
+	if hookManager != nil && !preserveHandoff {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
 			internal.Logger.Printf(ctx, "Connection hook error: %v", err)
@@ -1761,7 +1775,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// owns it now and may already hold it IN_USE for its init commands, so
 		// Release would free the worker's IN_USE and a Get would take the
 		// connection mid-init. Pool it as-is; the worker makes it IDLE when done.
-		handedOff := cn.HandedOffSince(ownerGen)
+		handedOff := preserveHandoff || cn.HandedOffSince(ownerGen)
 		transitionedToIdle := !handedOff && cn.Release()
 
 		// Handle unexpected state changes
@@ -1908,6 +1922,12 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	}
 
 	cn.SetLastPutAtNs(getCachedTimeNs())
+}
+
+// ReleaseHandoff returns a connection already accepted by the handoff worker
+// without treating prefetched monitor data as an unread command reply.
+func (p *ConnPool) ReleaseHandoff(ctx context.Context, cn *Conn) {
+	p.putConn(ctx, cn, true, true)
 }
 
 func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
@@ -2340,7 +2360,7 @@ func (p *ConnPool) DrainIdleConns(ctx context.Context, st *DrainState, fn func(c
 				p.removeConnInternal(ctx, cn, err, true)
 			} else {
 				// Normal return: runs OnPut (queues any maintenance handoff).
-				p.putConn(ctx, cn, true)
+				p.putConn(ctx, cn, true, false)
 			}
 		}()
 		handled++

@@ -599,6 +599,7 @@ func (cfg *AutoPipelineOptions) Validate() error {
 // back to the underlying client and itself satisfy UniversalClient.
 type cmdableClient interface {
 	UniversalClient
+	Monitor(ctx context.Context, ch chan string) *MonitorCmd
 	// processPipelineHook is the hook-wrapped []Cmder pipeline entry — the same
 	// method Pipeline.Exec is wired to (see Client.Pipeline). The flusher
 	// dispatches drained batches through it directly, skipping the per-batch
@@ -1752,8 +1753,19 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		// A hook that returns nil WITHOUT calling next has short-circuited
 		// SUCCESSFULLY (it served the command itself); plain Client hooks may do
 		// that, so nothing here synthesizes an error for it — see dispatchCmds.
-		err := ap.pipeliner.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
+		process := func(ctx context.Context, cmd Cmder) error {
+			if isMonitorCmd(ctx, cmd) {
+				switch client := ap.pipeliner.(type) {
+				case *Client:
+					return client.processMonitorNoHook(ctx, cmd)
+				case *ClusterClient:
+					return client.processMonitor(ctx, cmd)
+				}
+			}
 			return ap.pipeliner.process(ctx, cmd)
+		}
+		err := ap.pipeliner.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
+			return process(ctx, cmd)
 		})
 		// The chain's final verdict, exactly like Client.Process — recorded
 		// before the deferred close wakes the reader, so short-circuits,
@@ -1887,6 +1899,12 @@ func (ap *AutoPipeliner) HImportDiscardAll(ctx context.Context) *IntCmd {
 // Watch runs a transactional function on the underlying client (not batched).
 func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	return ap.pipeliner.Watch(ctx, fn, keys...)
+}
+
+// Monitor delegates to the underlying client (not batched — MONITOR needs a
+// dedicated connection).
+func (ap *AutoPipeliner) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return ap.pipeliner.Monitor(ctx, ch)
 }
 
 // Subscribe opens a pub/sub on the underlying client (not batched — pub/sub
@@ -2028,6 +2046,10 @@ var outsidePipelineCommands = map[string]struct{}{
 func runsOutsidePipeline(name string) bool {
 	_, ok := outsidePipelineCommands[name]
 	return ok
+}
+
+func isMonitorCmd(_ context.Context, cmd Cmder) bool {
+	return cmd.GetCmdType() == CmdTypeMonitor
 }
 
 // blockingCommands are commands that park on the server until data arrives or
@@ -2203,7 +2225,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		cacheDivert := ap.cscAdmitMarked(cmd)
 		diverted = diverted || cacheDivert
 	}
-	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
+	diverted = diverted || isMonitorCmd(ctx, cmd) || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,
 		// so an HIMPORT SET on the FD pipe can fail "no such fieldset". Divert it to

@@ -21,6 +21,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hscan"
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/routing"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -273,6 +274,7 @@ type Cmder interface {
 
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
+	monitorCommand() *MonitorCmd
 }
 
 func setCmdsErr(cmds []Cmder, e error) {
@@ -364,6 +366,10 @@ func migrateKeysPos(cmd Cmder) (pos int, valid bool) {
 // MIGRATE options cannot be inspected safely). It uses CommandInfo when supplied
 // and otherwise falls back to the legacy command table and runtime arguments.
 func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
+	if cmd.GetCmdType() == CmdTypeMonitor {
+		return 0
+	}
+
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
 	}
@@ -585,6 +591,13 @@ func (cmd *baseCmd) await() {
 // batch's own completion signal.
 func (cmd *baseCmd) rawErr() error { return cmd.err }
 
+func commandConstructorErr(cmd Cmder) error {
+	if cmd.GetCmdType() == CmdTypeMonitor && len(cmd.Args()) == 0 {
+		return cmd.rawErr()
+	}
+	return nil
+}
+
 // readyBatch exposes the deferred-face batch gating this command (nil for
 // synchronous commands) to the cluster fan-out, which registers its per-node
 // goroutines as executors of every batch they carry.
@@ -753,6 +766,10 @@ func (cmd *baseCmd) base() *baseCmd {
 
 func (cmd *baseCmd) GetCmdType() CmdType {
 	return cmd.cmdType
+}
+
+func (cmd *baseCmd) monitorCommand() *MonitorCmd {
+	return nil
 }
 
 func (cmd *baseCmd) setArgs(args []interface{}) {
@@ -9465,22 +9482,57 @@ const (
 
 type MonitorCmd struct {
 	baseCmd
-	ch     chan string
-	status MonitorStatus
-	mu     sync.Mutex
+	ch              chan string
+	status          MonitorStatus
+	mu              sync.Mutex
+	closeConn       func() error
+	closeGeneration uint64
+	lastConn        *pool.Conn
+	cancel          context.CancelFunc
+	startCh         chan struct{}
+	startOnce       sync.Once
 }
 
-func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
+// NewMonitorCmd creates a monitor command with fully caller-specified command
+// arguments for services that expose vendor-specific monitor command names.
+// Process the returned command with a client to open the monitor stream.
+func NewMonitorCmd(ctx context.Context, ch chan string, args ...interface{}) *MonitorCmd {
+	if len(args) == 0 {
+		cmd := &MonitorCmd{baseCmd: baseCmd{ctx: ctx, cmdType: CmdTypeMonitor}, ch: ch, status: monitorStatusIdle, mu: sync.Mutex{}, startCh: make(chan struct{})}
+		cmd.SetErr(errors.New("redis: monitor command requires at least one argument"))
+		return cmd
+	}
+
+	cmdArgs := make([]interface{}, len(args))
+	copy(cmdArgs, args)
+
 	return &MonitorCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
-			args:    []interface{}{"monitor"},
+			args:    cmdArgs,
 			cmdType: CmdTypeMonitor,
 		},
-		ch:     ch,
-		status: monitorStatusIdle,
-		mu:     sync.Mutex{},
+		ch:      ch,
+		status:  monitorStatusIdle,
+		mu:      sync.Mutex{},
+		startCh: make(chan struct{}),
 	}
+}
+
+func (cmd *MonitorCmd) monitorCommand() *MonitorCmd {
+	return cmd
+}
+
+func (cmd *MonitorCmd) setLastConn(conn *pool.Conn) {
+	cmd.mu.Lock()
+	cmd.lastConn = conn
+	cmd.mu.Unlock()
+}
+
+func (cmd *MonitorCmd) lastConnValue() *pool.Conn {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	return cmd.lastConn
 }
 
 func (cmd *MonitorCmd) String() string {
@@ -9489,16 +9541,84 @@ func (cmd *MonitorCmd) String() string {
 }
 
 func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
+	return cmd.readReplyWithInitial(rd, "")
+}
+
+func (cmd *MonitorCmd) readReplyWithInitial(rd *proto.Reader, initial string) error {
+	cmd.mu.Lock()
+	closeConn := cmd.closeConn
+	generation := cmd.closeGeneration
+	stopped := cmd.status == monitorStatusStop
+	cmd.mu.Unlock()
+	if stopped {
+		return errMonitorStopped
+	}
+	var closeOnce sync.Once
+	closeExecution := func() error {
+		var err error
+		closeOnce.Do(func() {
+			if closeConn != nil {
+				err = closeConn()
+			}
+			cmd.mu.Lock()
+			if cmd.closeGeneration == generation {
+				cmd.closeConn = nil
+				cmd.cancel = nil
+			}
+			cmd.mu.Unlock()
+		})
+		return err
+	}
+	cmd.mu.Lock()
+	if cmd.status == monitorStatusStop || cmd.closeGeneration != generation {
+		cmd.mu.Unlock()
+		if closeConn != nil {
+			_ = closeConn()
+		}
+		return errMonitorStopped
+	}
+	cmd.closeConn = closeExecution
+	cmd.mu.Unlock()
+
 	ctx, cancel := context.WithCancel(cmd.ctx)
+	cmd.mu.Lock()
+	if cmd.status == monitorStatusStop || cmd.closeGeneration != generation {
+		cmd.mu.Unlock()
+		cancel()
+		return errMonitorStopped
+	}
+	cmd.cancel = cancel
+	cmd.mu.Unlock()
 	go func(ctx context.Context) {
+		stopClose := context.AfterFunc(ctx, func() { _ = closeExecution() })
+		defer func() {
+			stopClose()
+			_ = closeExecution()
+		}()
+		select {
+		case <-cmd.startCh:
+		case <-ctx.Done():
+			return
+		}
+		if initial != "" {
+			select {
+			case cmd.ch <- initial:
+			case <-ctx.Done():
+				return
+			}
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
-				err := cmd.readMonitor(rd, cancel)
+				err := cmd.readMonitor(rd, ctx)
 				if err != nil {
-					cmd.err = err
+					cmd.mu.Lock()
+					if cmd.status != monitorStatusStop && cmd.closeGeneration == generation {
+						cmd.err = err
+					}
+					cmd.mu.Unlock()
 					return
 				}
 			}
@@ -9507,39 +9627,97 @@ func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
 	return nil
 }
 
-func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) error {
+func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, ctx context.Context) error {
 	for {
 		cmd.mu.Lock()
 		st := cmd.status
-		pk, _ := rd.Peek(1)
 		cmd.mu.Unlock()
-		if len(pk) != 0 && st == monitorStatusStart {
+		if st == monitorStatusStop {
+			return nil
+		}
+		pk, err := rd.Peek(1)
+		if err != nil {
 			cmd.mu.Lock()
-			line, err := rd.ReadString()
+			stopped := cmd.status == monitorStatusStop
 			cmd.mu.Unlock()
+			if stopped {
+				return nil
+			}
+			return err
+		}
+		if len(pk) != 0 && st == monitorStatusStart {
+			line, err := rd.ReadString()
 			if err != nil {
+				cmd.mu.Lock()
+				stopped := cmd.status == monitorStatusStop
+				cmd.mu.Unlock()
+				if stopped {
+					return nil
+				}
 				return err
 			}
-			cmd.ch <- line
-		}
-		if st == monitorStatusStop {
-			cancel()
-			break
+			select {
+			case cmd.ch <- line:
+			case <-ctx.Done():
+				return nil
+			}
 		}
 	}
-	return nil
+}
+
+func (cmd *MonitorCmd) stopped() bool {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	return cmd.status == monitorStatusStop
 }
 
 func (cmd *MonitorCmd) Start() {
 	cmd.mu.Lock()
-	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStart
+	cmd.mu.Unlock()
+	cmd.startOnce.Do(func() { close(cmd.startCh) })
 }
 
 func (cmd *MonitorCmd) Stop() {
 	cmd.mu.Lock()
-	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStop
+	cmd.closeGeneration++
+	cancel := cmd.cancel
+	cmd.cancel = nil
+	cmd.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	cmd.close()
+}
+
+func (cmd *MonitorCmd) setActiveConn(closeConn func() error) bool {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	if cmd.status == monitorStatusStop || cmd.closeConn != nil {
+		return false
+	}
+	cmd.closeGeneration++
+	cmd.closeConn = closeConn
+	return true
+}
+
+func (cmd *MonitorCmd) clearCloseConn() {
+	cmd.mu.Lock()
+	cmd.closeConn = nil
+	cmd.cancel = nil
+	cmd.closeGeneration++
+	cmd.mu.Unlock()
+}
+
+func (cmd *MonitorCmd) close() {
+	cmd.mu.Lock()
+	closeConn := cmd.closeConn
+	cmd.closeConn = nil
+	cmd.mu.Unlock()
+	if closeConn != nil {
+		_ = closeConn()
+	}
 }
 
 type VectorScoreSliceCmd struct {
@@ -9960,7 +10138,7 @@ func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
 func (cmd *MonitorCmd) Clone() Cmder {
 	// MonitorCmd cannot be safely cloned due to channels and goroutines
 	// Return a new MonitorCmd with the same channel
-	return newMonitorCmd(cmd.ctx, cmd.ch)
+	return NewMonitorCmd(cmd.ctx, cmd.ch, cmd.args...)
 }
 
 // ExtractCommandValue extracts the value from a command result using the fast enum-based approach

@@ -96,6 +96,15 @@ func (c *Pipeline) BatchProcess(ctx context.Context, cmd ...Cmder) error {
 			resetCSCCommand(command)
 		}
 	}
+	for _, queued := range cmd {
+		if queued.GetCmdType() == CmdTypeMonitor {
+			err := errors.New("redis: MONITOR is not supported on a pipeline; run it on a dedicated client.EphemeralConn()")
+			for _, rejected := range cmd {
+				rejected.SetErr(err)
+			}
+			return err
+		}
+	}
 	c.cmds = append(c.cmds, cmd...)
 	return nil
 }
