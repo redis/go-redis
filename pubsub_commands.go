@@ -18,8 +18,8 @@ type PubSubCmdable interface {
 func (c cmdable) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
 	cmd := NewIntCmd(ctx, "publish", channel, message)
 	_ = c(ctx, cmd)
-	// The "sent" Pub/Sub metric is recorded on the execution path
-	// (baseClient.recordCommand), so the async autopipeline face counts too.
+	// The "sent" Pub/Sub metric is recorded after the reply is read
+	// (baseClient.recordCommandSamples), on every execution path.
 	return cmd
 }
 

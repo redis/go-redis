@@ -1848,16 +1848,23 @@ func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAtte
 }
 
 // recordCommand records a finished command to the client's recorder: its
-// duration and, for a successful PUBLISH/SPUBLISH or XREADGROUP, the "sent"
-// Pub/Sub message or the stream lag of every message read. It runs on the
-// execution path, so the async autopipeline face records them too, and reads
-// only the raw result (never Val()/Err(), which on the FD reader would await
-// the batch this call completes).
+// duration and, on success, its per-command samples (recordCommandSamples).
+// It runs on the single-command path and the FD reader, and reads only the
+// raw result (never Val()/Err(), which on the FD reader would await the batch
+// this call completes).
 func (c *baseClient) recordCommand(ctx context.Context, d time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn) {
 	c.recorder().RecordOperationDuration(ctx, d, cmd, attempts, err, cn, c.opt.DB)
 	if err != nil {
 		return
 	}
+	c.recordCommandSamples(ctx, cmd, cn)
+}
+
+// recordCommandSamples records the "sent" Pub/Sub message of a successful
+// PUBLISH/SPUBLISH and the stream lag of every message a successful XREADGROUP
+// read. recordCommand calls it for single commands; the pipeline read loops
+// call it for each command whose reply was read without error.
+func (c *baseClient) recordCommandSamples(ctx context.Context, cmd Cmder, cn *pool.Conn) {
 	switch cmd.Name() {
 	case "publish", "spublish":
 		if args := cmd.Args(); len(args) > 1 {
@@ -2771,6 +2778,7 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 }
 
 func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder, flags []byte) error {
+	samples := otel.Enabled(c.recorder())
 	for i, cmd := range cmds {
 		if flags != nil && flags[i] != 0 {
 			if err := c.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
@@ -2784,6 +2792,9 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 		}
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
+		if err == nil && samples {
+			c.recordCommandSamples(ctx, cmd, cn)
+		}
 		if err != nil && !isRedisError(err) {
 			setCmdsErr(cmds[i+1:], err)
 			return wrapServingEndpoint(cn, err)

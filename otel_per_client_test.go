@@ -284,3 +284,78 @@ func TestOTelRecorderPerClientCommands(t *testing.T) {
 		}
 	}
 }
+
+// TestOTelRecorderBatchedCommandSamples pins that Pub/Sub "sent" and stream
+// lag are recorded once per successful command that runs inside a batch
+// (Pipeline, TxPipeline, half-duplex and full-duplex autopipelining), and not
+// for a discarded pipeline.
+func TestOTelRecorderBatchedCommandSamples(t *testing.T) {
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ctx := context.Background()
+	rec := newCountingRecorder()
+	c := NewClient(&Options{Addr: internalTestRedisAddr(), OTelRecorder: rec})
+	t.Cleanup(func() { _ = c.Close() })
+
+	expect := func(what, key string, want int, run func()) {
+		t.Helper()
+		rec.reset()
+		run()
+		if got := rec.get(key); got != want {
+			t.Errorf("%s: %s = %d, want %d", what, key, got, want)
+		}
+	}
+
+	expect("Pipeline Publish", "pubsub", 1, func() {
+		p := c.Pipeline()
+		p.Publish(ctx, "ch", "x")
+		_, _ = p.Exec(ctx)
+	})
+	expect("Pipeline Publish discarded", "pubsub", 0, func() {
+		p := c.Pipeline()
+		p.Publish(ctx, "ch", "x")
+		p.Discard()
+	})
+	expect("TxPipeline SPublish", "pubsub", 1, func() {
+		p := c.TxPipeline()
+		p.SPublish(ctx, "ch", "x")
+		_, _ = p.Exec(ctx)
+	})
+
+	stream := "otel-batched-samples"
+	_ = c.Del(ctx, stream).Err()
+	if err := c.XGroupCreateMkStream(ctx, stream, "g", "0").Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Del(ctx, stream).Err() })
+	readArgs := &XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{stream, ">"}, Count: 1, Block: -1}
+	add := func() { c.XAdd(ctx, &XAddArgs{Stream: stream, Values: []string{"k", "v"}}) }
+
+	expect("Pipeline XReadGroup", "lag", 1, func() {
+		add()
+		p := c.Pipeline()
+		p.XReadGroup(ctx, readArgs)
+		_, _ = p.Exec(ctx)
+	})
+
+	for _, fd := range []bool{false, true} {
+		ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: fd})
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := map[bool]string{false: "half-duplex", true: "full-duplex"}[fd]
+		expect(name+" AutoPipeline Publish", "pubsub", 1, func() {
+			if err := ap.Publish(ctx, "ch", "x").Err(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		expect(name+" AutoPipeline XReadGroup", "lag", 1, func() {
+			add()
+			if err := ap.XReadGroup(ctx, readArgs).Err(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		_ = ap.Close()
+	}
+}

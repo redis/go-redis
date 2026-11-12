@@ -26,8 +26,15 @@ type PubSubPooler interface {
 	Stats() *pool.PubSubStats
 }
 
-// OTelRecorder is the interface for recording OpenTelemetry metrics.
-
+// OTelRecorder is the interface for recording OpenTelemetry metrics. It is the
+// type of the global recorder (SetOTelRecorder) and of the per-client one
+// (Options.OTelRecorder).
+//
+// A recorder may also implement Enabled() bool. go-redis consults it before
+// metric work whose inputs are expensive to obtain and skips recording while
+// it returns false; a recorder without it is always on. The other optional
+// capabilities are OTelConnectionCounter, OTelMultiDBRecorder and
+// OTelPoolRegistrar.
 type OTelRecorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
 	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn ConnInfo, dbIndex int)

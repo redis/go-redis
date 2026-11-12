@@ -345,11 +345,14 @@ hand-synced lists.
 | MultiDB failover, active-db change, circuit, health check | MultiDB core and members | the MultiDB `rec` |
 
 Pub/Sub "sent" and XREADGROUP stream lag were recorded from the command
-wrappers, which cannot see the client. They move onto the execution path
-(`recordCommand`, called by both the normal path and the full-duplex reader),
-where the client and the serving connection are known. The samples therefore
-also carry `server.address`, and are emitted on the async autopipeline face as
-well, which the existing code comments already list as the intended follow-up.
+wrappers, which cannot see the client (and counted a pipelined PUBLISH at queue
+time, so a discarded pipeline still counted). They move to after the reply is
+read (`recordCommandSamples`): `recordCommand` calls it on the single-command
+path and the full-duplex reader, and the two pipeline read loops
+(`pipelineReadCmdsWithFlags`, `pipelineReadCmdsInView`) call it for each
+command whose reply was read without error, which covers Pipeline, TxPipeline,
+cluster pipelines and the half-duplex autopipeliner. The client and the
+serving connection are known there, so the samples also carry `server.address`.
 
 ## Testing
 
@@ -411,9 +414,10 @@ well, which the existing code comments already list as the intended follow-up.
 - **Hot path.** Custom attributes are baked into the cached attribute set once
   per key; a per-client recorder is a field read on the client, cheaper than
   today's global callback lookup.
-- **Behavior change.** Pub/Sub "sent" and stream-lag samples move to the
-  execution path and gain server attributes. This is the smallest change that
-  gives every family per-client attribution.
+- **Behavior change.** Pub/Sub "sent" and stream-lag samples are recorded
+  after the reply is read, once per successful command on every execution
+  path, and gain server attributes. This is the smallest change that gives
+  every family per-client attribution.
 
 ## Alternatives considered
 

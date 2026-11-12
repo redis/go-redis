@@ -397,8 +397,8 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	cmd.SetFirstKeyPos(keyPos)
 	_ = c(ctx, cmd)
 
-	// Stream lag is recorded on the execution path (baseClient.recordCommand),
-	// so the async autopipeline face counts too.
+	// Stream lag is recorded after the reply is read
+	// (baseClient.recordCommandSamples), on every execution path.
 	return cmd
 }
 

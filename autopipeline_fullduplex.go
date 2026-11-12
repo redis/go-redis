@@ -1191,6 +1191,15 @@ func (fd *fdEngine) emitMetricsGuarded(octx context.Context, emit func()) {
 	emit()
 }
 
+// recorder returns the owning client's recorder; an engine built without a
+// client (tests) records to the global recorder.
+func (fd *fdEngine) recorder() otel.Recorder {
+	if fd.client == nil {
+		return otel.Scoped(nil)
+	}
+	return fd.client.recorder()
+}
+
 // reportReplyMetrics runs the inline-completed command's user-settable metric
 // callbacks (OTel operation-duration; native error callback for a non-retryable
 // Redis error, reporting attempts-1 retries like processWithRetry) for parity
@@ -3173,15 +3182,6 @@ func (fd *fdEngine) settleTail(reqs []fdReq, err error) []fdReq {
 // is not in the in-flight queue, so an escaping panic here would leave every caller
 // blocked forever (session recovery cannot reclaim it). On panic, fall back to empty
 // classification so the requests still settle.
-// recorder returns the owning client's recorder; an engine built without a
-// client (tests) records to the global recorder.
-func (fd *fdEngine) recorder() otel.Recorder {
-	if fd.client == nil {
-		return otel.Scoped(nil)
-	}
-	return fd.client.recorder()
-}
-
 func classifyCommandErrorGuarded(err error) (errorType, statusCode string, isInternal bool) {
 	defer func() {
 		if r := recover(); r != nil {

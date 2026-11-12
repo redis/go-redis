@@ -3389,6 +3389,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 		})
 	}
 
+	samples := otel.Enabled(node.Client.recorder())
 	for i, cmd := range cmds {
 		if flags != nil && flags[i] != 0 {
 			if err := node.Client.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
@@ -3410,6 +3411,9 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 		cmd.SetErr(err)
 
 		if err == nil {
+			if samples {
+				node.Client.recordCommandSamples(ctx, cmd, cn)
+			}
 			continue
 		}
 
