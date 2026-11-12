@@ -3799,7 +3799,7 @@ func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 			}
 		}()
 		// A non-nil error routes to the panicking error callback.
-		fd.reportReplyMetrics(context.Background(), req, errors.New("WRONGTYPE Operation"), nil, 0)
+		fd.reportReplyMetrics(context.Background(), req, errors.New("WRONGTYPE Operation"), nil, 0, false)
 	}()
 
 	if calls.Load() != 1 {
@@ -3822,7 +3822,7 @@ func TestFDReportReplyMetricsNilReplyType(t *testing.T) {
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
 	req := fdReq{cmd: NewStringCmd(context.Background(), "get", "k"), attempts: 1}
 
-	fd.reportReplyMetrics(context.Background(), req, Nil, nil, 0)
+	fd.reportReplyMetrics(context.Background(), req, Nil, nil, 0, false)
 	if got := gotType.Load(); got != "NIL" || gotInternal.Load() {
 		t.Fatalf("errorType = %v, internal = %v, want NIL, false", got, gotInternal.Load())
 	}
@@ -3989,7 +3989,7 @@ func TestFDReportReplyMetricsDurationCallbackNoDeadlock(t *testing.T) {
 		// e == nil exercises the duration callback (the blocking-view path). The
 		// batch is deliberately left open, matching the real order where
 		// reportReplyMetrics runs before req.complete().
-		fd.reportReplyMetrics(ctx, req, nil, nil, 0)
+		fd.reportReplyMetrics(ctx, req, nil, nil, 0, false)
 	}()
 
 	select {

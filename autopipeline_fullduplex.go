@@ -1207,8 +1207,11 @@ func (fd *fdEngine) recorder() otel.Recorder {
 // (panic containment; see there). gid is the calling goroutine's id, or 0 to
 // resolve it here: the reader passes its own, read once per session, because
 // curGoroutineID (runtime.Stack) once per reply capped the reader at about a
-// tenth of its throughput with OTel metrics on.
-func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error, cn *pool.Conn, gid int64) {
+// tenth of its throughput with OTel metrics on. sampled reports that the
+// command's per-command samples (recordCommandSamples) were already recorded:
+// the Close-time flush runs commands through a pooled pipeline whose read loop
+// samples them, so only the duration is recorded here.
+func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error, cn *pool.Conn, gid int64, sampled bool) {
 	if fd.client == nil { // an engine built without a client (tests) has nowhere to record
 		return
 	}
@@ -1233,7 +1236,12 @@ func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error,
 				req.batch.addExecutor(gid)
 				defer req.batch.removeExecutor(gid)
 			}
-			fd.client.recordCommand(octx, fd.sinceWritten(req.writtenOff), req.cmd, req.attempts, e, cn)
+			d := fd.sinceWritten(req.writtenOff)
+			if sampled {
+				fd.client.recorder().RecordOperationDuration(octx, d, req.cmd, req.attempts, e, cn, fd.client.opt.DB)
+			} else {
+				fd.client.recordCommand(octx, d, req.cmd, req.attempts, e, cn)
+			}
 		}
 		if e != nil {
 			fd.client.recordCommandError(octx, e, cn, req.attempts-1)
@@ -2143,7 +2151,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 						req.batch.fdAttempts = req.attempts // published by complete()
 						req.batch.fdConn = cn
 					} else {
-						fd.reportReplyMetrics(octx, req, e, cn, readerGid)
+						fd.reportReplyMetrics(octx, req, e, cn, readerGid, false)
 					}
 					fd.finish(req) // wake the caller, or hand off to the hook host
 					done++
@@ -3634,13 +3642,14 @@ func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries in
 			// Per-command metrics, as the reader reports them inline: this path
 			// bypasses the reader. A pipelined command is measured with its
 			// batch (fdPipelineMetrics). Telemetry, so on both branches below;
-			// account only decides the owner's outcome report.
+			// account only decides the owner's outcome report. run's read loop
+			// already recorded the per-command samples (sampled=true).
 			if !reqs[j].pipelined {
 				octx := reqs[j].ctx
 				if octx == nil {
 					octx = bg
 				}
-				fd.reportReplyMetrics(octx, reqs[j], reqs[j].cmd.rawErr(), nil, 0)
+				fd.reportReplyMetrics(octx, reqs[j], reqs[j].cmd.rawErr(), nil, 0, true)
 			}
 			if account {
 				fd.finish(reqs[j])

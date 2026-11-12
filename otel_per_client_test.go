@@ -356,6 +356,17 @@ func TestOTelRecorderBatchedCommandSamples(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+		expect(name+" AutoPipeline Pipeline Publish", "pubsub", 1, func() {
+			p := ap.Pipeline()
+			p.Publish(ctx, "ch", "x")
+			_, _ = p.Exec(ctx)
+		})
+		expect(name+" AutoPipeline Pipeline XReadGroup", "lag", 1, func() {
+			add()
+			p := ap.Pipeline()
+			p.XReadGroup(ctx, readArgs)
+			_, _ = p.Exec(ctx)
+		})
 		_ = ap.Close()
 	}
 }
