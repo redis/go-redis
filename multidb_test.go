@@ -3534,3 +3534,33 @@ func TestDefaultMultiDBFailureDetectorConfig(t *testing.T) {
 		t.Fatalf("DefaultMultiDBFailureDetectorConfig() = %+v, want %+v", got, want)
 	}
 }
+
+// TestMultiDBPipelineRejectsConnStateCommands: a per-connection state command
+// queued on a MultiDB Pipeline or TxPipeline fails the batch before dispatch,
+// like on the other pooled clients.
+func TestMultiDBPipelineRejectsConnStateCommands(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), db)
+	runs := map[string]func(func(redis.Pipeliner) error) ([]redis.Cmder, error){
+		"Pipelined":   func(fn func(redis.Pipeliner) error) ([]redis.Cmder, error) { return mdb.Pipelined(ctx, fn) },
+		"TxPipelined": func(fn func(redis.Pipeliner) error) ([]redis.Cmder, error) { return mdb.TxPipelined(ctx, fn) },
+	}
+	for name, run := range runs {
+		var keyed *redis.StatusCmd
+		_, err := run(func(p redis.Pipeliner) error {
+			keyed = p.Set(ctx, "k", "v", 0)
+			p.ClientTrackingOff(ctx)
+			return nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "CLIENT TRACKING is per-connection state") {
+			t.Fatalf("%s: err = %v, want the CLIENT TRACKING guidance error", name, err)
+		}
+		if keyed.Err() == nil {
+			t.Fatalf("%s: keyed command in the same batch has no error, want the guidance error", name)
+		}
+	}
+	if n := db.hook.batches.Load(); n != 0 {
+		t.Fatalf("member saw %d pipeline batches, want 0 (must not dispatch)", n)
+	}
+}

@@ -2960,6 +2960,12 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 // commands' remaining budget, so a command already issued on the child's
 // connection is not given a fresh MaxRedirects+1 executions.
 func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder, maxRedirects int) error {
+	// Cluster pipelines bypass baseClient.generalProcessPipeline: surface a
+	// queued pooled-state rejection before any node mapping (fail-before-dispatch).
+	if err := stateRejectedErr(cmds); err != nil {
+		setCmdsErr(cmds, err)
+		return err
+	}
 	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
 	var operationStart time.Time
 	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
@@ -3613,6 +3619,12 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 		return nil
 	}
 
+	// Same fail-before-dispatch surfacing as processPipeline.
+	if err := stateRejectedErr(cmds); err != nil {
+		setCmdsErr(cmds, err)
+		return err
+	}
+
 	// Resolve once so the transaction uses one metadata view.
 	route := c.resolvePipelineRouting(ctx, cmds)
 	defer route.clear(cmds)
@@ -4103,6 +4115,45 @@ func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedire
 		return &txOutcome{kind: txFatal, err: execErr, execErr: execErr}
 	}
 	return &txOutcome{kind: txFatal, err: execErr}
+}
+
+// ClientTracking and friends are per-connection commands (statefulCmdable);
+// on a pooled cluster client they fail with guidance. Use a dedicated
+// connection of the relevant node client, or the built-in client-side cache.
+func (c *ClusterClient) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+	if !on {
+		return c.ClientTrackingOff(ctx)
+	}
+	return c.ClientTrackingOn(ctx, opt)
+}
+
+// ClientTrackingOn on a pooled cluster client fails with guidance; see ClientTracking.
+func (c *ClusterClient) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, args...)
+}
+
+// ClientTrackingOff on a pooled cluster client fails with guidance; see ClientTracking.
+func (c *ClusterClient) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
+}
+
+// ClientMaintNotifications on a pooled cluster client fails with guidance;
+// set ClusterOptions.MaintNotificationsConfig instead.
+func (c *ClusterClient) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, args...)
 }
 
 func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {

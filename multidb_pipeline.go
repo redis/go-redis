@@ -275,6 +275,12 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 // so a command already issued on the member's FD connection does not get a
 // fresh CommandRetries+1 executions.
 func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, maxRetries int) error {
+	// Fail-before-dispatch: the attempts below reset command errors before
+	// handing the batch to a member, which would clear a pre-set rejection.
+	if err := stateRejectedErr(cmds); err != nil {
+		setCmdsErr(cmds, err)
+		return err
+	}
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -553,6 +559,11 @@ func (c *multidbCore) processPipelineRetries(ctx context.Context, cmds []Cmder, 
 // recorded so the breaker and detector can move traffic for subsequent
 // operations.
 func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error {
+	// Same fail-before-dispatch as processPipelineRetries.
+	if err := stateRejectedErr(cmds); err != nil {
+		setCmdsErr(cmds, err)
+		return err
+	}
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -729,6 +740,45 @@ func (c *MultiDBClient) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
 	return cmd
+}
+
+// ClientTracking and friends are per-connection commands (statefulCmdable);
+// on a MultiDB client they fail with guidance. Use a dedicated connection of
+// the relevant database client, or the built-in client-side cache.
+func (c *MultiDBClient) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+	if !on {
+		return c.ClientTrackingOff(ctx)
+	}
+	return c.ClientTrackingOn(ctx, opt)
+}
+
+// ClientTrackingOn on a MultiDB client fails with guidance; see ClientTracking.
+func (c *MultiDBClient) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, args...)
+}
+
+// ClientTrackingOff on a MultiDB client fails with guidance; see ClientTracking.
+func (c *MultiDBClient) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
+}
+
+// ClientMaintNotifications on a MultiDB client fails with guidance; set
+// MaintNotificationsConfig on each database's Options instead.
+func (c *MultiDBClient) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, args...)
 }
 
 // Pipeline returns a pipeline whose Exec routes the whole batch to the active
