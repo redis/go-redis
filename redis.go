@@ -1854,6 +1854,13 @@ func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAtte
 // this call completes).
 func (c *baseClient) recordCommand(ctx context.Context, d time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn) {
 	c.recorder().RecordOperationDuration(ctx, d, cmd, attempts, err, cn, c.opt.DB)
+// recordCommand records a finished command to the client's recorder: its
+// duration and, on success, its per-command samples (recordCommandSamples).
+// It runs on the single-command path and the FD reader, and reads only the
+// raw result (never Val()/Err(), which on the FD reader would await the batch
+// this call completes).
+func (c *baseClient) recordCommand(ctx context.Context, d time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn) {
+	c.recorder().RecordOperationDuration(ctx, d, cmd, attempts, err, cn, c.opt.DB)
 	if err != nil {
 		return
 	}
