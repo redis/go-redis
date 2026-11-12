@@ -354,6 +354,15 @@ func testClusterWatchLiveSlotMigration(t *testing.T, setOpt func(*ClusterOptions
 			if replies, err := exec.Slice(); err != nil || len(replies) != 1 {
 				return fmt.Errorf("raw EXEC = %v, %v; want one reply", replies, err)
 			}
+			// The same raw MULTI/EXEC as direct commands.
+			for _, args := range [][]interface{}{{"multi"}, {"get", key}} {
+				if err := tx.Do(ctx, args...).Err(); err != nil {
+					return err
+				}
+			}
+			if replies, err := tx.Do(ctx, "exec").Slice(); err != nil || len(replies) != 1 {
+				return fmt.Errorf("direct raw EXEC = %v, %v; want one reply", replies, err)
+			}
 			_, err = tx.TxPipelined(ctx, func(pipe Pipeliner) error {
 				pipe.Get(ctx, key)
 				pipe.Set(ctx, key, n+1, 0)
@@ -467,6 +476,7 @@ func TestClusterWatchAskHImportRetryKeepsAsking(t *testing.T) {
 // ASKING error, not that MOVED, on every Tx path.
 func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 	const noperm = "NOPERM User has no permissions to run the 'asking' command"
+	const execAbort = "EXECABORT Transaction discarded because of previous errors."
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
@@ -478,8 +488,10 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 		// a node that already owns the slot does; execNull makes EXEC fail
 		// as after a modified watched key.
 		owner, execNull bool
-		// want is the expected error prefix; empty means the ASKING error.
+		// want is the expected error; empty means the ASKING error, and ok
+		// means no error.
 		want string
+		ok   bool
 		fn   func(tx *Tx) error
 	}{
 		{name: "watch", rejectFrom: 1, fn: func(*Tx) error { return nil }},
@@ -498,6 +510,24 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 				return nil
 			})
 			return err
+		}},
+		// A queue-time error that a missing ASKING did not cause keeps its
+		// EXECABORT.
+		{name: "owner-unrelated-abort", rejectFrom: 2, owner: true, want: execAbort, fn: func(tx *Tx) error {
+			_, err := tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Do(ctx, "bogus")
+				return nil
+			})
+			return err
+		}},
+		// A raw MULTI sent as direct commands: ASKING goes before MULTI only.
+		{name: "direct-raw-multi", rejectFrom: 1 << 20, ok: true, fn: func(tx *Tx) error {
+			for _, args := range [][]interface{}{{"multi"}, {"set", "key", "v"}, {"exec"}} {
+				if err := tx.Do(ctx, args...).Err(); err != nil {
+					return err
+				}
+			}
+			return nil
 		}},
 		{name: "raw-multi", rejectFrom: 2, fn: func(tx *Tx) error {
 			_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
@@ -533,6 +563,11 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 					case "hello":
 						return "%0\r\n"
 					case "asking":
+						if multi {
+							// Redis queues ASKING inside MULTI.
+							aborted = true
+							return "+QUEUED\r\n"
+						}
 						if askings.Add(1) >= tc.rejectFrom {
 							if tc.push {
 								return "-" + noperm + "\r\n>2\r\n$10\r\ninvalidate\r\n*1\r\n$3\r\nkey\r\n"
@@ -553,7 +588,7 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 						}
 						if aborted {
 							aborted = false
-							return "-EXECABORT Transaction discarded because of previous errors.\r\n"
+							return "-" + execAbort + "\r\n"
 						}
 						return "*1\r\n+OK\r\n"
 					}
@@ -572,7 +607,8 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 					case "set":
 						return "+QUEUED\r\n"
 					}
-					return "-ERR unexpected command '" + args[0] + "'\r\n"
+					aborted = aborted || multi
+					return "-ERR unknown command '" + args[0] + "'\r\n"
 				}
 			})
 			source = newWatchTestServer(t, stateless(func(args []string) string {
@@ -592,11 +628,17 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 			}))
 
 			client := newWatchTestClusterClient(t, source, 3, 0)
+			err := client.Watch(ctx, tc.fn, "key")
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("Watch() = %v; want nil", err)
+				}
+				return
+			}
 			want := tc.want
 			if want == "" {
 				want = noperm
 			}
-			err := client.Watch(ctx, tc.fn, "key")
 			if err == nil || err.Error() != want {
 				t.Fatalf("Watch() = %v; want %q", err, want)
 			}

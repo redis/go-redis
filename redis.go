@@ -443,6 +443,9 @@ type baseClient struct {
 	// redirect. Each command then carries an ASKING prefix in place of the
 	// CLIENT CACHING prefix (see prefixASKING).
 	asking bool
+	// askingMulti is set while a raw MULTI sent as direct commands is open on
+	// an asking Tx (see trackAskingMulti).
+	askingMulti bool
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -2100,7 +2103,10 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		// the socket still carries TRACKING after disableCSCServing (#4236 item 1).
 		flag := byte(0)
 		if c.asking {
-			flag = prefixASKING
+			if !c.askingMulti {
+				flag = prefixASKING
+			}
+			c.trackAskingMulti(cmd)
 		} else if c.cscPolicy.mode != TrackingModePlain {
 			tracked := c.cscConnInitGen(cn.GetID()) != 0
 			if capture != nil && !tracked {
@@ -2197,7 +2203,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				}
 			}
 			err := readReplyFunc(rd)
-			if askingErr != nil && askingMasks(err) {
+			if askingErr != nil && askingRedirect(err) {
 				err = askingErr
 			}
 			// Assert the command type before touching the error: the
@@ -2760,6 +2766,9 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 	// askingErr carries over to commands without a prefix: in an asking
 	// batch those are the commands of a raw MULTI, and its ASKING covers them.
 	var askingErr error
+	// askingRedirected records a redirect under askingErr, so that the
+	// EXECABORT of a raw MULTI is reported as askingErr only after one.
+	var askingRedirected bool
 	for i, cmd := range cmds {
 		if flags != nil && flags[i] != 0 {
 			rejected, err := c.readPipelinePrefix(ctx, cn, rd, flags[i])
@@ -2767,15 +2776,20 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 				setCmdsErr(cmds[i:], err)
 				return err
 			}
-			askingErr = rejected
+			askingErr, askingRedirected = rejected, false
 		}
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
-		if askingErr != nil && askingMasks(err) {
-			err = askingErr
+		if askingErr != nil {
+			if askingRedirect(err) {
+				askingRedirected = true
+				err = askingErr
+			} else if askingRedirected && proto.IsExecAbortError(err) {
+				err = askingErr
+			}
 		}
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
@@ -2848,7 +2862,7 @@ func (c *baseClient) txPipelineProcessCmds(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
-			if askingErr != nil && askingMasks(err) {
+			if askingErr != nil && (askingRedirect(err) || askingAbortedExec(err, trimmedCmds)) {
 				err = askingErr
 			}
 			setCmdsErr(cmds, err)

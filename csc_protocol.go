@@ -157,18 +157,48 @@ func (c *baseClient) readASKINGAck(ctx context.Context, cn *pool.Conn, rd *proto
 	return nil, c.drainPushFrames(ctx, cn, rd, true)
 }
 
-// askingMasks reports whether err, the reply to a command whose ASKING was
-// rejected, comes from the missing ASKING: a cluster redirect, or EXECABORT
-// after a redirected queued command. Other replies, such as redis.Nil or
-// TxFailedErr, are valid outcomes on a node that already owns the slot.
-func askingMasks(err error) bool {
+// askingRedirect reports whether err, the reply to a command whose ASKING was
+// rejected, comes from the missing ASKING: a cluster redirect. Other replies,
+// such as redis.Nil or TxFailedErr, are valid outcomes on a node that already
+// owns the slot.
+func askingRedirect(err error) bool {
 	if err == nil || !isRedisError(err) {
 		return false
 	}
-	if moved, ask, _ := isMovedError(err); moved || ask {
-		return true
+	moved, ask, _ := isMovedError(err)
+	return moved || ask
+}
+
+// askingAbortedExec reports whether err, the EXEC reply of a transaction whose
+// ASKING was rejected, comes from the missing ASKING: EXECABORT after a queued
+// command got a redirect. An abort for another queue-time error stays.
+func askingAbortedExec(err error, queued []Cmder) bool {
+	if err == nil || !proto.IsExecAbortError(err) {
+		return false
 	}
-	return proto.IsExecAbortError(err)
+	for _, cmd := range queued {
+		// rawErr: execution path, never await here.
+		if askingRedirect(cmd.rawErr()) {
+			return true
+		}
+	}
+	return false
+}
+
+// trackAskingMulti follows a raw MULTI sent as direct commands on an asking Tx.
+// Its commands run under the ASKING before MULTI, and an ASKING inside MULTI
+// would be queued.
+func (c *baseClient) trackAskingMulti(cmd Cmder) {
+	if len(cmd.Args()) != 1 {
+		return
+	}
+	name, _ := cscCommandToken(cmd, 0)
+	switch internal.ToLower(name) {
+	case "multi":
+		c.askingMulti = true
+	case "exec", "discard":
+		c.askingMulti = false
+	}
 }
 
 // readPipelinePrefix reads the reply to a prefix of a pipeline command.
