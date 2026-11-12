@@ -5,10 +5,12 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // waitForError drains events until an error event arrives.
@@ -809,5 +811,85 @@ func TestSubscribeSkipsNamesCoveredByConnectReplay(t *testing.T) {
 	case ev := <-h.Events():
 		t.Fatalf("duplicate event after both confirmations: %#v", ev)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestFailedReplayKeepsOldConnection pins that a failed replay write
+// during connection replacement discards only the new connection and
+// leaves the still-healthy old connection installed and delivering
+// messages until a later retry succeeds.
+func TestFailedReplayKeepsOldConnection(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	cfg := testConfig("node-a:6379")
+	cfg.MinRetryBackoff = 10 * time.Millisecond
+	cfg.ReconnectMaxBackoff = 10 * time.Millisecond
+
+	gate := make(chan struct{})
+	var dials atomic.Int32
+	hooks := testHooks(srv)
+	hooks.newConn = func(ctx context.Context, addr string) (*pool.Conn, error) {
+		cn, err := srv.dial(ctx, addr)
+		if err != nil {
+			return nil, err
+		}
+		if dials.Add(1) == 2 {
+			// Gate the retry dial and close conn 2 before installLocked
+			// writes the replay so the replay write fails deterministically.
+			srv.setDialGate(gate)
+			_ = cn.Close()
+		}
+		return cn, nil
+	}
+	m := NewManager(cfg, hooks)
+	t.Cleanup(func() { _ = m.Close() })
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "ch")
+	fsc1.sendConfirm(t, "subscribe", "ch", 1)
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	// Trigger a planned replacement whose new connection will fail its
+	// replay write.
+	if err := fsc1.poolConn.MarkForHandoff("node-b:6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	fsc1.sendMessage(t, "message", "ch", "trigger-handoff")
+	msg, ok := recvEvent(t, h.Events()).(*Message)
+	if !ok || msg.Payload != "trigger-handoff" {
+		t.Fatalf("got %#v, want trigger-handoff", msg)
+	}
+
+	fsc2 := srv.waitDial(t)
+	fsc2.expectClosed(t)
+	srv.waitGateHit(t)
+
+	// Old connection must remain installed and keep delivering messages.
+	if m.conn.Load() != fsc1.poolConn {
+		t.Fatalf("m.conn = %p, want old connection %p", m.conn.Load(), fsc1.poolConn)
+	}
+	fsc1.sendMessage(t, "message", "ch", "still-on-old")
+	msg, ok = recvEvent(t, h.Events()).(*Message)
+	if !ok || msg.Payload != "still-on-old" {
+		t.Fatalf("got %#v, want still-on-old from retained old connection", msg)
+	}
+
+	// Release the gate so retry dials conn 3, replays, and retires conn 1.
+	srv.setDialGate(nil)
+	close(gate)
+	fsc3 := srv.waitDial(t)
+	fsc3.expectCmd(t, "subscribe", "ch")
+	fsc3.sendConfirm(t, "subscribe", "ch", 1)
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+	fsc1.expectClosed(t)
+
+	fsc3.sendMessage(t, "message", "ch", "on-new")
+	msg, ok = recvEvent(t, h.Events()).(*Message)
+	if !ok || msg.Payload != "on-new" {
+		t.Fatalf("got %#v, want on-new after cutover", msg)
 	}
 }
