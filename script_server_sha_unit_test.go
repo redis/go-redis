@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -34,14 +35,28 @@ type fakeScripter struct {
 	// EvalSha/EvalShaRO return NOSCRIPT until the script is loaded again,
 	// which is what a real server does.
 	flushedAfterFirstLoad bool
+
+	// If set, SCRIPT LOAD fails with this error.
+	scriptLoadErr error
+	// If set, EvalSha/EvalShaRO return NOSCRIPT whatever was loaded.
+	noScript bool
+	// If set, decides the answer of EvalSha for the digest it was sent.
+	evalShaHook func(sha1 string) error
 }
+
+var errFakeNoScript = proto.RedisError("NOSCRIPT No matching script. Please use EVAL.")
 
 func (f *fakeScripter) ScriptLoad(ctx context.Context, script string) *StringCmd {
 	f.mu.Lock()
 	f.scriptLoadCalls++
+	err := f.scriptLoadErr
 	f.mu.Unlock()
 
 	cmd := NewStringCmd(ctx)
+	if err != nil {
+		cmd.SetErr(err)
+		return cmd
+	}
 	cmd.SetVal(f.hashToReturn)
 	return cmd
 }
@@ -70,13 +85,18 @@ func (f *fakeScripter) EvalSha(ctx context.Context, sha1 string, keys []string, 
 	f.mu.Lock()
 	f.evalShaCalls++
 	f.lastEvalShaSHA = sha1
-	fail := f.flushedAfterFirstLoad && f.scriptLoadCalls < 2
+	fail := f.noScript || (f.flushedAfterFirstLoad && f.scriptLoadCalls < 2)
+	hook := f.evalShaHook
 	f.mu.Unlock()
 
 	cmd := NewCmd(ctx)
+	if hook != nil {
+		cmd.SetErr(hook(sha1))
+		return cmd
+	}
 	if fail {
 		// Use RedisError so go-redis NOSCRIPT detection triggers.
-		cmd.SetErr(proto.RedisError("NOSCRIPT No matching script. Please use EVAL."))
+		cmd.SetErr(errFakeNoScript)
 		return cmd
 	}
 	cmd.SetErr(nil)
@@ -97,12 +117,12 @@ func (f *fakeScripter) EvalShaRO(ctx context.Context, sha1 string, keys []string
 	f.mu.Lock()
 	f.evalShaROCalls++
 	f.lastEvalShaROSHA = sha1
-	fail := f.flushedAfterFirstLoad && f.scriptLoadCalls < 2
+	fail := f.noScript || (f.flushedAfterFirstLoad && f.scriptLoadCalls < 2)
 	f.mu.Unlock()
 
 	cmd := NewCmd(ctx)
 	if fail {
-		cmd.SetErr(proto.RedisError("NOSCRIPT No matching script. Please use EVAL."))
+		cmd.SetErr(errFakeNoScript)
 		return cmd
 	}
 	cmd.SetErr(nil)
@@ -240,6 +260,125 @@ func TestNewScriptServerSHA_EvalShaRO_ReloadsOnNoScript(t *testing.T) {
 	}
 	if c.evalShaROCalls != 2 {
 		t.Fatalf("expected EvalShaRO 2 calls (retry), got %d", c.evalShaROCalls)
+	}
+}
+
+// A reload that fails (SCRIPT LOAD denied by ACL, network error, load only
+// queued) must not drop the cached digest: the EVAL fallback puts the script
+// back into the server's cache, so the next call can use EVALSHA again.
+func TestNewScriptServerSHA_FailedReloadKeepsDigest(t *testing.T) {
+	hash := strings.Repeat("8", 40)
+	tests := map[string]func(c *fakeScripter){
+		"load error": func(c *fakeScripter) {
+			c.scriptLoadErr = proto.RedisError("NOPERM this user has no permissions to run the 'script|load' command")
+		},
+		"queued load": func(c *fakeScripter) { c.hashToReturn = "" },
+	}
+	for name, breakLoad := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			c := &fakeScripter{hashToReturn: hash}
+
+			s := NewScriptServerSHA("return 1")
+			if err := s.Run(ctx, c, []string{"k"}).Err(); err != nil {
+				t.Fatalf("Run() err: %v", err)
+			}
+
+			// The script cache is flushed and SCRIPT LOAD stops working.
+			c.noScript = true
+			breakLoad(c)
+			if err := s.Run(ctx, c, []string{"k"}).Err(); err != nil {
+				t.Fatalf("Run() after flush err: %v", err)
+			}
+			if c.scriptLoadCalls != 2 || c.evalCalls != 1 {
+				t.Fatalf("expected a failed reload and the Eval fallback, got ScriptLoad %d calls, Eval %d calls", c.scriptLoadCalls, c.evalCalls)
+			}
+			if got := s.Hash(); got != hash {
+				t.Errorf("Hash() = %q after a failed reload, want %q", got, hash)
+			}
+
+			// The server has the script again; SCRIPT LOAD still does not work.
+			c.noScript = false
+			if err := s.Run(ctx, c, []string{"k"}).Err(); err != nil {
+				t.Fatalf("Run() after recovery err: %v", err)
+			}
+			if err := s.RunRO(ctx, c, []string{"k"}).Err(); err != nil {
+				t.Fatalf("RunRO() after recovery err: %v", err)
+			}
+			// EvalSha: first run, the miss, the run after recovery.
+			if c.evalShaCalls != 3 || c.lastEvalShaSHA != hash || c.evalShaROCalls != 1 || c.lastEvalShaROSHA != hash {
+				t.Errorf("expected EVALSHA and EVALSHA_RO with the cached digest after recovery, got EvalSha %d calls (last %q), EvalShaRO %d calls (last %q)",
+					c.evalShaCalls, c.lastEvalShaSHA, c.evalShaROCalls, c.lastEvalShaROSHA)
+			}
+			if c.scriptLoadCalls != 2 || c.evalCalls != 1 || c.evalROCalls != 0 {
+				t.Errorf("expected no reload and no fallback after recovery, got ScriptLoad %d calls, Eval %d calls, EvalRO %d calls",
+					c.scriptLoadCalls, c.evalCalls, c.evalROCalls)
+			}
+		})
+	}
+}
+
+// Callers that get NOSCRIPT at the same time all reload. SCRIPT LOAD answers
+// with the digest they already hold, so none of them may treat the digest
+// another one has just stored as stale and none may retry with an empty one.
+func TestNewScriptServerSHA_ConcurrentReloadNeverSendsEmptyDigest(t *testing.T) {
+	const callers = 8
+
+	ctx := context.Background()
+	hash := strings.Repeat("9", 40)
+
+	// The interleaving that breaks this cannot be forced from a Scripter, so
+	// the collision is repeated.
+	for round := 0; round < 200; round++ {
+		var (
+			evalShas atomic.Int32
+			empty    atomic.Int32
+			missed   sync.WaitGroup
+		)
+		missed.Add(callers)
+		c := &fakeScripter{hashToReturn: hash}
+		c.evalShaHook = func(sha1 string) error {
+			if sha1 == "" {
+				empty.Add(1)
+				return errFakeNoScript
+			}
+			if evalShas.Add(1) <= callers {
+				// Every caller misses once, and all of them have missed
+				// before the first one starts to reload.
+				missed.Done()
+				missed.Wait()
+				return errFakeNoScript
+			}
+			return nil
+		}
+
+		s := NewScriptServerSHA("return 1")
+		if err := s.Load(ctx, c).Err(); err != nil {
+			t.Fatalf("Load() err: %v", err)
+		}
+
+		errs := make([]error, callers)
+		var wg sync.WaitGroup
+		for i := 0; i < callers; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				errs[i] = s.EvalSha(ctx, c, []string{"k"}).Err()
+			}(i)
+		}
+		wg.Wait()
+
+		if n := empty.Load(); n != 0 {
+			t.Fatalf("round %d: EVALSHA was sent with an empty digest %d times", round, n)
+		}
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: EvalSha() of caller %d err: %v", round, i, err)
+			}
+		}
+		if got := s.Hash(); got != hash {
+			t.Fatalf("round %d: Hash() = %q, want %q", round, got, hash)
+		}
 	}
 }
 
