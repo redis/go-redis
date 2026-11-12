@@ -53,6 +53,14 @@ func (e RedisError) Error() string { return string(e) }
 
 func (RedisError) RedisError() {}
 
+// isServerError reports whether err is an error reply from the server: a plain
+// RedisError or a typed one (MOVED, ASK, LOADING, ...). Aggregates keep these
+// as element values instead of stopping mid-frame.
+func isServerError(err error) bool {
+	_, ok := err.(interface{ RedisError() })
+	return ok
+}
+
 func ParseErrorReply(line []byte) error {
 	msg := string(line[1:])
 	return parseTypedRedisError(msg)
@@ -454,7 +462,7 @@ func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
 				val[i] = nil
 				continue
 			}
-			if err, ok := err.(RedisError); ok {
+			if isServerError(err) {
 				val[i] = err
 				continue
 			}
@@ -492,7 +500,7 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 				m[k] = nil
 				continue
 			}
-			if err, ok := err.(RedisError); ok {
+			if isServerError(err) {
 				m[k] = err
 				continue
 			}
