@@ -62,10 +62,11 @@ func clusterSlotsReply(addr string) string {
 	return fmt.Sprintf("*1\r\n*3\r\n:0\r\n:16383\r\n*2\r\n$%d\r\n%s\r\n:%s\r\n", len(host), host, port)
 }
 
-func newWatchTestClusterClient(t *testing.T, addr string, maxRedirects int) *ClusterClient {
+func newWatchTestClusterClient(t *testing.T, addr string, maxRedirects, maxRetries int) *ClusterClient {
 	t.Helper()
 	client := NewClusterClient(&ClusterOptions{
 		Addrs:                    []string{addr},
+		MaxRetries:               maxRetries,
 		Protocol:                 3,
 		DisableIdentity:          true,
 		MaxRedirects:             maxRedirects,
@@ -81,7 +82,7 @@ func newWatchTestClusterClient(t *testing.T, addr string, maxRedirects int) *Clu
 // ClusterClient.Watch must send ASKING so the transaction runs on the target.
 func TestClusterWatchAskSendsAsking(t *testing.T) {
 	var source string
-	var askings, execs atomic.Int32
+	var askings, execs, gets atomic.Int32
 	target := newWatchTestServer(t, func() func(args []string) string {
 		var asking, multi bool
 		return func(args []string) string {
@@ -109,6 +110,11 @@ func TestClusterWatchAskSendsAsking(t *testing.T) {
 			case "watch":
 				return "+OK\r\n"
 			case "get":
+				// The first GET fails with a retryable error: with
+				// MaxRetries set, the Tx must retry it with a new ASKING.
+				if gets.Add(1) == 1 {
+					return "-LOADING Redis is loading the dataset in memory\r\n"
+				}
 				return "_\r\n"
 			case "set":
 				return "+QUEUED\r\n"
@@ -136,7 +142,7 @@ func TestClusterWatchAskSendsAsking(t *testing.T) {
 		return "-ERR unexpected command '" + args[0] + "'\r\n"
 	}))
 
-	client := newWatchTestClusterClient(t, source, 3)
+	client := newWatchTestClusterClient(t, source, 3, 2)
 	ctx := context.Background()
 	called := false
 	err := client.Watch(ctx, func(tx *Tx) error {
@@ -161,6 +167,30 @@ func TestClusterWatchAskSendsAsking(t *testing.T) {
 	}
 	if n := askings.Load(); n == 0 {
 		t.Fatal("target received no ASKING")
+	}
+	if n := gets.Load(); n != 2 {
+		t.Fatalf("target served GET %d times; want 2 (one retry after LOADING)", n)
+	}
+}
+
+func TestAskingPipelineFlags(t *testing.T) {
+	ctx := context.Background()
+	cmd := func(args ...interface{}) Cmder { return NewCmd(ctx, args...) }
+	cmds := []Cmder{
+		cmd("get", "a"),
+		cmd("multi"),
+		cmd("get", "a"),
+		cmd("set", "a", "1"),
+		cmd("exec"),
+		cmd("get", "a"),
+		cmd("multi"),
+		cmd("discard"),
+		cmd("get", "a"),
+	}
+	got := string(askingPipelineFlags(cmds))
+	want := "AA\x00\x00\x00AA\x00A"
+	if got != want {
+		t.Fatalf("askingPipelineFlags = %q; want %q", got, want)
 	}
 }
 
@@ -187,7 +217,7 @@ func TestClusterWatchReturnsErrorWhenRedirectsRunOut(t *testing.T) {
 		a = newWatchTestServer(t, stateless(node(&a, &b)))
 		b = newWatchTestServer(t, stateless(node(&b, &a)))
 
-		client := newWatchTestClusterClient(t, a, 2)
+		client := newWatchTestClusterClient(t, a, 2, 0)
 		called := false
 		err := client.Watch(context.Background(), func(*Tx) error { called = true; return nil }, "key")
 		if err == nil {
@@ -217,7 +247,7 @@ func TestClusterWatchReturnsErrorWhenRedirectsRunOut(t *testing.T) {
 			return "+OK\r\n"
 		}))
 
-		client := newWatchTestClusterClient(t, a, 2)
+		client := newWatchTestClusterClient(t, a, 2, 0)
 		called := false
 		err := client.Watch(context.Background(), func(*Tx) error { called = true; return nil }, "key")
 		if err == nil {
@@ -303,17 +333,26 @@ func testClusterWatchLiveSlotMigration(t *testing.T, setOpt func(*ClusterOptions
 
 	incr := func(key string) error {
 		return c.Watch(ctx, func(tx *Tx) error {
-			// One direct read, one plain pipeline read and one read inside
-			// MULTI: each is a trackable read that takes a different path.
+			// A direct read, plain pipeline reads and a read inside MULTI:
+			// each is a trackable read that takes a different path.
 			n, err := tx.Get(ctx, key).Int()
 			if err != nil && !errors.Is(err, Nil) {
 				return err
 			}
+			// A raw MULTI/EXEC in a plain pipeline: ASKING goes before
+			// MULTI only, so EXEC returns just the queued GET.
+			var exec *Cmd
 			if _, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
 				pipe.Get(ctx, key)
+				pipe.Do(ctx, "multi")
+				pipe.Get(ctx, key)
+				exec = pipe.Do(ctx, "exec")
 				return nil
 			}); err != nil && !errors.Is(err, Nil) {
 				return err
+			}
+			if replies, err := exec.Slice(); err != nil || len(replies) != 1 {
+				return fmt.Errorf("raw EXEC = %v, %v; want one reply", replies, err)
 			}
 			_, err = tx.TxPipelined(ctx, func(pipe Pipeliner) error {
 				pipe.Get(ctx, key)

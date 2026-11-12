@@ -438,6 +438,11 @@ type pipelinePoolRef struct {
 
 type baseClient struct {
 	cscPolicy cscPolicy
+	// asking is set only on the private baseClient of a Tx that
+	// ClusterClient.Watch runs on a node importing the slot, after an ASK
+	// redirect. Each command then carries an ASKING prefix in place of the
+	// CLIENT CACHING prefix (see prefixASKING).
+	asking bool
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -2094,7 +2099,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		// Per-socket init generation (not live client-level CSC) decides whether
 		// the socket still carries TRACKING after disableCSCServing (#4236 item 1).
 		flag := byte(0)
-		if c.cscPolicy.mode != TrackingModePlain {
+		if c.asking {
+			flag = prefixASKING
+		} else if c.cscPolicy.mode != TrackingModePlain {
 			tracked := c.cscConnInitGen(cn.GetID()) != 0
 			if capture != nil && !tracked {
 				capture.noStore = true
@@ -2669,7 +2676,7 @@ func (c *baseClient) pipelineProcessCmds(
 	// for registered fieldsets the batch references get written ahead of
 	// the batch.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
-	flags := c.cscPipelineFlags(cn, cmds)
+	flags := c.pipelinePrefixFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -2768,24 +2775,6 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	return c.txPipelineProcessCmdsAsking(ctx, cn, cmds, nil)
-}
-
-// txPipelineProcessAskingCmds is txPipelineProcessCmds for a transaction on a
-// node that imports the slot (see Tx.asking).
-func (c *baseClient) txPipelineProcessAskingCmds(
-	ctx context.Context, cn *pool.Conn, cmds []Cmder,
-) (bool, error) {
-	return c.txPipelineProcessCmdsAsking(ctx, cn, cmds, NewStatusCmd(ctx, "asking"))
-}
-
-// txPipelineProcessCmdsAsking writes a non-nil asking directly before MULTI,
-// after the HIMPORT commands. ASKING covers only the next command, so the
-// transaction then carries no CLIENT CACHING prefix, as for any ASK redirect
-// (see cscFlag).
-func (c *baseClient) txPipelineProcessCmdsAsking(
-	ctx context.Context, cn *pool.Conn, cmds []Cmder, asking *StatusCmd,
-) (bool, error) {
 	// Drain pending push notifications before writing the transaction. A drain error
 	// may leave the reply stream desynchronized, so fail the batch and remove the
 	// conn (errConnUnusable) rather than logging on. (generalProcessPipeline drains
@@ -2801,19 +2790,11 @@ func (c *baseClient) txPipelineProcessCmdsAsking(
 	// for registered fieldsets the transaction references get written ahead
 	// of MULTI; the session state is visible inside the transaction.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
-	var flags []byte
-	if asking == nil {
-		flags = c.cscPipelineFlags(cn, cmds)
-	}
+	flags := c.pipelinePrefixFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
 			if err := writeCmd(wr, ic); err != nil {
-				return err
-			}
-		}
-		if asking != nil {
-			if err := writeCmd(wr, asking); err != nil {
 				return err
 			}
 		}
@@ -2832,18 +2813,6 @@ func (c *baseClient) txPipelineProcessCmdsAsking(
 			// the batch like a write failure (see pipelineProcessCmds).
 			setCmdsErr(cmds, err)
 			return err
-		}
-
-		if asking != nil {
-			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
-			}
-			// A rejected ASKING still leaves the MULTI and EXEC replies to
-			// read; only a transport error ends the batch here.
-			if err := asking.readReply(rd); err != nil && !isRedisError(err) {
-				setCmdsErr(cmds, err)
-				return err
-			}
 		}
 
 		if flags != nil && flags[0] != 0 {

@@ -13,7 +13,13 @@ import (
 var (
 	cscYesWire = []byte("*3\r\n$6\r\nCLIENT\r\n$7\r\nCACHING\r\n$3\r\nYES\r\n")
 	cscNoWire  = []byte("*3\r\n$6\r\nCLIENT\r\n$7\r\nCACHING\r\n$2\r\nNO\r\n")
+	askingWire = []byte("*1\r\n$6\r\nASKING\r\n")
 )
+
+// prefixASKING is the prefix flag for ASKING. It replaces the CLIENT CACHING
+// prefix on a baseClient with asking set: ASKING covers only the next
+// command, and an ASK redirect carries no caching prefix (see cscFlag).
+const prefixASKING byte = 'A'
 
 func (c *baseClient) cscFlag(cmd Cmder, store bool) byte {
 	// ASK redirects must not carry a caching prefix. OPTIN YES still requires
@@ -39,6 +45,9 @@ func writeCSCPrefix(wr *proto.Writer, flag byte) error {
 	}
 	if flag == 'N' {
 		_, err = wr.Write(cscNoWire)
+	}
+	if flag == prefixASKING {
+		_, err = wr.Write(askingWire)
 	}
 	return err
 }
@@ -119,6 +128,40 @@ func (c *baseClient) cscPipelineFlags(cn *pool.Conn, cmds []Cmder) []byte {
 			flags[multi] = 'N'
 		} else {
 			flags[i] = 'N'
+		}
+	}
+	return flags
+}
+
+// pipelinePrefixFlags returns the per-command prefix flags of a pipeline or
+// transaction batch.
+func (c *baseClient) pipelinePrefixFlags(cn *pool.Conn, cmds []Cmder) []byte {
+	if c.asking {
+		return askingPipelineFlags(cmds)
+	}
+	return c.cscPipelineFlags(cn, cmds)
+}
+
+// askingPipelineFlags puts ASKING before every top-level command and before
+// MULTI. The importing node keeps the ASKING flag inside MULTI until EXEC, and
+// an ASKING inside MULTI would be queued and change EXEC's reply.
+func askingPipelineFlags(cmds []Cmder) []byte {
+	flags := make([]byte, len(cmds))
+	multi := false
+	for i, cmd := range cmds {
+		name, _ := cscCommandToken(cmd, 0)
+		if multi {
+			if len(cmd.Args()) == 1 {
+				switch internal.ToLower(name) {
+				case "exec", "discard":
+					multi = false
+				}
+			}
+			continue
+		}
+		flags[i] = prefixASKING
+		if len(cmd.Args()) == 1 && internal.ToLower(name) == "multi" {
+			multi = true
 		}
 	}
 	return flags
