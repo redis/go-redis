@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -475,6 +474,12 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 		rejectFrom int32
 		// push sends a RESP3 push frame right after the rejection.
 		push bool
+		// owner makes the target serve keyed commands without ASKING, as
+		// a node that already owns the slot does; execNull makes EXEC fail
+		// as after a modified watched key.
+		owner, execNull bool
+		// want is the expected error prefix; empty means the ASKING error.
+		want string
 		fn   func(tx *Tx) error
 	}{
 		{name: "watch", rejectFrom: 1, fn: func(*Tx) error { return nil }},
@@ -482,6 +487,18 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 		// Cmd accepts a push array as a value, so an undrained push would
 		// be read as the reply.
 		{name: "direct-push", rejectFrom: 2, push: true, fn: func(tx *Tx) error { return tx.Do(ctx, "get", "key").Err() }},
+		// On a node that already owns the slot, a rejected ASKING does not
+		// matter: genuine nil and transaction-failed outcomes stay.
+		{name: "owner-nil", rejectFrom: 1, owner: true, want: Nil.Error(), fn: func(tx *Tx) error {
+			return tx.Get(ctx, "key").Err()
+		}},
+		{name: "owner-txfailed", rejectFrom: 1, owner: true, execNull: true, want: TxFailedErr.Error(), fn: func(tx *Tx) error {
+			_, err := tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Set(ctx, "key", "v", 0)
+				return nil
+			})
+			return err
+		}},
 		{name: "raw-multi", rejectFrom: 2, fn: func(tx *Tx) error {
 			_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
 				pipe.Do(ctx, "multi")
@@ -531,13 +548,16 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 						return "+OK\r\n"
 					case "exec":
 						multi, asking = false, false
+						if tc.execNull {
+							return "_\r\n"
+						}
 						if aborted {
 							aborted = false
 							return "-EXECABORT Transaction discarded because of previous errors.\r\n"
 						}
 						return "*1\r\n+OK\r\n"
 					}
-					if !asking {
+					if !asking && !tc.owner {
 						aborted = aborted || multi
 						return "-MOVED 0 " + source + "\r\n"
 					}
@@ -572,9 +592,13 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 			}))
 
 			client := newWatchTestClusterClient(t, source, 3, 0)
+			want := tc.want
+			if want == "" {
+				want = noperm
+			}
 			err := client.Watch(ctx, tc.fn, "key")
-			if err == nil || !strings.HasPrefix(err.Error(), "NOPERM") {
-				t.Fatalf("Watch() = %v; want the %q error", err, noperm)
+			if err == nil || err.Error() != want {
+				t.Fatalf("Watch() = %v; want %q", err, want)
 			}
 		})
 	}

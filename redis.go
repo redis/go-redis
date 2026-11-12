@@ -2197,7 +2197,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				}
 			}
 			err := readReplyFunc(rd)
-			if askingErr != nil && isRedisError(err) {
+			if askingErr != nil && askingMasks(err) {
 				err = askingErr
 			}
 			// Assert the command type before touching the error: the
@@ -2774,7 +2774,7 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
-		if askingErr != nil && isRedisError(err) {
+		if askingErr != nil && askingMasks(err) {
 			err = askingErr
 		}
 		cmd.SetErr(err)
@@ -2848,7 +2848,7 @@ func (c *baseClient) txPipelineProcessCmds(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
-			if askingErr != nil && isRedisError(err) {
+			if askingErr != nil && askingMasks(err) {
 				err = askingErr
 			}
 			setCmdsErr(cmds, err)

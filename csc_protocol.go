@@ -157,6 +157,20 @@ func (c *baseClient) readASKINGAck(ctx context.Context, cn *pool.Conn, rd *proto
 	return nil, c.drainPushFrames(ctx, cn, rd, true)
 }
 
+// askingMasks reports whether err, the reply to a command whose ASKING was
+// rejected, comes from the missing ASKING: a cluster redirect, or EXECABORT
+// after a redirected queued command. Other replies, such as redis.Nil or
+// TxFailedErr, are valid outcomes on a node that already owns the slot.
+func askingMasks(err error) bool {
+	if err == nil || !isRedisError(err) {
+		return false
+	}
+	if moved, ask, _ := isMovedError(err); moved || ask {
+		return true
+	}
+	return proto.IsExecAbortError(err)
+}
+
 // readPipelinePrefix reads the reply to a prefix of a pipeline command.
 func (c *baseClient) readPipelinePrefix(ctx context.Context, cn *pool.Conn, rd *proto.Reader, flag byte) (rejected, err error) {
 	if flag != prefixASKING {
