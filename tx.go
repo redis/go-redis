@@ -37,6 +37,13 @@ type Tx struct {
 	// Tx is not safe for concurrent use (see above), so watchArmed is accessed
 	// only from the goroutine that owns the Tx and needs no synchronization.
 	watchArmed bool
+
+	// asking makes the Tx send ASKING before its commands. ClusterClient.Watch
+	// sets it to follow an ASK redirect to a node that is importing the slot.
+	// That node clears the ASKING flag after every command outside MULTI, so
+	// each command needs its own ASKING. Inside MULTI the flag holds until
+	// EXEC, so one ASKING before MULTI covers the whole transaction.
+	asking bool
 }
 
 func (c *Client) newTx() *Tx {
@@ -77,10 +84,41 @@ func (c *Tx) init() {
 
 	c.initHooks(hooks{
 		dial:       c.baseClient.dial,
-		process:    c.baseClient.process,
-		pipeline:   c.baseClient.processPipeline,
-		txPipeline: c.baseClient.processTxPipeline,
+		process:    c.askingProcess,
+		pipeline:   c.askingProcessPipeline,
+		txPipeline: c.askingProcessTxPipeline,
 	})
+}
+
+func (c *Tx) askingProcess(ctx context.Context, cmd Cmder) error {
+	if c.asking {
+		if err := c.baseClient.process(ctx, NewStatusCmd(ctx, "asking")); err != nil {
+			cmd.SetErr(err)
+			return err
+		}
+	}
+	return c.baseClient.process(ctx, cmd)
+}
+
+func (c *Tx) askingProcessPipeline(ctx context.Context, cmds []Cmder) error {
+	if !c.asking {
+		return c.baseClient.processPipeline(ctx, cmds)
+	}
+	wire := make([]Cmder, 0, 2*len(cmds))
+	for _, cmd := range cmds {
+		wire = append(wire, NewStatusCmd(ctx, "asking"), cmd)
+	}
+	return c.baseClient.processPipeline(ctx, wire)
+}
+
+func (c *Tx) askingProcessTxPipeline(ctx context.Context, cmds []Cmder) error {
+	if c.asking {
+		if err := c.baseClient.process(ctx, NewStatusCmd(ctx, "asking")); err != nil {
+			setCmdsErr(cmds, err)
+			return err
+		}
+	}
+	return c.baseClient.processTxPipeline(ctx, cmds)
 }
 
 func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
@@ -95,7 +133,14 @@ func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
 //
 // The transaction is automatically closed when fn exits.
 func (c *Client) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
+	return c.watchAsking(ctx, fn, false, keys...)
+}
+
+// watchAsking is Watch with an option to send ASKING before every command of
+// the transaction (see Tx.asking).
+func (c *Client) watchAsking(ctx context.Context, fn func(*Tx) error, asking bool, keys ...string) error {
 	tx := c.newTx()
+	tx.asking = asking
 	defer tx.Close(ctx)
 	if len(keys) > 0 {
 		// Return the Process error, not cmd.Err(): it keeps the serving
