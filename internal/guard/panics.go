@@ -1,13 +1,8 @@
-//go:build guard
-
 package guard
 
 import (
 	"go/ast"
-	"path/filepath"
-	"sort"
 	"strings"
-	"testing"
 )
 
 // Layer 6: unhandled crashes. Lists every panic, log.Fatal*, log.Panic* and
@@ -19,13 +14,12 @@ import (
 //   - the enclosing function defers a recover();
 //   - the package is main (generators and tools).
 //
-// There is no in-code exemption. A new site fails the test until a
-// maintainer accepts it with -guard.update.
+// There is no in-code exemption.
 //
 // Calls are matched by name within a package, without type information. A
 // name shared with other callers makes a function not constructor-only, so
 // the matching errs on the side of reporting.
-func TestGuard_6_NoUnhandledPanic(t *testing.T) {
+func panics(t *tree) ([]Entry, error) {
 	type funcInfo struct {
 		pkgDir  string
 		pkg     string
@@ -38,17 +32,16 @@ func TestGuard_6_NoUnhandledPanic(t *testing.T) {
 	var funcs []*funcInfo
 	callers := map[string][]*funcInfo{} // pkgDir+"."+callee name -> callers
 
-	for _, file := range guardSources(t) {
-		pos := sourcesFset.Position(file.Pos())
-		pkgDir := filepath.Dir(pos.Filename)
-		for _, decl := range file.Decls {
+	for _, f := range t.src {
+		pkgDir := f.dir
+		for _, decl := range f.file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
 			fi := &funcInfo{
 				pkgDir: pkgDir,
-				pkg:    file.Name.Name,
+				pkg:    f.file.Name.Name,
 				name:   fn.Name.Name,
 				entity: funcEntity(fn),
 				ctor:   isConstructorName(fn.Name.Name) && fn.Recv == nil,
@@ -101,17 +94,16 @@ func TestGuard_6_NoUnhandledPanic(t *testing.T) {
 		}
 	}
 
-	var entries []GuardEntry
+	var entries []Entry
 	for _, fi := range funcs {
 		if fi.ctor || ctorOnly[fi] || fi.recover || fi.pkg == "main" {
 			continue
 		}
 		for _, call := range fi.sites {
-			entries = append(entries, GuardEntry{Package: fi.pkg, Entity: fi.entity, Detail: call})
+			entries = append(entries, Entry{Dir: fi.pkgDir, Package: fi.pkg, Entity: fi.entity, Detail: call})
 		}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entryKey(entries[i]) < entryKey(entries[j]) })
-	compareGolden(t, "guard_6_panics.json", entries)
+	return entries, nil
 }
 
 func isConstructorName(name string) bool {

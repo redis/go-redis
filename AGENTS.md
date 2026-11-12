@@ -211,25 +211,24 @@ markdown any tool or editor can open:
 
 ### Behavioral guard and API check
 
-`internal/guard` and `scripts/apidiff.sh` detect unintended changes to
-constants, defaults, error strings, logs, error policy, panics, dependencies,
-imports, tests and command tokens (`internal/guard/doc.go`).
+`internal/guard` and `scripts/apidiff.sh` detect unintended changes to the
+exported API, constants, defaults, error strings, logs, error policy, panics,
+dependencies, imports, tests and command tokens (`internal/guard/doc.go`).
 
-- Run the guard with `make guard` (tests are behind the `guard` build tag;
-  plain `go test ./...` skips them). It needs no Redis.
-- **Never** run `make guard.update` or `go test -tags guard ./internal/guard -guard.update`,
-  and never edit, regenerate, delete or copy files in `internal/guard/testdata/`.
-  Only the CI guard bot may change them; CI rejects golden commits from
-  anyone else.
+- `make guard` compares the working tree with its merge base with
+  `origin/master`. It needs no Redis. Exit 1 means a change needs maintainer
+  approval; the report lists it under "needs approval" with a digest.
+- When `make guard` reports a change that needs approval, or `make apidiff`
+  fails, do not try to make it pass. Report the change to the user and say
+  whether it is intended.
+- **Never** post `/guard-approve` or `/guard-reject` on a PR. Only a
+  maintainer does that.
 - **Never** add entries to `scripts/apidiff-allow.txt`.
-- When `make guard` or `make apidiff` fails, do not try to make it pass.
-  Report the diff to the user and say whether the change is intended. A
-  maintainer accepts intended changes with the `guard-update` label.
-- New tests pass the guard without any update. Adding a skip, a `//nolint`,
-  a focused or pending spec, or removing a test does not; justify it to the
-  user instead.
-- Do not change `internal/guard/*.go` unless the task is about the guard.
-  Such changes go in their own PR.
+- Changes listed under "for information" (new tests, skips, `//nolint`, new
+  exported API, new constants or errors) need no approval; still mention a
+  new skip, `//nolint` or removed test to the user and justify it.
+- Do not change `internal/guard/` unless the task is about the guard. Such
+  changes go in their own PR.
 
 ### Commits and PRs
 

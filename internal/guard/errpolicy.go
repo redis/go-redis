@@ -1,50 +1,56 @@
-//go:build guard
-
 package guard
 
 import (
+	"fmt"
 	"go/ast"
 	"strings"
-	"testing"
 )
 
 // Layer 5: error policy. Records, in source order:
 //
 //   - decide:  each return of an error predicate (a func that takes an error
 //     and returns a bool, e.g. shouldRetry, isBadConn, isMovedError), with the
-//     conditions on the path to it. A changed, removed or reordered check
-//     shows up as a diff.
+//     conditions on the path to it.
 //   - check:   each call of an error predicate outside predicates, so a
 //     dropped shouldRetry or isBadConn call site shows up.
 //   - dispose: each connection removal or close, with its conditions.
-func TestGuard_5_ErrorPolicy(t *testing.T) {
-	preds := errorPredicateNames(guardSources(t))
-	runGuardOrdered(t, "guard_5_error_policy.json", func(file *ast.File, add func(GuardEntry)) {
-		for _, decl := range file.Decls {
+//
+// Each detail starts with its position in the function ("[3] decide: ..."),
+// so a reordered check is a change, not only an added or removed one.
+func errorPolicy(t *tree) ([]Entry, error) {
+	preds := errorPredicateNames(t.src)
+	pos := map[string]int{} // dir + entity -> next position
+	return collect(t, func(f srcFile, add func(Entry)) {
+		for _, decl := range f.file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
 			entity := funcEntity(fn)
+			emit := func(detail string) {
+				key := f.dir + "\x00" + entity
+				add(Entry{Entity: entity, Detail: fmt.Sprintf("[%d] %s", pos[key], detail)})
+				pos[key]++
+			}
 			isPred := isErrorPredicate(fn)
 			walkPaths(fn.Body.List, nil, func(n ast.Node, conds []string) {
 				switch x := n.(type) {
 				case *ast.ReturnStmt:
 					if isPred {
-						add(GuardEntry{Entity: entity, Detail: "decide: " + pathStr(conds) + " -> " + exprList(x.Results)})
+						emit("decide: " + pathStr(conds) + " -> " + exprList(x.Results))
 					}
 				case *ast.CallExpr:
 					name := calleeName(x)
 					switch {
 					case isConnDisposal(name, len(x.Args)):
-						add(GuardEntry{Entity: entity, Detail: "dispose: " + exprStr(x) + " when " + pathStr(conds)})
+						emit("dispose: " + exprStr(x) + " when " + pathStr(conds))
 					case !isPred && preds[name]:
-						add(GuardEntry{Entity: entity, Detail: "check: " + exprStr(x)})
+						emit("check: " + exprStr(x))
 					}
 				}
 			})
 		}
-	})
+	}), nil
 }
 
 // isErrorPredicate reports whether fn takes an error and returns at least
@@ -83,10 +89,10 @@ func isErrorPredicate(fn *ast.FuncDecl) bool {
 // errorPredicateNames returns the names of all error predicates. Calls are
 // matched by name only (no type info), so proto.IsLoadingError and
 // redis.IsLoadingError both match "IsLoadingError".
-func errorPredicateNames(files []*ast.File) map[string]bool {
+func errorPredicateNames(files []srcFile) map[string]bool {
 	names := map[string]bool{}
-	for _, file := range files {
-		for _, decl := range file.Decls {
+	for _, f := range files {
+		for _, decl := range f.file.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && isErrorPredicate(fn) {
 				names[fn.Name.Name] = true
 			}

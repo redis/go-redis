@@ -1,5 +1,3 @@
-//go:build guard
-
 package guard
 
 import (
@@ -7,18 +5,14 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"testing"
 )
 
-// Layer 9: anti-cheat. Records what keeps tests and linters honest, so
-// weakening them to make CI pass shows up as a diff:
+// Layer 9: tests and linters. Records what keeps tests and linters honest,
+// so weakening them shows up in the report:
 //
 //   - test functions (Test*, Fuzz*, Benchmark*, Example*) per package;
 //   - Ginkgo nodes (Describe, It, Entry, ...) including focused (F*) and
@@ -29,14 +23,18 @@ import (
 //     golangci-lint config.
 //
 // Test files are scanned in every directory, including e2e, doctests and fuzz.
-func TestGuard_9_AntiCheat(t *testing.T) {
-	var entries []GuardEntry
-	for _, f := range allGoSources(t) {
+func antiCheat(t *tree) ([]Entry, error) {
+	var entries []Entry
+	for _, f := range t.all {
 		pkg := f.file.Name.Name
+		add := func(e Entry) {
+			e.Dir, e.Package = f.dir, pkg
+			entries = append(entries, e)
+		}
 		if f.test {
 			for _, decl := range f.file.Decls {
 				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && isTestFuncName(fn.Name.Name) {
-					entries = append(entries, GuardEntry{Package: pkg, Entity: fn.Name.Name, Detail: "func"})
+					add(Entry{Entity: fn.Name.Name, Detail: "func"})
 				}
 			}
 		}
@@ -50,9 +48,9 @@ func TestGuard_9_AntiCheat(t *testing.T) {
 				name := calleeName(call)
 				switch {
 				case f.test && isGinkgoNode(name):
-					entries = append(entries, GuardEntry{Package: pkg, Entity: owner, Detail: ginkgoDetail(name, call)})
+					add(Entry{Entity: owner, Detail: ginkgoDetail(name, call)})
 				case isSkipCall(name):
-					entries = append(entries, GuardEntry{Package: pkg, Entity: owner, Detail: "skip: " + exprStr(call)})
+					add(Entry{Entity: owner, Detail: "skip: " + exprStr(call)})
 				}
 				return true
 			})
@@ -60,40 +58,19 @@ func TestGuard_9_AntiCheat(t *testing.T) {
 		for _, cg := range f.file.Comments {
 			for _, c := range cg.List {
 				if isNolintDirective(c.Text) {
-					entries = append(entries, GuardEntry{
-						Package: pkg,
-						Entity:  ownerAt(f.file, c.Pos()),
-						Detail:  "nolint: " + strings.TrimSpace(strings.TrimPrefix(c.Text, "//")),
+					add(Entry{
+						Entity: ownerAt(f.file, c.Pos()),
+						Detail: "nolint: " + strings.TrimSpace(strings.TrimPrefix(c.Text, "//")),
 					})
 				}
 			}
 		}
 	}
-	entries = append(entries, ciTestLines(t)...)
-	sortEntries(entries)
-	compareGoldenAdditive(t, "guard_9_anticheat.json", entries, isAllowedTestAddition)
-}
-
-// isAllowedTestAddition reports whether a new Layer 9 entry may appear
-// without a golden update: a new test function, a plain (not focused or
-// pending) Ginkgo node, or a Redis version gate. New skips, //nolint,
-// focus/pending specs and CI/lint config changes still fail.
-func isAllowedTestAddition(e GuardEntry) bool {
-	if e.Package == "ci" {
-		return false
+	ci, err := ciTestLines(t.root)
+	if err != nil {
+		return nil, err
 	}
-	d := e.Detail
-	if d == "func" {
-		return true
-	}
-	if strings.HasPrefix(d, "skip: SkipBeforeRedisVersion(") || strings.HasPrefix(d, "skip: SkipAfterRedisVersion(") {
-		return true
-	}
-	node, _, ok := strings.Cut(d, ":")
-	if !ok || !ginkgoNodes[node] || node[0] == 'F' || node[0] == 'P' || node[0] == 'X' {
-		return false
-	}
-	return !strings.Contains(d, " [Pending]") && !strings.Contains(d, " [Focus]")
+	return append(entries, ci...), nil
 }
 
 // isNolintDirective matches "//nolint..." and "// nolint..." comments, not
@@ -104,51 +81,6 @@ func isNolintDirective(text string) bool {
 		return false
 	}
 	return strings.HasPrefix(strings.TrimLeft(s, " "), "nolint")
-}
-
-type goSource struct {
-	file *ast.File
-	test bool
-}
-
-var (
-	allSourcesOnce sync.Once
-	allSources     []goSource
-	allSourcesErr  error
-)
-
-// allGoSources parses every .go file, test files included, skipping only
-// hidden dirs, vendor, testdata and tmp.
-func allGoSources(t *testing.T) []goSource {
-	t.Helper()
-	allSourcesOnce.Do(func() {
-		fset := token.NewFileSet()
-		allSourcesErr = filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			name := d.Name()
-			if d.IsDir() {
-				if path != repoRoot && (strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" || name == "tmp") {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(name, ".go") {
-				return nil
-			}
-			file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution|parser.ParseComments)
-			if err != nil {
-				return fmt.Errorf("parse %s: %w", path, err)
-			}
-			allSources = append(allSources, goSource{file: file, test: strings.HasSuffix(name, "_test.go")})
-			return nil
-		})
-	})
-	if allSourcesErr != nil {
-		t.Fatalf("scan: %v", allSourcesErr)
-	}
-	return allSources
 }
 
 func isTestFuncName(name string) bool {
@@ -229,16 +161,15 @@ func ownerAt(file *ast.File, pos token.Pos) string {
 
 // ciTestLines records "go test" lines from the Makefile and GitHub config,
 // and every non-comment line of the golangci-lint config.
-func ciTestLines(t *testing.T) []GuardEntry {
-	t.Helper()
-	var out []GuardEntry
-	add := func(rel string, all bool) {
-		data, err := os.ReadFile(filepath.Join(repoRoot, rel))
+func ciTestLines(root string) ([]Entry, error) {
+	var out []Entry
+	add := func(rel string, all bool) error {
+		data, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			if os.IsNotExist(err) {
-				return
+				return nil
 			}
-			t.Fatalf("read %s: %v", rel, err)
+			return fmt.Errorf("read %s: %w", rel, err)
 		}
 		sc := bufio.NewScanner(bytes.NewReader(data))
 		for sc.Scan() {
@@ -247,23 +178,33 @@ func ciTestLines(t *testing.T) []GuardEntry {
 				continue
 			}
 			if all || strings.Contains(line, "go test") {
-				out = append(out, GuardEntry{Package: "ci", Entity: rel, Detail: line})
+				out = append(out, Entry{Dir: ".", Package: "ci", Entity: rel, Detail: line})
+			}
+		}
+		return sc.Err()
+	}
+	if err := add("Makefile", false); err != nil {
+		return nil, err
+	}
+	for _, pattern := range []string{".github/workflows/*.yml", ".github/workflows/*.yaml", ".github/actions/*/action.yml"} {
+		matches, err := filepath.Glob(filepath.Join(root, pattern))
+		if err != nil {
+			return nil, fmt.Errorf("glob %s: %w", pattern, err)
+		}
+		for _, m := range matches {
+			rel, err := filepath.Rel(root, m)
+			if err != nil {
+				return nil, err
+			}
+			if err := add(filepath.ToSlash(rel), false); err != nil {
+				return nil, err
 			}
 		}
 	}
-	add("Makefile", false)
-	for _, pattern := range []string{".github/workflows/*.yml", ".github/workflows/*.yaml", ".github/actions/*/action.yml"} {
-		matches, err := filepath.Glob(filepath.Join(repoRoot, pattern))
-		if err != nil {
-			t.Fatalf("glob %s: %v", pattern, err)
-		}
-		for _, m := range matches {
-			rel, _ := filepath.Rel(repoRoot, m)
-			add(filepath.ToSlash(rel), false)
-		}
-	}
 	for _, cfg := range []string{".golangci.yml", ".golangci.yaml"} {
-		add(cfg, true)
+		if err := add(cfg, true); err != nil {
+			return nil, err
+		}
 	}
-	return out
+	return out, nil
 }

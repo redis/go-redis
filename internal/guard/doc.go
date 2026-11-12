@@ -1,66 +1,65 @@
 // Package guard holds the behavioral regression guard.
 //
-// Each TestGuard_* scans the repository's Go sources with go/parser and
-// compares the extracted signals with a golden file in testdata/guard_*.json.
-// The package does not import go-redis, so it runs even when the root package
-// does not compile. Standard library only.
+// The guard extracts signals from a source tree with go/parser and compares
+// two trees: a change and its merge base. It never builds or runs the
+// scanned code, so it is safe to run on untrusted code. It does not import
+// go-redis, so it works when the root package does not compile. Standard
+// library only.
 //
 // # Layers
 //
-//	 1 Constants     top-level consts, exported and unexported, with iota position
-//	 2 Defaults      New*, *default*, (*XxxOptions).init: composite fields, x.F = v
-//	 3 Errors        errors.New, fmt.Errorf, new*Err* factories, panic
-//	 4 Logs          log/slog/zap/*logger* calls, prometheus/metrics/*meter calls
-//	 5 ErrorPolicy   error predicates (shouldRetry, isBadConn, ...): decisions in
+//	01 constants     top-level consts, exported and unexported, with iota position
+//	02 defaults      New*, *default*, (*XxxOptions).init: composite fields, x.F = v
+//	03 errors        errors.New, fmt.Errorf, new*Err* factories, panic
+//	04 logs          log/slog/zap/*logger* calls, prometheus/metrics/*meter calls
+//	05 error_policy  error predicates (shouldRetry, isBadConn, ...): decisions in
 //	                 source order, their call sites, and conn removal/close
-//	 6 Panics        panic/log.Fatal/os.Exit reachable outside constructors
-//	 7 Deps          every go.mod: go, toolchain, require, replace, ...
-//	 8 Imports       import paths per package directory
-//	 9 AntiCheat     test funcs, Ginkgo nodes, skips, //nolint, CI go test lines,
+//	06 panics        panic/log.Fatal/os.Exit reachable outside constructors
+//	07 deps          every go.mod: go, toolchain, require, replace, ...
+//	08 imports       import paths per package directory
+//	09 tests         test funcs, Ginkgo nodes, skips, //nolint, CI go test lines,
 //	                 golangci config
-//	10 Protocol      command tokens per command-building func in package redis
+//	10 protocol      command tokens per command-building func in package redis
+//	11 api           exported funcs, methods, types, fields, interface methods
+//	                 and vars, with signatures (types only)
 //
-// The exported API is checked separately by scripts/apidiff.sh (make apidiff).
+// Source layers skip example, doctests, e2e, fuzz, scripts and customvet
+// directories and internal/guard itself. Layer 9 scans every Go file.
+// Entries hold the package directory but no file name or line, so moving
+// code between files of a package is not a change.
+//
+// # What needs approval
+//
+// A change is an entry added (+) or removed (-). Each layer has a tier:
+//
+//	gated   05, 06, 07, 08: every change.
+//	named   01, 02, 10, 11: removals, and additions whose identity (const
+//	        name, function and field, command function, API symbol) exists
+//	        in the base, i.e. a changed value. A new identity is for
+//	        information. In 10, a command function whose new token list
+//	        keeps all old tokens in order (a new option) is for information.
+//	paired  03, 04: removals, and additions next to a removal of the same
+//	        kind in the same package (a changed message). Other additions
+//	        are for information.
+//	info    09: never needs approval.
+//
+// The digest is the first 12 hex characters of the SHA-256 of the sorted
+// lines that need approval, each followed by a newline. Changes for
+// information do not affect it.
 //
 // # Running
 //
-// The tests are behind the "guard" build tag, so the regular test matrix
-// skips them. They need no Redis and run once in CI (guard-gate.yml):
+//	make guard                                   # working tree vs merge base with origin/master
+//	scripts/guard-delta.sh <base-rev> [<head-rev>]
+//	make guard.selftest                          # tests of the guard itself
 //
-//	make guard    # go test -tags guard -count=1 ./internal/guard
+// guard-delta.sh builds cmd/guard from its own checkout, copies both trees
+// to a temp dir (git archive; the working tree copy holds tracked and
+// untracked, not ignored files), runs "guard dump" on each and "guard
+// delta" on the two dumps. Exit 0: nothing needs approval. Exit 1: something
+// does. Exit 2: error.
 //
-// New tests (test funcs, plain Ginkgo nodes, SkipBefore/AfterRedisVersion)
-// pass without a golden update. Everything else that changes a golden fails.
-//
-// # Changing goldens
-//
-// Only the guard bot commits to testdata/. A maintainer reviews the failing
-// diff and adds the guard-update label to the PR (or runs the "Guard update"
-// workflow). guard-update.yml regenerates the goldens with the base branch's
-// guard code and pushes one signed bot commit. Do not commit goldens from
-// make guard.update; guard-provenance rejects them.
-//
-// guard-gate.yml runs on pull_request_target with base-branch code:
-//
-//   - guard-provenance: if goldens changed, the newest commit touching them
-//     must be a verified bot commit that touches only testdata/, and nothing
-//     may change them after it.
-//   - guard-check: the base guard against the PR's sources and goldens.
-//
-// A PR that changes internal/guard/*.go may change only internal/guard/. Its
-// guard code is never executed by the gate; to regenerate, a maintainer
-// reviews it and runs "Guard update" with trust_pr_guard_code.
-//
-// # Setup (repository admin)
-//
-//  1. Bot user with write access, a GPG key (no passphrase, registered on
-//     the account, verified email) and a token: fine-grained PAT for
-//     same-repo PRs, classic PAT with public_repo for fork PRs.
-//  2. Variables: GUARD_BOT_LOGIN, GUARD_BOT_NAME, GUARD_BOT_EMAIL,
-//     GUARD_BOT_SIGNING_KEY.
-//  3. Environment guard-bot (branches master, v9, v9.*) with secrets
-//     GUARD_BOT_TOKEN and GUARD_BOT_GPG_PRIVATE_KEY.
-//  4. Label guard-update.
-//  5. Branch protection: require guard-provenance, guard-check and code
-//     owner review; block force and direct pushes.
+// The exported API is also checked against the last release by
+// scripts/apidiff.sh (make apidiff). That check type-checks the code, so
+// it runs only in the unprivileged build workflow.
 package guard

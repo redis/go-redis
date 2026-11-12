@@ -113,14 +113,15 @@ bench:
 	export REDIS_VERSION=$(REDIS_VERSION) && \
 	go test ./... -test.run=NONE -test.bench=. -test.benchmem -skip Example -timeout 11m
 
-# Behavioral regression guard (internal/guard/doc.go). No Redis needed.
+# Guard delta of the working tree against its merge base with origin/master
+# (internal/guard/doc.go). Exits 1 when a change needs maintainer approval.
+# No Redis needed; does not fetch.
 guard:
-	go test -tags guard -count=1 ./internal/guard
+	./scripts/guard-delta.sh origin/master
 
-# Regenerate goldens locally to inspect a change. Do not commit the result:
-# only the guard bot may change them (add the guard-update label to the PR).
-guard.update:
-	go test -tags guard -count=1 ./internal/guard -guard.update
+# Tests of the guard itself, including scenarios and mutations (need git).
+guard.selftest:
+	go test -tags guard -count=1 ./internal/guard/...
 
 # Exported API vs. the latest v9 release (override: make apidiff BASE=v9.22.0).
 apidiff:
@@ -161,7 +162,7 @@ test.e2e.logic:
 		go test -v -run "TestCreateTestFaultInjectorLogic|TestFaultInjectorClientCreation" ./maintnotifications/e2e/
 	@echo "Logic tests completed!"
 
-.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench guard guard.update apidiff fmt test.e2e test.e2e.logic test.multidb.e2e docker.e2e.start docker.e2e.stop
+.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench guard guard.selftest apidiff fmt test.e2e test.e2e.logic test.multidb.e2e docker.e2e.start docker.e2e.stop
 
 build:
 	export RE_CLUSTER=$(RE_CLUSTER) && \
