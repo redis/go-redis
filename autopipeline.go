@@ -2047,7 +2047,7 @@ func runsOutsidePipeline(name string) bool {
 var blockingCommands = map[string]struct{}{
 	"blpop": {}, "brpop": {}, "brpoplpush": {},
 	"blmove": {}, "blmovem": {}, "blmpop": {},
-	"bzpopmin": {}, "bzpopmax": {}, "bzmpop": {},
+	"bzpopmin": {}, "bzpopmax": {}, "bzmpop": {}, "bzmove": {},
 	"wait": {}, "waitaof": {},
 	// MIGRATE blocks the source instance for up to its timeout.
 	"migrate": {},
