@@ -1879,6 +1879,19 @@ func (c *baseClient) recordCommandSamples(ctx context.Context, cmd Cmder, cn *po
 	}
 }
 
+// recordCommandSamplesGuarded is recordCommandSamples under a recover, for the
+// pipeline read loops: a panicking recorder there would abort the loop with
+// replies still unread and return a desynced connection to the pool. The FD
+// reader guards its samples the same way (emitMetricsGuarded).
+func (c *baseClient) recordCommandSamplesGuarded(ctx context.Context, cmd Cmder, cn *pool.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(ctx, "redis: recovered metric recorder panic in pipeline read loop: %v", r)
+		}
+	}()
+	c.recordCommandSamples(ctx, cmd, cn)
+}
+
 // recordStreamLag records, for each message read by an XREADGROUP, the time
 // since the message was created (its ID's millisecond timestamp).
 func (c *baseClient) recordStreamLag(ctx context.Context, cn *pool.Conn, cmd *XStreamSliceCmd) {
@@ -2809,7 +2822,7 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
 		if err == nil && samples {
-			c.recordCommandSamples(ctx, cmd, cn)
+			c.recordCommandSamplesGuarded(ctx, cmd, cn)
 		}
 		if err != nil && !isRedisError(err) {
 			setCmdsErr(cmds[i+1:], err)

@@ -3417,7 +3417,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 
 		if err == nil {
 			if samples {
-				node.Client.recordCommandSamples(ctx, cmd, cn)
+				node.Client.recordCommandSamplesGuarded(ctx, cmd, cn)
 			}
 			continue
 		}
