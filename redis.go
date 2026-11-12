@@ -2757,8 +2757,10 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 }
 
 func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder, flags []byte) error {
+	// askingErr carries over to commands without a prefix: in an asking
+	// batch those are the commands of a raw MULTI, and its ASKING covers them.
+	var askingErr error
 	for i, cmd := range cmds {
-		var askingErr error
 		if flags != nil && flags[i] != 0 {
 			rejected, err := c.readPipelinePrefix(ctx, cn, rd, flags[i])
 			if err != nil {

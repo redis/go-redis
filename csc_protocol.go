@@ -133,7 +133,8 @@ func (c *baseClient) cscPipelineFlags(cn *pool.Conn, cmds []Cmder) []byte {
 	return flags
 }
 
-// readASKINGAck reads the reply to an ASKING prefix. A Redis error (for
+// readASKINGAck reads the reply to an ASKING prefix and the push frames after
+// it. A Redis error (for
 // example NOPERM from an ACL) comes back as rejected: the paired command then
 // ran without ASKING, and its reply, usually MOVED, hides the cause. The
 // caller still reads that reply, to keep the connection in sync, and reports
@@ -144,7 +145,8 @@ func (c *baseClient) readASKINGAck(ctx context.Context, cn *pool.Conn, rd *proto
 	}
 	status, err := rd.ReadString()
 	if isRedisError(err) {
-		return err, nil
+		// Drain as on success, so the paired reply read comes next.
+		return err, c.drainPushFrames(ctx, cn, rd, true)
 	}
 	if err != nil {
 		return nil, err

@@ -473,10 +473,24 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 		name string
 		// rejectFrom is the first ASKING (1-based) that the target rejects.
 		rejectFrom int32
-		fn         func(tx *Tx) error
+		// push sends a RESP3 push frame right after the rejection.
+		push bool
+		fn   func(tx *Tx) error
 	}{
 		{name: "watch", rejectFrom: 1, fn: func(*Tx) error { return nil }},
 		{name: "direct", rejectFrom: 2, fn: func(tx *Tx) error { return tx.Get(ctx, "key").Err() }},
+		// Cmd accepts a push array as a value, so an undrained push would
+		// be read as the reply.
+		{name: "direct-push", rejectFrom: 2, push: true, fn: func(tx *Tx) error { return tx.Do(ctx, "get", "key").Err() }},
+		{name: "raw-multi", rejectFrom: 2, fn: func(tx *Tx) error {
+			_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Do(ctx, "multi")
+				pipe.Set(ctx, "key", "v", 0)
+				pipe.Do(ctx, "exec")
+				return nil
+			})
+			return err
+		}},
 		{name: "pipeline", rejectFrom: 2, fn: func(tx *Tx) error {
 			_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
 				pipe.Get(ctx, "key")
@@ -503,6 +517,9 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 						return "%0\r\n"
 					case "asking":
 						if askings.Add(1) >= tc.rejectFrom {
+							if tc.push {
+								return "-" + noperm + "\r\n>2\r\n$10\r\ninvalidate\r\n*1\r\n$3\r\nkey\r\n"
+							}
 							return "-" + noperm + "\r\n"
 						}
 						asking = true
