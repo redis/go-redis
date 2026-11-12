@@ -409,11 +409,13 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 // flags were invalidated by himportAfterBatch, so himportInjectedCmds
 // regenerates the PREPAREs for this connection. Transport errors are
 // returned; server errors stay recorded on the commands.
-// (The retry does not carry an ASKING prefix. A redirected [ASKING, SET]
-// pair whose injected PREPARE failed is excluded by the root-cause swap in
-// himportAfterBatch; one that lost its session without an injection can be
-// re-issued here, and the bare SET then draws a fresh MOVED/ASK that the
-// outer cluster redirect handling resolves.)
+// (In a cluster pipeline the retry does not carry an ASKING prefix. A
+// redirected [ASKING, SET] pair whose injected PREPARE failed is excluded by
+// the root-cause swap in himportAfterBatch; one that lost its session without
+// an injection can be re-issued here, and the bare SET then draws a fresh
+// MOVED/ASK that the outer cluster redirect handling resolves. A Tx with
+// asking set has no outer redirect handling, so there each SET keeps its
+// ASKING prefix.)
 func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, cmds []Cmder) error {
 	if c.himport.idle() {
 		return nil
@@ -432,13 +434,17 @@ func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, 
 	}
 
 	injected := c.himportInjectedCmds(ctx, cn, retry)
+	var flags []byte
+	if c.asking {
+		flags = askingPipelineFlags(retry)
+	}
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
 			if err := writeCmd(wr, ic); err != nil {
 				return err
 			}
 		}
-		return writeCmds(wr, retry)
+		return writeCSCPipelineCmds(wr, retry, flags)
 	}); err != nil {
 		return err
 	}
@@ -446,7 +452,7 @@ func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, 
 		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
 			return err
 		}
-		err := c.pipelineReadCmds(ctx, cn, rd, retry)
+		err := c.pipelineReadCmdsWithFlags(ctx, cn, rd, retry, flags)
 		if err != nil && !isRedisError(err) {
 			return err
 		}

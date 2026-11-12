@@ -381,3 +381,83 @@ func testClusterWatchLiveSlotMigration(t *testing.T, setOpt func(*ClusterOptions
 		}
 	}
 }
+
+// A Watch that follows ASK runs tx.Pipelined with a managed HImportSet. The
+// importing node answers the first SET with "no such fieldset", so the client
+// re-prepares and re-issues the SET once. That retry must carry ASKING too.
+func TestClusterWatchAskHImportRetryKeepsAsking(t *testing.T) {
+	var source string
+	var sets, okSets atomic.Int32
+	target := newWatchTestServer(t, func() func(args []string) string {
+		var asking bool
+		return func(args []string) string {
+			switch {
+			case args[0] == "hello":
+				return "%0\r\n"
+			case args[0] == "asking":
+				asking = true
+				return "+OK\r\n"
+			case args[0] == "unwatch":
+				return "+OK\r\n"
+			case args[0] == "himport" && args[1] == "prepare":
+				return "+OK\r\n"
+			}
+			wasAsking := asking
+			asking = false
+			if !wasAsking {
+				return "-MOVED 0 " + source + "\r\n"
+			}
+			switch {
+			case args[0] == "watch":
+				return "+OK\r\n"
+			case args[0] == "himport" && args[1] == "set":
+				if sets.Add(1) == 1 {
+					return "-ERR no such fieldset\r\n"
+				}
+				okSets.Add(1)
+				return "+OK\r\n"
+			}
+			return "-ERR unexpected command '" + args[0] + "'\r\n"
+		}
+	})
+	source = newWatchTestServer(t, stateless(func(args []string) string {
+		switch {
+		case args[0] == "hello":
+			return "%0\r\n"
+		case args[0] == "himport" && args[1] == "prepare":
+			return "+OK\r\n"
+		case args[0] == "watch":
+			return "-ASK 0 " + target + "\r\n"
+		case args[0] == "unwatch":
+			return "+OK\r\n"
+		case args[0] == "cluster" && args[1] == "shards":
+			return "-ERR unknown subcommand\r\n"
+		case args[0] == "cluster" && args[1] == "slots":
+			return clusterSlotsReply(source)
+		}
+		return "-ERR unexpected command '" + args[0] + "'\r\n"
+	}))
+
+	client := newWatchTestClusterClient(t, source, 3, 0)
+	ctx := context.Background()
+	if err := client.HImportPrepare(ctx, "fs", "f1").Err(); err != nil {
+		t.Fatalf("HImportPrepare() = %v", err)
+	}
+	var set *StatusCmd
+	err := client.Watch(ctx, func(tx *Tx) error {
+		_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
+			set = pipe.HImportSet(ctx, "key", "fs", "v1")
+			return nil
+		})
+		return err
+	}, "key")
+	if err != nil {
+		t.Fatalf("Watch() = %v; want nil", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("HImportSet() = %v; want nil", err)
+	}
+	if n := okSets.Load(); n != 1 {
+		t.Fatalf("target accepted %d HIMPORT SETs; want 1", n)
+	}
+}
