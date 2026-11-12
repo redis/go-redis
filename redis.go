@@ -2768,6 +2768,24 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
+	return c.txPipelineProcessCmdsAsking(ctx, cn, cmds, nil)
+}
+
+// txPipelineProcessAskingCmds is txPipelineProcessCmds for a transaction on a
+// node that imports the slot (see Tx.asking).
+func (c *baseClient) txPipelineProcessAskingCmds(
+	ctx context.Context, cn *pool.Conn, cmds []Cmder,
+) (bool, error) {
+	return c.txPipelineProcessCmdsAsking(ctx, cn, cmds, NewStatusCmd(ctx, "asking"))
+}
+
+// txPipelineProcessCmdsAsking writes a non-nil asking directly before MULTI,
+// after the HIMPORT commands. ASKING covers only the next command, so the
+// transaction then carries no CLIENT CACHING prefix, as for any ASK redirect
+// (see cscFlag).
+func (c *baseClient) txPipelineProcessCmdsAsking(
+	ctx context.Context, cn *pool.Conn, cmds []Cmder, asking *StatusCmd,
+) (bool, error) {
 	// Drain pending push notifications before writing the transaction. A drain error
 	// may leave the reply stream desynchronized, so fail the batch and remove the
 	// conn (errConnUnusable) rather than logging on. (generalProcessPipeline drains
@@ -2783,11 +2801,19 @@ func (c *baseClient) txPipelineProcessCmds(
 	// for registered fieldsets the transaction references get written ahead
 	// of MULTI; the session state is visible inside the transaction.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
-	flags := c.cscPipelineFlags(cn, cmds)
+	var flags []byte
+	if asking == nil {
+		flags = c.cscPipelineFlags(cn, cmds)
+	}
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
 			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
+		if asking != nil {
+			if err := writeCmd(wr, asking); err != nil {
 				return err
 			}
 		}
@@ -2806,6 +2832,18 @@ func (c *baseClient) txPipelineProcessCmds(
 			// the batch like a write failure (see pipelineProcessCmds).
 			setCmdsErr(cmds, err)
 			return err
+		}
+
+		if asking != nil {
+			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			}
+			// A rejected ASKING still leaves the MULTI and EXEC replies to
+			// read; only a transport error ends the batch here.
+			if err := asking.readReply(rd); err != nil && !isRedisError(err) {
+				setCmdsErr(cmds, err)
+				return err
+			}
 		}
 
 		if flags != nil && flags[0] != 0 {

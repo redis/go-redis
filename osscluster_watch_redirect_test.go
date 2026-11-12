@@ -234,13 +234,32 @@ func TestClusterWatchReturnsErrorWhenRedirectsRunOut(t *testing.T) {
 
 // Live check on a private cluster: while a slot migrates, Watch on a key that
 // already moved and on a new key must run on the importing node and commit.
+// With CSC in OPTOUT mode the Tx connection is tracked, so a CLIENT CACHING NO
+// prefix must not land between ASKING and the command it covers.
 func TestClusterWatchLiveSlotMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opt  func(*ClusterOptions)
+	}{
+		{name: "plain", opt: func(*ClusterOptions) {}},
+		{name: "csc-optout", opt: func(opt *ClusterOptions) {
+			opt.ClientSideCacheConfig = &ClientSideCacheConfig{MaxEntries: 128}
+			opt.ClientSideCacheTrackingMode = TrackingModeOptOut
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testClusterWatchLiveSlotMigration(t, tc.opt) })
+	}
+}
+
+func testClusterWatchLiveSlotMigration(t *testing.T, setOpt func(*ClusterOptions)) {
 	_, nodes := newClusterCSCLive(t)
 	ctx := context.Background()
-	c := NewClusterClient(&ClusterOptions{
+	opt := &ClusterOptions{
 		Addrs: []string{nodes[0].opt.Addr}, Protocol: 3, DisableIdentity: true,
 		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
-	})
+	}
+	setOpt(opt)
+	c := NewClusterClient(opt)
 	t.Cleanup(func() { _ = c.Close() })
 
 	moved, fresh := "{watch-ask}:moved", "{watch-ask}:new"
@@ -284,14 +303,27 @@ func TestClusterWatchLiveSlotMigration(t *testing.T) {
 
 	incr := func(key string) error {
 		return c.Watch(ctx, func(tx *Tx) error {
+			// One direct read, one plain pipeline read and one read inside
+			// MULTI: each is a trackable read that takes a different path.
 			n, err := tx.Get(ctx, key).Int()
 			if err != nil && !errors.Is(err, Nil) {
 				return err
 			}
+			if _, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Get(ctx, key)
+				return nil
+			}); err != nil && !errors.Is(err, Nil) {
+				return err
+			}
 			_, err = tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Get(ctx, key)
 				pipe.Set(ctx, key, n+1, 0)
 				return nil
 			})
+			if errors.Is(err, Nil) {
+				// The GET of a new key inside MULTI returns nil; EXEC ran.
+				err = nil
+			}
 			return err
 		}, key)
 	}

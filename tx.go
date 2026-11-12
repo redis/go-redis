@@ -90,14 +90,15 @@ func (c *Tx) init() {
 	})
 }
 
+// ASKING covers only the next command on the wire. Each asking path writes
+// ASKING in the same batch as its command, so that no CLIENT CACHING prefix
+// or HIMPORT command can come between them.
+
 func (c *Tx) askingProcess(ctx context.Context, cmd Cmder) error {
-	if c.asking {
-		if err := c.baseClient.process(ctx, NewStatusCmd(ctx, "asking")); err != nil {
-			cmd.SetErr(err)
-			return err
-		}
+	if !c.asking {
+		return c.baseClient.process(ctx, cmd)
 	}
-	return c.baseClient.process(ctx, cmd)
+	return c.baseClient.processPipeline(ctx, []Cmder{NewStatusCmd(ctx, "asking"), cmd})
 }
 
 func (c *Tx) askingProcessPipeline(ctx context.Context, cmds []Cmder) error {
@@ -112,13 +113,13 @@ func (c *Tx) askingProcessPipeline(ctx context.Context, cmds []Cmder) error {
 }
 
 func (c *Tx) askingProcessTxPipeline(ctx context.Context, cmds []Cmder) error {
-	if c.asking {
-		if err := c.baseClient.process(ctx, NewStatusCmd(ctx, "asking")); err != nil {
-			setCmdsErr(cmds, err)
-			return err
-		}
+	if !c.asking {
+		return c.baseClient.processTxPipeline(ctx, cmds)
 	}
-	return c.baseClient.processTxPipeline(ctx, cmds)
+	if err := c.baseClient.generalProcessPipeline(ctx, cmds, c.baseClient.txPipelineProcessAskingCmds, "MULTI", c.opt.MaxRetries); err != nil {
+		return err
+	}
+	return cmdsFirstErr(cmds)
 }
 
 func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
