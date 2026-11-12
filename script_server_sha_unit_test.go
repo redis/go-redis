@@ -11,7 +11,8 @@ import (
 )
 
 // fakeScripter simulates enough of Scripter for unit testing Script behavior.
-// It records which redis commands were invoked and can simulate NOSCRIPT.
+// It records which redis commands were invoked and can simulate a flushed
+// script cache.
 type fakeScripter struct {
 	mu sync.Mutex
 
@@ -29,9 +30,10 @@ type fakeScripter struct {
 	lastEvalShaSHA   string
 	lastEvalShaROSHA string
 
-	// If set, the first EvalSha/EvalShaRO returns a NOSCRIPT error.
-	failFirstEvalShaWithNoScr   bool
-	failFirstEvalShaROWithNoScr bool
+	// If set, the script cache is flushed after the first SCRIPT LOAD:
+	// EvalSha/EvalShaRO return NOSCRIPT until the script is loaded again,
+	// which is what a real server does.
+	flushedAfterFirstLoad bool
 }
 
 func (f *fakeScripter) ScriptLoad(ctx context.Context, script string) *StringCmd {
@@ -68,8 +70,7 @@ func (f *fakeScripter) EvalSha(ctx context.Context, sha1 string, keys []string, 
 	f.mu.Lock()
 	f.evalShaCalls++
 	f.lastEvalShaSHA = sha1
-	callNum := f.evalShaCalls
-	fail := f.failFirstEvalShaWithNoScr && callNum == 1
+	fail := f.flushedAfterFirstLoad && f.scriptLoadCalls < 2
 	f.mu.Unlock()
 
 	cmd := NewCmd(ctx)
@@ -96,8 +97,7 @@ func (f *fakeScripter) EvalShaRO(ctx context.Context, sha1 string, keys []string
 	f.mu.Lock()
 	f.evalShaROCalls++
 	f.lastEvalShaROSHA = sha1
-	callNum := f.evalShaROCalls
-	fail := f.failFirstEvalShaROWithNoScr && callNum == 1
+	fail := f.flushedAfterFirstLoad && f.scriptLoadCalls < 2
 	f.mu.Unlock()
 
 	cmd := NewCmd(ctx)
@@ -132,8 +132,8 @@ func TestNewScriptServerSHA_Run_UsesScriptLoadAndEvalSha_NoEval(t *testing.T) {
 func TestNewScriptServerSHA_Run_RetriesOnNoScript_NoEvalFallback(t *testing.T) {
 	ctx := context.Background()
 	c := &fakeScripter{
-		hashToReturn:              strings.Repeat("b", 40),
-		failFirstEvalShaWithNoScr: true,
+		hashToReturn:          strings.Repeat("b", 40),
+		flushedAfterFirstLoad: true,
 	}
 
 	s := NewScriptServerSHA("return 1")
@@ -142,10 +142,10 @@ func TestNewScriptServerSHA_Run_RetriesOnNoScript_NoEvalFallback(t *testing.T) {
 	}
 
 	// Expected:
-	// - ScriptLoad once (hash cached in Script)
+	// - ScriptLoad twice (first load, reload after NOSCRIPT)
 	// - EvalSha twice (first NOSCRIPT, second retry)
-	if c.scriptLoadCalls != 1 {
-		t.Fatalf("expected ScriptLoad 1 call (hash cached), got %d", c.scriptLoadCalls)
+	if c.scriptLoadCalls != 2 {
+		t.Fatalf("expected ScriptLoad 2 calls (reload after NOSCRIPT), got %d", c.scriptLoadCalls)
 	}
 	if c.evalShaCalls != 2 {
 		t.Fatalf("expected EvalSha 2 calls (retry), got %d", c.evalShaCalls)
@@ -179,8 +179,8 @@ func TestNewScriptServerSHA_RunRO_UsesScriptLoadAndEvalShaRO_NoEvalRO(t *testing
 func TestNewScriptServerSHA_RunRO_RetriesOnNoScript_NoEvalROFallback(t *testing.T) {
 	ctx := context.Background()
 	c := &fakeScripter{
-		hashToReturn:                strings.Repeat("d", 40),
-		failFirstEvalShaROWithNoScr: true,
+		hashToReturn:          strings.Repeat("d", 40),
+		flushedAfterFirstLoad: true,
 	}
 
 	s := NewScriptServerSHA("return 1")
@@ -188,14 +188,58 @@ func TestNewScriptServerSHA_RunRO_RetriesOnNoScript_NoEvalROFallback(t *testing.
 		t.Fatalf("RunRO() err: %v", err)
 	}
 
-	if c.scriptLoadCalls != 1 {
-		t.Fatalf("expected ScriptLoad 1 call (hash cached), got %d", c.scriptLoadCalls)
+	if c.scriptLoadCalls != 2 {
+		t.Fatalf("expected ScriptLoad 2 calls (reload after NOSCRIPT), got %d", c.scriptLoadCalls)
 	}
 	if c.evalShaROCalls != 2 {
 		t.Fatalf("expected EvalShaRO 2 calls (retry), got %d", c.evalShaROCalls)
 	}
 	if c.evalROCalls != 0 {
 		t.Fatalf("expected EvalRO 0 calls, got %d", c.evalROCalls)
+	}
+}
+
+// EvalSha and EvalShaRO have no EVAL fallback of their own (that is Run's),
+// so without the reload they keep answering NOSCRIPT after a flush.
+func TestNewScriptServerSHA_EvalSha_ReloadsOnNoScript(t *testing.T) {
+	ctx := context.Background()
+	c := &fakeScripter{
+		hashToReturn:          strings.Repeat("f", 40),
+		flushedAfterFirstLoad: true,
+	}
+
+	s := NewScriptServerSHA("return 1")
+	if err := s.EvalSha(ctx, c, []string{"k"}).Err(); err != nil {
+		t.Fatalf("EvalSha() err: %v", err)
+	}
+	if c.scriptLoadCalls != 2 {
+		t.Fatalf("expected ScriptLoad 2 calls (reload after NOSCRIPT), got %d", c.scriptLoadCalls)
+	}
+	if c.evalShaCalls != 2 {
+		t.Fatalf("expected EvalSha 2 calls (retry), got %d", c.evalShaCalls)
+	}
+
+	if err := s.EvalShaRO(ctx, c, []string{"k"}).Err(); err != nil {
+		t.Fatalf("EvalShaRO() err: %v", err)
+	}
+}
+
+func TestNewScriptServerSHA_EvalShaRO_ReloadsOnNoScript(t *testing.T) {
+	ctx := context.Background()
+	c := &fakeScripter{
+		hashToReturn:          strings.Repeat("f", 40),
+		flushedAfterFirstLoad: true,
+	}
+
+	s := NewScriptServerSHA("return 1")
+	if err := s.EvalShaRO(ctx, c, []string{"k"}).Err(); err != nil {
+		t.Fatalf("EvalShaRO() err: %v", err)
+	}
+	if c.scriptLoadCalls != 2 {
+		t.Fatalf("expected ScriptLoad 2 calls (reload after NOSCRIPT), got %d", c.scriptLoadCalls)
+	}
+	if c.evalShaROCalls != 2 {
+		t.Fatalf("expected EvalShaRO 2 calls (retry), got %d", c.evalShaROCalls)
 	}
 }
 
