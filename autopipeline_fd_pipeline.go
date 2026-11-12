@@ -124,11 +124,12 @@ func (hs *hooksMixin) wrapPipelineHooks(next ProcessPipelineHook) ProcessPipelin
 }
 
 // fdPipelineMetrics records an FD batch the way generalProcessPipeline records
-// an ordinary pipeline: one duration with the command count and attempts, one
-// error when the pipeline as a whole failed, and the per-command samples
-// (recordCommandSamples) of each command that succeeded, as the pooled read
-// loops record them. The reader skips its per-command metrics for pipelined
-// commands, so nothing is counted twice.
+// an ordinary pipeline: one duration with the command count and attempts, and
+// one error when the pipeline as a whole failed. The reader skips its
+// per-command duration for pipelined commands, so nothing is counted twice;
+// it records their per-command samples (recordCommandSamples) as each reply
+// is read, so a reply the Close-time flush reads through a pooled pipeline is
+// sampled by that pipeline's read loop instead, once either way.
 //
 // attempts counts the times the batch was issued. One difference from an
 // ordinary pipeline: connection-lease retries are not counted. The lease
@@ -147,17 +148,9 @@ func (ap *AutoPipeliner) fdPipelineMetrics(ctx context.Context, start time.Time,
 		if !start.IsZero() {
 			rec.RecordPipelineOperationDuration(ctx, time.Since(start), "PIPELINE", len(cmds), attempts, perr, cn, db)
 		}
-		if !otel.Enabled(rec) {
-			return
-		}
-		if perr != nil {
+		if perr != nil && otel.Enabled(rec) {
 			errorType, statusCode, isInternal := classifyCommandErrorGuarded(perr)
 			rec.RecordError(ctx, errorType, cn, statusCode, isInternal, attempts-1)
-		}
-		for _, cmd := range cmds {
-			if cmd.rawErr() == nil { // rawErr: the batch is complete; never await here
-				ap.fd.client.recordCommandSamples(ctx, cmd, cn)
-			}
 		}
 	})
 }

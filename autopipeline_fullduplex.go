@@ -2146,10 +2146,16 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// is advanced, so recovery would re-own the already-consumed reply and
 					// replay it — a mutating command twice.
 					if req.pipelined {
-						// A pipelined command is measured with its batch, as in an
-						// ordinary pipeline (fdPipelineMetrics), not per command.
+						// A pipelined command's duration is measured with its batch, as
+						// in an ordinary pipeline (fdPipelineMetrics), not per command.
+						// Its samples are recorded here, per reply read, as the pooled
+						// read loops do: a batch read partly here and partly by the
+						// Close-time flush is then sampled once on each side.
 						req.batch.fdAttempts = req.attempts // published by complete()
 						req.batch.fdConn = cn
+						if e == nil && fd.client != nil && otel.Enabled(fd.client.recorder()) {
+							fd.emitMetricsGuarded(octx, func() { fd.client.recordCommandSamples(octx, req.cmd, cn) })
+						}
 					} else {
 						fd.reportReplyMetrics(octx, req, e, cn, readerGid, false)
 					}
