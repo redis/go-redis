@@ -3261,6 +3261,11 @@ func (c *ClusterClient) processPipelineNode(
 		// SUCCESSFULLY, having served the batch itself — the same thing a plain
 		// Pipeline hook may do — so setCmdsErr(nil) leaves the values it set
 		// intact (review finding by codex on #3942).
+		if err == nil {
+			if progress, ok := ctx.Value(pipelineExecutedKey{}).(*executedCmds); ok {
+				progress.markProgress(cmds, pipelineAnsweredLocally)
+			}
+		}
 		setCmdsErr(cmds, err)
 		return
 	}

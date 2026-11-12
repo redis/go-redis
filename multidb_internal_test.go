@@ -2203,14 +2203,108 @@ func TestMultiDBClusterControlCommandsFailOverOpenActive(t *testing.T) {
 type decoratedCmd struct{ Cmder }
 
 // batchInspectHook hands every batch to fn and answers it locally.
-type batchInspectHook struct{ fn func([]Cmder) }
+type batchInspectHook struct {
+	fn    func([]Cmder)
+	err   error
+	armed *atomic.Bool
+}
 
 func (batchInspectHook) DialHook(next DialHook) DialHook          { return next }
 func (batchInspectHook) ProcessHook(next ProcessHook) ProcessHook { return next }
-func (h batchInspectHook) ProcessPipelineHook(ProcessPipelineHook) ProcessPipelineHook {
+func (h batchInspectHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
-		h.fn(cmds)
-		return nil
+		if h.armed != nil && !h.armed.Load() {
+			return next(ctx, cmds)
+		}
+		if h.fn != nil {
+			h.fn(cmds)
+		}
+		return h.err
+	}
+}
+
+func TestMultiDBClusterRetryPreservesLocalPipelineResult(t *testing.T) {
+	t.Run("retryable server reply", func(t *testing.T) {
+		testMultiDBClusterRetryPreservesLocalPipelineResult(t, nil, 1, 1)
+	})
+	t.Run("failure before sending", func(t *testing.T) {
+		testMultiDBClusterRetryPreservesLocalPipelineResult(t, io.EOF, 0, 1)
+	})
+	t.Run("neutral timeout before sending", func(t *testing.T) {
+		testMultiDBClusterRetryPreservesLocalPipelineResult(t, pool.ErrPoolTimeout, 1, 0)
+	})
+}
+
+func testMultiDBClusterRetryPreservesLocalPipelineResult(t *testing.T, beforeSend error, wantFailing, wantFallback int64) {
+	t.Helper()
+	local, failing, fallback := newFDStateServer(t), newFDStateServer(t), newFDStateServer(t)
+	failing.readOnly.Store(beforeSend == nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var answered atomic.Int64
+	var armed, failureArmed atomic.Bool
+	mdb, err := NewMultiDBClient(ctx, &MultiDBOptions{
+		Clients: []MultiDBClientConfig{
+			{Weight: 0.75, ClusterOptions: &ClusterOptions{
+				Addrs: []string{local.addr(), failing.addr()}, Protocol: 2, MaxRedirects: -1,
+				ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+					return []ClusterSlot{
+						{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: local.addr()}}},
+						{Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: failing.addr()}}},
+					}, nil
+				},
+				NewClient: func(opts *Options) *Client {
+					client := NewClient(opts)
+					switch {
+					case opts.NodeAddress == local.addr():
+						client.AddHook(batchInspectHook{armed: &armed, fn: func(cmds []Cmder) {
+							for _, cmd := range cmds {
+								cmd.(*StatusCmd).SetVal("local")
+								answered.Add(1)
+							}
+						}})
+					case beforeSend != nil && opts.NodeAddress == failing.addr():
+						client.AddHook(batchInspectHook{armed: &failureArmed, err: beforeSend, fn: func([]Cmder) {
+							failureArmed.Store(false)
+						}})
+					}
+					return client
+				},
+			}},
+			{Weight: 0.5, Options: &Options{Addr: fallback.addr(), Protocol: 2, DisableIdentity: true}},
+		},
+		HealthChecks:         []MultiDBHealthCheck{onePingCheck{}},
+		HealthCheckInterval:  time.Hour,
+		AutoFallbackInterval: -1,
+		CommandRetries:       1,
+		CircuitBreakerConfig: &MultiDBCircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: time.Hour},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	if mdb.ActiveDatabaseID() != 0 {
+		t.Fatal("expected the cluster member to be active")
+	}
+	armed.Store(true)
+	failureArmed.Store(true)
+	pipe := mdb.Pipeline()
+	localResult := pipe.Set(ctx, "bar", "v", 0) // slot 5061
+	retried := pipe.Set(ctx, "foo", "v", 0)     // slot 12182
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if got := answered.Load(); got != 1 {
+		t.Fatalf("hook answered %d commands, want 1", got)
+	}
+	if got := localResult.Val(); got != "local" {
+		t.Errorf("local result = %q, want local", got)
+	}
+	if got := retried.Val(); got != "OK" {
+		t.Errorf("retried result = %q, want OK", got)
+	}
+	if a, b, c := local.setCalls.Load(), failing.setCalls.Load(), fallback.setCalls.Load(); a != 0 || b != wantFailing || c != wantFallback {
+		t.Errorf("SET calls: local=%d, failing=%d, fallback=%d, want 0, %d, %d", a, b, c, wantFailing, wantFallback)
 	}
 }
 
