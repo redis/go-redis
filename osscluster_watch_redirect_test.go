@@ -488,6 +488,10 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 		// a node that already owns the slot does; execNull makes EXEC fail
 		// as after a modified watched key.
 		owner, execNull bool
+		// loadingOnce makes the target answer the first command with this
+		// name with LOADING; maxRetries lets the client retry it.
+		loadingOnce string
+		maxRetries  int
 		// want is the expected error; empty means the ASKING error, and ok
 		// means no error.
 		want string
@@ -521,14 +525,23 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 			return err
 		}},
 		// A raw MULTI sent as direct commands: ASKING goes before MULTI only.
-		{name: "direct-raw-multi", rejectFrom: 1 << 20, ok: true, fn: func(tx *Tx) error {
-			for _, args := range [][]interface{}{{"multi"}, {"set", "key", "v"}, {"exec"}} {
-				if err := tx.Do(ctx, args...).Err(); err != nil {
-					return err
-				}
+		{name: "direct-raw-multi", rejectFrom: 1 << 20, ok: true, fn: directRawMulti(ctx)},
+		// The ASKING before a direct MULTI is rejected: the queued command
+		// and EXEC both report it.
+		{name: "direct-raw-multi-rejected", rejectFrom: 2, fn: func(tx *Tx) error {
+			if err := tx.Do(ctx, "multi").Err(); err != nil {
+				return err
 			}
-			return nil
+			setErr := tx.Do(ctx, "set", "key", "v").Err()
+			execErr := tx.Do(ctx, "exec").Err()
+			if setErr == nil || execErr == nil || setErr.Error() != execErr.Error() {
+				return fmt.Errorf("SET = %v, EXEC = %v; want the same error", setErr, execErr)
+			}
+			return execErr
 		}},
+		// A retried MULTI keeps its ASKING, and a retried EXEC gets none.
+		{name: "direct-raw-multi-retry", rejectFrom: 1 << 20, loadingOnce: "multi", maxRetries: 2, ok: true, fn: directRawMulti(ctx)},
+		{name: "direct-raw-exec-retry", rejectFrom: 1 << 20, loadingOnce: "exec", maxRetries: 2, ok: true, fn: directRawMulti(ctx)},
 		{name: "raw-multi", rejectFrom: 2, fn: func(tx *Tx) error {
 			_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
 				pipe.Do(ctx, "multi")
@@ -558,7 +571,14 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 			var askings atomic.Int32
 			target := newWatchTestServer(t, func() func(args []string) string {
 				var asking, multi, aborted bool
+				loaded := false
 				return func(args []string) string {
+					if args[0] == tc.loadingOnce && !loaded {
+						// Rejected before it runs: the ASKING flag is gone,
+						// and an open MULTI stays open.
+						loaded, asking = true, multi && asking
+						return "-LOADING Redis is loading the dataset in memory\r\n"
+					}
 					switch args[0] {
 					case "hello":
 						return "%0\r\n"
@@ -627,7 +647,7 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 				return "-ERR unexpected command '" + args[0] + "'\r\n"
 			}))
 
-			client := newWatchTestClusterClient(t, source, 3, 0)
+			client := newWatchTestClusterClient(t, source, 3, tc.maxRetries)
 			err := client.Watch(ctx, tc.fn, "key")
 			if tc.ok {
 				if err != nil {
@@ -643,5 +663,17 @@ func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
 				t.Fatalf("Watch() = %v; want %q", err, want)
 			}
 		})
+	}
+}
+
+// directRawMulti sends MULTI, SET and EXEC as separate direct commands.
+func directRawMulti(ctx context.Context) func(tx *Tx) error {
+	return func(tx *Tx) error {
+		for _, args := range [][]interface{}{{"multi"}, {"set", "key", "v"}, {"exec"}} {
+			if err := tx.Do(ctx, args...).Err(); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }

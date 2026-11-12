@@ -443,9 +443,9 @@ type baseClient struct {
 	// redirect. Each command then carries an ASKING prefix in place of the
 	// CLIENT CACHING prefix (see prefixASKING).
 	asking bool
-	// askingMulti is set while a raw MULTI sent as direct commands is open on
-	// an asking Tx (see trackAskingMulti).
-	askingMulti bool
+	// askingMulti follows a raw MULTI sent as direct commands on an asking
+	// Tx (see askingDirectReply).
+	askingMulti askingMultiState
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -2103,10 +2103,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		// the socket still carries TRACKING after disableCSCServing (#4236 item 1).
 		flag := byte(0)
 		if c.asking {
-			if !c.askingMulti {
+			if !c.askingMulti.open {
 				flag = prefixASKING
 			}
-			c.trackAskingMulti(cmd)
 		} else if c.cscPolicy.mode != TrackingModePlain {
 			tracked := c.cscConnInitGen(cn.GetID()) != 0
 			if capture != nil && !tracked {
@@ -2203,8 +2202,8 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				}
 			}
 			err := readReplyFunc(rd)
-			if askingErr != nil && askingRedirect(err) {
-				err = askingErr
+			if c.asking {
+				err = c.askingDirectReply(cmd, askingErr, err)
 			}
 			// Assert the command type before touching the error: the
 			// errors.As chain inside himportNoSuchFieldset allocates, and

@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -185,20 +186,52 @@ func askingAbortedExec(err error, queued []Cmder) bool {
 	return false
 }
 
-// trackAskingMulti follows a raw MULTI sent as direct commands on an asking Tx.
-// Its commands run under the ASKING before MULTI, and an ASKING inside MULTI
-// would be queued.
-func (c *baseClient) trackAskingMulti(cmd Cmder) {
+// askingMultiState follows a raw MULTI sent as direct commands on an asking
+// Tx. The commands inside it run under the ASKING before MULTI, and an ASKING
+// inside MULTI would be queued.
+type askingMultiState struct {
+	open bool
+	// err is the rejected ASKING before MULTI, and redirected records a
+	// redirect under it (see askingAbortedExec).
+	err        error
+	redirected bool
+}
+
+// askingDirectReply returns the error to report for a direct command on an
+// asking Tx and updates the raw MULTI state. prefixErr is the rejected ASKING
+// before this command, if any. The state changes only on the reply, so a
+// retried MULTI, EXEC or DISCARD keeps the right prefix.
+func (c *baseClient) askingDirectReply(cmd Cmder, prefixErr, reply error) error {
+	m := &c.askingMulti
+	err := reply
+	if prefixErr != nil && askingRedirect(err) {
+		err = prefixErr
+	} else if m.open && m.err != nil {
+		if askingRedirect(err) {
+			m.redirected = true
+			err = m.err
+		} else if m.redirected && proto.IsExecAbortError(err) {
+			err = m.err
+		}
+	}
 	if len(cmd.Args()) != 1 {
-		return
+		return err
 	}
 	name, _ := cscCommandToken(cmd, 0)
 	switch internal.ToLower(name) {
 	case "multi":
-		c.askingMulti = true
+		if reply == nil {
+			*m = askingMultiState{open: true, err: prefixErr}
+		}
 	case "exec", "discard":
-		c.askingMulti = false
+		// EXEC ends the transaction when it runs: committed, aborted by
+		// a watched key (nil) or discarded (EXECABORT). A rejection before
+		// it runs, such as LOADING, leaves the transaction open.
+		if reply == nil || errors.Is(reply, Nil) || proto.IsExecAbortError(reply) {
+			*m = askingMultiState{}
+		}
 	}
+	return err
 }
 
 // readPipelinePrefix reads the reply to a prefix of a pipeline command.
