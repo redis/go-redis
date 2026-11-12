@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -459,5 +460,105 @@ func TestClusterWatchAskHImportRetryKeepsAsking(t *testing.T) {
 	}
 	if n := okSets.Load(); n != 1 {
 		t.Fatalf("target accepted %d HIMPORT SETs; want 1", n)
+	}
+}
+
+// When the importing node rejects ASKING (for example NOPERM from an ACL),
+// the paired command runs without it and draws MOVED. Watch must report the
+// ASKING error, not that MOVED, on every Tx path.
+func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
+	const noperm = "NOPERM User has no permissions to run the 'asking' command"
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		// rejectFrom is the first ASKING (1-based) that the target rejects.
+		rejectFrom int32
+		fn         func(tx *Tx) error
+	}{
+		{name: "watch", rejectFrom: 1, fn: func(*Tx) error { return nil }},
+		{name: "direct", rejectFrom: 2, fn: func(tx *Tx) error { return tx.Get(ctx, "key").Err() }},
+		{name: "pipeline", rejectFrom: 2, fn: func(tx *Tx) error {
+			_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Get(ctx, "key")
+				return nil
+			})
+			return err
+		}},
+		{name: "txpipeline", rejectFrom: 2, fn: func(tx *Tx) error {
+			_, err := tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Set(ctx, "key", "v", 0)
+				return nil
+			})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var source string
+			var askings atomic.Int32
+			target := newWatchTestServer(t, func() func(args []string) string {
+				var asking, multi, aborted bool
+				return func(args []string) string {
+					switch args[0] {
+					case "hello":
+						return "%0\r\n"
+					case "asking":
+						if askings.Add(1) >= tc.rejectFrom {
+							return "-" + noperm + "\r\n"
+						}
+						asking = true
+						return "+OK\r\n"
+					case "unwatch":
+						return "+OK\r\n"
+					case "multi":
+						multi = true
+						return "+OK\r\n"
+					case "exec":
+						multi, asking = false, false
+						if aborted {
+							aborted = false
+							return "-EXECABORT Transaction discarded because of previous errors.\r\n"
+						}
+						return "*1\r\n+OK\r\n"
+					}
+					if !asking {
+						aborted = aborted || multi
+						return "-MOVED 0 " + source + "\r\n"
+					}
+					if !multi {
+						asking = false
+					}
+					switch args[0] {
+					case "watch":
+						return "+OK\r\n"
+					case "get":
+						return "_\r\n"
+					case "set":
+						return "+QUEUED\r\n"
+					}
+					return "-ERR unexpected command '" + args[0] + "'\r\n"
+				}
+			})
+			source = newWatchTestServer(t, stateless(func(args []string) string {
+				switch {
+				case args[0] == "hello":
+					return "%0\r\n"
+				case args[0] == "watch":
+					return "-ASK 0 " + target + "\r\n"
+				case args[0] == "unwatch":
+					return "+OK\r\n"
+				case args[0] == "cluster" && args[1] == "shards":
+					return "-ERR unknown subcommand\r\n"
+				case args[0] == "cluster" && args[1] == "slots":
+					return clusterSlotsReply(source)
+				}
+				return "-ERR unexpected command '" + args[0] + "'\r\n"
+			}))
+
+			client := newWatchTestClusterClient(t, source, 3, 0)
+			err := client.Watch(ctx, tc.fn, "key")
+			if err == nil || !strings.HasPrefix(err.Error(), "NOPERM") {
+				t.Fatalf("Watch() = %v; want the %q error", err, noperm)
+			}
+		})
 	}
 }

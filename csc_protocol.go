@@ -133,6 +133,41 @@ func (c *baseClient) cscPipelineFlags(cn *pool.Conn, cmds []Cmder) []byte {
 	return flags
 }
 
+// readASKINGAck reads the reply to an ASKING prefix. A Redis error (for
+// example NOPERM from an ACL) comes back as rejected: the paired command then
+// ran without ASKING, and its reply, usually MOVED, hides the cause. The
+// caller still reads that reply, to keep the connection in sync, and reports
+// rejected in its place. Any other failure leaves the connection unusable.
+func (c *baseClient) readASKINGAck(ctx context.Context, cn *pool.Conn, rd *proto.Reader) (rejected, err error) {
+	if err := c.drainPushFrames(ctx, cn, rd, true); err != nil {
+		return nil, err
+	}
+	status, err := rd.ReadString()
+	if isRedisError(err) {
+		return err, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status != "OK" {
+		return nil, fmt.Errorf("redis: invalid ASKING status %q", status)
+	}
+	return nil, c.drainPushFrames(ctx, cn, rd, true)
+}
+
+// readPipelinePrefix reads the reply to a prefix of a pipeline command.
+func (c *baseClient) readPipelinePrefix(ctx context.Context, cn *pool.Conn, rd *proto.Reader, flag byte) (rejected, err error) {
+	if flag != prefixASKING {
+		return nil, c.readCSCPipelinePrefix(ctx, cn, rd)
+	}
+	rejected, err = c.readASKINGAck(ctx, cn, rd)
+	if err != nil {
+		_ = cn.Close()
+		return nil, fmt.Errorf("%w: pipeline ASKING reply: %w", errConnUnusable, err)
+	}
+	return rejected, nil
+}
+
 // pipelinePrefixFlags returns the per-command prefix flags of a pipeline or
 // transaction batch.
 func (c *baseClient) pipelinePrefixFlags(cn *pool.Conn, cmds []Cmder) []byte {
