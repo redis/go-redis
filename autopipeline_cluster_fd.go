@@ -182,18 +182,13 @@ func (r *clusterFDRouter) slotTableDrop(cmd Cmder, ch *AutoPipeliner) {
 	}
 }
 
-// submit routes cmd to the FD child that owns its slot. It is called from
+// submitToken routes cmd to the FD child that owns its slot, handing it the
+// owner admission token (see AutoPipelineOptions.fdOutcome). It is called from
 // AutoPipeliner.submit AFTER routing and diversion have been decided, so cmd
 // is a batchable single-node command. On any routing miss (keyless command,
 // unresolved slot, topology not loaded, or a node whose client turns out not to
 // be FD-capable) it falls back to the normal cluster Process path — correct,
 // just not pipelined.
-func (r *clusterFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
-	return r.submitToken(ctx, cmd, fdOutcomeToken{})
-}
-
-// submitToken is submit with the owner admission token handed to the node
-// child's FD engine (see AutoPipelineOptions.fdOutcome).
 func (r *clusterFDRouter) submitToken(ctx context.Context, cmd Cmder, token fdOutcomeToken) AutoFuture {
 	// Mirror enqueue's closed contract: reject once the parent is closing rather
 	// than route to a child that Close is tearing down.

@@ -967,18 +967,13 @@ func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp
 	fd.outcome(ctx, cmd, err, grp, token)
 }
 
-// submit enqueues a command onto the ordered stream and returns its batch.
-// Blocks when the queue is full (backpressure) or bails if the engine is
-// closing. The caller (AutoPipeliner.submit) stamps setReady on the async face.
-// With process hooks installed a per-command host goroutine runs the hook chain
-// (see hostHook) and ctx parents its span; the hook-free path skips that
-// goroutine and channel entirely.
-func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
-	return fd.submitToken(ctx, cmd, fdOutcomeToken{})
-}
-
-// submitToken is submit with the owner admission token recorded on the request
-// (see AutoPipelineOptions.fdOutcome).
+// submitToken enqueues a command onto the ordered stream with the owner
+// admission token recorded on the request (see AutoPipelineOptions.fdOutcome)
+// and returns its batch. Blocks when the queue is full (backpressure) or bails
+// if the engine is closing. The caller (AutoPipeliner.submit) stamps setReady
+// on the async face. With process hooks installed a per-command host goroutine
+// runs the hook chain (see hostHook) and ctx parents its span; the hook-free
+// path skips that goroutine and channel entirely.
 func (fd *fdEngine) submitToken(ctx context.Context, cmd Cmder, token fdOutcomeToken) *apBatch {
 	if fd.ap.isClosed() {
 		cmd.SetErr(ErrClosed)
