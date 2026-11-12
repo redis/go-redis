@@ -436,8 +436,12 @@ type FTSearchOptions struct {
 	Payload         string
 	SortBy          []FTSearchSortBy
 	SortByWithCount bool
-	LimitOffset     int
-	Limit           int
+	// LimitOffset is the OFFSET passed to LIMIT.
+	// When LimitOffset > 0 and Limit is 0 (unset), the client sends the
+	// server default page size of 10. Redis 8 rejects LIMIT <offset> 0,
+	// and older RediSearch versions accept it but return no documents.
+	LimitOffset int
+	Limit       int
 	// CountOnly sets LIMIT 0 0 to get the count - number of documents in the result set without actually returning the result set.
 	// When using this option, the Limit and LimitOffset options are ignored.
 	CountOnly bool
@@ -564,7 +568,10 @@ type FTHybridOptions struct {
 	Apply             []FTHybridApply            // Field transformations
 	SortBy            []FTSearchSortBy           // Reuse from FTSearch
 	Filter            string                     // Post-filter expression
-	LimitOffset       int                        // Result limiting
+	// LimitOffset is the OFFSET passed to LIMIT.
+	// When LimitOffset > 0 and Limit is 0 (unset), the client sends the
+	// server default page size of 10 so Redis 8 does not reject LIMIT <offset> 0.
+	LimitOffset       int // Result limiting
 	Limit             int
 	Params            map[string]interface{} // Parameter substitution
 	ExplainScore      bool                   // Include score explanations
@@ -3449,6 +3456,26 @@ func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSe
 	return cmd
 }
 
+// defaultFTSearchLimit is the page size Redis uses when FT.SEARCH / FT.HYBRID
+// is sent without a LIMIT clause.
+const defaultFTSearchLimit = 10
+
+// appendFTLimit appends a LIMIT clause. countOnly becomes LIMIT 0 0. An offset
+// without a limit uses defaultFTSearchLimit so the command is valid on Redis 8
+// and still returns a page of documents on older servers.
+func appendFTLimit(args []interface{}, offset, limit int, countOnly bool) []interface{} {
+	if countOnly {
+		return append(args, "LIMIT", 0, 0)
+	}
+	if offset > 0 && limit == 0 {
+		limit = defaultFTSearchLimit
+	}
+	if offset >= 0 && limit > 0 {
+		return append(args, "LIMIT", offset, limit)
+	}
+	return args
+}
+
 type SearchQuery []interface{}
 
 // FTSearchQuery - Executes a search query on an index with additional options.
@@ -3550,13 +3577,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) (SearchQuery, error) 
 				queryArgs = append(queryArgs, "WITHCOUNT")
 			}
 		}
-		if options.CountOnly {
-			queryArgs = append(queryArgs, "LIMIT", 0, 0)
-		} else {
-			if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
-				queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
-			}
-		}
+		queryArgs = appendFTLimit(queryArgs, options.LimitOffset, options.Limit, options.CountOnly)
 		if options.Params != nil {
 			queryArgs = append(queryArgs, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
@@ -3673,13 +3694,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 				args = append(args, "WITHCOUNT")
 			}
 		}
-		if options.CountOnly {
-			args = append(args, "LIMIT", 0, 0)
-		} else {
-			if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
-				args = append(args, "LIMIT", options.LimitOffset, options.Limit)
-			}
-		}
+		args = appendFTLimit(args, options.LimitOffset, options.Limit, options.CountOnly)
 		if options.Params != nil {
 			args = append(args, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
@@ -4171,9 +4186,7 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		}
 
 		// Add LIMIT
-		if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
-			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
-		}
+		args = appendFTLimit(args, options.LimitOffset, options.Limit, false)
 
 		// Add PARAMS
 		// Emit from the local params map, which contains the caller-provided params

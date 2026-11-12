@@ -2787,7 +2787,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
 	})
 
-	It("should fail when using a non-zero offset with a zero limit", Label("search", "ftsearch"), func() {
+	It("should use the default page size when using a non-zero offset with a zero limit", Label("search", "ftsearch"), func() {
 		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "testIdx", &redis.FTCreateOptions{}, &redis.FieldSchema{
 			FieldName: "txt",
@@ -2799,12 +2799,15 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 		client.HSet(ctx, "doc1", "txt", "hello world")
 
-		// Attempt to search with a non-zero offset and zero limit.
-		_, err = client.FTSearchWithArgs(ctx, "testIdx", "hello", &redis.FTSearchOptions{
+		// A non-zero offset without a limit uses the default page size of 10
+		// instead of sending LIMIT 5 0, which Redis 8 rejects.
+		res, err := client.FTSearchWithArgs(ctx, "testIdx", "hello", &redis.FTSearchOptions{
 			LimitOffset: 5,
 			Limit:       0,
 		}).Result()
-		Expect(err).To(HaveOccurred())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(1))
+		Expect(res.Docs).To(BeEmpty())
 	})
 
 	It("should evaluate exponentiation precedence in APPLY expressions correctly", Label("search", "ftaggregate"), func() {
