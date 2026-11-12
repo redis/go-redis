@@ -1,0 +1,679 @@
+package redis
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/redis/go-redis/v9/maintnotifications"
+)
+
+// newWatchTestServer starts a RESP server on 127.0.0.1 and returns its
+// address. newReply makes one reply function per connection, so a server can
+// keep connection state such as the ASKING flag.
+func newWatchTestServer(t *testing.T, newReply func() func(args []string) string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, conn)
+			mu.Unlock()
+			reply := newReply()
+			wg.Add(1)
+			go func() { defer wg.Done(); serveRedirectTestConn(conn, reply) }()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+		mu.Unlock()
+		wg.Wait()
+	})
+	return ln.Addr().String()
+}
+
+func stateless(reply func(args []string) string) func() func(args []string) string {
+	return func() func(args []string) string { return reply }
+}
+
+// clusterSlotsReply maps every slot to addr.
+func clusterSlotsReply(addr string) string {
+	host, port, _ := net.SplitHostPort(addr)
+	return fmt.Sprintf("*1\r\n*3\r\n:0\r\n:16383\r\n*2\r\n$%d\r\n%s\r\n:%s\r\n", len(host), host, port)
+}
+
+func newWatchTestClusterClient(t *testing.T, addr string, maxRedirects, maxRetries int) *ClusterClient {
+	t.Helper()
+	client := NewClusterClient(&ClusterOptions{
+		Addrs:                    []string{addr},
+		MaxRetries:               maxRetries,
+		Protocol:                 3,
+		DisableIdentity:          true,
+		MaxRedirects:             maxRedirects,
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+// The source of a slot in migration answers WATCH for a moved or new key with
+// ASK. The target imports the slot and serves keyed commands only after
+// ASKING; without it, the target answers MOVED back to the source.
+// ClusterClient.Watch must send ASKING so the transaction runs on the target.
+func TestClusterWatchAskSendsAsking(t *testing.T) {
+	var source string
+	var askings, execs, gets atomic.Int32
+	target := newWatchTestServer(t, func() func(args []string) string {
+		var asking, multi bool
+		return func(args []string) string {
+			switch args[0] {
+			case "hello":
+				return "%0\r\n"
+			case "asking":
+				askings.Add(1)
+				asking = true
+				return "+OK\r\n"
+			case "multi":
+				// The ASKING flag holds inside MULTI until EXEC.
+				multi = true
+				return "+OK\r\n"
+			case "unwatch":
+				return "+OK\r\n"
+			}
+			if !asking {
+				return "-MOVED 0 " + source + "\r\n"
+			}
+			if !multi {
+				asking = false
+			}
+			switch args[0] {
+			case "watch":
+				return "+OK\r\n"
+			case "get":
+				// The first GET fails with a retryable error: with
+				// MaxRetries set, the Tx must retry it with a new ASKING.
+				if gets.Add(1) == 1 {
+					return "-LOADING Redis is loading the dataset in memory\r\n"
+				}
+				return "_\r\n"
+			case "set":
+				return "+QUEUED\r\n"
+			case "exec":
+				multi, asking = false, false
+				execs.Add(1)
+				return "*1\r\n+OK\r\n"
+			}
+			return "-ERR unexpected command '" + args[0] + "'\r\n"
+		}
+	})
+	source = newWatchTestServer(t, stateless(func(args []string) string {
+		switch {
+		case args[0] == "hello":
+			return "%0\r\n"
+		case args[0] == "watch":
+			return "-ASK 0 " + target + "\r\n"
+		case args[0] == "unwatch":
+			return "+OK\r\n"
+		case args[0] == "cluster" && args[1] == "shards":
+			return "-ERR unknown subcommand\r\n"
+		case args[0] == "cluster" && args[1] == "slots":
+			return clusterSlotsReply(source)
+		}
+		return "-ERR unexpected command '" + args[0] + "'\r\n"
+	}))
+
+	client := newWatchTestClusterClient(t, source, 3, 2)
+	ctx := context.Background()
+	called := false
+	err := client.Watch(ctx, func(tx *Tx) error {
+		called = true
+		if err := tx.Get(ctx, "key").Err(); !errors.Is(err, Nil) {
+			return fmt.Errorf("Get() = %v; want redis.Nil", err)
+		}
+		_, err := tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+			pipe.Set(ctx, "key", "value", 0)
+			return nil
+		})
+		return err
+	}, "key")
+	if err != nil {
+		t.Fatalf("Watch() = %v; want nil", err)
+	}
+	if !called {
+		t.Fatal("Watch() did not run the callback")
+	}
+	if n := execs.Load(); n != 1 {
+		t.Fatalf("target ran EXEC %d times; want 1", n)
+	}
+	if n := askings.Load(); n == 0 {
+		t.Fatal("target received no ASKING")
+	}
+	if n := gets.Load(); n != 2 {
+		t.Fatalf("target served GET %d times; want 2 (one retry after LOADING)", n)
+	}
+}
+
+func TestAskingPipelineFlags(t *testing.T) {
+	ctx := context.Background()
+	cmd := func(args ...interface{}) Cmder { return NewCmd(ctx, args...) }
+	cmds := []Cmder{
+		cmd("get", "a"),
+		cmd("multi"),
+		cmd("get", "a"),
+		cmd("set", "a", "1"),
+		cmd("exec"),
+		cmd("get", "a"),
+		cmd("multi"),
+		cmd("discard"),
+		cmd("get", "a"),
+	}
+	got := string(askingPipelineFlags(cmds))
+	want := "AA\x00\x00\x00AA\x00A"
+	if got != want {
+		t.Fatalf("askingPipelineFlags = %q; want %q", got, want)
+	}
+}
+
+// When the attempts run out on redirects or READONLY replies, Watch must
+// return the last error. It must not return nil without running the callback.
+func TestClusterWatchReturnsErrorWhenRedirectsRunOut(t *testing.T) {
+	t.Run("MOVED", func(t *testing.T) {
+		var a, b string
+		node := func(self, other *string) func(args []string) string {
+			return func(args []string) string {
+				switch {
+				case args[0] == "hello":
+					return "%0\r\n"
+				case args[0] == "watch":
+					return "-MOVED 0 " + *other + "\r\n"
+				case args[0] == "cluster" && args[1] == "shards":
+					return "-ERR unknown subcommand\r\n"
+				case args[0] == "cluster" && args[1] == "slots":
+					return clusterSlotsReply(*self)
+				}
+				return "+OK\r\n"
+			}
+		}
+		a = newWatchTestServer(t, stateless(node(&a, &b)))
+		b = newWatchTestServer(t, stateless(node(&b, &a)))
+
+		client := newWatchTestClusterClient(t, a, 2, 0)
+		called := false
+		err := client.Watch(context.Background(), func(*Tx) error { called = true; return nil }, "key")
+		if err == nil {
+			t.Fatal("Watch() = nil; want a MOVED error")
+		}
+		if moved, _, _ := isMovedError(err); !moved {
+			t.Fatalf("Watch() = %v; want a MOVED error", err)
+		}
+		if called {
+			t.Fatal("Watch() ran the callback")
+		}
+	})
+
+	t.Run("READONLY", func(t *testing.T) {
+		var a string
+		a = newWatchTestServer(t, stateless(func(args []string) string {
+			switch {
+			case args[0] == "hello":
+				return "%0\r\n"
+			case args[0] == "watch":
+				return "-READONLY You can't write against a read only replica.\r\n"
+			case args[0] == "cluster" && args[1] == "shards":
+				return "-ERR unknown subcommand\r\n"
+			case args[0] == "cluster" && args[1] == "slots":
+				return clusterSlotsReply(a)
+			}
+			return "+OK\r\n"
+		}))
+
+		client := newWatchTestClusterClient(t, a, 2, 0)
+		called := false
+		err := client.Watch(context.Background(), func(*Tx) error { called = true; return nil }, "key")
+		if err == nil {
+			t.Fatal("Watch() = nil; want a READONLY error")
+		}
+		if !isReadOnlyError(err) {
+			t.Fatalf("Watch() = %v; want a READONLY error", err)
+		}
+		if called {
+			t.Fatal("Watch() ran the callback")
+		}
+	})
+}
+
+// Live check on a private cluster: while a slot migrates, Watch on a key that
+// already moved and on a new key must run on the importing node and commit.
+// With CSC in OPTOUT mode the Tx connection is tracked, so a CLIENT CACHING NO
+// prefix must not land between ASKING and the command it covers.
+func TestClusterWatchLiveSlotMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opt  func(*ClusterOptions)
+	}{
+		{name: "plain", opt: func(*ClusterOptions) {}},
+		{name: "csc-optout", opt: func(opt *ClusterOptions) {
+			opt.ClientSideCacheConfig = &ClientSideCacheConfig{MaxEntries: 128}
+			opt.ClientSideCacheTrackingMode = TrackingModeOptOut
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testClusterWatchLiveSlotMigration(t, tc.opt) })
+	}
+}
+
+func testClusterWatchLiveSlotMigration(t *testing.T, setOpt func(*ClusterOptions)) {
+	_, nodes := newClusterCSCLive(t)
+	ctx := context.Background()
+	opt := &ClusterOptions{
+		Addrs: []string{nodes[0].opt.Addr}, Protocol: 3, DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	}
+	setOpt(opt)
+	c := NewClusterClient(opt)
+	t.Cleanup(func() { _ = c.Close() })
+
+	moved, fresh := "{watch-ask}:moved", "{watch-ask}:new"
+	if err := c.Set(ctx, moved, "1", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	source, err := c.MasterForKey(ctx, moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a, b *Client
+	for _, n := range nodes[:3] {
+		if n.opt.Addr == source.opt.Addr {
+			a = n
+		} else if b == nil {
+			b = n
+		}
+	}
+	if a == nil || b == nil {
+		t.Fatal("migration nodes not found")
+	}
+	aid, err := a.ClusterMyID(ctx).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bid, err := b.ClusterMyID(ctx).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := clusterKeySlot(moved)
+	if err := b.Do(ctx, "cluster", "setslot", slot, "importing", aid).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Do(ctx, "cluster", "setslot", slot, "migrating", bid).Err(); err != nil {
+		t.Fatal(err)
+	}
+	_, bport, _ := net.SplitHostPort(b.opt.Addr)
+	if err := a.Do(ctx, "migrate", "127.0.0.1", bport, "", 0, 5000, "keys", moved).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	incr := func(key string) error {
+		return c.Watch(ctx, func(tx *Tx) error {
+			// A direct read, plain pipeline reads and a read inside MULTI:
+			// each is a trackable read that takes a different path.
+			n, err := tx.Get(ctx, key).Int()
+			if err != nil && !errors.Is(err, Nil) {
+				return err
+			}
+			// A raw MULTI/EXEC in a plain pipeline: ASKING goes before
+			// MULTI only, so EXEC returns just the queued GET.
+			var exec *Cmd
+			if _, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Get(ctx, key)
+				pipe.Do(ctx, "multi")
+				pipe.Get(ctx, key)
+				exec = pipe.Do(ctx, "exec")
+				return nil
+			}); err != nil && !errors.Is(err, Nil) {
+				return err
+			}
+			if replies, err := exec.Slice(); err != nil || len(replies) != 1 {
+				return fmt.Errorf("raw EXEC = %v, %v; want one reply", replies, err)
+			}
+			// The same raw MULTI/EXEC as direct commands.
+			for _, args := range [][]interface{}{{"multi"}, {"get", key}} {
+				if err := tx.Do(ctx, args...).Err(); err != nil {
+					return err
+				}
+			}
+			if replies, err := tx.Do(ctx, "exec").Slice(); err != nil || len(replies) != 1 {
+				return fmt.Errorf("direct raw EXEC = %v, %v; want one reply", replies, err)
+			}
+			_, err = tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Get(ctx, key)
+				pipe.Set(ctx, key, n+1, 0)
+				return nil
+			})
+			if errors.Is(err, Nil) {
+				// The GET of a new key inside MULTI returns nil; EXEC ran.
+				err = nil
+			}
+			return err
+		}, key)
+	}
+	for _, tc := range []struct{ key, want string }{{moved, "2"}, {fresh, "1"}} {
+		if err := incr(tc.key); err != nil {
+			t.Fatalf("Watch(%s) = %v; want nil", tc.key, err)
+		}
+		conn := b.Conn()
+		if err := conn.Do(ctx, "asking").Err(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := conn.Get(ctx, tc.key).Result()
+		_ = conn.Close()
+		if err != nil || got != tc.want {
+			t.Fatalf("%s on the importing node = %q, %v; want %q", tc.key, got, err, tc.want)
+		}
+	}
+}
+
+// A Watch that follows ASK runs tx.Pipelined with a managed HImportSet. The
+// importing node answers the first SET with "no such fieldset", so the client
+// re-prepares and re-issues the SET once. That retry must carry ASKING too.
+func TestClusterWatchAskHImportRetryKeepsAsking(t *testing.T) {
+	var source string
+	var sets, okSets atomic.Int32
+	target := newWatchTestServer(t, func() func(args []string) string {
+		var asking bool
+		return func(args []string) string {
+			switch {
+			case args[0] == "hello":
+				return "%0\r\n"
+			case args[0] == "asking":
+				asking = true
+				return "+OK\r\n"
+			case args[0] == "unwatch":
+				return "+OK\r\n"
+			case args[0] == "himport" && args[1] == "prepare":
+				return "+OK\r\n"
+			}
+			wasAsking := asking
+			asking = false
+			if !wasAsking {
+				return "-MOVED 0 " + source + "\r\n"
+			}
+			switch {
+			case args[0] == "watch":
+				return "+OK\r\n"
+			case args[0] == "himport" && args[1] == "set":
+				if sets.Add(1) == 1 {
+					return "-ERR no such fieldset\r\n"
+				}
+				okSets.Add(1)
+				return "+OK\r\n"
+			}
+			return "-ERR unexpected command '" + args[0] + "'\r\n"
+		}
+	})
+	source = newWatchTestServer(t, stateless(func(args []string) string {
+		switch {
+		case args[0] == "hello":
+			return "%0\r\n"
+		case args[0] == "himport" && args[1] == "prepare":
+			return "+OK\r\n"
+		case args[0] == "watch":
+			return "-ASK 0 " + target + "\r\n"
+		case args[0] == "unwatch":
+			return "+OK\r\n"
+		case args[0] == "cluster" && args[1] == "shards":
+			return "-ERR unknown subcommand\r\n"
+		case args[0] == "cluster" && args[1] == "slots":
+			return clusterSlotsReply(source)
+		}
+		return "-ERR unexpected command '" + args[0] + "'\r\n"
+	}))
+
+	client := newWatchTestClusterClient(t, source, 3, 0)
+	ctx := context.Background()
+	if err := client.HImportPrepare(ctx, "fs", "f1").Err(); err != nil {
+		t.Fatalf("HImportPrepare() = %v", err)
+	}
+	var set *StatusCmd
+	err := client.Watch(ctx, func(tx *Tx) error {
+		_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
+			set = pipe.HImportSet(ctx, "key", "fs", "v1")
+			return nil
+		})
+		return err
+	}, "key")
+	if err != nil {
+		t.Fatalf("Watch() = %v; want nil", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("HImportSet() = %v; want nil", err)
+	}
+	if n := okSets.Load(); n != 1 {
+		t.Fatalf("target accepted %d HIMPORT SETs; want 1", n)
+	}
+}
+
+// When the importing node rejects ASKING (for example NOPERM from an ACL),
+// the paired command runs without it and draws MOVED. Watch must report the
+// ASKING error, not that MOVED, on every Tx path.
+func TestClusterWatchAskReportsRejectedAsking(t *testing.T) {
+	const noperm = "NOPERM User has no permissions to run the 'asking' command"
+	const execAbort = "EXECABORT Transaction discarded because of previous errors."
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		// rejectFrom is the first ASKING (1-based) that the target rejects.
+		rejectFrom int32
+		// push sends a RESP3 push frame right after the rejection.
+		push bool
+		// owner makes the target serve keyed commands without ASKING, as
+		// a node that already owns the slot does; execNull makes EXEC fail
+		// as after a modified watched key.
+		owner, execNull bool
+		// loadingOnce makes the target answer the first command with this
+		// name with LOADING; maxRetries lets the client retry it.
+		loadingOnce string
+		maxRetries  int
+		// want is the expected error; empty means the ASKING error, and ok
+		// means no error.
+		want string
+		ok   bool
+		fn   func(tx *Tx) error
+	}{
+		{name: "watch", rejectFrom: 1, fn: func(*Tx) error { return nil }},
+		{name: "direct", rejectFrom: 2, fn: func(tx *Tx) error { return tx.Get(ctx, "key").Err() }},
+		// Cmd accepts a push array as a value, so an undrained push would
+		// be read as the reply.
+		{name: "direct-push", rejectFrom: 2, push: true, fn: func(tx *Tx) error { return tx.Do(ctx, "get", "key").Err() }},
+		// On a node that already owns the slot, a rejected ASKING does not
+		// matter: genuine nil and transaction-failed outcomes stay.
+		{name: "owner-nil", rejectFrom: 1, owner: true, want: Nil.Error(), fn: func(tx *Tx) error {
+			return tx.Get(ctx, "key").Err()
+		}},
+		{name: "owner-txfailed", rejectFrom: 1, owner: true, execNull: true, want: TxFailedErr.Error(), fn: func(tx *Tx) error {
+			_, err := tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Set(ctx, "key", "v", 0)
+				return nil
+			})
+			return err
+		}},
+		// A queue-time error that a missing ASKING did not cause keeps its
+		// EXECABORT.
+		{name: "owner-unrelated-abort", rejectFrom: 2, owner: true, want: execAbort, fn: func(tx *Tx) error {
+			_, err := tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Do(ctx, "bogus")
+				return nil
+			})
+			return err
+		}},
+		// A raw MULTI sent as direct commands: ASKING goes before MULTI only.
+		{name: "direct-raw-multi", rejectFrom: 1 << 20, ok: true, fn: directRawMulti(ctx)},
+		// The ASKING before a direct MULTI is rejected: the queued command
+		// and EXEC both report it.
+		{name: "direct-raw-multi-rejected", rejectFrom: 2, fn: func(tx *Tx) error {
+			if err := tx.Do(ctx, "multi").Err(); err != nil {
+				return err
+			}
+			setErr := tx.Do(ctx, "set", "key", "v").Err()
+			execErr := tx.Do(ctx, "exec").Err()
+			if setErr == nil || execErr == nil || setErr.Error() != execErr.Error() {
+				return fmt.Errorf("SET = %v, EXEC = %v; want the same error", setErr, execErr)
+			}
+			return execErr
+		}},
+		// A retried MULTI keeps its ASKING, and a retried EXEC gets none.
+		{name: "direct-raw-multi-retry", rejectFrom: 1 << 20, loadingOnce: "multi", maxRetries: 2, ok: true, fn: directRawMulti(ctx)},
+		{name: "direct-raw-exec-retry", rejectFrom: 1 << 20, loadingOnce: "exec", maxRetries: 2, ok: true, fn: directRawMulti(ctx)},
+		{name: "raw-multi", rejectFrom: 2, fn: func(tx *Tx) error {
+			_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Do(ctx, "multi")
+				pipe.Set(ctx, "key", "v", 0)
+				pipe.Do(ctx, "exec")
+				return nil
+			})
+			return err
+		}},
+		{name: "pipeline", rejectFrom: 2, fn: func(tx *Tx) error {
+			_, err := tx.Pipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Get(ctx, "key")
+				return nil
+			})
+			return err
+		}},
+		{name: "txpipeline", rejectFrom: 2, fn: func(tx *Tx) error {
+			_, err := tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+				pipe.Set(ctx, "key", "v", 0)
+				return nil
+			})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var source string
+			var askings atomic.Int32
+			target := newWatchTestServer(t, func() func(args []string) string {
+				var asking, multi, aborted bool
+				loaded := false
+				return func(args []string) string {
+					if args[0] == tc.loadingOnce && !loaded {
+						// Rejected before it runs: the ASKING flag is gone,
+						// and an open MULTI stays open.
+						loaded, asking = true, multi && asking
+						return "-LOADING Redis is loading the dataset in memory\r\n"
+					}
+					switch args[0] {
+					case "hello":
+						return "%0\r\n"
+					case "asking":
+						if multi {
+							// Redis queues ASKING inside MULTI.
+							aborted = true
+							return "+QUEUED\r\n"
+						}
+						if askings.Add(1) >= tc.rejectFrom {
+							if tc.push {
+								return "-" + noperm + "\r\n>2\r\n$10\r\ninvalidate\r\n*1\r\n$3\r\nkey\r\n"
+							}
+							return "-" + noperm + "\r\n"
+						}
+						asking = true
+						return "+OK\r\n"
+					case "unwatch":
+						return "+OK\r\n"
+					case "multi":
+						multi = true
+						return "+OK\r\n"
+					case "exec":
+						multi, asking = false, false
+						if tc.execNull {
+							return "_\r\n"
+						}
+						if aborted {
+							aborted = false
+							return "-" + execAbort + "\r\n"
+						}
+						return "*1\r\n+OK\r\n"
+					}
+					if !asking && !tc.owner {
+						aborted = aborted || multi
+						return "-MOVED 0 " + source + "\r\n"
+					}
+					if !multi {
+						asking = false
+					}
+					switch args[0] {
+					case "watch":
+						return "+OK\r\n"
+					case "get":
+						return "_\r\n"
+					case "set":
+						return "+QUEUED\r\n"
+					}
+					aborted = aborted || multi
+					return "-ERR unknown command '" + args[0] + "'\r\n"
+				}
+			})
+			source = newWatchTestServer(t, stateless(func(args []string) string {
+				switch {
+				case args[0] == "hello":
+					return "%0\r\n"
+				case args[0] == "watch":
+					return "-ASK 0 " + target + "\r\n"
+				case args[0] == "unwatch":
+					return "+OK\r\n"
+				case args[0] == "cluster" && args[1] == "shards":
+					return "-ERR unknown subcommand\r\n"
+				case args[0] == "cluster" && args[1] == "slots":
+					return clusterSlotsReply(source)
+				}
+				return "-ERR unexpected command '" + args[0] + "'\r\n"
+			}))
+
+			client := newWatchTestClusterClient(t, source, 3, tc.maxRetries)
+			err := client.Watch(ctx, tc.fn, "key")
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("Watch() = %v; want nil", err)
+				}
+				return
+			}
+			want := tc.want
+			if want == "" {
+				want = noperm
+			}
+			if err == nil || err.Error() != want {
+				t.Fatalf("Watch() = %v; want %q", err, want)
+			}
+		})
+	}
+}
+
+// directRawMulti sends MULTI, SET and EXEC as separate direct commands.
+func directRawMulti(ctx context.Context) func(tx *Tx) error {
+	return func(tx *Tx) error {
+		for _, args := range [][]interface{}{{"multi"}, {"set", "key", "v"}, {"exec"}} {
+			if err := tx.Do(ctx, args...).Err(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}

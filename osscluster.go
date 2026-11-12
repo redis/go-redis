@@ -4122,6 +4122,9 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		return err
 	}
 
+	// asking is set after an ASK redirect: the target imports the slot and
+	// accepts the transaction only with ASKING.
+	var asking bool
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -4131,10 +4134,10 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		// Track callback errors separately to avoid retrying user failures through cluster retry classification.
 		var fnErr error
-		err = node.Client.Watch(ctx, func(tx *Tx) error {
+		err = node.Client.watchAsking(ctx, func(tx *Tx) error {
 			fnErr = fn(tx)
 			return fnErr
-		}, keys...)
+		}, asking, keys...)
 		if err == nil {
 			break
 		}
@@ -4146,12 +4149,16 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		if e, ok := err.(*errWithServingEndpoint); ok {
 			err = e.err
 		}
+		// Keep err when switching nodes: if the attempts run out, Watch must
+		// return the last error, not nil.
 		moved, ask, addr := isMovedError(err)
 		if moved || ask {
-			node, err = c.nodes.GetOrCreate(redirectAddr(addr, node, servingEp))
-			if err != nil {
-				return err
+			next, nodeErr := c.nodes.GetOrCreate(redirectAddr(addr, node, servingEp))
+			if nodeErr != nil {
+				return nodeErr
 			}
+			node = next
+			asking = ask
 			continue
 		}
 
@@ -4159,10 +4166,12 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			if isReadOnly {
 				c.state.LazyReload()
 			}
-			node, err = c.slotMasterNode(ctx, slot)
-			if err != nil {
-				return err
+			next, nodeErr := c.slotMasterNode(ctx, slot)
+			if nodeErr != nil {
+				return nodeErr
 			}
+			node = next
+			asking = false
 			continue
 		}
 

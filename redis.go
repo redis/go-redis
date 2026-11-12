@@ -438,6 +438,14 @@ type pipelinePoolRef struct {
 
 type baseClient struct {
 	cscPolicy cscPolicy
+	// asking is set only on the private baseClient of a Tx that
+	// ClusterClient.Watch runs on a node importing the slot, after an ASK
+	// redirect. Each command then carries an ASKING prefix in place of the
+	// CLIENT CACHING prefix (see prefixASKING).
+	asking bool
+	// askingMulti follows a raw MULTI sent as direct commands on an asking
+	// Tx (see askingDirectReply).
+	askingMulti askingMultiState
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -2094,7 +2102,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		// Per-socket init generation (not live client-level CSC) decides whether
 		// the socket still carries TRACKING after disableCSCServing (#4236 item 1).
 		flag := byte(0)
-		if c.cscPolicy.mode != TrackingModePlain {
+		if c.asking {
+			if !c.askingMulti.open {
+				flag = prefixASKING
+			}
+		} else if c.cscPolicy.mode != TrackingModePlain {
 			tracked := c.cscConnInitGen(cn.GetID()) != 0
 			if capture != nil && !tracked {
 				capture.noStore = true
@@ -2167,7 +2179,15 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 				}
 			}
-			if flag != 0 {
+			var askingErr error
+			if flag == prefixASKING {
+				rejected, err := c.readASKINGAck(ctx, cn, rd)
+				if err != nil {
+					_ = cn.Close()
+					return err
+				}
+				askingErr = rejected
+			} else if flag != 0 {
 				ok, err := c.readCSCAck(ctx, cn, rd)
 				if err != nil {
 					_ = cn.Close()
@@ -2182,6 +2202,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				}
 			}
 			err := readReplyFunc(rd)
+			if c.asking {
+				err = c.askingDirectReply(cmd, askingErr, err)
+			}
 			// Assert the command type before touching the error: the
 			// errors.As chain inside himportNoSuchFieldset allocates, and
 			// this is the per-command hot path.
@@ -2669,7 +2692,7 @@ func (c *baseClient) pipelineProcessCmds(
 	// for registered fieldsets the batch references get written ahead of
 	// the batch.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
-	flags := c.cscPipelineFlags(cn, cmds)
+	flags := c.pipelinePrefixFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -2739,18 +2762,34 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 }
 
 func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder, flags []byte) error {
+	// askingErr carries over to commands without a prefix: in an asking
+	// batch those are the commands of a raw MULTI, and its ASKING covers them.
+	var askingErr error
+	// askingRedirected records a redirect under askingErr, so that the
+	// EXECABORT of a raw MULTI is reported as askingErr only after one.
+	var askingRedirected bool
 	for i, cmd := range cmds {
 		if flags != nil && flags[i] != 0 {
-			if err := c.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
+			rejected, err := c.readPipelinePrefix(ctx, cn, rd, flags[i])
+			if err != nil {
 				setCmdsErr(cmds[i:], err)
 				return err
 			}
+			askingErr, askingRedirected = rejected, false
 		}
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
+		if askingErr != nil {
+			if askingRedirect(err) {
+				askingRedirected = true
+				err = askingErr
+			} else if askingRedirected && proto.IsExecAbortError(err) {
+				err = askingErr
+			}
+		}
 		cmd.SetErr(err)
 		if err != nil && !isRedisError(err) {
 			setCmdsErr(cmds[i+1:], err)
@@ -2783,7 +2822,7 @@ func (c *baseClient) txPipelineProcessCmds(
 	// for registered fieldsets the transaction references get written ahead
 	// of MULTI; the session state is visible inside the transaction.
 	injected := c.himportInjectedCmds(ctx, cn, cmds)
-	flags := c.cscPipelineFlags(cn, cmds)
+	flags := c.pipelinePrefixFlags(cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, ic := range injected {
@@ -2808,17 +2847,23 @@ func (c *baseClient) txPipelineProcessCmds(
 			return err
 		}
 
+		var askingErr error
 		if flags != nil && flags[0] != 0 {
-			if err := c.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
+			rejected, err := c.readPipelinePrefix(ctx, cn, rd, flags[0])
+			if err != nil {
 				setCmdsErr(cmds, err)
 				return err
 			}
+			askingErr = rejected
 		}
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
+			if askingErr != nil && (askingRedirect(err) || askingAbortedExec(err, trimmedCmds)) {
+				err = askingErr
+			}
 			setCmdsErr(cmds, err)
 			return err
 		}

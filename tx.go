@@ -95,7 +95,14 @@ func (c *Tx) Process(ctx context.Context, cmd Cmder) error {
 //
 // The transaction is automatically closed when fn exits.
 func (c *Client) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
+	return c.watchAsking(ctx, fn, false, keys...)
+}
+
+// watchAsking is Watch with an option to send ASKING before every command of
+// the transaction (see baseClient.asking).
+func (c *Client) watchAsking(ctx context.Context, fn func(*Tx) error, asking bool, keys ...string) error {
 	tx := c.newTx()
+	tx.baseClient.asking = asking
 	defer tx.Close(ctx)
 	if len(keys) > 0 {
 		// Return the Process error, not cmd.Err(): it keeps the serving
