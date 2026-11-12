@@ -523,6 +523,11 @@ func setupFailoverConn(u *url.URL) (*FailoverOptions, error) {
 		if o.DB, err = strconv.Atoi(f[0]); err != nil {
 			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
 		}
+		// A negative index parses fine but makes every connection fail on
+		// SELECT, so reject it when the URL is read.
+		if o.DB < 0 {
+			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
+		}
 	default:
 		return nil, fmt.Errorf("redis: invalid URL path: %s", u.Path)
 	}
@@ -596,6 +601,9 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 		db, err := strconv.Atoi(tmp)
 		if err != nil {
 			return nil, fmt.Errorf("redis: invalid database number: %w", err)
+		}
+		if db < 0 {
+			return nil, fmt.Errorf("redis: invalid database number: %q", tmp)
 		}
 		o.DB = db
 	}
