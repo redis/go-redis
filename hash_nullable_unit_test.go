@@ -112,3 +112,33 @@ func TestHMGetStringsDecodeErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestHMGetStringsCachedReplyOwnership(t *testing.T) {
+	ctx := context.Background()
+	wire := []byte("*3\r\n_\r\n$0\r\n\r\n$3\r\nx\x00y\r\n")
+	generic := NewSliceCmd(ctx, "hmget", "k", "missing", "empty", "binary")
+	if err := applyCachedReply(generic, wire); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewNullableStringSliceCmd(ctx, generic.Args()...)
+	if err := applyCachedReply(cmd, wire); err != nil {
+		t.Fatal(err)
+	}
+	retained := cmd.Val()
+	want := NullableStringSlice{Values: []string{"", "", "x\x00y"}, Valid: []bool{false, true, true}}
+	if !reflect.DeepEqual(retained, want) {
+		t.Fatal("cached typed values differ")
+	}
+	second := NewNullableStringSliceCmd(ctx, generic.Args()...)
+	if err := applyCachedReply(second, wire); err != nil {
+		t.Fatal(err)
+	}
+	second.val.Values[2] = "changed"
+	second.val.Valid[1] = false
+	for i := range wire {
+		wire[i] = 'x'
+	}
+	if !reflect.DeepEqual(retained, want) {
+		t.Fatal("cached result aliases slots or raw cache bytes")
+	}
+}

@@ -234,6 +234,7 @@ func (c cmdable) HStrLen(ctx context.Context, key, field string) *IntCmd {
 	_ = c(ctx, cmd)
 	return cmd
 }
+
 func (c cmdable) HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"hscan", key, cursor}
 	if match != "" {
@@ -362,7 +363,6 @@ func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration ti
 //
 // [HExpireAt Documentation]: https://redis.io/commands/hexpireat/
 func (c cmdable) HExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
-
 	args := []interface{}{"HEXPIREAT", key, tm.Unix(), "FIELDS", len(fields)}
 
 	for _, field := range fields {

@@ -30,6 +30,7 @@ func (h *nullableResultHook) inspect(cmd Cmder) {
 		}
 	}
 }
+
 func (h *nullableResultHook) ProcessHook(next ProcessHook) ProcessHook {
 	return func(ctx context.Context, cmd Cmder) error {
 		if h.before.Load() {
@@ -40,6 +41,7 @@ func (h *nullableResultHook) ProcessHook(next ProcessHook) ProcessHook {
 		return err
 	}
 }
+
 func (h *nullableResultHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if h.before.Load() {
