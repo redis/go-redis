@@ -74,14 +74,20 @@ const maxNestingDepth = 1000
 var errMaxNestingDepth = errors.New("redis: maximum nesting depth exceeded")
 
 type Reader struct {
-	rd    *bufio.Reader
-	depth int
+	rd       *bufio.Reader
+	depth    int
+	fatalErr error
 }
 
 func (r *Reader) enterAggregate() error {
+	if r.fatalErr != nil {
+		return r.fatalErr
+	}
 	if r.depth >= maxNestingDepth {
-		// The reply is only partially consumed; the connection must be closed.
-		return errMaxNestingDepth
+		// The frame is only partially consumed. Prevent any subsequent read
+		// from treating its remaining bytes as another command's reply.
+		r.fatalErr = errMaxNestingDepth
+		return r.fatalErr
 	}
 	r.depth++
 	return nil
@@ -109,16 +115,24 @@ func (r *Reader) Size() int {
 }
 
 func (r *Reader) Peek(n int) ([]byte, error) {
+	if r.fatalErr != nil {
+		return nil, r.fatalErr
+	}
 	return r.rd.Peek(n)
 }
 
 func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
+	r.depth = 0
+	r.fatalErr = nil
 }
 
 // PeekReplyType returns the data type of the next response without advancing the Reader,
 // and discard the attribute type.
 func (r *Reader) PeekReplyType() (byte, error) {
+	if r.fatalErr != nil {
+		return 0, r.fatalErr
+	}
 	for {
 		b, err := r.rd.Peek(1)
 		if err != nil {
@@ -172,6 +186,9 @@ var ErrPushNotificationNameTooLong = errors.New("redis: push notification name e
 // notification and cause the caller's ReadReply to consume (and drop) the
 // frame; see issue #3839.
 func (r *Reader) PeekPushNotificationName() (string, error) {
+	if r.fatalErr != nil {
+		return "", r.fatalErr
+	}
 	c, err := r.rd.Peek(1)
 	if err != nil {
 		return "", err
@@ -356,6 +373,9 @@ func (r *Reader) ReadLine() ([]byte, error) {
 //   - there is a pending read error;
 //   - or line does not end with \r\n.
 func (r *Reader) readLine() ([]byte, error) {
+	if r.fatalErr != nil {
+		return nil, r.fatalErr
+	}
 	b, err := r.rd.ReadSlice('\n')
 	if err != nil {
 		if err != bufio.ErrBufferFull {
@@ -841,6 +861,9 @@ func (r *Reader) DiscardNext() error {
 
 // Discard the data represented by line.
 func (r *Reader) Discard(line []byte) (err error) {
+	if r.fatalErr != nil {
+		return r.fatalErr
+	}
 	if len(line) == 0 {
 		return errors.New("redis: invalid line")
 	}
@@ -938,6 +961,13 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 	if err != nil {
 		return buf, err
 	}
+	switch line[0] {
+	case RespArray, RespSet, RespPush, RespMap, RespAttr:
+		if err := r.enterAggregate(); err != nil {
+			return buf, err
+		}
+		defer func() { r.depth-- }()
+	}
 
 	buf = append(buf, line...)
 	buf = append(buf, '\r', '\n')
@@ -1033,6 +1063,13 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 	line, err := r.readLine()
 	if err != nil {
 		return 0, err
+	}
+	switch line[0] {
+	case RespArray, RespSet, RespPush, RespMap, RespAttr:
+		if err := r.enterAggregate(); err != nil {
+			return 0, err
+		}
+		defer func() { r.depth-- }()
 	}
 
 	var written int64
