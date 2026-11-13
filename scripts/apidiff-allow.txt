@@ -1,0 +1,13 @@
+# Accepted incompatible changes reported by scripts/apidiff.sh.
+# One extended regex per line, matched against the whole apidiff line
+# (for example "- Options.Foo: removed"). Lines starting with # are comments.
+# Entries for a specific change can be removed once that change is released,
+# because the base tag then moves past it.
+
+# New commands add methods to the *Cmdable interfaces. go-redis does not
+# support implementing these interfaces outside the module.
+- [A-Za-z0-9]*Cmdable\.[A-Za-z0-9]+: added
+
+# v9.24 (unreleased): maintnotifications circuit breaker types became aliases
+# of internal/circuitbreaker types (#3954). Source compatible for callers.
+- \./maintnotifications\.(\(\*CircuitBreaker\)\.GetState|CircuitBreaker(Closed|HalfOpen|Open|State)|CircuitBreakerStats\.State): changed from .*
