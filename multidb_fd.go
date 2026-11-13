@@ -609,7 +609,7 @@ func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, 
 	// freshly reset member.
 	if kind == outcomeSuccess {
 		db.cb.RecordSuccessFor(token.res)
-	} else if grp.take() {
+	} else if grp.take(token.res.Generation()) {
 		db.cb.RecordFailureFor(token.res)
 	}
 	// The detector write is window-gated by the generation sampled at
@@ -621,7 +621,7 @@ func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, 
 	if kind == outcomeSuccess {
 		c.successSinceFailover.Store(true)
 		c.recordDetectorSuccess(token.detectorGen)
-	} else if grp.takeDetector() {
+	} else if grp.takeDetector(token.detectorGen) {
 		c.recordDetectorFailure(token.detectorGen, err)
 	}
 }

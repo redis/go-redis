@@ -259,6 +259,9 @@ type Reservation struct {
 	settled *atomic.Bool
 }
 
+// Generation identifies the breaker episode in which the command was admitted.
+func (r Reservation) Generation() uint64 { return r.gen }
+
 // AllowReserve is Allow with an identity-bearing reservation. Prefer it over
 // Allow when the admitted operation may outlive a later open -> half-open
 // transition, or when several outcomes share one admission: the returned

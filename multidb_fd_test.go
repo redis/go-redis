@@ -494,6 +494,43 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 			t.Errorf("detector failures = %d, want 2 (one per group)", det.failures)
 		}
 	})
+
+	t.Run("stale group outcome does not suppress current generation", func(t *testing.T) {
+		det := &countingFD{}
+		core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+		db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1,
+		})}
+		core.dbs[0] = db
+		core.active.Store(0)
+
+		oldRes, ok := db.cb.CurrentClosedReservation()
+		if !ok {
+			t.Fatal("initial breaker not closed")
+		}
+		stale := fdOutcomeToken{res: oldRes, detectorGen: core.detectorGen.Load()}
+		db.cb.Reset()
+		core.resetDetectorSafely()
+		newRes, ok := db.cb.CurrentClosedReservation()
+		if !ok {
+			t.Fatal("reset breaker not closed")
+		}
+		fresh := fdOutcomeToken{res: newRes, detectorGen: core.detectorGen.Load()}
+
+		group := &fdFailGroup{}
+		core.settleFDOutcome(context.Background(), db, cmd, io.EOF, group, stale)
+		if db.cb.State() != imultidb.CircuitClosed || det.failures != 0 {
+			t.Fatal("stale admission affected fresh failure window")
+		}
+		core.settleFDOutcome(context.Background(), db, cmd, io.EOF, group, fresh)
+		if got := db.cb.State(); got != imultidb.CircuitOpen {
+			t.Errorf("breaker state = %v, want open", got)
+		}
+		if det.failures != 1 {
+			t.Errorf("detector failures = %d, want 1", det.failures)
+		}
+	})
 }
 
 // NumShards>1 with the ordered async face is coerced to 1 for MultiDB full
