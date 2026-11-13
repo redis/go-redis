@@ -2178,3 +2178,52 @@ func TestFTInfoRESP2DoubleFields(t *testing.T) {
 		t.Errorf("GCStats mismatch: RESP2=%+v, RESP3=%+v", parity, resp3.GCStats)
 	}
 }
+
+// TestParseFTInfoCaseSensitiveTag checks that the CASESENSITIVE flag of a TAG
+// attribute is read. The attribute replies are the ones Redis 8.10 sends for
+// FT.CREATE idx SCHEMA t TAG SEPARATOR | CASESENSITIVE SORTABLE.
+func TestParseFTInfoCaseSensitiveTag(t *testing.T) {
+	tests := []struct {
+		name string
+		attr interface{}
+	}{
+		{
+			name: "RESP2",
+			attr: []interface{}{
+				"identifier", "t", "attribute", "t", "type", "TAG",
+				"SEPARATOR", "|", "CASESENSITIVE", "SORTABLE", "UNF",
+			},
+		},
+		{
+			name: "RESP3",
+			attr: map[interface{}]interface{}{
+				"identifier": "t",
+				"attribute":  "t",
+				"type":       "TAG",
+				"SEPARATOR":  "|",
+				"flags":      []interface{}{"CASESENSITIVE", "SORTABLE", "UNF"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseFTInfo(map[string]interface{}{
+				"attributes": []interface{}{tt.attr},
+			})
+			if err != nil {
+				t.Fatalf("parseFTInfo returned error: %v", err)
+			}
+			if len(result.Attributes) != 1 {
+				t.Fatalf("expected 1 attribute, got %d", len(result.Attributes))
+			}
+			att := result.Attributes[0]
+			if !att.CaseSensitive {
+				t.Errorf("expected CaseSensitive to be true, got %+v", att)
+			}
+			if !att.Sortable || !att.UNF {
+				t.Errorf("expected Sortable and UNF to be true, got %+v", att)
+			}
+		})
+	}
+}

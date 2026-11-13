@@ -892,3 +892,41 @@ func TestFTSearchQueryLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestFTHybridWithArgsCombineCount(t *testing.T) {
+	tests := []struct {
+		name    string
+		combine *FTHybridCombineOptions
+		want    []interface{}
+	}{
+		{
+			name:    "rrf_without_params",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineRRF},
+			want:    []interface{}{"COMBINE", "RRF", 0},
+		},
+		{
+			name:    "linear_without_params",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear},
+			want:    []interface{}{"COMBINE", "LINEAR", 0},
+		},
+		{
+			name:    "rrf_with_window",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineRRF, Window: 3},
+			want:    []interface{}{"COMBINE", "RRF", 2, "WINDOW", 3},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+				SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+				Combine:           tt.combine,
+			})
+			want := append([]interface{}{"FT.HYBRID", "idx", "SEARCH", "*"}, tt.want...)
+			if !reflect.DeepEqual(cmd.Args(), want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
+			}
+		})
+	}
+}

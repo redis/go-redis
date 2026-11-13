@@ -53,6 +53,14 @@ func (e RedisError) Error() string { return string(e) }
 
 func (RedisError) RedisError() {}
 
+// isServerError reports whether err is an error reply from the server: a plain
+// RedisError or a typed one (MOVED, ASK, LOADING, ...). Aggregates keep these
+// as element values instead of stopping mid-frame.
+func isServerError(err error) bool {
+	_, ok := err.(interface{ RedisError() })
+	return ok
+}
+
 func ParseErrorReply(line []byte) error {
 	msg := string(line[1:])
 	return parseTypedRedisError(msg)
@@ -60,8 +68,33 @@ func ParseErrorReply(line []byte) error {
 
 //------------------------------------------------------------------------------
 
+// maxNestingDepth is a defense-in-depth limit for unusually deep aggregate
+// replies, such as those sent by a nonstandard or untrusted intermediary.
+// A well-behaved Redis server is not expected to produce these frames.
+// Tracking nesting depth adds overhead to aggregate parsing, so this
+// hardening may be removed if its performance cost outweighs the benefit.
+const maxNestingDepth = 1000
+
+var errMaxNestingDepth = errors.New("redis: maximum nesting depth exceeded")
+
 type Reader struct {
-	rd *bufio.Reader
+	rd       *bufio.Reader
+	depth    int
+	fatalErr error
+}
+
+func (r *Reader) enterAggregate() error {
+	if r.fatalErr != nil {
+		return r.fatalErr
+	}
+	if r.depth >= maxNestingDepth {
+		// The frame is only partially consumed. Prevent any subsequent read
+		// from treating its remaining bytes as another command's reply.
+		r.fatalErr = errMaxNestingDepth
+		return r.fatalErr
+	}
+	r.depth++
+	return nil
 }
 
 func NewReader(rd io.Reader) *Reader {
@@ -86,27 +119,37 @@ func (r *Reader) Size() int {
 }
 
 func (r *Reader) Peek(n int) ([]byte, error) {
+	if r.fatalErr != nil {
+		return nil, r.fatalErr
+	}
 	return r.rd.Peek(n)
 }
 
 func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
+	r.depth = 0
+	r.fatalErr = nil
 }
 
 // PeekReplyType returns the data type of the next response without advancing the Reader,
 // and discard the attribute type.
 func (r *Reader) PeekReplyType() (byte, error) {
-	b, err := r.rd.Peek(1)
-	if err != nil {
-		return 0, err
+	if r.fatalErr != nil {
+		return 0, r.fatalErr
 	}
-	if b[0] == RespAttr {
-		if err = r.DiscardNext(); err != nil {
+	for {
+		b, err := r.rd.Peek(1)
+		if err != nil {
 			return 0, err
 		}
-		return r.PeekReplyType()
+		if b[0] == RespAttr {
+			if err = r.DiscardNext(); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		return b[0], nil
 	}
-	return b[0], nil
 }
 
 // ReadAttributeLen consumes a RESP3 attribute header and returns its pair
@@ -147,6 +190,9 @@ var ErrPushNotificationNameTooLong = errors.New("redis: push notification name e
 // notification and cause the caller's ReadReply to consume (and drop) the
 // frame; see issue #3839.
 func (r *Reader) PeekPushNotificationName() (string, error) {
+	if r.fatalErr != nil {
+		return "", r.fatalErr
+	}
 	c, err := r.rd.Peek(1)
 	if err != nil {
 		return "", err
@@ -294,41 +340,46 @@ func skipDigitsThenCRLF(buf []byte, start int) (int, bool, error) {
 // ReadLine Return a valid reply, it will check the protocol or redis error,
 // and discard the attribute type.
 func (r *Reader) ReadLine() ([]byte, error) {
-	line, err := r.readLine()
-	if err != nil {
-		return nil, err
-	}
-	switch line[0] {
-	case RespError:
-		return nil, ParseErrorReply(line)
-	case RespNil:
-		return nil, Nil
-	case RespBlobError:
-		var blobErr string
-		blobErr, err = r.readStringReply(line)
-		if err == nil {
-			err = parseTypedRedisError(blobErr)
-		}
-		return nil, err
-	case RespAttr:
-		if err = r.Discard(line); err != nil {
+	for {
+		line, err := r.readLine()
+		if err != nil {
 			return nil, err
 		}
-		return r.ReadLine()
-	}
+		switch line[0] {
+		case RespError:
+			return nil, ParseErrorReply(line)
+		case RespNil:
+			return nil, Nil
+		case RespBlobError:
+			var blobErr string
+			blobErr, err = r.readStringReply(line)
+			if err == nil {
+				err = parseTypedRedisError(blobErr)
+			}
+			return nil, err
+		case RespAttr:
+			if err = r.Discard(line); err != nil {
+				return nil, err
+			}
+			continue
+		}
 
-	// Compatible with RESP2
-	if IsNilReply(line) {
-		return nil, Nil
-	}
+		// Compatible with RESP2
+		if IsNilReply(line) {
+			return nil, Nil
+		}
 
-	return line, nil
+		return line, nil
+	}
 }
 
 // readLine returns an error if:
 //   - there is a pending read error;
 //   - or line does not end with \r\n.
 func (r *Reader) readLine() ([]byte, error) {
+	if r.fatalErr != nil {
+		return nil, r.fatalErr
+	}
 	b, err := r.rd.ReadSlice('\n')
 	if err != nil {
 		if err != bufio.ErrBufferFull {
@@ -441,6 +492,11 @@ func (r *Reader) readVerb(line []byte) (string, error) {
 }
 
 func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
+	if err := r.enterAggregate(); err != nil {
+		return nil, err
+	}
+	defer func() { r.depth-- }()
+
 	n, err := replyLen(line)
 	if err != nil {
 		return nil, err
@@ -454,7 +510,7 @@ func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
 				val[i] = nil
 				continue
 			}
-			if err, ok := err.(RedisError); ok {
+			if isServerError(err) {
 				val[i] = err
 				continue
 			}
@@ -466,6 +522,11 @@ func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
 }
 
 func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
+	if err := r.enterAggregate(); err != nil {
+		return nil, err
+	}
+	defer func() { r.depth-- }()
+
 	n, err := replyLen(line)
 	if err != nil {
 		return nil, err
@@ -492,7 +553,7 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 				m[k] = nil
 				continue
 			}
-			if err, ok := err.(RedisError); ok {
+			if isServerError(err) {
 				m[k] = err
 				continue
 			}
@@ -804,8 +865,19 @@ func (r *Reader) DiscardNext() error {
 
 // Discard the data represented by line.
 func (r *Reader) Discard(line []byte) (err error) {
+	if r.fatalErr != nil {
+		return r.fatalErr
+	}
 	if len(line) == 0 {
 		return errors.New("redis: invalid line")
+	}
+
+	switch line[0] {
+	case RespArray, RespSet, RespPush, RespMap, RespAttr:
+		if err := r.enterAggregate(); err != nil {
+			return err
+		}
+		defer func() { r.depth-- }()
 	}
 	switch line[0] {
 	case RespStatus, RespError, RespInt, RespNil, RespFloat, RespBool, RespBigInt:
@@ -892,6 +964,13 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 	line, err := r.readLine()
 	if err != nil {
 		return buf, err
+	}
+	switch line[0] {
+	case RespArray, RespSet, RespPush, RespMap, RespAttr:
+		if err := r.enterAggregate(); err != nil {
+			return buf, err
+		}
+		defer func() { r.depth-- }()
 	}
 
 	buf = append(buf, line...)
@@ -988,6 +1067,13 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 	line, err := r.readLine()
 	if err != nil {
 		return 0, err
+	}
+	switch line[0] {
+	case RespArray, RespSet, RespPush, RespMap, RespAttr:
+		if err := r.enterAggregate(); err != nil {
+			return 0, err
+		}
+		defer func() { r.depth-- }()
 	}
 
 	var written int64

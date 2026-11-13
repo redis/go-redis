@@ -25,6 +25,9 @@ import (
 // to the channels in case of network errors.
 type PubSub struct {
 	opt *Options
+	// rec is the creating client's recorder; nil (a PubSub built without a
+	// client) records to the global recorder. Read through recorder().
+	rec otel.Recorder
 
 	newConn   func(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
@@ -67,6 +70,13 @@ type PubSub struct {
 
 func (c *PubSub) init() {
 	c.exit = make(chan struct{})
+}
+
+func (c *PubSub) recorder() otel.Recorder {
+	if c.rec == nil {
+		return otel.Scoped(nil)
+	}
+	return c.rec
 }
 
 func (c *PubSub) String() string {
@@ -490,7 +500,7 @@ func (c *PubSub) newMessage(ctx context.Context, cn *pool.Conn, reply interface{
 					Payload: payload,
 				}
 				// Record PubSub message received
-				otel.RecordPubSubMessage(ctx, cn, "received", channel, sharded)
+				c.recorder().RecordPubSubMessage(ctx, cn, "received", channel, sharded)
 				return msg, nil
 			case []interface{}:
 				ss := make([]string, len(payload))
@@ -502,7 +512,7 @@ func (c *PubSub) newMessage(ctx context.Context, cn *pool.Conn, reply interface{
 					PayloadSlice: ss,
 				}
 				// Record PubSub message received
-				otel.RecordPubSubMessage(ctx, cn, "received", channel, sharded)
+				c.recorder().RecordPubSubMessage(ctx, cn, "received", channel, sharded)
 				return msg, nil
 			default:
 				return nil, fmt.Errorf("redis: unsupported pubsub message payload: %T", payload)
@@ -515,7 +525,7 @@ func (c *PubSub) newMessage(ctx context.Context, cn *pool.Conn, reply interface{
 				Payload: reply[3].(string),
 			}
 			// Record PubSub message received (pattern message, not sharded)
-			otel.RecordPubSubMessage(ctx, cn, "received", channel, false)
+			c.recorder().RecordPubSubMessage(ctx, cn, "received", channel, false)
 			return msg, nil
 		case "pong":
 			return &Pong{

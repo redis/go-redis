@@ -60,8 +60,8 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 	}
 
 	// Record maintenance notification metric
-	if maintenanceCallback := pool.GetMetricMaintenanceNotificationCallback(); maintenanceCallback != nil {
-		if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
+	if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
+		if maintenanceCallback := pool.MetricsOf(conn).MaintenanceNotification; maintenanceCallback != nil {
 			maintenanceCallback(ctx, conn, notificationType)
 		}
 	}
@@ -255,7 +255,7 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 
 	// Record relaxed timeout metric
-	if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
+	if relaxedTimeoutCallback := pool.MetricsOf(conn).ConnectionRelaxedTimeout; relaxedTimeoutCallback != nil {
 		relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "MIGRATING")
 	}
 
@@ -321,7 +321,7 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 
 	// Record relaxed timeout metric
-	if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
+	if relaxedTimeoutCallback := pool.MetricsOf(conn).ConnectionRelaxedTimeout; relaxedTimeoutCallback != nil {
 		relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "FAILING_OVER")
 	}
 

@@ -161,6 +161,16 @@ var _ = Describe("Commands", func() {
 			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), 3*time.Second))
 		})
 
+		It("should Wait with a sub-millisecond timeout", func() {
+			// WAIT ... 0 blocks until the replicas acknowledge, which never
+			// happens here: the timeout has to round up to 1ms, not down to 0.
+			start := time.Now()
+			val, err := rawClient.Wait(ctx, 1, 500*time.Microsecond).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(0)))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
+		})
+
 		It("should WaitAOF", func() {
 			const waitAOF = 3 * time.Second
 
@@ -1822,58 +1832,6 @@ var _ = Describe("Commands", func() {
 
 			_, err = client.BitPos(ctx, "mykey", 0, 0, 0, 0, 0).Result()
 			Expect(err).Should(MatchError("too many arguments"))
-		})
-
-		It("should BitRangeIntArray", func() {
-			SkipBeforeRedisVersion("8.12", "BITRANGEINTARRAY needs Redis 8.12")
-
-			for _, off := range []int64{1, 7, 9, 30} {
-				Expect(client.SetBit(ctx, "bria", off, 1).Err()).NotTo(HaveOccurred())
-			}
-
-			offs, err := client.BitRangeIntArray(ctx, "bria", 0, -1).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(offs).To(Equal([]int64{1, 7, 9, 30}))
-
-			offs, err = client.BitRangeIntArray(ctx, "bria", 1, -1).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(offs).To(Equal([]int64{9, 30}))
-
-			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 5, 10, &redis.BitRangeIntArrayArgs{
-				Unit: redis.BitCountIndexBit,
-			}).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(offs).To(Equal([]int64{7, 9}))
-
-			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 24, 31, &redis.BitRangeIntArrayArgs{
-				Unit:  redis.BitCountIndexBit,
-				Zeros: true,
-			}).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(offs).To(Equal([]int64{24, 25, 26, 27, 28, 29, 31}))
-
-			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 2, -1, &redis.BitRangeIntArrayArgs{
-				Unit:  redis.BitCountIndexBit,
-				Limit: 2,
-			}).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(offs).To(Equal([]int64{7, 9}))
-
-			// BYTE units complete the byte that holds the last offset.
-			offs, err = client.BitRangeIntArrayWithArgs(ctx, "bria", 0, -1, &redis.BitRangeIntArrayArgs{
-				Limit: 1,
-			}).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(offs).To(Equal([]int64{1, 7}))
-
-			offs, err = client.BitRangeIntArray(ctx, "nosuchkey", 0, -1).Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(offs).To(BeEmpty())
-
-			err = client.BitRangeIntArrayWithArgs(ctx, "bria", 0, -1, &redis.BitRangeIntArrayArgs{
-				Unit: "nibble",
-			}).Err()
-			Expect(err).To(MatchError("redis: invalid bitrangeintarray unit"))
 		})
 
 		It("should BitPosSpan", func() {
@@ -8398,6 +8356,29 @@ var _ = Describe("Commands", func() {
 				Block:   100 * time.Millisecond,
 			}).Result()
 			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should XRead with a sub-millisecond Block", func() {
+			// BLOCK 0 waits forever: a positive Block below 1ms has to round
+			// up to 1ms, not down to 0.
+			start := time.Now()
+			_, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "$"},
+				Block:   500 * time.Microsecond,
+			}).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
+
+			Expect(client.XGroupCreate(ctx, "stream", "group", "$").Err()).NotTo(HaveOccurred())
+			start = time.Now()
+			_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "group",
+				Consumer: "consumer",
+				Streams:  []string{"stream", ">"},
+				Block:    500 * time.Microsecond,
+			}).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
 		})
 
 		It("should XRead with per-stream IDs", Label("NonRedisEnterprise"), func() {

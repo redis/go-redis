@@ -379,6 +379,11 @@ type MultiDBOptions struct {
 	// stable member id. Delivered asynchronously (FIFO per database); do not
 	// rely on it running synchronously with the transition.
 	OnCircuitStateChanged func(dbID int, from, to string)
+
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. MultiDB-level metrics go to it, and member clients without their own OTelRecorder inherit it; their pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
 }
 
 const (

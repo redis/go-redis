@@ -496,6 +496,11 @@ type Options struct {
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
 
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. The client's connection pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
+
 	// Client-side caching is eventually consistent. A cached value may be
 	// stale until its invalidation arrives, and reads are not guaranteed to
 	// be monotonic: a value observed through an uncached path can be newer
@@ -1045,6 +1050,11 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 		if o.DB, err = strconv.Atoi(f[0]); err != nil {
 			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
 		}
+		// A negative index parses fine but makes every connection fail on
+		// SELECT, so reject it when the URL is read.
+		if o.DB < 0 {
+			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
+		}
 	default:
 		return nil, fmt.Errorf("redis: invalid URL path: %s", u.Path)
 	}
@@ -1229,6 +1239,9 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 		if err != nil {
 			return nil, fmt.Errorf("redis: invalid database number: %w", err)
 		}
+		if db < 0 {
+			return nil, fmt.Errorf("redis: invalid database number: %q", tmp)
+		}
 		o.DB = db
 	}
 
@@ -1305,6 +1318,7 @@ func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 	poolName string,
+	metrics *pool.MetricCallbacks,
 ) (*pool.ConnPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -1348,6 +1362,7 @@ func newConnPool(
 		WriteBufferSize:          opt.WriteBufferSize,
 		PushNotificationsEnabled: opt.Protocol == 3,
 		Name:                     poolName,
+		Metrics:                  metrics,
 	}), nil
 }
 
@@ -1355,6 +1370,7 @@ func newPubSubPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 	poolName string,
+	metrics *pool.MetricCallbacks,
 ) (*pool.PubSubPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -1395,5 +1411,6 @@ func newPubSubPool(
 		WriteBufferSize:          32 * 1024,
 		PushNotificationsEnabled: opt.Protocol == 3,
 		Name:                     poolName,
+		Metrics:                  metrics,
 	}, dialer), nil
 }

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -37,13 +38,11 @@ func TestPipelineNilReplyErrorType(t *testing.T) {
 
 	var calls atomic.Int64
 	var gotType atomic.Value
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(_ context.Context, errorType string, _ *pool.Conn, _ string, _ bool, _ int) {
-			calls.Add(1)
-			gotType.Store(errorType)
-		},
+	setTestErrorRecorder(func(_ context.Context, errorType string, _ *pool.Conn, _ string, _ bool, _ int) {
+		calls.Add(1)
+		gotType.Store(errorType)
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
@@ -66,4 +65,20 @@ func TestPipelineNilReplyErrorType(t *testing.T) {
 	if got := gotType.Load(); got != "NIL" {
 		t.Fatalf("errorType = %v, want NIL", got)
 	}
+}
+
+// testErrorRecorder is a global recorder whose RecordError calls fn and that
+// discards everything else, for tests pinning the client's error metric.
+type testErrorRecorder struct {
+	otel.Recorder
+	fn func(ctx context.Context, errorType string, cn *pool.Conn, statusCode string, isInternal bool, retries int)
+}
+
+func (r testErrorRecorder) RecordError(ctx context.Context, errorType string, cn *pool.Conn, statusCode string, isInternal bool, retries int) {
+	r.fn(ctx, errorType, cn, statusCode, isInternal, retries)
+}
+
+// setTestErrorRecorder installs a testErrorRecorder; undo with otel.SetGlobalRecorder(nil).
+func setTestErrorRecorder(fn func(ctx context.Context, errorType string, cn *pool.Conn, statusCode string, isInternal bool, retries int)) {
+	otel.SetGlobalRecorder(testErrorRecorder{Recorder: otel.NoopRecorder(), fn: fn})
 }
