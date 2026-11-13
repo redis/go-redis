@@ -10,6 +10,7 @@ name: Guard self-test
 
 on:
   pull_request:
+    branches-ignore: [ndyakov/guard-base-compare] # TEMPORARY, validation PR only
     paths:
       - 'internal/guard/**'
       - 'scripts/guard-*'

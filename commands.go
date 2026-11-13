@@ -20,7 +20,7 @@ import (
 // For example:
 //
 //	rdb.Set(ctx, key, value, redis.KeepTTL)
-const KeepTTL = -1
+const KeepTTL = -2
 
 func usePrecise(dur time.Duration) bool {
 	return dur < time.Second || dur%time.Second != 0

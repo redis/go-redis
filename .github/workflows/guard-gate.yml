@@ -13,6 +13,12 @@ name: Guard
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited]
+  # TEMPORARY, validation PR only, never merge. pull_request_target runs the
+  # default branch's workflow, which does not have this file yet;
+  # pull_request runs the copy from this PR.
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [ndyakov/guard-base-compare]
 
 permissions: {}
 
