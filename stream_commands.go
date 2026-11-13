@@ -270,7 +270,7 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	}
 	if a.Block >= 0 {
 		args = append(args, "block")
-		args = append(args, int64(a.Block/time.Millisecond))
+		args = append(args, formatMs(ctx, a.Block))
 		keyPos += 2
 	}
 	args = append(args, "streams")
@@ -377,7 +377,7 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 		keyPos += 2
 	}
 	if a.Block >= 0 {
-		args = append(args, "block", int64(a.Block/time.Millisecond))
+		args = append(args, "block", formatMs(ctx, a.Block))
 		keyPos += 2
 	}
 	if a.NoAck {
@@ -385,7 +385,7 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 		keyPos++
 	}
 	if a.Claim > 0 {
-		args = append(args, "claim", int64(a.Claim/time.Millisecond))
+		args = append(args, "claim", formatMs(ctx, a.Claim))
 		keyPos += 2
 	}
 	args = append(args, "streams")
@@ -585,27 +585,27 @@ type XClaimArgs struct {
 }
 
 func (c cmdable) XClaim(ctx context.Context, a *XClaimArgs) *XMessageSliceCmd {
-	args := xClaimArgs(a)
+	args := xClaimArgs(ctx, a)
 	cmd := NewXMessageSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCmd {
-	args := xClaimArgs(a)
+	args := xClaimArgs(ctx, a)
 	args = append(args, "justid")
 	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func xClaimArgs(a *XClaimArgs) []interface{} {
+func xClaimArgs(ctx context.Context, a *XClaimArgs) []interface{} {
 	args := make([]interface{}, 0, 5+len(a.Messages))
 	args = append(args,
 		"xclaim",
 		a.Stream,
 		a.Group, a.Consumer,
-		int64(a.MinIdle/time.Millisecond))
+		formatMs(ctx, a.MinIdle))
 	for _, id := range a.Messages {
 		args = append(args, id)
 	}
