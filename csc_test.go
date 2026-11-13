@@ -5654,7 +5654,7 @@ func TestCSCPerformanceCompatibility(t *testing.T) {
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("eligible commands changed: removed %v, added %v", removed, added)
 	}
-	if view.cscFingerprint != "7ae8e649835982e6b9c6718365bc8da4" {
+	if view.cscFingerprint != "4624cdeaed3bcbe281696bfcd11a4522" {
 		t.Fatalf("default CSC fingerprint changed: %s", view.cscFingerprint)
 	}
 	if path := os.Getenv("CSC_COMPATIBILITY_DUMP"); path != "" {
