@@ -28,8 +28,9 @@ import (
 //   - Accounting: each child reports every command's outcome (fdOutcome) and
 //     the router settles it into the member's breaker and the failure
 //     detector, as core.process does. The breaker episode and the detector
-//     window are read when the outcome lands, not when the command was
-//     admitted: a command that outlives a reselect counts into the new window.
+//     window are the ones the command was admitted into (fdOutcomeToken), so
+//     an outcome that outlives a reselect of the same member does not count
+//     into the fresh window.
 //   - Recovery: a child whose connection drops, or whose member cannot be
 //     leased, reroutes its replayable work through MultiDB's pipeline path
 //     (fdReroute), which re-gates and fails over to the newly active member.
@@ -113,14 +114,14 @@ func (r *multidbFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	if !r.blocking {
 		return r.submitOrdered(ctx, cmd)
 	}
-	child, reject := r.target()
+	child, token, reject := r.target()
 	if reject {
 		return r.rejectClosed(cmd)
 	}
 	if child == nil {
 		return r.divert(ctx, cmd)
 	}
-	fut := child.submit(ctx, cmd)
+	fut := child.submitToken(ctx, cmd, token)
 	if fut.batch == completedBatch && errors.Is(cmd.Err(), ErrClosed) {
 		// The member was removed or its child closed under us: MultiDB's path
 		// routes the command to the live active member.
@@ -132,27 +133,42 @@ func (r *multidbFDRouter) submit(ctx context.Context, cmd Cmder) AutoFuture {
 
 // target admits a command: the active member's FD child when the member is
 // closed-admitted and the detector has not tripped, nil when the command must
-// take MultiDB's normal path, reject when the client is closed.
-func (r *multidbFDRouter) target() (child *AutoPipeliner, reject bool) {
+// take MultiDB's normal path, reject when the client is closed. It also
+// returns the admission token the outcome must settle into, so a command that
+// outlives a reselect of this same member does not count into the fresh
+// breaker episode and detector window.
+func (r *multidbFDRouter) target() (child *AutoPipeliner, token fdOutcomeToken, reject bool) {
 	if r.parent.isClosed() {
-		return nil, true
+		return nil, fdOutcomeToken{}, true
 	}
 	core := r.c.core
 	if core.closed.Load() {
-		return nil, true
+		return nil, fdOutcomeToken{}, true
 	}
 	db, _ := core.activeSnapshot()
 	if db == nil || core.shouldFailoverSafely() {
-		return nil, false
+		return nil, fdOutcomeToken{}, false
 	}
-	// Read the state; do not reserve. Only a closed breaker takes the FD
-	// path. Half-open probes (and the open -> half-open transition) belong to
-	// MultiDB's path, and a reserve-then-release here would hold a probe slot
-	// that a concurrent probe could then not get.
-	if db.cb.State() != imultidb.CircuitClosed {
-		return nil, false
+	// Sample the detector window before the breaker reservation, as
+	// core.process does: a reselect landing between the two then leaves an old
+	// detector generation, so the outcome is conservatively dropped instead of
+	// polluting the fresh window.
+	detectorGen := core.detectorGen.Load()
+	// Read the closed admission without reserving a probe slot. Only a closed
+	// breaker takes the FD path. Half-open probes (and the open -> half-open
+	// transition) belong to MultiDB's path, and a reserve-then-release here
+	// would hold a probe slot that a concurrent probe could then not get. The
+	// reservation still carries the closed episode's generation, which is what
+	// the outcome settles against.
+	res, closed := db.cb.CurrentClosedReservation()
+	if !closed {
+		return nil, fdOutcomeToken{}, false
 	}
-	return r.childFor(db)
+	child, reject = r.childFor(db)
+	if child == nil {
+		return nil, fdOutcomeToken{}, reject
+	}
+	return child, fdOutcomeToken{res: res, detectorGen: detectorGen}, false
 }
 
 // submitOrdered is the async face's submit. The ordered async face promises
@@ -176,7 +192,7 @@ func (r *multidbFDRouter) target() (child *AutoPipeliner, reject bool) {
 // submitLocked, which picks, switches and submits under laneSem, so no caller
 // can act on a stale pick.
 func (r *multidbFDRouter) submitOrdered(ctx context.Context, cmd Cmder) AutoFuture {
-	want, reject := r.target()
+	want, token, reject := r.target()
 	if reject {
 		return r.rejectClosed(cmd)
 	}
@@ -184,7 +200,7 @@ func (r *multidbFDRouter) submitOrdered(ctx context.Context, cmd Cmder) AutoFutu
 		want = r.hd.Load()
 	}
 	if want != nil && r.lane.Load() == want {
-		fut := want.submit(ctx, cmd)
+		fut := want.submitToken(ctx, cmd, token)
 		if fut.batch != completedBatch || !errors.Is(cmd.Err(), ErrClosed) {
 			return fut
 		}
@@ -223,9 +239,10 @@ func (r *multidbFDRouter) submitLocked(ctx context.Context, cmd Cmder) AutoFutur
 	}
 	defer r.unlockLane()
 	for attempt := 0; ; attempt++ {
-		want, reject := r.target()
+		want, token, reject := r.target()
 		if !reject && want == nil {
 			want, reject = r.hdLaneLocked()
+			token = fdOutcomeToken{}
 		}
 		if reject {
 			return r.rejectClosed(cmd)
@@ -243,7 +260,7 @@ func (r *multidbFDRouter) submitLocked(ctx context.Context, cmd Cmder) AutoFutur
 			r.drainLaneLocked()
 			r.lane.Store(want)
 		}
-		fut := want.submit(ctx, cmd)
+		fut := want.submitToken(ctx, cmd, token)
 		if fut.batch != completedBatch || !errors.Is(cmd.Err(), ErrClosed) {
 			return fut
 		}
@@ -435,8 +452,8 @@ func (r *multidbFDRouter) dropChild(db *multidbDatabase) {
 func (r *multidbFDRouter) newChild(db *multidbDatabase) (*AutoPipeliner, error) {
 	core := r.c.core
 	cfg := r.childCfg
-	cfg.fdOutcome = func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup) {
-		core.settleFDOutcome(ctx, db, cmd, err, grp)
+	cfg.fdOutcome = func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup, token fdOutcomeToken) {
+		core.settleFDOutcome(ctx, db, cmd, err, grp, token)
 	}
 	// The engine passes the commands' remaining budget (derived from
 	// fdRetryBudget below) as the retry bound, so a rerouted command never
@@ -546,16 +563,31 @@ func (r *multidbFDRouter) close() error {
 	return firstErr
 }
 
+// fdOutcomeToken is the owner admission a full-duplex command's outcome
+// belongs to: the circuit-breaker reservation and failure-detector generation
+// sampled when the router admitted it to the FD path. Carrying it from submit
+// to settle keeps an outcome that outlives an operator reselect of the SAME
+// member out of the fresh breaker episode and detector window, exactly as
+// core.process carries its admission through the attempt. Rerouted commands do
+// not use it: the owner's path admits them again when it runs them.
+type fdOutcomeToken struct {
+	res         imultidb.Reservation
+	detectorGen uint64
+}
+
 // settleFDOutcome records a full-duplex command's final outcome on db, the way
 // core.process does for a command it ran: the member's breaker always, the
 // failure detector only while db is still the active member. The breaker
-// episode and the detector window are the current ones (see multidbFDRouter).
+// episode and the detector window are the ones the command was admitted into
+// (token, captured by multidbFDRouter.target), not the current ones: an
+// operator reselect of the same member must not let a pre-reset outcome
+// reopen the fresh breaker or trip failover away from the member just selected.
 // Runs on the child's reader or engine goroutine: it must not block.
 //
 // grp groups the failures of one connection drop: the breaker and the
 // detector each count the group once (the first failure recorded), as
 // recordBatchOutcomes does for a batch. Successes count per command.
-func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, cmd Cmder, err error, grp *fdFailGroup) {
+func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, cmd Cmder, err error, grp *fdFailGroup, token fdOutcomeToken) {
 	if callerEnded(ctx, err, false) {
 		// The caller's own context ended the command (a context error or a
 		// cut-short dial): a client-side signal, not a health verdict
@@ -571,26 +603,25 @@ func (c *multidbCore) settleFDOutcome(ctx context.Context, db *multidbDatabase, 
 	if kind == outcomeNeutral {
 		return
 	}
-	if res, ok := db.cb.CurrentClosedReservation(); ok {
-		if kind == outcomeSuccess {
-			db.cb.RecordSuccessFor(res)
-		} else if grp.take() {
-			db.cb.RecordFailureFor(res)
-		}
+	// Settle against the admission token. RecordSuccessFor/RecordFailureFor
+	// drop the outcome when the breaker cycled since admission (an operator
+	// reselect bumps its generation), so a late failure cannot reopen the
+	// freshly reset member.
+	if kind == outcomeSuccess {
+		db.cb.RecordSuccessFor(token.res)
+	} else if grp.take(token.res.Generation()) {
+		db.cb.RecordFailureFor(token.res)
 	}
-	// Sample the detector window BEFORE the active check. A failover switches
-	// the active member first and then resets the detector (bumping the
-	// generation), so a generation read before a member check that still sees
-	// db belongs to db's window: a reset after it voids the write
-	// (recordDetector*), and a switch before it fails the check.
-	gen := c.detectorGen.Load()
+	// The detector write is window-gated by the generation sampled at
+	// admission: a reselect of the same member (which leaves the identity
+	// check below unchanged) voids it inside recordDetector*.
 	if cur, _ := c.activeSnapshot(); cur != db {
 		return
 	}
 	if kind == outcomeSuccess {
 		c.successSinceFailover.Store(true)
-		c.recordDetectorSuccess(gen)
-	} else if grp.takeDetector() {
-		c.recordDetectorFailure(gen, err)
+		c.recordDetectorSuccess(token.detectorGen)
+	} else if grp.takeDetector(token.detectorGen) {
+		c.recordDetectorFailure(token.detectorGen, err)
 	}
 }
