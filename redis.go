@@ -1738,13 +1738,14 @@ func (c *baseClient) processWithRetry(
 }
 
 // isClosedConnErr reports whether err means the connection was closed by the
-// peer or the network.
+// peer or the network. Timeouts are excluded: a stalled mid-frame drain is a
+// desync, not a dead conn.
 func isClosedConnErr(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 	var opErr *net.OpError
-	return errors.As(err, &opErr)
+	return errors.As(err, &opErr) && !opErr.Timeout()
 }
 
 // recordCommandError emits the native error metric for a command's terminal
