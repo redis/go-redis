@@ -4112,11 +4112,8 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 			}
 
 			// Add COMBINE with method and parameter count
-			args = append(args, "COMBINE", string(options.Combine.Method))
-			if len(combineParams) > 0 {
-				args = append(args, len(combineParams))
-				args = append(args, combineParams...)
-			}
+			args = append(args, "COMBINE", string(options.Combine.Method), len(combineParams))
+			args = append(args, combineParams...)
 		}
 
 		// Add LOAD (projected fields)
