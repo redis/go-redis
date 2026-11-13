@@ -24,6 +24,9 @@ func (e *ContextDeadlineError) Is(target error) bool { return target == e.cause 
 
 func (e *ContextDeadlineError) Timeout() bool { return e.timeout.Timeout() }
 
+// Temporary is declared so the error still satisfies net.Error.
+func (e *ContextDeadlineError) Temporary() bool { return false }
+
 type deadlineReader struct {
 	reader   io.Reader
 	ctx      context.Context

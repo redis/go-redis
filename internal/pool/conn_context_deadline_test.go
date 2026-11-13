@@ -121,6 +121,27 @@ func TestConnContextDeadlinePreservesEarlierTimeout(t *testing.T) {
 	}
 }
 
+func TestConnContextDeadlineErrorIsNetError(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	cn := NewConn(client)
+	defer cn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	err := cn.WithReader(ctx, time.Hour, func(rd *proto.Reader) error {
+		_, err := rd.ReadReply()
+		return err
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected a context deadline error, got %v", err)
+	}
+	netErr, ok := err.(net.Error)
+	if !ok || !netErr.Timeout() {
+		t.Fatalf("expected err.(net.Error) with Timeout() true, got %T %v", err, err)
+	}
+}
+
 func TestConnContextDeadlineHardRead(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
