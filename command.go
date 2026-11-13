@@ -32,6 +32,7 @@ var keylessCommands = map[string]struct{}{
 	"acl":          {},
 	"asking":       {},
 	"auth":         {},
+	"backup":       {},
 	"bgrewriteaof": {},
 	"bgsave":       {},
 	"client":       {},
@@ -168,6 +169,7 @@ const (
 	CmdTypeUint
 	CmdTypeUintSlice
 	CmdTypeAREntrySlice
+	CmdTypeBackupStatus
 )
 
 type (
@@ -10474,6 +10476,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return arEntrySliceCmd.Val(), arEntrySliceCmd.Err()
 			}
+		case CmdTypeBackupStatus:
+			if backupStatusCmd, ok := cmd.(interface {
+				Val() *BackupStatus
+				Err() error
+			}); ok {
+				return backupStatusCmd.Val(), backupStatusCmd.Err()
+			}
 		case CmdTypeMapStringString:
 			if mapCmd, ok := cmd.(interface {
 				Val() map[string]string
@@ -10732,6 +10741,111 @@ func (cmd *AREntrySliceCmd) Clone() Cmder {
 		copy(val, cmd.val)
 	}
 	return &AREntrySliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// BackupStatus is the reply of BACKUP STATUS.
+type BackupStatus struct {
+	// State is one of idle, pending, snapshotting, incrementing, sealed or failed.
+	State string
+	// Error says why the backup failed ("aborted by user" after BACKUP ABORT). It is empty otherwise.
+	Error string
+	// StartTime is when the current or last backup started; zero if none has.
+	StartTime time.Time
+	// EndTime is when the backup was sealed; zero otherwise.
+	EndTime time.Time
+}
+
+// BackupStatusCmd is a command that returns the state of a node's backup (BACKUP STATUS).
+type BackupStatusCmd struct {
+	baseCmd
+	val *BackupStatus
+}
+
+var _ Cmder = (*BackupStatusCmd)(nil)
+
+func NewBackupStatusCmd(ctx context.Context, args ...interface{}) *BackupStatusCmd {
+	return &BackupStatusCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeBackupStatus,
+		},
+	}
+}
+
+func (cmd *BackupStatusCmd) SetVal(val *BackupStatus) {
+	cmd.val = val
+}
+
+func (cmd *BackupStatusCmd) Val() *BackupStatus {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *BackupStatusCmd) Result() (*BackupStatus, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *BackupStatusCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+// readReply reads a map in RESP3 and a flat array of name/value pairs in RESP2.
+// The times are Unix seconds, with 0 for a time that hasn't happened.
+func (cmd *BackupStatusCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	status := &BackupStatus{}
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "state":
+			status.State, err = rd.ReadString()
+		case "error":
+			status.Error, err = rd.ReadString()
+		case "start_time":
+			status.StartTime, err = readBackupTime(rd)
+		case "end_time":
+			status.EndTime, err = readBackupTime(rd)
+		default:
+			err = rd.DiscardNext()
+		}
+		if err != nil {
+			return err
+		}
+	}
+	cmd.val = status
+	return nil
+}
+
+func readBackupTime(rd *proto.Reader) (time.Time, error) {
+	sec, err := rd.ReadInt()
+	if err != nil || sec == 0 {
+		return time.Time{}, err
+	}
+	return time.Unix(sec, 0), nil
+}
+
+func (cmd *BackupStatusCmd) Clone() Cmder {
+	var val *BackupStatus
+	if cmd.val != nil {
+		v := *cmd.val
+		val = &v
+	}
+	return &BackupStatusCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
