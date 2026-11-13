@@ -268,6 +268,11 @@ type ClusterOptions struct {
 	// Individual node clients handle other maintenance notifications (MOVING, MIGRATING, etc.).
 	MaintNotificationsConfig *maintnotifications.Config
 
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. Every node client and its pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
+
 	// CommandMetadata configures cluster-owned metadata for routing.
 	//
 	// Experimental: this API may change in a minor release.
@@ -613,6 +618,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		cscMetadataSource:         opt.cscMetadataSource,
 		MaintNotificationsConfig:  maintNotificationsConfig,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
+		OTelRecorder:              opt.OTelRecorder,
 	}
 }
 
@@ -1987,6 +1993,7 @@ func (c *clusterStateHolder) ReloadOrGet(ctx context.Context) (*clusterState, er
 // multiple goroutines.
 type ClusterClient struct {
 	opt             *ClusterOptions
+	rec             otel.Recorder // cluster-level metrics (redirects, pipelines); see clientRecorder
 	nodes           *clusterNodes
 	state           *clusterStateHolder
 	cmdMeta         *commandMetadataStore
@@ -2033,6 +2040,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 	c := &ClusterClient{
 		opt:             opt,
+		rec:             scopedRecorder(opt.OTelRecorder),
 		nodes:           newClusterNodes(opt),
 		himport:         newHImportRegistry(),
 		autopipelinerMu: &sync.Mutex{},
@@ -2303,7 +2311,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			redirected = true
 			c.state.LazyReload()
 
-			recordClusterRedirectMetric(ctx, ask)
+			c.recordClusterRedirectMetric(ctx, ask)
 
 			var err error
 			node, err = c.nodes.GetOrCreate(redirectAddr(addr, redirectFrom, servingEp))
@@ -2962,8 +2970,8 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder, maxRedirects int) error {
 	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
 	var operationStart time.Time
-	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
-	if pipelineOpDurationCallback != nil {
+	recordDuration := otel.Enabled(c.recorder())
+	if recordDuration {
 		operationStart = time.Now()
 	}
 	totalAttempts := 0
@@ -2986,9 +2994,9 @@ func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder
 	if mapErr != nil {
 		err := mapErr
 		setCmdsErr(cmds, err)
-		if pipelineOpDurationCallback != nil {
+		if recordDuration {
 			operationDuration := time.Since(operationStart)
-			pipelineOpDurationCallback(ctx, operationDuration, "PIPELINE", len(cmds), 1, err, nil, 0)
+			c.recorder().RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), 1, err, nil, 0)
 		}
 		return err
 	}
@@ -2999,9 +3007,9 @@ func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
-				if pipelineOpDurationCallback != nil {
+				if recordDuration {
 					operationDuration := time.Since(operationStart)
-					pipelineOpDurationCallback(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, err, nil, 0)
+					c.recorder().RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, err, nil, 0)
 				}
 				return err
 			}
@@ -3027,13 +3035,13 @@ func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder
 	}
 
 	// Record pipeline operation duration
-	if pipelineOpDurationCallback != nil {
+	if recordDuration {
 		operationDuration := time.Since(operationStart)
 		finalErr := cmdsFirstErr(cmds)
 		if finalErr == nil {
 			finalErr = lastErr
 		}
-		pipelineOpDurationCallback(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, finalErr, nil, 0)
+		c.recorder().RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, finalErr, nil, 0)
 	}
 
 	return cmdsFirstErr(cmds)
@@ -3386,6 +3394,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 		})
 	}
 
+	samples := otel.Enabled(node.Client.recorder())
 	for i, cmd := range cmds {
 		if flags != nil && flags[i] != 0 {
 			if err := node.Client.readCSCPipelinePrefix(ctx, cn, rd); err != nil {
@@ -3407,6 +3416,9 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 		cmd.SetErr(err)
 
 		if err == nil {
+			if samples {
+				node.Client.recordCommandSamplesGuarded(ctx, cmd, cn)
+			}
 			continue
 		}
 
@@ -3592,19 +3604,19 @@ var errTxDirtyConn = errors.New("redis: connection has unread transaction replie
 
 func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (retErr error) {
 	var operationStart time.Time
-	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
-	if pipelineOpDurationCallback != nil {
+	recordDuration := otel.Enabled(c.recorder())
+	if recordDuration {
 		operationStart = time.Now()
 	}
 	totalAttempts := 0
 	var lastErr error
 
 	defer func() {
-		if pipelineOpDurationCallback == nil {
+		if !recordDuration {
 			return
 		}
 		finalErr := cmp.Or(retErr, cmdsFirstErr(cmds), lastErr)
-		pipelineOpDurationCallback(ctx, time.Since(operationStart), "MULTI", len(cmds), totalAttempts, finalErr, nil, 0)
+		c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), "MULTI", len(cmds), totalAttempts, finalErr, nil, 0)
 	}()
 
 	// Trim multi .. exec.
@@ -4181,6 +4193,7 @@ func (c *ClusterClient) pubSub() *PubSub {
 	var node *clusterNode
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
+		rec: c.rec,
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			if node != nil {
 				panic("node != nil")

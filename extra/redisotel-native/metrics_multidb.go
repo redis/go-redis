@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 )
 
 // MultiDB (Active-Active failover) metrics.
@@ -31,6 +30,9 @@ func (r *metricsRecorder) RecordMultiDBFailover(
 	fromFQDN, toFQDN, reason string,
 	duration time.Duration,
 ) {
+	if r.off() {
+		return
+	}
 	if r.multiDBFailovers == nil && r.multiDBFailoverDuration == nil {
 		return
 	}
@@ -41,16 +43,19 @@ func (r *metricsRecorder) RecordMultiDBFailover(
 		attribute.String(AttrRedisClientMultiDBFailoverReason, reason),
 	)
 	if r.multiDBFailovers != nil {
-		r.multiDBFailovers.Add(ctx, 1, metric.WithAttributes(attrs...))
+		r.multiDBFailovers.Add(ctx, 1, r.withAttrs(attrs))
 	}
 	if r.multiDBFailoverDuration != nil {
-		r.multiDBFailoverDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+		r.multiDBFailoverDuration.Record(ctx, duration.Seconds(), r.withAttrs(attrs))
 	}
 }
 
 // RecordMultiDBActiveDatabaseChange records a change of the active member
 // database (failover, fallback or manual selection).
 func (r *metricsRecorder) RecordMultiDBActiveDatabaseChange(ctx context.Context, fromFQDN, toFQDN string) {
+	if r.off() {
+		return
+	}
 	if r.multiDBActiveDatabaseChanges == nil {
 		return
 	}
@@ -59,12 +64,15 @@ func (r *metricsRecorder) RecordMultiDBActiveDatabaseChange(ctx context.Context,
 		attribute.String(AttrRedisClientMultiDBFromDatabase, fromFQDN),
 		attribute.String(AttrRedisClientMultiDBToDatabase, toFQDN),
 	)
-	r.multiDBActiveDatabaseChanges.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.multiDBActiveDatabaseChanges.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordMultiDBCircuitStateChange records a member circuit breaker state
 // transition ("closed", "open", "half-open").
 func (r *metricsRecorder) RecordMultiDBCircuitStateChange(ctx context.Context, dbFQDN, fromState, toState string) {
+	if r.off() {
+		return
+	}
 	if r.multiDBCircuitStateChanges == nil {
 		return
 	}
@@ -74,12 +82,15 @@ func (r *metricsRecorder) RecordMultiDBCircuitStateChange(ctx context.Context, d
 		attribute.String(AttrRedisClientMultiDBCircuitFromState, fromState),
 		attribute.String(AttrRedisClientMultiDBCircuitToState, toState),
 	)
-	r.multiDBCircuitStateChanges.Add(ctx, 1, metric.WithAttributes(attrs...))
+	r.multiDBCircuitStateChanges.Add(ctx, 1, r.withAttrs(attrs))
 }
 
 // RecordMultiDBHealthCheck records the outcome and wall time of one member
 // health check.
 func (r *metricsRecorder) RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, duration time.Duration) {
+	if r.off() {
+		return
+	}
 	if r.multiDBHealthChecks == nil && r.multiDBHealthCheckDuration == nil {
 		return
 	}
@@ -89,9 +100,9 @@ func (r *metricsRecorder) RecordMultiDBHealthCheck(ctx context.Context, dbFQDN s
 		attribute.Bool(AttrRedisClientMultiDBHealthCheckSuccess, success),
 	)
 	if r.multiDBHealthChecks != nil {
-		r.multiDBHealthChecks.Add(ctx, 1, metric.WithAttributes(attrs...))
+		r.multiDBHealthChecks.Add(ctx, 1, r.withAttrs(attrs))
 	}
 	if r.multiDBHealthCheckDuration != nil {
-		r.multiDBHealthCheckDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+		r.multiDBHealthCheckDuration.Record(ctx, duration.Seconds(), r.withAttrs(attrs))
 	}
 }

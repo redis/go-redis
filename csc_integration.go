@@ -1802,7 +1802,7 @@ func (c *baseClient) processCached(
 						cause = sessErr.err
 					}
 					cmd.SetErr(cause)
-					recordCommandError(ctx, cause, served, startAttempt-1)
+					c.recordCommandError(ctx, cause, served, startAttempt-1)
 					return cause
 				}
 			}

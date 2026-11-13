@@ -3969,7 +3969,7 @@ func (ap *AutoPipeliner) fdPipelineHooked(ctx context.Context, cmds []Cmder) err
 func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error {
 	opt := ap.fd.client.opt
 	var start time.Time
-	if otel.GetPipelineOperationDurationCallback() != nil {
+	if otel.Enabled(ap.fd.client.recorder()) {
 		start = time.Now()
 	}
 	res, err := ap.fdPipelined(ctx, cmds)

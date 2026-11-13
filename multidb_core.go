@@ -30,6 +30,7 @@ type multidbDatabase struct {
 	c  *Client
 	cc *ClusterClient
 
+	rec    otel.Recorder // the core's recorder, for this member's health-check metrics
 	cb     *imultidb.CircuitBreaker
 	weight float64 // guarded by core.dbMu
 	fqdn   string
@@ -67,6 +68,24 @@ type multidbDatabase struct {
 	// invoking a user callback there would self-deadlock the moment the
 	// callback touches a control API that takes the same lock.
 	cbq cbq.CallbackQueue
+}
+
+// recorder returns where the MultiDB client's metrics go. A hand-built value (tests) leaves
+// rec nil, which means the global recorder.
+func (c *multidbCore) recorder() otel.Recorder {
+	if c.rec == nil {
+		return otel.Scoped(nil)
+	}
+	return c.rec
+}
+
+// recorder returns where the member's metrics go. A hand-built value (tests) leaves
+// rec nil, which means the global recorder.
+func (db *multidbDatabase) recorder() otel.Recorder {
+	if db.rec == nil {
+		return otel.Scoped(nil)
+	}
+	return db.rec
 }
 
 func (db *multidbDatabase) process(ctx context.Context, cmd Cmder) error {
@@ -271,11 +290,12 @@ func (db *multidbDatabase) applyProbeVerdict(ctx context.Context, gen uint64, he
 		// sample voids this stale failure.
 		db.cb.RecordFailureForReset(gen)
 	}
-	otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, took)
+	db.recorder().RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, took)
 }
 
 type multidbCore struct {
 	opts *MultiDBOptions
+	rec  otel.Recorder // see clientRecorder; members carry their own
 
 	dbMu sync.RWMutex
 	// dbs is keyed by stable member id (multidbDatabase.id), not by position:
@@ -401,6 +421,7 @@ var multidbAfterStartupReconcile func()
 func newMultidbCore(opts *MultiDBOptions) *multidbCore {
 	core := &multidbCore{
 		opts:     opts,
+		rec:      scopedRecorder(opts.OTelRecorder),
 		detector: opts.FailureDetector,
 		strategy: opts.FailoverStrategy,
 		dbs:      make(map[int]*multidbDatabase),
@@ -428,6 +449,7 @@ func newMultidbCore(opts *MultiDBOptions) *multidbCore {
 // resolved health checks for one member database.
 func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase, error) {
 	db := &multidbDatabase{
+		rec: c.rec,
 		// Stable id assigned here, before the circuit-breaker callback below
 		// captures the member: a probe-fired state change then reports the real
 		// id. Monotonic and never reused; a failed build just leaves a gap.
@@ -450,6 +472,9 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 		case cfg.Options != nil:
 			opt := *cfg.Options
 			disableMaintNotificationsIfUnset(&opt)
+			if opt.OTelRecorder == nil {
+				opt.OTelRecorder = c.opts.OTelRecorder
+			}
 			// MultiDB owns retries (CommandRetries): each attempt is re-gated
 			// and counted by the breaker and detector, and may go to a new
 			// active. Member retries would repeat sends the breaker never sees.
@@ -472,6 +497,9 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 			if opt.MaintNotificationsConfig == nil {
 				opt.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
 			}
+			if opt.OTelRecorder == nil {
+				opt.OTelRecorder = c.opts.OTelRecorder
+			}
 			db.cc = NewClusterClient(&opt)
 			db.cc.trackMemberCommandExecution()
 		}
@@ -492,7 +520,7 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 	stateCallback := c.opts.OnCircuitStateChanged
 	dbRef := db
 	db.cb.OnStateChange(func(oldState, newState imultidb.CircuitState) {
-		otel.RecordMultiDBCircuitStateChange(context.Background(), dbRef.fqdn,
+		c.recorder().RecordMultiDBCircuitStateChange(context.Background(), dbRef.fqdn,
 			oldState.String(), newState.String())
 		if stateCallback != nil && !dbRef.removed.Load() {
 			// Deliver asynchronously (FIFO per database): state changes fire
@@ -671,7 +699,7 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 			go func(id int, db *multidbDatabase) {
 				start := time.Now()
 				healthy := db.checkHealthyNoRecord(passCtx, c.opts.HealthCheckTimeout, db.checks)
-				otel.RecordMultiDBHealthCheck(passCtx, db.fqdn, healthy, time.Since(start))
+				c.recorder().RecordMultiDBHealthCheck(passCtx, db.fqdn, healthy, time.Since(start))
 				results <- verdict{id: id, healthy: healthy}
 			}(id, db)
 		}
@@ -1725,9 +1753,9 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	// does off-lock work (metrics, PubSub re-dial), no ordering-sensitive
 	// callback dispatch.
 	return func() {
-		otel.RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
+		c.recorder().RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
 		if reason == failoverReasonAutomatic || reason == failoverReasonManual {
-			otel.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
+			c.recorder().RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
 		}
 		c.notifyPubSubs(ctx)
 	}
@@ -1914,7 +1942,7 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 		if !canceledByClose {
 			// A probe close() cut short is not a health verdict for a member
 			// that is never added; the closed re-check below discards it.
-			otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, time.Since(start))
+			c.recorder().RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, time.Since(start))
 		}
 	}
 	// Serialize with the other membership paths (RemoveDatabase, manual failover),
@@ -2481,6 +2509,7 @@ func (c *multidbCore) newPubSub() *PubSub {
 	staticAllCluster := !c.hasStandaloneMember()
 
 	pubsub := &PubSub{
+		rec: c.rec,
 		newConn: func(ctx context.Context, _ string, channels []string) (*pool.Conn, error) {
 			if c.closed.Load() {
 				// ErrClosed (== pool.ErrClosed) is the only error the PubSub

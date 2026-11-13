@@ -131,6 +131,29 @@ independently and are not part of this coherent pair.
 
 ---
 
+## Metric callbacks
+
+Pool-level metrics (connection count, pending requests, wait time, create
+time, closed, handoff, relaxed timeout, maintenance notifications, errors) go
+through a `MetricCallbacks` table. A pool uses its own `Options.Metrics` when
+set, otherwise the process-global table installed by `SetAllMetricCallbacks`
+(what `redis.SetOTelRecorder` drives). Every connection remembers the table of
+the pool that dialed it (`MetricsOf(cn)`), so code that only has a `*Conn`
+(maintnotifications) records where the pool does.
+
+Invariants:
+
+- `connection.count` and `pending_requests` are UpDown counters: the -1 must
+  reach the table that saw the +1. Sites read the callback once under
+  `connsMu`/`trackMu` and reuse it for both deltas.
+- `SetAllMetricCallbacks` recounts the live connections of every pool on the
+  global table (-1 on the old table, +1 on the new one) while holding every
+  such pool's `connsMu` and `trackMu`. Pools with their own table are never in
+  the live sets and are not recounted; their table is immutable for the pool's
+  life and their count returns to zero on `Close`.
+- Callbacks may run with `connsMu` or `trackMu` held and must not re-enter the
+  pool.
+
 ## Hook integration (`hooks.go`)
 
 `PoolHookManager` carries `OnGet`, `OnPut`, `OnRemove`. It's stored as an `atomic.Value` on `ConnPool` so reads in the hot path don't need a mutex. Hooks are called *outside* the pool's internal lock — never call back into the pool from inside a hook in a way that requires the lock you're not holding.
