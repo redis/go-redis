@@ -68,7 +68,11 @@ func ParseErrorReply(line []byte) error {
 
 //------------------------------------------------------------------------------
 
-// Limit aggregate nesting to bound stack use when parsing untrusted replies.
+// maxNestingDepth is a defense-in-depth limit for unusually deep aggregate
+// replies, such as those sent by a nonstandard or untrusted intermediary.
+// A well-behaved Redis server is not expected to produce these frames.
+// Tracking nesting depth adds overhead to aggregate parsing, so this
+// hardening may be removed if its performance cost outweighs the benefit.
 const maxNestingDepth = 1000
 
 var errMaxNestingDepth = errors.New("redis: maximum nesting depth exceeded")
