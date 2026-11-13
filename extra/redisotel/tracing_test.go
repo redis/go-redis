@@ -506,6 +506,7 @@ func TestTracingHook_ProcessHook_LongCommand(t *testing.T) {
 	hook := newTracingHook(
 		"redis://localhost:6379",
 		WithTracerProvider(provider),
+		WithDBStatementMaxLen(0),
 	)
 	longValue := strings.Repeat("a", 102400)
 
@@ -583,6 +584,7 @@ func TestTracingHook_ProcessPipelineHook_LongCommands(t *testing.T) {
 	hook := newTracingHook(
 		"redis://localhost:6379",
 		WithTracerProvider(provider),
+		WithDBStatementMaxLen(0),
 	)
 
 	tests := []struct {

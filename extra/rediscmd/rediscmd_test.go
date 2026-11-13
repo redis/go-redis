@@ -2,6 +2,7 @@ package rediscmd
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -76,4 +77,68 @@ var _ = Describe("CmdString", func() {
 		Entry("", []interface{}{"get", "key"}, "get key"),
 		Entry("", []interface{}{"set", "auth", "value"}, "set auth value"),
 	)
+
+	It("redacts custom Stringer types without leaking credential", func() {
+		Expect(CmdString(redis.NewCmd(context.Background(), "SET", "k", testSecret("hunter2")))).To(Equal("SET k ***"))
+		Expect(CmdStringLimit(redis.NewCmd(context.Background(), "SET", "k", testSecret("hunter2")), 64)).To(Equal("SET k ***"))
+	})
+
+	It("truncates long arguments with limit", func() {
+		longVal := "hello" + strings.Repeat("x", 100)
+		cmd := redis.NewCmd(context.Background(), "SET", "k", longVal)
+		Expect(CmdStringLimit(cmd, 16)).To(Equal("SET k helloxxxxx…(+95 bytes)"))
+	})
+
+	It("truncates long pipeline commands with limit", func() {
+		cmd1 := redis.NewCmd(context.Background(), "SET", "k1", "v1")
+		cmd2 := redis.NewCmd(context.Background(), "SET", "k2", strings.Repeat("a", 100))
+		summary, stmt := CmdsStringLimit([]redis.Cmder{cmd1, cmd2}, 24)
+		Expect(summary).To(Equal("set"))
+		Expect(stmt).To(ContainSubstring("…"))
+	})
+
+	It("safely recovers from panicking Stringer methods", func() {
+		cmd := redis.NewCmd(context.Background(), "SET", "k", panicStringer{})
+		Expect(CmdString(cmd)).To(ContainSubstring("PANIC=String method: test panic"))
+		Expect(CmdStringLimit(cmd, 64)).To(ContainSubstring("PANIC=String method"))
+	})
+
+	It("returns command summary via CmdsSummary without formatting arguments", func() {
+		cmd1 := redis.NewCmd(context.Background(), "SET", "k", "v")
+		cmd2 := redis.NewCmd(context.Background(), "GET", "k")
+		cmd3 := redis.NewCmd(context.Background(), "SET", "k2", "v2")
+		Expect(CmdsSummary([]redis.Cmder{cmd1, cmd2, cmd3})).To(Equal("set get"))
+	})
+
+	It("uses bounded placeholder for non-struct custom types when truncated", func() {
+		cmd := redis.NewCmd(context.Background(), "SET", "k", testBlob{})
+		Expect(CmdStringLimit(cmd, 64)).To(Equal("SET k <rediscmd.testBlob>"))
+	})
 })
+
+type testSecret string
+
+func (s testSecret) String() string {
+	return "***"
+}
+
+func (s testSecret) MarshalBinary() ([]byte, error) {
+	return []byte(s), nil
+}
+
+type panicStringer struct{}
+
+func (panicStringer) String() string {
+	panic("test panic")
+}
+
+func (panicStringer) MarshalBinary() ([]byte, error) {
+	return []byte("safe"), nil
+}
+
+type testBlob [1024]byte
+
+func (b testBlob) MarshalBinary() ([]byte, error) {
+	return b[:], nil
+}
+
