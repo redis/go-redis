@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// Ensures ConnPool applies DialTimeout per attempt via context (so dialing doesn't hang
+// Ensures ConnPool applies DialTimeout via context (so dialing doesn't hang
 // when a custom dialer ignores timeouts).
-func TestDialConn_AppliesDialTimeoutPerAttemptViaContext(t *testing.T) {
+func TestDialConn_AppliesDialTimeoutViaContext(t *testing.T) {
 	p := NewConnPool(&Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
-			// Pool should apply DialTimeout per attempt via context.
+			// Pool should apply DialTimeout via context.
 			dl, ok := ctx.Deadline()
 			if !ok {
 				return nil, errors.New("expected context deadline")

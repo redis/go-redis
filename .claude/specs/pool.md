@@ -55,9 +55,9 @@ There used to also be an atomic `Conn.closed` bool. It was removed in #3783 beca
 
 `StateUnusable` is the contract that lets handoff and re-auth coexist with normal traffic without races. `OnGet` rejects unusable conns, `OnPut` keeps them in the pool (instead of recycling/closing), and the background worker drives them back to `StateIdle` (or removes them) when its work finishes.
 
-### 4. Dial timeout is per-attempt, not cumulative
+### 4. Dial timeout bounds the entire retry sequence
 
-`DialerRetries` (default 5), `DialerRetryTimeout` (default 100ms), and the optional `DialerRetryBackoff` function shape retry behaviour. `DialTimeout` is applied **per attempt**: each retry gets a fresh window (#3705 — `fix(timeout): make dial timeout per-retry`). The caller's context deadline is honored only when it's tighter than the per-attempt budget. This prevents a long backoff from eating the next attempt's I/O time.
+`DialerRetries` (default 5), `DialerRetryTimeout` (default 100ms), and the optional `DialerRetryBackoff` function shape retry behaviour. All dial attempts and their backoffs share one `DialTimeout` budget. An earlier caller context deadline still wins. Command retries do not restart an exhausted dial sequence, so a cache outage does not multiply the configured connection-establishment timeout.
 
 If all attempts fail, `tryDial` keeps probing in the background once a second so the pool can recover without a foreground request having to retry the whole sequence.
 

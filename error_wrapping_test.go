@@ -639,29 +639,29 @@ func TestContextErrorWrapping(t *testing.T) {
 	})
 }
 
-// TestDialTimeoutShouldRetry tests that dial errors wrapped in context.DeadlineExceeded
-// (as produced by pool.go's context.WithTimeout(ctx, DialTimeout)) are retried.
-func TestDialTimeoutShouldRetry(t *testing.T) {
+// TestDialTimeoutDoesNotRetry ensures the command loop does not restart
+// the dial retry budget already exhausted by the pool.
+func TestDialTimeoutDoesNotRetry(t *testing.T) {
 	makeDialOpError := func(inner error) *net.OpError {
 		return &net.OpError{Op: "dial", Net: "tcp", Err: inner}
 	}
 
-	t.Run("bare dial OpError retries", func(t *testing.T) {
+	t.Run("bare dial OpError does not retry", func(t *testing.T) {
 		err := makeDialOpError(&net.AddrError{Err: "connection refused", Addr: "127.0.0.1:6379"})
-		if !redis.ShouldRetry(err, false) {
-			t.Errorf("bare dial OpError should retry")
+		if redis.ShouldRetry(err, false) {
+			t.Errorf("bare dial OpError should not retry")
 		}
 	})
 
-	t.Run("dial OpError wrapped in context.DeadlineExceeded retries", func(t *testing.T) {
+	t.Run("dial OpError wrapped in context.DeadlineExceeded does not retry", func(t *testing.T) {
 		// Simulates pool.go wraps net.OpError as DeadlineExceeded.
 		dialErr := makeDialOpError(context.DeadlineExceeded)
 		wrappedErr := fmt.Errorf("dial tcp: %w", dialErr)
-		if !redis.ShouldRetry(wrappedErr, false) {
-			t.Errorf("dial OpError wrapped in DeadlineExceeded should retry, got false")
+		if redis.ShouldRetry(wrappedErr, false) {
+			t.Errorf("dial OpError wrapped in DeadlineExceeded should not retry, got true")
 		}
-		if !redis.ShouldRetry(wrappedErr, true) {
-			t.Errorf("dial OpError wrapped in DeadlineExceeded should retry, got false")
+		if redis.ShouldRetry(wrappedErr, true) {
+			t.Errorf("dial OpError wrapped in DeadlineExceeded should not retry, got true")
 		}
 	})
 

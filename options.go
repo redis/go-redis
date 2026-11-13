@@ -152,7 +152,8 @@ type Options struct {
 	// default: 1 second;
 	MaxRetryBackoff time.Duration
 
-	// DialTimeout for establishing new connections.
+	// DialTimeout is the total timeout for establishing a new connection,
+	// including dial retries and their backoff.
 	//
 	// default: 5 seconds
 	DialTimeout time.Duration

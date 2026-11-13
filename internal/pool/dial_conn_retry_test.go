@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestDialConn_HangingDial_RetriesWithPerAttemptTimeout(t *testing.T) {
+func TestDialConn_HangingDial_SharesTimeoutAcrossRetries(t *testing.T) {
 	var calls atomic.Int32
 	var sawDeadline atomic.Int32
 
@@ -23,7 +23,7 @@ func TestDialConn_HangingDial_RetriesWithPerAttemptTimeout(t *testing.T) {
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			calls.Add(1)
 
-			// Ensure each attempt has a deadline (pool applies DialTimeout per attempt).
+			// Ensure the dial sequence has a deadline.
 			if dl, ok := ctx.Deadline(); ok {
 				rem := time.Until(dl)
 				// Very generous bounds to avoid flakes.
@@ -48,7 +48,7 @@ func TestDialConn_HangingDial_RetriesWithPerAttemptTimeout(t *testing.T) {
 	defer p.Close()
 
 	// Use a parent context with a bounded timeout so this test fails fast (instead of hanging)
-	// when dialConn does not apply per-attempt DialTimeout via context.
+	// when dialConn does not apply DialTimeout via context.
 	parentBudget := dialTimeout*time.Duration(retries) + backoff*time.Duration(retries-1) + 250*time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), parentBudget)
 	defer cancel()
@@ -60,18 +60,18 @@ func TestDialConn_HangingDial_RetriesWithPerAttemptTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if got := calls.Load(); got != retries {
-		t.Fatalf("expected %d dial attempts, got %d", retries, got)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected one dial attempt within the shared budget, got %d", got)
 	}
-	if got := sawDeadline.Load(); got != retries {
-		t.Fatalf("expected deadline on all attempts, got %d/%d", got, retries)
+	if got := sawDeadline.Load(); got != 1 {
+		t.Fatalf("expected deadline on the dial attempt, got %d", got)
 	}
 
-	// Each attempt should wait ~dialTimeout, plus backoff between attempts.
+	// The entire retry sequence should wait about dialTimeout.
 	// Allow wide bounds for CI noise.
-	min := dialTimeout*time.Duration(retries) + backoff*time.Duration(retries-1)
+	min := dialTimeout
 	if elapsed < min/2 {
-		t.Fatalf("dialConn returned too quickly (%v < %v), retries/backoff may not have occurred", elapsed, min/2)
+		t.Fatalf("dialConn returned too quickly (%v < %v), the dial may not have honored its deadline", elapsed, min/2)
 	}
 	if elapsed > 5*min {
 		t.Fatalf("dialConn took too long (%v > %v), likely hung beyond expected timeouts", elapsed, 5*min)
