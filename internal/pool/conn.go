@@ -110,9 +110,10 @@ type Conn struct {
 	// Contains *atomicNetConn wrapper, accessed atomically for better performance
 	netConnAtomic atomic.Value // stores *atomicNetConn
 
-	rd *proto.Reader
-	bw *bufio.Writer
-	wr *proto.Writer
+	rd             *proto.Reader
+	deadlineReader deadlineReader
+	bw             *bufio.Writer
+	wr             *proto.Writer
 
 	// Lightweight mutex to protect reader operations during handoff and health checks
 	// Used during:
@@ -229,11 +230,13 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 		stateMachine: NewConnStateMachine(),
 	}
 
+	cn.deadlineReader.reader = netConn
+
 	// Use specified buffer sizes, or fall back to 32KiB defaults if 0
 	if readBufSize > 0 {
-		cn.rd = proto.NewReaderSize(netConn, readBufSize)
+		cn.rd = proto.NewReaderSize(&cn.deadlineReader, readBufSize)
 	} else {
-		cn.rd = proto.NewReader(netConn) // Uses 32KiB default
+		cn.rd = proto.NewReader(&cn.deadlineReader) // Uses 32KiB default
 	}
 
 	if writeBufSize > 0 {
@@ -846,7 +849,8 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 	// Protect reader reset operations to avoid data races
 	// Use write lock since we're modifying the reader state
 	cn.readerMu.Lock()
-	cn.rd.Reset(netConn)
+	cn.deadlineReader.reader = netConn
+	cn.rd.Reset(&cn.deadlineReader)
 	cn.readerMu.Unlock()
 
 	cn.bw.Reset(netConn)
@@ -1247,6 +1251,7 @@ func (cn *Conn) RemoteAddr() net.Addr {
 func (cn *Conn) WithReader(
 	ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error,
 ) error {
+	var deadline time.Time
 	if timeout >= 0 {
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveReadTimeout(timeout)
@@ -1257,7 +1262,8 @@ func (cn *Conn) WithReader(
 			return errConnectionNotAvailable
 		}
 
-		if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
+		deadline = cn.deadline(ctx, effectiveTimeout)
+		if err := netConn.SetReadDeadline(deadline); err != nil {
 			return err
 		}
 	} else {
@@ -1268,6 +1274,14 @@ func (cn *Conn) WithReader(
 		// needlessly closed + redialed. Cheap: one atomic store, only on the rare
 		// deadline-free path; harmless on a nil netConn.
 		cn.SetUsedAtNs(getCachedTimeNs())
+	}
+	if ctx != nil {
+		if ctxDeadline, ok := ctx.Deadline(); ok && deadline.Equal(ctxDeadline) {
+			cn.deadlineReader.ctx, cn.deadlineReader.deadline = ctx, deadline
+			defer func() {
+				cn.deadlineReader.ctx, cn.deadlineReader.deadline = nil, time.Time{}
+			}()
+		}
 	}
 	return fn(cn.rd)
 }
@@ -1284,6 +1298,10 @@ func (cn *Conn) WithReaderHardDeadline(
 	if netConn == nil {
 		return errConnectionNotAvailable
 	}
+	if ctx := cn.deadlineReader.ctx; ctx != nil {
+		cn.deadlineReader.ctx = nil
+		defer func() { cn.deadlineReader.ctx = ctx }()
+	}
 	if err := netConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
@@ -1298,13 +1316,15 @@ func (cn *Conn) WithReaderHardDeadline(
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {
+	var deadline time.Time
 	if timeout >= 0 {
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveWriteTimeout(timeout)
 
 		// Set write deadline on the connection
 		if netConn := cn.getNetConn(); netConn != nil {
-			if err := netConn.SetWriteDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
+			deadline = cn.deadline(ctx, effectiveTimeout)
+			if err := netConn.SetWriteDeadline(deadline); err != nil {
 				return err
 			}
 		} else {
@@ -1326,10 +1346,10 @@ func (cn *Conn) WithWriter(
 	}
 
 	if err := fn(cn.wr); err != nil {
-		return err
+		return contextDeadlineError(ctx, deadline, err)
 	}
 
-	return cn.bw.Flush()
+	return contextDeadlineError(ctx, deadline, cn.bw.Flush())
 }
 
 func (cn *Conn) IsClosed() bool {

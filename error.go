@@ -194,6 +194,11 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 	if err == nil {
 		return false
 	}
+	// Pub/Sub permits receive timeouts even when the socket deadline came from ctx.
+	var deadlineErr *pool.ContextDeadlineError
+	if allowTimeout && errors.As(err, &deadlineErr) {
+		return false
+	}
 
 	// Check for context errors (works with wrapped errors)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

@@ -197,6 +197,8 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
+	// Socket timeouts caused by the context deadline match context.DeadlineExceeded with errors.Is.
+	// Earlier ReadTimeout or WriteTimeout limits still return network timeout errors.
 	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
 	ContextTimeoutEnabled bool
 
