@@ -42,7 +42,9 @@ func TestContextDeadlinePubSubKeepsTimeoutConnection(t *testing.T) {
 	p := &PubSub{
 		opt: &Options{Protocol: 2}, cn: cn,
 		closeConn: func(cn *pool.Conn) error { closes++; return cn.Close() },
-		newConn:   func(ctx context.Context, _ string, _ []string) (*pool.Conn, error) { return nil, ctx.Err() },
+		newConn: func(ctx context.Context, _ string, _ []string, _ ...func(*pool.Conn)) (*pool.Conn, error) {
+			return nil, ctx.Err()
+		},
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()

@@ -170,6 +170,7 @@ const (
 	CmdTypeUintSlice
 	CmdTypeAREntrySlice
 	CmdTypeBackupStatus
+	CmdTypeNullableStringSlice
 )
 
 type (
@@ -10420,6 +10421,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return tsNRangePivotRowSliceCmd.Val(), tsNRangePivotRowSliceCmd.Err()
 			}
+		case CmdTypeNullableStringSlice:
+			if nullableCmd, ok := cmd.(interface {
+				Val() NullableStringSlice
+				Err() error
+			}); ok {
+				return nullableCmd.Val(), nullableCmd.Err()
+			}
 		case CmdTypeStringSlice:
 			if stringSliceCmd, ok := cmd.(interface {
 				Val() []string
@@ -10849,4 +10857,99 @@ func (cmd *BackupStatusCmd) Clone() Cmder {
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
+}
+
+// NullableStringSlice contains ordered strings and their validity. Values and
+// Valid have the same length. Valid[i] is false for a missing value; it is true
+// for a stored empty string. Decoded vectors and string payloads belong to the
+// result and are not reused by subsequent commands or reads.
+type NullableStringSlice struct {
+	Values []string
+	Valid  []bool
+}
+
+// NullableStringSliceCmd reads an array of nullable strings without boxing each
+// value into an interface. It does not expose borrowed connection buffers.
+type NullableStringSliceCmd struct {
+	baseCmd
+	val      NullableStringSlice
+	expected int
+}
+
+var _ Cmder = (*NullableStringSliceCmd)(nil)
+
+func NewNullableStringSliceCmd(ctx context.Context, args ...interface{}) *NullableStringSliceCmd {
+	cmd := &NullableStringSliceCmd{
+		baseCmd:  baseCmd{ctx: ctx, args: args, cmdType: CmdTypeNullableStringSlice},
+		expected: -1,
+	}
+	if len(args) >= 2 {
+		if name, ok := args[0].(string); ok && strings.EqualFold(name, "hmget") {
+			cmd.expected = len(args) - 2
+			cmd.SetFirstKeyPos(1)
+		}
+	}
+	return cmd
+}
+
+func (cmd *NullableStringSliceCmd) SetVal(val NullableStringSlice) { cmd.val = val }
+
+func (cmd *NullableStringSliceCmd) Val() NullableStringSlice {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *NullableStringSliceCmd) Result() (NullableStringSlice, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *NullableStringSliceCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *NullableStringSliceCmd) readReply(rd *proto.Reader) error {
+	cmd.val = NullableStringSlice{}
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if cmd.expected >= 0 && n != cmd.expected {
+		return fmt.Errorf("redis: unexpected HMGET reply length %d, want %d", n, cmd.expected)
+	}
+	val := NullableStringSlice{Values: make([]string, n), Valid: make([]bool, n)}
+	for i := range n {
+		kind, err := rd.PeekReplyType()
+		if err != nil {
+			return err
+		}
+		if kind != proto.RespString && kind != proto.RespNil && kind != proto.RespStatus {
+			// An embedded error is not a complete command error: the rest of
+			// this array is unread, so the connection must not be reused.
+			return fmt.Errorf("%w: unexpected nullable string element type %q", errConnUnusable, kind)
+		}
+		value, err := rd.ReadString()
+		if err == Nil {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		val.Values[i], val.Valid[i] = value, true
+	}
+	// A failed read never publishes a partially decoded result.
+	cmd.val = val
+	return nil
+}
+
+func (cmd *NullableStringSliceCmd) Clone() Cmder {
+	val := NullableStringSlice{}
+	if cmd.val.Values != nil {
+		val.Values = append([]string{}, cmd.val.Values...)
+	}
+	if cmd.val.Valid != nil {
+		val.Valid = append([]bool{}, cmd.val.Valid...)
+	}
+	return &NullableStringSliceCmd{baseCmd: cmd.cloneBaseCmd(), val: val, expected: cmd.expected}
 }

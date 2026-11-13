@@ -1134,6 +1134,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 				return nil
 			}
 		}
+	case CmdTypeNullableStringSlice:
+		if c, ok := cmd.(interface{ SetVal(NullableStringSlice) }); ok {
+			if v, ok := value.(NullableStringSlice); ok {
+				c.SetVal(v)
+				return nil
+			}
+		}
 	case CmdTypeStringSlice:
 		if c, ok := cmd.(interface{ SetVal([]string) }); ok {
 			if v, ok := value.([]string); ok {
