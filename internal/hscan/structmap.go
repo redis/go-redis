@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 // structMap contains the map of struct fields for target structs
@@ -118,13 +119,15 @@ func (s StructValue) decode(field *structField, v reflect.Value, value string) e
 		switch scan := v.Interface().(type) {
 		case Scanner:
 			return scan.ScanRedis(value)
+		case *time.Time:
+			return scan.UnmarshalText([]byte(value))
+		case encoding.BinaryUnmarshaler:
+			return scan.UnmarshalBinary([]byte(value))
 		case encoding.TextUnmarshaler:
 			// Copy: both contracts allow decoding in place, so the bytes must
 			// not alias value's backing array (internal/proto.Scan copies
 			// before UnmarshalBinary for the same reason).
 			return scan.UnmarshalText([]byte(value))
-		case encoding.BinaryUnmarshaler:
-			return scan.UnmarshalBinary([]byte(value))
 		}
 	}
 
