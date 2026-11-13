@@ -34,6 +34,40 @@ var _ = Describe("NewScriptServerSHA", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("should reload with SCRIPT LOAD, not EVAL, after SCRIPT FLUSH", Label("NonRedisEnterprise"), func() {
+		s := redis.NewScriptServerSHA("return 1")
+		Expect(s.Run(ctx, client, nil).Err()).NotTo(HaveOccurred())
+
+		Expect(client.ScriptFlush(ctx).Err()).NotTo(HaveOccurred())
+		Expect(client.ConfigResetStat(ctx).Err()).NotTo(HaveOccurred())
+		Expect(s.Run(ctx, client, nil).Err()).NotTo(HaveOccurred())
+
+		// EVALSHA (NOSCRIPT), SCRIPT LOAD, EVALSHA: no fallback to EVAL.
+		stats, err := client.Info(ctx, "commandstats").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stats).To(ContainSubstring("cmdstat_script|load:calls=1,"))
+		Expect(stats).To(ContainSubstring("cmdstat_evalsha:calls=2,"))
+		Expect(stats).NotTo(ContainSubstring("cmdstat_eval:"))
+	})
+
+	It("should reload script for EvalSha and EvalShaRO after SCRIPT FLUSH", func() {
+		s := redis.NewScriptServerSHA("return KEYS[1]")
+
+		result, err := s.EvalSha(ctx, client, []string{"mykey"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal("mykey"))
+
+		Expect(client.ScriptFlush(ctx).Err()).NotTo(HaveOccurred())
+		result, err = s.EvalSha(ctx, client, []string{"mykey"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal("mykey"))
+
+		Expect(client.ScriptFlush(ctx).Err()).NotTo(HaveOccurred())
+		result, err = s.EvalShaRO(ctx, client, []string{"mykey"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal("mykey"))
+	})
+
 	It("should run script with RunRO", func() {
 		s := redis.NewScriptServerSHA("return 1")
 
