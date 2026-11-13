@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -1689,12 +1690,17 @@ func (c *baseClient) processWithRetry(
 		// A conn retired by the pre-command drain never saw the command. It is
 		// typically an idle conn the server closed (over TLS, the drain reads the
 		// close_notify then EOF), which the pool health check cannot detect, so
-		// several can be handed out in a row.
-		if err != nil && forced && preWriteRetirements < c.opt.PoolSize {
+		// several can be handed out in a row. Re-run on the next conn at attempt
+		// 0: no backoff and no retry budget spent.
+		for err != nil && forced && isClosedConnErr(err) && preWriteRetirements < c.opt.PoolSize {
 			preWriteRetirements++
-			attempt--
-			lastErr = err
-			continue
+			retry, forced, cn, err = c._process(ctx, cmd, 0, capture)
+			if cn != nil {
+				lastConn = cn
+			}
+			if state != nil {
+				state.lastConn = lastConn
+			}
 		}
 		// A "no such fieldset" reply for a registered fieldset means the
 		// connection lost its server session state (e.g. RESET, concurrent
@@ -1729,6 +1735,16 @@ func (c *baseClient) processWithRetry(
 	recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
 
 	return lastErr
+}
+
+// isClosedConnErr reports whether err means the connection was closed by the
+// peer or the network.
+func isClosedConnErr(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr)
 }
 
 // recordCommandError emits the native error metric for a command's terminal
