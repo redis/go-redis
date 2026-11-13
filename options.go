@@ -1102,7 +1102,11 @@ func redactRawURL(s string) (string, string) {
 	switch {
 	case at > end:
 		// The '@' is in the password or in a query value, and the two
-		// can't be told apart, so quote only the scheme.
+		// can't be told apart, so quote only the scheme. An earlier '@'
+		// ends the userinfo that url.Parse read, so return that password.
+		if i := strings.LastIndexByte(s[start:end], '@'); i >= 0 {
+			_, password, _ = strings.Cut(s[start:start+i], ":")
+		}
 		return s[:start], password
 	case !ok:
 		return s[:end], ""
@@ -1117,10 +1121,30 @@ func redactRawURL(s string) (string, string) {
 func quoteURLPart(parts ...string) string {
 	for _, p := range parts {
 		if strings.Contains(p, "@") {
-			return "(not shown: it contains '@'; escape '/', '?' and '#' in the password)"
+			return hiddenURLPart
 		}
 	}
 	return parts[len(parts)-1]
+}
+
+const hiddenURLPart = "(not shown: it contains '@'; escape '/', '?' and '#' in the password)"
+
+// quoteURLError is quoteURLPart for an error that quotes the last of parts.
+func quoteURLError(err error, parts ...string) error {
+	if quoteURLPart(parts...) == hiddenURLPart {
+		return errors.New(hiddenURLPart)
+	}
+	return err
+}
+
+// unexpectedOptionError reports the query keys no option read. An unescaped
+// '&' in a password= value makes the rest of the password a key, so the names
+// are left out when the query has a password.
+func unexpectedOptionError(u *url.URL, keys []string) error {
+	if strings.Contains(u.RawQuery, "password=") {
+		return errors.New("redis: unexpected option: (not shown: the query has a password; escape '&' in it)")
+	}
+	return fmt.Errorf("redis: unexpected option: %s", quoteURLPart(u.RawQuery, strings.Join(keys, ", ")))
 }
 
 func setupTCPConn(u *url.URL) (*Options, error) {
@@ -1195,6 +1219,7 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 
 type queryOptions struct {
 	q   url.Values
+	raw string // u.RawQuery, checked by quoteURLPart before a value is quoted
 	err error
 }
 
@@ -1227,7 +1252,7 @@ func (o *queryOptions) int(name string) int {
 		return i
 	}
 	if o.err == nil {
-		o.err = fmt.Errorf("redis: invalid %s number: %s", name, err)
+		o.err = fmt.Errorf("redis: invalid %s number: %s", name, quoteURLError(err, o.raw, s))
 	}
 	return 0
 }
@@ -1303,7 +1328,7 @@ func (o *queryOptions) duration(name string) time.Duration {
 		return dur
 	}
 	if o.err == nil {
-		o.err = fmt.Errorf("redis: invalid %s duration: %w", name, err)
+		o.err = fmt.Errorf("redis: invalid %s duration: %w", name, quoteURLError(err, o.raw, s))
 	}
 	return 0
 }
@@ -1316,7 +1341,7 @@ func (o *queryOptions) bool(name string) bool {
 		return false
 	default:
 		if o.err == nil {
-			o.err = fmt.Errorf("redis: invalid %s boolean: expected true/false/1/0 or an empty string, got %q", name, s)
+			o.err = fmt.Errorf("redis: invalid %s boolean: expected true/false/1/0 or an empty string, got %s", name, quoteURLPart(o.raw, strconv.Quote(s)))
 		}
 		return false
 	}
@@ -1333,13 +1358,13 @@ func (o *queryOptions) remaining() []string {
 
 // setupConnParams converts query parameters in u to option value in o.
 func setupConnParams(u *url.URL, o *Options) (*Options, error) {
-	q := queryOptions{q: u.Query()}
+	q := queryOptions{q: u.Query(), raw: u.RawQuery}
 
 	// compat: a future major release may use q.int("db")
 	if tmp := q.string("db"); tmp != "" {
 		db, err := strconv.Atoi(tmp)
 		if err != nil {
-			return nil, fmt.Errorf("redis: invalid database number: %w", err)
+			return nil, fmt.Errorf("redis: invalid database number: %w", quoteURLError(err, u.RawQuery, tmp))
 		}
 		if db < 0 {
 			return nil, fmt.Errorf("redis: invalid database number: %q", tmp)
@@ -1400,7 +1425,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
-		return nil, fmt.Errorf("redis: unexpected option: %s", quoteURLPart(u.RawQuery, strings.Join(r, ", ")))
+		return nil, unexpectedOptionError(u, r)
 	}
 
 	return o, nil
