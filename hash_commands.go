@@ -18,6 +18,7 @@ type HashCmdable interface {
 	HKeys(ctx context.Context, key string) *StringSliceCmd
 	HLen(ctx context.Context, key string) *IntCmd
 	HMGet(ctx context.Context, key string, fields ...string) *SliceCmd
+	HMGetStrings(ctx context.Context, key string, fields ...string) *NullableStringSliceCmd
 	HSet(ctx context.Context, key string, values ...interface{}) *IntCmd
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd
@@ -120,6 +121,21 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 		args[2+i] = field
 	}
 	cmd := NewSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HMGetStrings is HMGet with independently owned string values and a validity
+// vector. Missing fields have Valid[i] == false; an empty stored string has
+// Valid[i] == true. Field order and duplicates are preserved.
+// Redis 2.0.0+: https://redis.io/docs/latest/commands/hmget/
+func (c cmdable) HMGetStrings(ctx context.Context, key string, fields ...string) *NullableStringSliceCmd {
+	args := make([]interface{}, 2+len(fields))
+	args[0], args[1] = "hmget", key
+	for i, field := range fields {
+		args[2+i] = field
+	}
+	cmd := NewNullableStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
