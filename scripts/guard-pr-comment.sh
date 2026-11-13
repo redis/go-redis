@@ -8,7 +8,9 @@
 # fence that is longer than any backtick run in it, and the comment is capped
 # below GitHub's 65536 character limit.
 #
-# Environment (optional, for the header): RUN_URL, BASE_REF.
+# Environment (optional): RUN_URL, BASE_REF for the header;
+# GUARD_APPROVALS=on once /guard-approve and /guard-reject are handled
+# (until then the comment says they have no effect).
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -43,6 +45,24 @@ fence="$(printf '%*s' "$n" '' | tr ' ' '`')"
     echo "**Nothing needs approval.** For information: $info."
   else
     echo "**Needs approval: $gated** (digest \`$digest\`). For information: $info."
+    echo
+    echo "To approve these changes, comment:"
+    echo
+    echo '```'
+    echo "/guard-approve $digest"
+    echo '```'
+    echo
+    echo "To reject them, comment:"
+    echo
+    echo '```'
+    echo "/guard-reject <reason>"
+    echo '```'
+    echo
+    echo "The digest names exactly the changes listed below. If the PR changes them, the digest changes and a new approval is needed."
+    if [[ "${GUARD_APPROVALS:-off}" != on ]]; then
+      echo
+      echo "_Not active yet: this check is report only, so these commands have no effect._"
+    fi
   fi
   echo
   if [[ -n "${BASE_REF:-}" ]]; then
