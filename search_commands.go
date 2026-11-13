@@ -1887,7 +1887,7 @@ func parseFTAttributeFromMap(attrMap map[interface{}]interface{}) FTAttribute {
 						att.NoIndex = true
 					case "unf":
 						att.UNF = true
-					case "case_sensitive":
+					case "casesensitive":
 						att.CaseSensitive = true
 					case "withsuffixtrie":
 						att.WithSuffixtrie = true
@@ -2082,7 +2082,7 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 						att.PhoneticMatcher = internal.ToString(attrSlice[i+1])
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrSlice[i])) == "case_sensitive" {
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "casesensitive" {
 						att.CaseSensitive = true
 						continue
 					}
