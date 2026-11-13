@@ -390,7 +390,7 @@ func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptio
 
 // setupClusterQueryParams converts query parameters in u to option value in o.
 func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
-	q := queryOptions{q: u.Query()}
+	q := queryOptions{q: u.Query(), raw: u.RawQuery}
 
 	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
@@ -436,7 +436,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	for _, addr := range addrs {
 		h, p, err := net.SplitHostPort(addr)
 		if err != nil || h == "" || p == "" {
-			return nil, fmt.Errorf("redis: unable to parse addr param: %s", addr)
+			return nil, fmt.Errorf("redis: unable to parse addr param: %s", quoteURLPart(u.RawQuery, addr))
 		}
 
 		o.Addrs = append(o.Addrs, net.JoinHostPort(h, p))
@@ -444,7 +444,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
-		return nil, fmt.Errorf("redis: unexpected option: %s", quoteURLPart(u.RawQuery, strings.Join(r, ", ")))
+		return nil, unexpectedOptionError(u, r)
 	}
 
 	return o, nil

@@ -463,7 +463,7 @@ func setupFailoverConn(u *url.URL) (*FailoverOptions, error) {
 }
 
 func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, error) {
-	q := queryOptions{q: u.Query()}
+	q := queryOptions{q: u.Query(), raw: u.RawQuery}
 
 	o.MasterName = q.string("master_name")
 	o.ClientName = q.string("client_name")
@@ -513,7 +513,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	if tmp := q.string("db"); tmp != "" {
 		db, err := strconv.Atoi(tmp)
 		if err != nil {
-			return nil, fmt.Errorf("redis: invalid database number: %w", err)
+			return nil, fmt.Errorf("redis: invalid database number: %w", quoteURLError(err, u.RawQuery, tmp))
 		}
 		o.DB = db
 	}
@@ -522,7 +522,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	for _, addr := range addrs {
 		h, p, err := net.SplitHostPort(addr)
 		if err != nil || h == "" || p == "" {
-			return nil, fmt.Errorf("redis: unable to parse addr param: %s", addr)
+			return nil, fmt.Errorf("redis: unable to parse addr param: %s", quoteURLPart(u.RawQuery, addr))
 		}
 
 		o.SentinelAddrs = append(o.SentinelAddrs, net.JoinHostPort(h, p))
@@ -537,7 +537,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
-		return nil, fmt.Errorf("redis: unexpected option: %s", quoteURLPart(u.RawQuery, strings.Join(r, ", ")))
+		return nil, unexpectedOptionError(u, r)
 	}
 
 	return o, nil
