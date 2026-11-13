@@ -3849,7 +3849,7 @@ var _ = Describe("Command Tips tests", func() {
 			}, {
 				test: "InvalidQueryAddr",
 				url:  "rediss://foo:bar@localhost:123?addr=rediss://foo:barr@localhost:1234",
-				err:  errors.New(`redis: unable to parse addr param: rediss://foo:barr@localhost:1234`),
+				err:  errors.New(`redis: unable to parse addr param: (not shown: it contains '@'; escape '/', '?' and '#' in the password)`),
 			}, {
 				test: "InvalidInt",
 				url:  "redis://localhost?pool_size=five",

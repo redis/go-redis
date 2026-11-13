@@ -375,6 +375,50 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 	}
 }
 
+func TestParseURLErrorRedactsPassword(t *testing.T) {
+	urls := []string{
+		"redis://user:s3cr3t@localhost:6379x/0",
+		"rediss://:s3cr3t@[::1/0",
+		"redis://user:s3cr3t%zz@localhost/0",
+		"redis://user:s3/cr@t@localhost:bad/0",
+		"redis://user:s3#cr@localhost:bad/0",
+		"redis://user:%s3@localhost/0",
+		"redis://sentinel:pass@localhost:bad?password=s3cr3t",
+		"redis://sentinel:pass@localhost:bad?password=app@s3cr3t",
+		"redis://user:/s3cr3t@localhost/0",
+		"redis://user:/s3cr3t@localhost",
+		"redis://user:?s3cr3t@localhost/0",
+		"redis://user:6379?s3=cr3t@localhost/0",
+		"redis:/%zz?password=s3cr3t://foo",
+		"redis://localhost?password=s3&cr3t",
+		"redis://user:6379?max_retries=s3cr3t@localhost/0",
+		"redis://user:6379?max_retries=s3&x=cr3t@localhost/0",
+		"redis://user:?read_timeout=s3cr3t@localhost/0",
+		"redis://user:?pool_fifo=s3cr3t@localhost/0",
+		"redis://user:?db=s3cr3t@localhost/0",
+		"redis://user:?addr=s3cr3t@localhost/0",
+	}
+	parsers := map[string]func(string) error{
+		"ParseURL":         func(u string) error { _, err := ParseURL(u); return err },
+		"ParseClusterURL":  func(u string) error { _, err := ParseClusterURL(u); return err },
+		"ParseFailoverURL": func(u string) error { _, err := ParseFailoverURL(u); return err },
+	}
+	for name, parse := range parsers {
+		for _, u := range urls {
+			err := parse(u)
+			if err == nil && name == "ParseClusterURL" {
+				continue // ParseClusterURL ignores the path
+			}
+			if err == nil {
+				t.Fatalf("%s(%q): expected an error", name, u)
+			}
+			if msg := err.Error(); strings.Contains(msg, "s3") || strings.Contains(msg, "cr3t") {
+				t.Errorf("%s(%q): error leaks the password: %s", name, u, msg)
+			}
+		}
+	}
+}
+
 // Test ReadTimeout option initialization, including special values -1 and 0.
 // And also test behaviour of WriteTimeout option, when it is not explicitly set and use
 // ReadTimeout value.
