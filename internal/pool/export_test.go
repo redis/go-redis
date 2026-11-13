@@ -35,6 +35,12 @@ func (p *ConnPool) CheckMinIdleConns() {
 	p.connsMu.Unlock()
 }
 
+// PooledLen returns the number of pooled conns (PoolSize soft cap); excess
+// non-pooled conns are not counted.
+func (p *ConnPool) PooledLen() int {
+	return int(p.poolSize.Load())
+}
+
 func (p *ConnPool) QueueLen() int {
 	return int(p.semaphore.Len())
 }

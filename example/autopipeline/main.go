@@ -3,7 +3,7 @@
 //
 // Act 1 — usage tour: the blocking face as a drop-in client, the async face
 // with a submission window, Submit/AutoFuture for raw commands, the Do escape
-// hatch, and (env-gated) cluster usage.
+// hatch, a bounded queue (MaxQueuedCommands), and (env-gated) cluster usage.
 //
 // Act 2 — throughput: the same workload (N goroutines issuing SET for a fixed
 // duration) run four ways:
@@ -47,6 +47,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -187,7 +188,44 @@ func usageTour(ctx context.Context) {
 	}
 	fmt.Println("  do: raw command ran on a normal connection (not batched)")
 
-	// --- e. Tuning notes (in code, so they stay honest) --------------------
+	// --- e. A bounded queue: MaxQueuedCommands ----------------------------
+	// By default the autopipeliner accepts every command, so a server slower
+	// than the producers grows client memory without bound. MaxQueuedCommands
+	// caps the commands accepted but not yet completed. A command over the cap
+	// is not sent: it fails at once with ErrAutoPipelineQueueFull, and the
+	// caller backs off and retries it. Rejection is per command, so check the
+	// error of a command a later one depends on. Its own client: the
+	// autopipeliner is cached per client, and the first config wins.
+	bounded := redis.NewClient(&redis.Options{Addr: addr()})
+	defer bounded.Close()
+	bap, err := bounded.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxQueuedCommands: 16})
+	if err != nil {
+		fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer bap.Close()
+	const burst = 10000
+	sets := make([]*redis.StatusCmd, burst)
+	for i := range sets {
+		sets[i] = bap.Set(ctx, fmt.Sprintf("tour:bounded:%d", i), i, 0) // submitted faster than they complete
+	}
+	rejected := 0
+	for i, c := range sets {
+		err := c.Err()
+		if errors.Is(err, redis.ErrAutoPipelineQueueFull) {
+			rejected++
+		}
+		for errors.Is(err, redis.ErrAutoPipelineQueueFull) {
+			time.Sleep(100 * time.Microsecond) // back off, then retry
+			err = bap.Set(ctx, fmt.Sprintf("tour:bounded:%d", i), i, 0).Err()
+		}
+		if err != nil {
+			fatalf("bounded set %d: %v", i, err)
+		}
+	}
+	fmt.Printf("  bounded queue: %d SETs at MaxQueuedCommands 16: %d rejected at once, all retried\n",
+		burst, rejected)
+
+	// --- f. Tuning notes (in code, so they stay honest) --------------------
 	// For peak throughput on the async face give up global ordering:
 	//
 	//	rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
@@ -202,7 +240,7 @@ func usageTour(ctx context.Context) {
 	// automatically). Remember the instance is cached per client: the FIRST
 	// call's config wins.
 
-	// --- f. Cluster (env-gated) -------------------------------------------
+	// --- g. Cluster (env-gated) -------------------------------------------
 	if addrs := os.Getenv("REDIS_CLUSTER_ADDRS"); addrs != "" {
 		clusterTour(ctx, strings.Split(addrs, ","))
 	} else {

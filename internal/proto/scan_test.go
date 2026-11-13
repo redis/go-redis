@@ -2,6 +2,7 @@ package proto_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -16,6 +17,43 @@ import (
 type testScanSliceStruct struct {
 	ID   int
 	Name string
+}
+
+func TestScanUint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		input   string
+		want    uint64
+		wantErr error
+	}{
+		{"zero", "0", 0, nil},
+		{"small", "42", 42, nil},
+		{"maximum_32_bit", "4294967295", 4294967295, nil},
+		{"above_32_bit", "4294967296", 4294967296, nil},
+		{"maximum_64_bit", "18446744073709551615", ^uint64(0), nil},
+		{"above_64_bit", "18446744073709551616", 0, strconv.ErrRange},
+		{"negative", "-1", 0, strconv.ErrSyntax},
+		{"invalid", "not-a-number", 0, strconv.ErrSyntax},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantErr := tc.wantErr
+			if wantErr == nil && tc.want > uint64(^uint(0)) {
+				wantErr = strconv.ErrRange
+			}
+			got := uint(42)
+			err := proto.Scan([]byte(tc.input), &got)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("Scan(%q): got error %v, want %v", tc.input, err, wantErr)
+			}
+			if wantErr != nil {
+				if got != 42 {
+					t.Fatalf("Scan(%q) changed destination on error: got %d, want 42", tc.input, got)
+				}
+			} else if uint64(got) != tc.want {
+				t.Fatalf("Scan(%q): got %d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
 }
 
 func (s *testScanSliceStruct) MarshalBinary() ([]byte, error) {

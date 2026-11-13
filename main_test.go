@@ -613,6 +613,14 @@ func cleanupTLSCluster() {
 	// TLS cluster is auto-managed by the container, no cleanup needed
 }
 
+// isFullDuplexSubject reports whether GOREDIS_TEST_SUBJECT selects a
+// full-duplex face (ap-fd, ap-fd-blocking). Those keep a warm spare in the
+// pipeline pool, so exact pipeline-pool counts differ.
+func isFullDuplexSubject() bool {
+	s := os.Getenv("GOREDIS_TEST_SUBJECT")
+	return s == "ap-fd" || s == "ap-fd-blocking"
+}
+
 // newUniversalSubject returns the redis.UniversalClient that a parametrized
 // command suite runs against, selected by the GOREDIS_TEST_SUBJECT env var so a
 // whole suite can be replayed through the autopipeliner without touching each

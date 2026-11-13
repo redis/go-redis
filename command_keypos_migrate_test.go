@@ -2,8 +2,48 @@ package redis
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 )
+
+func TestMigrateUnsupportedOptionFailsBeforeDispatch(t *testing.T) {
+	ctx := context.Background()
+	newCmd := func() *Cmd {
+		return NewCmd(ctx, "migrate", "host", 6379, "", 0, 1000, clusterBinaryKey("KEYS"), "key")
+	}
+	if pos := cmdFirstKeyPosWithInfo(newCmd(), nil); pos != -1 {
+		t.Fatalf("unsupported MIGRATE option key position=%d, want invalid (-1)", pos)
+	}
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cluster-disabled=%v", disabled), func(t *testing.T) {
+			c := NewClusterClient(&ClusterOptions{DisableRoutingPolicies: disabled})
+			defer c.Close()
+			if err := c.Process(ctx, newCmd()); err == nil || !strings.Contains(err.Error(), "routing key") {
+				t.Fatalf("direct MIGRATE error=%v", err)
+			}
+			missing := c.routingDecisionInView(ctx, newCmd(), &commandMetadataView{}, nil)
+			if missing.policyErr == nil {
+				t.Fatal("missing metadata accepted unsupported MIGRATE option")
+			}
+			ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ap.routeCommand(ctx, newCmd()); err == nil {
+				t.Fatal("AutoPipeline accepted unsupported MIGRATE option")
+			}
+		})
+	}
+	r := NewRing(&RingOptions{})
+	defer r.Close()
+	if _, err := r.cmdShard(newCmd()); err == nil {
+		t.Fatal("Ring accepted unsupported MIGRATE option")
+	}
+	if err := r.generalProcessPipeline(ctx, []Cmder{newCmd()}, false); err == nil || !strings.Contains(err.Error(), "routing key") {
+		t.Fatalf("Ring pipeline MIGRATE error=%v", err)
+	}
+}
 
 // Raw MIGRATE in its KEYS form: the options before KEYS take operands (AUTH
 // password, AUTH2 username password), so a scan for the first "keys" token

@@ -99,9 +99,9 @@ type AutoPipelineOptions struct {
 	//
 	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1) face of a
 	// standalone *Client that has a pipeline pool — BOTH the deferred
-	// (AsyncAutoPipeline) and the blocking (AutoPipeline) face. NumShards > 1
-	// runs that many full-duplex engines, each on its own held connection; see
-	// NumShards for the ordering that mode keeps. A SINGLE
+	// (AsyncAutoPipeline) and the blocking (AutoPipeline) face. FullDuplexPipes > 1
+	// runs that many full-duplex pipes, each on its own held connection; see
+	// FullDuplexPipes for the ordering that mode keeps. A SINGLE
 	// blocking caller gains nothing: it has one command in flight, so there is
 	// nothing to overlap, and it still pays the held connection and goroutine
 	// overhead; the win needs MANY concurrent blocking callers, whose commands then
@@ -113,6 +113,13 @@ type AutoPipelineOptions struct {
 	// cluster path (topology reload included). It falls back to half-duplex only
 	// when PipelinePoolSize<0 removes the node pipeline pools. Validate rejects the
 	// contradictory standalone combos (FullDuplex with Unordered or MaxConcurrentBatches>1).
+	//
+	// With client-side caching, native full-duplex sessions use only the
+	// untracked pipeline pool and never send CLIENT CACHING. Pool saturation
+	// waits up to DefaultPipelinePoolTimeout (or a smaller positive
+	// Options.PoolTimeout), then follows the existing lease retry budget. It does not spill to the main
+	// pool. Commands diverted to Process and ordinary pipeline fallbacks keep
+	// their normal caching and connection-acquisition behavior.
 	//
 	// Ordering caveat: blocking and connection-hostile commands (BLPOP, WAIT,
 	// XREAD BLOCK, SUBSCRIBE, MULTI, ...) are diverted to a separate pooled
@@ -182,9 +189,14 @@ type AutoPipelineOptions struct {
 	// Limiter: Options.Limiter is admitted (Allow/ReportResult) once PER WRITTEN
 	// BATCH — the chunk flushed to the connection in one write, the full-duplex
 	// analogue of a pipeline exec or a half-duplex flush — not per command and
-	// not per session. A deny fails every command of that chunk with the
-	// Limiter's own error, verbatim (examinable via errors.Is); the session and
-	// its connection stay alive, and the next chunk pays Allow again, so an open
+	// not per session. The one addition is the handshake of a fresh connection
+	// (a new session, or one recycled after a connection failure): it is
+	// admitted once before the handshake and reported once with the handshake
+	// result, the same accounting a pooled command pays when it dials. A deny
+	// there fails the lease, not a chunk. A deny on a chunk fails every command
+	// of that chunk with the Limiter's own error, verbatim (examinable via
+	// errors.Is); the session and its connection stay alive, and the next chunk
+	// pays Allow again, so an open
 	// breaker fail-fasts and service resumes as soon as it closes. Because
 	// admission happens at write time, a deny surfaces as queue latency on the
 	// awaited result, not as a submit-time error — and one deny covers a whole
@@ -211,10 +223,10 @@ type AutoPipelineOptions struct {
 	// set; 0 means the default (65536, covering ~50ms links at ~1.3M ops/s) and a
 	// negative value is rejected by Validate.
 	//
-	// The window is PER ENGINE. With NumShards > 1 each full-duplex engine gets
-	// its own window and submit queue of this size, so the client-wide bound is
-	// NumShards × FullDuplexWindow in flight, plus as many queued. Size it for
-	// one wire; to cap the total, divide by NumShards.
+	// The window is PER PIPE. With FullDuplexPipes > 1 each pipe gets its own
+	// window and submit queue of this size, so the client-wide bound is
+	// FullDuplexPipes × FullDuplexWindow in flight, plus as many queued. Size it
+	// for one pipe; to cap the total, divide by FullDuplexPipes.
 	FullDuplexWindow int
 
 	// FullDuplexIdleTimeout is how long the held full-duplex connection may sit
@@ -229,6 +241,37 @@ type AutoPipelineOptions struct {
 	// idle. Only used when FullDuplex is set. 0 means the default (5s); a negative
 	// value is rejected by Validate.
 	FullDuplexMaxHold time.Duration
+
+	// FullDuplexPipes is the number of full-duplex pipes on a standalone *Client.
+	// Each pipe is one held pipeline-pool connection with its own writer, reader,
+	// window (see FullDuplexWindow) and submit queue. 0 means 1. Only used when
+	// FullDuplex is set; a negative value is rejected by Validate.
+	//
+	// One pipe has a throughput ceiling; more pipes are the way past it, and they
+	// pay off only with many concurrent callers: measured with 10-command
+	// pipelines, 8 pipes were 30% slower than 1 at 8 callers, broke even at about
+	// 128, and 2.2x faster at 1024. Raise it only when one pipe is saturated.
+	//
+	// Commands are routed to a pipe by a hash of their first key, so Unordered is
+	// not required, but order holds only between commands that share a first key.
+	// The key is hashed in its string form (fmt for non-string arguments, as Ring
+	// does), so pass a key as the same Go type everywhere: true and "1" are the
+	// same Redis key but can land on different pipes. Commands that touch other
+	// keys after the first one (COPY, RENAME, MSET, multi-key DEL, EVAL/FCALL with
+	// several keys) and keyless commands (including FLUSHDB and SWAPDB) are not
+	// ordered against the rest; await the first future before submitting a
+	// dependent one, or keep FullDuplexPipes at 1, which keeps the whole submit
+	// order. A Pipeline() rides a pipe only when all its keyed commands hash to
+	// one pipe; otherwise it runs as an ordinary pipeline on a pooled connection,
+	// not ordered against unawaited commands on the pipes.
+	//
+	// The pipeline pool must hold at least FullDuplexPipes connections for every
+	// full-duplex autopipeliner in use (construction checks this one); raise
+	// Options.PipelinePoolSize if needed. If full duplex cannot engage (no
+	// pipeline pool), FullDuplexPipes has no effect. On a ClusterClient full
+	// duplex runs one pipe per master and ignores FullDuplexPipes; on a
+	// MultiDBClient it runs one pipe per member and ignores it too.
+	FullDuplexPipes int
 
 	// contentSharded is set internally by cluster wiring when commands are
 	// routed to shards by content (slot), so same-key commands always share a
@@ -253,6 +296,40 @@ type AutoPipelineOptions struct {
 	// retries live in MaxRedirects). Never set by users (unexported).
 	clusterRetryBudget int
 
+	// fdReroute is set internally by an owner of full-duplex children (the
+	// cluster full-duplex router). Commands the child's engine cannot complete on
+	// its own connection run through it, in order, instead of being replayed on
+	// that connection or failed: the replayable tail after a connection error,
+	// and the carry plus the queue once lease retries are spent. A cluster child
+	// reroutes through the ClusterClient, so a node that went away does not
+	// strand its accepted commands. maxRetries bounds the owner's retry loop
+	// (0 = one execution): the commands' remaining retry budget, so a command
+	// already issued on the child's connection does not get a fresh one. Shutdown
+	// flushes run through it too. Never set by users (unexported). See
+	// fdEngine.reroute.
+	fdReroute func(ctx context.Context, cmds []Cmder, maxRetries int) error
+
+	// fdOutcome is set internally by an owner that accounts per command (the
+	// MultiDB full-duplex router: breaker and failure detector). The engine
+	// calls it with every command's final outcome it settles itself, and with
+	// the failed attempt of every command it reroutes. Never set by users
+	// (unexported). ctx is the command's submit context. grp, when non-nil,
+	// groups the reports of one settle call that carry the same error, so the
+	// owner can count per-event state (the breaker) once per settle call
+	// (fdFailGroup.take); a drop is bounded to a few such calls. See
+	// fdEngine.finish.
+	fdOutcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup)
+
+	// fdOwnerRetries and fdRetryBudget are set internally by an owner that has
+	// its own retry policy (the MultiDB full-duplex router, from CommandRetries;
+	// 0 means none). With fdOwnerRetries the child engine (1) uses fdRetryBudget
+	// instead of the client's MaxRetries to bound how often a command is
+	// re-issued, and (2) reroutes on the FIRST failed lease instead of retrying
+	// the lease: the owner does the retrying, against whatever it selects.
+	// Never set by users (unexported).
+	fdOwnerRetries bool
+	fdRetryBudget  int
+
 	// NumShards is the number of independent queue+flusher shards the
 	// autopipeliner runs. 0 (the default) means auto: a single shard, which
 	// funnels every caller into one queue so batches stay deep — measured
@@ -268,28 +345,12 @@ type AutoPipelineOptions struct {
 	// concurrently, NumShards > 1 on the deferred (async) face requires
 	// Unordered: true (construction fails otherwise).
 	//
-	// With FullDuplex active on a standalone *Client, NumShards means something
-	// else: the number of full-duplex engines, each holding one pipeline-pool
-	// connection with its own window (see FullDuplexWindow). More engines pay
-	// off only with many concurrent callers: measured with 10-command
-	// pipelines, 8 engines were 30% slower than 1 at 8 callers, broke even at about
-	// 128, and 2.2x faster at 1024. Commands are routed
-	// to an engine by a hash of their first key, so Unordered is not required,
-	// but order holds only between commands that share a first key. The key is
-	// hashed in its string form (fmt for non-string arguments, as Ring does), so
-	// pass a key as the same Go type everywhere: true and "1" are the same Redis
-	// key but can land on different engines. Commands
-	// that touch other keys after the first one (COPY, RENAME, MSET, multi-key
-	// DEL, EVAL/FCALL with several keys) and keyless commands (including
-	// FLUSHDB and SWAPDB) are not ordered against the rest; await the first
-	// future before submitting a dependent one, or keep NumShards at 1, which
-	// keeps the whole submit order. A Pipeline() rides the FD wire only when all
-	// its keyed commands hash to one engine; otherwise it runs as an ordinary
-	// pipeline on a pooled connection, not ordered against unawaited commands on
-	// the engines. The pipeline pool must hold at least
-	// NumShards connections for every full-duplex autopipeliner in use
-	// (construction checks this one). If full duplex cannot engage (no
-	// pipeline pool), the Unordered rule above applies.
+	// Full duplex: use FullDuplexPipes to choose the number of pipes. For
+	// compatibility with 9.23.0, NumShards > 1 with FullDuplex still selects
+	// that many pipes when FullDuplexPipes is 0; Validate rejects the two set to
+	// different values. If full duplex cannot engage (no pipeline pool),
+	// NumShards keeps its half-duplex meaning and the Unordered rule above
+	// applies.
 	NumShards int
 
 	// MaxFlushDelay is the maximum delay after flushing before checking for more commands.
@@ -325,6 +386,23 @@ type AutoPipelineOptions struct {
 	// MaxFlushDelay only when enough commands are in flight (see MaxFlushDelay)
 	// and ignores AdaptiveDelay.
 	AdaptiveDelay bool
+
+	// MaxQueuedCommands, when > 0, is a hard limit on commands the
+	// autopipeliner has accepted but not yet completed: queued, waiting for a
+	// batch permit, executing, and commands run outside the pipeline (Do,
+	// blocking and connection-hostile commands). A command submitted at the limit is not
+	// queued: it fails at once with ErrAutoPipelineQueueFull. The limit bounds
+	// client memory when the server is slower than the producers.
+	//
+	// Rejection is per command, so it can break submit order on the deferred
+	// face: a SET may be rejected while a later GET on the same key is
+	// accepted. Check the error of each command that the next one depends on.
+	//
+	// With FullDuplex the ordered stream is bounded by FullDuplexWindow (a full
+	// window blocks the submitter instead of rejecting), so MaxQueuedCommands
+	// then limits only the commands run outside the pipeline.
+	// Default: 0 (no limit).
+	MaxQueuedCommands int
 }
 
 // autoPipelinePermitBackstop bounds how long a flush waits for a concurrency
@@ -477,6 +555,9 @@ func (cfg *AutoPipelineOptions) Validate() error {
 	if cfg.NumShards < 0 {
 		return fmt.Errorf("redis: AutoPipelineOptions.NumShards=%d must be >= 0", cfg.NumShards)
 	}
+	if cfg.MaxQueuedCommands < 0 {
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxQueuedCommands=%d must be >= 0", cfg.MaxQueuedCommands)
+	}
 	if cfg.AdaptiveDelay && cfg.MaxFlushDelay <= 0 {
 		return fmt.Errorf("redis: AutoPipelineOptions.AdaptiveDelay requires MaxFlushDelay > 0 " +
 			"(adaptive delay scales MaxFlushDelay by queue fill; with no MaxFlushDelay it would " +
@@ -495,6 +576,17 @@ func (cfg *AutoPipelineOptions) Validate() error {
 		}
 		if cfg.FullDuplexMaxHold < 0 {
 			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexMaxHold=%s must be >= 0 (0 = default)", cfg.FullDuplexMaxHold)
+		}
+		if cfg.FullDuplexPipes < 0 {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexPipes=%d must be >= 0 (0 = one pipe)", cfg.FullDuplexPipes)
+		}
+		// NumShards>1 is the 9.23.0 spelling of the pipe count under full duplex
+		// (see fdPipeCount). Two different counts are ambiguous; reject them.
+		if cfg.FullDuplexPipes > 1 && cfg.NumShards > 1 && cfg.FullDuplexPipes != cfg.NumShards &&
+			!cfg.contentSharded {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplexPipes=%d and NumShards=%d disagree; "+
+				"set only FullDuplexPipes (NumShards is the older spelling of the full-duplex pipe count)",
+				cfg.FullDuplexPipes, cfg.NumShards)
 		}
 	}
 	return nil
@@ -548,6 +640,15 @@ type apBatch struct {
 	// fdFlushed is set when the Close-time flush ran this pipelined command
 	// through the pooled pipeline, which recorded the pipeline metric itself.
 	fdFlushed bool
+	// fdOutcomeOwed is set by the full-duplex engine, before it releases a
+	// hooked command's host, when the owner's outcome report (fdOutcome) is
+	// still owed: the host reports it after the hook chain returns, so the
+	// owner sees the chain's final result. False for commands whose outcome
+	// the owner's own path settled (a reroute).
+	fdOutcomeOwed bool
+	// fdOutcomeGroup is the owed report's failure group (see
+	// AutoPipelineOptions.fdOutcome). Set and published with fdOutcomeOwed.
+	fdOutcomeGroup *fdFailGroup
 	// closed makes close() idempotent: on the async faces the dispatch closes
 	// the batch at the innermost exec seam (under the user hooks, so a hook
 	// reading a result after next() does not block on a channel its own
@@ -592,22 +693,32 @@ type apBatch struct {
 // instead of self-deadlocking on the batch's own completion signal.
 func (b *apBatch) enterNodeDispatch() func() {
 	gid := curGoroutineID()
+	b.addExecutor(gid)
+	return func() { b.removeExecutor(gid) }
+}
+
+// addExecutor registers goroutine gid as an executor of this batch, like
+// enterNodeDispatch, for a caller that already knows its goroutine id: the
+// full-duplex reader resolves it once per session instead of once per reply.
+// Pair with removeExecutor(gid).
+func (b *apBatch) addExecutor(gid int64) {
 	b.nodeMu.Lock()
 	b.nodeGids = append(b.nodeGids, gid)
 	b.nodeCount.Store(int32(len(b.nodeGids)))
 	b.nodeMu.Unlock()
-	return func() {
-		b.nodeMu.Lock()
-		for i, g := range b.nodeGids {
-			if g == gid {
-				b.nodeGids[i] = b.nodeGids[len(b.nodeGids)-1]
-				b.nodeGids = b.nodeGids[:len(b.nodeGids)-1]
-				break
-			}
+}
+
+func (b *apBatch) removeExecutor(gid int64) {
+	b.nodeMu.Lock()
+	for i, g := range b.nodeGids {
+		if g == gid {
+			b.nodeGids[i] = b.nodeGids[len(b.nodeGids)-1]
+			b.nodeGids = b.nodeGids[:len(b.nodeGids)-1]
+			break
 		}
-		b.nodeCount.Store(int32(len(b.nodeGids)))
-		b.nodeMu.Unlock()
 	}
+	b.nodeCount.Store(int32(len(b.nodeGids)))
+	b.nodeMu.Unlock()
 }
 
 // isExecutorGoroutine reports whether the CALLING goroutine is currently
@@ -709,6 +820,10 @@ func getFDBlockingBatch() *apBatch {
 	b.dispGid.Store(0)
 	b.nodeCount.Store(0)
 	b.nodeGids = nil
+	// Never set on a pooled batch today (pooled only on the hook-free path,
+	// owed only on the hooked one); cleared so reuse cannot inherit it.
+	b.fdOutcomeOwed = false
+	b.fdOutcomeGroup = nil
 	// Drain any stray signal so the reused channel starts empty. Insurance: the
 	// blocking face always drains done in Wait, so this is normally a no-op.
 	select {
@@ -897,6 +1012,10 @@ type AutoPipeliner struct {
 	// half-duplex shard flushers: when set, submit() routes to the owning node's
 	// child and no shard flusher is started. See autopipeline_cluster_fd.go.
 	clusterFD *clusterFDRouter
+	// mdbFD, when non-nil, runs ordered full-duplex on a *MultiDBClient by routing
+	// each command to an FD child on the ACTIVE member. Mutually exclusive with
+	// fd, clusterFD and the shard flushers, like clusterFD. See multidb_fd.go.
+	mdbFD *multidbFDRouter
 	// pipelinePool is the connection pool that backs autopipelined batch
 	// dispatch (distinct from the client's main pool). Captured once at
 	// construction via an in-package assertion; nil when the underlying client
@@ -904,14 +1023,13 @@ type AutoPipeliner struct {
 	// tell whether flushing a tiny batch now would contend for a scarce pooled
 	// connection — see awaitExpectedArrivals / pipelineHasFreeConn.
 	pipelinePool pool.Pooler
-	// cscActiveFn reports whether client-side caching is CURRENTLY active on the
-	// underlying client (nil when the client type exposes none). Consulted per
-	// solo dispatch — not captured as a bool — because CSC can disable itself
-	// mid-life (RESP3 fallback, processor damping), after which cacheable solos
-	// should return to the pipeline pool instead of the main pool. Gates the
-	// cacheable-solo routing: only an active-CSC client routes through Process
-	// (which honors the cache).
-	cscActiveFn func() bool
+	// cscActiveFn checks the client's current CSC state before solo dispatch:
+	// CSC can disable itself after AutoPipeliner construction.
+	cscActiveFn        func() bool
+	captureCacheIntent bool
+	// cscEligibleFn checks eligibility under the client's current metadata view
+	// so live refreshes and application overrides take effect at dispatch.
+	cscEligibleFn func(Cmder) bool
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
 	// when true the command call itself blocks until the command has executed
 	// (drop-in, synchronous shape); when false the call returns immediately and
@@ -933,19 +1051,9 @@ type AutoPipeliner struct {
 	// batch across nodes). When nil, commands are assigned round-robin.
 	shardFn func(Cmder) int
 
-	// preflight, when set, can reject a command at submit time, before it is
-	// enqueued or dispatched (cluster mode refuses fan-out-policy commands
-	// that cannot ride a pipeline, so one caller's command cannot poison a
-	// merged batch). The returned error is set on the command.
-	preflight func(ctx context.Context, cmd Cmder) error
-
-	// mustDivert, when set, forces a command off the batching path even though
-	// it is otherwise batchable — cluster mode uses it for commands whose
-	// routing is NOT slot-derived (ReqSpecial, e.g. FT.CURSOR READ, which is
-	// sticky to the node that owns the cursor). Batched, mapCmdsByNode would
-	// route them by slot and reach the wrong shard; diverted, they go through
-	// Client/ClusterClient.Process and keep their special routing.
-	mustDivert func(ctx context.Context, cmd Cmder) bool
+	// routeCommand validates cluster routing before dispatch and reports whether
+	// the command must run outside the batch. Nil for standalone clients.
+	routeCommand func(ctx context.Context, cmd Cmder) (divert bool, err error)
 
 	// sharedClosed, when non-nil, is the owning client's pool-set closed flag
 	// (shared across WithTimeout clones). The getters refuse to build a fresh
@@ -968,6 +1076,12 @@ type AutoPipeliner struct {
 	// zero. Pipeliner-global, not per-shard: cluster routing may land a
 	// follow-up on a different shard than the batch that woke its caller.
 	expectedArrivals atomic.Int64
+
+	// maxQueued is config.MaxQueuedCommands (0 = no limit). queued counts the
+	// accepted, not-yet-completed commands it limits: admitQueued adds one,
+	// releaseQueued subtracts a batch's commands before the batch closes.
+	maxQueued int64
+	queued    atomic.Int64
 
 	// execEWMA is an exponentially-weighted moving average (alpha 1/8) of
 	// batch execution time in nanoseconds — the engine's own view of the
@@ -1250,8 +1364,12 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			fdOn, fdClient = true, c
 		}
 	}
+	// MultiDB full duplex forces NumShards to 1 (see the mdbFD branch below), so
+	// it is exempt here: rejecting first would make that coercion unreachable.
+	_, isMultiDB := pipeliner.(*MultiDBClient)
+	mdbFDReq := isMultiDB && config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1
 	if config.NumShards > 1 && !config.Unordered && !blocking &&
-		!config.contentSharded && !fdOn {
+		!config.contentSharded && !fdOn && !mdbFDReq {
 		return nil, fmt.Errorf(
 			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
@@ -1268,6 +1386,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		ctx:       ctx,
 		cancel:    cancel,
 		closeDone: make(chan struct{}),
+		maxQueued: int64(config.MaxQueuedCommands),
 	}
 	// Capture the pipeline pool (in-package, promoted to *Client). nil for a
 	// client that has none (e.g. *ClusterClient) — the straggler-hold then
@@ -1275,10 +1394,19 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	if pp, ok := pipeliner.(interface{ getPipelinePool() pool.Pooler }); ok {
 		ap.pipelinePool = pp.getPipelinePool()
 	}
-	// CSC probe (in-package assertion; *ClusterClient does not expose it) — see
-	// the cscActiveFn field doc.
-	if cc, ok := pipeliner.(interface{ autopipelineCSCActive() bool }); ok {
+	// Unknown wrappers may delegate to a CSC client; built-in clients can skip
+	// context lookup entirely when their construction cannot enable caching.
+	ap.captureCacheIntent = true
+	if cc, ok := pipeliner.(interface{ cscCapturesIntent() bool }); ok {
+		ap.captureCacheIntent = cc.cscCapturesIntent()
+	}
+	// CSC probes for standalone and cluster clients.
+	if cc, ok := pipeliner.(interface {
+		autopipelineCSCActive() bool
+		autopipelineCSCEligible(Cmder) bool
+	}); ok {
 		ap.cscActiveFn = cc.autopipelineCSCActive
+		ap.cscEligibleFn = cc.autopipelineCSCEligible
 	}
 
 	// Route the typed command surface. Blocking: the command call blocks until
@@ -1331,7 +1459,9 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			clusterFDOn, clusterFDCC = true, cc
 			nShards = 1
 			// Report the actual shard count (1), not the cluster default, from Config().
+			// Cluster full duplex runs one pipe per master (FullDuplexPipes is ignored).
 			config.NumShards = 1
+			config.FullDuplexPipes = 1
 			// Resolve the FD tuning defaults on the PARENT config now, mirroring
 			// newFDEngine (which only writes them onto each child's config). Without
 			// this, Config() on a default-constructed cluster-FD autopipeliner would
@@ -1350,6 +1480,37 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			}
 		}
 	}
+	// MultiDB full duplex: like cluster FD, a router over per-member FD children
+	// (multidbFDRouter) and one flusherless shard. The parent keeps diversion;
+	// each child is a standalone or cluster FD autopipeliner on its member.
+	// Config().FullDuplex then reports that the router is installed: a member
+	// that cannot host full duplex (no pipeline pool, replica routing on a
+	// cluster member, a build error) takes MultiDB's half-duplex path, as does
+	// any member while the fast path is unavailable (see
+	// MultiDBClient.AutoPipeline).
+	var mdbFDClient *MultiDBClient
+	if !fdOn && !clusterFDOn && mdbFDReq {
+		if mc, ok := pipeliner.(*MultiDBClient); ok {
+			mdbFDClient = mc
+			nShards = 1
+			config.NumShards = 1
+			// One ordered engine per member: FullDuplexPipes is ignored, as on
+			// a ClusterClient.
+			config.FullDuplexPipes = 1
+			// Same effective-defaults contract as the cluster FD branch above.
+			if config.FullDuplexWindow <= 0 {
+				config.FullDuplexWindow = fdDefaultWindow
+			}
+			if config.FullDuplexIdleTimeout <= 0 {
+				config.FullDuplexIdleTimeout = fdDefaultIdle
+			}
+			if config.FullDuplexMaxHold <= 0 {
+				config.FullDuplexMaxHold = fdDefaultMaxHold
+			}
+		}
+	}
+	mdbFDOn := mdbFDClient != nil
+
 	// Split the concurrent-batch budget across shards so each shard has its own
 	// semaphore. A single shared semaphore became a contention point once the
 	// per-shard queue mutexes were no longer the bottleneck. Integer division
@@ -1381,15 +1542,24 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		// NumShards 8 pass here against a pool of 10, and the surplus spills.
 		// A client-wide engine count is a follow-up; until then size
 		// PipelinePoolSize for every full-duplex autopipeliner in use.
-		if n := fdShardCount(config); n > 1 {
+		n := fdPipeCount(config)
+		if n > 1 {
+			field := "FullDuplexPipes"
+			if config.FullDuplexPipes <= 0 {
+				field = "NumShards"
+			}
 			if pp := fdClient.getPipelinePool(); pp != nil && n > pp.Size() {
 				return nil, fmt.Errorf(
-					"redis: AutoPipelineOptions.NumShards=%d needs a pipeline pool of at "+
-						"least %d connections (each full-duplex engine holds one), but "+
+					"redis: AutoPipelineOptions.%s=%d needs a pipeline pool of at "+
+						"least %d connections (each full-duplex pipe holds one), but "+
 						"PipelinePoolSize gives %d; raise Options.PipelinePoolSize or lower "+
-						"NumShards", n, n, pp.Size())
+						"%s", field, n, n, pp.Size(), field,
+				)
 			}
 		}
+		// Report the effective pipe count from Config(), whichever field asked
+		// for it.
+		config.FullDuplexPipes = n
 		// One flusherless shard, exactly as the single-engine path does: no
 		// half-duplex flusher runs and enqueue never does a %0, even though
 		// submit routes past it entirely.
@@ -1403,7 +1573,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	// the engine actually runs, so a requested-but-inactive FullDuplex must report
 	// false rather than claim a mode the instance is not in. Only Config() reads
 	// this after here.
-	ap.config.FullDuplex = fdOn || clusterFDOn
+	ap.config.FullDuplex = fdOn || clusterFDOn || mdbFDOn
 
 	ap.shards = make([]*apShard, nShards)
 	for i := range ap.shards {
@@ -1436,23 +1606,23 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			// OOM before any command is sent. A nil queue is safe: nothing appends to
 			// it while a full-duplex engine is active, and Len reads the atomic
 			// counter, not the slice.
-			if !fdOn && !clusterFDOn {
+			if !fdOn && !clusterFDOn && !mdbFDOn {
 				s.stripes[j].queue = getQueueSlice(config.MaxBatchSize)
 			}
 			s.stripes[j].curBatch = newAPBatch()
 		}
 		ap.shards[i] = s
-		if !fdOn && !clusterFDOn {
+		if !fdOn && !clusterFDOn && !mdbFDOn {
 			ap.wg.Add(1)
 			go s.flusher()
 		}
 	}
 
 	if fdOn {
-		// NumShards>1 runs N engines on THIS client, each leasing its own
-		// connection from the pipeline pool. fds[0] is fd, so nothing
+		// FullDuplexPipes>1 runs N engines (pipes) on THIS client, each leasing
+		// its own connection from the pipeline pool. fds[0] is fd, so nothing
 		// downstream needs to know the difference when N==1.
-		n := fdShardCount(config)
+		n := fdPipeCount(config)
 		ap.fds = make([]*fdEngine, 0, n)
 		for i := 0; i < n; i++ {
 			e := newFDEngine(ap, fdClient)
@@ -1464,6 +1634,9 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	}
 	if clusterFDOn {
 		ap.clusterFD = newClusterFDRouter(ap, clusterFDCC, config, blocking)
+	}
+	if mdbFDOn {
+		ap.mdbFD = newMultiDBFDRouter(ap, mdbFDClient, config, blocking)
 	}
 
 	return ap, nil
@@ -1512,7 +1685,11 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 // so Close waits for accepted diverted work (bounded — see Close) instead of
 // returning while it still holds a pooled connection.
 func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apBatch {
+	if ap.captureCacheIntent && cmd.cacheState().depth == 0 {
+		cscBegin(ctx, cmd)
+	}
 	if ap.blocking {
+		defer resetAutoPipelineCommand(cmd)
 		// The blocking face runs it inline, so the caller's own goroutine holds
 		// the connection; still take the gate so Close cannot decide "nothing
 		// in flight" while this command is executing.
@@ -1522,9 +1699,17 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 			cmd.SetErr(ErrClosed)
 			return completedBatch
 		}
+		// Counts against MaxQueuedCommands too: it holds a pooled connection
+		// until it completes.
+		if !ap.admitQueued() {
+			ap.divertMu.Unlock()
+			cmd.SetErr(ErrAutoPipelineQueueFull)
+			return completedBatch
+		}
 		ap.divertWg.Add(1)
 		ap.divertMu.Unlock()
 		defer ap.divertWg.Done()
+		defer ap.releaseQueued(1)
 		_ = ap.pipeliner.Process(ctx, cmd)
 		return completedBatch
 	}
@@ -1539,6 +1724,16 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		ap.divertMu.Unlock()
 		cmd.SetErr(ErrClosed)
 		cmd.setReady(completedBatch)
+		resetAutoPipelineCommand(cmd)
+		return completedBatch
+	}
+	// Each diverted command holds a goroutine until it completes, so it counts
+	// against MaxQueuedCommands like a queued one.
+	if !ap.admitQueued() {
+		ap.divertMu.Unlock()
+		cmd.SetErr(ErrAutoPipelineQueueFull)
+		cmd.setReady(completedBatch)
+		resetAutoPipelineCommand(cmd)
 		return completedBatch
 	}
 	b := newAPBatch()
@@ -1548,6 +1743,8 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 	go func() {
 		defer ap.divertWg.Done()
 		defer b.close()
+		defer resetAutoPipelineCommand(cmd)
+		defer ap.releaseQueued(1)
 		defer recoverDispatchPanic([]Cmder{cmd})
 		if ap.armSelfDeadlockGuard() {
 			b.dispGid.Store(curGoroutineID())
@@ -1850,7 +2047,7 @@ func runsOutsidePipeline(name string) bool {
 var blockingCommands = map[string]struct{}{
 	"blpop": {}, "brpop": {}, "brpoplpush": {},
 	"blmove": {}, "blmovem": {}, "blmpop": {},
-	"bzpopmin": {}, "bzpopmax": {}, "bzmpop": {},
+	"bzpopmin": {}, "bzpopmax": {}, "bzmpop": {}, "bzmove": {},
 	"wait": {}, "waitaof": {},
 	// MIGRATE blocks the source instance for up to its timeout.
 	"migrate": {},
@@ -1962,8 +2159,21 @@ func blockingArgString(arg interface{}) string {
 	}
 }
 
+// resetAutoPipelineCommand releases request state before completion is published.
+func resetAutoPipelineCommand(cmd Cmder) {
+	cmd.setClusterRoutingDecision(nil)
+	resetCSCCommand(cmd)
+}
+
 // submit queues a command without blocking and returns its completion future.
 func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
+	if ap.captureCacheIntent {
+		cscBegin(ctx, cmd)
+	}
+	// Sequential command reuse must capture a fresh admission decision and slot:
+	// the FD slot table trusts a cached slot as this admission's.
+	cmd.setClusterRoutingDecision(nil)
+	cmd.resetCachedSlot()
 	// finish marks the command ready on the deferred face so its result
 	// accessors (Val/Result/Err) self-gate through await() — whether the
 	// caller goes through the typed surface or raw Submit. Reading a
@@ -1977,15 +2187,23 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		}
 		return f
 	}
-	// Decide DIVERSION first. The cluster preflight rejects commands whose
-	// request policy cannot ride a pipeline (ReqAllNodes/ReqAllShards), but a
-	// diverted command never rides one: it goes through the underlying
-	// Client/ClusterClient.Process, which performs the normal cluster-wide
-	// fan-out and aggregation. Running the preflight first therefore rejected
-	// commands that would have worked — typed WAIT/WAITAOF on a cluster with
-	// command policies enabled (review finding by codex on #3942).
-	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
-		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
+	// Validate routing even for commands that independently require diversion.
+	// A blocking command must not bypass the cluster's fan-out ordering check.
+	diverted := false
+	if ap.routeCommand != nil {
+		var err error
+		diverted, err = ap.routeCommand(ctx, cmd)
+		if err != nil {
+			cmd.SetErr(err)
+			resetAutoPipelineCommand(cmd)
+			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
+		}
+	}
+	if cmd.cacheState().mark() != cacheUnmarked {
+		cacheDivert := ap.cscAdmitMarked(cmd)
+		diverted = diverted || cacheDivert
+	}
+	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,
 		// so an HIMPORT SET on the FD pipe can fail "no such fieldset". Divert it to
@@ -1995,13 +2213,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// (himportInjectedCmds) and stays on the pipeline. Cluster full-duplex
 		// (clusterFD) routes to per-node FD children whose engines have the same
 		// limitation, so divert there too.
-		((ap.fd != nil || ap.clusterFD != nil) && isHImportCmd(cmd))
-	if !diverted && ap.preflight != nil {
-		if err := ap.preflight(ctx, cmd); err != nil {
-			cmd.SetErr(err)
-			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
-		}
-	}
+		((ap.fd != nil || ap.clusterFD != nil || ap.mdbFD != nil) && isHImportCmd(cmd))
 	if diverted {
 		// Blocking commands (and the conn-hostile ones above) are executed
 		// directly, outside the pipeline — via runOutsidePipeline, which
@@ -2014,6 +2226,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// of running after Close().
 		if ap.isClosed() {
 			cmd.SetErr(ErrClosed)
+			resetAutoPipelineCommand(cmd)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 		// runOutsidePipeline sets the command ready itself on the deferred
@@ -2023,24 +2236,44 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// No finish here: enqueue stamps ready under the stripe lock, before the
 	// command is visible to any drain (the error paths above still go through
 	// finish for uniform accessor behavior).
+	if ap.mdbFD != nil {
+		// MultiDB full-duplex: route to the active member's FD child (or divert
+		// to MultiDB's normal path); the router honors the face contract.
+		f := ap.mdbFD.submit(ctx, cmd)
+		if f.batch == completedBatch {
+			resetAutoPipelineCommand(cmd)
+		}
+		return f
+	}
 	if ap.clusterFD != nil {
 		// Cluster full-duplex: route to the per-node FD child that owns this
 		// command's slot. The child is a standalone FD autopipeliner sharing this
 		// face's blocking flag, so its submit honors the same setReady/blocking
 		// contract — return its AutoFuture directly.
-		return ap.clusterFD.submit(ctx, cmd)
+		f := ap.clusterFD.submit(ctx, cmd)
+		if f.batch == completedBatch {
+			resetAutoPipelineCommand(cmd)
+		}
+		return f
 	}
 	if ap.fd != nil {
 		// Ordered full-duplex: stream on one held connection. enqueue's async
 		// setReady is replicated here since we bypass it. ctx is threaded so a
 		// per-command process-hook host can parent its span correctly.
 		b := ap.fdFor(cmd).submit(ctx, cmd)
+		if b == completedBatch {
+			resetAutoPipelineCommand(cmd)
+		}
 		if !ap.blocking {
 			cmd.setReady(b)
 		}
 		return AutoFuture{cmd: cmd, batch: b}
 	}
-	return AutoFuture{cmd: cmd, batch: ap.enqueue(cmd)}
+	batch := ap.enqueue(cmd)
+	if batch == completedBatch {
+		resetAutoPipelineCommand(cmd)
+	}
+	return AutoFuture{cmd: cmd, batch: batch}
 }
 
 // ErrSubmitBlockingFace rejects Submit on the blocking face: Submit does not
@@ -2070,6 +2303,15 @@ var errDoNoArgs = errors.New("redis: AutoPipeliner.Do requires at least one argu
 // EXPERIMENTAL: this API is subject to change, use with caution.
 var ErrAutoPipelineTimeout = errors.New(
 	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)",
+)
+
+// ErrAutoPipelineQueueFull is set on a command rejected because the
+// autopipeliner already holds AutoPipelineOptions.MaxQueuedCommands accepted
+// commands. The command was not sent. The caller may retry it later.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
+var ErrAutoPipelineQueueFull = errors.New(
+	"redis: autopipeline: queue full (MaxQueuedCommands reached)",
 )
 
 // Submit queues a command without blocking and returns an AutoFuture; Wait on
@@ -2104,7 +2346,7 @@ func (ap *AutoPipeliner) processAsync(ctx context.Context, cmd Cmder) error {
 	// non-blocking not-yet-executed view — while the caller always sees its
 	// own store before any await.
 	f := ap.submit(ctx, cmd)
-	// Report SUBMIT-time rejections (a closed pipeliner, a cluster preflight
+	// Report SUBMIT-time rejections (a closed pipeliner, a cluster routing
 	// refusal): those paths set the error on the command and hand back the
 	// shared completed batch without queueing anything, so returning nil made
 	// Process claim success for a command that will never run — and callers
@@ -2170,10 +2412,80 @@ func (ap *AutoPipeliner) isClosed() bool {
 	return ap.closed.Load() || (ap.sharedClosed != nil && ap.sharedClosed.Load())
 }
 
+// admitQueued takes one MaxQueuedCommands slot. It reports false when the
+// pipeliner is at its limit; the caller then rejects the command. Always true
+// when no limit is set.
+func (ap *AutoPipeliner) admitQueued() bool {
+	if ap.maxQueued <= 0 {
+		return true
+	}
+	if ap.queued.Add(1) > ap.maxQueued {
+		ap.queued.Add(-1)
+		return false
+	}
+	return true
+}
+
+// releaseQueued frees n slots taken by admitQueued. Call it before the
+// commands' batch closes, so a woken caller can submit again at once.
+func (ap *AutoPipeliner) releaseQueued(n int) {
+	if ap.maxQueued > 0 {
+		ap.queued.Add(-int64(n))
+	}
+}
+
+// queueFull reports, without taking a slot, whether MaxQueuedCommands is
+// already reached. enqueue checks it before cluster slot routing and sizing,
+// so a rejected submit does not run user Args/String/MarshalBinary code.
+// admitQueued still makes the final, atomic decision.
+func (ap *AutoPipeliner) queueFull() bool {
+	return ap.maxQueued > 0 && ap.queued.Load() >= ap.maxQueued
+}
+
+// rejectQueueFull fails cmd with ErrAutoPipelineQueueFull and accounts it as an
+// arrival (see consumeExpectedArrival).
+func (ap *AutoPipeliner) rejectQueueFull(cmd Cmder) *apBatch {
+	if ap.consumeExpectedArrival() {
+		// This rejection was the last expected arrival. A flusher waiting for
+		// the wave only re-checks the count when woken, and a rejected command
+		// never calls wake, so wake every shard (the count is pipeliner-wide):
+		// the waiting one flushes now instead of after the silence fallback.
+		for _, s := range ap.shards {
+			s.wake()
+		}
+	}
+	cmd.SetErr(ErrAutoPipelineQueueFull)
+	return completedBatch
+}
+
+// consumeExpectedArrival accounts a rejected command as an arrival, so the
+// flusher does not wait out the silence fallback for a resubmission that will
+// never land. Unlike enqueue's plain decrement it never goes below zero: a
+// caller retrying a rejection in a loop would otherwise push the counter far
+// negative, and the next announced wave would vanish into that deficit. It
+// reports whether it took the count from 1 to 0.
+func (ap *AutoPipeliner) consumeExpectedArrival() bool {
+	for {
+		v := ap.expectedArrivals.Load()
+		if v <= 0 {
+			return false
+		}
+		if ap.expectedArrivals.CompareAndSwap(v, v-1) {
+			return v == 1
+		}
+	}
+}
+
 func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	if ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return completedBatch
+	}
+
+	// Already full: reject before slot routing and sizing run user code (see
+	// queueFull).
+	if ap.queueFull() {
+		return ap.rejectQueueFull(cmd)
 	}
 
 	// Pick a shard. With shardFn (cluster mode) route by command content so all
@@ -2215,6 +2527,10 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 		cmdBytes = n
 	}
 
+	if !ap.admitQueued() {
+		return ap.rejectQueueFull(cmd)
+	}
+
 	st := s.stripe()
 	st.mu.Lock()
 	// Re-check closed under the stripe lock (see Close): either we win the lock
@@ -2222,6 +2538,7 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	// reject here — so a late enqueue never hangs on an unclosed done.
 	if ap.isClosed() {
 		st.mu.Unlock()
+		ap.releaseQueued(1)
 		cmd.SetErr(ErrClosed)
 		return completedBatch
 	}
@@ -2287,6 +2604,11 @@ func (ap *AutoPipeliner) Config() AutoPipelineOptions {
 	// MaxRedirects, used as the child engine's recovery budget); it has no meaning
 	// on a config a caller copies into a standalone client, so strip it too.
 	cfg.clusterRetryBudget = 0
+	// fdReroute holds the owner's closure, like clusterReprocess: strip it.
+	cfg.fdReroute = nil
+	cfg.fdOutcome = nil
+	cfg.fdOwnerRetries = false
+	cfg.fdRetryBudget = 0
 	return cfg
 }
 
@@ -2311,20 +2633,6 @@ func (ap *AutoPipeliner) numShards() int { return len(ap.shards) }
 // how the shard's batch is split. Must be called before the autopipeliner is
 // used. Not safe to change concurrently with enqueues.
 func (ap *AutoPipeliner) setShardFn(fn func(Cmder) int) { ap.shardFn = fn }
-
-// setPreflight installs a submit-time command filter (cluster wiring rejects
-// commands whose request policy cannot ride a pipeline). Called once during
-// construction, before the AutoPipeliner is published.
-func (ap *AutoPipeliner) setPreflight(fn func(ctx context.Context, cmd Cmder) error) {
-	ap.preflight = fn
-}
-
-// setMustDivert installs a predicate that forces a command off the batching
-// path (see the mustDivert field). Called once during construction, before the
-// AutoPipeliner is published.
-func (ap *AutoPipeliner) setMustDivert(fn func(ctx context.Context, cmd Cmder) bool) {
-	ap.mustDivert = fn
-}
 
 // Close stops the autopipeliner and flushes any pending commands. Worst
 // case it blocks up to the internal permit backstop (~30s) PER SHARD if
@@ -2416,6 +2724,11 @@ func (ap *AutoPipeliner) drainBody() error {
 		// shard sweep's nil result.
 		clusterFDErr = ap.clusterFD.close()
 	}
+	if ap.mdbFD != nil {
+		// Same for the per-member children: flush them while the members are
+		// still open (MultiDBClient.Close waits for this drain first).
+		clusterFDErr = errors.Join(clusterFDErr, ap.mdbFD.close())
+	}
 
 	// Pass through the divert gate once: by the time this runs the engine is
 	// already rejecting new work (Close set ap.closed before calling here; the
@@ -2459,6 +2772,19 @@ func (ap *AutoPipeliner) drainBody() error {
 func (ap *AutoPipeliner) WaitClosed() error {
 	<-ap.closeDone
 	return ap.closeErr
+}
+
+// drained reports whether the Close that claimed this autopipeliner's shutdown
+// has already finished its drain, without blocking. A wrapping client that
+// keeps closed instances around so it can wait for their drains uses this to
+// drop the ones that are already finished.
+func (ap *AutoPipeliner) drained() bool {
+	select {
+	case <-ap.closeDone:
+		return true
+	default:
+		return false
+	}
 }
 
 // drainAll runs Close's whole drain tail under a single bound and returns an
@@ -3151,7 +3477,14 @@ func (s *apShard) flushBatchSlice() {
 			for i := range queues {
 				for _, qc := range queues[i] {
 					qc.SetErr(batchErr)
+					resetAutoPipelineCommand(qc)
 				}
+			}
+			// Release only once every command has its error, so the limit
+			// holds until the batch is really done, and before the closes
+			// wake the waiters.
+			ap.releaseQueued(total)
+			for i := range queues {
 				batches[i].close()
 				putQueueSlice(queues[i])
 			}
@@ -3210,10 +3543,13 @@ func (s *apShard) flushBatchSlice() {
 			// arming the silence-gap wait.
 			defer ap.batchWg.Done()
 			defer batches[0].close()
+			defer ap.releaseQueued(1)
 			defer s.inFlight.Add(-1)
 			defer s.sem.Release()
 			defer putQueueSlice(queues[0])
 			defer recoverDispatchPanic(queues[0])
+			solo := queues[0][0]
+			defer resetAutoPipelineCommand(solo)
 			// Background for the same reason as the batch goroutine below:
 			// accepted commands execute even under a concurrent Close.
 			execStart := time.Now()
@@ -3221,7 +3557,6 @@ func (s *apShard) flushBatchSlice() {
 			if !ap.blocking && ap.armSelfDeadlockGuard() {
 				b.dispGid.Store(curGoroutineID())
 			}
-			solo := queues[0][0]
 			// Both faces run the user-hook chain via withProcessHook. The
 			// command records the CHAIN's final verdict — exactly what
 			// Client.Process does — before the deferred close wakes the
@@ -3234,7 +3569,7 @@ func (s *apShard) flushBatchSlice() {
 				// is honored (processPipeline bypasses processCached). Gated on
 				// the LIVE CSC state: without active CSC, Process would just run on
 				// the MAIN pool, ignoring the pipeline pool the straggler gate probed.
-				if ap.cscActiveFn != nil && ap.cscActiveFn() && isCacheable(cmd) {
+				if !cmd.cacheState().has(cscForceBypass) && ap.cscActiveFn != nil && ap.cscActiveFn() && ap.cscEligibleFn(cmd) {
 					return ap.pipeliner.process(ctx, cmd)
 				}
 				// One-command pipeline on the PIPELINE pool (falls back to the main
@@ -3261,7 +3596,11 @@ func (s *apShard) flushBatchSlice() {
 		// the closes run after Exec on the happy path, so results are
 		// populated first.
 		defer func() {
+			ap.releaseQueued(total)
 			for i := range queues {
+				for _, cmd := range queues[i] {
+					resetAutoPipelineCommand(cmd)
+				}
 				batches[i].close()
 				putQueueSlice(queues[i])
 			}
@@ -3363,7 +3702,11 @@ func (s *apShard) flushBatchSliceShutdown() {
 				defer s.sem.Release()
 			}
 			defer func() {
+				ap.releaseQueued(total)
 				for i := range queues {
+					for _, cmd := range queues[i] {
+						resetAutoPipelineCommand(cmd)
+					}
 					batches[i].close()
 					putQueueSlice(queues[i])
 				}
@@ -3506,6 +3849,9 @@ func (ap *AutoPipeliner) Len() int {
 	if ap.clusterFD != nil {
 		total += ap.clusterFD.len()
 	}
+	if ap.mdbFD != nil {
+		total += ap.mdbFD.len()
+	}
 	return total
 }
 
@@ -3623,7 +3969,7 @@ func (ap *AutoPipeliner) fdPipelineHooked(ctx context.Context, cmds []Cmder) err
 func (ap *AutoPipeliner) fdPipelineExec(ctx context.Context, cmds []Cmder) error {
 	opt := ap.fd.client.opt
 	var start time.Time
-	if otel.GetPipelineOperationDurationCallback() != nil {
+	if otel.Enabled(ap.fd.client.recorder()) {
 		start = time.Now()
 	}
 	res, err := ap.fdPipelined(ctx, cmds)

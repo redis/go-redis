@@ -1,6 +1,9 @@
 package redis
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 type ClusterCmdable interface {
 	ClusterMyShardID(ctx context.Context) *StringCmd
@@ -141,11 +144,30 @@ func (c cmdable) ClusterDelSlots(ctx context.Context, slots ...int) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) ClusterDelSlotsRange(ctx context.Context, min, max int) *StatusCmd {
+// slotsRange expands the inclusive range [min, max] into the slot list the
+// CLUSTER ADDSLOTS/DELSLOTS commands take. A range whose length comes out
+// negative or overflows would panic in make(), so it is reported as an error.
+func slotsRange(min, max int) ([]int, error) {
+	if max < min {
+		return nil, fmt.Errorf("redis: invalid slot range %d..%d: max is below min", min, max)
+	}
 	size := max - min + 1
+	if size <= 0 {
+		return nil, fmt.Errorf("redis: invalid slot range %d..%d: range is too large", min, max)
+	}
 	slots := make([]int, size)
-	for i := 0; i < size; i++ {
+	for i := range slots {
 		slots[i] = min + i
+	}
+	return slots, nil
+}
+
+func (c cmdable) ClusterDelSlotsRange(ctx context.Context, min, max int) *StatusCmd {
+	slots, err := slotsRange(min, max)
+	if err != nil {
+		cmd := NewStatusCmd(ctx)
+		cmd.SetErr(err)
+		return cmd
 	}
 	return c.ClusterDelSlots(ctx, slots...)
 }
@@ -184,10 +206,11 @@ func (c cmdable) ClusterAddSlots(ctx context.Context, slots ...int) *StatusCmd {
 }
 
 func (c cmdable) ClusterAddSlotsRange(ctx context.Context, min, max int) *StatusCmd {
-	size := max - min + 1
-	slots := make([]int, size)
-	for i := 0; i < size; i++ {
-		slots[i] = min + i
+	slots, err := slotsRange(min, max)
+	if err != nil {
+		cmd := NewStatusCmd(ctx)
+		cmd.SetErr(err)
+		return cmd
 	}
 	return c.ClusterAddSlots(ctx, slots...)
 }

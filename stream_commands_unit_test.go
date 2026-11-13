@@ -269,6 +269,122 @@ func TestXRead_MaxArgs(t *testing.T) {
 	}
 }
 
+// These tests assert how XREAD places the stream IDs after the keys:
+//   - IDs sends one ID per stream, in order;
+//   - ID sends the same ID for every stream, as before;
+//   - IDs takes precedence over ID, and an empty IDs falls back to ID.
+func TestXRead_IDsArgs(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		args    *XReadArgs
+		want    []interface{}
+		wantPos int8
+	}{
+		{
+			name:    "ids_one_per_stream",
+			args:    &XReadArgs{Streams: []string{"s1", "s2"}, IDs: []string{"5-0", "0"}, Block: -1},
+			want:    []interface{}{"xread", "streams", "s1", "s2", "5-0", "0"},
+			wantPos: 2,
+		},
+		{
+			name: "ids_with_count_and_block",
+			args: &XReadArgs{
+				Streams: []string{"s1", "s2"},
+				IDs:     []string{"5-0", "0"},
+				Count:   10,
+				Block:   time.Second,
+			},
+			want: []interface{}{
+				"xread", "count", int64(10), "block", int64(1000), "streams", "s1", "s2", "5-0", "0",
+			},
+			// keyPos: 1 + 2 (count) + 2 (block) + 1 (streams) = 6
+			wantPos: 6,
+		},
+		{
+			name:    "id_for_every_stream",
+			args:    &XReadArgs{Streams: []string{"s1", "s2"}, ID: "0", Block: -1},
+			want:    []interface{}{"xread", "streams", "s1", "s2", "0", "0"},
+			wantPos: 2,
+		},
+		{
+			name:    "ids_take_precedence_over_id",
+			args:    &XReadArgs{Streams: []string{"s1", "s2"}, ID: "$", IDs: []string{"5-0", "0"}, Block: -1},
+			want:    []interface{}{"xread", "streams", "s1", "s2", "5-0", "0"},
+			wantPos: 2,
+		},
+		{
+			name:    "empty_ids_falls_back_to_id",
+			args:    &XReadArgs{Streams: []string{"s1", "s2"}, ID: "$", IDs: []string{}, Block: -1},
+			want:    []interface{}{"xread", "streams", "s1", "s2", "$", "$"},
+			wantPos: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			c := captureCmdable(&captured)
+			cmd := c.XRead(ctx, tt.args)
+			if cmd == nil {
+				t.Fatalf("XRead returned nil")
+			}
+			if err := cmd.Err(); err != nil {
+				t.Fatalf("XRead returned error: %v", err)
+			}
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+			if got := cmd.firstKeyPos(); got != tt.wantPos {
+				t.Errorf("firstKeyPos mismatch: got %d, want %d", got, tt.wantPos)
+			}
+		})
+	}
+}
+
+// XREAD must not send the command when IDs does not have one ID per stream,
+// including when the IDs are also written inline in Streams.
+func TestXRead_IDsLengthMismatch(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		args *XReadArgs
+	}{
+		{
+			name: "fewer_ids_than_streams",
+			args: &XReadArgs{Streams: []string{"s1", "s2"}, IDs: []string{"0"}, Block: -1},
+		},
+		{
+			name: "more_ids_than_streams",
+			args: &XReadArgs{Streams: []string{"s1"}, IDs: []string{"0", "0"}, Block: -1},
+		},
+		{
+			name: "ids_with_inline_stream_ids",
+			args: &XReadArgs{Streams: []string{"s1", "s2", "0", "0"}, IDs: []string{"0", "0"}, Block: -1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			c := captureCmdable(&captured)
+			cmd := c.XRead(ctx, tt.args)
+			if cmd == nil {
+				t.Fatalf("XRead returned nil")
+			}
+			want := "redis: XRead IDs length must match Streams length"
+			if err := cmd.Err(); err == nil || err.Error() != want {
+				t.Errorf("error mismatch: got %v, want %q", err, want)
+			}
+			if captured != nil {
+				t.Errorf("command was sent: %#v", captured.Args())
+			}
+		})
+	}
+}
+
 // These tests assert the argument lists built by XREADGROUP for the MAXCOUNT and
 // MAXSIZE options (Redis >= 8.10), including their interaction with the existing
 // NOACK and CLAIM options and the first-key position used for cluster routing.
@@ -331,6 +447,96 @@ func TestXReadGroup_MaxArgs(t *testing.T) {
 			}
 			if got := cmd.firstKeyPos(); got != tt.wantPos {
 				t.Errorf("firstKeyPos mismatch: got %d, want %d", got, tt.wantPos)
+			}
+		})
+	}
+}
+
+// A positive duration below one millisecond must not be sent as 0: for BLOCK
+// and WAIT a zero timeout means "wait forever", and for the idle-time
+// arguments it means "any entry". These builders round it up to 1ms like the
+// other millisecond arguments do (formatMs).
+func TestSubMillisecondDurationArgs(t *testing.T) {
+	ctx := context.Background()
+	const subMs = 500 * time.Microsecond
+
+	tests := []struct {
+		name string
+		call func(c cmdable) Cmder
+		want []interface{}
+	}{
+		{
+			name: "xread_block",
+			call: func(c cmdable) Cmder {
+				return c.XRead(ctx, &XReadArgs{Streams: []string{"stream", "$"}, Block: subMs})
+			},
+			want: []interface{}{"xread", "block", int64(1), "streams", "stream", "$"},
+		},
+		{
+			name: "xread_block_zero_still_blocks_forever",
+			call: func(c cmdable) Cmder {
+				return c.XRead(ctx, &XReadArgs{Streams: []string{"stream", "$"}, Block: 0})
+			},
+			want: []interface{}{"xread", "block", int64(0), "streams", "stream", "$"},
+		},
+		{
+			name: "xread_block_whole_milliseconds",
+			call: func(c cmdable) Cmder {
+				return c.XRead(ctx, &XReadArgs{Streams: []string{"stream", "$"}, Block: 2500 * time.Microsecond})
+			},
+			want: []interface{}{"xread", "block", int64(2), "streams", "stream", "$"},
+		},
+		{
+			name: "xreadgroup_block_and_claim",
+			call: func(c cmdable) Cmder {
+				return c.XReadGroup(ctx, &XReadGroupArgs{
+					Group: "group", Consumer: "consumer", Streams: []string{"stream", ">"},
+					Block: subMs, Claim: subMs,
+				})
+			},
+			want: []interface{}{
+				"xreadgroup", "group", "group", "consumer",
+				"block", int64(1), "claim", int64(1), "streams", "stream", ">",
+			},
+		},
+		{
+			name: "xclaim_min_idle",
+			call: func(c cmdable) Cmder {
+				return c.XClaim(ctx, &XClaimArgs{
+					Stream: "stream", Group: "group", Consumer: "consumer",
+					MinIdle: subMs, Messages: []string{"1-0"},
+				})
+			},
+			want: []interface{}{"xclaim", "stream", "group", "consumer", int64(1), "1-0"},
+		},
+		{
+			name: "xclaimjustid_min_idle",
+			call: func(c cmdable) Cmder {
+				return c.XClaimJustID(ctx, &XClaimArgs{
+					Stream: "stream", Group: "group", Consumer: "consumer",
+					MinIdle: subMs, Messages: []string{"1-0"},
+				})
+			},
+			want: []interface{}{"xclaim", "stream", "group", "consumer", int64(1), "1-0", "justid"},
+		},
+		{
+			name: "wait_timeout",
+			call: func(c cmdable) Cmder { return c.Wait(ctx, 1, subMs) },
+			want: []interface{}{"wait", 1, int64(1)},
+		},
+		{
+			name: "waitaof_timeout",
+			call: func(c cmdable) Cmder { return c.WaitAOF(ctx, 1, 1, subMs) },
+			want: []interface{}{"waitAOF", 1, 1, int64(1)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := tt.call(captureCmdable(&captured))
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
 			}
 		})
 	}

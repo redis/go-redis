@@ -3,6 +3,7 @@ package redisotel
 import (
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -15,6 +16,7 @@ const (
 	MetricGroupConnectionAdvanced MetricGroup = "connection-advanced"
 	MetricGroupPubSub             MetricGroup = "pubsub"
 	MetricGroupStream             MetricGroup = "stream"
+	MetricGroupMultiDB            MetricGroup = "multidb"
 )
 
 type HistogramAggregation string
@@ -51,6 +53,8 @@ type config struct {
 	bucketsStreamProcessingDuration []float64
 	bucketsConnectionCreateTime     []float64
 	bucketsConnectionWaitTime       []float64
+
+	customAttributes []attribute.KeyValue
 }
 
 func (c *config) isMetricGroupEnabled(group MetricGroup) bool {
@@ -108,6 +112,10 @@ const (
 	MetricGroupFlagConnectionAdvanced MetricGroupFlags = 1 << 3
 	MetricGroupFlagPubSub             MetricGroupFlags = 1 << 4
 	MetricGroupFlagStream             MetricGroupFlags = 1 << 5
+	// MetricGroupFlagMultiDB enables the MultiDB (Active-Active failover)
+	// metrics: failovers, active database changes, member circuit breaker
+	// transitions and health checks.
+	MetricGroupFlagMultiDB MetricGroupFlags = 1 << 6
 
 	// MetricGroupAll enables all metric groups
 	MetricGroupAll MetricGroupFlags = MetricGroupFlagCommand |
@@ -115,7 +123,8 @@ const (
 		MetricGroupFlagResiliency |
 		MetricGroupFlagConnectionAdvanced |
 		MetricGroupFlagPubSub |
-		MetricGroupFlagStream
+		MetricGroupFlagStream |
+		MetricGroupFlagMultiDB
 )
 
 // Use NewConfig() to create a new instance with defaults, then chain
@@ -158,12 +167,14 @@ type Config struct {
 	BucketsStreamLag            []float64
 	BucketsConnectionCreateTime []float64
 	BucketsConnectionWaitTime   []float64
+
+	CustomAttributes []attribute.KeyValue
 }
 
 // NewConfig creates a new Config with default values.
 // Default configuration:
 // - Enabled: false (must explicitly enable)
-// - MetricGroups: all metric groups (command, connection, resiliency, pubsub, stream)
+// - MetricGroups: all metric groups (command, connection, resiliency, pubsub, stream, multidb)
 // - HistogramAggregation: explicit bucket
 // - Buckets: 0.1ms to 10s (suitable for Redis operations)
 //
@@ -277,5 +288,12 @@ func (c *Config) WithHistogramBuckets(buckets []float64) *Config {
 	c.BucketsStreamLag = buckets
 	c.BucketsConnectionCreateTime = buckets
 	c.BucketsConnectionWaitTime = buckets
+	return c
+}
+
+// WithCustomAttributes appends attributes that are added to every metric.
+// A custom attribute with the same key as a built-in one replaces it.
+func (c *Config) WithCustomAttributes(attrs ...attribute.KeyValue) *Config {
+	c.CustomAttributes = append(c.CustomAttributes, attrs...)
 	return c
 }

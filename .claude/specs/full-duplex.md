@@ -16,10 +16,16 @@ just a directly-constructed standalone client. See "Cluster support" below.
 
 One background goroutine (`fd.run`) owns the engine. Per session it runs:
 
-- `attempt` — leases and initializes ONE connection (pipeline pool, spilling to the
-  main pool on saturation), then runs `session`. Its deferred release Removes the conn
-  on a connection error (`fdConnErr`) and Puts it on any clean end (idle / recycle /
-  graceful), so a handoff-marked conn is handed off by the pool's OnPut hook.
+- `attempt` — leases and initializes ONE connection from the pipeline pool, then
+  runs `session`. Without CSC, the lease may spill to the main pool when the pipeline
+  pool cannot serve it. With CSC attached, it uses blocking `Get` on the pipeline
+  pool to keep native FD sessions untracked, even after CSC serving stops. The
+  pipeline pool's `PoolTimeout` bounds the wait for a pool turn and a drainer
+  handoff, not dialing or connection initialization. Acquisition is cancelled by
+  `Close`; lease failures follow the existing retry policy. Its deferred release
+  Removes the conn on a connection error (`fdConnErr`) and Puts it on any clean end
+  (idle / recycle / graceful), so a handoff-marked conn is handed off by the pool's
+  OnPut hook.
 - `session` — spawns a READER goroutine (reads replies in FIFO order, completes each
   command as its reply lands) and runs the WRITER on the engine goroutine (re-issues
   the recovered carry, then serves the queue in `MaxBatchSize`/`MaxBatchBytes` chunks).
@@ -55,7 +61,8 @@ aggregating correctly; only single-node commands route through a child.
 
 - **Child config**: derived once from the parent's `AutoPipelineOptions`,
   forcing the ordered single-shard FD combo (`FullDuplex/!Unordered/
-  MaxConcurrentBatches<=1/NumShards<=1`) the engine requires, and stripping the
+  MaxConcurrentBatches<=1/NumShards<=1/FullDuplexPipes<=1`) the engine requires
+  (one pipe per master: a parent's `FullDuplexPipes` must not multiply per node), and stripping the
   cluster-only `contentSharded` bit so it cannot leak onto a node child.
 - **Redirects**: each child's `fdEngine.reprocess` is wired to
   `clusterReprocess`, which re-runs a MOVED/ASK (or otherwise retryable) reply
@@ -69,6 +76,31 @@ aggregating correctly; only single-node commands route through a child.
   tail on the first socket error. The router injects `cc.opt.MaxRedirects` as
   `clusterRetryBudget`, which `fdEngine.retryBudget()` substitutes in when
   `redirectAware`.
+- **Connection-error and lease-failure recovery (`fdReroute`)**: the router sets
+  each child's `AutoPipelineOptions.fdReroute` to `cc.processPipelineRetries`. When a
+  child's session drops, the replayable tail (after the budget partition and the
+  sent-`NoRetry` split, same set and order as the same-connection replay) runs
+  through the ClusterClient pipeline instead, which routes each command by its slot
+  against live topology. When lease retries are spent, the carry and then the queue
+  go the same way instead of failing. So a node that topology GC closed or replaced
+  does not strand its accepted commands. The Close-time flush (`flushReqs`) also
+  goes through the owner, so a child closed by topology GC does not flush through
+  its dropped node. `fdEngine.rerouteReqs` reuses `flushCarryBudgeted`: each group
+  passes its remaining budget (`fdCarryRemainingRetries`) as the owner's retry
+  bound, so a command never runs more than budget+1 times in total. `runReroute`
+  returns a per-command transport error even when the owner returns an earlier
+  Redis error (`redis.Nil`), so the abort-on-transport-failure rule still holds.
+  `flushReqsVia` reports per-command metrics before it completes a command, as the
+  reader does. Both reroutes run before the backoff, which then only paces the
+  re-lease. Standalone FD (no owner) keeps the same-connection replay (backoff
+  first) and fail-fast paths.
+- **Hooks on recovery**: recovery attempts (the reroute and the MOVED/ASK
+  reprocess) run nested inside the command's `hostHook`, so node pipeline/process
+  hooks see them as nested spans. MOVED/ASK recovery pins CSC bypass on the command
+  for nested dispatch, so a replacement hook context cannot enable cache lookup
+  or publication. The command's cache state is cleared before completion, allowing
+  later reuse to select its own caching policy. Making internal recovery hookless
+  is a separate hook-semantics change.
 - **Fallback to `Process`**: routing (`childFor`/`getOrCreateChild`) resolves the
   owning node from live cluster state on every submit. A keyless command, an
   unresolved slot, a not-yet-loaded topology, or a node whose client turns out
@@ -87,6 +119,93 @@ aggregating correctly; only single-node commands route through a child.
   the caller. This is a single bounded retry immediately before/after the
   dispatch call, not a lock held across it — a second, much rarer double-unlucky
   race on the retry itself is not further retried and does surface `ErrClosed`.
+
+## MultiDB support
+
+`multidbFDRouter` (`multidb_fd.go`) runs FD on a `*MultiDBClient`, which has no
+connection of its own: one FD child per member, built privately (never through
+the member's cached getters) — a standalone engine on a `*Client` member, a
+`clusterFDRouter` on a `*ClusterClient` member. The parent keeps diversion.
+
+- **Admission**: a command takes the fast path only on a closed-state breaker
+  admission (`!res.Held()`) with the detector not tripped; otherwise it runs on
+  MultiDB's path, which owns failover and half-open probes.
+- **Owner seams** (internal `AutoPipelineOptions` fields, copied into cluster node
+  children, stripped by `Config()`):
+  - `fdOutcome` — the engine reports every final outcome it settles itself
+    (`fdEngine.finish`; reader, retries, fail paths, shutdown flush) and the failed
+    attempt of every command it reroutes. The router settles it into the member's
+    breaker (`CurrentClosedReservation`: current closed episode only) and the
+    detector (only while the member is active, current window). `reportOutcome`
+    reads `rawErr()`: `Err()` waits on the async face's batch, which the engine
+    completes after reporting. A hooked command reports from `hostHook` after
+    the member hook chain returns (`apBatch.fdOutcomeOwed`), so the owner sees
+    the chain's final result. An error is skipped only when the caller's own
+    ctx ended it — a context error or a cut-short dial (`callerEnded`, as in
+    `core.process`); a member read/write failure after the ctx ended still
+    counts. Reports of one settle call that carry the same error share an
+    `fdFailGroup`: the breaker counts the group once, the detector every
+    command. A drop can settle through up to three calls (`failPipelines` for
+    the exhausted set, `failPipelines` for the NoRetry tail, `rerouteReqs`), so
+    the breaker is charged per settle call (bounded per drop).
+  - `fdReroute` = `core.processPipelineRetries` — dropped tail, lease failure and
+    the close-time backlog go through MultiDB to whichever member it selects,
+    bounded by the commands' remaining `CommandRetries` budget.
+  - `fdOwnerRetries` + `fdRetryBudget` = `CommandRetries` (0 = none): bounds
+    re-issues; a failed lease reroutes at once (no lease retries against a dead
+    member; `CommandRetries=MaxInt` must not hang).
+- **Ordered async face (lanes)**: commands go to ONE lane at a time — the active
+  member's child, or a private ordered half-duplex MultiDB autopipeliner (`hd`)
+  for commands off the fast path. Switching lanes Closes the old lane and waits
+  for its drain first, so submit order holds across failover, fallback and
+  breaker transitions. Only the fast path (picked lane == current lane) runs
+  without `laneSem` (a 1-slot channel semaphore); a switch picks, drains and
+  submits under it
+  (`submitLocked`), so a stale pick cannot switch back. If no lane takes the
+  command, the current lane is drained before it diverts to MultiDB's path,
+  and the divert completes before `laneSem` is released (pinned by
+  `TestMultiDBFullDuplexOrderAcrossMemberDeath` and
+  `TestMultiDBFullDuplexDivertKeepsOrder`). Submitters stall for the drain; one
+  whose ctx ends while waiting for `laneSem` completes with `ctx.Err()`, unsent. The
+  blocking face needs no lanes (each caller waits for its command). On a cluster
+  member the lane orders per key (slot), like plain cluster FD: commands the
+  cluster router cannot place (keyless, topology miss, non-FD node) leave
+  through `ownerDivert` and are not ordered against the lane, and a lane drain
+  does not wait for them. A retryable reply on a child is rerouted through
+  MultiDB by one FIFO worker per engine (`rerouteReplyToOwner`), in reply
+  order; a tail reroute or Close-time flush waits for it
+  (`waitReplyReroutes`). So order among retried commands holds (pinned by
+  `TestMultiDBFullDuplexRetryableReplyKeepsOrder` and
+  `TestMultiDBFullDuplexTailRerouteAfterReplyReroutes`). Relaxation, as with
+  pipeline retries: a later command that already ran on the first member (or
+  settled with its budget spent) completes before an earlier command's retry.
+  If the engine is closing and no retry slot is free, the reply settles with
+  its own error, not `ErrClosed`. A transport failure aborts only the rest of
+  its reroute batch (those commands complete with the error); later batches
+  and the tail reroute still run, as with separate `rerouteReqs` calls.
+- **No-FD members** (no pipeline pool, replica routing): remembered in `noFD`,
+  their commands divert without rebuilding a child.
+- **Cluster member misses**: a command the member's `clusterFDRouter` cannot
+  place on a node child (keyless, topology miss, non-FD node) runs through
+  `clusterFDRouter.ownerDivert` = the MultiDB router's divert, not
+  `db.cc.Process`, so MultiDB admission, accounting and failover still apply.
+- **Member removal**: each child registers on `multidbDatabase.onRemove`;
+  `RemoveDatabase` runs it before closing the member's client, which drains and
+  closes the child.
+- `Len` counts the children and the `hd` lane (`hd` is atomic so `Len` does not
+  wait out a lane switch's drain).
+- **v1 limits**: `MultiDBClient.AddHook` hooks do not run on the FD path. A
+  standalone member's hooks (`AddDatabaseHook`) do; a cluster member's do not,
+  because `AddDatabaseHook` installs them on the `ClusterClient` and the cluster
+  FD router sends through node clients (same as plain cluster FD, see
+  "Cluster-level process hooks on the cluster FD fast path"; register per node
+  via `OnNewNode`). `Pipeline()`/`TxPipeline()` stay on MultiDB's pipeline path;
+  NumShards forced to 1; outcomes count toward the episode/window current when
+  the reply lands. `Config().FullDuplex` means the router is installed, not that
+  every member runs FD: a member that cannot host it (`PipelinePoolSize < 0`,
+  replica routing on a cluster member, a build error) always goes half-duplex,
+  and any member does while the fast path is unavailable (no active member,
+  failover pending, breaker open/half-open).
 
 ## Panic boundaries
 
@@ -178,13 +297,3 @@ These are documented gaps, tracked as follow-ups, not fixed in the current PR.
   it introduced deadlocked against the off-pipe retry's executor guard (codex P1 on
   #4002). Composing the parent chain into the node engine's single host is the follow-up.
 
-- **Cluster FD connection-error carries stay on the origin node.** When a node child's
-  FD session hits a CONNECTION error, `fd.run` replays the unacked tail on a fresh
-  connection from that same node client's fixed-address pool (bounded by the cluster's
-  `MaxRedirects`). A reply-level redirect (MOVED/ASK) already re-resolves through
-  `cc.process`, but a connection error does not: if topology GC has closed or replaced
-  that master, the accepted commands exhaust their budget with `ErrClosed`/a dial error
-  instead of routing to the replacement. Re-resolving recovered connection-error carries
-  through the parent cluster path (preserving the sent/`NoRetry` guard) needs the
-  `fdConnErr` branch of the recovery loop restructured, so it is a follow-up (codex P2
-  on #4002).

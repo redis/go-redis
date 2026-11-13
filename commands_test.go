@@ -83,7 +83,18 @@ var _ = Describe("Commands", func() {
 			Expect(cmds[0].Err().Error()).To(authErr)
 
 			stats := rawClient.PoolStats()
-			if stats.PipelineStats != nil {
+			if stats.PipelineStats != nil && isFullDuplexSubject() {
+				// Full-duplex keeps a warm spare in the pipeline pool, refilled
+				// by a background dial, so whether a lease hits the spare or
+				// dials races that refill, and the held session can carry the
+				// second Pipelined without a pool operation. Pin the intent
+				// instead: the pipelines ran on the pipeline pool, and the main
+				// pool served only the BeforeEach FlushDB.
+				Expect(stats.PipelineStats.Hits + stats.PipelineStats.Misses).To(BeNumerically(">=", 1))
+				Expect(stats.PipelineStats.Timeouts).To(Equal(uint32(0)))
+				Expect(stats.Hits).To(Equal(uint32(0)))
+				Expect(stats.Misses).To(Equal(uint32(1)))
+			} else if stats.PipelineStats != nil {
 				// The autopipeline subject faces create the dedicated pipeline
 				// pool lazily, so the two Pipelined calls above ran there: the
 				// first dialed (miss), the second reused (hit). The main pool
@@ -148,6 +159,16 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(0)))
 			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), 3*time.Second))
+		})
+
+		It("should Wait with a sub-millisecond timeout", func() {
+			// WAIT ... 0 blocks until the replicas acknowledge, which never
+			// happens here: the timeout has to round up to 1ms, not down to 0.
+			start := time.Now()
+			val, err := rawClient.Wait(ctx, 1, 500*time.Microsecond).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(0)))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
 		})
 
 		It("should WaitAOF", func() {
@@ -410,11 +431,10 @@ var _ = Describe("Commands", func() {
 				pipe.ClientSetInfo(ctx, libInfo)
 			}).To(Panic())
 			// Test setting the default options for libName, libName suffix and libVer.
-			// CLIENT SETINFO is per-connection state, so read CLIENT INFO through the
-			// same pipeline path that issued the SETINFOs above: when the client has a
-			// dedicated pipeline pool (the autopipeline subject faces create one
-			// lazily), those ran on a pipeline-pool connection and rawClient.ClientInfo
-			// would inspect a different, main-pool connection.
+			// CLIENT SETINFO is per-connection state. Set the libName and read
+			// CLIENT INFO in the same Exec, so both run on one connection; separate
+			// Execs are not guaranteed to share one.
+			pipe.ClientSetInfo(ctx, redis.WithLibraryName(libName))
 			infoCmd := pipe.ClientInfo(ctx)
 			_, err = pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -3563,9 +3583,7 @@ var _ = Describe("Commands", func() {
 				"value1",
 				"ARGS",
 				"arg1",
-				"ARGS",
 				"arg2",
-				"ARGS",
 				3,
 			}
 
@@ -4188,8 +4206,9 @@ var _ = Describe("Commands", func() {
 
 			res, err = client.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
-			// overhead of the push notification check is about 1-2ms for 100 commands
-			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 2))
+			// TTL only counts down; allow slack for slow CI runners.
+			Expect(res[0]).To(BeNumerically("<=", 10*time.Second.Milliseconds()))
+			Expect(res[0]).To(BeNumerically(">", 9*time.Second.Milliseconds()))
 		})
 
 		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
@@ -5222,6 +5241,182 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("sets", func() {
+		Describe("member expiration", func() {
+			BeforeEach(func() {
+				SkipBeforeRedisVersion("8.12", "set member expiration needs Redis 8.12")
+			})
+
+			It("sets, reads and removes member expirations", func() {
+				Expect(client.SAddEX(ctx, "sexp", "a", "b", "c").Val()).To(Equal(int64(1)))
+
+				res, err := client.SExpire(ctx, "sexp", 100*time.Second, "a", "nosuch").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated, redis.SMemberNotFound}))
+
+				res, err = client.STTL(ctx, "sexp", "a", "b", "nosuch").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res[0]).To(BeNumerically("~", 100, 2))
+				Expect(res[1:]).To(Equal([]int64{redis.SMemberNoExpiration, redis.SMemberNotFound}))
+
+				res, err = client.SExpireWithArgs(ctx, "sexp", 50*time.Second, redis.SExpireGT, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireConditionFail}))
+
+				res, err = client.SPersist(ctx, "sexp", "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated, redis.SMemberNoExpiration}))
+
+				res, err = client.SPExpireAt(ctx, "sexp", time.UnixMilli(1), "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireDeleted}))
+			})
+
+			It("returns one -2 per member for a missing key", func() {
+				res, err := client.SPTTL(ctx, "sexp-missing", "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SMemberNotFound, redis.SMemberNotFound}))
+			})
+
+			It("honors SADDEX conditions", func() {
+				n, err := client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{Condition: redis.SAddEXMXX}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(0)))
+
+				Expect(client.SAddEX(ctx, "sexp", "a").Val()).To(Equal(int64(1)))
+
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{Condition: redis.SAddEXMNX}, "a", "z").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(0)))
+				Expect(client.SIsMember(ctx, "sexp", "z").Val()).To(BeFalse())
+
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					Condition:      redis.SAddEXMXX,
+					ExpirationType: redis.SAddEXExpirationPX,
+					ExpirationVal:  50000,
+				}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+				ttl, err := client.SPTTL(ctx, "sexp", "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ttl[0]).To(BeNumerically("~", 50000, 5000))
+			})
+
+			It("sets SADDEX expirations", func() {
+				n, err := client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationEX,
+					ExpirationVal:  100,
+				}, "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				ttl, err := client.STTL(ctx, "sexp", "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ttl).To(HaveLen(2))
+				Expect(ttl[0]).To(BeNumerically("~", 100, 2))
+				Expect(ttl[1]).To(BeNumerically("~", 100, 2))
+
+				// SADDEX without an expiration drops it from existing members.
+				Expect(client.SAddEX(ctx, "sexp", "a").Val()).To(Equal(int64(1)))
+				// KEEPTTL keeps b's expiration; c is added without one.
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationKEEPTTL,
+				}, "b", "c").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				ttl, err = client.STTL(ctx, "sexp", "a", "b", "c").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ttl).To(HaveLen(3))
+				Expect(ttl[0]).To(Equal(redis.SMemberNoExpiration))
+				Expect(ttl[1]).To(BeNumerically("~", 100, 2))
+				Expect(ttl[2]).To(Equal(redis.SMemberNoExpiration))
+
+				// Nothing changes: the members exist without an expiration.
+				Expect(client.SAddEX(ctx, "sexp", "a", "c").Val()).To(Equal(int64(0)))
+
+				at := time.Unix(4102444800, 0)
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationEXAT,
+					ExpirationVal:  at.Unix(),
+				}, "d").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationPXAT,
+					ExpirationVal:  at.UnixMilli() + 1000,
+				}, "e").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				res, err := client.SExpireTime(ctx, "sexp", "d", "e", "a", "nosuch").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{at.Unix(), at.Unix() + 1, redis.SMemberNoExpiration, redis.SMemberNotFound}))
+				res, err = client.SPExpireTime(ctx, "sexp", "d", "e").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{at.UnixMilli(), at.UnixMilli() + 1000}))
+			})
+
+			It("deletes members with a SADDEX time in the past", func() {
+				Expect(client.SAdd(ctx, "sexp", "a", "b").Err()).NotTo(HaveOccurred())
+
+				n, err := client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationPX,
+					ExpirationVal:  0,
+				}, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+				Expect(client.SIsMember(ctx, "sexp", "a").Val()).To(BeFalse())
+
+				// Past time on a missing member changes nothing.
+				n, err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationEXAT,
+					ExpirationVal:  1,
+				}, "x").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(0)))
+				Expect(client.SIsMember(ctx, "sexp", "x").Val()).To(BeFalse())
+
+				err = client.SAddEXWithArgs(ctx, "sexp", &redis.SAddEXOptions{
+					ExpirationType: redis.SAddEXExpirationEX,
+					ExpirationVal:  -1,
+				}, "b").Err()
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("sets member expirations in ms and at absolute times", func() {
+				Expect(client.SAdd(ctx, "sexp", "a", "b").Err()).NotTo(HaveOccurred())
+
+				res, err := client.SPExpire(ctx, "sexp", 20*time.Second, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated}))
+				ttl, err := client.SPTTL(ctx, "sexp", "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ttl[0]).To(BeNumerically("~", 20000, 2000))
+
+				res, err = client.SPExpireWithArgs(ctx, "sexp", 30*time.Second, redis.SExpireLT, "a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireConditionFail}))
+
+				at := time.Unix(4102444800, 0)
+				res, err = client.SExpireAtWithArgs(ctx, "sexp", at, redis.SExpireNX, "a", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireConditionFail, redis.SExpireUpdated}))
+
+				res, err = client.SPExpireAtWithArgs(ctx, "sexp", at.Add(time.Second), redis.SExpireXX, "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireUpdated}))
+
+				res, err = client.SExpireTime(ctx, "sexp", "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{at.Unix() + 1}))
+
+				res, err = client.SExpireAt(ctx, "sexp", time.Unix(1, 0), "b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]int64{redis.SExpireDeleted}))
+				Expect(client.SIsMember(ctx, "sexp", "b").Val()).To(BeFalse())
+			})
+		})
+
 		It("should SAdd", func() {
 			sAdd := client.SAdd(ctx, "set", "Hello")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
@@ -8163,6 +8358,68 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
+		It("should XRead with a sub-millisecond Block", func() {
+			// BLOCK 0 waits forever: a positive Block below 1ms has to round
+			// up to 1ms, not down to 0.
+			start := time.Now()
+			_, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "$"},
+				Block:   500 * time.Microsecond,
+			}).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
+
+			Expect(client.XGroupCreate(ctx, "stream", "group", "$").Err()).NotTo(HaveOccurred())
+			start = time.Now()
+			_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "group",
+				Consumer: "consumer",
+				Streams:  []string{"stream", ">"},
+				Block:    500 * time.Microsecond,
+			}).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
+		})
+
+		It("should XRead with per-stream IDs", Label("NonRedisEnterprise"), func() {
+			_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "stream2", ID: "1-0", Values: map[string]interface{}{"alpha": "a"}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "stream2", ID: "2-0", Values: map[string]interface{}{"beta": "b"}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// "stream" is read after 2-0 and "stream2" from the start.
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"2-0", "0"},
+				Block:   -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+				{
+					Stream: "stream2",
+					Messages: []redis.XMessage{
+						{ID: "1-0", Values: map[string]interface{}{"alpha": "a"}},
+						{ID: "2-0", Values: map[string]interface{}{"beta": "b"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead fail when IDs and Streams lengths differ", func() {
+			err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"0"},
+				Block:   -1,
+			}).Err()
+			Expect(err).To(MatchError("redis: XRead IDs length must match Streams length"))
+		})
+
 		It("should XRead with MAXCOUNT capping cumulative entries across streams", func() {
 			SkipBeforeRedisVersion("8.10", "XREAD MAXCOUNT requires Redis 8.10+")
 
@@ -9135,6 +9392,28 @@ var _ = Describe("Commands", func() {
 				}))
 			})
 
+			It("should return -1 for nil lag in XINFO STREAM FULL", func() {
+				for _, id := range []string{"0-1", "0-2", "0-3"} {
+					err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s", ID: id, Values: []string{"foo", id}}).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				err := client.XGroupCreate(ctx, "s", "g", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+				err = client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{"s", ">"}, Count: 1, Block: -1}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Deleting an entry the group has not read yet makes Redis reply with a nil lag.
+				err = client.XDel(ctx, "s", "0-2").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				res, err := client.XInfoStreamFull(ctx, "s", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.Groups).To(HaveLen(1))
+				Expect(res.Groups[0].EntriesRead).To(Equal(int64(1)))
+				Expect(res.Groups[0].Lag).To(Equal(int64(-1))) // nil lag from Redis is reported as -1
+			})
+
 			It("should XINFO CONSUMERS", func() {
 				res, err := client.XInfoConsumers(ctx, "stream", "group1").Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -9266,6 +9545,24 @@ var _ = Describe("Commands", func() {
 			Expect(res[0].GeoHash).To(Equal(int64(3479447370796909)))
 			Expect(res[0].Longitude).To(Equal(15.087267458438873))
 			Expect(res[0].Latitude).To(Equal(37.50266842333162))
+		})
+
+		It("should search geo radius twice with the same query", func() {
+			q := &redis.GeoRadiusQuery{
+				Radius:   200,
+				Unit:     "km",
+				WithDist: true,
+				Sort:     "ASC",
+			}
+			for i := 0; i < 2; i++ {
+				res, err := client.GeoRadius(ctx, "Sicily", 15, 37, q).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(2))
+				Expect(res[0].Name).To(Equal("Catania"))
+				Expect(res[0].Dist).To(Equal(56.4413))
+				Expect(res[1].Name).To(Equal("Palermo"))
+				Expect(res[1].Dist).To(Equal(190.4424))
+			}
 		})
 
 		It("should search geo radius by member with options", func() {
@@ -9448,6 +9745,18 @@ var _ = Describe("Commands", func() {
 			val, err = client.GeoSearch(ctx, "Sicily", q).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]string{"Palermo"}))
+		})
+
+		It("should geo search without changing the query", func() {
+			q := &redis.GeoSearchQuery{
+				Member: "Catania",
+				Radius: 200,
+				Sort:   "asc",
+			}
+			val, err := client.GeoSearch(ctx, "Sicily", q).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal([]string{"Catania", "Palermo"}))
+			Expect(q.RadiusUnit).To(BeEmpty())
 		})
 
 		It("should geo search with options", func() {

@@ -46,8 +46,8 @@ func TestRegisterPoolsRaceWithSetGlobalRecorder(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			for j := 0; j < 2000; j++ {
-				RegisterPools(nil, nil, nil, "127.0.0.1:6379")
-				UnregisterPools(nil, nil, nil)
+				RegisterPools(Scoped(nil), nil, nil, nil, "127.0.0.1:6379")
+				UnregisterPools(Scoped(nil), nil, nil, nil)
 			}
 		}()
 	}
