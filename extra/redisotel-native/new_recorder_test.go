@@ -39,6 +39,29 @@ func TestNewRecorderRequiresInit(t *testing.T) {
 	}
 }
 
+// TestNewRecorderWhenMetricsDisabled pins that, with Init called on a disabled config,
+// NewRecorder returns a nil recorder and no error, so an app with a metrics
+// on/off switch can pass the result to Options.OTelRecorder unconditionally.
+func TestNewRecorderWhenMetricsDisabled(t *testing.T) {
+	resetObservabilityForTest()
+	t.Cleanup(resetObservabilityForTest)
+	inst := GetObservabilityInstance()
+	if err := inst.Init(NewConfig().WithEnabled(false)); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	rec, err := inst.NewRecorder(NewConfig())
+	if err != nil {
+		t.Fatalf("NewRecorder with metrics disabled: %v, want nil error", err)
+	}
+	if rec != nil {
+		t.Fatalf("NewRecorder with metrics disabled = %v, want nil recorder", rec)
+	}
+	c := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", OTelRecorder: rec})
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // TestNewRecorderAttributePrecedence pins built-in < Init < per-client on a
 // histogram, a counter and a MultiDB instrument, and that the two recorders
 // on one provider produce separate series with separate caches.

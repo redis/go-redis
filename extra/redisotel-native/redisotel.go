@@ -138,13 +138,19 @@ func (o *ObservabilityInstance) Init(cfg *Config) error {
 // shared provider are subject to the SDK's duplicate-instrument rule (the first
 // registration wins). The recorder stops recording when Shutdown is called.
 //
-// NewRecorder returns an error until Init has been called with an enabled
-// config.
+// If Init was called with a disabled config, NewRecorder returns a nil recorder
+// and no error: a client given a nil Options.OTelRecorder uses the global
+// recorder (a no-op unless one is set), so an app with a metrics on/off switch
+// can pass the result through unchanged. It returns an error only when Init
+// has not been called.
 func (o *ObservabilityInstance) NewRecorder(cfg *Config) (redis.OTelRecorder, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if !o.initialized {
-		return nil, errors.New("redisotel: not initialized, call Init() with an enabled config first")
+		if o.config != nil && !o.config.Enabled {
+			return nil, nil
+		}
+		return nil, errors.New("redisotel: not initialized, call Init() first")
 	}
 	provider := cfg.MeterProvider
 	var shared *opQueue
