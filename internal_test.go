@@ -1445,7 +1445,7 @@ func TestPubSubConn_PassesPersistedChannelsToNewConn(t *testing.T) {
 				opt:       &Options{Addr: "stub:6379"},
 				channels:  tt.channels,
 				schannels: tt.schannels,
-				newConn: func(_ context.Context, _ string, channels []string) (*pool.Conn, error) {
+				newConn: func(_ context.Context, _ string, channels []string, _ ...func(*pool.Conn)) (*pool.Conn, error) {
 					captured = append([]string(nil), channels...)
 					return nil, stubErr
 				},

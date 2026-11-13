@@ -209,6 +209,13 @@ type Conn struct {
 	// server-side tracking coverage belongs to the old socket.
 	onCscReinit func()
 
+	// pubSubReAuth is the callback invoked when a Pub/Sub connection needs to
+	// re-authenticate in-place with new credentials from a streaming credentials provider.
+	pubSubReAuth atomic.Pointer[func(username, password string) error]
+
+	// isResp3 indicates whether the connection successfully negotiated RESP3.
+	isResp3 atomic.Bool
+
 	// cscReadPending requests one conservative drain after a command read through
 	// a transport whose buffered state cannot be fully observed by MaybeHasData.
 	cscReadPending atomic.Bool
@@ -828,6 +835,34 @@ func (cn *Conn) SetOnCscClose(fn func() error) {
 // overwriting any previous one.
 func (cn *Conn) SetOnCscReinit(fn func()) {
 	cn.onCscReinit = fn
+}
+
+// SetPubSubReAuth installs fn as the re-authentication callback for a Pub/Sub connection.
+func (cn *Conn) SetPubSubReAuth(fn func(username, password string) error) {
+	if fn == nil {
+		cn.pubSubReAuth.Store(nil)
+		return
+	}
+	cn.pubSubReAuth.Store(&fn)
+}
+
+// GetPubSubReAuth returns the currently installed Pub/Sub re-authentication callback, if any.
+func (cn *Conn) GetPubSubReAuth() func(username, password string) error {
+	fnPtr := cn.pubSubReAuth.Load()
+	if fnPtr == nil {
+		return nil
+	}
+	return *fnPtr
+}
+
+// SetResp3 records whether the connection successfully negotiated RESP3.
+func (cn *Conn) SetResp3(v bool) {
+	cn.isResp3.Store(v)
+}
+
+// IsResp3 reports whether the connection successfully negotiated RESP3.
+func (cn *Conn) IsResp3() bool {
+	return cn.isResp3.Load()
 }
 
 // SetInitConnFunc sets the connection initialization function to be called on reconnections.
