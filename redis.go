@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -1993,9 +1994,11 @@ func (c *baseClient) processWithRetry(
 	// callback) counts attempts already spent before this loop — e.g. the FD socket
 	// attempt on a diverted retryable command — not just this loop's iterations.
 	totalAttempts := startAttempt
+	// Pre-write retirements re-run without spending the retry budget, capped by
+	// the pool size so a pool full of retired conns still terminates.
+	preWriteRetirements := 0
 	for attempt := startAttempt; attempt <= maxRetries; attempt++ {
 		totalAttempts++
-		attempt := attempt
 
 		retry, forced, cn, err := c._process(ctx, cmd, attempt, capture)
 		if cn != nil {
@@ -2004,6 +2007,21 @@ func (c *baseClient) processWithRetry(
 		if state != nil {
 			state.attempts = totalAttempts
 			state.lastConn = lastConn
+		}
+		// A conn retired by the pre-command drain never saw the command. It is
+		// typically an idle conn the server closed (over TLS, the drain reads the
+		// close_notify then EOF), which the pool health check cannot detect, so
+		// several can be handed out in a row. Re-run on the next conn at attempt
+		// 0: no backoff and no retry budget spent.
+		for err != nil && forced && isClosedConnErr(err) && preWriteRetirements < c.opt.PoolSize {
+			preWriteRetirements++
+			retry, forced, cn, err = c._process(ctx, cmd, 0, capture)
+			if cn != nil {
+				lastConn = cn
+			}
+			if state != nil {
+				state.lastConn = lastConn
+			}
 		}
 		// A "no such fieldset" reply for a registered fieldset means the
 		// connection lost its server session state (e.g. RESET, concurrent
@@ -2038,6 +2056,17 @@ func (c *baseClient) processWithRetry(
 	c.recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
 
 	return lastErr
+}
+
+// isClosedConnErr reports whether err means the connection was closed by the
+// peer or the network. Timeouts are excluded: a stalled mid-frame drain is a
+// desync, not a dead conn.
+func isClosedConnErr(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && !opErr.Timeout()
 }
 
 // recordCommandError emits the native error metric for a command's terminal
