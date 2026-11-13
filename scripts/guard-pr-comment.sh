@@ -24,9 +24,9 @@ OUT="$2"
 MARKER='<!-- guard-report -->'
 LIMIT=60000
 
-gated="$(sed -n 's/^needs approval: \([0-9][0-9]*\)$/\1/p' "$REPORT" | head -n 1)"
-info="$(sed -n 's/^for information: \([0-9][0-9]*\)$/\1/p' "$REPORT" | head -n 1)"
-digest="$(sed -n 's/^digest: \([0-9a-f]\{12\}\)$/\1/p' "$REPORT" | head -n 1)"
+gated="$(sed -n 's/^needs approval: \([0-9][0-9]*\)$/\1/p' "$REPORT" | awk 'NR == 1')"
+info="$(sed -n 's/^for information: \([0-9][0-9]*\)$/\1/p' "$REPORT" | awk 'NR == 1')"
+digest="$(sed -n 's/^digest: \([0-9a-f]\{12\}\)$/\1/p' "$REPORT" | awk 'NR == 1')"
 if [[ -z "$gated" || -z "$info" ]]; then
   echo "guard-pr-comment: report has no counts" >&2
   exit 2

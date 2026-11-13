@@ -67,7 +67,7 @@ EMPTY_TREE="$(git -C "$REPO" hash-object -t tree /dev/null)"
 extract() {
   local rev="$1" dir="$2" bad
   bad="$(git -C "$REPO" ls-tree -r --full-tree "$rev" |
-    awk -F'\t' '{ split($1, m, " ") } m[1] == "120000" || m[1] == "160000" { print $2 }' | head -n 5)"
+    awk -F'\t' '{ split($1, m, " ") } m[1] == "120000" || m[1] == "160000" { print $2 }' | awk 'NR <= 5')"
   if [[ -n "$bad" ]]; then
     echo "guard-delta: $rev contains symlinks or submodules, which the guard does not support:" >&2
     printf '%s\n' "$bad" | sed 's/^/  /' >&2
