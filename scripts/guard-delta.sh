@@ -9,6 +9,13 @@
 # code is never built or run. The working tree copy holds tracked and
 # untracked files that are not ignored.
 #
+# Revisions are extracted through a temporary index with checkout-index,
+# not git archive: git archive honours the tree's own .gitattributes, so
+# "export-ignore" could hide a file from the guard. Attributes are read from
+# the empty tree, so no attribute changes any file. A revision that contains
+# a symlink or a submodule is rejected (exit 2): either could point the build
+# at code the guard does not scan. go-redis has neither.
+#
 # Prints the report and the digest of the changes that need approval.
 # Exit status: 0 nothing needs approval, 1 something does, 2 error.
 #
@@ -54,10 +61,28 @@ git -C "$REPO" rev-parse --verify --quiet "$BASE_REV^{commit}" >/dev/null
 MB="$(git -C "$REPO" merge-base "$BASE_REV" "$HEAD_SHA")"
 BASE_LABEL="merge base of $BASE_REV (${MB:0:12})"
 
+EMPTY_TREE="$(git -C "$REPO" hash-object -t tree /dev/null)"
+
+# extract <commit> <dir>: every file of <commit>, byte for byte.
+extract() {
+  local rev="$1" dir="$2" bad
+  bad="$(git -C "$REPO" ls-tree -r --full-tree "$rev" |
+    awk -F'\t' '{ split($1, m, " ") } m[1] == "120000" || m[1] == "160000" { print $2 }' | head -n 5)"
+  if [[ -n "$bad" ]]; then
+    echo "guard-delta: $rev contains symlinks or submodules, which the guard does not support:" >&2
+    printf '%s\n' "$bad" | sed 's/^/  /' >&2
+    exit 2
+  fi
+  GIT_INDEX_FILE="$TMP/index" git -C "$REPO" read-tree "$rev"
+  GIT_INDEX_FILE="$TMP/index" git -C "$REPO" -c core.symlinks=false -c core.autocrlf=false \
+    --attr-source="$EMPTY_TREE" checkout-index -a -f --prefix="$dir/"
+  rm -f -- "$TMP/index"
+}
+
 mkdir -- "$TMP/base" "$TMP/head"
-git -C "$REPO" archive "$MB" | tar -x -C "$TMP/base"
+extract "$MB" "$TMP/base"
 if [[ -n "$HEAD_REV" ]]; then
-  git -C "$REPO" archive "$HEAD_SHA" | tar -x -C "$TMP/head"
+  extract "$HEAD_SHA" "$TMP/head"
 else
   # Files deleted in the working tree are still listed by -c; skip them.
   git -C "$REPO" ls-files -z -c -o --exclude-standard |

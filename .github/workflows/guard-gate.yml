@@ -1,33 +1,40 @@
-name: Guard gate
+name: Guard
 
-# Required check for the behavioral regression guard (internal/guard/doc.go).
+# Guard report for every PR (internal/guard/doc.go). Report only: the job
+# fails only when the guard itself fails, never because of the report.
 #
-# Runs on pull_request_target so the workflow, the scripts and the guard code
-# come from the base branch. The PR is checked out only as data and none of
-# its code is executed (a PR that changes internal/guard is not executed
-# either; see scripts/guard-run.sh). No secrets are used here.
+# pull_request_target always runs this file and its checkout from the
+# default branch, whatever branch the PR targets. The guard code and the
+# scripts come from that checkout ("trusted"). The PR is fetched as data
+# and only parsed; none of its code is built or run. The token can write
+# comments and labels, so the report text (which contains PR text) is only
+# passed through files, never through ${{ }} in a run: block.
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: guard-gate-${{ github.event.pull_request.number }}
+  group: guard-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  provenance:
-    name: guard-provenance
+  report:
+    name: guard-report
+    # "edited" also fires for title and body edits; only a base change matters.
+    if: github.event.action != 'edited' || contains(toJSON(github.event.changes), '"base"')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
-      - name: Checkout base (trusted code)
+      - name: Checkout guard code (default branch)
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: base
+          path: trusted
           persist-credentials: false
 
       - name: Checkout PR (data only)
@@ -38,58 +45,92 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify PR head
+      - name: Verify revisions
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          set -euo pipefail
           if [ "$(git -C pr rev-parse HEAD)" != "$HEAD_SHA" ]; then
-            echo "PR head moved during checkout; a newer run will check it" >&2
+            echo "PR head moved during checkout; a newer run will report it" >&2
             exit 1
           fi
-
-      - name: Check golden provenance
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GUARD_BOT_LOGIN: ${{ vars.GUARD_BOT_LOGIN }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: bash base/scripts/guard-provenance.sh pr "$BASE_SHA" "$HEAD_SHA"
-
-  check:
-    name: guard-check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout base (trusted code)
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: base
-          persist-credentials: false
-
-      - name: Checkout PR (data only)
-        uses: actions/checkout@v7
-        with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/head
-          path: pr
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify PR head
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [ "$(git -C pr rev-parse HEAD)" != "$HEAD_SHA" ]; then
-            echo "PR head moved during checkout; a newer run will check it" >&2
+          if ! git -C pr cat-file -e "$BASE_SHA^{commit}"; then
+            echo "base commit $BASE_SHA is not in the PR checkout" >&2
             exit 1
           fi
 
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: stable # the guard needs no matrix: one Go, no Redis
-          cache: false # a pull_request_target cache write would land in the base scope
+          go-version: stable
+          cache: false # a pull_request_target cache write would land in the default branch scope
 
-      - name: Run guard (base guard code, PR sources and goldens)
+      - name: Build guard
         env:
+          GOTOOLCHAIN: local
+        run: cd trusted && go build -o "$RUNNER_TEMP/guard" ./internal/guard/cmd/guard
+
+      - name: Compute delta
+        id: delta
+        env:
+          GOTOOLCHAIN: local
+          GUARD_REPO: ${{ github.workspace }}/pr
+          GUARD_BIN: ${{ runner.temp }}/guard
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash base/scripts/guard-run.sh check base pr "$BASE_SHA"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          rc=0
+          bash trusted/scripts/guard-delta.sh "$BASE_SHA" "$HEAD_SHA" >"$RUNNER_TEMP/report.txt" 2>"$RUNNER_TEMP/stderr.txt" || rc=$?
+          cat "$RUNNER_TEMP/report.txt"
+          case "$rc" in
+            0 | 1) ;;
+            *)
+              echo "guard-delta failed (exit $rc):" >&2
+              cat "$RUNNER_TEMP/stderr.txt" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Write job summary
+        run: |
+          set -euo pipefail
+          bash trusted/scripts/guard-pr-comment.sh "$RUNNER_TEMP/report.txt" "$RUNNER_TEMP/summary.md"
+          cat "$RUNNER_TEMP/summary.md" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Comment and label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          bash trusted/scripts/guard-pr-comment.sh "$RUNNER_TEMP/report.txt" "$RUNNER_TEMP/body.md"
+
+          # Update the earlier report comment, or add one. awk reads all of
+          # gh's output (head would close the pipe early and fail the step).
+          id="$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- guard-report -->"))) | .id' |
+            awk 'NR == 1')"
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$RUNNER_TEMP/body.md" >/dev/null
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@"$RUNNER_TEMP/body.md" >/dev/null
+          fi
+
+          # One guard label at a time.
+          if grep -q '^needs approval: 0$' "$RUNNER_TEMP/report.txt"; then
+            want="guard: clean"; other="guard: needs approval"
+          else
+            want="guard: needs approval"; other="guard: clean"
+          fi
+          gh label create "guard: clean" --repo "$REPO" --color 0e8a16 \
+            --description "Guard: nothing needs approval" --force >/dev/null
+          gh label create "guard: needs approval" --repo "$REPO" --color d93f0b \
+            --description "Guard: changes need maintainer approval" --force >/dev/null
+          enc="$(printf '%s' "$other" | jq -sRr @uri)"
+          gh api -X DELETE "repos/$REPO/issues/$PR/labels/$enc" >/dev/null 2>&1 || true
+          gh api "repos/$REPO/issues/$PR/labels" -f "labels[]=$want" >/dev/null

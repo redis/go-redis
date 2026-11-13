@@ -23,10 +23,15 @@ type Entry struct {
 }
 
 // Line is the entry as one line of the report and the digest input.
+// Newlines and carriage returns (possible in raw string literals) are
+// written as \n and \r, so an entry can never start a report line of its
+// own, for example a fake "digest:" line.
 func (e Entry) Line() string {
 	parts := append([]string{e.Dir, e.Entity, e.Detail}, e.RawArgs...)
-	return strings.Join(parts, " | ")
+	return lineEscaper.Replace(strings.Join(parts, " | "))
 }
+
+var lineEscaper = strings.NewReplacer("\n", `\n`, "\r", `\r`)
 
 // Tier says how a layer's changes are classified.
 type Tier int

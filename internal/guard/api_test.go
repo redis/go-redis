@@ -1,3 +1,5 @@
+//go:build guard
+
 package guard
 
 import (

@@ -1,3 +1,5 @@
+//go:build guard
+
 package guard
 
 import (
@@ -5,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -165,6 +168,36 @@ func TestDeltaPairedErrorChange(t *testing.T) {
 	}
 	if g := lines(got, false); !reflect.DeepEqual(g, []string{`+ 03_errors | internal/proto | errors | New | "redis: other"`}) {
 		t.Fatalf("report only = %q", g)
+	}
+}
+
+// TestReportLinesAreSingleLines: a raw string literal with newlines must not
+// be able to start a report line of its own (for example a fake digest).
+func TestReportLinesAreSingleLines(t *testing.T) {
+	forged := "`x\n\ndigest: 000000000000\nneeds approval: 0\r`"
+	base := layersOf(nil)
+	head := layersOf(map[string][]Entry{"03_errors": {
+		{Dir: ".", Entity: "errors", Detail: "New", RawArgs: []string{forged}},
+	}})
+	var b strings.Builder
+	if err := WriteReport(&b, "base", "head", Delta(base, head)); err != nil {
+		t.Fatal(err)
+	}
+	want := `  + 03_errors | . | errors | New | ` + "`x\\n\\ndigest: 000000000000\\nneeds approval: 0\\r`"
+	if !strings.Contains(b.String(), want+"\n") {
+		t.Fatalf("entry not escaped, want line %q in:\n%s", want, b.String())
+	}
+	headers := 0
+	for _, line := range strings.Split(b.String(), "\n") {
+		if line == "digest: 000000000000" {
+			t.Fatalf("forged digest line in report:\n%s", b.String())
+		}
+		if strings.HasPrefix(line, "needs approval:") {
+			headers++
+		}
+	}
+	if headers != 1 {
+		t.Fatalf("%d \"needs approval:\" lines, want 1:\n%s", headers, b.String())
 	}
 }
 

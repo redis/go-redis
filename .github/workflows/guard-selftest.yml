@@ -1,0 +1,45 @@
+name: Guard self-test
+
+# Tests of the guard itself (make guard.selftest): unit tests, scenarios on
+# scratch repositories, and mutation cases. They are behind the "guard"
+# build tag, so the Go x Redis matrix skips them. This is a normal
+# unprivileged job: it runs the PR's own code, with a read-only token.
+#
+# Do not make this a required check while it has a paths filter: a
+# required check that never reports blocks unrelated PRs.
+
+on:
+  pull_request:
+    paths:
+      - 'internal/guard/**'
+      - 'scripts/guard-*'
+      - '.github/workflows/guard-*'
+      - 'Makefile'
+  push:
+    branches: [master, v9, 'v9.*']
+    paths:
+      - 'internal/guard/**'
+      - 'scripts/guard-*'
+      - '.github/workflows/guard-*'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    name: guard-selftest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Run guard self-tests
+        run: make guard.selftest

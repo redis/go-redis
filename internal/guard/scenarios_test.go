@@ -234,6 +234,62 @@ func TestScenarioTargetBranch(t *testing.T) {
 	expectSame(t, "C3 merge master into pr2", c1, c3)
 }
 
+// TestScenarioExportIgnoreCannotHideFiles: a PR must not be able to hide a
+// file from the guard with "export-ignore" in its own .gitattributes, or
+// change file contents with eol or ident attributes.
+func TestScenarioExportIgnoreCannotHideFiles(t *testing.T) {
+	s := newScratch(t)
+	s.git("checkout", "-q", "-b", "pr")
+	hidden := "package redis\n\nimport _ \"os/exec\"\n"
+	if err := os.WriteFile(s.path("guard_hidden.go"), []byte(hidden), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	attrs := "guard_hidden.go export-ignore\ncommands.go text eol=crlf ident\n"
+	if err := os.WriteFile(s.path(".gitattributes"), []byte(attrs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.git("add", "-A")
+	s.git("commit", "-q", "-m", "hide a file")
+
+	r := s.delta("master", "pr")
+	want := "+ 08_imports | . | . | os/exec"
+	if !contains(r.gated, want) {
+		t.Fatalf("hidden import not reported, want %q in gated:\n%s", want, r.out)
+	}
+	for _, line := range r.gated {
+		if strings.Contains(line, "KeepTTL") {
+			t.Fatalf("attributes changed commands.go: %s\n%s", line, r.out)
+		}
+	}
+}
+
+// TestScenarioSymlinkIsRejected: a symlink could make the build compile a
+// file the guard does not scan, so a revision with one is an error.
+func TestScenarioSymlinkIsRejected(t *testing.T) {
+	s := newScratch(t)
+	s.git("checkout", "-q", "-b", "pr")
+	if err := os.WriteFile(s.path("guard_payload.txt"), []byte("package redis\n\nimport _ \"os/exec\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("guard_payload.txt", s.path("guard_link.go")); err != nil {
+		t.Fatal(err)
+	}
+	s.git("add", "-A")
+	s.git("commit", "-q", "-m", "symlinked go file")
+
+	script := filepath.Join(repoTop(t), "scripts", "guard-delta.sh")
+	cmd := exec.Command("bash", script, "master", "pr")
+	cmd.Env = append(os.Environ(), "GUARD_REPO="+s.repo, "GUARD_BIN="+guardBin(t))
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+		t.Fatalf("want exit 2, got %v:\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "guard_link.go") {
+		t.Fatalf("error does not name the symlink:\n%s", out)
+	}
+}
+
 // TestScenarioWorkingTree: make guard compares the working tree, including
 // untracked files, and skips files deleted from it.
 func TestScenarioWorkingTree(t *testing.T) {
