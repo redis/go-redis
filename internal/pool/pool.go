@@ -1051,6 +1051,52 @@ func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 	return p.getConn(ctx, false)
 }
 
+// waitForUsableIdle polls the lightweight connection state rather than
+// repeatedly running popIdle (which rearranges the idle slice). A maintenance
+// worker updates state without calling Put, so there is no pool queue event to
+// wait for here. Its ticker and deadline are always stopped before returning.
+func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time) error {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return ErrPoolTimeout
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.closedCh:
+			return ErrClosed
+		case <-timer.C:
+			return ErrPoolTimeout
+		case <-ticker.C:
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if p.closed() {
+				return ErrClosed
+			}
+			p.connsMu.Lock()
+			ready := len(p.idleConns) == 0
+			for _, cn := range p.idleConns {
+				state := cn.GetStateMachine().GetState()
+				if state == StateIdle || state == StateCreated {
+					ready = true
+					break
+				}
+			}
+			p.connsMu.Unlock()
+			if ready {
+					return nil
+			}
+		}
+	}
+}
+
 // getConn returns a connection from the pool. When wait is false it does not block
 // for a turn (see waitTurn / TryGet).
 func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error) {
@@ -1109,6 +1155,14 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	hookManager := p.hookManager.Load()
 
 retryIdle:
+	if err := ctx.Err(); err != nil {
+		p.freeTurn()
+		return nil, err
+	}
+	if p.closed() {
+		p.freeTurn()
+		return nil, ErrClosed
+	}
 	drainGeneration := p.drainGeneration.Load()
 	for attempts := 0; attempts < getAttempts; attempts++ {
 
@@ -1196,16 +1250,16 @@ retryIdle:
 			p.freeTurn()
 			return nil, err
 		}
+		nowNs = time.Now().UnixNano()
 		goto retryIdle
 	} else if retry {
+		nowNs = time.Now().UnixNano()
 		goto retryIdle
 	}
 
-	// Idle entries can be temporarily unavailable during re-authentication or
-	// handoff. Retrying them avoids dialing an overflow connection (or failing
-	// with ErrPoolExhausted at MaxActiveConns). Background workers change their
-	// state without putting them back, so periodically rescan within the same
-	// PoolTimeout budget. An empty idle list still follows normal dial admission.
+	// Idle entries held by re-authentication or handoff become usable when
+	// their state changes, without a fresh Put. Wait for that state without
+	// repeatedly rotating and copying the idle slice in popIdle.
 	p.connsMu.Lock()
 	hasIdle := len(p.idleConns) > 0
 	p.connsMu.Unlock()
@@ -1214,24 +1268,14 @@ retryIdle:
 			p.freeTurn()
 			return nil, ErrPoolTryFull
 		}
-		remaining := time.Until(poolDeadline)
-		if remaining <= 0 {
+		if err = p.waitForUsableIdle(ctx, poolDeadline); err != nil {
 			p.freeTurn()
-			return nil, ErrPoolTimeout
+			return nil, err
 		}
-		timer := time.NewTimer(min(time.Millisecond, remaining))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			p.freeTurn()
-			return nil, ctx.Err()
-		case <-p.closedCh:
-			timer.Stop()
-			p.freeTurn()
-			return nil, ErrClosed
-		case <-timer.C:
-			goto retryIdle
-		}
+		// Maintenance can outlast the cached-time window. Check expiration
+		// against the current clock when we next inspect an idle connection.
+		nowNs = time.Now().UnixNano()
+		goto retryIdle
 	}
 
 	atomic.AddUint32(&p.stats.Misses, 1)

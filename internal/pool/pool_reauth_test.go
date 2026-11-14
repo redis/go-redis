@@ -170,3 +170,87 @@ func TestGetUnavailableIdleStops(t *testing.T) {
 		})
 	}
 }
+
+func TestGetRechecksLifetimeAfterReauthWait(t *testing.T) {
+	ctx := context.Background()
+	var dials atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		PoolSize: 1, MaxActiveConns: 1, MaxConcurrentDials: 1,
+		PoolTimeout: time.Second, ConnMaxLifetime: 35 * time.Millisecond,
+		Dialer: func(context.Context) (net.Conn, error) {
+			dials.Add(1)
+			return newDummyConn(), nil
+		},
+	})
+	defer p.Close()
+
+	original, err := p.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original.GetStateMachine().Transition(pool.StateInUse)
+	p.Put(ctx, original)
+	original.GetStateMachine().Transition(pool.StateUnusable)
+
+	type result struct {
+		cn *pool.Conn
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		cn, err := p.Get(ctx)
+		done <- result{cn, err}
+	}()
+	// Let the connection expire while it is in maintenance.
+	time.Sleep(85 * time.Millisecond)
+	original.GetStateMachine().Transition(pool.StateIdle)
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("Get after maintenance: %v", got.err)
+		}
+		if got.cn == original || dials.Load() != 2 {
+			t.Fatalf("expired connection reused; conn=%p original=%p dials=%d", got.cn, original, dials.Load())
+		}
+		p.Put(ctx, got.cn)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Get did not replace expired idle connection")
+	}
+}
+
+func TestCancelledGetDoesNotTakeReauthenticatedConnection(t *testing.T) {
+	p := pool.NewConnPool(&pool.Options{
+		PoolSize: 1, MaxActiveConns: 1, MaxConcurrentDials: 1,
+		PoolTimeout: time.Second, Dialer: dummyDialer,
+	})
+	defer p.Close()
+	ctx := context.Background()
+	cn, err := p.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cn.GetStateMachine().Transition(pool.StateInUse)
+	p.Put(ctx, cn)
+	cn.GetStateMachine().Transition(pool.StateUnusable)
+
+	waitCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		got, err := p.Get(waitCtx)
+		if got != nil {
+			p.Put(ctx, got)
+		}
+		done <- err
+	}()
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+	cn.GetStateMachine().Transition(pool.StateIdle)
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("cancelled Get returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled Get did not finish")
+	}
+}
