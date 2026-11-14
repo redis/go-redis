@@ -3783,7 +3783,7 @@ var _ = Describe("Command Tips tests", func() {
 		Expect(plain.Err()).NotTo(HaveOccurred())
 		Expect(plain.Val()).To(Equal(int64(1)))
 		Expect(client.Get(ctx, sameA).Val()).To(Equal("1"))
-		Expect(client.TTL(ctx, sameA).Val()).To(Equal(-time.Second))
+		Expect(client.TTL(ctx, sameA).Val()).To(Equal(time.Duration(-1)))
 
 		Expect(client.Del(ctx, sameA, sameB).Err()).NotTo(HaveOccurred())
 
