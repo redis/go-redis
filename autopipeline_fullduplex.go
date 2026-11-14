@@ -1616,7 +1616,7 @@ func (fd *fdEngine) run() {
 			// retries against whatever it selects (e.g. MultiDB's new active member),
 			// so re-leasing this endpoint would only delay that.
 			ownerRetries := fd.reroute != nil && fd.ownerRetries
-			if !ownerRetries && shouldRetry(aerr, true) && leaseAttempts < fd.retryBudget() {
+			if !ownerRetries && shouldRetrySingleNode(aerr, true) && leaseAttempts < fd.retryBudget() {
 				leaseAttempts++
 				fd.sleepBackoff(leaseAttempts)
 				continue // carry unchanged; re-lease

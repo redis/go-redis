@@ -2358,7 +2358,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		}
 		return readErr
 	}); err != nil {
-		retry := forceRetry.Load() || shouldRetry(err, retryTimeout.Load() == 1)
+		retry := forceRetry.Load() || shouldRetrySingleNode(err, retryTimeout.Load() == 1)
 		return retry, forceRetry.Load(), usedConn, err
 	}
 
@@ -2645,7 +2645,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// Don't retry if any command in the pipeline explicitly disables retries
 		// (e.g., RawWriteToCmd which writes directly to an io.Writer and cannot
 		// undo partial writes on retry)
-		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
+		if lastErr == nil || !canRetry || !shouldRetrySingleNode(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
 			if pipelineErrShouldStamp(lastErr) {
 				setCmdsErr(cmds, lastErr)

@@ -639,8 +639,8 @@ func TestContextErrorWrapping(t *testing.T) {
 	})
 }
 
-// TestDialTimeoutShouldRetry tests that dial errors wrapped in context.DeadlineExceeded
-// (as produced by pool.go's context.WithTimeout(ctx, DialTimeout)) are retried.
+// TestDialTimeoutShouldRetry ensures that cluster and MultiDB clients still
+// classify dial failures as retryable even when the pool timeout is wrapped.
 func TestDialTimeoutShouldRetry(t *testing.T) {
 	makeDialOpError := func(inner error) *net.OpError {
 		return &net.OpError{Op: "dial", Net: "tcp", Err: inner}
@@ -649,7 +649,7 @@ func TestDialTimeoutShouldRetry(t *testing.T) {
 	t.Run("bare dial OpError retries", func(t *testing.T) {
 		err := makeDialOpError(&net.AddrError{Err: "connection refused", Addr: "127.0.0.1:6379"})
 		if !redis.ShouldRetry(err, false) {
-			t.Errorf("bare dial OpError should retry")
+			t.Errorf("bare dial OpError should retry for failover")
 		}
 	})
 

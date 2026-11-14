@@ -396,17 +396,17 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should retry with backoff", func() {
+	It("should retry dialing with backoff", func() {
 		clientNoRetry := redis.NewClient(&redis.Options{
-			Addr:       ":1234",
-			MaxRetries: -1,
+			Addr:          ":1234",
+			DialerRetries: 1,
 		})
 		defer clientNoRetry.Close()
 
 		clientRetry := redis.NewClient(&redis.Options{
-			Addr:            ":1234",
-			MaxRetries:      5,
-			MaxRetryBackoff: 128 * time.Millisecond,
+			Addr:               ":1234",
+			DialerRetries:      5,
+			DialerRetryTimeout: 10 * time.Millisecond,
 		})
 		defer clientRetry.Close()
 

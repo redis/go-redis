@@ -96,9 +96,9 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 
-	// Dial errors mean TCP connection was never established — safe to retry even
-	// when wrapped inside context.DeadlineExceeded (from DialTimeout context).
-	// Must be checked before the context error check below.
+	// Dial errors are retryable at higher layers, including ClusterClient node
+	// failover and MultiDB health classification. The single-node command loop
+	// suppresses its own redundant retries separately.
 	var opErr *net.OpError
 	if errors.As(err, &opErr) && opErr.Op == "dial" {
 		return true
@@ -177,6 +177,16 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	// -SEARCH_TIMEOUT (search-on-timeout fail): retrying would just repeat the
 	// same expensive query.
 	return false
+}
+
+// shouldRetrySingleNode avoids restarting an exhausted pool dial sequence
+// against the same endpoint. Credential-provider and handshake failures are
+// not pool dial failures and retain their ordinary retry behavior.
+func shouldRetrySingleNode(err error, retryTimeout bool) bool {
+	if errors.Is(err, pool.ErrDialSequenceFailure) {
+		return false
+	}
+	return shouldRetry(err, retryTimeout)
 }
 
 func isRedisError(err error) bool {
