@@ -1044,10 +1044,57 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 // for a full pool. It returns ErrPoolTryFull at once instead. This lets a caller
 // with a fallback (the pipeline pool) spill without a stall. ErrPoolTryFull is
 // different from ErrPoolTimeout: no wait happened, so getConn does not count the
-// spill as a pool timeout. A hard MaxActiveConns ceiling still returns
-// ErrPoolExhausted. TryGet still dials a new connection under an acquired turn.
+// spill as a pool timeout. Temporarily unavailable idle entries also return
+// ErrPoolTryFull. With no idle entries, a hard MaxActiveConns ceiling still
+// returns ErrPoolExhausted. TryGet dials under an acquired turn.
 func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 	return p.getConn(ctx, false)
+}
+
+// waitForUsableIdle polls the lightweight connection state rather than
+// repeatedly running popIdle (which rearranges the idle slice). A maintenance
+// worker updates state without calling Put, so there is no pool queue event to
+// wait for here. Its ticker and deadline are always stopped before returning.
+func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time) error {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return ErrPoolTimeout
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.closedCh:
+			return ErrClosed
+		case <-timer.C:
+			return ErrPoolTimeout
+		case <-ticker.C:
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if p.closed() {
+				return ErrClosed
+			}
+			p.connsMu.Lock()
+			ready := len(p.idleConns) == 0
+			for _, cn := range p.idleConns {
+				state := cn.GetStateMachine().GetState()
+				if state == StateIdle || state == StateCreated {
+					ready = true
+					break
+				}
+			}
+			p.connsMu.Unlock()
+			if ready {
+					return nil
+			}
+		}
+	}
 }
 
 // getConn returns a connection from the pool. When wait is false it does not block
@@ -1084,7 +1131,7 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 		}
 	}()
 
-	// PoolTimeout is one budget for both the pool turn and a drainer handoff.
+	// PoolTimeout is one budget for the pool turn and temporary maintenance waits.
 	poolDeadline := time.Now().Add(p.cfg.PoolTimeout)
 
 	// Connection wait time measures only semaphore acquisition.
@@ -1108,6 +1155,14 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	hookManager := p.hookManager.Load()
 
 retryIdle:
+	if err := ctx.Err(); err != nil {
+		p.freeTurn()
+		return nil, err
+	}
+	if p.closed() {
+		p.freeTurn()
+		return nil, ErrClosed
+	}
 	drainGeneration := p.drainGeneration.Load()
 	for attempts := 0; attempts < getAttempts; attempts++ {
 
@@ -1195,8 +1250,31 @@ retryIdle:
 			p.freeTurn()
 			return nil, err
 		}
+		nowNs = time.Now().UnixNano()
 		goto retryIdle
 	} else if retry {
+		nowNs = time.Now().UnixNano()
+		goto retryIdle
+	}
+
+	// Idle entries held by re-authentication or handoff become usable when
+	// their state changes, without a fresh Put. Wait for that state without
+	// repeatedly rotating and copying the idle slice in popIdle.
+	p.connsMu.Lock()
+	hasIdle := len(p.idleConns) > 0
+	p.connsMu.Unlock()
+	if hasIdle {
+		if !wait {
+			p.freeTurn()
+			return nil, ErrPoolTryFull
+		}
+		if err = p.waitForUsableIdle(ctx, poolDeadline); err != nil {
+			p.freeTurn()
+			return nil, err
+		}
+		// Maintenance can outlast the cached-time window. Check expiration
+		// against the current clock when we next inspect an idle connection.
+		nowNs = time.Now().UnixNano()
 		goto retryIdle
 	}
 
