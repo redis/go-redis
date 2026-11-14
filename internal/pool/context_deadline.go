@@ -35,13 +35,6 @@ type deadlineReader struct {
 
 func (r *deadlineReader) Read(b []byte) (int, error) {
 	n, err := r.reader.Read(b)
-	if n > 0 {
-		// Data and an error arrived together: bufio caches the error and replays it
-		// on a later read. Wrapping it here would hand the NEXT command a context
-		// deadline that belongs to this one, and shouldRetry would not retry it
-		// where a plain socket timeout is retryable (see #4305). Leave it raw.
-		return n, err
-	}
 	return n, contextDeadlineError(r.ctx, r.deadline, err)
 }
 

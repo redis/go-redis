@@ -19,7 +19,7 @@ func (socketTimeout) Timeout() bool   { return true }
 func (socketTimeout) Temporary() bool { return true }
 
 // dataThenErrorReader returns its payload together with an error, the way a
-// transport can report a complete reply and a timeout in the same read.
+// transport can report bytes and a timeout in the same read.
 type dataThenErrorReader struct {
 	data []byte
 	err  error
@@ -57,31 +57,6 @@ func expiredDeadlineContext(t *testing.T) (context.Context, time.Time) {
 	return ctx, deadline
 }
 
-// A timeout that arrives together with data belongs to the next read; wrapping it
-// would make bufio cache a context error and hand it to the following command.
-func TestDeadlineReaderDoesNotWrapErrorWithData(t *testing.T) {
-	ctx, deadline := expiredDeadlineContext(t)
-	raw := socketTimeout{}
-	r := &deadlineReader{
-		reader:   &dataThenErrorReader{data: []byte("+OK\r\n"), err: raw},
-		ctx:      ctx,
-		deadline: deadline,
-	}
-
-	buf := make([]byte, len("+OK\r\n"))
-	n, err := r.Read(buf)
-	if n != len(buf) {
-		t.Fatalf("Read returned %d bytes, want %d", n, len(buf))
-	}
-	var contextErr *ContextDeadlineError
-	if errors.As(err, &contextErr) {
-		t.Fatalf("a timeout that arrived with data was wrapped as a context error: %v", err)
-	}
-	if !errors.Is(err, raw) {
-		t.Fatalf("Read returned %v, want the raw socket timeout", err)
-	}
-}
-
 // The socket timer can fire just before the context timer publishes its error;
 // a timeout on a deadline that came from the context must still be wrapped.
 func TestContextDeadlineErrorWrapsAtTheDeadlineBoundary(t *testing.T) {
@@ -97,27 +72,94 @@ func TestContextDeadlineErrorWrapsAtTheDeadlineBoundary(t *testing.T) {
 	}
 }
 
-// The cached error from a successful command must not surface as a context
-// deadline on the next command: shouldRetry has to see a retryable socket timeout.
-func TestCachedReadErrorIsNotAContextDeadline(t *testing.T) {
+// A timeout that arrives together with the tail of an incomplete reply belongs to
+// the command still being parsed; its context classification must be kept.
+func TestPartialReplyKeepsContextDeadline(t *testing.T) {
 	ctx, deadline := expiredDeadlineContext(t)
-	raw := socketTimeout{}
 	rd := proto.NewReader(&deadlineReader{
-		reader:   &dataThenErrorReader{data: []byte("+OK\r\n"), err: raw},
+		reader:   &dataThenErrorReader{data: []byte("$5\r\nhe"), err: socketTimeout{}},
 		ctx:      ctx,
 		deadline: deadline,
 	})
 
-	if _, err := rd.ReadReply(); err != nil {
-		t.Fatalf("first reply: %v", err)
-	}
 	_, err := rd.ReadReply()
-	var contextErr *ContextDeadlineError
-	if errors.As(err, &contextErr) {
-		t.Fatalf("the next command received the previous read's context error: %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("partial reply lost its context deadline classification: %v", err)
 	}
-	var netErr net.Error
-	if !errors.As(err, &netErr) || !netErr.Timeout() {
-		t.Fatalf("expected a retryable socket timeout, got %v", err)
+}
+
+// scriptedConn replays scripted reads, so a read can return bytes and a timeout at
+// the same time — the transport shape that leaves a cached error behind.
+type scriptedConn struct {
+	reads []struct {
+		data []byte
+		err  error
+	}
+}
+
+func (c *scriptedConn) Read(p []byte) (int, error) {
+	if len(c.reads) == 0 {
+		return 0, io.EOF
+	}
+	step := c.reads[0]
+	c.reads = c.reads[1:]
+	return copy(p, step.data), step.err
+}
+
+func (c *scriptedConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c *scriptedConn) Close() error                     { return nil }
+func (c *scriptedConn) LocalAddr() net.Addr              { return scriptedAddr{} }
+func (c *scriptedConn) RemoteAddr() net.Addr             { return scriptedAddr{} }
+func (c *scriptedConn) SetDeadline(time.Time) error      { return nil }
+func (c *scriptedConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *scriptedConn) SetWriteDeadline(time.Time) error { return nil }
+
+type scriptedAddr struct{}
+
+func (scriptedAddr) Network() string { return "scripted" }
+func (scriptedAddr) String() string  { return "scripted" }
+
+// A transport can return a complete reply and a timeout together. The reply parses
+// fine, but bufio caches the wrapped timeout; the next command must not inherit it.
+func TestCachedReadErrorIsDroppedBeforeNextCommand(t *testing.T) {
+	conn := &scriptedConn{reads: []struct {
+		data []byte
+		err  error
+	}{
+		{[]byte("+OK\r\n"), socketTimeout{}},
+		{[]byte("+OK\r\n"), nil},
+	}}
+	cn := NewConn(conn)
+	t.Cleanup(func() { _ = cn.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	time.Sleep(5 * time.Millisecond)
+
+	// The first command gets its reply even though a context timeout came with it.
+	err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		_, err := rd.ReadReply()
+		return err
+	})
+	if err != nil {
+		t.Fatalf("first command: a complete reply must parse despite the timeout: %v", err)
+	}
+
+	// The connection is fine: the next command must read the next reply instead of
+	// the previous command's cached context error.
+	var reply string
+	err = cn.WithReader(context.Background(), time.Second, func(rd *proto.Reader) error {
+		value, err := rd.ReadReply()
+		if err != nil {
+			return err
+		}
+		reply, _ = value.(string)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("second command inherited the previous command's error: %v", err)
+	}
+	if reply != "OK" {
+		t.Fatalf("second command read %q, want OK", reply)
 	}
 }
