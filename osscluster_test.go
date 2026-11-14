@@ -3759,6 +3759,55 @@ var _ = Describe("Command Tips tests", func() {
 		})
 	})
 
+	It("should MSETEX with the dynamic resolver", func() {
+		SkipBeforeRedisVersion("8.3", "MSetEX is available since redis 8.4")
+
+		sameA, sameB := "{m}a", "{m}b"
+		crossA, crossB := "{msetex:one}a", "{msetex:two}b"
+
+		Expect(hashtag.Slot(sameA)).To(Equal(hashtag.Slot(sameB)))
+		ex := &redis.ExpirationOption{Mode: redis.EX, Value: 100}
+		withEX := client.MSetEX(ctx, redis.MSetEXArgs{Expiration: ex}, sameA, "1", sameB, "2")
+		Expect(withEX.Err()).NotTo(HaveOccurred())
+		Expect(withEX.Val()).To(Equal(int64(1)))
+		Expect(client.Get(ctx, sameA).Val()).To(Equal("1"))
+		Expect(client.Get(ctx, sameB).Val()).To(Equal("2"))
+		Expect(client.TTL(ctx, sameA).Val()).To(BeNumerically(">", 0))
+		Expect(client.TTL(ctx, sameA).Val()).To(BeNumerically("<=", 100*time.Second))
+		Expect(client.TTL(ctx, sameB).Val()).To(BeNumerically(">", 0))
+		Expect(client.TTL(ctx, sameB).Val()).To(BeNumerically("<=", 100*time.Second))
+
+		Expect(client.Del(ctx, sameA, sameB).Err()).NotTo(HaveOccurred())
+
+		plain := client.MSetEX(ctx, redis.MSetEXArgs{}, sameA, "1", sameB, "2")
+		Expect(plain.Err()).NotTo(HaveOccurred())
+		Expect(plain.Val()).To(Equal(int64(1)))
+		Expect(client.Get(ctx, sameA).Val()).To(Equal("1"))
+		Expect(client.TTL(ctx, sameA).Val()).To(Equal(time.Duration(-1)))
+
+		Expect(client.Del(ctx, sameA, sameB).Err()).NotTo(HaveOccurred())
+
+		Expect(hashtag.Slot(crossA)).NotTo(Equal(hashtag.Slot(crossB)))
+		cross := client.MSetEX(ctx, redis.MSetEXArgs{Expiration: ex}, crossA, "1", crossB, "2")
+		Expect(cross.Err()).NotTo(HaveOccurred())
+		Expect(cross.Val()).To(Equal(int64(1)))
+		Expect(client.Get(ctx, crossA).Val()).To(Equal("1"))
+		Expect(client.Get(ctx, crossB).Val()).To(Equal("2"))
+		Expect(client.TTL(ctx, crossA).Val()).To(BeNumerically(">", 0))
+		Expect(client.TTL(ctx, crossA).Val()).To(BeNumerically("<=", 100*time.Second))
+		Expect(client.TTL(ctx, crossB).Val()).To(BeNumerically(">", 0))
+		Expect(client.TTL(ctx, crossB).Val()).To(BeNumerically("<=", 100*time.Second))
+
+		Expect(client.Del(ctx, crossA, crossB).Err()).NotTo(HaveOccurred())
+
+		for _, condition := range []redis.SetCondition{redis.NX, redis.XX} {
+			res := client.MSetEX(ctx, redis.MSetEXArgs{Condition: condition}, crossA, "1", crossB, "2")
+			Expect(res.Err()).To(MatchError(redis.ErrCrossSlot))
+			Expect(client.Get(ctx, crossA).Err()).To(Equal(redis.Nil))
+			Expect(client.Get(ctx, crossB).Err()).To(Equal(redis.Nil))
+		}
+	})
+
 	_ = Describe("ClusterClient ParseURL", func() {
 		cases := []struct {
 			test string
