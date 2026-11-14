@@ -44,7 +44,7 @@ func contextDeadlineError(ctx context.Context, deadline time.Time, err error) er
 		return err
 	}
 	ctxDeadline, ok := ctx.Deadline()
-	if !ok || !deadline.Equal(ctxDeadline) || time.Now().Before(deadline) {
+	if !ok || !deadline.Equal(ctxDeadline) {
 		return err
 	}
 	var netErr net.Error

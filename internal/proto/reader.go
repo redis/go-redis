@@ -79,6 +79,7 @@ var errMaxNestingDepth = errors.New("redis: maximum nesting depth exceeded")
 
 type Reader struct {
 	rd       *bufio.Reader
+	src      io.Reader
 	depth    int
 	fatalErr error
 }
@@ -99,14 +100,30 @@ func (r *Reader) enterAggregate() error {
 
 func NewReader(rd io.Reader) *Reader {
 	return &Reader{
-		rd: bufio.NewReaderSize(rd, DefaultBufferSize),
+		rd:  bufio.NewReaderSize(rd, DefaultBufferSize),
+		src: rd,
 	}
 }
 
 func NewReaderSize(rd io.Reader, size int) *Reader {
 	return &Reader{
-		rd: bufio.NewReaderSize(rd, size),
+		rd:  bufio.NewReaderSize(rd, size),
+		src: rd,
 	}
+}
+
+// DiscardCachedReadError drops a read error that bufio cached from a previous
+// operation, leaving the parser state alone. A transport can return a complete
+// reply and a timeout together: the reply parses, but the wrapped timeout stays
+// cached and would be reported for the next command on the connection.
+//
+// Nothing is discarded while bytes are buffered: there the cached error can belong
+// to the reply still being parsed, and that classification must be kept.
+func (r *Reader) DiscardCachedReadError() {
+	if r.src == nil || r.rd.Buffered() > 0 {
+		return
+	}
+	r.rd.Reset(r.src)
 }
 
 func (r *Reader) Buffered() int {
@@ -127,6 +144,7 @@ func (r *Reader) Peek(n int) ([]byte, error) {
 
 func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
+	r.src = rd
 	r.depth = 0
 	r.fatalErr = nil
 }

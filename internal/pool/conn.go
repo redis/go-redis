@@ -1318,6 +1318,10 @@ func (cn *Conn) WithReader(
 			}()
 		}
 	}
+	// A previous command can leave a context timeout cached by bufio when its reply
+	// arrived in the same read as the timeout. That error belongs to the previous
+	// command; drop it before this one starts reading (#4305).
+	cn.rd.DiscardCachedReadError()
 	return fn(cn.rd)
 }
 
