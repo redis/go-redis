@@ -1044,8 +1044,9 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 // for a full pool. It returns ErrPoolTryFull at once instead. This lets a caller
 // with a fallback (the pipeline pool) spill without a stall. ErrPoolTryFull is
 // different from ErrPoolTimeout: no wait happened, so getConn does not count the
-// spill as a pool timeout. A hard MaxActiveConns ceiling still returns
-// ErrPoolExhausted. TryGet still dials a new connection under an acquired turn.
+// spill as a pool timeout. Temporarily unavailable idle entries also return
+// ErrPoolTryFull. With no idle entries, a hard MaxActiveConns ceiling still
+// returns ErrPoolExhausted. TryGet dials under an acquired turn.
 func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 	return p.getConn(ctx, false)
 }
@@ -1084,7 +1085,7 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 		}
 	}()
 
-	// PoolTimeout is one budget for both the pool turn and a drainer handoff.
+	// PoolTimeout is one budget for the pool turn and temporary maintenance waits.
 	poolDeadline := time.Now().Add(p.cfg.PoolTimeout)
 
 	// Connection wait time measures only semaphore acquisition.
@@ -1198,6 +1199,39 @@ retryIdle:
 		goto retryIdle
 	} else if retry {
 		goto retryIdle
+	}
+
+	// Idle entries can be temporarily unavailable during re-authentication or
+	// handoff. Retrying them avoids dialing an overflow connection (or failing
+	// with ErrPoolExhausted at MaxActiveConns). Background workers change their
+	// state without putting them back, so periodically rescan within the same
+	// PoolTimeout budget. An empty idle list still follows normal dial admission.
+	p.connsMu.Lock()
+	hasIdle := len(p.idleConns) > 0
+	p.connsMu.Unlock()
+	if hasIdle {
+		if !wait {
+			p.freeTurn()
+			return nil, ErrPoolTryFull
+		}
+		remaining := time.Until(poolDeadline)
+		if remaining <= 0 {
+			p.freeTurn()
+			return nil, ErrPoolTimeout
+		}
+		timer := time.NewTimer(min(time.Millisecond, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			p.freeTurn()
+			return nil, ctx.Err()
+		case <-p.closedCh:
+			timer.Stop()
+			p.freeTurn()
+			return nil, ErrClosed
+		case <-timer.C:
+			goto retryIdle
+		}
 	}
 
 	atomic.AddUint32(&p.stats.Misses, 1)
