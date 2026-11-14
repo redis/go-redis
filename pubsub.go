@@ -128,7 +128,11 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	channels = append(channels, newChannels...)
 
 	cn, err := c.newConn(ctx, c.opt.Addr, channels, func(cn *pool.Conn) {
-		cn.SetPubSubReAuth(c.reauth)
+		// Bind the callback to this connection so a re-auth scheduled for it
+		// never reaches a replacement connection (see PubSub.reauth).
+		cn.SetPubSubReAuth(func(username, password string) error {
+			return c.reauth(cn, username, password)
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -1012,7 +1016,9 @@ func (c *channel) initAllChan() {
 	}()
 }
 
-func (c *PubSub) reauth(username, password string) error {
+// reauth re-authenticates target, the connection the credentials update was
+// scheduled for.
+func (c *PubSub) reauth(target *pool.Conn, username, password string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1021,6 +1027,13 @@ func (c *PubSub) reauth(username, password string) error {
 	}
 	if c.cn == nil {
 		return errors.New("redis: pubsub connection is not ready for re-authentication")
+	}
+	if c.cn != target {
+		// The connection was replaced (reconnect, handoff) after the re-auth
+		// was scheduled. The replacement authenticated with the provider's
+		// current credentials when it was dialed, so sending AUTH to it here
+		// could only apply credentials that are older than that.
+		return nil
 	}
 	cn := c.cn
 
