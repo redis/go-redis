@@ -179,12 +179,11 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	return false
 }
 
-// shouldRetrySingleNode avoids restarting a pool's completed dial sequence
-// from the single-node command/pipeline retry loop. Cluster and MultiDB must
-// still see dial errors as retryable so they can fail over to another node.
+// shouldRetrySingleNode avoids restarting an exhausted pool dial sequence
+// against the same endpoint. Credential-provider and handshake failures are
+// not pool dial failures and retain their ordinary retry behavior.
 func shouldRetrySingleNode(err error, retryTimeout bool) bool {
-	var opErr *net.OpError
-	if errors.As(err, &opErr) && opErr.Op == "dial" {
+	if errors.Is(err, pool.ErrDialSequenceFailure) {
 		return false
 	}
 	return shouldRetry(err, retryTimeout)

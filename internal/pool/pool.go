@@ -66,6 +66,10 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
+	// ErrDialSequenceFailure identifies failures after the pool exhausted its
+	// connection dial sequence, as distinct from later handshake errors.
+	ErrDialSequenceFailure = errors.New("redis: dial retry sequence failed")
+
 	// ErrPoolTryFull is the result of TryGet (the non-waiting acquire) when the
 	// pool has no free turn now. It is not a timeout, because nothing waited. A
 	// caller with a fallback uses it to spill at once. The pipeline pool spills to
@@ -365,6 +369,23 @@ type Options struct {
 
 type lastDialErrorWrap struct {
 	err error
+}
+
+// dialSequenceError keeps the original error text and unwrapping behavior
+// while identifying a completed pool dial sequence to outer retry loops.
+type dialSequenceError struct{ err error }
+
+func (e *dialSequenceError) Error() string { return e.err.Error() }
+func (e *dialSequenceError) Unwrap() error { return e.err }
+func (e *dialSequenceError) Is(target error) bool {
+	return target == ErrDialSequenceFailure
+}
+
+func wrapDialSequenceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &dialSequenceError{err: err}
 }
 
 type ConnPool struct {
@@ -878,7 +899,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
-		return nil, p.getLastDialError()
+		return nil, wrapDialSequenceError(p.getLastDialError())
 	}
 
 	// Record dial start time for connection creation metric
@@ -950,7 +971,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if p.dialErrorsNum.Add(1) == uint32(p.cfg.PoolSize) {
 		go p.tryDial()
 	}
-	return nil, lastErr
+	return nil, wrapDialSequenceError(lastErr)
 }
 
 func (p *ConnPool) dialRetryBackoff(attempt int) time.Duration {

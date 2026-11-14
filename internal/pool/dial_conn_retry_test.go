@@ -209,3 +209,32 @@ func TestDialConn_NoBackoffAfterLastAttempt(t *testing.T) {
 		t.Fatalf("dialConn took too long (%v); likely slept after last attempt (backoff=%v)", elapsed, backoff)
 	}
 }
+
+func TestDialConn_PreservesOriginOfExhaustedDialError(t *testing.T) {
+	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+	p := NewConnPool(&Options{
+		Dialer: func(context.Context) (net.Conn, error) { return nil, dialErr },
+		PoolSize:           100,
+		MaxConcurrentDials: 1,
+		DialTimeout:        time.Second,
+		DialerRetries:      1,
+	})
+	defer p.Close()
+
+	_, err := p.dialConn(context.Background(), true)
+	if !errors.Is(err, ErrDialSequenceFailure) {
+		t.Fatalf("expected pool dial origin marker, got %v", err)
+	}
+	var got *net.OpError
+	if !errors.As(err, &got) || got != dialErr || err.Error() != dialErr.Error() {
+		t.Fatalf("pool dial marker must preserve original error: %v", err)
+	}
+
+	// Cached failures are returned without dialing but have the same origin.
+	p.setLastDialError(dialErr)
+	p.dialErrorsNum.Store(uint32(p.cfg.PoolSize))
+	_, err = p.dialConn(context.Background(), true)
+	if !errors.Is(err, ErrDialSequenceFailure) || !errors.As(err, &got) {
+		t.Fatalf("cached pool dial failure lost its origin: %v", err)
+	}
+}
