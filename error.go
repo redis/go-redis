@@ -96,11 +96,12 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 
-	// The pool already retries dial failures within DialTimeout. Retrying the
-	// command would restart that budget and multiply outage latency.
+	// Dial errors are retryable at higher layers, including ClusterClient node
+	// failover and MultiDB health classification. The single-node command loop
+	// suppresses its own redundant retries separately.
 	var opErr *net.OpError
 	if errors.As(err, &opErr) && opErr.Op == "dial" {
-		return false
+		return true
 	}
 
 	// Check for context errors (works with wrapped errors)
@@ -176,6 +177,17 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	// -SEARCH_TIMEOUT (search-on-timeout fail): retrying would just repeat the
 	// same expensive query.
 	return false
+}
+
+// shouldRetrySingleNode avoids restarting a pool's completed dial sequence
+// from the single-node command/pipeline retry loop. Cluster and MultiDB must
+// still see dial errors as retryable so they can fail over to another node.
+func shouldRetrySingleNode(err error, retryTimeout bool) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return false
+	}
+	return shouldRetry(err, retryTimeout)
 }
 
 func isRedisError(err error) bool {

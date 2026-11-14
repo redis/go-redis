@@ -40,7 +40,7 @@ var _ = Describe("error", func() {
 			context.Canceled:         false,
 			context.DeadlineExceeded: false,
 			redis.ErrPoolTimeout:     true,
-			&net.OpError{Op: "dial"}: false,
+			&net.OpError{Op: "dial"}: true,
 			// Use typed errors instead of plain errors.New()
 			proto.ParseErrorReply([]byte("-ERR max number of clients reached")):                                                                                   true,
 			proto.ParseErrorReply([]byte("-LOADING Redis is loading the dataset in memory")):                                                                      true,
