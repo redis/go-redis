@@ -2605,8 +2605,17 @@ func (c *baseClient) generalProcessPipelineFrom(
 	totalAttempts := priorAttempts
 
 	var lastErr error
+	// connAcquired reports whether the latest attempt obtained a connection:
+	// the withPipelineConn callback only runs after getConn (including
+	// initConn) succeeds. When setup fails, no command was sent and no
+	// reply was read, so the failure must be stamped onto every command
+	// even when it is a Redis error reply (e.g. WRONGPASS from AUTH or a
+	// SELECT failure), which pipelineErrShouldStamp would otherwise skip
+	// on the assumption that per-command replies were read.
+	var connAcquired bool
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
+		connAcquired = false
 		if attempt > 0 {
 			// Continue the backoff of an operation that already ran
 			// priorAttempts times (a full-duplex attempt), as its own retries
@@ -2625,6 +2634,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// Route pipelines through the dedicated pipeline pool when configured;
 		// withPipelineConn falls back to the regular pool when it is not.
 		lastErr = c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			connAcquired = true
 			lastConn = cn
 			// Drain pending push notifications before executing the pipeline. A drain
 			// error can mean a custom processor consumed part of a RESP3 push frame,
@@ -2647,7 +2657,9 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// undo partial writes on retry)
 		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
-			if pipelineErrShouldStamp(lastErr) {
+			// A setup failure (!connAcquired) stamps even Redis errors: no
+			// command was sent, so no per-command reply exists to preserve.
+			if !connAcquired || pipelineErrShouldStamp(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
 			if recordDuration {
@@ -2667,8 +2679,9 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// per-command — notably AutoPipeline, which discards this function's returned
 	// error — see the error instead of a nil error and a zero value. Guard on
 	// !isRedisError so a per-command redis error (e.g. LOADING) keeps its own
-	// reply rather than being overwritten.
-	if pipelineErrShouldStamp(lastErr) {
+	// reply rather than being overwritten, except when connection setup
+	// failed and no command was sent at all.
+	if !connAcquired || pipelineErrShouldStamp(lastErr) {
 		setCmdsErr(cmds, lastErr)
 	}
 
