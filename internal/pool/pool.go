@@ -1349,14 +1349,32 @@ retryIdle:
 		goto retryIdle
 	}
 
-	// Idle entries held by re-authentication or handoff become usable when
-	// their state changes, without a fresh Put. Wait for that state without
-	// repeatedly rotating and copying the idle slice in popIdle.
+	// Idle entries held by re-authentication become usable again when their
+	// state changes, without a fresh Put, so Get waits for that state instead
+	// of extra-dialing. Entries held by a connection handoff do not qualify:
+	// the handoff worker owns them (its endpoint mark stays set until
+	// ClearHandoffState) and may retry for a long time, so the established
+	// contract is to skip them and dial a fresh connection.
 	p.connsMu.Lock()
 	// A concurrent Get may have just popped the last idle conn for OnGet.
 	// It can still return that conn on rejection, so keep the maintenance
 	// wait active until its disposition is known instead of extra-dialing.
-	hasIdleOrPending := len(p.idleConns) > 0 || p.idleGetInFlight.Load() > 0
+	hasIdleOrPending := p.idleGetInFlight.Load() > 0
+	if !hasIdleOrPending {
+		for _, idle := range p.idleConns {
+			state := idle.GetStateMachine().GetState()
+			if state == StateIdle || state == StateCreated {
+				hasIdleOrPending = true
+				break
+			}
+			// Unusable entries still held by a handoff worker keep the
+			// handoff endpoint set; only re-auth entries qualify for the wait.
+			if state == StateUnusable && idle.GetHandoffEndpoint() == "" {
+				hasIdleOrPending = true
+				break
+			}
+		}
+	}
 	// popIdle examines at most popAttempts entries per call. Its bounded
 	// skip can leave a ready connection deeper in a larger idle list even
 	// though neither a hook nor a health check rejected a connection.
