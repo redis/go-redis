@@ -1742,8 +1742,8 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 // putConnWithoutTurn is an internal method that puts a connection back to the pool
 // without freeing a turn. This is used when returning a rejected connection from
 // within Get(), where the turn is still held by the Get() call.
-func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn, onRemoved func()) {
-	p.putConn(ctx, cn, false, onRemoved)
+func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn, onRemoved ...func()) {
+	p.putConn(ctx, cn, false, onRemoved...)
 }
 
 // demoteRejectedIdle moves a hook-rejected connection to the oldest end of
