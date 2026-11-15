@@ -558,7 +558,22 @@ func (c *ClusterClient) executeParallel(
 				targetSlot = slot
 			}
 		}
-		if err := c.executeParallelTarget(ctx, nodes[0], targetSlot, cmd); err != nil {
+		err := c.executeParallelTarget(ctx, nodes[0], targetSlot, cmd)
+		if err != nil && targetSlot >= 0 && (isReadOnlyError(err) || err == pool.ErrClosed) {
+			// A single-target fan-out has no successful sibling to replay.
+			// A READONLY (or closed-pool) failure may therefore follow the
+			// replacement master, unlike a multi-target broadcast.
+			state, reloadErr := c.state.ReloadOrGet(ctx)
+			if reloadErr == nil {
+				replacement, routeErr := state.slotMasterNode(targetSlot)
+				if routeErr == nil && replacement != nodes[0] {
+					err = c.executeParallelTarget(ctx, replacement, targetSlot, cmd)
+				} else if routeErr != nil {
+					_ = c.noteTopologySelectionError(routeErr)
+				}
+			}
+		}
+		if err != nil {
 			return &clusterFanoutExecutionError{err: err}
 		}
 		return nil

@@ -3073,7 +3073,7 @@ func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder
 			if node.Client.dialAddrCanChange {
 				continue
 			}
-			if dialErr := cmdsFirstErr(batch); ctx.Err() == nil && !isContextError(dialErr) &&
+			if dialErr := cmdsFirstErr(batch); ctx.Err() == nil &&
 				errors.Is(dialErr, pool.ErrDialSequenceFailure) {
 				exhaustedDialNodes[node] = dialErr
 				node.MarkAsFailing()
