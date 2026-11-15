@@ -4252,6 +4252,11 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		}
 
 		if shouldRetry(err, true) {
+			// WATCH is pinned to this node until a redirect identifies another
+			// master. Retrying an exhausted fixed-address dial cannot recover.
+			if !node.Client.dialAddrCanChange && errors.Is(err, pool.ErrDialSequenceFailure) {
+				return err
+			}
 			continue
 		}
 
