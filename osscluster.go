@@ -2351,6 +2351,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 				}
 				exhaustedDialNodes[node] = lastErr
 				node.MarkAsFailing()
+				c.state.LazyReload()
 				node = nil
 				continue
 			}
