@@ -616,3 +616,32 @@ func TestClusterRoutingStopsFixedDialRetries(t *testing.T) {
 		})
 	}
 }
+
+
+func TestClusterWatchDoesNotRestartFixedDialBudget(t *testing.T) {
+	var calls atomic.Int32
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{"127.0.0.1:6379"},
+		MaxRedirects: 3,
+		DialerRetries: 1,
+		DialTimeout: 50 * time.Millisecond,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			calls.Add(1)
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+		},
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{{
+				Start: 0, End: 16383,
+				Nodes: []ClusterNode{{Addr: "127.0.0.1:6379"}},
+			}}, nil
+		},
+	})
+	defer cluster.Close()
+	err := cluster.Watch(context.Background(), func(*Tx) error { return nil }, "key")
+	if !errors.Is(err, pool.ErrDialSequenceFailure) {
+		t.Fatalf("expected exhausted dial marker, got %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("WATCH restarted an exhausted fixed endpoint: %d dials, want 1", got)
+	}
+}
