@@ -119,8 +119,15 @@ func TestPubSubReAuthRunsWhenIdle(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("re-auth did not run")
 	}
-	if manager.IsTracking(cn.GetID()) {
-		t.Fatal("idle pub/sub connection still tracked after re-auth finished")
+	// The callback runs before the worker clears its running flag, so
+	// tracking may still read true right after done closes: poll until
+	// the worker has finished instead of asserting immediately.
+	deadline := time.Now().Add(2 * time.Second)
+	for manager.IsTracking(cn.GetID()) {
+		if time.Now().After(deadline) {
+			t.Fatal("idle pub/sub connection still tracked after re-auth finished")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -177,5 +184,29 @@ func TestPubSubReAuthRemoveConnDropsPending(t *testing.T) {
 	case n := <-ran:
 		t.Fatalf("pending re-auth %d ran after RemoveConn", n)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A rotation that arrives after the connection was removed must not
+// resurrect tracking state for the closed connection: the entry created
+// after RemoveConn would never be cleaned up again.
+func TestPubSubReAuthNoStateAfterRemoveConn(t *testing.T) {
+	manager := NewManager(&mockPooler{}, time.Second)
+	cn, cleanup := newTestPubSubConn(t)
+	defer cleanup()
+
+	_ = cn.Close()
+	manager.RemoveConn(cn.GetID())
+	manager.poolHookRef.markPubSubForReAuth(cn, func(error) {
+		t.Error("re-auth ran for a removed connection")
+	})
+
+	// Give a worker a chance to start, then check no state remains.
+	time.Sleep(100 * time.Millisecond)
+	manager.poolHookRef.pubSubReAuthLock.Lock()
+	_, ok := manager.poolHookRef.pubSubReAuth[cn.GetID()]
+	manager.poolHookRef.pubSubReAuthLock.Unlock()
+	if ok {
+		t.Fatal("mark after RemoveConn left pub/sub re-auth state behind")
 	}
 }

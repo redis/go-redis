@@ -134,6 +134,14 @@ func (r *ReAuthPoolHook) markForReAuthIfOpen(conn *pool.Conn, reAuthFn func(erro
 func (r *ReAuthPoolHook) markPubSubForReAuth(conn *pool.Conn, reAuthFn func(error)) {
 	connID := conn.GetID()
 	r.pubSubReAuthLock.Lock()
+	// Refuse rotations for a connection that is already closed. The check
+	// must hold the same lock as removeConn: otherwise a rotation that
+	// slips in after removeConn deleted the entry resurrects tracking
+	// state for a dead connection, and nothing ever cleans it up again.
+	if conn.IsClosed() {
+		r.pubSubReAuthLock.Unlock()
+		return
+	}
 	state, ok := r.pubSubReAuth[connID]
 	if !ok {
 		state = &pubSubReAuthState{}
