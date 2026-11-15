@@ -1084,17 +1084,18 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, ho
 		defer p.connsMu.Unlock()
 		// Return to acquisition when nothing can become ready without a
 		// fresh dial. Handoff-owned entries are not candidates for this wait.
+		hasReauth := false
 		for _, cn := range p.idleConns {
 			state := cn.GetStateMachine().GetState()
 			if state == StateIdle || state == StateCreated {
 				return true
 			}
 			if state == StateUnusable && cn.GetHandoffEndpoint() == "" {
-				return false // re-authentication may restore this connection
+				hasReauth = true // re-authentication may restore this connection
 			}
 		}
 		// A popped OnGet connection may still be rejected and requeued.
-		return p.idleGetInFlight.Load() == 0
+		return !hasReauth && p.idleGetInFlight.Load() == 0
 	}
 	if err := ctx.Err(); err != nil {
 		return err
