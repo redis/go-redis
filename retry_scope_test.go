@@ -403,3 +403,63 @@ func TestClusterDoesNotRedialExhaustedNode(t *testing.T) {
 		t.Fatalf("cluster sent %d commands to the same exhausted node, want 1", got)
 	}
 }
+
+func TestRingChangingDialerRetainsOuterRetries(t *testing.T) {
+	var calls atomic.Int32
+	ring := NewRing(&RingOptions{
+		Addrs: map[string]string{"shard": "127.0.0.1:0"},
+		NewClient: func(opt *Options) *Client {
+			opt.DialerCanChangeAddress = true
+			return NewClient(opt)
+		},
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			calls.Add(1)
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+		},
+		DialerRetries:      1,
+		MaxRetries:         2,
+		DialTimeout:        100 * time.Millisecond,
+		PoolSize:           8,
+		HeartbeatFrequency: time.Hour,
+		HeartbeatFn:        func(context.Context, *Client) bool { return true },
+	})
+	defer ring.Close()
+
+	if err := ring.Get(context.Background(), "key").Err(); err == nil {
+		t.Fatal("expected a dial failure")
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("changing dialer made %d attempts, want 3", got)
+	}
+}
+
+func TestClusterChangingDialerRetainsOuterRetries(t *testing.T) {
+	var calls atomic.Int32
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{"127.0.0.1:6379"},
+		NewClient: func(opt *Options) *Client {
+			opt.DialerCanChangeAddress = true
+			return NewClient(opt)
+		},
+		MaxRedirects:          2,
+		DisableRoutingPolicies: true,
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{{
+				Start: 0, End: 16383,
+				Nodes: []ClusterNode{{Addr: "127.0.0.1:6379"}},
+			}}, nil
+		},
+	})
+	defer cluster.Close()
+	cluster.OnNewNode(func(client *Client) {
+		client.AddHook(&clusterPoolDialFailHook{calls: &calls})
+	})
+
+	err := cluster.Get(context.Background(), "test").Err()
+	if !errors.Is(err, pool.ErrDialSequenceFailure) {
+		t.Fatalf("expected exhausted dial marker, got %v", err)
+	}
+	if got := calls.Load(); got < 2 {
+		t.Fatalf("changing dialer retried %d times, want more than one", got)
+	}
+}

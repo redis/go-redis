@@ -916,7 +916,9 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		lastErr = shard.Client.Process(ctx, cmd)
-		if errors.Is(lastErr, pool.ErrDialSequenceFailure) {
+		if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !shard.Client.dialAddrCanChange {
+			// A fixed shard has spent its dial budget; a custom dialer that
+			// may change addresses can retry within the outer Ring budget.
 			failedDialShards[shard] = struct{}{}
 		}
 		if lastErr == nil || (!shouldRetry(lastErr, cmd.readTimeout() == nil) && !errors.Is(lastErr, pool.ErrDialSequenceFailure)) || cmd.NoRetry() {

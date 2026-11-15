@@ -2206,7 +2206,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
 	// A completed dial budget must not be restarted on the same cluster node
 	// within this command, even if topology selection returns it again.
-	var exhaustedDialNodes map[*clusterNode]struct{}
+	var exhaustedDialNodes map[*clusterNode]error
 	needsInitialNode := c.opt.DisableRoutingPolicies || decision.policy == nil ||
 		decision.policy.Request == routing.ReqDefault
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
@@ -2244,8 +2244,14 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if node != nil && exhaustedDialNodes != nil {
-			if _, alreadyDialed := exhaustedDialNodes[node]; alreadyDialed {
-				return lastErr
+			if dialErr, alreadyDialed := exhaustedDialNodes[node]; alreadyDialed {
+				// A topology refresh may still find another node within this
+				// command's redirect budget. Never redial this fixed endpoint
+				// or return a stale MOVED/ASK instead of its dial error.
+				lastErr = dialErr
+				node = nil
+				moved, ask = false, false
+				continue
 			}
 		}
 
@@ -2331,13 +2337,14 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
-			if node != nil && errors.Is(lastErr, pool.ErrDialSequenceFailure) {
-				// The pool has already spent DialTimeout on this endpoint.
-				// Immediately try another eligible node instead of redialing it.
+			if node != nil && !node.Client.dialAddrCanChange && errors.Is(lastErr, pool.ErrDialSequenceFailure) {
+				// Only fixed endpoints have spent their entire dial budget.
+				// A custom endpoint-changing dialer can still select another
+				// address for this logical node on the next command retry.
 				if exhaustedDialNodes == nil {
-					exhaustedDialNodes = make(map[*clusterNode]struct{})
+					exhaustedDialNodes = make(map[*clusterNode]error)
 				}
-				exhaustedDialNodes[node] = struct{}{}
+				exhaustedDialNodes[node] = lastErr
 				node.MarkAsFailing()
 				node = nil
 				continue
