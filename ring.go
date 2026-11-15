@@ -893,6 +893,7 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
+	var failedDialShard *ringShard
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -904,9 +905,19 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		if err != nil {
 			return err
 		}
+		if shard == failedDialShard {
+			// The pool already exhausted its dial budget against this shard.
+			// A topology change can still select a different shard on retry.
+			return lastErr
+		}
 
 		lastErr = shard.Client.Process(ctx, cmd)
-		if lastErr == nil || !shouldRetrySingleNode(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {
+		if errors.Is(lastErr, pool.ErrDialSequenceFailure) {
+			failedDialShard = shard
+		} else {
+			failedDialShard = nil
+		}
+		if lastErr == nil || (!shouldRetry(lastErr, cmd.readTimeout() == nil) && failedDialShard == nil) || cmd.NoRetry() {
 			return lastErr
 		}
 	}

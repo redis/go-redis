@@ -2100,13 +2100,12 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 
 	errStr := err.Error()
 
-	// Check for timeout errors
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		return "TIMEOUT", "TIMEOUT", true
-	}
-
-	// Check for network errors
-	if _, ok := err.(net.Error); ok {
+	// Preserve network error classification through pool and hook wrappers.
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "TIMEOUT", "TIMEOUT", true
+		}
 		return "NETWORK", "NETWORK", true
 	}
 

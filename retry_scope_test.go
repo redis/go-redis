@@ -52,3 +52,70 @@ func TestRingDoesNotRestartPoolDialSequence(t *testing.T) {
 		t.Fatalf("ring restarted an exhausted pool dial sequence: %d calls", got)
 	}
 }
+
+type fixedRingShard string
+
+func (h fixedRingShard) Get(string) string { return string(h) }
+
+func TestRingRetriesAfterShardRebalance(t *testing.T) {
+	var ring *Ring
+	var badDials, goodDials atomic.Int32
+	ring = NewRing(&RingOptions{
+		Addrs: map[string]string{"bad": "bad:6379", "good": "good:6379"},
+		NewConsistentHash: func(shards []string) ConsistentHash {
+			for _, shard := range shards {
+				if shard == "bad" {
+					return fixedRingShard("bad")
+				}
+			}
+			return fixedRingShard("good")
+		},
+		Dialer: func(_ context.Context, _, addr string) (net.Conn, error) {
+			if addr == "bad:6379" {
+				badDials.Add(1)
+				ring.sharding.mu.Lock()
+				for range 3 {
+					ring.sharding.shards.m["bad"].Vote(false)
+				}
+				ring.sharding.rebalanceLocked()
+				ring.sharding.mu.Unlock()
+			} else {
+				goodDials.Add(1)
+			}
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+		},
+		DialerRetries:      1,
+		MaxRetries:         2,
+		DialTimeout:        100 * time.Millisecond,
+		PoolSize:           8,
+		HeartbeatFrequency: time.Hour,
+		HeartbeatFn:        func(context.Context, *Client) bool { return true },
+	})
+	defer ring.Close()
+
+	if err := ring.Get(context.Background(), "key").Err(); err == nil {
+		t.Fatal("expected a dial failure")
+	}
+	if badDials.Load() != 1 || goodDials.Load() != 1 {
+		t.Fatalf("dial attempts bad=%d good=%d, want one attempt per shard", badDials.Load(), goodDials.Load())
+	}
+}
+
+func TestWrappedDialErrorKeepsNetworkMetrics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"network", &net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("connection refused")}, "NETWORK"},
+		{"timeout", &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}, "TIMEOUT"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, tc.err)
+			kind, status, internal := classifyCommandError(wrapped)
+			if kind != tc.want || status != tc.want || !internal {
+				t.Fatalf("classifyCommandError(%v) = (%q, %q, %v), want %q", wrapped, kind, status, internal, tc.want)
+			}
+		})
+	}
+}
