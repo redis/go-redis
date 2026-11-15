@@ -383,6 +383,12 @@ type ConnPool struct {
 	connsMu   sync.Mutex
 	conns     map[uint64]*Conn
 	idleConns []*Conn
+	// Counts popped idle connections still being health-checked or passed through
+	// OnGet. While one is in flight it may be rejected and returned to the idle
+	// list, so another Get must not mistake a temporarily empty list for capacity
+	// to dial. Increment while holding connsMu at pop and decrement only after
+	// the connection is accepted, removed, or requeued.
+	idleGetInFlight atomic.Int32
 
 	// pendingConns reserves MaxActiveConns capacity before dialing. Together
 	// with conns it counts both pooled and dedicated connections, under connsMu.
@@ -1077,7 +1083,8 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, ho
 		p.connsMu.Lock()
 		defer p.connsMu.Unlock()
 		if len(p.idleConns) == 0 {
-			return true
+			// An OnGet still running may put its rejected connection back.
+			return p.idleGetInFlight.Load() == 0
 		}
 		for _, cn := range p.idleConns {
 			state := cn.GetStateMachine().GetState()
@@ -1231,6 +1238,7 @@ retryIdle:
 		p.connsMu.Lock()
 		cn, err = p.popIdle()
 		if cn != nil {
+			p.idleGetInFlight.Add(1)
 			// Emit idle→used transition inside the lock so Close() sees
 			// consistent state (conn removed from idleConns = "used").
 			if cb := p.metrics().ConnectionCount; cb != nil {
@@ -1252,6 +1260,7 @@ retryIdle:
 		if !p.isHealthyConn(cn, nowNs) {
 			// Connection was already transitioned to MetricStateUsed under the lock above.
 			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateUsed)
+			p.idleGetInFlight.Add(-1)
 			removedUnhealthy = true
 			continue
 		}
@@ -1279,10 +1288,12 @@ retryIdle:
 					p.demoteRejectedIdle(cn)
 					cn = nil
 				}
+				p.idleGetInFlight.Add(-1)
 				continue
 			}
 		}
 
+		p.idleGetInFlight.Add(-1)
 		atomic.AddUint32(&p.stats.Hits, 1)
 
 		// Record wait time (use cached callback from above)
@@ -1332,13 +1343,21 @@ retryIdle:
 	// their state changes, without a fresh Put. Wait for that state without
 	// repeatedly rotating and copying the idle slice in popIdle.
 	p.connsMu.Lock()
-	hasIdle := len(p.idleConns) > 0
+	// A concurrent Get may have just popped the last idle conn for OnGet.
+	// It can still return that conn on rejection, so keep the maintenance
+	// wait active until its disposition is known instead of extra-dialing.
+	hasIdleOrPending := len(p.idleConns) > 0 || p.idleGetInFlight.Load() > 0
 	p.connsMu.Unlock()
-	if hasIdle {
+	if hasIdleOrPending {
 		// Continue past getAttempts only while the original idle snapshot
 		// has unexamined entries. Refills cannot expand this budget.
 		if removedUnhealthy && idleScanRemaining > 0 {
 			if wait && time.Until(poolDeadline) <= 0 {
+				// Prefer the caller's expired context when both deadlines elapsed.
+				if err := ctx.Err(); err != nil {
+					p.freeTurn()
+					return nil, err
+				}
 				p.freeTurn()
 				return nil, ErrPoolTimeout
 			}

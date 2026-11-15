@@ -114,6 +114,164 @@ func TestGetSkipsHookRejectedIdleForHealthyPeer(t *testing.T) {
 	}
 }
 
+// A rejected idle connection may be temporarily absent from idleConns while its
+// OnGet hook is running. Another Get must wait for its disposition rather than
+// dial a replacement before the hook has a chance to requeue it.
+type delayedIdleRejectHook struct {
+	entered  chan struct{}
+	release  chan struct{}
+	rejected atomic.Bool
+}
+
+func (h *delayedIdleRejectHook) OnGet(_ context.Context, _ *pool.Conn, isNew bool) (bool, error) {
+	if !isNew && h.rejected.CompareAndSwap(false, true) {
+		close(h.entered)
+		<-h.release
+		return false, nil
+	}
+	return true, nil
+}
+
+func (*delayedIdleRejectHook) OnPut(context.Context, *pool.Conn) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (*delayedIdleRejectHook) OnRemove(context.Context, *pool.Conn, error) {}
+
+func TestGetWaitsForInFlightIdleHook(t *testing.T) {
+	ctx := context.Background()
+	var dials atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		PoolSize: 2, MaxActiveConns: 2, MaxConcurrentDials: 2,
+		PoolTimeout: 200 * time.Millisecond,
+		Dialer: func(context.Context) (net.Conn, error) {
+			dials.Add(1)
+			return newDummyConn(), nil
+		},
+	})
+	t.Cleanup(func() { _ = p.Close() })
+	original, err := p.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original.GetStateMachine().Transition(pool.StateInUse)
+	p.Put(ctx, original)
+
+	h := &delayedIdleRejectHook{entered: make(chan struct{}), release: make(chan struct{})}
+	p.AddPoolHook(h)
+	firstCtx, cancelFirst := context.WithCancel(ctx)
+	defer cancelFirst()
+	type result struct {
+		cn *pool.Conn
+		err error
+	}
+	firstDone := make(chan result, 1)
+	go func() {
+		cn, err := p.Get(firstCtx)
+		firstDone <- result{cn, err}
+	}()
+	select {
+	case <-h.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first OnGet did not enter")
+	}
+	// Ensure the blocked OnGet is always released on test failure.
+	defer func() {
+		select {
+		case <-h.release:
+		default:
+			close(h.release)
+		}
+	}()
+	secondCtx, cancelSecond := context.WithTimeout(ctx, time.Second)
+	defer cancelSecond()
+	secondDone := make(chan result, 1)
+	go func() {
+		cn, err := p.Get(secondCtx)
+		secondDone <- result{cn, err}
+	}()
+	select {
+	case r := <-secondDone:
+		if r.cn != nil {
+			p.Put(ctx, r.cn)
+		}
+		t.Fatalf("second Get bypassed pending OnGet: %v", r.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("dialed a replacement while OnGet was pending: %d dials", got)
+	}
+	cancelFirst()
+	close(h.release)
+	first := <-firstDone
+	if first.cn != nil {
+		p.Put(ctx, first.cn)
+	}
+	if first.err != context.Canceled {
+		t.Fatalf("first Get returned %v, want cancellation", first.err)
+	}
+	select {
+	case second := <-secondDone:
+		if second.err != nil || second.cn != original {
+			t.Fatalf("second Get returned conn=%p err=%v; want original=%p", second.cn, second.err, original)
+		}
+		p.Put(ctx, second.cn)
+	case <-time.After(time.Second):
+		t.Fatal("second Get did not reuse the requeued idle connection")
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("unexpected extra dial after requeue: %d", got)
+	}
+}
+
+// Closing a stale idle connection can outlast both the request and pool
+// deadlines. In that race the caller context error must take precedence.
+type slowStaleCloseConn struct{ net.Conn }
+
+func (c *slowStaleCloseConn) Close() error {
+	time.Sleep(12 * time.Millisecond)
+	return c.Conn.Close()
+}
+
+func TestGetStaleScanPrefersExpiredContext(t *testing.T) {
+	ctx := context.Background()
+	p := pool.NewConnPool(&pool.Options{
+		PoolSize: 4, MaxActiveConns: 4, MaxConcurrentDials: 4,
+		PoolTimeout: 10 * time.Millisecond, ConnMaxIdleTime: time.Minute,
+		Dialer: func(context.Context) (net.Conn, error) {
+			return &slowStaleCloseConn{newDummyConn()}, nil
+		},
+	})
+	t.Cleanup(func() { _ = p.Close() })
+	conns := make([]*pool.Conn, 4)
+	for i := range conns {
+		var err error
+		conns[i], err = p.Get(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns[i].GetStateMachine().Transition(pool.StateInUse)
+	}
+	for i, cn := range conns {
+		p.Put(ctx, cn)
+		if i > 0 {
+			cn.SetUsedAt(time.Now().Add(-time.Hour))
+		}
+	}
+	deadlineCtx, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
+	defer cancel()
+	cn, err := p.Get(deadlineCtx)
+	if cn != nil {
+		p.Put(ctx, cn)
+	}
+	if err != context.DeadlineExceeded {
+		t.Fatalf("stale scan returned %v, want context deadline exceeded", err)
+	}
+	if p.Stats().Timeouts != 0 {
+		t.Fatal("caller deadline incorrectly counted as a pool timeout")
+	}
+}
+
 func TestTryGetSkipsMoreThanThreeStaleIdleConns(t *testing.T) {
 	ctx := context.Background()
 	var dials atomic.Int32
