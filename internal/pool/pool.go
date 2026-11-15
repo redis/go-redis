@@ -1055,7 +1055,7 @@ func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 // repeatedly running popIdle (which rearranges the idle slice). A maintenance
 // worker updates state without calling Put, so there is no pool queue event to
 // wait for here. Its ticker and deadline are always stopped before returning.
-func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time) error {
+func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, hookRejected bool) error {
 	isReady := func() bool {
 		p.connsMu.Lock()
 		defer p.connsMu.Unlock()
@@ -1076,12 +1076,15 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time) er
 	if p.closed() {
 		return ErrClosed
 	}
-	if isReady() {
-		return nil
-	}
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return ErrPoolTimeout
+	}
+	// An OnGet hook can reject StateIdle connections while re-authentication
+	// is scheduled but not yet running. After such a rejection, wait for at
+	// least one tick rather than immediately retrying the same idle entry.
+	if !hookRejected && isReady() {
+		return nil
 	}
 	interval := min(10*time.Millisecond, remaining/4)
 	if interval <= 0 {
@@ -1104,9 +1107,6 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time) er
 			}
 			if p.closed() {
 				return ErrClosed
-			}
-			if isReady() {
-				return nil
 			}
 			return ErrPoolTimeout
 		case <-ticker.C:
@@ -1190,6 +1190,7 @@ retryIdle:
 		return nil, ErrClosed
 	}
 	drainGeneration := p.drainGeneration.Load()
+	hookRejected := false
 	for attempts := 0; attempts < getAttempts; attempts++ {
 
 		p.connsMu.Lock()
@@ -1229,6 +1230,7 @@ retryIdle:
 					// Connection was already transitioned to MetricStateUsed under the lock above.
 					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateUsed)
 				} else {
+					hookRejected = true
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
 					// Connection is already in MetricStateUsed (transitioned under the lock above).
 					// Return connection to pool without freeing the turn that this Get() call holds.
@@ -1294,7 +1296,7 @@ retryIdle:
 			p.freeTurn()
 			return nil, ErrPoolTryFull
 		}
-		if err = p.waitForUsableIdle(ctx, poolDeadline); err != nil {
+		if err = p.waitForUsableIdle(ctx, poolDeadline, hookRejected); err != nil {
 			p.freeTurn()
 			return nil, err
 		}

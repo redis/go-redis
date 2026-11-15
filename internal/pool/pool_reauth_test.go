@@ -13,6 +13,54 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
+// A re-authentication hook can reject a connection before its worker has
+// transitioned the connection out of StateIdle.
+type rejectIdleOnGetHook struct{ rejected atomic.Int32 }
+
+func (h *rejectIdleOnGetHook) OnGet(_ context.Context, _ *pool.Conn, isNew bool) (bool, error) {
+	if isNew {
+		return true, nil
+	}
+	h.rejected.Add(1)
+	return false, nil
+}
+
+func (*rejectIdleOnGetHook) OnPut(context.Context, *pool.Conn) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (*rejectIdleOnGetHook) OnRemove(context.Context, *pool.Conn, error) {}
+
+func TestGetBoundsHookRejectedIdleRetries(t *testing.T) {
+	p := pool.NewConnPool(&pool.Options{
+		PoolSize: 1, MaxActiveConns: 1, MaxConcurrentDials: 1,
+		PoolTimeout: 20 * time.Millisecond, Dialer: dummyDialer,
+	})
+	t.Cleanup(func() { _ = p.Close() })
+	ctx := context.Background()
+	cn, err := p.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cn.GetStateMachine().Transition(pool.StateInUse)
+	p.Put(ctx, cn)
+
+	hook := &rejectIdleOnGetHook{}
+	p.AddPoolHook(hook)
+	boundedCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_, err = p.Get(boundedCtx)
+	if err != pool.ErrPoolTimeout {
+		t.Fatalf("hook-rejected idle Get returned %v, want pool timeout", err)
+	}
+	if got := hook.rejected.Load(); got == 0 || got > 100 {
+		t.Fatalf("hook rejected %d times, want bounded retries", got)
+	}
+	if p.QueueLen() != 0 {
+		t.Fatalf("pool turn leaked after timeout: %d", p.QueueLen())
+	}
+}
+
 func TestGetWaitsForReAuth(t *testing.T) {
 	for _, capped := range []bool{true, false} {
 		name := "unlimited"
