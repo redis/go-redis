@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -340,5 +341,65 @@ func TestCustomDialerCanRetryDifferentEndpoint(t *testing.T) {
 	fd := &fdEngine{client: switching}
 	if !fd.canRetryLease(poolErr, 0) {
 		t.Fatal("full-duplex lease must retain the endpoint-change retry policy")
+	}
+}
+
+func TestSentinelClientCustomDialerRetryPolicy(t *testing.T) {
+	poolErr := fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, context.DeadlineExceeded)
+	client := NewSentinelClient(&Options{
+		Addr: "127.0.0.1:0", DialerCanChangeAddress: true,
+		DialerRetries: 1, MaxRetries: 2,
+	})
+	defer client.Close()
+	if !client.shouldRetryCommand(poolErr, true) {
+		t.Fatal("SentinelClient lost the opted-in endpoint-change retry policy")
+	}
+
+	fixed := NewSentinelClient(&Options{
+		Addr: "127.0.0.1:0", DialerRetries: 1, MaxRetries: 2,
+	})
+	defer fixed.Close()
+	if fixed.shouldRetryCommand(poolErr, true) {
+		t.Fatal("fixed-address SentinelClient must not restart an exhausted dial sequence")
+	}
+}
+
+type clusterPoolDialFailHook struct{ calls *atomic.Int32 }
+
+func (h *clusterPoolDialFailHook) DialHook(next DialHook) DialHook { return next }
+func (h *clusterPoolDialFailHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+func (h *clusterPoolDialFailHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(context.Context, Cmder) error {
+		h.calls.Add(1)
+		return fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, context.DeadlineExceeded)
+	}
+}
+
+func TestClusterDoesNotRedialExhaustedNode(t *testing.T) {
+	var calls atomic.Int32
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{"127.0.0.1:6379"},
+		MaxRedirects: 3,
+		DisableRoutingPolicies: true,
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{{
+				Start: 0, End: 16383,
+				Nodes: []ClusterNode{{Addr: "127.0.0.1:6379"}},
+			}}, nil
+		},
+	})
+	defer cluster.Close()
+	cluster.OnNewNode(func(client *Client) {
+		client.AddHook(&clusterPoolDialFailHook{calls: &calls})
+	})
+
+	err := cluster.Get(context.Background(), "test").Err()
+	if !errors.Is(err, pool.ErrDialSequenceFailure) {
+		t.Fatalf("expected exhausted pool dial marker, got %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("cluster sent %d commands to the same exhausted node, want 1", got)
 	}
 }

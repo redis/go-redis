@@ -2204,6 +2204,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	var moved bool
 	var ask bool
 	var lastErr error
+	// A completed dial budget must not be restarted on the same cluster node
+	// within this command, even if topology selection returns it again.
+	var exhaustedDialNodes map[*clusterNode]struct{}
 	needsInitialNode := c.opt.DisableRoutingPolicies || decision.policy == nil ||
 		decision.policy.Request == routing.ReqDefault
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
@@ -2237,6 +2240,12 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 					continue
 				}
 				return err
+			}
+		}
+
+		if node != nil && exhaustedDialNodes != nil {
+			if _, alreadyDialed := exhaustedDialNodes[node]; alreadyDialed {
+				return lastErr
 			}
 		}
 
@@ -2322,7 +2331,18 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
-			// First retry the same node.
+			if node != nil && errors.Is(lastErr, pool.ErrDialSequenceFailure) {
+				// The pool has already spent DialTimeout on this endpoint.
+				// Immediately try another eligible node instead of redialing it.
+				if exhaustedDialNodes == nil {
+					exhaustedDialNodes = make(map[*clusterNode]struct{})
+				}
+				exhaustedDialNodes[node] = struct{}{}
+				node.MarkAsFailing()
+				node = nil
+				continue
+			}
+			// First retry the same node for ordinary transient errors.
 			if attempt == 0 {
 				continue
 			}

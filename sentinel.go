@@ -849,6 +849,8 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 			apClosed: &atomic.Bool{},
 			opt:      opt,
 			onClose:  &onCloseHooks{},
+			// An opted-in custom dialer may select a new Sentinel on retry.
+			dialAddrCanChange: opt.DialerCanChangeAddress,
 		},
 	}
 	c.rec, c.poolMetrics = clientRecorder(opt.OTelRecorder)
