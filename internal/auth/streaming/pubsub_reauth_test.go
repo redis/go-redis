@@ -105,6 +105,89 @@ func TestPubSubReAuthSerializesRotations(t *testing.T) {
 	}
 }
 
+// A rotation being enqueued must hold pubSubReAuthLock until its enqueue
+// decision under state.mu is done. If the lock is released between the
+// state lookup and the decision, an older rotation can pause there while
+// a newer one claims running — and the older one then overwrites pending,
+// so the worker writes the older credentials last (Codex review on
+// 0a8583a8). While a rotation is parked on state.mu, the map lock must
+// still be held by it.
+func TestPubSubReAuthEnqueueHoldsMapLock(t *testing.T) {
+	manager := NewManager(&mockPooler{}, time.Second)
+	cn, cleanup := newTestPubSubConn(t)
+	defer cleanup()
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	ran := make(chan int, 2)
+
+	mkFn := func(n int) func(error) {
+		return func(error) {
+			if n == 1 {
+				once.Do(func() { close(started) })
+				<-release
+			}
+			ran <- n
+		}
+	}
+
+	manager.MarkForReAuth(cn, mkFn(1))
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first re-auth did not start")
+	}
+
+	// Park the next rotation inside its enqueue decision.
+	hook := manager.poolHookRef
+	hook.pubSubReAuthLock.Lock()
+	state := hook.pubSubReAuth[cn.GetID()]
+	hook.pubSubReAuthLock.Unlock()
+	state.mu.Lock()
+
+	enqueued := make(chan struct{})
+	go func() { manager.MarkForReAuth(cn, mkFn(2)); close(enqueued) }()
+	// Give the rotation time to arrive and park on state.mu.
+	time.Sleep(100 * time.Millisecond)
+
+	// The enqueuing rotation must still hold the map lock: had it
+	// released the lock between the lookup and the decision, a newer
+	// rotation could claim running first and then be overwritten in
+	// pending by this older one.
+	if hook.pubSubReAuthLock.TryLock() {
+		hook.pubSubReAuthLock.Unlock()
+		state.mu.Unlock()
+		close(release)
+		t.Fatal("rotation released pubSubReAuthLock before its enqueue decision finished")
+	}
+
+	state.mu.Unlock()
+	select {
+	case <-enqueued:
+	case <-time.After(2 * time.Second):
+		t.Fatal("rotation did not enqueue")
+	}
+	close(release)
+
+	select {
+	case n := <-ran:
+		if n != 1 {
+			t.Fatalf("first re-auth = %d, want 1", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight re-auth did not finish")
+	}
+	select {
+	case n := <-ran:
+		if n != 2 {
+			t.Fatalf("pending re-auth = %d, want 2", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending re-auth did not run")
+	}
+}
+
 // A rotation for an idle connection runs right away, and once it finishes
 // the connection is no longer tracked.
 func TestPubSubReAuthRunsWhenIdle(t *testing.T) {

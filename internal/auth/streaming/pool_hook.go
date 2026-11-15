@@ -147,9 +147,15 @@ func (r *ReAuthPoolHook) markPubSubForReAuth(conn *pool.Conn, reAuthFn func(erro
 		state = &pubSubReAuthState{}
 		r.pubSubReAuth[connID] = state
 	}
+	// Hold pubSubReAuthLock while deciding under state.mu: if the lock
+	// is released between the lookup and the decision, an older rotation
+	// can pause there, a newer one can claim running, and the older one
+	// then overwrites pending — the worker would write the older
+	// credentials last. removeConn takes the locks in the same order,
+	// so this nesting cannot deadlock.
+	state.mu.Lock()
 	r.pubSubReAuthLock.Unlock()
 
-	state.mu.Lock()
 	if state.closed {
 		state.mu.Unlock()
 		return
