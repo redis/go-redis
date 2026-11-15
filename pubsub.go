@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -28,7 +29,7 @@ type PubSub struct {
 	// client) records to the global recorder. Read through recorder().
 	rec otel.Recorder
 
-	newConn   func(ctx context.Context, addr string, channels []string) (*pool.Conn, error)
+	newConn   func(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
 	mu        sync.Mutex
@@ -62,6 +63,9 @@ type PubSub struct {
 
 	// Cleanup callback for maintenanceNotifications upgrade tracking
 	onClose func()
+
+	// In-place re-authentication pending reply count (RESP3)
+	authPending int
 }
 
 func (c *PubSub) init() {
@@ -123,7 +127,9 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	channels = append(channels, slices.Collect(maps.Keys(c.schannels))...)
 	channels = append(channels, newChannels...)
 
-	cn, err := c.newConn(ctx, c.opt.Addr, channels)
+	cn, err := c.newConn(ctx, c.opt.Addr, channels, func(cn *pool.Conn) {
+		cn.SetPubSubReAuth(c.reauth)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +256,9 @@ func (c *PubSub) closeTheCn(reason error) error {
 	if c.cn == nil {
 		return nil
 	}
+	c.cn.SetPubSubReAuth(nil)
+	c.authPending = 0
+	c.cmd = nil
 	err := c.closeConn(c.cn)
 	c.cn = nil
 	return err
@@ -534,32 +543,66 @@ func (c *PubSub) newMessage(ctx context.Context, cn *pool.Conn, reply interface{
 // is not received in time. This is low-level API and in most cases
 // Channel should be used instead.
 func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (interface{}, error) {
-	if c.cmd == nil {
-		c.cmd = NewCmd(ctx)
-	}
-
 	// Don't hold the lock to allow subscriptions and pings.
 	cn, err := c.connWithLock(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
-		// To be sure there are no buffered push notifications, we process them before reading the reply
-		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			// Log the error but don't fail the command execution
-			// Push notification processing errors shouldn't break normal Redis operations
-			internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
+	c.mu.Lock()
+	if c.cmd == nil {
+		c.cmd = NewCmd(ctx)
+	}
+	cmd := c.cmd
+	c.mu.Unlock()
+
+	for {
+
+		err = cn.WithReader(ctx, timeout, func(rd *proto.Reader) error {
+			// To be sure there are no buffered push notifications, we process them before reading the reply
+			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				// Log the error but don't fail the command execution
+				// Push notification processing errors shouldn't break normal Redis operations
+				internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
+			}
+			return cmd.readReply(rd)
+		})
+
+		if err != nil {
+			if isRedisError(err) {
+				c.mu.Lock()
+				if c.authPending > 0 {
+					c.authPending--
+					c.reconnect(ctx, err)
+					c.mu.Unlock()
+					return nil, err
+				}
+				c.mu.Unlock()
+			}
+			c.releaseConnWithLock(ctx, cn, err, timeout > 0)
+			return nil, err
 		}
-		return c.cmd.readReply(rd)
-	})
+
+		c.mu.Lock()
+		if c.authPending > 0 {
+			if val, ok := cmd.Val().(string); ok && strings.EqualFold(val, "OK") {
+				c.authPending--
+				c.mu.Unlock()
+				continue
+			}
+		}
+		c.mu.Unlock()
+
+		break
+	}
+
 	c.releaseConnWithLock(ctx, cn, err, timeout > 0)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return c.newMessage(ctx, cn, c.cmd.Val())
+	return c.newMessage(ctx, cn, cmd.Val())
 }
 
 // Receive returns a message as a Subscription, Message, Pong or error.
@@ -600,6 +643,9 @@ func (c *PubSub) ReceiveMessage(ctx context.Context) (*Message, error) {
 }
 
 func (c *PubSub) getContext() context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.cmd != nil {
 		return c.cmd.ctx
 	}
@@ -964,4 +1010,43 @@ func (c *channel) initAllChan() {
 			}
 		}
 	}()
+}
+
+func (c *PubSub) reauth(username, password string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return pool.ErrClosed
+	}
+	if c.cn == nil {
+		return errors.New("redis: pubsub connection is not ready for re-authentication")
+	}
+	cn := c.cn
+
+	if !cn.IsResp3() {
+		// When the negotiated protocol is RESP2 (either configured or negotiated
+		// as fallback), a subscribed pub/sub connection cannot execute in-place
+		// AUTH commands. Safely trigger reconnect rather than in-place AUTH.
+		c.reconnect(context.Background(), nil)
+		return nil
+	}
+
+	ctx := context.Background()
+	var cmd *StatusCmd
+	if username != "" {
+		cmd = NewStatusCmd(ctx, "AUTH", username, password)
+	} else {
+		cmd = NewStatusCmd(ctx, "AUTH", password)
+	}
+
+	err := c.writeCmd(ctx, cn, cmd)
+	c.releaseConn(ctx, cn, err, false)
+	if err != nil {
+		return err
+	}
+	if c.cn == cn {
+		c.authPending++
+	}
+	return nil
 }
