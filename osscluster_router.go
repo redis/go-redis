@@ -563,16 +563,36 @@ func (c *ClusterClient) executeParallel(
 		}
 		err := c.executeParallelTarget(ctx, nodes[0], targetSlot, cmd)
 		if err != nil && targetSlot >= 0 && (isReadOnlyError(err) || err == pool.ErrClosed) {
-			// A single-target fan-out has no successful sibling to replay.
-			// A READONLY (or closed-pool) failure may therefore follow the
-			// replacement master, unlike a multi-target broadcast.
-			state, reloadErr := c.state.ReloadOrGet(ctx)
-			if reloadErr == nil {
+			// No sibling has succeeded, so bounded rerouting is safe for
+			// this single-target fan-out. A first refresh can still be stale.
+			currentNode := nodes[0]
+			for retry := 0; retry <= c.opt.MaxRedirects; retry++ {
+				if retry > 0 {
+					if sleepErr := internal.Sleep(ctx, c.retryBackoff(retry)); sleepErr != nil {
+						err = sleepErr
+						break
+					}
+				}
+				state, reloadErr := c.state.ReloadOrGet(ctx)
+				if reloadErr != nil {
+					if ctx.Err() != nil {
+						err = ctx.Err()
+						break
+					}
+					continue
+				}
 				replacement, routeErr := state.slotMasterNode(targetSlot)
-				if routeErr == nil && replacement != nodes[0] {
-					err = c.executeParallelTarget(ctx, replacement, targetSlot, cmd)
-				} else if routeErr != nil {
+				if routeErr != nil {
 					_ = c.noteTopologySelectionError(routeErr)
+					continue
+				}
+				if replacement == currentNode {
+					continue
+				}
+				currentNode = replacement
+				err = c.executeParallelTarget(ctx, currentNode, targetSlot, cmd)
+				if err == nil || (!isReadOnlyError(err) && err != pool.ErrClosed) {
+					break
 				}
 			}
 		}

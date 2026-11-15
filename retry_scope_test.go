@@ -904,3 +904,60 @@ func TestClusterCallerCancellationDoesNotMarkNodeFailing(t *testing.T) {
 		})
 	}
 }
+
+type delayedClusterPromotionHook struct {
+	address  string
+	old      string
+	newCalls *atomic.Int32
+}
+
+func (h delayedClusterPromotionHook) DialHook(next DialHook) DialHook { return next }
+func (h delayedClusterPromotionHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+func (h delayedClusterPromotionHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(_ context.Context, cmd Cmder) error {
+		if h.address == h.old {
+			return pool.ErrClosed
+		}
+		h.newCalls.Add(1)
+		cmd.SetErr(nil)
+		return nil
+	}
+}
+
+func TestClusterSingleTargetRetriesStaleTopology(t *testing.T) {
+	const oldAddr, newAddr = "127.0.0.1:6381", "127.0.0.1:6382"
+	var loads, newCalls atomic.Int32
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{oldAddr, newAddr}, MaxRedirects: 5,
+		ClusterStateReloadInterval: time.Hour,
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			addr := oldAddr
+			if loads.Add(1) > 3 {
+				addr = newAddr
+			}
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+		},
+	})
+	defer cluster.Close()
+	cluster.OnNewNode(func(client *Client) {
+		client.AddHook(delayedClusterPromotionHook{address: client.opt.Addr, old: oldAddr, newCalls: &newCalls})
+	})
+	ctx := context.Background()
+	if _, err := cluster.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	original, err := cluster.nodes.GetOrCreate(oldAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewCmd(ctx, "flushdb")
+	err = cluster.executeParallel(ctx, cmd, []*clusterNode{original}, map[*clusterNode]int{original: 0}, nil, nil)
+	if err != nil {
+		t.Fatalf("single-target fan-out gave up before a later topology refresh: %v", err)
+	}
+	if got := newCalls.Load(); got != 1 {
+		t.Fatalf("expected one successful replacement target call, got %d", got)
+	}
+}
