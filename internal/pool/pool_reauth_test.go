@@ -215,8 +215,18 @@ func TestGetBoundsMinIdleHealthFailureRetries(t *testing.T) {
 			if err == context.DeadlineExceeded {
 				t.Fatalf("%s kept retrying unhealthy min-idle replacements until caller deadline", name)
 			}
-			if p.QueueLen() != 0 {
-				t.Fatalf("%s leaked a pool turn: %d", name, p.QueueLen())
+			if pending := p.Stats().PendingRequests; pending != 0 {
+				t.Fatalf("%s leaked %d pending requests", name, pending)
+			}
+			// MinIdleConns replenishment borrows its own pool turns in background
+			// goroutines. Wait for those workers instead of mistaking their turns
+			// for a leak by the completed Get/TryGet call.
+			turnDeadline := time.Now().Add(2 * time.Second)
+			for p.QueueLen() != 0 && time.Now().Before(turnDeadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if turns := p.QueueLen(); turns != 0 {
+				t.Fatalf("%s left %d pool turns after min-idle refill", name, turns)
 			}
 		})
 	}
