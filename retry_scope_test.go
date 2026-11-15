@@ -724,3 +724,94 @@ func TestClusterProcessSchedulesReloadAfterExhaustedDial(t *testing.T) {
 		t.Fatal("cluster did not schedule a topology reload after dial exhaustion")
 	}
 }
+
+func TestClusterBroadcastKeepsOriginalShardTarget(t *testing.T) {
+	const badAddr, otherAddr = "127.0.0.1:6381", "127.0.0.1:6382"
+	var badCalls, otherCalls, reloads atomic.Int32
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs:                      []string{badAddr, otherAddr},
+		MaxRedirects:               2,
+		ClusterStateReloadInterval: time.Hour,
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			if reloads.Add(1) == 1 {
+				return []ClusterSlot{
+					{Start: 0, End: 8191, Nodes: []ClusterNode{{Addr: badAddr}}},
+					{Start: 8192, End: 16383, Nodes: []ClusterNode{{Addr: otherAddr}}},
+				}, nil
+			}
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: otherAddr}}}}, nil
+		},
+	})
+	defer cluster.Close()
+	cluster.OnNewNode(func(client *Client) {
+		calls := &badCalls
+		if client.opt.Addr == otherAddr {
+			calls = &otherCalls
+		}
+		client.AddHook(&clusterPoolDialFailHook{calls: calls})
+	})
+
+	ctx := context.Background()
+	if _, err := cluster.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	badNode, err := cluster.nodes.GetOrCreate(badAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// After scale-in the old representative slot points at another original
+	// broadcast target, not a replacement for the failed shard.
+	if _, err := cluster.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	err = cluster.executeParallelTarget(ctx, badNode, 0, NewCmd(ctx, "dbsize"))
+	if !errors.Is(err, pool.ErrDialSequenceFailure) {
+		t.Fatalf("expected original shard dial error, got %v", err)
+	}
+	if badCalls.Load() != 1 || otherCalls.Load() != 0 {
+		t.Fatalf("broadcast rerouted a failed shard: original=%d duplicate=%d", badCalls.Load(), otherCalls.Load())
+	}
+}
+
+type canceledClusterPipelineReviewHook struct{}
+
+func (canceledClusterPipelineReviewHook) DialHook(next DialHook) DialHook { return next }
+func (canceledClusterPipelineReviewHook) ProcessHook(next ProcessHook) ProcessHook { return next }
+func (canceledClusterPipelineReviewHook) ProcessPipelineHook(ProcessPipelineHook) ProcessPipelineHook {
+	return func(context.Context, []Cmder) error {
+		return fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, context.Canceled)
+	}
+}
+
+func TestCanceledClusterPipelineDoesNotFailNode(t *testing.T) {
+	const addr = "127.0.0.1:6379"
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{addr}, MaxRedirects: 2,
+		ClusterStateReloadInterval: time.Hour,
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+		},
+	})
+	defer cluster.Close()
+	cluster.OnNewNode(func(client *Client) {
+		client.AddHook(canceledClusterPipelineReviewHook{})
+	})
+	ctx := context.Background()
+	if _, err := cluster.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	node, err := cluster.nodes.GetOrCreate(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = cluster.Pipelined(ctx, func(p Pipeliner) error {
+		p.Get(ctx, "key")
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled dial error, got %v", err)
+	}
+	if node.failing.Load() != 0 {
+		t.Fatal("canceled pool dial incorrectly marked a healthy cluster node as failing")
+	}
+}
