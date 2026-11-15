@@ -921,7 +921,8 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 			// may change addresses can retry within the outer Ring budget.
 			failedDialShards[shard] = struct{}{}
 		}
-		if lastErr == nil || (!shouldRetry(lastErr, cmd.readTimeout() == nil) && !errors.Is(lastErr, pool.ErrDialSequenceFailure)) || cmd.NoRetry() {
+		if lastErr == nil || ctx.Err() != nil || errors.Is(lastErr, context.Canceled) ||
+			(!shouldRetry(lastErr, cmd.readTimeout() == nil) && !errors.Is(lastErr, pool.ErrDialSequenceFailure)) || cmd.NoRetry() {
 			return lastErr
 		}
 	}

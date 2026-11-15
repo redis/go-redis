@@ -314,6 +314,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	var moved, ask bool
 	var redirected bool
 	var lastErr error
+	var exhaustedDialNodes map[*clusterNode]error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		ctx = callerCtx
 		if redirected {
@@ -346,6 +347,14 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			}
 		}
 
+		if dialErr, already := exhaustedDialNodes[node]; already {
+			// Reloads may select a node whose pool dial budget was already
+			// exhausted by this invocation. Never start that dial again.
+			lastErr = dialErr
+			node = nil
+			moved, ask = false, false
+			continue
+		}
 		c.cscCheckNode(cmd, node.Client)
 		if ask {
 			ask = false
@@ -399,6 +408,16 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		}
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
+			if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !node.Client.dialAddrCanChange {
+				if exhaustedDialNodes == nil {
+					exhaustedDialNodes = make(map[*clusterNode]error)
+				}
+				exhaustedDialNodes[node] = lastErr
+				node.MarkAsFailing()
+				c.state.LazyReload()
+				node = nil
+				continue
+			}
 			if attempt > 0 {
 				node.MarkAsFailing()
 				node = nil
@@ -606,11 +625,15 @@ func (c *ClusterClient) executeParallelTarget(
 	cscEnter(cmd)
 	defer cscLeave(cmd)
 	var lastErr error
+	failedDialNodes := make(map[*clusterNode]struct{})
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
 			}
+		}
+		if _, exhausted := failedDialNodes[node]; exhausted {
+			return lastErr
 		}
 		c.cscCheckNode(cmd, node.Client)
 		lastErr = node.Client.Process(ctx, cmd)
@@ -632,6 +655,22 @@ func (c *ClusterClient) executeParallelTarget(
 			// Do not redirect one keyless broadcast target into another.
 			c.state.LazyReload()
 			c.recordClusterRedirectMetric(ctx, ask)
+			return lastErr
+		}
+		if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !node.Client.dialAddrCanChange {
+			failedDialNodes[node] = struct{}{}
+			if targetSlot >= 0 {
+				// A slot migration may supply another master, but never retry
+				// this target's already-exhausted fixed endpoint.
+				if state, err := c.state.ReloadOrGet(ctx); err == nil {
+					if replacement, routeErr := state.slotMasterNode(targetSlot); routeErr == nil && replacement != node {
+						if _, exhausted := failedDialNodes[replacement]; !exhausted {
+							node = replacement
+							continue
+						}
+					}
+				}
+			}
 			return lastErr
 		}
 		if !shouldRetry(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {

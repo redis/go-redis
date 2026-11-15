@@ -526,3 +526,93 @@ func TestClusterPipelinesDoNotRestartFixedNodeDialBudget(t *testing.T) {
 		})
 	}
 }
+
+
+type countingFixedRingHash struct{ picks *atomic.Int32 }
+
+func (h *countingFixedRingHash) Get(string) string {
+	h.picks.Add(1)
+	return "shard"
+}
+
+type cancelledDialReviewHook struct{ calls *atomic.Int32 }
+
+func (h *cancelledDialReviewHook) DialHook(next DialHook) DialHook { return next }
+func (h *cancelledDialReviewHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+func (h *cancelledDialReviewHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(context.Context, Cmder) error {
+		h.calls.Add(1)
+		return fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, context.Canceled)
+	}
+}
+
+func TestRingStopsReroutingCanceledPoolDial(t *testing.T) {
+	var calls, picks atomic.Int32
+	ring := NewRing(&RingOptions{
+		Addrs: map[string]string{"shard": "127.0.0.1:6379"},
+		NewConsistentHash: func([]string) ConsistentHash {
+			return &countingFixedRingHash{picks: &picks}
+		},
+		NewClient: func(opt *Options) *Client {
+			client := NewClient(opt)
+			client.AddHook(&cancelledDialReviewHook{calls: &calls})
+			return client
+		},
+		MaxRetries: 3, PoolSize: 8, HeartbeatFrequency: time.Hour,
+		HeartbeatFn: func(context.Context, *Client) bool { return true },
+	})
+	defer ring.Close()
+
+	err := ring.Get(context.Background(), "key").Err()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want canceled error, got %v", err)
+	}
+	if calls.Load() != 1 || picks.Load() != 1 {
+		t.Fatalf("canceled dial retried: calls=%d shard selections=%d", calls.Load(), picks.Load())
+	}
+}
+
+func TestClusterRoutingStopsFixedDialRetries(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		name := "multi-slot"
+		if parallel {
+			name = "parallel-target"
+		}
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			const addr = "127.0.0.1:6379"
+			cluster := NewClusterClient(&ClusterOptions{
+				Addrs: []string{addr}, MaxRedirects: 3,
+				ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+				},
+			})
+			defer cluster.Close()
+			cluster.OnNewNode(func(client *Client) {
+				client.AddHook(&clusterPoolDialFailHook{calls: &calls})
+			})
+			ctx := context.Background()
+			cmd := NewCmd(ctx, "get", "key")
+			var err error
+			if parallel {
+				var node *clusterNode
+				node, err = cluster.nodes.GetOrCreate(addr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = cluster.executeParallelTarget(ctx, node, -1, cmd)
+			} else {
+				decision := cluster.commandRoutingDecision(ctx, cmd)
+				err = cluster.executeMultiSlotCommand(ctx, cmd, decision.naturalSlot, &decision)
+			}
+			if !errors.Is(err, pool.ErrDialSequenceFailure) {
+				t.Fatalf("want exhausted dial marker, got %v", err)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("restarted fixed target dial %d times", calls.Load())
+			}
+		})
+	}
+}
