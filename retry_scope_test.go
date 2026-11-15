@@ -849,3 +849,58 @@ func TestCanceledClusterPipelineDoesNotFailNode(t *testing.T) {
 		t.Fatal("canceled pool dial incorrectly marked a healthy cluster node as failing")
 	}
 }
+
+type cancellingClusterDialHook struct{ cancel context.CancelFunc }
+
+func (h cancellingClusterDialHook) DialHook(next DialHook) DialHook { return next }
+func (h cancellingClusterDialHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+func (h cancellingClusterDialHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(ctx context.Context, _ Cmder) error {
+		h.cancel()
+		return fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, ctx.Err())
+	}
+}
+
+func TestClusterCallerCancellationDoesNotMarkNodeFailing(t *testing.T) {
+	const addr = "127.0.0.1:6379"
+	for _, mode := range []string{"process", "multi-slot"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cluster := NewClusterClient(&ClusterOptions{
+				Addrs: []string{addr}, MaxRedirects: 2,
+				DisableRoutingPolicies: true,
+				ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+					return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+				},
+			})
+			defer cluster.Close()
+			cluster.OnNewNode(func(client *Client) {
+				client.AddHook(cancellingClusterDialHook{cancel: cancel})
+			})
+			if _, err := cluster.state.Reload(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			node, err := cluster.nodes.GetOrCreate(addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "process":
+				err = cluster.Get(ctx, "key").Err()
+			case "multi-slot":
+				cmd := NewCmd(ctx, "get", "key")
+				decision := cluster.commandRoutingDecision(ctx, cmd)
+				err = cluster.executeMultiSlotCommand(ctx, cmd, decision.naturalSlot, &decision)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected caller cancellation, got %v", err)
+			}
+			if node.failing.Load() != 0 {
+				t.Fatal("caller cancellation marked a healthy cluster node as failing")
+			}
+		})
+	}
+}

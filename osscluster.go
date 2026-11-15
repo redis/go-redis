@@ -2343,6 +2343,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
 			if node != nil && !node.Client.dialAddrCanChange && errors.Is(lastErr, pool.ErrDialSequenceFailure) {
+				if ctx.Err() != nil {
+					return lastErr
+				}
 				// Only fixed endpoints have spent their entire dial budget.
 				// A custom endpoint-changing dialer can still select another
 				// address for this logical node on the next command retry.
@@ -4257,6 +4260,9 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			// WATCH is pinned to this node until a redirect identifies another
 			// master. Retrying an exhausted fixed-address dial cannot recover.
 			if !node.Client.dialAddrCanChange && errors.Is(err, pool.ErrDialSequenceFailure) {
+				if ctx.Err() != nil {
+					return err
+				}
 				node.MarkAsFailing()
 				c.state.LazyReload()
 				return err

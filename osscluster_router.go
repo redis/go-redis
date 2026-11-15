@@ -409,6 +409,9 @@ func (c *ClusterClient) executeMultiSlotCommand(
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
 			if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !node.Client.dialAddrCanChange {
+				if ctx.Err() != nil {
+					return lastErr
+				}
 				if exhaustedDialNodes == nil {
 					exhaustedDialNodes = make(map[*clusterNode]error)
 				}
