@@ -893,7 +893,10 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
-	var failedDialShard *ringShard
+	// Remember every shard whose pool dial sequence was exhausted during this
+	// command. A later failure on a different shard must not make the first
+	// eligible for another full DialTimeout budget.
+	failedDialShards := make(map[*ringShard]struct{})
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -905,24 +908,18 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		if err != nil {
 			return err
 		}
-		if shard == failedDialShard {
-			// A keyless command may randomly reselect the failed shard even
-			// while other shards are healthy. Skip it within the bounded
-			// retry loop; never restart its exhausted dial sequence.
-			if cmdFirstKeyPosWithInfo(cmd, nil) == 0 {
-				continue
-			}
-			// Keyed commands cannot change shards without a rebalance.
-			return lastErr
+		if _, failed := failedDialShards[shard]; failed {
+			// Both keyed and keyless routing can select a different shard on a
+			// later attempt (e.g. after a heartbeat rebalance). Keep the
+			// bounded selection attempts without redialing an exhausted shard.
+			continue
 		}
 
 		lastErr = shard.Client.Process(ctx, cmd)
 		if errors.Is(lastErr, pool.ErrDialSequenceFailure) {
-			failedDialShard = shard
-		} else {
-			failedDialShard = nil
+			failedDialShards[shard] = struct{}{}
 		}
-		if lastErr == nil || (!shouldRetry(lastErr, cmd.readTimeout() == nil) && failedDialShard == nil) || cmd.NoRetry() {
+		if lastErr == nil || (!shouldRetry(lastErr, cmd.readTimeout() == nil) && !errors.Is(lastErr, pool.ErrDialSequenceFailure)) || cmd.NoRetry() {
 			return lastErr
 		}
 	}

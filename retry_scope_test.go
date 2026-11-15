@@ -220,3 +220,74 @@ func TestRingKeylessReselectsAfterExhaustedDial(t *testing.T) {
 		t.Fatalf("dial attempts bad=%d good=%d, want one per shard", badDials.Load(), goodDials.Load())
 	}
 }
+
+func TestRingKeyedWaitsForRebalanceWithoutRedial(t *testing.T) {
+	var hash scriptedRingHash
+	var badDials, goodDials atomic.Int32
+	ring := NewRing(&RingOptions{
+		Addrs: map[string]string{"bad": "bad:6379", "good": "good:6379"},
+		NewConsistentHash: func([]string) ConsistentHash { return &hash },
+		Dialer: func(_ context.Context, _, addr string) (net.Conn, error) {
+			if addr == "bad:6379" {
+				badDials.Add(1)
+			} else {
+				goodDials.Add(1)
+			}
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+		},
+		DialerRetries:      1,
+		MaxRetries:         3,
+		DialTimeout:        100 * time.Millisecond,
+		PoolSize:           8,
+		HeartbeatFrequency: time.Hour,
+		HeartbeatFn:        func(context.Context, *Client) bool { return true },
+	})
+	defer ring.Close()
+
+	if err := ring.Get(context.Background(), "key").Err(); err == nil {
+		t.Fatal("expected a dial failure")
+	}
+	if badDials.Load() != 1 || goodDials.Load() != 1 {
+		t.Fatalf("dial attempts bad=%d good=%d, want one per shard", badDials.Load(), goodDials.Load())
+	}
+}
+
+type alternatingRingHash struct{ picks atomic.Int32 }
+
+func (h *alternatingRingHash) Get(string) string {
+	if h.picks.Add(1)%2 == 1 {
+		return "bad"
+	}
+	return "good"
+}
+
+func TestRingDoesNotRedialPreviouslyFailedShard(t *testing.T) {
+	var hash alternatingRingHash
+	var badDials, goodDials atomic.Int32
+	ring := NewRing(&RingOptions{
+		Addrs: map[string]string{"bad": "bad:6379", "good": "good:6379"},
+		NewConsistentHash: func([]string) ConsistentHash { return &hash },
+		Dialer: func(_ context.Context, _, addr string) (net.Conn, error) {
+			if addr == "bad:6379" {
+				badDials.Add(1)
+			} else {
+				goodDials.Add(1)
+			}
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+		},
+		DialerRetries:      1,
+		MaxRetries:         2,
+		DialTimeout:        100 * time.Millisecond,
+		PoolSize:           8,
+		HeartbeatFrequency: time.Hour,
+		HeartbeatFn:        func(context.Context, *Client) bool { return true },
+	})
+	defer ring.Close()
+
+	if err := ring.Ping(context.Background()).Err(); err == nil {
+		t.Fatal("expected a dial failure")
+	}
+	if badDials.Load() != 1 || goodDials.Load() != 1 {
+		t.Fatalf("dial attempts bad=%d good=%d, want one per shard", badDials.Load(), goodDials.Load())
+	}
+}
