@@ -96,6 +96,14 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 
+	// A pool dial may expire its own DialTimeout and return a wrapped
+	// context.DeadlineExceeded without a net.OpError. Treat the explicit pool
+	// failure marker as reroutable for Cluster and MultiDB; only caller
+	// cancellation must stop routing. Single-node loops use a separate gate.
+	if errors.Is(err, pool.ErrDialSequenceFailure) {
+		return !errors.Is(err, context.Canceled)
+	}
+
 	// Dial errors are retryable at higher layers, including ClusterClient node
 	// failover and MultiDB health classification. The single-node command loop
 	// suppresses its own redundant retries separately.

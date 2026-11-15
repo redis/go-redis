@@ -291,3 +291,54 @@ func TestRingDoesNotRedialPreviouslyFailedShard(t *testing.T) {
 		t.Fatalf("dial attempts bad=%d good=%d, want one per shard", badDials.Load(), goodDials.Load())
 	}
 }
+
+func TestPoolDialDeadlineIsReroutable(t *testing.T) {
+	poolErr := fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, context.DeadlineExceeded)
+	if !shouldRetry(poolErr, false) {
+		t.Fatal("pool DialTimeout must allow Cluster/MultiDB endpoint failover")
+	}
+	if shouldRetrySingleNode(poolErr, true) {
+		t.Fatal("fixed-address client must not restart a completed dial budget")
+	}
+	if shouldRetry(context.DeadlineExceeded, true) {
+		t.Fatal("an unmarked caller deadline must not trigger retries")
+	}
+	canceled := fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, context.Canceled)
+	if shouldRetry(canceled, true) {
+		t.Fatal("a canceled dial must not be retried")
+	}
+}
+
+func TestCustomDialerCanRetryDifferentEndpoint(t *testing.T) {
+	dial := func(context.Context, string, string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+	}
+	poolErr := fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, context.DeadlineExceeded)
+	fixed := NewClient(&Options{Dialer: dial, MaxRetries: 2})
+	defer fixed.Close()
+	if fixed.shouldRetryCommand(poolErr, true) {
+		t.Fatal("fixed-address custom dialer must not restart a completed dial sequence")
+	}
+	switching := NewClient(&Options{Dialer: dial, DialerCanChangeAddress: true, MaxRetries: 2})
+	defer switching.Close()
+	if !switching.shouldRetryCommand(poolErr, true) {
+		t.Fatal("opted-in custom dialer should retry another endpoint")
+	}
+	if !switching.clone().shouldRetryCommand(poolErr, true) {
+		t.Fatal("clone lost the custom dialer retry policy")
+	}
+	conn := switching.Conn()
+	defer conn.Close()
+	if !conn.shouldRetryCommand(poolErr, true) {
+		t.Fatal("Conn wrapper lost the custom dialer retry policy")
+	}
+	tx := switching.newTx()
+	defer tx.Close(context.Background())
+	if !tx.shouldRetryCommand(poolErr, true) {
+		t.Fatal("Watch wrapper lost the custom dialer retry policy")
+	}
+	fd := &fdEngine{client: switching}
+	if !fd.canRetryLease(poolErr, 0) {
+		t.Fatal("full-duplex lease must retain the endpoint-change retry policy")
+	}
+}

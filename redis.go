@@ -2356,9 +2356,9 @@ func (c *baseClient) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
 }
 
-// shouldRetryCommand permits a new dial sequence for Sentinel failover
-// clients, whose dialer can reselect another endpoint between attempts.
-// Ordinary clients must not repeat an exhausted sequence to one address.
+// shouldRetryCommand permits a new dial sequence for Sentinel failover or
+// explicitly endpoint-selecting custom dialers. Fixed-address clients must
+// not repeat an exhausted sequence against the same address.
 func (c *baseClient) shouldRetryCommand(err error, retryTimeout bool) bool {
 	if c.dialAddrCanChange {
 		return shouldRetry(err, retryTimeout)
@@ -3043,11 +3043,12 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: &baseClient{
-			apClosed:  &atomic.Bool{},
-			opt:       opt,
-			cscPolicy: opt.cachePolicy(),
-			onClose:   &onCloseHooks{},
-			himport:   newHImportRegistry(),
+			apClosed:          &atomic.Bool{},
+			opt:               opt,
+			cscPolicy:         opt.cachePolicy(),
+			dialAddrCanChange: opt.DialerCanChangeAddress,
+			onClose:           &onCloseHooks{},
+			himport:           newHImportRegistry(),
 		},
 	}
 	c.rec, c.poolMetrics = clientRecorder(opt.OTelRecorder)

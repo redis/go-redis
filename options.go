@@ -81,6 +81,12 @@ type Options struct {
 	// Network and Addr options.
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
+	// DialerCanChangeAddress allows command retries after a completed pool dial
+	// sequence when a custom Dialer may select a different endpoint on its next
+	// call. Leave false for a Dialer that always targets the same address, to
+	// avoid restarting DialTimeout against that unreachable endpoint.
+	DialerCanChangeAddress bool
+
 	// Hook that is called when new connection is established.
 	OnConnect func(ctx context.Context, cn *Conn) error
 
