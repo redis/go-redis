@@ -630,17 +630,18 @@ type commandMetadataStore struct {
 	fetchCtx    context.Context
 	fetchCancel context.CancelFunc
 
-	mu          sync.Mutex
-	refreshDone chan struct{} // guarded by mu; non-nil while one attempt owns lastFetch
-	initialDone bool          // one completed attempt ends foreground verification
-	retryAt     time.Time     // background cooldown survives new refresh requests
-	backoff     time.Duration
-	started     bool
-	refresh     chan struct{}
-	refreshLive atomic.Bool // A node identity observation also needs a live-view refresh.
-	stop        chan struct{}
-	done        chan struct{}
-	stopOnce    sync.Once
+	mu            sync.Mutex
+	refreshDone   chan struct{} // guarded by mu; non-nil while one attempt owns lastFetch
+	initialDone   bool          // one completed attempt ends foreground verification
+	retryAt       time.Time     // background cooldown survives new refresh requests
+	nextVerifyAt  time.Time     // guarded by mu; rate-limits HELLO-less verification
+	backoff       time.Duration
+	started       bool
+	refresh       chan struct{}
+	pendingVerify atomic.Int32 // 0=upgrade, 1=hello-less verify, 2=explicit verify
+	stop          chan struct{}
+	done          chan struct{}
+	stopOnce      sync.Once
 
 	// serverFp identifies the current server. serverEpoch also rejects ABA
 	// changes during a refresh. Both are guarded by mu.
@@ -780,6 +781,7 @@ func (s *commandMetadataStore) onServerHello(fp string) {
 	if changed {
 		s.serverFp = fp
 		s.serverEpoch++
+		s.nextVerifyAt = time.Time{}
 		if v := s.current.Load(); v != nil && v.live {
 			// Decide on static metadata until the new server's arrives.
 			s.current.Store(s.static)
@@ -808,26 +810,58 @@ func (s *commandMetadataStore) onClusterServerHelloReply(hello map[string]interf
 
 // onClusterServerHello schedules verification without adopting one node's
 // identity. The cluster fetch checks siblings before retiring the live view.
-// An empty fingerprint always requests verification, including during a fetch.
+// An empty fingerprint uses the rate-limited HELLO-less verification path.
 func (s *commandMetadataStore) onClusterServerHello(fp string) {
 	if !s.wantsServerHello() {
 		return
 	}
-	if fp != "" && fp == s.serverFingerprint() {
+	if fp == "" {
+		s.requestHelloLessVerification()
+		return
+	}
+	if fp == s.serverFingerprint() {
 		s.onConnInit()
 		return
 	}
 	s.requestVerification()
 }
 
-// requestVerification checks identity even when metadata is already live.
-// HELLO-fallback reconnects cannot prove that the previous identity still holds.
+// requestVerification checks identity immediately even when metadata is already live.
 func (s *commandMetadataStore) requestVerification() {
 	if !s.wantsServerHello() {
 		return
 	}
-	s.refreshLive.Store(true)
+	s.pendingVerify.Store(pendingVerifyExplicit)
 	s.requestRefresh()
+}
+
+// requestHelloLessVerification schedules identity verification for connections
+// that initialized without HELLO, rate-limited once live metadata is established.
+func (s *commandMetadataStore) requestHelloLessVerification() {
+	if !s.wantsServerHello() || s.fetch == nil {
+		return
+	}
+	s.mu.Lock()
+	if v := s.current.Load(); v != nil && v.live {
+		if cooldown := s.verifyCooldown(); cooldown > 0 && time.Now().Before(s.nextVerifyAt) {
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.mu.Unlock()
+	s.pendingVerify.CompareAndSwap(pendingVerifyNone, pendingVerifyHelloLess)
+	s.requestRefresh()
+}
+
+func (s *commandMetadataStore) verifyCooldown() time.Duration {
+	cooldown := cmdMetaVerifyInterval
+	if cooldown <= 0 {
+		return 0
+	}
+	if s.refreshInterval > 0 && s.refreshInterval < cooldown {
+		return s.refreshInterval
+	}
+	return cooldown
 }
 
 func (s *commandMetadataStore) serverFingerprint() string {
@@ -913,6 +947,7 @@ func (s *commandMetadataStore) invalidateLive() {
 func (s *commandMetadataStore) invalidateLiveLocked() {
 	s.serverFp = ""
 	s.serverEpoch++
+	s.nextVerifyAt = time.Time{}
 	if view := s.current.Load(); view != nil && view.live {
 		s.current.Store(s.static)
 	}
@@ -933,25 +968,34 @@ func (s *commandMetadataStore) startWorker() {
 	go s.run()
 }
 
-// cmdMetaBackoffMin/Max bound the retry backoff after a failed refresh, and
+// cmdMetaBackoffMin/Max bound the retry backoff after a failed refresh,
 // cmdMetaRetryCap bounds automatic retries (later external triggers —
-// conn init, periodic refresh — still attempt once each). Vars so tests can
-// shrink them.
+// conn init, periodic refresh — still attempt once each), and
+// cmdMetaVerifyInterval bounds how frequently HELLO-less reconnects re-run
+// verification once live metadata is established. Vars so tests can shrink them.
 var (
-	cmdMetaBackoffMin = time.Second
-	cmdMetaBackoffMax = 30 * time.Second
-	cmdMetaRetryCap   = 5
+	cmdMetaBackoffMin     = time.Second
+	cmdMetaBackoffMax     = 30 * time.Second
+	cmdMetaRetryCap       = 5
+	cmdMetaVerifyInterval = 30 * time.Second
 )
 
 const cmdMetaFetchTimeout = 30 * time.Second
 
 var errCommandMetadataNotReady = errors.New("redis: live command metadata verification is pending")
 
+const (
+	pendingVerifyNone int32 = iota
+	pendingVerifyHelloLess
+	pendingVerifyExplicit
+)
+
 type commandMetadataRefreshMode uint8
 
 const (
 	commandMetadataInitialRefresh commandMetadataRefreshMode = iota
 	commandMetadataUpgrade
+	commandMetadataVerifyHelloLess
 	commandMetadataVerify
 )
 
@@ -965,12 +1009,8 @@ func (s *commandMetadataStore) run() {
 		periodicC = periodic.C
 	}
 	consecFail := 0
-	attempt := func(verifyLive bool) {
+	attempt := func(mode commandMetadataRefreshMode) {
 		for {
-			mode := commandMetadataUpgrade
-			if verifyLive {
-				mode = commandMetadataVerify
-			}
 			err := s.refreshMetadata(s.fetchCtx, mode)
 			if err == nil {
 				consecFail = 0
@@ -994,7 +1034,7 @@ func (s *commandMetadataStore) run() {
 			return
 		case <-periodicC:
 			periodic.Reset(cmdMetaJitter(s.refreshInterval))
-			attempt(true)
+			attempt(commandMetadataVerify)
 		case <-s.refresh:
 			// Stop wins over a pending token, so Close never runs one more fetch.
 			select {
@@ -1003,9 +1043,16 @@ func (s *commandMetadataStore) run() {
 			default:
 			}
 			// Skip redundant connection-init requests, but verify identity
-			// changes and HELLO-fallback reconnects even while the view is live.
-			verifyLive := s.refreshLive.Swap(false)
-			attempt(verifyLive)
+			// changes and (rate-limited) HELLO-fallback reconnects even while
+			// the view is live.
+			mode := commandMetadataUpgrade
+			switch s.pendingVerify.Swap(pendingVerifyNone) {
+			case pendingVerifyHelloLess:
+				mode = commandMetadataVerifyHelloLess
+			case pendingVerifyExplicit:
+				mode = commandMetadataVerify
+			}
+			attempt(mode)
 		}
 	}
 }
@@ -1021,7 +1068,7 @@ func (s *commandMetadataStore) refreshMetadata(ctx context.Context, mode command
 			return err
 		}
 		s.mu.Lock()
-		if v := s.current.Load(); mode != commandMetadataVerify && v != nil && v.live {
+		if v := s.current.Load(); mode != commandMetadataVerify && mode != commandMetadataVerifyHelloLess && v != nil && v.live {
 			s.mu.Unlock()
 			return nil
 		}
@@ -1040,6 +1087,14 @@ func (s *commandMetadataStore) refreshMetadata(ctx context.Context, mode command
 				// Initial callers share the outcome without another foreground
 				// probe; forced verification still performs a fresh attempt.
 				continue
+			}
+		}
+		if mode == commandMetadataVerifyHelloLess {
+			if v := s.current.Load(); v != nil && v.live {
+				if cooldown := s.verifyCooldown(); cooldown > 0 && time.Now().Before(s.nextVerifyAt) {
+					s.mu.Unlock()
+					return nil
+				}
 			}
 		}
 		if delay := time.Until(s.retryAt); mode != commandMetadataInitialRefresh && delay > 0 {
@@ -1064,6 +1119,11 @@ func (s *commandMetadataStore) refreshMetadata(ctx context.Context, mode command
 			s.initialDone = true
 			if err == nil {
 				s.backoff, s.retryAt = 0, time.Time{}
+				if cooldown := s.verifyCooldown(); cooldown > 0 {
+					s.nextVerifyAt = time.Now().Add(cooldown)
+				} else {
+					s.nextVerifyAt = time.Time{}
+				}
 			} else if ctx.Err() == nil {
 				if s.backoff == 0 {
 					s.backoff = cmdMetaBackoffMin
