@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -108,6 +109,9 @@ func (c *blockingIdleHealthConn) SetDeadline(t time.Time) error {
 // With no pool hooks, a health check cannot requeue the popped connection.
 // Another caller must be free to dial against the remaining pool capacity.
 func TestHooklessHealthCheckDoesNotBlockSpareDial(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("socket health checks are disabled on Windows")
+	}
 	for _, try := range []bool{false, true} {
 		name := "Get"
 		if try {
