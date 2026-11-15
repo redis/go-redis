@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"runtime"
 	"sync"
@@ -629,5 +630,110 @@ func TestCancelledGetDoesNotTakeReauthenticatedConnection(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancelled Get did not finish")
+	}
+}
+
+type blockedIdleCloseConn struct {
+	net.Conn
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockedIdleCloseConn) Close() error {
+	c.once.Do(func() { close(c.entered) })
+	<-c.release
+	return c.Conn.Close()
+}
+
+type failIdleOnGetHook struct{}
+
+func (*failIdleOnGetHook) OnGet(_ context.Context, _ *pool.Conn, isNew bool) (bool, error) {
+	if !isNew {
+		return false, errors.New("reject idle connection")
+	}
+	return true, nil
+}
+
+func (*failIdleOnGetHook) OnPut(context.Context, *pool.Conn) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (*failIdleOnGetHook) OnRemove(context.Context, *pool.Conn, error) {}
+
+// A stale or hook-rejected connection is removed before its network Close
+// finishes. Other callers must be allowed to dial the freed capacity.
+func TestGetUnblocksNewDialDuringIdleTeardown(t *testing.T) {
+	for _, mode := range []string{"stale", "hook"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			blocked := &blockedIdleCloseConn{
+				Conn: newDummyConn(), entered: make(chan struct{}), release: make(chan struct{}),
+			}
+			var once sync.Once
+			release := func() { once.Do(func() { close(blocked.release) }) }
+			t.Cleanup(release)
+			var dials atomic.Int32
+			p := pool.NewConnPool(&pool.Options{
+				PoolSize: 2, MaxActiveConns: 2, MaxConcurrentDials: 2,
+				PoolTimeout: 150 * time.Millisecond, ConnMaxIdleTime: time.Minute,
+				Dialer: func(context.Context) (net.Conn, error) {
+					if dials.Add(1) == 1 {
+						return blocked, nil
+					}
+					return newDummyConn(), nil
+				},
+			})
+			t.Cleanup(func() { _ = p.Close() })
+			original, err := p.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original.GetStateMachine().Transition(pool.StateInUse)
+			p.Put(ctx, original)
+			if mode == "stale" {
+				original.SetUsedAt(time.Now().Add(-time.Hour))
+			} else {
+				p.AddPoolHook(&failIdleOnGetHook{})
+			}
+
+			type result struct {
+				cn  *pool.Conn
+				err error
+			}
+			firstDone := make(chan result, 1)
+			go func() {
+				cn, err := p.Get(ctx)
+				firstDone <- result{cn, err}
+			}()
+			select {
+			case <-blocked.entered:
+			case <-time.After(time.Second):
+				t.Fatal("first Get did not reach idle teardown")
+			}
+			if got := p.Len(); got != 0 {
+				t.Fatalf("stale connection still counted after removal: %d", got)
+			}
+			second, err := p.TryGet(ctx)
+			if err != nil {
+				t.Fatalf("TryGet could not reuse capacity while Close blocked: %v", err)
+			}
+			if second == original {
+				t.Fatal("returned connection pending teardown")
+			}
+			release()
+			p.Put(ctx, second)
+			select {
+			case first := <-firstDone:
+				if first.cn != nil {
+					p.Put(ctx, first.cn)
+				}
+				if first.err != nil {
+					t.Fatalf("original Get failed after teardown: %v", first.err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("original Get did not finish")
+			}
+		})
 	}
 }

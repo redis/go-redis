@@ -1233,6 +1233,12 @@ retryIdle:
 	hookRejected := false
 	removedUnhealthy := false
 	for attempts := 0; attempts < getAttempts && idleScanRemaining > 0; attempts++ {
+		// A blocked OnGet can return after cancellation; do not reacquire
+		// its requeued connection on the next attempt.
+		if err := ctx.Err(); err != nil {
+			p.freeTurn()
+			return nil, err
+		}
 		idleScanRemaining--
 
 		p.connsMu.Lock()
@@ -1259,8 +1265,8 @@ retryIdle:
 
 		if !p.isHealthyConn(cn, nowNs) {
 			// Connection was already transitioned to MetricStateUsed under the lock above.
-			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateUsed)
-			p.idleGetInFlight.Add(-1)
+			_ = p.closeConnWithRemovalHook(ctx, cn, CloseReasonStale, MetricStateUsed,
+				func() { p.idleGetInFlight.Add(-1) })
 			removedUnhealthy = true
 			continue
 		}
@@ -1273,7 +1279,8 @@ retryIdle:
 				if hookErr != nil {
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
 					// Connection was already transitioned to MetricStateUsed under the lock above.
-					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateUsed)
+					_ = p.closeConnWithRemovalHook(ctx, cn, CloseReasonHookError, MetricStateUsed,
+						func() { p.idleGetInFlight.Add(-1) })
 					removedUnhealthy = true
 				} else {
 					hookRejected = true
@@ -1288,7 +1295,9 @@ retryIdle:
 					p.demoteRejectedIdle(cn)
 					cn = nil
 				}
-				p.idleGetInFlight.Add(-1)
+				if hookErr == nil {
+					p.idleGetInFlight.Add(-1)
+				}
 				continue
 			}
 		}
@@ -2030,11 +2039,21 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 //   - reason: why the connection is being closed (use CloseReason* constants)
 //   - fromState: the metric state the connection was in (use MetricState* constants)
 func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
+	return p.closeConnWithRemovalHook(ctx, cn, reason, fromState, nil)
+}
+
+// closeConnWithRemovalHook releases a Get's in-flight idle marker immediately
+// after the pool entry is removed, before metrics or network Close can block.
+// Other callers use CloseConn without a callback.
+func (p *ConnPool) closeConnWithRemovalHook(ctx context.Context, cn *Conn, reason string, fromState string, onRemoved func()) error {
 	if hookManager := p.hookManager.Load(); hookManager != nil {
 		hookManager.ProcessOnRemove(ctx, cn, errors.New(reason))
 	}
 
 	removed, countCb := p.removeConnWithLock(cn)
+	if onRemoved != nil {
+		onRemoved()
+	}
 
 	// Only emit UpDownCounter decrements if we actually removed the connection.
 	// If removed is false, Close() already removed it and emitted the -1 delta.
