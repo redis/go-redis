@@ -892,3 +892,72 @@ func TestGetScansPastDemotedIdleEntries(t *testing.T) {
 		})
 	}
 }
+
+
+// popIdle only examines popAttempts entries in one call. A large pool must
+// still reach a ready entry beyond that limit without falling back to a dial
+// or returning ErrPoolTryFull from TryGet.
+func TestGetScansPastFiftyUnavailableIdle(t *testing.T) {
+	for _, fifo := range []bool{false, true} {
+		for _, try := range []bool{false, true} {
+			name := "LIFO/Get"
+			if fifo {
+				name = "FIFO/Get"
+			}
+			if try {
+				name = name[:len(name)-3] + "TryGet"
+			}
+			t.Run(name, func(t *testing.T) {
+				const poolSize = 64
+				ctx := context.Background()
+				var dials atomic.Int32
+				p := pool.NewConnPool(&pool.Options{
+					PoolSize: poolSize, MaxActiveConns: poolSize, MaxConcurrentDials: poolSize,
+					PoolFIFO: fifo, PoolTimeout: time.Second,
+					Dialer: func(context.Context) (net.Conn, error) {
+						dials.Add(1)
+						return newDummyConn(), nil
+					},
+				})
+				t.Cleanup(func() { _ = p.Close() })
+				conns := make([]*pool.Conn, poolSize)
+				for i := range conns {
+					var err error
+					conns[i], err = p.Get(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					conns[i].GetStateMachine().Transition(pool.StateInUse)
+				}
+				for _, cn := range conns {
+					p.Put(ctx, cn)
+				}
+				for i, cn := range conns {
+					if (fifo && i < 50) || (!fifo && i >= poolSize-50) {
+						cn.GetStateMachine().Transition(pool.StateUnusable)
+					}
+				}
+				var got *pool.Conn
+				var err error
+				if try {
+					got, err = p.TryGet(ctx)
+				} else {
+					got, err = p.Get(ctx)
+				}
+				if err != nil {
+					t.Fatalf("ready idle behind 50 unavailable entries: %v", err)
+				}
+				if got == nil || got.GetStateMachine().GetState() == pool.StateUnusable {
+					t.Fatalf("returned unusable connection: %v", got)
+				}
+				p.Put(ctx, got)
+				if n := dials.Load(); n != poolSize {
+					t.Fatalf("dialed %d times; want no additional dial after initial %d", n, poolSize)
+				}
+				if p.QueueLen() != 0 {
+					t.Fatalf("leaked %d pool turns", p.QueueLen())
+				}
+			})
+		}
+	}
+}

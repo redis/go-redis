@@ -1357,12 +1357,27 @@ retryIdle:
 	// It can still return that conn on rejection, so keep the maintenance
 	// wait active until its disposition is known instead of extra-dialing.
 	hasIdleOrPending := len(p.idleConns) > 0 || p.idleGetInFlight.Load() > 0
+	// popIdle examines at most popAttempts entries per call. Its bounded
+	// skip can leave a ready connection deeper in a larger idle list even
+	// though neither a hook nor a health check rejected a connection.
+	// Only continue within the original finite scan budget, so a concurrent
+	// MinIdleConns refill cannot make Get or TryGet spin indefinitely.
+	readyIdleBeyondPopLimit := false
+	if idleScanRemaining > 0 && !removedUnhealthy && !hookRejected {
+		for _, idle := range p.idleConns {
+			state := idle.GetStateMachine().GetState()
+			if state == StateIdle || state == StateCreated {
+				readyIdleBeyondPopLimit = true
+				break
+			}
+		}
+	}
 	p.connsMu.Unlock()
 	if hasIdleOrPending {
 		// Continue past getAttempts while the original idle snapshot has
 		// unexamined entries, including connections demoted by OnGet hooks.
 		// Refill arrivals never enlarge this finite scan budget.
-		if (removedUnhealthy || hookRejected) && idleScanRemaining > 0 {
+		if (removedUnhealthy || hookRejected || readyIdleBeyondPopLimit) && idleScanRemaining > 0 {
 			if wait && time.Until(poolDeadline) <= 0 {
 				// Prefer the caller's expired context when both deadlines elapsed.
 				if err := ctx.Err(); err != nil {
