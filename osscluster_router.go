@@ -625,15 +625,11 @@ func (c *ClusterClient) executeParallelTarget(
 	cscEnter(cmd)
 	defer cscLeave(cmd)
 	var lastErr error
-	failedDialNodes := make(map[*clusterNode]struct{})
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
 			}
-		}
-		if _, exhausted := failedDialNodes[node]; exhausted {
-			return lastErr
 		}
 		c.cscCheckNode(cmd, node.Client)
 		lastErr = node.Client.Process(ctx, cmd)
@@ -641,15 +637,10 @@ func (c *ClusterClient) executeParallelTarget(
 			return nil
 		}
 		if targetSlot >= 0 && (isReadOnlyError(lastErr) || lastErr == pool.ErrClosed) {
-			state, err := c.state.ReloadOrGet(ctx)
-			if err == nil {
-				if replacement, routeErr := state.slotMasterNode(targetSlot); routeErr == nil && replacement != node {
-					node = replacement
-					continue
-				} else if routeErr != nil {
-					_ = c.noteTopologySelectionError(routeErr)
-				}
-			}
+			// A broadcast target represents one original shard, not its slot's
+			// current owner. Rerouting would double-count another target.
+			c.state.LazyReload()
+			return lastErr
 		}
 		if moved, ask, _ := isMovedError(lastErr); moved || ask {
 			// Do not redirect one keyless broadcast target into another.
@@ -658,18 +649,10 @@ func (c *ClusterClient) executeParallelTarget(
 			return lastErr
 		}
 		if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !node.Client.dialAddrCanChange {
-			failedDialNodes[node] = struct{}{}
-			if targetSlot >= 0 && attempt < c.opt.MaxRedirects {
-				// A slot migration may supply another master, but never retry
-				// this target's already-exhausted fixed endpoint.
-				if state, err := c.state.ReloadOrGet(ctx); err == nil {
-					if replacement, routeErr := state.slotMasterNode(targetSlot); routeErr == nil && replacement != node {
-						if _, exhausted := failedDialNodes[replacement]; !exhausted {
-							node = replacement
-							continue
-						}
-					}
-				}
+			// Failing closed avoids counting another shard's response twice.
+			// Topology discovery is deferred to a later command.
+			if targetSlot >= 0 && !isContextError(lastErr) && ctx.Err() == nil {
+				c.state.LazyReload()
 			}
 			return lastErr
 		}
