@@ -650,8 +650,8 @@ func TestClusterParallelTargetSkipsFinalDiscovery(t *testing.T) {
 	const addr = "127.0.0.1:6379"
 	var dials, reloads atomic.Int32
 	cluster := NewClusterClient(&ClusterOptions{
-		Addrs: []string{addr},
-		MaxRedirects: -1, // One attempt: no later target can use a refreshed topology.
+		Addrs:                      []string{addr},
+		MaxRedirects:               -1, // One attempt: no later target can use a refreshed topology.
 		ClusterStateReloadInterval: time.Hour,
 		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
 			reloads.Add(1)
@@ -688,9 +688,9 @@ func TestClusterProcessSchedulesReloadAfterExhaustedDial(t *testing.T) {
 	var dials, reloads atomic.Int32
 	reloaded := make(chan struct{}, 1)
 	cluster := NewClusterClient(&ClusterOptions{
-		Addrs: []string{addr},
-		MaxRedirects: 2,
-		DisableRoutingPolicies: true,
+		Addrs:                      []string{addr},
+		MaxRedirects:               2,
+		DisableRoutingPolicies:     true,
 		ClusterStateReloadInterval: time.Hour,
 		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
 			if reloads.Add(1) > 1 {
