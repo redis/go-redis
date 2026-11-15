@@ -277,6 +277,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Addrs:                                  o.Addrs,
 		ClientName:                             o.ClientName,
 		Dialer:                                 o.Dialer,
+		DialerCanChangeAddress:                 o.DialerCanChangeAddress,
 		OnConnect:                              o.OnConnect,
 
 		Protocol:                     o.Protocol,

@@ -463,3 +463,66 @@ func TestClusterChangingDialerRetainsOuterRetries(t *testing.T) {
 		t.Fatalf("changing dialer retried %d times, want more than one", got)
 	}
 }
+
+func TestUniversalClusterDialerRetryPolicy(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		opt := (&UniversalOptions{
+			Addrs:                  []string{"127.0.0.1:6379", "127.0.0.1:6380"},
+			DialerCanChangeAddress: enabled,
+		}).Cluster()
+		if opt.DialerCanChangeAddress != enabled {
+			t.Fatalf("cluster option lost endpoint-change policy: enabled=%v", enabled)
+		}
+		if got := opt.clientOptions().DialerCanChangeAddress; got != enabled {
+			t.Fatalf("node option lost endpoint-change policy: got=%v want=%v", got, enabled)
+		}
+	}
+}
+
+func TestClusterPipelinesDoNotRestartFixedNodeDialBudget(t *testing.T) {
+	for _, transaction := range []bool{false, true} {
+		name := "pipeline"
+		if transaction {
+			name = "transaction"
+		}
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			c := NewClusterClient(&ClusterOptions{
+				Addrs: []string{"127.0.0.1:6379"},
+				DisableRoutingPolicies: true,
+				MaxRedirects:           3,
+				DialerRetries:          1,
+				PipelinePoolSize:       -1,
+				Dialer: func(context.Context, string, string) (net.Conn, error) {
+					calls.Add(1)
+					return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+				},
+				ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+					return []ClusterSlot{{
+						Start: 0, End: 16383,
+						Nodes: []ClusterNode{{Addr: "127.0.0.1:6379"}},
+					}}, nil
+				},
+			})
+			defer c.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			enqueue := func(p Pipeliner) error {
+				p.Get(ctx, "key")
+				return nil
+			}
+			var err error
+			if transaction {
+				_, err = c.TxPipelined(ctx, enqueue)
+			} else {
+				_, err = c.Pipelined(ctx, enqueue)
+			}
+			if !errors.Is(err, pool.ErrDialSequenceFailure) {
+				t.Fatalf("expected exhausted pool dial error, got %v", err)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("%s redialed exhausted fixed node %d times; want 1", name, got)
+			}
+		})
+	}
+}
