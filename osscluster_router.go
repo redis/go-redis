@@ -659,7 +659,7 @@ func (c *ClusterClient) executeParallelTarget(
 		}
 		if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !node.Client.dialAddrCanChange {
 			failedDialNodes[node] = struct{}{}
-			if targetSlot >= 0 {
+			if targetSlot >= 0 && attempt < c.opt.MaxRedirects {
 				// A slot migration may supply another master, but never retry
 				// this target's already-exhausted fixed endpoint.
 				if state, err := c.state.ReloadOrGet(ctx); err == nil {
