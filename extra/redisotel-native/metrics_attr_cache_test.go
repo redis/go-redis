@@ -49,6 +49,51 @@ func durationPoints(t *testing.T, reader *metric.ManualReader) []metricdata.Hist
 	return out
 }
 
+func TestWrappedDialErrorOperationDurationClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		want  string
+	}{
+		{
+			name:  "connection refused",
+			cause: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
+			want:  "network:connection_refused",
+		},
+		{
+			name: "dns failure",
+			cause: &net.OpError{
+				Op: "dial", Net: "tcp",
+				Err: &net.DNSError{Err: "no such host", Name: "missing.invalid", IsNotFound: true},
+			},
+			want: "network:dns_error",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			r, reader := newDurationRecorder(t)
+			wrapped := fmt.Errorf("pool dial sequence failed: %w", tc.cause)
+			r.RecordOperationDuration(ctx, time.Millisecond, redis.NewStringCmd(ctx, "get", "key"), 1, wrapped, nil, 0)
+			r.RecordPipelineOperationDuration(ctx, time.Millisecond, "PIPELINE", 1, 1, wrapped, nil, 0)
+
+			points := durationPoints(t, reader)
+			if len(points) != 2 {
+				t.Fatalf("recorded %d duration series, want 2", len(points))
+			}
+			for _, point := range points {
+				label, ok := point.Attributes.Value(AttrErrorType)
+				if !ok || label.AsString() != tc.want {
+					t.Errorf("duration error.type = %q (present %v), want %q", label.AsString(), ok, tc.want)
+				}
+				category, ok := point.Attributes.Value(AttrRedisClientErrorsCategory)
+				if !ok || category.AsString() != "network" {
+					t.Errorf("duration error category = %q (present %v), want network", category.AsString(), ok)
+				}
+			}
+		})
+	}
+}
+
 // TestOperationDurationAttributesWithCache records the same command on the same
 // connection twice and then with an error: the successes share one series with
 // the full attribute set, and the error gets its own series with error attributes.

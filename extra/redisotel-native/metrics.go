@@ -490,9 +490,10 @@ func isNetworkError(err error) bool {
 		return false
 	}
 
-	// Check for net.Error interface (standard way to detect network errors)
-	_, ok := err.(net.Error)
-	return ok
+	// Pool dial-budget markers and hooks can wrap network errors. Preserve
+	// their original classification in operation-duration metrics.
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // isTimeoutError checks if an error is a timeout error
