@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/big"
 	"strconv"
+	"sync"
 
 	"github.com/redis/go-redis/v9/internal/util"
 )
@@ -78,8 +79,14 @@ const maxNestingDepth = 1000
 var errMaxNestingDepth = errors.New("redis: maximum nesting depth exceeded")
 
 type Reader struct {
-	rd       *bufio.Reader
-	src      io.Reader
+	rd  *bufio.Reader
+	src io.Reader
+
+	// Conn.WithReader may be entered concurrently for its usedAt bookkeeping
+	// (internal/pool/conn_used_at_test.go), and bufio.Reader is not safe for
+	// concurrent use. DiscardCachedReadError resets it, so serialise that reset.
+	resetMu sync.Mutex
+
 	depth    int
 	fatalErr error
 }
@@ -120,6 +127,8 @@ func NewReaderSize(rd io.Reader, size int) *Reader {
 // Nothing is discarded while bytes are buffered: there the cached error can belong
 // to the reply still being parsed, and that classification must be kept.
 func (r *Reader) DiscardCachedReadError() {
+	r.resetMu.Lock()
+	defer r.resetMu.Unlock()
 	if r.src == nil || r.rd.Buffered() > 0 {
 		return
 	}
