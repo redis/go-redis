@@ -1201,6 +1201,17 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
+	// A pass may discard unhealthy idle connections, but MinIdleConns can
+	// replenish them concurrently. Only scan the entries visible at the start
+	// of this acquisition (at least the normal getAttempts), so refills cannot
+	// keep Get/TryGet in the stale-connection retry path indefinitely.
+	newIdleScanBudget := func() int {
+		p.connsMu.Lock()
+		n := len(p.idleConns)
+		p.connsMu.Unlock()
+		return max(getAttempts, n)
+	}
+	idleScanRemaining := newIdleScanBudget()
 
 retryIdle:
 	if err := ctx.Err(); err != nil {
@@ -1214,7 +1225,8 @@ retryIdle:
 	drainGeneration := p.drainGeneration.Load()
 	hookRejected := false
 	removedUnhealthy := false
-	for attempts := 0; attempts < getAttempts; attempts++ {
+	for attempts := 0; attempts < getAttempts && idleScanRemaining > 0; attempts++ {
+		idleScanRemaining--
 
 		p.connsMu.Lock()
 		cn, err = p.popIdle()
@@ -1304,9 +1316,11 @@ retryIdle:
 			return nil, err
 		}
 		nowNs = time.Now().UnixNano()
+		idleScanRemaining = newIdleScanBudget()
 		goto retryIdle
 	} else if retry {
 		nowNs = time.Now().UnixNano()
+		idleScanRemaining = newIdleScanBudget()
 		goto retryIdle
 	}
 
@@ -1317,10 +1331,13 @@ retryIdle:
 	hasIdle := len(p.idleConns) > 0
 	p.connsMu.Unlock()
 	if hasIdle {
-		// Discarding a stale entry is real progress: TryGet should continue
-		// scanning for a healthy idle connection past getAttempts. Only
-		// hook rejections (which return an entry to idle) must not spin.
-		if removedUnhealthy {
+		// Continue past getAttempts only while the original idle snapshot
+		// has unexamined entries. Refills cannot expand this budget.
+		if removedUnhealthy && idleScanRemaining > 0 {
+			if wait && time.Until(poolDeadline) <= 0 {
+				p.freeTurn()
+				return nil, ErrPoolTimeout
+			}
 			nowNs = time.Now().UnixNano()
 			goto retryIdle
 		}
@@ -1328,13 +1345,16 @@ retryIdle:
 			p.freeTurn()
 			return nil, ErrPoolTryFull
 		}
-		if err = p.waitForUsableIdle(ctx, poolDeadline, hookRejected); err != nil {
+		// After exhausting the snapshot, wait for a tick even if a newly
+		// replenished entry is already idle, to avoid a tight retry loop.
+		if err = p.waitForUsableIdle(ctx, poolDeadline, hookRejected || idleScanRemaining == 0); err != nil {
 			p.freeTurn()
 			return nil, err
 		}
 		// Maintenance can outlast the cached-time window. Check expiration
 		// against the current clock when we next inspect an idle connection.
 		nowNs = time.Now().UnixNano()
+		idleScanRemaining = newIdleScanBudget()
 		goto retryIdle
 	}
 

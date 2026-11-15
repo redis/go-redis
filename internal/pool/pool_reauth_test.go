@@ -3,8 +3,10 @@ package pool_test
 import (
 	"context"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -102,6 +104,70 @@ func TestTryGetSkipsMoreThanThreeStaleIdleConns(t *testing.T) {
 	p.Put(ctx, got)
 	if dials.Load() != 4 || p.QueueLen() != 0 {
 		t.Fatalf("dials=%d turns=%d, want 4 and 0", dials.Load(), p.QueueLen())
+	}
+}
+
+// MinIdleConns may replenish a failed connection while a caller is still
+// discarding it. New idle entries must not renew that caller's scan budget.
+type failingIdleHealthConn struct{ net.Conn }
+
+func (*failingIdleHealthConn) SyscallConn() (syscall.RawConn, error) {
+	return nil, net.ErrClosed
+}
+
+func (cn *failingIdleHealthConn) Close() error {
+	// Give the background MinIdleConns dialer time to refill each removal.
+	time.Sleep(time.Millisecond)
+	return cn.Conn.Close()
+}
+
+func TestGetBoundsMinIdleHealthFailureRetries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("socket health checks are disabled on Windows")
+	}
+	for _, try := range []bool{false, true} {
+		name := "Get"
+		if try {
+			name = "TryGet"
+		}
+		t.Run(name, func(t *testing.T) {
+			const minIdle = 16
+			p := pool.NewConnPool(&pool.Options{
+				PoolSize: minIdle, MinIdleConns: minIdle, MaxConcurrentDials: minIdle,
+				PoolTimeout: 5 * time.Millisecond,
+				Dialer: func(context.Context) (net.Conn, error) {
+					return &failingIdleHealthConn{newDummyConn()}, nil
+				},
+			})
+			t.Cleanup(func() { _ = p.Close() })
+
+			warmDeadline := time.Now().Add(2 * time.Second)
+			for p.Stats().IdleConns < minIdle && time.Now().Before(warmDeadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if p.Stats().IdleConns < minIdle {
+				t.Fatal("min-idle connections were not ready")
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			var cn *pool.Conn
+			var err error
+			if try {
+				cn, err = p.TryGet(ctx)
+			} else {
+				cn, err = p.Get(ctx)
+			}
+			if cn != nil {
+				p.Put(ctx, cn)
+			}
+			if err == context.DeadlineExceeded {
+				t.Fatalf("%s kept retrying unhealthy min-idle replacements until caller deadline", name)
+			}
+			if p.QueueLen() != 0 {
+				t.Fatalf("%s leaked a pool turn: %d", name, p.QueueLen())
+			}
+		})
 	}
 }
 
