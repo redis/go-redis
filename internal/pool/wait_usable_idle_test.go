@@ -49,6 +49,28 @@ func TestUsableIdlePollIntervalRespectsCallerDeadline(t *testing.T) {
 
 // A handoff worker can own idle-list entries indefinitely. They must not
 // prevent a waiting Get from checking whether it can dial a replacement.
+// A later ready connection must win over an earlier re-auth entry, and must
+// not wait for the full maintenance deadline.
+func TestWaitForUsableIdleScansPastReauth(t *testing.T) {
+	firstClient, firstServer := net.Pipe()
+	defer firstClient.Close()
+	defer firstServer.Close()
+	secondClient, secondServer := net.Pipe()
+	defer secondClient.Close()
+	defer secondServer.Close()
+	reauth := NewConn(firstClient)
+	reauth.GetStateMachine().Transition(StateUnusable)
+	ready := NewConn(secondClient)
+	ready.GetStateMachine().Transition(StateIdle)
+	p := &ConnPool{
+		closedCh: make(chan struct{}),
+		idleConns: []*Conn{reauth, ready},
+	}
+	if err := p.waitForUsableIdle(context.Background(), time.Now().Add(100*time.Millisecond), false); err != nil {
+		t.Fatalf("ready connection behind re-auth was overlooked: %v", err)
+	}
+}
+
 func TestWaitForUsableIdleHandoffOnly(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
