@@ -3769,6 +3769,10 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 		case txRetryTryAgain, txRetryConn:
 			if outcome.kind == txRetryConn && !node.Client.dialAddrCanChange &&
 				errors.Is(outcome.err, pool.ErrDialSequenceFailure) {
+				if ctx.Err() != nil {
+					setCmdsErr(cmds, outcome.err)
+					return outcome.err
+				}
 				// No transaction commands reached the wire on this acquisition.
 				// Reselect a node without restarting this endpoint's dial budget.
 				exhaustedDialNodes[node] = outcome.err

@@ -961,3 +961,57 @@ func TestClusterSingleTargetRetriesStaleTopology(t *testing.T) {
 		t.Fatalf("expected one successful replacement target call, got %d", got)
 	}
 }
+
+type cancelAfterTxDialHook struct{ cancel context.CancelFunc }
+
+func (h cancelAfterTxDialHook) DialHook(next DialHook) DialHook          { return next }
+func (h cancelAfterTxDialHook) ProcessHook(next ProcessHook) ProcessHook { return next }
+func (h cancelAfterTxDialHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		err := next(ctx, cmds)
+		if errors.Is(err, pool.ErrDialSequenceFailure) {
+			h.cancel()
+		}
+		return err
+	}
+}
+
+func TestCanceledClusterTxPipelineDoesNotFailNode(t *testing.T) {
+	const addr = "127.0.0.1:6379"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{addr}, MaxRedirects: 2,
+		DialerRetries: 1, PipelinePoolSize: -1,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+		},
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+		},
+	})
+	defer cluster.Close()
+	cluster.OnNewNode(func(client *Client) {
+		client.AddHook(cancelAfterTxDialHook{cancel: cancel})
+	})
+	if _, err := cluster.state.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	node, err := cluster.nodes.GetOrCreate(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = cluster.TxPipelined(ctx, func(p Pipeliner) error {
+		p.Get(ctx, "key")
+		return nil
+	})
+	if !errors.Is(err, pool.ErrDialSequenceFailure) {
+		t.Fatalf("expected exhausted dial error, got %v", err)
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("expected canceled caller context, got %v", ctx.Err())
+	}
+	if node.failing.Load() != 0 {
+		t.Fatal("caller cancellation marked a healthy transaction node as failing")
+	}
+}
