@@ -1082,17 +1082,19 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, ho
 	isReady := func() bool {
 		p.connsMu.Lock()
 		defer p.connsMu.Unlock()
-		if len(p.idleConns) == 0 {
-			// An OnGet still running may put its rejected connection back.
-			return p.idleGetInFlight.Load() == 0
-		}
+		// Return to acquisition when nothing can become ready without a
+		// fresh dial. Handoff-owned entries are not candidates for this wait.
 		for _, cn := range p.idleConns {
 			state := cn.GetStateMachine().GetState()
 			if state == StateIdle || state == StateCreated {
 				return true
 			}
+			if state == StateUnusable && cn.GetHandoffEndpoint() == "" {
+				return false // re-authentication may restore this connection
+			}
 		}
-		return false
+		// A popped OnGet connection may still be rejected and requeued.
+		return p.idleGetInFlight.Load() == 0
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1208,6 +1210,13 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
+	// Only OnGet hooks can requeue a popped idle connection. Ordinary
+	// health checks must not prevent another caller from dialing spare capacity.
+	releaseIdleGet := func() {
+		if hookManager != nil {
+			p.idleGetInFlight.Add(-1)
+		}
+	}
 	// A pass may discard unhealthy idle connections, but MinIdleConns can
 	// replenish them concurrently. Only scan the entries visible at the start
 	// of this acquisition (at least the normal getAttempts), so refills cannot
@@ -1244,7 +1253,9 @@ retryIdle:
 		p.connsMu.Lock()
 		cn, err = p.popIdle()
 		if cn != nil {
-			p.idleGetInFlight.Add(1)
+			if hookManager != nil {
+				p.idleGetInFlight.Add(1)
+			}
 			// Emit idle→used transition inside the lock so Close() sees
 			// consistent state (conn removed from idleConns = "used").
 			if cb := p.metrics().ConnectionCount; cb != nil {
@@ -1266,7 +1277,7 @@ retryIdle:
 		if !p.isHealthyConn(cn, nowNs) {
 			// Connection was already transitioned to MetricStateUsed under the lock above.
 			_ = p.closeConnWithRemovalHook(ctx, cn, CloseReasonStale, MetricStateUsed,
-				func() { p.idleGetInFlight.Add(-1) })
+				releaseIdleGet)
 			removedUnhealthy = true
 			continue
 		}
@@ -1280,7 +1291,7 @@ retryIdle:
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
 					// Connection was already transitioned to MetricStateUsed under the lock above.
 					_ = p.closeConnWithRemovalHook(ctx, cn, CloseReasonHookError, MetricStateUsed,
-						func() { p.idleGetInFlight.Add(-1) })
+						releaseIdleGet)
 					removedUnhealthy = true
 				} else {
 					hookRejected = true
@@ -1290,7 +1301,7 @@ retryIdle:
 					// putConnWithoutTurn will emit used→idle transition.
 					// Release the in-flight marker when requeue completes OR directly
 					// after pool removal, before network Close can block.
-					releaseInFlight := sync.OnceFunc(func() { p.idleGetInFlight.Add(-1) })
+					releaseInFlight := sync.OnceFunc(releaseIdleGet)
 					p.putConnWithoutTurn(ctx, cn, releaseInFlight)
 					// OnGet may reject a still-IDLE connection whose re-auth worker
 					// has not started. Do not let LIFO immediately pop this same
@@ -1303,7 +1314,7 @@ retryIdle:
 			}
 		}
 
-		p.idleGetInFlight.Add(-1)
+		releaseIdleGet()
 		atomic.AddUint32(&p.stats.Hits, 1)
 
 		// Record wait time (use cached callback from above)
