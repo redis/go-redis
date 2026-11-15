@@ -1056,11 +1056,38 @@ func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 // worker updates state without calling Put, so there is no pool queue event to
 // wait for here. Its ticker and deadline are always stopped before returning.
 func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time) error {
+	isReady := func() bool {
+		p.connsMu.Lock()
+		defer p.connsMu.Unlock()
+		if len(p.idleConns) == 0 {
+			return true
+		}
+		for _, cn := range p.idleConns {
+			state := cn.GetStateMachine().GetState()
+			if state == StateIdle || state == StateCreated {
+				return true
+			}
+		}
+		return false
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.closed() {
+		return ErrClosed
+	}
+	if isReady() {
+		return nil
+	}
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return ErrPoolTimeout
 	}
-	ticker := time.NewTicker(10 * time.Millisecond)
+	interval := min(10*time.Millisecond, remaining/4)
+	if interval <= 0 {
+		interval = remaining
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	timer := time.NewTimer(remaining)
 	defer timer.Stop()
@@ -1072,6 +1099,15 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time) er
 		case <-p.closedCh:
 			return ErrClosed
 		case <-timer.C:
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if p.closed() {
+				return ErrClosed
+			}
+			if isReady() {
+				return nil
+			}
 			return ErrPoolTimeout
 		case <-ticker.C:
 			if err := ctx.Err(); err != nil {
@@ -1080,18 +1116,8 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time) er
 			if p.closed() {
 				return ErrClosed
 			}
-			p.connsMu.Lock()
-			ready := len(p.idleConns) == 0
-			for _, cn := range p.idleConns {
-				state := cn.GetStateMachine().GetState()
-				if state == StateIdle || state == StateCreated {
-					ready = true
-					break
-				}
-			}
-			p.connsMu.Unlock()
-			if ready {
-					return nil
+			if isReady() {
+				return nil
 			}
 		}
 	}
