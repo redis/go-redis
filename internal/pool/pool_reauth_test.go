@@ -738,3 +738,83 @@ func TestGetUnblocksNewDialDuringIdleTeardown(t *testing.T) {
 		})
 	}
 }
+
+func TestRejectedReauthRetirementReleasesIdleMarkerBeforeClose(t *testing.T) {
+	ctx := context.Background()
+	blocked := &blockedIdleCloseConn{
+		Conn: newDummyConn(), entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(blocked.release) }) }
+	var dials atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		PoolSize: 2, MaxActiveConns: 2, MaxConcurrentDials: 2,
+		PoolTimeout: 200 * time.Millisecond,
+		Dialer: func(context.Context) (net.Conn, error) {
+			if dials.Add(1) == 1 {
+				return blocked, nil
+			}
+			return newDummyConn(), nil
+		},
+	})
+	t.Cleanup(func() { _ = p.Close() })
+	t.Cleanup(release)
+
+	original, err := p.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original.GetStateMachine().Transition(pool.StateInUse)
+	p.Put(ctx, original)
+
+	h := &delayedIdleRejectHook{entered: make(chan struct{}), release: make(chan struct{})}
+	p.AddPoolHook(h)
+	var hookOnce sync.Once
+	releaseHook := func() { hookOnce.Do(func() { close(h.release) }) }
+	t.Cleanup(releaseHook)
+
+	type result struct {
+		cn *pool.Conn
+		err error
+	}
+	firstDone := make(chan result, 1)
+	go func() {
+		cn, err := p.Get(ctx)
+		firstDone <- result{cn: cn, err: err}
+	}()
+	select {
+	case <-h.entered:
+	case <-time.After(time.Second):
+		t.Fatal("OnGet did not enter")
+	}
+	p.RetireConns(ctx, []*pool.Conn{original}, "test retire pending reauth")
+	releaseHook()
+	select {
+	case <-blocked.entered:
+	case <-time.After(time.Second):
+		t.Fatal("rejected connection did not enter teardown")
+	}
+	if got := p.Len(); got != 0 {
+		t.Fatalf("retired connection still accounted for: %d", got)
+	}
+	second, err := p.TryGet(ctx)
+	if err != nil {
+		t.Fatalf("TryGet could not dial after requeue removal: %v", err)
+	}
+	if second == original {
+		t.Fatal("reused a retiring connection")
+	}
+	release()
+	p.Put(ctx, second)
+	select {
+	case first := <-firstDone:
+		if first.cn != nil {
+			p.Put(ctx, first.cn)
+		}
+		if first.err != nil {
+			t.Fatalf("first Get failed after removal: %v", first.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("original Get did not resume after Close")
+	}
+}

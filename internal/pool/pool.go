@@ -1288,15 +1288,16 @@ retryIdle:
 					// Connection is already in MetricStateUsed (transitioned under the lock above).
 					// Return connection to pool without freeing the turn that this Get() call holds.
 					// putConnWithoutTurn will emit used→idle transition.
-					p.putConnWithoutTurn(ctx, cn)
+					// Release the in-flight marker when requeue completes OR directly
+					// after pool removal, before network Close can block.
+					releaseInFlight := sync.OnceFunc(func() { p.idleGetInFlight.Add(-1) })
+					p.putConnWithoutTurn(ctx, cn, releaseInFlight)
 					// OnGet may reject a still-IDLE connection whose re-auth worker
 					// has not started. Do not let LIFO immediately pop this same
 					// connection again while other idle entries remain usable.
 					p.demoteRejectedIdle(cn)
 					cn = nil
-				}
-				if hookErr == nil {
-					p.idleGetInFlight.Add(-1)
+					releaseInFlight()
 				}
 				continue
 			}
@@ -1740,8 +1741,8 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 // putConnWithoutTurn is an internal method that puts a connection back to the pool
 // without freeing a turn. This is used when returning a rejected connection from
 // within Get(), where the turn is still held by the Get() call.
-func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn) {
-	p.putConn(ctx, cn, false)
+func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn, onRemoved func()) {
+	p.putConn(ctx, cn, false, onRemoved)
 }
 
 // demoteRejectedIdle moves a hook-rejected connection to the oldest end of
@@ -1764,7 +1765,12 @@ func (p *ConnPool) demoteRejectedIdle(cn *Conn) {
 }
 
 // putConn is the internal implementation of Put that optionally frees a turn.
-func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
+func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemoved ...func()) {
+	// For a rejected OnGet, notify as soon as the pool entry is removed.
+	var releaseInFlight func()
+	if len(onRemoved) > 0 {
+		releaseInFlight = onRemoved[0]
+	}
 	// Guard against nil connection
 	if cn == nil {
 		internal.Logger.Printf(ctx, "putConn called with nil connection")
@@ -1780,7 +1786,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	var err error
 
 	if reason := cn.CloseOnPutReason(); reason != "" {
-		p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
+		p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn, releaseInFlight)
 		return
 	}
 
@@ -1789,7 +1795,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		if replyType, err := cn.PeekReplyTypeSafe(); err != nil || replyType != proto.RespPush {
 			// Not a push notification or error peeking, remove connection
 			internal.Logger.Printf(ctx, "Conn has unread data (not push notification), removing it")
-			p.removeConnInternal(ctx, cn, err, freeTurn)
+			p.removeConnInternal(ctx, cn, err, freeTurn, releaseInFlight)
 			return
 		}
 		// It's a push notification, allow pooling (client will handle it)
@@ -1806,19 +1812,19 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
 			internal.Logger.Printf(ctx, "Connection hook error: %v", err)
-			p.removeConnInternal(ctx, cn, err, freeTurn)
+			p.removeConnInternal(ctx, cn, err, freeTurn, releaseInFlight)
 			return
 		}
 	}
 
 	// Combine all removal checks into one - reduces branches
 	if shouldRemove || !shouldPool {
-		p.removeConnInternal(ctx, cn, errHookRequestedRemoval, freeTurn)
+		p.removeConnInternal(ctx, cn, errHookRequestedRemoval, freeTurn, releaseInFlight)
 		return
 	}
 
 	if !cn.pooled {
-		p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn)
+		p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn, releaseInFlight)
 		return
 	}
 
@@ -1845,7 +1851,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			if sm == nil {
 				// State machine is nil - connection is in an invalid state, remove it
 				internal.Logger.Printf(ctx, "conn[%d] has nil state machine, removing it", cn.GetID())
-				p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn)
+				p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn, releaseInFlight)
 				return
 			}
 			currentState := sm.GetState()
@@ -1859,6 +1865,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 				}
 				shouldCloseConn = true
 				removedFromPool, countCb = p.removeConnWithLock(cn)
+				if releaseInFlight != nil {
+					releaseInFlight()
+				}
 			default:
 				// Pool as-is
 				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, pooling as-is", cn.GetID(), currentState)
@@ -1880,7 +1889,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 				// RetireConns marks under, so a marked connection is never
 				// idled and left in the pool until its next put.
 				p.connsMu.Unlock()
-				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
+				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn, releaseInFlight)
 				return
 			}
 			// Check if Close() already removed this connection from p.conns.
@@ -1906,7 +1915,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			if reason := cn.CloseOnPutReason(); reason != "" {
 				// Same late-retirement check as above (see there).
 				p.connsMu.Unlock()
-				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
+				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn, releaseInFlight)
 				return
 			}
 			if _, inPool := p.conns[cn.GetID()]; inPool {
@@ -1938,6 +1947,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			hookManager.ProcessOnRemove(ctx, cn, errConnEvictedIdle)
 		}
 		removedFromPool, countCb = p.removeConnWithLock(cn)
+		if releaseInFlight != nil {
+			releaseInFlight()
+		}
 
 		// Only emit if we actually removed it from the map (not already taken by Close()).
 		if removedFromPool {
@@ -1949,6 +1961,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 	}
 
+	// If Close removed this entry concurrently, release the pending marker too.
+	if shouldCloseConn && releaseInFlight != nil {
+		releaseInFlight()
+	}
 	if freeTurn {
 		p.freeTurn()
 	}
@@ -1984,7 +2000,7 @@ func (p *ConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error
 }
 
 // removeConnInternal is the internal implementation of Remove that optionally frees a turn.
-func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool) {
+func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool, onRemoved ...func()) {
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
@@ -1996,6 +2012,10 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	removed, wasIdle := p.removeConn(cn)
 	countCb := p.metrics().ConnectionCount
 	p.connsMu.Unlock()
+	// A rejected Get must stop hiding freed pool capacity before Close blocks.
+	if len(onRemoved) > 0 && onRemoved[0] != nil {
+		onRemoved[0]()
+	}
 
 	if freeTurn {
 		p.freeTurn()
