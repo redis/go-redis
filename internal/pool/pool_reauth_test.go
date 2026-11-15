@@ -61,6 +61,50 @@ func TestGetBoundsHookRejectedIdleRetries(t *testing.T) {
 	}
 }
 
+func TestTryGetSkipsMoreThanThreeStaleIdleConns(t *testing.T) {
+	ctx := context.Background()
+	var dials atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		PoolSize: 4, MaxActiveConns: 4, MaxConcurrentDials: 4,
+		PoolTimeout: time.Second, ConnMaxIdleTime: time.Minute,
+		Dialer: func(context.Context) (net.Conn, error) {
+			dials.Add(1)
+			return newDummyConn(), nil
+		},
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	conns := make([]*pool.Conn, 4)
+	for i := range conns {
+		var err error
+		conns[i], err = p.Get(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns[i].GetStateMachine().Transition(pool.StateInUse)
+	}
+	// The healthy entry is deepest in the LIFO stack. All three entries
+	// above it are stale and must be closed before TryGet can reach it.
+	for i, cn := range conns {
+		p.Put(ctx, cn)
+		if i > 0 {
+			cn.SetUsedAt(time.Now().Add(-time.Hour))
+		}
+	}
+
+	got, err := p.TryGet(ctx)
+	if err != nil {
+		t.Fatalf("TryGet skipped healthy idle connection: %v", err)
+	}
+	if got != conns[0] {
+		t.Errorf("TryGet returned %p, want healthy idle conn %p", got, conns[0])
+	}
+	p.Put(ctx, got)
+	if dials.Load() != 4 || p.QueueLen() != 0 {
+		t.Fatalf("dials=%d turns=%d, want 4 and 0", dials.Load(), p.QueueLen())
+	}
+}
+
 func TestGetWaitsForReAuth(t *testing.T) {
 	for _, capped := range []bool{true, false} {
 		name := "unlimited"

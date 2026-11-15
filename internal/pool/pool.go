@@ -1051,6 +1051,23 @@ func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 	return p.getConn(ctx, false)
 }
 
+// usableIdlePollInterval bounds the readiness check by both the pool budget
+// and the caller's deadline, without changing which timer expires the wait.
+func usableIdlePollInterval(ctx context.Context, poolRemaining time.Duration) time.Duration {
+	pollBudget := poolRemaining
+	if ctxDeadline, ok := ctx.Deadline(); ok {
+		pollBudget = min(pollBudget, time.Until(ctxDeadline))
+	}
+	if pollBudget <= 0 {
+		return 0
+	}
+	interval := min(10*time.Millisecond, pollBudget/4)
+	if interval <= 0 {
+		return pollBudget
+	}
+	return interval
+}
+
 // waitForUsableIdle polls the lightweight connection state rather than
 // repeatedly running popIdle (which rearranges the idle slice). A maintenance
 // worker updates state without calling Put, so there is no pool queue event to
@@ -1086,9 +1103,14 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, ho
 	if !hookRejected && isReady() {
 		return nil
 	}
-	interval := min(10*time.Millisecond, remaining/4)
+	// Poll promptly when the caller has a shorter deadline than PoolTimeout.
+	// The pool timer still owns the pool budget; ctx.Done owns the caller's.
+	interval := usableIdlePollInterval(ctx, remaining)
 	if interval <= 0 {
-		interval = remaining
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1191,6 +1213,7 @@ retryIdle:
 	}
 	drainGeneration := p.drainGeneration.Load()
 	hookRejected := false
+	removedUnhealthy := false
 	for attempts := 0; attempts < getAttempts; attempts++ {
 
 		p.connsMu.Lock()
@@ -1217,6 +1240,7 @@ retryIdle:
 		if !p.isHealthyConn(cn, nowNs) {
 			// Connection was already transitioned to MetricStateUsed under the lock above.
 			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateUsed)
+			removedUnhealthy = true
 			continue
 		}
 
@@ -1229,6 +1253,7 @@ retryIdle:
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
 					// Connection was already transitioned to MetricStateUsed under the lock above.
 					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateUsed)
+					removedUnhealthy = true
 				} else {
 					hookRejected = true
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
@@ -1292,6 +1317,13 @@ retryIdle:
 	hasIdle := len(p.idleConns) > 0
 	p.connsMu.Unlock()
 	if hasIdle {
+		// Discarding a stale entry is real progress: TryGet should continue
+		// scanning for a healthy idle connection past getAttempts. Only
+		// hook rejections (which return an entry to idle) must not spin.
+		if removedUnhealthy {
+			nowNs = time.Now().UnixNano()
+			goto retryIdle
+		}
 		if !wait {
 			p.freeTurn()
 			return nil, ErrPoolTryFull
