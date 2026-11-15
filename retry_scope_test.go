@@ -54,6 +54,40 @@ func TestFailoverDialRetryScope(t *testing.T) {
 	if !failover.clone().shouldRetryCommand(dialErr, true) {
 		t.Fatal("derived Sentinel client must retain its endpoint-retry policy")
 	}
+	conn := failover.Conn()
+	defer conn.Close()
+	if !conn.shouldRetryCommand(dialErr, true) {
+		t.Fatal("Sentinel Conn wrapper must retain its endpoint-retry policy")
+	}
+	ephemeral := failover.EphemeralConn()
+	defer ephemeral.Close()
+	if !ephemeral.shouldRetryCommand(dialErr, true) {
+		t.Fatal("Sentinel EphemeralConn wrapper must retain its endpoint-retry policy")
+	}
+	tx := failover.newTx()
+	defer tx.Close(context.Background())
+	if !tx.shouldRetryCommand(dialErr, true) {
+		t.Fatal("Sentinel Watch transaction must retain its endpoint-retry policy")
+	}
+
+	fd := &fdEngine{client: failover}
+	if !fd.canRetryLease(dialErr, 0) {
+		t.Fatal("Sentinel full-duplex engine must retry an exhausted dial against another endpoint")
+	}
+	if fd.canRetryLease(dialErr, 2) {
+		t.Fatal("full-duplex lease must respect its retry budget")
+	}
+	fd.ownerRetries = true
+	fd.reroute = func(context.Context, []Cmder, int) error { return nil }
+	if fd.canRetryLease(dialErr, 0) {
+		t.Fatal("full-duplex lease should defer to an owner's reroute policy")
+	}
+	fd.ownerRetries = false
+	fd.reroute = nil
+	fd.client = client
+	if fd.canRetryLease(dialErr, 0) {
+		t.Fatal("fixed-address full-duplex engine must not restart an exhausted dial sequence")
+	}
 }
 
 func TestRingDoesNotRestartPoolDialSequence(t *testing.T) {

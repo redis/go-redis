@@ -65,6 +65,9 @@ func (c *Client) newTx() *Tx {
 			streamingCredentialsManager: c.streamingCredentialsManager,
 		},
 	}
+	// Watch leases from the same Sentinel pool as its parent; a failed first
+	// dial may be retried against a different advertised endpoint.
+	tx.baseClient.dialAddrCanChange = c.baseClient.dialAddrCanChange
 	// Tx reads are uncached but still OPTOUT-prefix when trackable; share the
 	// parent's CommandMetadata overrides for custom read-only keyed commands.
 	c.baseClient.shareCommandMetadata(&tx.baseClient)

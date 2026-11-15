@@ -3331,6 +3331,9 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
 	conn := newConn(connOpt, sticky, &c.hooksMixin, c.himport)
+	// These wrappers borrow the Sentinel pool, whose next dial may select a
+	// different endpoint. Keep the parent's retry policy for a cold lease.
+	conn.baseClient.dialAddrCanChange = c.baseClient.dialAddrCanChange
 	if isolated {
 		// Never enable tracking or attach the parent's cache to a socket whose
 		// session state the caller may change freely.
