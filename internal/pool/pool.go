@@ -1273,6 +1273,10 @@ retryIdle:
 					// Return connection to pool without freeing the turn that this Get() call holds.
 					// putConnWithoutTurn will emit used→idle transition.
 					p.putConnWithoutTurn(ctx, cn)
+					// OnGet may reject a still-IDLE connection whose re-auth worker
+					// has not started. Do not let LIFO immediately pop this same
+					// connection again while other idle entries remain usable.
+					p.demoteRejectedIdle(cn)
 					cn = nil
 				}
 				continue
@@ -1710,6 +1714,25 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 // within Get(), where the turn is still held by the Get() call.
 func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn) {
 	p.putConn(ctx, cn, false)
+}
+
+// demoteRejectedIdle moves a hook-rejected connection to the oldest end of
+// the LIFO idle list. FIFO already places a returned connection last. The
+// entry may have been removed or leased concurrently after putConn; then
+// there is nothing to reorder. This changes neither turns nor metrics.
+func (p *ConnPool) demoteRejectedIdle(cn *Conn) {
+	if p.cfg.PoolFIFO {
+		return
+	}
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+	for i := len(p.idleConns) - 1; i > 0; i-- {
+		if p.idleConns[i] == cn {
+			copy(p.idleConns[1:i+1], p.idleConns[:i])
+			p.idleConns[0] = cn
+			return
+		}
+	}
 }
 
 // putConn is the internal implementation of Put that optionally frees a turn.

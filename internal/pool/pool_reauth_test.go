@@ -17,10 +17,13 @@ import (
 
 // A re-authentication hook can reject a connection before its worker has
 // transitioned the connection out of StateIdle.
-type rejectIdleOnGetHook struct{ rejected atomic.Int32 }
+type rejectIdleOnGetHook struct {
+	rejected atomic.Int32
+	only     *pool.Conn
+}
 
-func (h *rejectIdleOnGetHook) OnGet(_ context.Context, _ *pool.Conn, isNew bool) (bool, error) {
-	if isNew {
+func (h *rejectIdleOnGetHook) OnGet(_ context.Context, cn *pool.Conn, isNew bool) (bool, error) {
+	if isNew || (h.only != nil && cn != h.only) {
 		return true, nil
 	}
 	h.rejected.Add(1)
@@ -60,6 +63,54 @@ func TestGetBoundsHookRejectedIdleRetries(t *testing.T) {
 	}
 	if p.QueueLen() != 0 {
 		t.Fatalf("pool turn leaked after timeout: %d", p.QueueLen())
+	}
+}
+
+func TestGetSkipsHookRejectedIdleForHealthyPeer(t *testing.T) {
+	for _, try := range []bool{false, true} {
+		name := "Get"
+		if try {
+			name = "TryGet"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			p := pool.NewConnPool(&pool.Options{
+				PoolSize: 2, MaxActiveConns: 2, MaxConcurrentDials: 2,
+				PoolTimeout: 30 * time.Millisecond, Dialer: dummyDialer,
+			})
+			t.Cleanup(func() { _ = p.Close() })
+			healthy, err := p.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blocked, err := p.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			healthy.GetStateMachine().Transition(pool.StateInUse)
+			blocked.GetStateMachine().Transition(pool.StateInUse)
+			p.Put(ctx, healthy)
+			p.Put(ctx, blocked)
+
+			hook := &rejectIdleOnGetHook{only: blocked}
+			p.AddPoolHook(hook)
+			var got *pool.Conn
+			if try {
+				got, err = p.TryGet(ctx)
+			} else {
+				got, err = p.Get(ctx)
+			}
+			if err != nil {
+				t.Fatalf("%s overlooked healthy idle peer: %v", name, err)
+			}
+			if got != healthy {
+				t.Fatalf("%s returned %p, want healthy conn %p", name, got, healthy)
+			}
+			p.Put(ctx, got)
+			if hook.rejected.Load() != 1 || p.QueueLen() != 0 {
+				t.Fatalf("rejections=%d turns=%d, want 1 and 0", hook.rejected.Load(), p.QueueLen())
+			}
+		})
 	}
 }
 
