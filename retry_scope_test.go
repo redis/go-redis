@@ -645,3 +645,82 @@ func TestClusterWatchDoesNotRestartFixedDialBudget(t *testing.T) {
 		t.Fatalf("WATCH restarted an exhausted fixed endpoint: %d dials, want 1", got)
 	}
 }
+
+func TestClusterParallelTargetSkipsFinalDiscovery(t *testing.T) {
+	const addr = "127.0.0.1:6379"
+	var dials, reloads atomic.Int32
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{addr},
+		MaxRedirects: -1, // One attempt: no later target can use a refreshed topology.
+		ClusterStateReloadInterval: time.Hour,
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			reloads.Add(1)
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+		},
+	})
+	defer cluster.Close()
+	cluster.OnNewNode(func(client *Client) {
+		client.AddHook(&clusterPoolDialFailHook{calls: &dials})
+	})
+
+	ctx := context.Background()
+	if _, err := cluster.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	node, err := cluster.nodes.GetOrCreate(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cluster.executeParallelTarget(ctx, node, 1, NewCmd(ctx, "get", "key"))
+	if !errors.Is(err, pool.ErrDialSequenceFailure) {
+		t.Fatalf("expected exhausted dial marker, got %v", err)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("target attempted %d dials, want 1", got)
+	}
+	if got := reloads.Load(); got != 1 {
+		t.Fatalf("final exhausted target triggered %d topology loads, want initial load only", got)
+	}
+}
+
+func TestClusterProcessSchedulesReloadAfterExhaustedDial(t *testing.T) {
+	const addr = "127.0.0.1:6379"
+	var dials, reloads atomic.Int32
+	reloaded := make(chan struct{}, 1)
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{addr},
+		MaxRedirects: 2,
+		DisableRoutingPolicies: true,
+		ClusterStateReloadInterval: time.Hour,
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			if reloads.Add(1) > 1 {
+				select {
+				case reloaded <- struct{}{}:
+				default:
+				}
+			}
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+		},
+	})
+	defer cluster.Close()
+	cluster.OnNewNode(func(client *Client) {
+		client.AddHook(&clusterPoolDialFailHook{calls: &dials})
+	})
+
+	ctx := context.Background()
+	if _, err := cluster.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	err := cluster.Get(ctx, "key").Err()
+	if !errors.Is(err, pool.ErrDialSequenceFailure) {
+		t.Fatalf("expected exhausted dial marker, got %v", err)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("fixed node attempted %d dials, want 1", got)
+	}
+	select {
+	case <-reloaded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cluster did not schedule a topology reload after dial exhaustion")
+	}
+}
