@@ -3073,7 +3073,7 @@ func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder
 			if node.Client.dialAddrCanChange {
 				continue
 			}
-			if dialErr := cmdsFirstErr(batch); ctx.Err() == nil &&
+			if dialErr := cmdsFirstErr(batch); ctx.Err() == nil && !errors.Is(dialErr, context.Canceled) &&
 				errors.Is(dialErr, pool.ErrDialSequenceFailure) {
 				exhaustedDialNodes[node] = dialErr
 				node.MarkAsFailing()
@@ -4257,6 +4257,8 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			// WATCH is pinned to this node until a redirect identifies another
 			// master. Retrying an exhausted fixed-address dial cannot recover.
 			if !node.Client.dialAddrCanChange && errors.Is(err, pool.ErrDialSequenceFailure) {
+				node.MarkAsFailing()
+				c.state.LazyReload()
 				return err
 			}
 			continue

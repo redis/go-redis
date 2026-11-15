@@ -646,6 +646,40 @@ func TestClusterWatchDoesNotRestartFixedDialBudget(t *testing.T) {
 	}
 }
 
+func TestClusterWatchReloadsTopologyAfterFixedDialFailure(t *testing.T) {
+	const addr = "127.0.0.1:6379"
+	var reloads atomic.Int32
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{addr}, MaxRedirects: 2, DialerRetries: 1,
+		DialTimeout: 50 * time.Millisecond, ClusterStateReloadInterval: time.Hour,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+		},
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			reloads.Add(1)
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+		},
+	})
+	defer cluster.Close()
+	ctx := context.Background()
+	if _, err := cluster.state.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := reloads.Load()
+	if err := cluster.Watch(ctx, func(*Tx) error { return nil }, "key"); !errors.Is(err, pool.ErrDialSequenceFailure) {
+		t.Fatalf("expected exhausted dial marker, got %v", err)
+	}
+	deadline := time.After(2 * time.Second)
+	for reloads.Load() <= before {
+		select {
+		case <-deadline:
+			t.Fatal("WATCH did not schedule a topology reload after dial exhaustion")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
 func TestClusterParallelTargetSkipsFinalDiscovery(t *testing.T) {
 	const addr = "127.0.0.1:6379"
 	var dials, reloads atomic.Int32
