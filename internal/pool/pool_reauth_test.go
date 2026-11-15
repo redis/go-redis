@@ -646,10 +646,10 @@ func (c *blockedIdleCloseConn) Close() error {
 	return c.Conn.Close()
 }
 
-type failIdleOnGetHook struct{}
+type failIdleOnGetHook struct{ blocked *pool.Conn }
 
-func (*failIdleOnGetHook) OnGet(_ context.Context, _ *pool.Conn, isNew bool) (bool, error) {
-	if !isNew {
+func (h *failIdleOnGetHook) OnGet(_ context.Context, cn *pool.Conn, isNew bool) (bool, error) {
+	if !isNew && cn == h.blocked {
 		return false, errors.New("reject idle connection")
 	}
 	return true, nil
@@ -672,7 +672,6 @@ func TestGetUnblocksNewDialDuringIdleTeardown(t *testing.T) {
 			}
 			var once sync.Once
 			release := func() { once.Do(func() { close(blocked.release) }) }
-			t.Cleanup(release)
 			var dials atomic.Int32
 			p := pool.NewConnPool(&pool.Options{
 				PoolSize: 2, MaxActiveConns: 2, MaxConcurrentDials: 2,
@@ -685,6 +684,8 @@ func TestGetUnblocksNewDialDuringIdleTeardown(t *testing.T) {
 				},
 			})
 			t.Cleanup(func() { _ = p.Close() })
+			// Run this before pool cleanup, including on an early test failure.
+			t.Cleanup(release)
 			original, err := p.Get(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -694,7 +695,7 @@ func TestGetUnblocksNewDialDuringIdleTeardown(t *testing.T) {
 			if mode == "stale" {
 				original.SetUsedAt(time.Now().Add(-time.Hour))
 			} else {
-				p.AddPoolHook(&failIdleOnGetHook{})
+				p.AddPoolHook(&failIdleOnGetHook{blocked: original})
 			}
 
 			type result struct {
