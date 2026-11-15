@@ -440,6 +440,9 @@ type pipelinePoolRef struct {
 
 type baseClient struct {
 	cscPolicy cscPolicy
+	// Sentinel failover dialers may choose a different master or replica on
+	// each dial. A failed pool dial must not suppress that routing retry.
+	dialAddrCanChange bool
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -607,6 +610,8 @@ func (c *baseClient) clone() *baseClient {
 		cmdMeta:        c.cmdMeta,
 		metadataSource: c.metadataSource,
 		staticCmdMeta:  c.staticCmdMeta,
+
+		dialAddrCanChange: c.dialAddrCanChange,
 
 		// cscRefreshQueue is SHARED (pointer copy), like cscPoolHook: processCached
 		// calls signalDemand on it so a miss for a key still in the refresher's
@@ -2340,7 +2345,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		}
 		return readErr
 	}); err != nil {
-		retry := forceRetry.Load() || shouldRetrySingleNode(err, retryTimeout.Load() == 1)
+		retry := forceRetry.Load() || c.shouldRetryCommand(err, retryTimeout.Load() == 1)
 		return retry, forceRetry.Load(), usedConn, err
 	}
 
@@ -2349,6 +2354,16 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
+}
+
+// shouldRetryCommand permits a new dial sequence for Sentinel failover
+// clients, whose dialer can reselect another endpoint between attempts.
+// Ordinary clients must not repeat an exhausted sequence to one address.
+func (c *baseClient) shouldRetryCommand(err error, retryTimeout bool) bool {
+	if c.dialAddrCanChange {
+		return shouldRetry(err, retryTimeout)
+	}
+	return shouldRetrySingleNode(err, retryTimeout)
 }
 
 func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
@@ -2627,7 +2642,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// Don't retry if any command in the pipeline explicitly disables retries
 		// (e.g., RawWriteToCmd which writes directly to an io.Writer and cannot
 		// undo partial writes on retry)
-		if lastErr == nil || !canRetry || !shouldRetrySingleNode(lastErr, true) || cmdsContainNoRetry(cmds) {
+		if lastErr == nil || !canRetry || !c.shouldRetryCommand(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
 			if pipelineErrShouldStamp(lastErr) {
 				setCmdsErr(cmds, lastErr)

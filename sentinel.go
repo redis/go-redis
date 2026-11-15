@@ -683,6 +683,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			opt:       opt,
 			onClose:   &onCloseHooks{},
 			himport:   newHImportRegistry(),
+
+			dialAddrCanChange: true,
 		},
 	}
 	rdb.rec, rdb.poolMetrics = clientRecorder(opt.OTelRecorder)

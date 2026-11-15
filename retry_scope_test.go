@@ -29,6 +29,33 @@ func TestSingleNodeDialRetryScope(t *testing.T) {
 	}
 }
 
+func TestFailoverDialRetryScope(t *testing.T) {
+	dialErr := fmt.Errorf("%w: %w", pool.ErrDialSequenceFailure, &net.OpError{
+		Op: "dial", Net: "tcp", Err: fmt.Errorf("connection refused"),
+	})
+
+	client := NewClient(&Options{Addr: "127.0.0.1:0", DialerRetries: 1, MaxRetries: 2})
+	defer client.Close()
+	if client.shouldRetryCommand(dialErr, true) {
+		t.Fatal("fixed-address client must not repeat an exhausted dial sequence")
+	}
+
+	failover := NewFailoverClient(&FailoverOptions{
+		MasterName:    "test",
+		SentinelAddrs: []string{"127.0.0.1:0"},
+		ReplicaOnly:   true,
+		DialerRetries: 1,
+		MaxRetries:    2,
+	})
+	defer failover.Close()
+	if !failover.shouldRetryCommand(dialErr, true) {
+		t.Fatal("Sentinel client must be able to retry a different replica")
+	}
+	if !failover.clone().shouldRetryCommand(dialErr, true) {
+		t.Fatal("derived Sentinel client must retain its endpoint-retry policy")
+	}
+}
+
 func TestRingDoesNotRestartPoolDialSequence(t *testing.T) {
 	var calls atomic.Int32
 	ring := NewRing(&RingOptions{
