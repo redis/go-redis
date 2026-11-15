@@ -27,10 +27,11 @@ type UniversalOptions struct {
 
 	// Common options.
 
-	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
+	OnConnect func(ctx context.Context, cn *Conn) error
+
 	// DialerCanChangeAddress: see Options.DialerCanChangeAddress.
 	DialerCanChangeAddress bool
-	OnConnect func(ctx context.Context, cn *Conn) error
 
 	Protocol int
 	Username string
