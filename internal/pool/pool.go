@@ -1359,9 +1359,10 @@ retryIdle:
 	hasIdleOrPending := len(p.idleConns) > 0 || p.idleGetInFlight.Load() > 0
 	p.connsMu.Unlock()
 	if hasIdleOrPending {
-		// Continue past getAttempts only while the original idle snapshot
-		// has unexamined entries. Refills cannot expand this budget.
-		if removedUnhealthy && idleScanRemaining > 0 {
+		// Continue past getAttempts while the original idle snapshot has
+		// unexamined entries, including connections demoted by OnGet hooks.
+		// Refill arrivals never enlarge this finite scan budget.
+		if (removedUnhealthy || hookRejected) && idleScanRemaining > 0 {
 			if wait && time.Until(poolDeadline) <= 0 {
 				// Prefer the caller's expired context when both deadlines elapsed.
 				if err := ctx.Err(); err != nil {

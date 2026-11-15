@@ -818,3 +818,77 @@ func TestRejectedReauthRetirementReleasesIdleMarkerBeforeClose(t *testing.T) {
 		t.Fatal("original Get did not resume after Close")
 	}
 }
+
+type rejectAllButOneIdleHook struct {
+	allowed *pool.Conn
+	rejections atomic.Int32
+}
+
+func (h *rejectAllButOneIdleHook) OnGet(_ context.Context, cn *pool.Conn, isNew bool) (bool, error) {
+	if isNew || cn == h.allowed {
+		return true, nil
+	}
+	h.rejections.Add(1)
+	return false, nil
+}
+
+func (*rejectAllButOneIdleHook) OnPut(context.Context, *pool.Conn) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (*rejectAllButOneIdleHook) OnRemove(context.Context, *pool.Conn, error) {}
+
+// A bounded scan must reach a healthy LIFO entry behind more than getAttempts
+// pending reauth entries, without spending a 10ms readiness poll on each group.
+func TestGetScansPastDemotedIdleEntries(t *testing.T) {
+	for _, try := range []bool{false, true} {
+		name := "Get"
+		if try {
+			name = "TryGet"
+		}
+		t.Run(name, func(t *testing.T) {
+			const poolSize = 16
+			p := pool.NewConnPool(&pool.Options{
+				PoolSize: poolSize, MaxActiveConns: poolSize, MaxConcurrentDials: poolSize,
+				PoolTimeout: 25 * time.Millisecond, Dialer: dummyDialer,
+			})
+			t.Cleanup(func() { _ = p.Close() })
+			ctx := context.Background()
+			conns := make([]*pool.Conn, poolSize)
+			for i := range conns {
+				var err error
+				conns[i], err = p.Get(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				conns[i].GetStateMachine().Transition(pool.StateInUse)
+			}
+			for _, cn := range conns {
+				p.Put(ctx, cn)
+			}
+			// LIFO places the one valid connection behind fifteen rejected ones.
+			hook := &rejectAllButOneIdleHook{allowed: conns[0]}
+			p.AddPoolHook(hook)
+			var got *pool.Conn
+			var err error
+			if try {
+				got, err = p.TryGet(ctx)
+			} else {
+				got, err = p.Get(ctx)
+			}
+			if err != nil {
+				t.Fatalf("%s failed to scan to the healthy connection: %v", name, err)
+			}
+			if got != conns[0] {
+				t.Fatalf("%s returned %p, want healthy %p", name, got, conns[0])
+			}
+			if hook.rejections.Load() != poolSize-1 {
+				t.Fatalf("rejections=%d, want %d", hook.rejections.Load(), poolSize-1)
+			}
+			p.Put(ctx, got)
+			if p.QueueLen() != 0 {
+				t.Fatalf("leaked %d pool turns", p.QueueLen())
+			}
+		})
+	}
+}
