@@ -761,7 +761,7 @@ func (fd *fdEngine) retryBudget() int {
 // FD session has acquired a connection. Owners with their own retry routing
 // handle failed leases themselves.
 func (fd *fdEngine) canRetryLease(err error, attempts int) bool {
-	return !(fd.reroute != nil && fd.ownerRetries) &&
+	return (fd.reroute == nil || !fd.ownerRetries) &&
 		fd.client.shouldRetryCommand(err, true) && attempts < fd.retryBudget()
 }
 
