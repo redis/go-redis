@@ -906,8 +906,13 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 			return err
 		}
 		if shard == failedDialShard {
-			// The pool already exhausted its dial budget against this shard.
-			// A topology change can still select a different shard on retry.
+			// A keyless command may randomly reselect the failed shard even
+			// while other shards are healthy. Skip it within the bounded
+			// retry loop; never restart its exhausted dial sequence.
+			if cmdFirstKeyPosWithInfo(cmd, nil) == 0 {
+				continue
+			}
+			// Keyed commands cannot change shards without a rebalance.
 			return lastErr
 		}
 
