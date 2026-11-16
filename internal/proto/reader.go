@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -124,15 +125,28 @@ func NewReaderSize(rd io.Reader, size int) *Reader {
 // reply and a timeout together: the reply parses, but the wrapped timeout stays
 // cached and would be reported for the next command on the connection.
 //
-// Nothing is discarded while bytes are buffered: there the cached error can belong
-// to the reply still being parsed, and that classification must be kept.
+// Bytes already buffered are kept: the cached error can sit behind frames the
+// previous command left in the buffer (a push, or the start of the next reply).
+// bufio has no API to clear its cached error without a Reset, so the buffered
+// bytes are copied out and replayed ahead of the underlying reader.
 func (r *Reader) DiscardCachedReadError() {
 	r.resetMu.Lock()
 	defer r.resetMu.Unlock()
-	if r.src == nil || r.rd.Buffered() > 0 {
+	if r.src == nil {
 		return
 	}
-	r.rd.Reset(r.src)
+	n := r.rd.Buffered()
+	if n == 0 {
+		r.rd.Reset(r.src)
+		return
+	}
+	buffered := make([]byte, n)
+	if _, err := io.ReadFull(r.rd, buffered); err != nil {
+		// Reading bytes bufio already holds never touches the transport, so this is
+		// unreachable; leave the reader untouched rather than lose the bytes.
+		return
+	}
+	r.rd.Reset(io.MultiReader(bytes.NewReader(buffered), r.src))
 }
 
 func (r *Reader) Buffered() int {
