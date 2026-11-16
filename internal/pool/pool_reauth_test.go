@@ -130,12 +130,12 @@ func TestGetWaitsForReAuth(t *testing.T) {
 							t.Fatal("Get did not resume after re-auth")
 						}
 					}
-					if phase != "pending" {
-						select {
-						case <-finished:
-						case <-time.After(time.Second):
-							t.Fatal("re-auth did not finish")
-						}
+					// Even a pending worker must finish before pool cleanup. Otherwise
+					// Close can race with the worker's state transition after this test.
+					select {
+					case <-finished:
+					case <-time.After(time.Second):
+						t.Fatal("re-auth did not finish")
 					}
 					wantDials := int32(2)
 					if tc.wait {
