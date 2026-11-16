@@ -1041,3 +1041,94 @@ func TestCanceledClusterTxPipelineDoesNotFailNode(t *testing.T) {
 		t.Fatal("caller cancellation marked a healthy transaction node as failing")
 	}
 }
+
+func TestClusterTxRedirectBacksOffAfterExhaustedNode(t *testing.T) {
+	const oldAddr = "127.0.0.1:7101"
+	const newAddr = "127.0.0.1:7102"
+	slot := clusterKeySlot("key")
+
+	var oldDials, newDials atomic.Int32
+	var topology atomic.Pointer[clusterState]
+	var replacement *clusterState
+	var cluster *ClusterClient
+	cluster = NewClusterClient(&ClusterOptions{
+		Addrs:              []string{oldAddr},
+		Protocol:           2,
+		DisableIdentity:    true,
+		MaxRedirects:      3,
+		MinRetryBackoff:    time.Second,
+		MaxRetryBackoff:    time.Second,
+		DialerRetries:      1,
+		DialerRetryBackoff: func(int) time.Duration { return 0 },
+		PipelinePoolSize:   -1,
+		Dialer: func(_ context.Context, _, addr string) (net.Conn, error) {
+			switch addr {
+			case oldAddr:
+				oldDials.Add(1)
+				// Fail one fixed endpoint, then promote another in the
+				// topology. A later MOVED redirects back to this spent node.
+				topology.Store(replacement)
+				cluster.state.state.Store(replacement)
+				return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+			case newAddr:
+				newDials.Add(1)
+				client, server := net.Pipe()
+				go serveTestRESPConn(server, func(command string) string {
+					switch command {
+					case "hello":
+						return "-ERR unknown command 'hello'\r\n"
+					case "multi":
+						return "+OK\r\n"
+					case "get":
+						return fmt.Sprintf("-MOVED %d %s\r\n", slot, oldAddr)
+					case "exec":
+						return "-EXECABORT Transaction discarded because of previous errors.\r\n"
+					default:
+						return "+OK\r\n"
+					}
+				})
+				return client, nil
+			default:
+				return nil, fmt.Errorf("unexpected dial address %s", addr)
+			}
+		},
+	})
+	defer cluster.Close()
+
+	old, err := cluster.nodes.GetOrCreate(oldAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newNode, err := cluster.nodes.GetOrCreate(newAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := installMetadataClusterState(cluster, []*clusterNode{old},
+		&clusterSlot{start: 0, end: 16383, nodes: []*clusterNode{old}})
+	newNode.loaded.Store(1)
+	replacement = &clusterState{
+		nodes: cluster.nodes, Masters: []*clusterNode{newNode},
+		slots: []*clusterSlot{{start: 0, end: 16383, nodes: []*clusterNode{newNode}}},
+		generation: 2, createdAt: time.Now(),
+	}
+	topology.Store(initial)
+	cluster.state.load = func(context.Context) (*clusterState, error) {
+		return topology.Load(), nil
+	}
+
+	// The first retry has enough time for one backoff. After the MOVED
+	// points back to the exhausted node, the following retry must back off
+	// instead of burning the remaining redirect budget immediately.
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_, err = cluster.TxPipelined(ctx, func(p Pipeliner) error {
+		p.Get(ctx, "key")
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("skipping exhausted MOVED target did not back off: %v", err)
+	}
+	if oldDials.Load() != 1 || newDials.Load() != 1 {
+		t.Fatalf("dial counts old=%d new=%d, want 1/1", oldDials.Load(), newDials.Load())
+	}
+}
