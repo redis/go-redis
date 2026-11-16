@@ -1081,12 +1081,13 @@ func usableIdlePollInterval(ctx context.Context, poolRemaining time.Duration) ti
 // hasLiveIdleGetPendingLocked reports only acquisitions whose connection is
 // still in the pool. The caller holds connsMu. A re-auth worker can remove a
 // popped connection while its OnGet is blocked; such a stale marker must not
-// hide dial capacity from another caller.
+// hide dial capacity from another caller. Filter can also close a popped
+// connection while it remains in p.conns until its getter unwinds.
 func (p *ConnPool) hasLiveIdleGetPendingLocked() bool {
 	live := false
 	p.idleGetPending.Range(func(_, v any) bool {
 		cn := v.(*Conn)
-		if p.conns[cn.GetID()] == cn {
+		if p.conns[cn.GetID()] == cn && cn.GetStateMachine().GetState() != StateClosed {
 			live = true
 			return false
 		}
