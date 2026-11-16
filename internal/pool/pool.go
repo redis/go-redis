@@ -388,7 +388,11 @@ type ConnPool struct {
 	// list, so another Get must not mistake a temporarily empty list for capacity
 	// to dial. Increment while holding connsMu at pop and decrement only after
 	// the connection is accepted, removed, or requeued.
-	idleGetInFlight atomic.Int32
+	// Each in-flight idle acquisition has its own marker. A background worker
+	// may remove its connection before OnGet completes; removed connections
+	// must not block other callers from dialing the freed capacity.
+	idleGetPending sync.Map // acquisition token -> *Conn
+	idleGetNext    atomic.Uint64
 
 	// pendingConns reserves MaxActiveConns capacity before dialing. Together
 	// with conns it counts both pooled and dedicated connections, under connsMu.
@@ -1074,6 +1078,23 @@ func usableIdlePollInterval(ctx context.Context, poolRemaining time.Duration) ti
 	return interval
 }
 
+// hasLiveIdleGetPendingLocked reports only acquisitions whose connection is
+// still in the pool. The caller holds connsMu. A re-auth worker can remove a
+// popped connection while its OnGet is blocked; such a stale marker must not
+// hide dial capacity from another caller.
+func (p *ConnPool) hasLiveIdleGetPendingLocked() bool {
+	live := false
+	p.idleGetPending.Range(func(_, v any) bool {
+		cn := v.(*Conn)
+		if p.conns[cn.GetID()] == cn {
+			live = true
+			return false
+		}
+		return true
+	})
+	return live
+}
+
 // waitForUsableIdle polls the lightweight connection state rather than
 // repeatedly running popIdle (which rearranges the idle slice). A maintenance
 // worker updates state without calling Put, so there is no pool queue event to
@@ -1095,7 +1116,7 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, ho
 			}
 		}
 		// A popped OnGet connection may still be rejected and requeued.
-		return !hasReauth && p.idleGetInFlight.Load() == 0
+		return !hasReauth && !p.hasLiveIdleGetPendingLocked()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1213,11 +1234,7 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	hookManager := p.hookManager.Load()
 	// Only OnGet hooks can requeue a popped idle connection. Ordinary
 	// health checks must not prevent another caller from dialing spare capacity.
-	releaseIdleGet := func() {
-		if hookManager != nil {
-			p.idleGetInFlight.Add(-1)
-		}
-	}
+	releaseIdleGet := func() {}
 	// A pass may discard unhealthy idle connections, but MinIdleConns can
 	// replenish them concurrently. Only scan the entries visible at the start
 	// of this acquisition (at least the normal getAttempts), so refills cannot
@@ -1255,7 +1272,9 @@ retryIdle:
 		cn, err = p.popIdle()
 		if cn != nil {
 			if hookManager != nil {
-				p.idleGetInFlight.Add(1)
+				token := p.idleGetNext.Add(1)
+				p.idleGetPending.Store(token, cn)
+				releaseIdleGet = func() { p.idleGetPending.Delete(token) }
 			}
 			// Emit idle→used transition inside the lock so Close() sees
 			// consistent state (conn removed from idleConns = "used").
@@ -1371,7 +1390,7 @@ retryIdle:
 	// A concurrent Get may have just popped the last idle conn for OnGet.
 	// It can still return that conn on rejection, so keep the maintenance
 	// wait active until its disposition is known instead of extra-dialing.
-	hasIdleOrPending := p.idleGetInFlight.Load() > 0
+	hasIdleOrPending := p.hasLiveIdleGetPendingLocked()
 	if !hasIdleOrPending {
 		for _, idle := range p.idleConns {
 			state := idle.GetStateMachine().GetState()
