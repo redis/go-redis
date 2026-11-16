@@ -2993,6 +2993,11 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
+		} else if !IsExecAbortError(err) {
+			// A refused EXEC can leave MULTI active even though its error
+			// is a complete Redis reply. Do not let another borrower inherit
+			// that state, including when no WATCH was issued.
+			cn.MarkCloseOnPut("tx: EXEC did not clear transaction state")
 		}
 		return err
 	}
