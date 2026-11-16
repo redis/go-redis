@@ -2,117 +2,205 @@
 
 ## Unreleased
 
-- **MultiDB client (experimental):** `NewMultiDBClient` routes commands to one
-  active database out of several standalone or cluster members (e.g. Redis
-  Enterprise Active-Active) and fails over based on circuit breakers, health
-  checks and a weight-based failover strategy, with auto-fallback to
-  higher-weight members. The `multidb` package adds ping and lag-aware health
-  checks and probe policies. See `example/multidb`
-  ([#3954](https://github.com/redis/go-redis/pull/3954)). Defaults:
-  - MultiDB owns retries: `CommandRetries` (0 = 2, -1 = none) retries on the
-    database active at each attempt, and every attempt is counted by the
-    breaker and failure detector. Standalone members get no retries of their
-    own (`MaxRetries` 0 becomes -1); an explicit `MaxRetries` is kept.
-  - Health checks: HEALTHY_ALL, 3 probes 500ms apart per check, honoring
-    `multidb.WithProbes` / `WithDelay` / `WithTimeout`; `HealthCheckTimeout`
-    (3s) caps the pass. Probes that cannot fit it are rejected at
-    construction and by `AddDatabase`. Under the default policy,
-    `SetActiveDatabase` and `ProbeTargetBeforeFailover` use one probe per
-    check.
-  - Startup: `InitialDBStateMajorityAvailable` needs half the members, rounded
-    up (1 of 2). A failed start matches `ErrInsufficientHealthyDatabases`;
-    with no healthy member it also matches `ErrPermanentlyNotAvailable`.
-  - Weights are in (0, 1] (0 = 1.0); -1 disables a member. The last enabled
-    member cannot be disabled.
-  - The default failure detector (1000 failures and 10% within 2s) is set
-    with `FailureDetectorConfig`, whose fields are used as given; start from
-    `DefaultMultiDBFailureDetectorConfig()`.
-- **Connection handshake and `Options.Limiter`:** the handshake of a new
-  connection (`HELLO`, `AUTH`, `SELECT`, `CLIENT SETINFO`,
-  `CLIENT MAINT_NOTIFICATIONS`) no longer calls `Limiter.Allow` per command. The
-  command that dials pays one admission and reports the handshake result once;
-  that admission also covers the commands an `OnConnect` callback sends on the
-  connection. A PubSub
-  connection, a reconnect after a maintenance handoff, and a fresh full-duplex
-  session each pay one admission for their handshake. Before, a circuit breaker in
-  the half-open state spent its probe budget on the handshake and never closed.
-- **Ephemeral connections with client-side caching:** with CSC active,
-  `EphemeralConn` now lazily dials a fresh, untracked connection. Session commands
-  are allowed without disrupting the parent cache, and reads always go to Redis.
-  The connection takes no `PoolSize` turn, does not support maintenance handoff,
-  and must be closed after use. Without CSC, idle-connection reuse is unchanged
-  ([#4174](https://github.com/redis/go-redis/pull/4174)).
-- **Connection-pool limits:** `MaxActiveConns` now counts all connections
-  registered with the pool (pooled, excess, and dedicated `NewConn` connections)
-  plus in-flight dial reservations. Previously, admission checked only the
-  pooled count (`poolSize`). Clients with this limit configured can now receive
-  `ErrPoolExhausted` from `NewConn`/`EphemeralConn` or during bursts that previously
-  exceeded the limit.
-- **Dial concurrency and prewarming:** `NewConn` now waits for the shared
-  `MaxConcurrentDials` limit and honors context cancellation while waiting. Idle
-  prewarming shares this limit without holding a pool turn while waiting for
-  dial capacity. Refill checks resume after foreground dials and successful
-  prewarm dials complete, and concurrent refill requests are preserved. These
-  pool-limit and prewarming changes apply to all clients using the pool, not
-  only CSC-enabled ephemeral sessions.
+# 9.24.0-beta.1 (2026-11-16)
 
-- **Ring telemetry:** `redisotel.InstrumentTracing` and `InstrumentMetrics` now instrument existing shards. Remove any per-shard instrumentation workaround when instrumenting the ring to avoid duplicate spans and metrics ([#4227](https://github.com/redis/go-redis/pull/4227)).
-- **Username without a password:** a `Username` with an empty `Password` again sends no `AUTH`, as before [#4161](https://github.com/redis/go-redis/pull/4161). Redis Enterprise and Redis Cloud databases with unauthenticated access can reject an empty password, so #4161 could break configs that set a username (e.g. `default`) without a password. Redis OSS accepts it. To authenticate an ACL user created with `nopass`, set `AuthEmptyPassword: true` (or `auth_empty_password=true` in the URL); for sentinel connections use `SentinelAuthEmptyPassword` (`sentinel_auth_empty_password=true`). The rule also applies to credentials from `CredentialsProvider`, `CredentialsProviderContext` and `StreamingCredentialsProvider` used when a connection is set up; re-authentication on a credentials refresh is unchanged. The client-side cache keeps a separate namespace for a username that sends no `AUTH`.
-- **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)).
-- **Struct scan on a bad field:** `Scan` on `HGETALL`/`HMGET` results used to stop at the first field that failed to decode, and with `HGETALL` the set of filled fields was random. It now sets every field it can decode and still returns an error: the one of the failing field with the smallest key for `HGETALL`, and the first failing argument for `HMGET`. A nil pointer field stays nil when its decode fails. Code that reuses the struct after an error will see more fields set ([#4136](https://github.com/redis/go-redis/pull/4136)).
-- Cluster routing shares command metadata with client-side caching for key
-  extraction and read-only status. Existing default routing and cluster-wide
-  `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers are preserved.
-  Install `NewCommandMetadataResolver()` or `client.NewDynamicResolver()` with
-  `SetCommandInfoResolver` to enable metadata-based fan-out and aggregation.
-  `CommandMetadata` configuration alone does not enable them. Cross-slot
-  fan-out is not atomic.
-- With metadata routing enabled, cross-slot `MGET` follows redirects for each
-  affected slot during resharding instead of returning a missing value for a
-  key that moved. Successful slot groups are not replayed.
-- Explicit pipelines and transactions retain node-local command execution;
-  ordered `AsyncAutoPipeline` rejects fan-out before dispatch. Same-slot
-  metadata commands remain batchable. Automatic fan-out is available through
-  the blocking face or unordered half-duplex mode. Existing direct helpers
-  and special routing retain their separate execution path.
-  `SCAN`, `INFO`, and
-  known diagnostics remain node-local. Single-slot raw commands and binary
-  marshaler values are accepted when no fan-out is needed.
-- Numeric sum/min/max fan-out preserves integer replies as exact `int64`
-  results, including raw `Do` results; integer overflow returns an error.
-  Aggregates containing floating-point replies return `float64`.
-- Resolved command key specifications take precedence over `SetFirstKeyPos`.
-  Missing snapshot commands retain the legacy key-position fallback; configure
-  `CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` for full
-  metadata. The default `CommandMetadataStatic` mode performs no network lookup
-  unless resolution reaches an explicitly installed `NewDynamicResolver`.
-  After activation, reconnects, topology changes and a configured refresh
-  interval also verify server identity in Static mode.
-- Embedded command wrappers retain raw-reply safety checks and receive typed
-  aggregate results through their promoted `SetVal` methods.
-- Metadata identity probes have bounded internal deadlines, including when
-  application socket timeouts are disabled. Waiting callers can cancel
-  independently of an ongoing refresh. Dynamic resolution waits for one initial
-  attempt; after failure or invalidation, commands use conservative metadata
-  immediately while background verification retries with backoff.
-- Cluster routing decisions are stored on commands without using commands as
-  map keys, and concurrent topology reloads share one in-flight load.
-- Topology loading prefers `CLUSTER SHARDS` and falls back to `CLUSTER SLOTS`
-  for unsupported commands or unusable replies, including missing or unknown
-  node health. Connection failures try another node without repeating `SLOTS`
-  on the failed connection.
-- Keyless routing prefers healthy nodes, but temporary local failure/loading
-  markers no longer exclude every candidate. Nodes explicitly marked offline
-  by topology remain excluded. `ErrClusterTopologyUnhealthy` supports
-  `errors.Is` checks. Unknown response policies return an error.
-- Fan-out responses containing `MOVED` or `ASK` refresh topology for later
-  commands without replaying already successful operations.
-- `FT.CURSOR READ` is no longer automatically retried after a lost reply, on
-  standalone and cluster clients, because the server may already have advanced
-  the cursor. Cursor ownership and reply-parsing changes are deferred to a
-  separate PR.
-- **Per-node TLS verification for cluster URLs:** `ParseClusterURL` accepts `tls_verify_node_host=true` on `rediss://` URLs. The parameter clears `TLSConfig.ServerName`, so each node is verified against the host it is dialed at and not against the host of the first URL. Use it when each node has a certificate for its own host. The default is unchanged: every node is verified against the host of the first URL, so clusters that use one certificate and announce their nodes by IP continue to work. `rediss://` cluster URLs now also set `MinVersion: tls.VersionTLS12`, as `ParseURL` and `ParseFailoverURL` do ([#4145](https://github.com/redis/go-redis/pull/4145)).
-- **Failover client with `StreamingCredentialsProvider`:** `NewFailoverClient` now creates the streaming credentials manager, so new connections no longer panic in `initConn` ([#4182](https://github.com/redis/go-redis/pull/4182)).
+This is a **beta** release. The exported API of the root module only grows compared to 9.23.0 (no exported function, type, method or field is removed or changed; this was checked by comparing `go doc` output), so existing code compiles unchanged, except custom types that implement the `Cmdable` interfaces, which must add the new methods. Some runtime behaviors change, so read the list below before you upgrade. The release adds:
+
+- The experimental **MultiDB client** for Active-Active (Redis Enterprise) failover.
+- **Metadata-driven cluster routing** and client-side caching (CSC) eligibility that comes from the `COMMAND` metadata.
+- CSC **OPT-IN / OPT-OUT** tracking modes, CSC on `ClusterClient`, and CSC with `EphemeralConn`.
+- A **per-client `OTelRecorder`**, and MultiDB metrics in `redisotel-native`.
+- New full-duplex options (`FullDuplexPipes`, `PipelineMinIdleConns`) and a cluster recovery fix for full-duplex sessions.
+- Commands for Redis 8.10 and for the 8.12 release candidates (`BACKUP`, set member expiration, `BITRANGEINTARRAY`, `ZMOVE`, `CF.COMPACT`, `BLESS`, scalar-quantized HNSW).
+
+⚠️ Behavior changes to check when you upgrade from 9.23.0:
+
+- **`ContextDeadlineError` for socket timeouts that come from a context deadline** ([#4263](https://github.com/redis/go-redis/pull/4263)) by [@aditya-rai-5](https://github.com/aditya-rai-5). With `ContextTimeoutEnabled: true`, a socket timeout caused by the deadline of the caller's context now matches `context.DeadlineExceeded` with `errors.Is`, and still matches `net.Error` with `Timeout() == true`. The complete original transport error stays in the chain. The error type is internal to the pool, so use `errors.Is`. Such an error is no longer retried, because the context has already expired, and its message starts with `context deadline exceeded:`. Earlier socket timeouts and hard read deadlines are unchanged. Edge cases are tracked in [#4305](https://github.com/redis/go-redis/issues/4305).
+- **`WithTimeout` keeps hooks:** a client returned by `WithTimeout` now runs the hooks of its parent. Before, it dropped them, so hooks added with `AddHook` did not run for commands, pipelines and transactions on that client ([#4095](https://github.com/redis/go-redis/pull/4095)) by [@CaliLuke](https://github.com/CaliLuke).
+- **CSC eligibility comes from the `COMMAND` metadata and fails closed** ([#3960](https://github.com/redis/go-redis/pull/3960)) by [@ofekshenawa](https://github.com/ofekshenawa). An unknown, malformed, blocking, nondeterministic or script-based command runs as usual but is not cached. `JSON.MGET` and `TS.INFO` are no longer cached by default. With CSC enabled, more eligible commands can be cached in the default `Static` metadata mode (the `BF.*`, `CF.*`, `TOPK.*`, `TDIGEST.*`, `V*` and `AR*` families, `CMS.QUERY`, `EXPIRETIME`, `PEXPIRETIME`, `HEXPIRETIME`, `HPEXPIRETIME`, `PFCOUNT`, `SDIFFCARD`, `SUNIONCARD`, `ZINTERCARD` and others). `Command()` results now also contain subcommand entries named `parent|child`, for example `client|id`. When built-in CSC is on, a raw `CLIENT CACHING` command is rejected, like the other commands that change connection state ([#4193](https://github.com/redis/go-redis/pull/4193)) by [@ofekshenawa](https://github.com/ofekshenawa).
+- **Connection-pool limits:** `MaxActiveConns` now counts all connections registered with the pool (pooled, excess, and dedicated `NewConn` connections) plus in-flight dial reservations. Previously, admission checked only the pooled count (`poolSize`). Clients with this limit configured can now receive `ErrPoolExhausted` from `NewConn`/`EphemeralConn` or during bursts that previously exceeded the limit ([#4174](https://github.com/redis/go-redis/pull/4174)) by [@aditya-rai-5](https://github.com/aditya-rai-5).
+- **Dial concurrency and prewarming:** `NewConn` now waits for the shared `MaxConcurrentDials` limit and honors context cancellation while waiting. Idle prewarming shares this limit without holding a pool turn while waiting for dial capacity. Refill checks resume after foreground dials and successful prewarm dials complete, and concurrent refill requests are preserved. These pool-limit and prewarming changes apply to all clients using the pool, not only CSC-enabled ephemeral sessions ([#4174](https://github.com/redis/go-redis/pull/4174)).
+- **Struct scan on a bad field:** `Scan` on `HGETALL`/`HMGET` results used to stop at the first field that failed to decode, and with `HGETALL` the set of filled fields was random. It now sets every field it can decode and still returns an error. When one field fails, that field's error is returned as before. When several fail, their errors are joined with `errors.Join`, in key order for `HGETALL` and argument order for `HMGET`, so `errors.Is` and `errors.As` match each of them. The underlying decoder error stays in the chain, so `errors.Is(err, strconv.ErrSyntax)` and `errors.As` with `*strconv.NumError` work. A field that fails to decode keeps its previous value, and a nil pointer field stays nil. Code that reuses the struct after an error will see more fields set ([#4136](https://github.com/redis/go-redis/pull/4136) by [@lazerg](https://github.com/lazerg), [#2255](https://github.com/redis/go-redis/pull/2255) by [@cpoole](https://github.com/cpoole), [#4294](https://github.com/redis/go-redis/pull/4294) by [@Avv123](https://github.com/Avv123)).
+- **URL configuration validation:** `ParseURL`, `ParseClusterURL`, and `ParseFailoverURL` now reject negative `dialer_retry_timeout`, `read_buffer_size`, and `write_buffer_size` values. Cluster and failover URLs that previously accepted negative retry timeouts now return an error; replace those values with `0` for no delay, or omit the parameter for the default 100 ms delay. An explicit `dialer_retry_timeout=0` now disables the retry delay ([#4144](https://github.com/redis/go-redis/pull/4144)) by [@Samuel-Sorial](https://github.com/Samuel-Sorial). `ParseURL` and `ParseFailoverURL` now also reject a negative database number ([#4275](https://github.com/redis/go-redis/pull/4275)) by [@ump45nose](https://github.com/ump45nose), and a plain-second duration that overflows `int64` nanoseconds ([#4276](https://github.com/redis/go-redis/pull/4276)) by [@ump45nose](https://github.com/ump45nose). A disabled `dial_timeout` (`0` or a negative value in the URL) now means no dial deadline. Before, every dial failed at once ([#4168](https://github.com/redis/go-redis/pull/4168)) by [@PerryLink](https://github.com/PerryLink).
+- **Empty password with a username (opt-in):** a `Username` with an empty `Password` sends no `AUTH`, the same as 9.23.0. To authenticate an ACL user created with `nopass`, set `AuthEmptyPassword: true` (or `auth_empty_password=true` in the URL); for sentinel connections use `SentinelAuthEmptyPassword` (`sentinel_auth_empty_password=true`). The rule also applies to credentials from `CredentialsProvider`, `CredentialsProviderContext` and `StreamingCredentialsProvider` used when a connection is set up; re-authentication on a credentials refresh is unchanged. Redis Enterprise and Redis Cloud databases with unauthenticated access can reject an empty password, which is why this is opt-in. The client-side cache keeps a separate namespace for a username that sends no `AUTH` ([#4161](https://github.com/redis/go-redis/pull/4161) by [@saddamr3e](https://github.com/saddamr3e), [#4194](https://github.com/redis/go-redis/pull/4194) by [@ndyakov](https://github.com/ndyakov)).
+- **Ring telemetry:** `redisotel.InstrumentTracing` and `InstrumentMetrics` now instrument existing shards. Remove any per-shard instrumentation workaround when instrumenting the ring to avoid duplicate spans and metrics ([#4227](https://github.com/redis/go-redis/pull/4227)) by [@nk-batman21](https://github.com/nk-batman21).
+- **Full-duplex clients keep one idle spare connection:** a full-duplex engine raises `MinIdleConns` of its pipeline pool to 1, so the pool holds one extra idle connection for each client (for each node on a cluster). Set `PipelineMinIdleConns` to a negative value to opt out ([#4101](https://github.com/redis/go-redis/pull/4101)) by [@ndyakov](https://github.com/ndyakov).
+- **Replies nested deeper than 1000 levels fail:** the RESP reader returns an error for a reply with more than 1000 levels of nested aggregates or attributes, instead of exhausting the stack ([#4296](https://github.com/redis/go-redis/pull/4296)) by [@xixi-box](https://github.com/xixi-box).
+- **`Script.Load` keeps the client-computed SHA-1:** a `Script` made with `NewScript` no longer takes the digest from the `SCRIPT LOAD` reply. A server that replies with another digest cannot redirect later `Run`/`RunRO` calls. `NewScriptServerSHA` still uses the server digest ([#3943](https://github.com/redis/go-redis/pull/3943)) by [@saddamr3e](https://github.com/saddamr3e).
+- **`PubSub.Channel` misuse does not panic:** calling `Channel` and `ChannelWithSubscriptions` on one `PubSub` now returns a closed channel and logs a warning. `Ring.Subscribe`, `PSubscribe` and `SSubscribe` with no channels, or a failed shard lookup, return a `PubSub` that carries the error and do not panic ([#3968](https://github.com/redis/go-redis/pull/3968)) by [@VedantMadane](https://github.com/VedantMadane).
+- **Return values:** `XInfoStreamFull` now reports a `-1` consumer-group lag when Redis replies with a nil lag, like `XInfoGroups` ([#4217](https://github.com/redis/go-redis/pull/4217)) by [@LindseyZ1205](https://github.com/LindseyZ1205). `ClusterClient.ScriptFlush` now returns `OK` ([#4252](https://github.com/redis/go-redis/pull/4252)) by [@LindseyZ1205](https://github.com/LindseyZ1205).
+- **New interface methods:** `Cmdable` and its sub-interfaces gain methods for the new commands (and `BlessCmdable`). This is the usual way go-redis adds commands. A custom type that implements these interfaces (for example a mock) must add the methods.
+
+## 🚀 Highlights
+
+### MultiDB client (experimental)
+
+`NewMultiDBClient` routes commands to one active database out of several standalone or cluster members (e.g. Redis Enterprise Active-Active) and fails over based on circuit breakers, health checks and a weight-based failover strategy, with auto-fallback to higher-weight members. The `multidb` package adds ping and lag-aware health checks and probe policies. See `example/multidb` ([#3954](https://github.com/redis/go-redis/pull/3954)) by [@ndyakov](https://github.com/ndyakov). Defaults:
+
+- MultiDB owns retries: `CommandRetries` (0 = 2, -1 = none) retries on the database active at each attempt, and every attempt is counted by the breaker and failure detector. Standalone members get no retries of their own (`MaxRetries` 0 becomes -1); an explicit `MaxRetries` is kept.
+- Health checks: HEALTHY_ALL, 3 probes 500ms apart per check, honoring `multidb.WithProbes` / `WithDelay` / `WithTimeout`; `HealthCheckTimeout` (3s) caps the pass. Probes that cannot fit it are rejected at construction and by `AddDatabase`. Under the default policy, `SetActiveDatabase` and `ProbeTargetBeforeFailover` use one probe per check.
+- Startup: `InitialDBStateMajorityAvailable` needs half the members, rounded up (1 of 2). A failed start matches `ErrInsufficientHealthyDatabases`; with no healthy member it also matches `ErrPermanentlyNotAvailable`.
+- Weights are in (0, 1] (0 = 1.0); -1 disables a member. The last enabled member cannot be disabled.
+- The default failure detector (1000 failures and 10% within 2s) is set with `FailureDetectorConfig`, whose fields are used as given; start from `DefaultMultiDBFailureDetectorConfig()`.
+- `redisotel-native` reports MultiDB events (failover, active database change, circuit breaker state change, health check) in a new `multidb` metric group, `MetricGroupFlagMultiDB`, which `MetricGroupAll` includes ([#4007](https://github.com/redis/go-redis/pull/4007)) by [@ndyakov](https://github.com/ndyakov).
+- A member `ProcessHook` that returns `nil` without calling `next` is no longer counted as a healthy database response ([#4271](https://github.com/redis/go-redis/pull/4271)) by [@harshitdeora](https://github.com/harshitdeora). A local result of a member hook in a cluster pipeline is kept when another node fails ([#4279](https://github.com/redis/go-redis/pull/4279)) by [@harshitdeora](https://github.com/harshitdeora). Full-duplex outcomes are recorded in the failure window after the active member is selected again ([#4283](https://github.com/redis/go-redis/pull/4283)) by [@xixi-box](https://github.com/xixi-box).
+
+**Experimental:** the MultiDB API can change in a minor release. User hooks and health checks must not call MultiDB control methods or `Close`.
+
+### Metadata-driven cluster routing
+
+Cluster routing and CSC use the same resolved `COMMAND` record for each command, so flags, key positions and policies cannot drift between two metadata sources ([#3960](https://github.com/redis/go-redis/pull/3960), [#4093](https://github.com/redis/go-redis/pull/4093)) by [@ofekshenawa](https://github.com/ofekshenawa).
+
+- Cluster routing shares command metadata with client-side caching for key extraction and read-only status. Existing default routing and cluster-wide `DBSize`, `ScriptLoad`, `ScriptFlush`, and `ScriptExists` helpers are preserved. Install `NewCommandMetadataResolver()` or `client.NewDynamicResolver()` with `SetCommandInfoResolver` to enable metadata-based fan-out and aggregation. `CommandMetadata` configuration alone does not enable them. Cross-slot fan-out is not atomic.
+- With metadata routing enabled, cross-slot `MGET` follows redirects for each affected slot during resharding instead of returning a missing value for a key that moved. Successful slot groups are not replayed.
+- Explicit pipelines and transactions retain node-local command execution; ordered `AsyncAutoPipeline` rejects fan-out before dispatch. Same-slot metadata commands remain batchable. Automatic fan-out is available through the blocking face or unordered half-duplex mode. Existing direct helpers and special routing retain their separate execution path. `SCAN`, `INFO`, and known diagnostics remain node-local. Single-slot raw commands and binary marshaler values are accepted when no fan-out is needed.
+- Numeric sum/min/max fan-out preserves integer replies as exact `int64` results, including raw `Do` results; integer overflow returns an error. Aggregates containing floating-point replies return `float64`.
+- Resolved command key specifications take precedence over `SetFirstKeyPos`. Missing snapshot commands retain the legacy key-position fallback; configure `CommandMetadataPreferLive` or `CommandMetadataConfig.Overrides` for full metadata. The default `CommandMetadataStatic` mode performs no network lookup unless resolution reaches an explicitly installed `NewDynamicResolver`. After activation, reconnects, topology changes and a configured refresh interval also verify server identity in Static mode.
+- Embedded command wrappers retain raw-reply safety checks and receive typed aggregate results through their promoted `SetVal` methods.
+- Metadata identity probes have bounded internal deadlines, including when application socket timeouts are disabled. Waiting callers can cancel independently of an ongoing refresh. Dynamic resolution waits for one initial attempt; after failure or invalidation, commands use conservative metadata immediately while background verification retries with backoff.
+- Cluster routing decisions are stored on commands without using commands as map keys, and concurrent topology reloads share one in-flight load.
+- Topology loading prefers `CLUSTER SHARDS` and falls back to `CLUSTER SLOTS` for unsupported commands or unusable replies, including missing or unknown node health. Connection failures try another node without repeating `SLOTS` on the failed connection.
+- Keyless routing prefers healthy nodes, but temporary local failure/loading markers no longer exclude every candidate. Nodes explicitly marked offline by topology remain excluded. `ErrClusterTopologyUnhealthy` supports `errors.Is` checks. Unknown response policies return an error.
+- Fan-out responses containing `MOVED` or `ASK` refresh topology for later commands without replaying already successful operations.
+- `FT.CURSOR READ` is no longer automatically retried after a lost reply, on standalone and cluster clients, because the server may already have advanced the cursor. Cursor ownership handling is not part of this release.
+- A `SCAN` iterator on a `ClusterClient` now visits every master. Before, it sent each page to a random node with the cursor of another node and could end early without an error ([#4200](https://github.com/redis/go-redis/pull/4200)) by [@ndyakov](https://github.com/ndyakov).
+- With the dynamic resolver, `DEL`, `EXISTS`, `TOUCH` and `UNLINK` on several keys of one slot returned the per-slot count multiplied by the number of keys in that slot. They now count each slot once ([#4141](https://github.com/redis/go-redis/pull/4141)) by [@lazerg](https://github.com/lazerg).
+
+### Client-side caching
+
+**Experimental:** the CSC options can change in a minor release.
+
+- **OPT-IN and OPT-OUT tracking modes:** `Options.ClientSideCacheTrackingMode` selects `TrackingModePlain` (default), `TrackingModeOptIn` or `TrackingModeOptOut`. `Options.ClientSideCacheable` is a predicate that selects the eligible unmarked calls, and `WithCache(ctx)` / `WithoutCache(ctx)` mark one call. The mode works with miss coalescing, refresh on invalidate, pipelines, autopipeline and cluster fan-out. With CSC on, the native full-duplex engine leases only the untracked pipeline pool and does not use the main pool ([#4193](https://github.com/redis/go-redis/pull/4193)) by [@ofekshenawa](https://github.com/ofekshenawa).
+- **CSC on `ClusterClient`:** each node client has its own cache, shared by its connection pool, with per-node capacity limits. `ClusterOptions`, `UniversalOptions` and `NewFailoverClusterClient` accept the CSC options, and `CSCStats()` and `CSCRefreshStats()` add up the registered nodes. The client does not store a reply that cannot prove that every key it depends on exists. A MOVED or ASK redirect bypasses the cache, and a topology change flushes only the caches of nodes that enter or leave routing. Replica reads, ordinary pipelines, transactions and full-duplex batches stay uncached ([#4080](https://github.com/redis/go-redis/pull/4080)) by [@ofekshenawa](https://github.com/ofekshenawa).
+- **Ephemeral connections with client-side caching:** with CSC active, `EphemeralConn` now lazily dials a fresh, untracked connection. Session commands are allowed without disrupting the parent cache, and reads always go to Redis. The connection takes no `PoolSize` turn, does not support maintenance handoff, and must be closed after use. Without CSC, idle-connection reuse is unchanged ([#4174](https://github.com/redis/go-redis/pull/4174)) by [@aditya-rai-5](https://github.com/aditya-rai-5).
+
+### Full-duplex autopipelining
+
+- **`AutoPipelineOptions.FullDuplexPipes`** sets the number of full-duplex pipes (held connections) on a standalone `Client`. 0 means 1. `NumShards > 1` under `FullDuplex` still selects that number when `FullDuplexPipes` is 0, but `FullDuplexPipes` is the preferred name. `Config().FullDuplexPipes` reports the effective count. On a cluster, a full-duplex autopipeliner keeps one pipe for each master ([#4107](https://github.com/redis/go-redis/pull/4107)) by [@ndyakov](https://github.com/ndyakov).
+- **Warm spare connection:** `Options.PipelineMinIdleConns` (default 0, `pipeline_min_idle_conns` in URLs) sets the minimum idle connections of the dedicated pipeline pool, and is available on `ClusterOptions`, `RingOptions`, `FailoverOptions` and `UniversalOptions`. A full-duplex engine keeps one idle spare, so a replacement for a failed held connection does not wait for a TCP or TLS dial. The spare is dialed but not initialized: `HELLO` and `AUTH` still run on the first lease ([#4101](https://github.com/redis/go-redis/pull/4101)) by [@ndyakov](https://github.com/ndyakov).
+- **Cluster recovery:** when the session of a node engine drops, the engine used to replay the unacknowledged commands only on a new connection to the same node, and failed them if that node was closed or replaced. The commands now go through the cluster router, so they reach the new owner of the slot ([#4111](https://github.com/redis/go-redis/pull/4111)) by [@ndyakov](https://github.com/ndyakov).
+- **OTel metrics no longer cost throughput:** with `redisotel-native` on, full duplex lost about 90% of its throughput. In one test with 256 callers and 64 commands in flight on a local Redis, `GET` throughput went from about 190k/s on v9.23.0 to about 2.1M/s now (about 10x; about 2.0M/s with OTel off). The gain depends on RTT, the number of commands in flight and the CPU, so expect a smaller effect on a remote Redis. The full-duplex reader reads its goroutine id once for each session, and `RecordOperationDuration` uses a bounded attribute cache and a queue for the success path ([#4269](https://github.com/redis/go-redis/pull/4269)) by [@ndyakov](https://github.com/ndyakov).
+
+### Per-client `OTelRecorder`
+
+Each client can have its own metrics recorder. Set `OTelRecorder` in `Options`, `ClusterOptions`, `RingOptions`, `FailoverOptions`, `UniversalOptions` or `MultiDBOptions`. The client sends its commands, pipelines, errors, cluster redirects, Pub/Sub messages, stream lag, and pool and connection events to it. Cluster nodes, ring shards, sentinel clients and MultiDB members use the recorder of their parent. Clients without it use the recorder from `redis.SetOTelRecorder`, as before. In `redisotel-native`, `NewRecorder` makes a recorder with its own `WithCustomAttributes`, which take precedence over the attributes of the global `Init` config ([#4179](https://github.com/redis/go-redis/pull/4179)) by [@vladvildanov](https://github.com/vladvildanov).
+
+```go
+inst := redisotel.GetObservabilityInstance()
+_ = inst.Init(redisotel.NewConfig().WithEnabled(true).WithMeterProvider(provider))
+defer inst.Shutdown()
+
+acmeRec, _ := inst.NewRecorder(redisotel.NewConfig().
+	WithCustomAttributes(attribute.String("tenant", "acme")))
+acme := redis.NewClient(&redis.Options{Addr: "acme:6379", OTelRecorder: acmeRec})
+```
+
+### Redis 8.10 and 8.12 commands
+
+The 8.12 commands target the 8.12 release candidates (the CI image is `8.12-rc3`). The commands and options can change before 8.12 is released.
+
+- Set member expiration: `SExpire`, `SPExpire`, `SExpireAt`, `SPExpireAt` (each with `WithArgs`), `STTL`, `SPTTL`, `SExpireTime`, `SPExpireTime`, `SPersist`, `SAddEX` and `SAddEXWithArgs` ([#4165](https://github.com/redis/go-redis/pull/4165)) by [@ndyakov](https://github.com/ndyakov).
+- `BITRANGEINTARRAY` ([#4242](https://github.com/redis/go-redis/pull/4242)) by [@ndyakov](https://github.com/ndyakov).
+- `ZMOVE`, `BZMOVE` and `ZMOVEMEMBER` ([#4289](https://github.com/redis/go-redis/pull/4289)) by [@ndyakov](https://github.com/ndyakov).
+- `CF.COMPACT` as `CFCompact` ([#4243](https://github.com/redis/go-redis/pull/4243)) by [@ndyakov](https://github.com/ndyakov).
+- `CELL_SIZE` for `CMS.INITBYDIM` and `CMS.INITBYPROB` (`CMSInitByDimCellSize`, `CMSInitByProbCellSize`) ([#4023](https://github.com/redis/go-redis/pull/4023)) by [@vlady-kotsev](https://github.com/vlady-kotsev).
+- Scalar-quantized HNSW indexes in `FT.CREATE`, and the two new `FT.INFO` fields ([#4077](https://github.com/redis/go-redis/pull/4077)) by [@vlady-kotsev](https://github.com/vlady-kotsev).
+- `BLESS GET`, `BLESS SET`, `BLESS CLEAR` and `BLESS SCAN` for the `NO-EVICT` flag ([#4041](https://github.com/redis/go-redis/pull/4041)) by [@vlady-kotsev](https://github.com/vlady-kotsev). `BlessScan` is node-local: scan each master of a cluster or ring.
+- `BACKUP START`, `SEAL`, `ABORT`, `CLEANUP` and `STATUS` for Redis 8.10 ([#4286](https://github.com/redis/go-redis/pull/4286)) by [@Purv-Kabaria](https://github.com/Purv-Kabaria).
+- Alignment with 8.12-rc2: `RERANK` for `FT.HYBRID`, the `BITRANGEINTARRAY` options, and new command metadata ([#4277](https://github.com/redis/go-redis/pull/4277)) by [@ndyakov](https://github.com/ndyakov).
+
+## ✨ New Features
+
+- **`FT.AGGREGATE` steps:** `FILTER` and `LIMIT` are now steps in `FTAggregateOptions.Steps`, so you can filter before `GROUPBY`, filter more than once, and place `LIMIT` between steps. `AggregateBuilder` gets `Limit()`. The old tail fields `Filter` and `LimitOffset`/`Limit` still work, are sent after all steps, and are deprecated in favor of steps ([#4076](https://github.com/redis/go-redis/pull/4076)) by [@ndyakov](https://github.com/ndyakov)
+- **Per-stream IDs for `XRead`:** `XReadArgs.IDs` gives one ID for each stream, in the order of `Streams`, and takes precedence over `ID` ([#4203](https://github.com/redis/go-redis/pull/4203)) by [@aozmekik](https://github.com/aozmekik)
+- **Native iterators for `ScanIterator`:** `ScanIterator.Vals(ctx)` returns an `iter.Seq[string]` for use with `range` ([#3348](https://github.com/redis/go-redis/pull/3348)) by [@khasanovbi](https://github.com/khasanovbi)
+- **More URL options:** `ParseURL`, `ParseClusterURL` and `ParseFailoverURL` accept `dialer_retries`, `dialer_retry_timeout`, `context_timeout_enabled`, `read_buffer_size`, `write_buffer_size`, `disable_identity` and `identity_suffix` where the options struct has the field ([#4063](https://github.com/redis/go-redis/pull/4063)) by [@SulimanAbdulrazzaq](https://github.com/SulimanAbdulrazzaq)
+- **Context-aware credential subscriptions:** the optional `auth.ContextStreamingCredentialsProvider` interface lets the client call `SubscribeWithContext` when it sets up a connection, so the context bounds the wait for the first credentials. Providers without the method keep `Subscribe` ([#4249](https://github.com/redis/go-redis/pull/4249)) by [@PragalvaXFREZ](https://github.com/PragalvaXFREZ)
+- **Per-node TLS verification for cluster URLs:** `ParseClusterURL` accepts `tls_verify_node_host=true` on `rediss://` URLs. The parameter clears `TLSConfig.ServerName`, so each node is verified against the host it is dialed at and not against the host of the first URL. Use it when each node has a certificate for its own host. The default is unchanged: every node is verified against the host of the first URL, so clusters that use one certificate and announce their nodes by IP continue to work. `rediss://` cluster URLs now also set `MinVersion: tls.VersionTLS12`, as `ParseURL` and `ParseFailoverURL` do ([#4145](https://github.com/redis/go-redis/pull/4145)) by [@PragalvaXFREZ](https://github.com/PragalvaXFREZ)
+- **`skip_verify` in `ParseClusterURL`:** the cluster parser accepts `?skip_verify=true` on `rediss://` URLs, like `ParseURL` and `ParseFailoverURL` ([#4106](https://github.com/redis/go-redis/pull/4106)) by [@PragalvaXFREZ](https://github.com/PragalvaXFREZ)
+- **`TSCreateRuleOptions.AlignTimestamp`:** the field is now exported, so callers outside the package can set the bucket alignment for `TSCreateRuleWithArgs` ([#4280](https://github.com/redis/go-redis/pull/4280)) by [@pcbeingused333](https://github.com/pcbeingused333)
+
+## 🐛 Bug Fixes
+
+**Connections, pool and transactions**
+
+- **Connection handshake and `Options.Limiter`:** the handshake of a new connection (`HELLO`, `AUTH`, `SELECT`, `CLIENT SETINFO`, `CLIENT MAINT_NOTIFICATIONS`) no longer calls `Limiter.Allow` per command. The command that dials pays one admission and reports the handshake result once; that admission also covers the commands an `OnConnect` callback sends on the connection. A PubSub connection, a reconnect after a maintenance handoff, and a fresh full-duplex session each pay one admission for their handshake. Before, a circuit breaker in the half-open state spent its probe budget on the handshake and never closed ([#4232](https://github.com/redis/go-redis/pull/4232)) by [@othoathydrahost](https://github.com/othoathydrahost). A panic in an `OnConnect` or credentials hook now settles the limiter admission, so a half-open breaker does not stay stuck ([#4247](https://github.com/redis/go-redis/pull/4247)) by [@ump45nose](https://github.com/ump45nose)
+- **Silent reply mix-up after a maintenance handoff:** with maintenance notifications on, a `MOVING` handoff under concurrent traffic could give one connection two owners. Both wrote on the same socket and read each other's replies, so a `GET` could return the `"OK"` of a `SET`, with no error. `putConn` no longer releases a connection that a hook handed to a handoff, the init of a handoff restores the owner's state, a delayed `MOVING` claims the idle connection before it queues the handoff, and a later handoff mark is not lost ([#4110](https://github.com/redis/go-redis/pull/4110), [#4239](https://github.com/redis/go-redis/pull/4239)) by [@ndyakov](https://github.com/ndyakov)
+- **Free re-run of retired idle connections:** when the server closes idle TLS connections (for example with a `timeout` setting), the pre-command drain retires them, and each one used to cost a retry of `MaxRetries`. The command was never written, so the client now runs it again without spending retries or backoff. The pool size caps these re-runs ([#4197](https://github.com/redis/go-redis/pull/4197)) by [@dunglas](https://github.com/dunglas)
+- **Transactions:** `TxPipelined` returns an error and drops the connection when `EXEC` replies with a different number of results than the number of queued commands. This happens when Redis rejects `WATCH` or `MULTI` inside `MULTI` ([#4186](https://github.com/redis/go-redis/pull/4186)) by [@saddamr3e](https://github.com/saddamr3e). A rejected `MULTI` drops the connection, so queued commands do not leak to another borrower ([#4192](https://github.com/redis/go-redis/pull/4192)) by [@saddamr3e](https://github.com/saddamr3e). `Tx.Close` requires an `OK` reply to `UNWATCH`, and removes the connection when the client cannot confirm a clean state (a refused `UNWATCH`, or an `EXEC` failure with an unknown outcome). Before, such a connection could return to the pool with `WATCH` or `MULTI` still active ([#4316](https://github.com/redis/go-redis/pull/4316)) by [@xixi-box](https://github.com/xixi-box)
+- **Pipeline setup errors:** when connection setup fails with a Redis error reply (for example `WRONGPASS` from `AUTH`), each queued command now gets the error. Before, `Pipeline.Exec` returned the error but every command had `Err() == nil` and a zero value ([#4312](https://github.com/redis/go-redis/pull/4312)) by [@xh123637](https://github.com/xh123637)
+- **Idle connection at `MaxActiveConns`:** when an idle scan skipped an unusable connection and acquired a usable one on its last allowed attempt, the connection was removed from the idle list and never returned, so `Get` could fail with `ErrPoolExhausted` ([#4322](https://github.com/redis/go-redis/pull/4322)) by [@xixi-box](https://github.com/xixi-box)
+- **TLS dial and context:** a TLS dial now honors the caller's context deadline and cancellation during the handshake, and not only `DialTimeout` ([#4143](https://github.com/redis/go-redis/pull/4143)) by [@Samuel-Sorial](https://github.com/Samuel-Sorial)
+- **Late PubSub connection:** a `PubSub` connection that finished its setup after `Client.Close` drained the pool is now closed and returns `ErrClosed`, on standalone, Sentinel and cluster clients ([#4157](https://github.com/redis/go-redis/pull/4157)) by [@aditya-rai-5](https://github.com/aditya-rai-5)
+- **Maintenance notifications:** a subscribed `PubSub` connection that gets a `MOVING` with a null endpoint stays under the control of the `PubSub`. Before, a handoff worker moved it to a new socket without `SUBSCRIBE`, and `Channel()` stopped delivering messages ([#4246](https://github.com/redis/go-redis/pull/4246)) by [@ump45nose](https://github.com/ump45nose)
+
+**Authentication and credentials**
+
+- **Pub/Sub re-authentication with `StreamingCredentialsProvider` on RESP3:** credential rotations now re-authenticate established Pub/Sub connections in place. Before, long-lived subscriber connections kept the old credentials ([#4195](https://github.com/redis/go-redis/pull/4195)) by [@AdamMagued](https://github.com/AdamMagued). Re-authentication is serialized for each connection, so an older credential cannot be written last ([#4317](https://github.com/redis/go-redis/pull/4317)) by [@Nacl-HCl](https://github.com/Nacl-HCl), and it skips a connection that was replaced after the rotation ([#4309](https://github.com/redis/go-redis/pull/4309)) by [@ump45nose](https://github.com/ump45nose). A close during subscription setup no longer re-enters `initConn` and panics ([#4262](https://github.com/redis/go-redis/pull/4262)) by [@PragalvaXFREZ](https://github.com/PragalvaXFREZ)
+- **Rejected re-authentication:** the connection is now closed when the server rejects a re-auth with `WRONGPASS` or `NOPERM`. Before, it kept serving commands with the replaced credentials ([#4058](https://github.com/redis/go-redis/pull/4058)) by [@saddamr3e](https://github.com/saddamr3e)
+- **Pub/Sub connection leak:** a closed Pub/Sub connection no longer stays in memory, with its buffers, when a `StreamingCredentialsProvider` is set ([#4119](https://github.com/redis/go-redis/pull/4119)) by [@meruiden](https://github.com/meruiden)
+- **`Conn`, `EphemeralConn` and `Watch` with `StreamingCredentialsProvider`:** the derived clients now carry the credentials manager, so a cold connection no longer panics ([#4155](https://github.com/redis/go-redis/pull/4155)) by [@TastyHeadphones](https://github.com/TastyHeadphones)
+- **Failover client with `StreamingCredentialsProvider`:** `NewFailoverClient` now creates the streaming credentials manager, so new connections no longer panic in `initConn` ([#4182](https://github.com/redis/go-redis/pull/4182)) by [@lazerg](https://github.com/lazerg)
+- **CSC cache and TLS client certificates:** clients that authenticate with different TLS client certificates (`tls-auth-clients-user`) no longer share cache entries, so a restricted user cannot read entries that a privileged user fetched ([#4261](https://github.com/redis/go-redis/pull/4261)) by [@saddamr3e](https://github.com/saddamr3e)
+**Cluster, Sentinel and Ring**
+
+- **Redirects without a host:** with `cluster-preferred-endpoint-type unknown-endpoint`, a null host in `CLUSTER SLOTS` is accepted and takes the host of the node that was asked ([#4131](https://github.com/redis/go-redis/pull/4131)) by [@spicysharkco](https://github.com/spicysharkco), and `MOVED`/`ASK` replies without a host reuse the host of the node that sent them ([#4205](https://github.com/redis/go-redis/pull/4205)) by [@soujasK](https://github.com/soujasK). After a maintenance handoff, the client uses the host of the serving connection ([#4233](https://github.com/redis/go-redis/pull/4233)) by [@ump45nose](https://github.com/ump45nose)
+- **`MOVED` to the node's own address:** the client drops the connection when `MOVED` points to the node that sent it, so the next attempt reconnects ([#4229](https://github.com/redis/go-redis/pull/4229)) by [@SergeiSadov](https://github.com/SergeiSadov)
+- **Batch retry after a redirect:** when the first reply of a node batch is retryable (for example `TRYAGAIN`) and a later command gets `MOVED` or `ASK`, the redirected command is no longer sent twice. A non-idempotent command such as `INCR` could run two times ([#4258](https://github.com/redis/go-redis/pull/4258)) by [@lazerg](https://github.com/lazerg)
+- **`NewFailoverClusterClient` and `ConnMaxLifetimeJitter`:** the jitter and the failing timeout are now kept ([#4196](https://github.com/redis/go-redis/pull/4196)) by [@nk-batman21](https://github.com/nk-batman21). The `onClose` hook is registered for `FailoverClusterClient` ([#4000](https://github.com/redis/go-redis/pull/4000)) by [@roganartu](https://github.com/roganartu)
+- **Sentinel:** the failover dialer uses `DialTimeout`, so `Subscribe` to an unreachable master does not hang until the kernel gives up ([#4067](https://github.com/redis/go-redis/pull/4067)) by [@lazerg](https://github.com/lazerg). Unused replica clients from empty or filtered discovery replies are closed ([#4220](https://github.com/redis/go-redis/pull/4220)) by [@Grivn](https://github.com/Grivn)
+- **Cluster commands:** `ClusterAddSlotsRange` and `ClusterDelSlotsRange` return an error for an invalid range and do not panic ([#4225](https://github.com/redis/go-redis/pull/4225)) by [@ump45nose](https://github.com/ump45nose). `ClusterShards` rejects an odd-length `slots` array ([#4282](https://github.com/redis/go-redis/pull/4282)) by [@saddamr3e](https://github.com/saddamr3e)
+
+**Protocol and reply parsing**
+
+- **Error elements inside arrays:** `IntSliceCmd` (`TS.MADD`, `CMS.INCRBY`), `UintSliceCmd`, `FloatSliceCmd`, `StringSliceCmd` and `BoolSliceCmd` now read the whole array when an element is a Redis error. Before, they stopped at that element, and in a pipeline the next command read the rest as its own reply ([#4071](https://github.com/redis/go-redis/pull/4071) by [@saddamr3e](https://github.com/saddamr3e), [#4137](https://github.com/redis/go-redis/pull/4137) by [@lazerg](https://github.com/lazerg)). The reader also keeps typed errors (`MOVED`, `ASK`, `LOADING`) as array elements ([#4274](https://github.com/redis/go-redis/pull/4274)) by [@ndyakov](https://github.com/ndyakov)
+- **Reply desync hardening:** `ReadSlice` checks the type of the header ([#4219](https://github.com/redis/go-redis/pull/4219)) by [@saddamr3e](https://github.com/saddamr3e). `Discard` counts a RESP3 attribute and the element it decorates as one element ([#4318](https://github.com/redis/go-redis/pull/4318)) by [@waw666waw666](https://github.com/waw666waw666). `VoidProcessor` consumes push frames whose first element is not a string ([#4046](https://github.com/redis/go-redis/pull/4046)) by [@saddamr3e](https://github.com/saddamr3e). A buffered push drain stops at a frame boundary, so a slow handler no longer makes a healthy connection fail with `i/o timeout` and drops the CSC entries fetched on it ([#4224](https://github.com/redis/go-redis/pull/4224)) by [@ndyakov](https://github.com/ndyakov)
+- **RESP3 numbers in `Cmd`:** `Cmd.Float64`, `Float32` and their slice forms accept RESP3 doubles ([#4088](https://github.com/redis/go-redis/pull/4088)) by [@LindseyZ1205](https://github.com/LindseyZ1205). `Text`, `Int64`, `StringSlice` and related accessors accept RESP3 doubles and big numbers ([#4138](https://github.com/redis/go-redis/pull/4138)) by [@lazerg](https://github.com/lazerg)
+- **32-bit platforms:** scanning a value that does not fit in `uint` returns an error ([#4081](https://github.com/redis/go-redis/pull/4081)) by [@MokiMeow](https://github.com/MokiMeow), and `Cmd.Int()` rejects an out-of-range integer reply ([#4256](https://github.com/redis/go-redis/pull/4256)) by [@b84330808](https://github.com/b84330808)
+- **`CLIENT INFO` values:** the parser accepts `=` in values such as the client name and `lib-name`. `ClientInfo()` and `ACLLog()` failed on them ([#4096](https://github.com/redis/go-redis/pull/4096)) by [@LindseyZ1205](https://github.com/LindseyZ1205)
+
+**Commands and search**
+
+- **RediSearch:** `FT.SEARCH` on RESP2 reads the per-document score, payload and sort key correctly with `NoContent` ([#4099](https://github.com/redis/go-redis/pull/4099)) by [@jayhemnani9910](https://github.com/jayhemnani9910). `EXPLAINSCORE` and an empty `RETURN` parse correctly ([#4140](https://github.com/redis/go-redis/pull/4140)) by [@lazerg](https://github.com/lazerg). `FTInfo` reads fractional doubles on RESP2 ([#4207](https://github.com/redis/go-redis/pull/4207)) by [@ump45nose](https://github.com/ump45nose) and the `CASESENSITIVE` flag of a TAG field ([#4291](https://github.com/redis/go-redis/pull/4291)) by [@Dv2Corn](https://github.com/Dv2Corn). `FTCreate` sends `SORTABLE`, `UNF` and `NOINDEX` after the field options ([#4199](https://github.com/redis/go-redis/pull/4199)) by [@RaphaelFakhri](https://github.com/RaphaelFakhri). `FTSearchQuery` applies `CountOnly` and keeps the offset ([#4268](https://github.com/redis/go-redis/pull/4268)) by [@RaphaelFakhri](https://github.com/RaphaelFakhri). `FTHybridWithArgs` always sends the `COMBINE` argument count ([#4298](https://github.com/redis/go-redis/pull/4298)) by [@lazerg](https://github.com/lazerg). `NewDropIndexBuilder(...).DeleteDocs()` does not panic ([#4105](https://github.com/redis/go-redis/pull/4105)) by [@PragalvaXFREZ](https://github.com/PragalvaXFREZ)
+- **`nil` options no longer panic:** `FTExplainWithArgs`, `FTSynUpdateWithArgs` and `CFReserveWithArgs` ([#4248](https://github.com/redis/go-redis/pull/4248)) by [@hktitof](https://github.com/hktitof), `HGetEXWithArgs` and `HSetEXWithArgs` ([#4214](https://github.com/redis/go-redis/pull/4214)) by [@LindseyZ1205](https://github.com/LindseyZ1205). `JSONGetWithArgs` with `nil` options sends the paths ([#4185](https://github.com/redis/go-redis/pull/4185)) by [@LindseyZ1205](https://github.com/LindseyZ1205)
+- **Argument order and count:** `IGNORE` is sent before `LABELS` in the five time-series builders that support it (for example `TSAddWithArgs` and `TSCreateWithArgs`), because `LABELS` takes the rest of the arguments ([#4160](https://github.com/redis/go-redis/pull/4160)) by [@yuefdev](https://github.com/yuefdev). `ModuleLoadex` sends `ARGS` once ([#4191](https://github.com/redis/go-redis/pull/4191)) by [@LindseyZ1205](https://github.com/LindseyZ1205). `HSet` and `HMSet` flatten typed `map[string]T` arguments such as `map[string]int` ([#4235](https://github.com/redis/go-redis/pull/4235)) by [@ump45nose](https://github.com/ump45nose)
+- **Sub-millisecond timeouts:** `XRead`, `XReadGroup`, `XClaim`, `Wait` and `WaitAOF` no longer send a positive timeout shorter than 1 ms as `0` (wait forever) ([#4292](https://github.com/redis/go-redis/pull/4292)) by [@Dv2Corn](https://github.com/Dv2Corn)
+- **Geo queries:** `GeoRadius` and `GeoRadiusByMember` no longer change the caller's `*GeoRadiusQuery`, so the second call with the same query works ([#4173](https://github.com/redis/go-redis/pull/4173)) by [@LindseyZ1205](https://github.com/LindseyZ1205)
+- **Scripts:** a queued `SCRIPT LOAD` (in a pipeline) no longer gives an empty digest to `NewScriptServerSHA` ([#4226](https://github.com/redis/go-redis/pull/4226)) by [@ump45nose](https://github.com/ump45nose)
+- **`HOTKEYS`:** the CPU time fields use the names that the server sends ([#4206](https://github.com/redis/go-redis/pull/4206)) by [@ump45nose](https://github.com/ump45nose)
+- **Struct scan:** the value passed to a `TextUnmarshaler` or `BinaryUnmarshaler` is a copy, so an unmarshaler that decodes in place cannot change the reply ([#4078](https://github.com/redis/go-redis/pull/4078)) by [@saddamr3e](https://github.com/saddamr3e)
+
+**Observability**
+
+- **`redisotel-native`:** `server.port` no longer contains the pool id (for example `6379_1`) ([#4086](https://github.com/redis/go-redis/pull/4086)) by [@zhechen-cs](https://github.com/zhechen-cs). The connection count includes connections that existed before `Init` ([#4089](https://github.com/redis/go-redis/pull/4089)) by [@ninadsutrave](https://github.com/ninadsutrave). Pending requests and state no longer drift across `Init` and `Shutdown` ([#4142](https://github.com/redis/go-redis/pull/4142)) by [@ninadsutrave](https://github.com/ninadsutrave). The pool usage metric does not underflow when pool statistics disagree ([#4031](https://github.com/redis/go-redis/pull/4031)) by [@andystaples](https://github.com/andystaples)
+
+## ⚡ Performance
+
+- **Short bulk strings in one write:** `Writer` writes the header of a bulk string with one call, and writes the value and CRLF together when the value is 32 bytes or less. Benchmarks of `WriteArgs` into a `bufio.Writer` showed 15% to 31% less time for each command on three CPUs, for example -24% to -26% for `GET key` and -27% to -31% for an 8-pair `MSET`. The bytes on the wire do not change ([#4281](https://github.com/redis/go-redis/pull/4281)) by [@g4lb](https://github.com/g4lb)
+- **OTel metrics and full duplex:** see the full-duplex highlight above ([#4269](https://github.com/redis/go-redis/pull/4269))
+
+## 🧪 Testing & Infrastructure
+
+- **CI images:** the test matrix uses Redis 8.10.3 and the 8.12 release candidate (`8.12-rc3`) ([#4231](https://github.com/redis/go-redis/pull/4231), [#4241](https://github.com/redis/go-redis/pull/4241), [#4264](https://github.com/redis/go-redis/pull/4264), [#4288](https://github.com/redis/go-redis/pull/4288)) by [@ndyakov](https://github.com/ndyakov)
+- **32-bit build:** a `386` CI job runs `go vet` and the tests, and the root tests compile for 32-bit ([#4139](https://github.com/redis/go-redis/pull/4139)) by [@lazerg](https://github.com/lazerg)
+- **Dependencies:** the OpenTelemetry SDK and `golang.org/x/net` are upgraded in the OTel adapters and examples, to fix `govulncheck` findings ([#4087](https://github.com/redis/go-redis/pull/4087)) by [@ofekshenawa](https://github.com/ofekshenawa)
+- **Regression tests:** a cold-start full-duplex cluster test bounds the number of connections ([#4223](https://github.com/redis/go-redis/pull/4223)) by [@ndyakov](https://github.com/ndyakov), and a test locks the `MSETEX` multi-shard split ([#4314](https://github.com/redis/go-redis/pull/4314)) by [@Zoomish](https://github.com/Zoomish)
+- **Test structure and flaky specs:** the autopipeline tests are consolidated from 28 files into 5 ([#4091](https://github.com/redis/go-redis/pull/4091)), and some tests move to the standard `testing` package ([#4085](https://github.com/redis/go-redis/pull/4085), [#4187](https://github.com/redis/go-redis/pull/4187)). Fixes for flaky or Redis Enterprise-incompatible specs: [#4172](https://github.com/redis/go-redis/pull/4172), [#4180](https://github.com/redis/go-redis/pull/4180), [#4210](https://github.com/redis/go-redis/pull/4210), [#4211](https://github.com/redis/go-redis/pull/4211), [#4215](https://github.com/redis/go-redis/pull/4215), [#4218](https://github.com/redis/go-redis/pull/4218), [#4255](https://github.com/redis/go-redis/pull/4255), [#4260](https://github.com/redis/go-redis/pull/4260), [#4270](https://github.com/redis/go-redis/pull/4270), [#4307](https://github.com/redis/go-redis/pull/4307)
+
+## Known issues and follow-ups
+
+- [#4302](https://github.com/redis/go-redis/issues/4302): hardening of in-place `AUTH` on RESP3 Pub/Sub connections. The first two points (out-of-order `AUTH` and a re-auth on a replaced connection) are fixed in this release. While an `AUTH` is pending, any Redis error on the subscriber costs one reconnect, which resubscribes.
+- [#4305](https://github.com/redis/go-redis/issues/4305): edge cases of `ContextDeadlineError` (a cached error can reach the next command with `Protocol: 2`, and the wrap can be skipped at the exact timeout boundary).
+
+## 👥 Contributors
+
+We'd like to thank all the contributors who worked on this release!
+
+[@AdamMagued](https://github.com/AdamMagued), [@aditya-rai-5](https://github.com/aditya-rai-5), [@andystaples](https://github.com/andystaples), [@aozmekik](https://github.com/aozmekik), [@Avv123](https://github.com/Avv123), [@b84330808](https://github.com/b84330808), [@CaliLuke](https://github.com/CaliLuke), [@cpoole](https://github.com/cpoole), [@dunglas](https://github.com/dunglas), [@Dv2Corn](https://github.com/Dv2Corn), [@g4lb](https://github.com/g4lb), [@Grivn](https://github.com/Grivn), [@harshitdeora](https://github.com/harshitdeora), [@hktitof](https://github.com/hktitof), [@jayhemnani9910](https://github.com/jayhemnani9910), [@jjj-n](https://github.com/jjj-n), [@khasanovbi](https://github.com/khasanovbi), [@lazerg](https://github.com/lazerg), [@LindseyZ1205](https://github.com/LindseyZ1205), [@meruiden](https://github.com/meruiden), [@MokiMeow](https://github.com/MokiMeow), [@mtnaskari](https://github.com/mtnaskari), [@Nacl-HCl](https://github.com/Nacl-HCl), [@ndyakov](https://github.com/ndyakov), [@ninadsutrave](https://github.com/ninadsutrave), [@nk-batman21](https://github.com/nk-batman21), [@ofekshenawa](https://github.com/ofekshenawa), [@othoathydrahost](https://github.com/othoathydrahost), [@pcbeingused333](https://github.com/pcbeingused333), [@PerryLink](https://github.com/PerryLink), [@PragalvaXFREZ](https://github.com/PragalvaXFREZ), [@Purv-Kabaria](https://github.com/Purv-Kabaria), [@RaphaelFakhri](https://github.com/RaphaelFakhri), [@rleungx](https://github.com/rleungx), [@roganartu](https://github.com/roganartu), [@saddamr3e](https://github.com/saddamr3e), [@Samuel-Sorial](https://github.com/Samuel-Sorial), [@SergeiSadov](https://github.com/SergeiSadov), [@soujasK](https://github.com/soujasK), [@spicysharkco](https://github.com/spicysharkco), [@SulimanAbdulrazzaq](https://github.com/SulimanAbdulrazzaq), [@TastyHeadphones](https://github.com/TastyHeadphones), [@ump45nose](https://github.com/ump45nose), [@VedantMadane](https://github.com/VedantMadane), [@vladvildanov](https://github.com/vladvildanov), [@vlady-kotsev](https://github.com/vlady-kotsev), [@waw666waw666](https://github.com/waw666waw666), [@xh123637](https://github.com/xh123637), [@xixi-box](https://github.com/xixi-box), [@yamaankhan20](https://github.com/yamaankhan20), [@yuefdev](https://github.com/yuefdev), [@zhechen-cs](https://github.com/zhechen-cs), [@Zoomish](https://github.com/Zoomish)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.23.0...v9.24.0-beta.1
 
 # 9.23.0 (2026-10-05)
 
