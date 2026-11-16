@@ -30,9 +30,6 @@ type UniversalOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
-	// DialerCanChangeAddress: see Options.DialerCanChangeAddress.
-	DialerCanChangeAddress bool
-
 	Protocol int
 	Username string
 	Password string
@@ -277,7 +274,6 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		Addrs:                                  o.Addrs,
 		ClientName:                             o.ClientName,
 		Dialer:                                 o.Dialer,
-		DialerCanChangeAddress:                 o.DialerCanChangeAddress,
 		OnConnect:                              o.OnConnect,
 
 		Protocol:                     o.Protocol,
@@ -358,9 +354,8 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		MasterName:                             o.MasterName,
 		ClientName:                             o.ClientName,
 
-		Dialer:                 o.Dialer,
-		DialerCanChangeAddress: o.DialerCanChangeAddress,
-		OnConnect:              o.OnConnect,
+		Dialer:    o.Dialer,
+		OnConnect: o.OnConnect,
 
 		DB:                           o.DB,
 		Protocol:                     o.Protocol,
@@ -434,11 +429,10 @@ func (o *UniversalOptions) Simple() *Options {
 	}
 
 	return &Options{
-		Addr:                   addr,
-		ClientName:             o.ClientName,
-		Dialer:                 o.Dialer,
-		DialerCanChangeAddress: o.DialerCanChangeAddress,
-		OnConnect:              o.OnConnect,
+		Addr:       addr,
+		ClientName: o.ClientName,
+		Dialer:     o.Dialer,
+		OnConnect:  o.OnConnect,
 
 		DB:                           o.DB,
 		Protocol:                     o.Protocol,

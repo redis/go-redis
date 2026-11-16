@@ -314,7 +314,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	var moved, ask bool
 	var redirected bool
 	var lastErr error
-	var exhaustedDialNodes map[*clusterNode]error
+	var exhaustedEndpoints map[string]error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		ctx = callerCtx
 		if redirected {
@@ -347,14 +347,11 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			}
 		}
 
-		if dialErr, already := exhaustedDialNodes[node]; already {
-			// Reloads may select a node whose pool dial budget was already
-			// exhausted by this invocation. Never start that dial again.
-			lastErr = dialErr
-			node = nil
-			moved, ask = false, false
-			continue
+		endpoint := node.Client.opt.Addr
+		if err := exhaustedEndpoints[endpoint]; err != nil {
+			return err
 		}
+		ctx, dialExhausted := node.Client.captureFixedDialExhaustion(ctx)
 		c.cscCheckNode(cmd, node.Client)
 		if ask {
 			ask = false
@@ -380,6 +377,18 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			return nil
 		}
 
+		if dialExhausted != nil && dialExhausted.Load() {
+			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+				return lastErr
+			}
+			if exhaustedEndpoints == nil {
+				exhaustedEndpoints = make(map[string]error)
+			}
+			exhaustedEndpoints[endpoint] = lastErr
+			node.MarkAsFailing()
+			node = nil
+			continue
+		}
 		if readOnly := isReadOnlyError(lastErr); readOnly || lastErr == pool.ErrClosed {
 			if readOnly {
 				c.state.LazyReload()
@@ -408,19 +417,6 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		}
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
-			if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !node.Client.dialAddrCanChange {
-				if ctx.Err() != nil {
-					return lastErr
-				}
-				if exhaustedDialNodes == nil {
-					exhaustedDialNodes = make(map[*clusterNode]error)
-				}
-				exhaustedDialNodes[node] = lastErr
-				node.MarkAsFailing()
-				c.state.LazyReload()
-				node = nil
-				continue
-			}
 			if attempt > 0 {
 				node.MarkAsFailing()
 				node = nil
@@ -561,42 +557,7 @@ func (c *ClusterClient) executeParallel(
 				targetSlot = slot
 			}
 		}
-		err := c.executeParallelTarget(ctx, nodes[0], targetSlot, cmd)
-		if err != nil && targetSlot >= 0 && (isReadOnlyError(err) || err == pool.ErrClosed) {
-			// No sibling has succeeded, so bounded rerouting is safe for
-			// this single-target fan-out. A first refresh can still be stale.
-			currentNode := nodes[0]
-			for retry := 0; retry <= c.opt.MaxRedirects; retry++ {
-				if retry > 0 {
-					if sleepErr := internal.Sleep(ctx, c.retryBackoff(retry)); sleepErr != nil {
-						err = sleepErr
-						break
-					}
-				}
-				state, reloadErr := c.state.ReloadOrGet(ctx)
-				if reloadErr != nil {
-					if ctx.Err() != nil {
-						err = ctx.Err()
-						break
-					}
-					continue
-				}
-				replacement, routeErr := state.slotMasterNode(targetSlot)
-				if routeErr != nil {
-					_ = c.noteTopologySelectionError(routeErr)
-					continue
-				}
-				if replacement == currentNode {
-					continue
-				}
-				currentNode = replacement
-				err = c.executeParallelTarget(ctx, currentNode, targetSlot, cmd)
-				if err == nil || (!isReadOnlyError(err) && err != pool.ErrClosed) {
-					break
-				}
-			}
-		}
-		if err != nil {
+		if err := c.executeParallelTarget(ctx, nodes[0], targetSlot, cmd); err != nil {
 			return &clusterFanoutExecutionError{err: err}
 		}
 		return nil
@@ -670,28 +631,32 @@ func (c *ClusterClient) executeParallelTarget(
 			}
 		}
 		c.cscCheckNode(cmd, node.Client)
-		lastErr = node.Client.Process(ctx, cmd)
+		attemptCtx, dialExhausted := node.Client.captureFixedDialExhaustion(ctx)
+		lastErr = node.Client.Process(attemptCtx, cmd)
 		if lastErr == nil {
 			return nil
 		}
-		if targetSlot >= 0 && (isReadOnlyError(lastErr) || lastErr == pool.ErrClosed) {
-			// A broadcast target represents one original shard, not its slot's
-			// current owner. Rerouting would double-count another target.
-			c.state.LazyReload()
+		if dialExhausted != nil && dialExhausted.Load() {
+			if ctx.Err() == nil {
+				c.state.LazyReload()
+			}
 			return lastErr
+		}
+		if targetSlot >= 0 && (isReadOnlyError(lastErr) || lastErr == pool.ErrClosed) {
+			state, err := c.state.ReloadOrGet(ctx)
+			if err == nil {
+				if replacement, routeErr := state.slotMasterNode(targetSlot); routeErr == nil && replacement != node {
+					node = replacement
+					continue
+				} else if routeErr != nil {
+					_ = c.noteTopologySelectionError(routeErr)
+				}
+			}
 		}
 		if moved, ask, _ := isMovedError(lastErr); moved || ask {
 			// Do not redirect one keyless broadcast target into another.
 			c.state.LazyReload()
 			c.recordClusterRedirectMetric(ctx, ask)
-			return lastErr
-		}
-		if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !node.Client.dialAddrCanChange {
-			// Failing closed avoids counting another shard's response twice.
-			// Topology discovery is deferred to a later command.
-			if targetSlot >= 0 && !isContextError(lastErr) && ctx.Err() == nil {
-				c.state.LazyReload()
-			}
 			return lastErr
 		}
 		if !shouldRetry(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {

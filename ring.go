@@ -893,10 +893,7 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
-	// Remember every shard whose pool dial sequence was exhausted during this
-	// command. A later failure on a different shard must not make the first
-	// eligible for another full DialTimeout budget.
-	failedDialShards := make(map[*ringShard]struct{})
+	var exhaustedAddrs map[string]error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -908,22 +905,20 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		if err != nil {
 			return err
 		}
-		if _, failed := failedDialShards[shard]; failed {
-			// Both keyed and keyless routing can select a different shard on a
-			// later attempt (e.g. after a heartbeat rebalance). Keep the
-			// bounded selection attempts without redialing an exhausted shard.
-			continue
-		}
 
-		lastErr = shard.Client.Process(ctx, cmd)
-		if errors.Is(lastErr, pool.ErrDialSequenceFailure) && !shard.Client.dialAddrCanChange {
-			// A fixed shard has spent its dial budget; a custom dialer that
-			// may change addresses can retry within the outer Ring budget.
-			failedDialShards[shard] = struct{}{}
+		if exhaustedErr, ok := exhaustedAddrs[shard.addr]; ok {
+			return exhaustedErr
 		}
-		if lastErr == nil || ctx.Err() != nil || errors.Is(lastErr, context.Canceled) ||
-			(!shouldRetry(lastErr, cmd.readTimeout() == nil) && !errors.Is(lastErr, pool.ErrDialSequenceFailure)) || cmd.NoRetry() {
+		attemptCtx, exhausted := shard.Client.captureFixedDialExhaustion(ctx)
+		lastErr = shard.Client.Process(attemptCtx, cmd)
+		if lastErr == nil || !shouldRetry(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {
 			return lastErr
+		}
+		if exhausted != nil && exhausted.Load() {
+			if exhaustedAddrs == nil {
+				exhaustedAddrs = make(map[string]error)
+			}
+			exhaustedAddrs[shard.addr] = lastErr
 		}
 	}
 	return lastErr

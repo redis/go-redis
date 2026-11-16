@@ -757,14 +757,6 @@ func (fd *fdEngine) retryBudget() int {
 	return fd.client.opt.MaxRetries
 }
 
-// canRetryLease applies the client's endpoint-aware dial policy before an
-// FD session has acquired a connection. Owners with their own retry routing
-// handle failed leases themselves.
-func (fd *fdEngine) canRetryLease(err error, attempts int) bool {
-	return (fd.reroute == nil || !fd.ownerRetries) &&
-		fd.client.shouldRetryCommand(err, true) && attempts < fd.retryBudget()
-}
-
 func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	mb := ap.config.MaxBatchSize
 	if mb <= 0 {
@@ -1623,7 +1615,8 @@ func (fd *fdEngine) run() {
 			// An owner with its own retry policy reroutes at once instead: it
 			// retries against whatever it selects (e.g. MultiDB's new active member),
 			// so re-leasing this endpoint would only delay that.
-			if fd.canRetryLease(aerr, leaseAttempts) {
+			ownerRetries := fd.reroute != nil && fd.ownerRetries
+			if !ownerRetries && shouldRetry(aerr, true) && leaseAttempts < fd.retryBudget() {
 				leaseAttempts++
 				fd.sleepBackoff(leaseAttempts)
 				continue // carry unchanged; re-lease

@@ -54,7 +54,7 @@ func (c *ClusterClient) executeScanCommand(
 		sc.args[1] = uint64(0)
 		st.restart = false
 	}
-	if err := st.masters[st.idx].Client.Process(ctx, sc); err != nil {
+	if err := processClusterScanOnNode(ctx, st.masters[st.idx], sc); err != nil {
 		return err
 	}
 	if sc.cursor == 0 && st.idx+1 < len(st.masters) {
@@ -157,7 +157,7 @@ func (c *ClusterClient) scanRoutedNode(
 			}
 		}
 	}
-	return node.Client.Process(ctx, cmd)
+	return processClusterScanOnNode(ctx, node, cmd)
 }
 
 // scanTagMaster returns the master of the one slot a SCAN's MATCH pattern can
@@ -203,4 +203,20 @@ func scanMatch(cmd Cmder) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// clusterScanDialExhausted signals that process must not replay a SCAN page
+// against a cursor owned by this endpoint. It is unwrapped before return.
+type clusterScanDialExhausted struct{ err error }
+
+func (e *clusterScanDialExhausted) Error() string { return e.err.Error() }
+func (e *clusterScanDialExhausted) Unwrap() error { return e.err }
+
+func processClusterScanOnNode(ctx context.Context, node *clusterNode, cmd Cmder) error {
+	ctx, exhausted := node.Client.captureFixedDialExhaustion(ctx)
+	err := node.Client.Process(ctx, cmd)
+	if err != nil && exhausted != nil && exhausted.Load() {
+		return &clusterScanDialExhausted{err: err}
+	}
+	return err
 }

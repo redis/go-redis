@@ -65,9 +65,6 @@ func (c *Client) newTx() *Tx {
 			streamingCredentialsManager: c.streamingCredentialsManager,
 		},
 	}
-	// Watch leases from the same Sentinel pool as its parent; a failed first
-	// dial may be retried against a different advertised endpoint.
-	tx.baseClient.dialAddrCanChange = c.baseClient.dialAddrCanChange
 	// Tx reads are uncached but still OPTOUT-prefix when trackable; share the
 	// parent's CommandMetadata overrides for custom read-only keyed commands.
 	c.baseClient.shareCommandMetadata(&tx.baseClient)
@@ -120,6 +117,15 @@ func (c *Tx) Close(ctx context.Context) error {
 	if c.watchArmed {
 		// Cleanup must not inherit the caller's cache intent.
 		_ = c.Unwatch(cscUnmarkedContext(ctx)).Err()
+		if c.watchArmed {
+			// A refused or queued UNWATCH is a complete reply, but does not
+			// prove that the connection is safe for another borrower. Remove
+			// the pinned connection without replaying cleanup or changing the
+			// callback's error. Get cannot dial here: WATCH already pinned it.
+			if cn, err := c.connPool.Get(ctx); err == nil {
+				c.connPool.Remove(ctx, cn, errors.New("redis: UNWATCH did not clear transaction state"))
+			}
+		}
 	}
 	return c.baseClient.Close()
 }
@@ -159,7 +165,7 @@ func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
 	// The watched keys have been released, so Close need not UNWATCH again.
-	if cmd.Err() == nil {
+	if cmd.Err() == nil && cmd.Val() == "OK" {
 		c.watchArmed = false
 	}
 	return cmd

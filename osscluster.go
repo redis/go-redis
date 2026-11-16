@@ -134,10 +134,6 @@ type ClusterOptions struct {
 
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
-	// DialerCanChangeAddress permits node dialers to select a different physical
-	// endpoint on retries; see Options.DialerCanChangeAddress.
-	DialerCanChangeAddress bool
-
 	OnConnect func(ctx context.Context, cn *Conn) error
 
 	Protocol                     int
@@ -567,7 +563,6 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ClientSideCacheInvalidationBatchWindow: opt.ClientSideCacheInvalidationBatchWindow,
 		ClientName:                             opt.ClientName,
 		Dialer:                                 opt.Dialer,
-		DialerCanChangeAddress:                 opt.DialerCanChangeAddress,
 		OnConnect:                              opt.OnConnect,
 
 		Protocol:                     opt.Protocol,
@@ -2209,9 +2204,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	var moved bool
 	var ask bool
 	var lastErr error
-	// A completed dial budget must not be restarted on the same cluster node
-	// within this command, even if topology selection returns it again.
-	var exhaustedDialNodes map[*clusterNode]error
+	var exhaustedEndpoints map[string]error
 	needsInitialNode := c.opt.DisableRoutingPolicies || decision.policy == nil ||
 		decision.policy.Request == routing.ReqDefault
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
@@ -2248,16 +2241,13 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
-		if node != nil && exhaustedDialNodes != nil {
-			if dialErr, alreadyDialed := exhaustedDialNodes[node]; alreadyDialed {
-				// A topology refresh may still find another node within this
-				// command's redirect budget. Never redial this fixed endpoint
-				// or return a stale MOVED/ASK instead of its dial error.
-				lastErr = dialErr
-				node = nil
-				moved, ask = false, false
-				continue
+		var dialExhausted *atomic.Bool
+		if node != nil {
+			endpoint := node.Client.opt.Addr
+			if err := exhaustedEndpoints[endpoint]; err != nil {
+				return err
 			}
+			ctx, dialExhausted = node.Client.captureFixedDialExhaustion(ctx)
 		}
 
 		if (newPolicy || c.opt.cscCustomFactory) && node != nil {
@@ -2302,6 +2292,21 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		if errors.As(lastErr, &fanoutErr) {
 			return fanoutErr.err
 		}
+		if scanErr, ok := lastErr.(*clusterScanDialExhausted); ok {
+			return scanErr.err
+		}
+		if dialExhausted != nil && dialExhausted.Load() {
+			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+				return lastErr
+			}
+			if exhaustedEndpoints == nil {
+				exhaustedEndpoints = make(map[string]error)
+			}
+			exhaustedEndpoints[node.Client.opt.Addr] = lastErr
+			node.MarkAsFailing()
+			node = nil
+			continue
+		}
 		// Fan-out may reject the topology before selecting any target. Only
 		// retry before dispatch; the execution-error guard above prevents replay.
 		if c.reloadTopologyForRetry(ctx, lastErr, attempt) {
@@ -2342,23 +2347,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
-			if node != nil && !node.Client.dialAddrCanChange && errors.Is(lastErr, pool.ErrDialSequenceFailure) {
-				if ctx.Err() != nil {
-					return lastErr
-				}
-				// Only fixed endpoints have spent their entire dial budget.
-				// A custom endpoint-changing dialer can still select another
-				// address for this logical node on the next command retry.
-				if exhaustedDialNodes == nil {
-					exhaustedDialNodes = make(map[*clusterNode]error)
-				}
-				exhaustedDialNodes[node] = lastErr
-				node.MarkAsFailing()
-				c.state.LazyReload()
-				node = nil
-				continue
-			}
-			// First retry the same node for ordinary transient errors.
+			// First retry the same node.
 			if attempt == 0 {
 				continue
 			}
@@ -3038,9 +3027,6 @@ func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder
 	}
 
 	var lastErr error
-	// Retrying a pipeline may change its target after a topology refresh, but
-	// must not start another pool dial sequence against an exhausted fixed node.
-	exhaustedDialNodes := make(map[*clusterNode]error)
 	for attempt := 0; attempt <= maxRedirects; attempt++ {
 		totalAttempts++
 		if attempt > 0 {
@@ -3058,12 +3044,6 @@ func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder
 		var wg sync.WaitGroup
 
 		for node, cmds := range cmdsMap.m {
-			if dialErr, exhausted := exhaustedDialNodes[node]; exhausted {
-				// Remap without acquiring another connection at this fixed endpoint.
-				_ = c.mapCmdsByNodeInView(ctx, failedCmds, cmds, route)
-				setCmdsErr(cmds, dialErr)
-				continue
-			}
 			wg.Add(1)
 			go func(node *clusterNode, cmds []Cmder) {
 				defer wg.Done()
@@ -3072,17 +3052,6 @@ func (c *ClusterClient) processPipelineRetries(ctx context.Context, cmds []Cmder
 		}
 
 		wg.Wait()
-		for node, batch := range cmdsMap.m {
-			if node.Client.dialAddrCanChange {
-				continue
-			}
-			if dialErr := cmdsFirstErr(batch); ctx.Err() == nil && !errors.Is(dialErr, context.Canceled) &&
-				errors.Is(dialErr, pool.ErrDialSequenceFailure) {
-				exhaustedDialNodes[node] = dialErr
-				node.MarkAsFailing()
-				c.state.LazyReload()
-			}
-		}
 		if len(failedCmds.m) == 0 {
 			break
 		}
@@ -3708,8 +3677,6 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 	asking := false
 	// MOVED/ASK are routing changes, not transient failures: follow them immediately.
 	redirected := false
-	// Keep a per-transaction record of fixed nodes whose pool dial budget is spent.
-	exhaustedDialNodes := make(map[*clusterNode]error)
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		totalAttempts++
 		if attempt > 0 && !redirected {
@@ -3732,18 +3699,6 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 				setCmdsErr(cmds, err)
 				return err
 			}
-		}
-
-		if dialErr, exhausted := exhaustedDialNodes[node]; exhausted {
-			// A topology refresh may promote a new master on a later attempt.
-			lastErr = dialErr
-			node = nil
-			asking = false
-			// An exhausted endpoint is not a redirect. Retry with backoff
-			// while the refreshed topology may select another master.
-			redirected = false
-			c.state.LazyReload()
-			continue
 		}
 
 		outcome := c.processTxPipelineNode(ctx, node, cmds, asking)
@@ -3770,21 +3725,6 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 				return err
 			}
 		case txRetryTryAgain, txRetryConn:
-			if outcome.kind == txRetryConn && !node.Client.dialAddrCanChange &&
-				errors.Is(outcome.err, pool.ErrDialSequenceFailure) {
-				if ctx.Err() != nil {
-					setCmdsErr(cmds, outcome.err)
-					return outcome.err
-				}
-				// No transaction commands reached the wire on this acquisition.
-				// Reselect a node without restarting this endpoint's dial budget.
-				exhaustedDialNodes[node] = outcome.err
-				node.MarkAsFailing()
-				c.state.LazyReload()
-				node = nil
-				asking = false
-				continue
-			}
 			// Same node, fresh connection: TRYAGAIN comes from the migrating
 			// source (still the owner), and a conn failure only needs a new
 			// connection. Preserve a prior ASKING flag: if we followed an ASK
@@ -4264,16 +4204,6 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		}
 
 		if shouldRetry(err, true) {
-			// WATCH is pinned to this node until a redirect identifies another
-			// master. Retrying an exhausted fixed-address dial cannot recover.
-			if !node.Client.dialAddrCanChange && errors.Is(err, pool.ErrDialSequenceFailure) {
-				if ctx.Err() != nil {
-					return err
-				}
-				node.MarkAsFailing()
-				c.state.LazyReload()
-				return err
-			}
 			continue
 		}
 
