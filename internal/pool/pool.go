@@ -383,16 +383,6 @@ type ConnPool struct {
 	connsMu   sync.Mutex
 	conns     map[uint64]*Conn
 	idleConns []*Conn
-	// Counts popped idle connections still being health-checked or passed through
-	// OnGet. While one is in flight it may be rejected and returned to the idle
-	// list, so another Get must not mistake a temporarily empty list for capacity
-	// to dial. Increment while holding connsMu at pop and decrement only after
-	// the connection is accepted, removed, or requeued.
-	// Each in-flight idle acquisition has its own marker. A background worker
-	// may remove its connection before OnGet completes; removed connections
-	// must not block other callers from dialing the freed capacity.
-	idleGetPending sync.Map // acquisition token -> *Conn
-	idleGetNext    atomic.Uint64
 
 	// pendingConns reserves MaxActiveConns capacity before dialing. Together
 	// with conns it counts both pooled and dedicated connections, under connsMu.
@@ -1054,9 +1044,9 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 // for a full pool. It returns ErrPoolTryFull at once instead. This lets a caller
 // with a fallback (the pipeline pool) spill without a stall. ErrPoolTryFull is
 // different from ErrPoolTimeout: no wait happened, so getConn does not count the
-// spill as a pool timeout. Temporarily unavailable idle entries also return
-// ErrPoolTryFull. With no idle entries, a hard MaxActiveConns ceiling still
-// returns ErrPoolExhausted. TryGet dials under an acquired turn.
+// spill as a pool timeout. Re-authentication at the hard MaxActiveConns limit
+// returns ErrPoolTryFull, while exhaustion without re-auth returns
+// ErrPoolExhausted. TryGet dials under an acquired turn when capacity remains.
 func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 	return p.getConn(ctx, false)
 }
@@ -1078,32 +1068,17 @@ func usableIdlePollInterval(ctx context.Context, poolRemaining time.Duration) ti
 	return interval
 }
 
-// hasLiveIdleGetPendingLocked reports only acquisitions whose connection is
-// still in the pool. The caller holds connsMu. A re-auth worker can remove a
-// popped connection while its OnGet is blocked; such a stale marker must not
-// hide dial capacity from another caller. Filter can also close a popped
-// connection while it remains in p.conns until its getter unwinds.
-func (p *ConnPool) hasLiveIdleGetPendingLocked() bool {
-	live := false
-	p.idleGetPending.Range(func(_, v any) bool {
-		cn := v.(*Conn)
-		if p.conns[cn.GetID()] == cn && cn.GetStateMachine().GetState() != StateClosed {
-			live = true
-			return false
-		}
-		return true
-	})
-	return live
-}
-
 // waitForUsableIdle polls the lightweight connection state rather than
 // repeatedly running popIdle (which rearranges the idle slice). A maintenance
 // worker updates state without calling Put, so there is no pool queue event to
-// wait for here. Its ticker and deadline are always stopped before returning.
+// wait for here. Waiting stops as soon as the hard cap has room to dial.
 func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, hookRejected bool) error {
 	isReady := func() bool {
 		p.connsMu.Lock()
 		defer p.connsMu.Unlock()
+		if p.cfg.MaxActiveConns == 0 || len(p.conns)+p.pendingConns < int(p.cfg.MaxActiveConns) {
+			return true
+		}
 		// Return to acquisition when nothing can become ready without a
 		// fresh dial. Handoff-owned entries are not candidates for this wait.
 		hasReauth := false
@@ -1116,8 +1091,7 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, ho
 				hasReauth = true // AUTH via SingleConnPool briefly enters StateInUse
 			}
 		}
-		// A popped OnGet connection may still be rejected and requeued.
-		return !hasReauth && !p.hasLiveIdleGetPendingLocked()
+		return !hasReauth
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1233,20 +1207,6 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
-	// Only OnGet hooks can requeue a popped idle connection. Ordinary
-	// health checks must not prevent another caller from dialing spare capacity.
-	releaseIdleGet := func() {}
-	// A pass may discard unhealthy idle connections, but MinIdleConns can
-	// replenish them concurrently. Only scan the entries visible at the start
-	// of this acquisition (at least the normal getAttempts), so refills cannot
-	// keep Get/TryGet in the stale-connection retry path indefinitely.
-	newIdleScanBudget := func() int {
-		p.connsMu.Lock()
-		n := len(p.idleConns)
-		p.connsMu.Unlock()
-		return max(getAttempts, n)
-	}
-	idleScanRemaining := newIdleScanBudget()
 
 retryIdle:
 	if err := ctx.Err(); err != nil {
@@ -1259,24 +1219,16 @@ retryIdle:
 	}
 	drainGeneration := p.drainGeneration.Load()
 	hookRejected := false
-	removedUnhealthy := false
-	for attempts := 0; attempts < getAttempts && idleScanRemaining > 0; attempts++ {
+	for attempts := 0; attempts < getAttempts; attempts++ {
 		// A blocked OnGet can return after cancellation; do not reacquire
 		// its requeued connection on the next attempt.
 		if err := ctx.Err(); err != nil {
 			p.freeTurn()
 			return nil, err
 		}
-		idleScanRemaining--
-
 		p.connsMu.Lock()
 		cn, err = p.popIdle()
 		if cn != nil {
-			if hookManager != nil {
-				token := p.idleGetNext.Add(1)
-				p.idleGetPending.Store(token, cn)
-				releaseIdleGet = func() { p.idleGetPending.Delete(token) }
-			}
 			// Emit idle→used transition inside the lock so Close() sees
 			// consistent state (conn removed from idleConns = "used").
 			if cb := p.metrics().ConnectionCount; cb != nil {
@@ -1297,9 +1249,7 @@ retryIdle:
 
 		if !p.isHealthyConn(cn, nowNs) {
 			// Connection was already transitioned to MetricStateUsed under the lock above.
-			_ = p.closeConnWithRemovalHook(ctx, cn, CloseReasonStale, MetricStateUsed,
-				releaseIdleGet)
-			removedUnhealthy = true
+			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateUsed)
 			continue
 		}
 
@@ -1311,31 +1261,20 @@ retryIdle:
 				if hookErr != nil {
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
 					// Connection was already transitioned to MetricStateUsed under the lock above.
-					_ = p.closeConnWithRemovalHook(ctx, cn, CloseReasonHookError, MetricStateUsed,
-						releaseIdleGet)
-					removedUnhealthy = true
+					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateUsed)
 				} else {
 					hookRejected = true
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
 					// Connection is already in MetricStateUsed (transitioned under the lock above).
 					// Return connection to pool without freeing the turn that this Get() call holds.
 					// putConnWithoutTurn will emit used→idle transition.
-					// Release the in-flight marker when requeue completes OR directly
-					// after pool removal, before network Close can block.
-					releaseInFlight := sync.OnceFunc(releaseIdleGet)
-					p.putConnWithoutTurn(ctx, cn, releaseInFlight)
-					// OnGet may reject a still-IDLE connection whose re-auth worker
-					// has not started. Do not let LIFO immediately pop this same
-					// connection again while other idle entries remain usable.
-					p.demoteRejectedIdle(cn)
+					p.putConnWithoutTurn(ctx, cn)
 					cn = nil
-					releaseInFlight()
 				}
 				continue
 			}
 		}
 
-		releaseIdleGet()
 		atomic.AddUint32(&p.stats.Hits, 1)
 
 		// Record wait time (use cached callback from above)
@@ -1373,87 +1312,44 @@ retryIdle:
 			return nil, err
 		}
 		nowNs = time.Now().UnixNano()
-		idleScanRemaining = newIdleScanBudget()
 		goto retryIdle
 	} else if retry {
 		nowNs = time.Now().UnixNano()
-		idleScanRemaining = newIdleScanBudget()
 		goto retryIdle
 	}
 
-	// Idle entries held by re-authentication become usable again when their
-	// state changes, without a fresh Put, so Get waits for that state instead
-	// of extra-dialing. Entries held by a connection handoff do not qualify:
-	// the handoff worker owns them (its endpoint mark stays set until
-	// ClearHandoffState) and may retry for a long time, so the established
-	// contract is to skip them and dial a fresh connection.
+	// Preserve the normal dial path whenever MaxActiveConns has spare room.
+	// Only a hard-cap exhaustion with an idle re-auth candidate should wait
+	// for that candidate to become usable instead of returning ErrPoolExhausted.
+	// In particular, PoolSize is a soft limit and must not trigger this wait.
 	p.connsMu.Lock()
-	// A concurrent Get may have just popped the last idle conn for OnGet.
-	// It can still return that conn on rejection, so keep the maintenance
-	// wait active until its disposition is known instead of extra-dialing.
-	hasIdleOrPending := p.hasLiveIdleGetPendingLocked()
-	if !hasIdleOrPending {
+	capReached := p.cfg.MaxActiveConns > 0 && len(p.conns)+p.pendingConns >= int(p.cfg.MaxActiveConns)
+	hasReauthIdle := false
+	if capReached {
 		for _, idle := range p.idleConns {
 			state := idle.GetStateMachine().GetState()
-			if state == StateIdle || state == StateCreated {
-				hasIdleOrPending = true
-				break
-			}
-			// Unusable entries still held by a handoff worker keep the
-			// handoff endpoint set; only re-auth entries qualify for the wait.
-			if (state == StateUnusable || state == StateInUse) && idle.GetHandoffEndpoint() == "" {
-				hasIdleOrPending = true
-				break
-			}
-		}
-	}
-	// popIdle examines at most popAttempts entries per call. Its bounded
-	// skip can leave a ready connection deeper in a larger idle list even
-	// though neither a hook nor a health check rejected a connection.
-	// Only continue within the original finite scan budget, so a concurrent
-	// MinIdleConns refill cannot make Get or TryGet spin indefinitely.
-	readyIdleBeyondPopLimit := false
-	if idleScanRemaining > 0 && !removedUnhealthy && !hookRejected {
-		for _, idle := range p.idleConns {
-			state := idle.GetStateMachine().GetState()
-			if state == StateIdle || state == StateCreated {
-				readyIdleBeyondPopLimit = true
+			// OnGet can reject before the re-auth worker marks it unusable.
+			// Handoff-owned entries must still use the usual dial/error path.
+			if (hookRejected && state == StateIdle) ||
+				((state == StateUnusable || state == StateInUse) && idle.GetHandoffEndpoint() == "") {
+				hasReauthIdle = true
 				break
 			}
 		}
 	}
 	p.connsMu.Unlock()
-	if hasIdleOrPending {
-		// Continue past getAttempts while the original idle snapshot has
-		// unexamined entries, including connections demoted by OnGet hooks.
-		// Refill arrivals never enlarge this finite scan budget.
-		if (removedUnhealthy || hookRejected || readyIdleBeyondPopLimit) && idleScanRemaining > 0 {
-			if wait && time.Until(poolDeadline) <= 0 {
-				// Prefer the caller's expired context when both deadlines elapsed.
-				if err := ctx.Err(); err != nil {
-					p.freeTurn()
-					return nil, err
-				}
-				p.freeTurn()
-				return nil, ErrPoolTimeout
-			}
-			nowNs = time.Now().UnixNano()
-			goto retryIdle
-		}
+	if hasReauthIdle {
 		if !wait {
 			p.freeTurn()
 			return nil, ErrPoolTryFull
 		}
-		// After exhausting the snapshot, wait for a tick even if a newly
-		// replenished entry is already idle, to avoid a tight retry loop.
-		if err = p.waitForUsableIdle(ctx, poolDeadline, hookRejected || idleScanRemaining == 0); err != nil {
+		if err = p.waitForUsableIdle(ctx, poolDeadline, hookRejected); err != nil {
 			p.freeTurn()
 			return nil, err
 		}
 		// Maintenance can outlast the cached-time window. Check expiration
 		// against the current clock when we next inspect an idle connection.
 		nowNs = time.Now().UnixNano()
-		idleScanRemaining = newIdleScanBudget()
 		goto retryIdle
 	}
 
@@ -1774,7 +1670,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		if cn.TryAcquire() {
 			// Successfully acquired the connection
 			p.idleConnsLen.Add(-1)
-			break
+			return cn, nil
 		}
 
 		// Connection is in UNUSABLE, INITIALIZING, or other state - skip it
@@ -1807,36 +1703,12 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 // putConnWithoutTurn is an internal method that puts a connection back to the pool
 // without freeing a turn. This is used when returning a rejected connection from
 // within Get(), where the turn is still held by the Get() call.
-func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn, onRemoved ...func()) {
-	p.putConn(ctx, cn, false, onRemoved...)
-}
-
-// demoteRejectedIdle moves a hook-rejected connection to the oldest end of
-// the LIFO idle list. FIFO already places a returned connection last. The
-// entry may have been removed or leased concurrently after putConn; then
-// there is nothing to reorder. This changes neither turns nor metrics.
-func (p *ConnPool) demoteRejectedIdle(cn *Conn) {
-	if p.cfg.PoolFIFO {
-		return
-	}
-	p.connsMu.Lock()
-	defer p.connsMu.Unlock()
-	for i := len(p.idleConns) - 1; i > 0; i-- {
-		if p.idleConns[i] == cn {
-			copy(p.idleConns[1:i+1], p.idleConns[:i])
-			p.idleConns[0] = cn
-			return
-		}
-	}
+func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn) {
+	p.putConn(ctx, cn, false)
 }
 
 // putConn is the internal implementation of Put that optionally frees a turn.
-func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemoved ...func()) {
-	// For a rejected OnGet, notify as soon as the pool entry is removed.
-	var releaseInFlight func()
-	if len(onRemoved) > 0 {
-		releaseInFlight = onRemoved[0]
-	}
+func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	// Guard against nil connection
 	if cn == nil {
 		internal.Logger.Printf(ctx, "putConn called with nil connection")
@@ -1852,7 +1724,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 	var err error
 
 	if reason := cn.CloseOnPutReason(); reason != "" {
-		p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn, releaseInFlight)
+		p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
 		return
 	}
 
@@ -1861,7 +1733,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 		if replyType, err := cn.PeekReplyTypeSafe(); err != nil || replyType != proto.RespPush {
 			// Not a push notification or error peeking, remove connection
 			internal.Logger.Printf(ctx, "Conn has unread data (not push notification), removing it")
-			p.removeConnInternal(ctx, cn, err, freeTurn, releaseInFlight)
+			p.removeConnInternal(ctx, cn, err, freeTurn)
 			return
 		}
 		// It's a push notification, allow pooling (client will handle it)
@@ -1878,19 +1750,19 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
 			internal.Logger.Printf(ctx, "Connection hook error: %v", err)
-			p.removeConnInternal(ctx, cn, err, freeTurn, releaseInFlight)
+			p.removeConnInternal(ctx, cn, err, freeTurn)
 			return
 		}
 	}
 
 	// Combine all removal checks into one - reduces branches
 	if shouldRemove || !shouldPool {
-		p.removeConnInternal(ctx, cn, errHookRequestedRemoval, freeTurn, releaseInFlight)
+		p.removeConnInternal(ctx, cn, errHookRequestedRemoval, freeTurn)
 		return
 	}
 
 	if !cn.pooled {
-		p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn, releaseInFlight)
+		p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn)
 		return
 	}
 
@@ -1917,7 +1789,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 			if sm == nil {
 				// State machine is nil - connection is in an invalid state, remove it
 				internal.Logger.Printf(ctx, "conn[%d] has nil state machine, removing it", cn.GetID())
-				p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn, releaseInFlight)
+				p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn)
 				return
 			}
 			currentState := sm.GetState()
@@ -1931,9 +1803,6 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 				}
 				shouldCloseConn = true
 				removedFromPool, countCb = p.removeConnWithLock(cn)
-				if releaseInFlight != nil {
-					releaseInFlight()
-				}
 			default:
 				// Pool as-is
 				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, pooling as-is", cn.GetID(), currentState)
@@ -1955,7 +1824,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 				// RetireConns marks under, so a marked connection is never
 				// idled and left in the pool until its next put.
 				p.connsMu.Unlock()
-				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn, releaseInFlight)
+				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
 				return
 			}
 			// Check if Close() already removed this connection from p.conns.
@@ -1981,7 +1850,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 			if reason := cn.CloseOnPutReason(); reason != "" {
 				// Same late-retirement check as above (see there).
 				p.connsMu.Unlock()
-				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn, releaseInFlight)
+				p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
 				return
 			}
 			if _, inPool := p.conns[cn.GetID()]; inPool {
@@ -2013,9 +1882,6 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 			hookManager.ProcessOnRemove(ctx, cn, errConnEvictedIdle)
 		}
 		removedFromPool, countCb = p.removeConnWithLock(cn)
-		if releaseInFlight != nil {
-			releaseInFlight()
-		}
 
 		// Only emit if we actually removed it from the map (not already taken by Close()).
 		if removedFromPool {
@@ -2027,10 +1893,6 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool, onRemov
 		}
 	}
 
-	// If Close removed this entry concurrently, release the pending marker too.
-	if shouldCloseConn && releaseInFlight != nil {
-		releaseInFlight()
-	}
 	if freeTurn {
 		p.freeTurn()
 	}
@@ -2066,7 +1928,7 @@ func (p *ConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error
 }
 
 // removeConnInternal is the internal implementation of Remove that optionally frees a turn.
-func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool, onRemoved ...func()) {
+func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool) {
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
@@ -2078,10 +1940,6 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	removed, wasIdle := p.removeConn(cn)
 	countCb := p.metrics().ConnectionCount
 	p.connsMu.Unlock()
-	// A rejected Get must stop hiding freed pool capacity before Close blocks.
-	if len(onRemoved) > 0 && onRemoved[0] != nil {
-		onRemoved[0]()
-	}
 
 	if freeTurn {
 		p.freeTurn()
@@ -2125,21 +1983,11 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 //   - reason: why the connection is being closed (use CloseReason* constants)
 //   - fromState: the metric state the connection was in (use MetricState* constants)
 func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
-	return p.closeConnWithRemovalHook(ctx, cn, reason, fromState, nil)
-}
-
-// closeConnWithRemovalHook releases a Get's in-flight idle marker immediately
-// after the pool entry is removed, before metrics or network Close can block.
-// Other callers use CloseConn without a callback.
-func (p *ConnPool) closeConnWithRemovalHook(ctx context.Context, cn *Conn, reason string, fromState string, onRemoved func()) error {
 	if hookManager := p.hookManager.Load(); hookManager != nil {
 		hookManager.ProcessOnRemove(ctx, cn, errors.New(reason))
 	}
 
 	removed, countCb := p.removeConnWithLock(cn)
-	if onRemoved != nil {
-		onRemoved()
-	}
 
 	// Only emit UpDownCounter decrements if we actually removed the connection.
 	// If removed is false, Close() already removed it and emitted the -1 delta.
