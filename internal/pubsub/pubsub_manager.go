@@ -1571,22 +1571,25 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 		return errPubSubNoConn
 	}
 
+	cmds, waiters := m.prepareReplayLocked()
+	if err = m.writeLocked(socketCtx, cn, cmds); err != nil {
+		_ = m.hooks.CloseConn(cn)
+		m.dialFailedLocked("resubscribe failed", reason, err)
+		return err
+	}
+
 	oldConn := m.conn.Swap(cn)
 	m.dropped = nil
 	if oldConn != nil {
 		// The old connection's outstanding replies die with the switch;
-		// settle them before the replay builds the fresh ledger.
+		// settle them before the replay installs the fresh ledger.
 		m.failReplyWaitersLocked(cmp.Or(reason, error(errConnUnusable)))
-	}
-
-	err = m.writeLocked(socketCtx, cn, m.replayLocked())
-	if oldConn != nil {
 		_ = m.hooks.CloseConn(oldConn)
+	} else {
+		m.settleUnsubscribeWaitersLocked(m.replyQueue)
+		m.replyQueue = nil
 	}
-	if err != nil {
-		m.dialFailedLocked("resubscribe failed", reason, err)
-		return err
-	}
+	m.commitReplayLocked(waiters)
 
 	if reason != nil {
 		internal.Logger.Printf(context.TODO(), "pubsub: reconnected (attempts: %d, due to: %v)", m.reconnectAttempts, reason)
@@ -1640,18 +1643,13 @@ func (m *Manager) reconnectBackoffLocked() time.Duration {
 	return internal.RetryBackoff(max(m.reconnectAttempts-1, 0), m.dialer.minBackoff, m.dialer.maxBackoff)
 }
 
-// replayLocked prepares the subscription replay for a freshly installed
-// connection: the ledger died with the old one, every registered name
-// is Pending again (a fresh connection owes every confirmation), and
-// one broadcast command per kind re-subscribes them. Callers must hold
-// m.mu; the returned commands go to writeLocked.
-func (m *Manager) replayLocked() [][]any {
-	// A fresh connection starts a fresh ledger; unsubscribes the old one
-	// still owed are settled, never left awaiting a reply that can't come.
-	m.settleUnsubscribeWaitersLocked(m.replyQueue)
-	m.replyQueue = nil
-
+// prepareReplayLocked builds the subscription replay commands and their
+// ledger entries without mutating m.replyQueue or any subscription's
+// state, so a failed replay write can discard the new connection without
+// disturbing a still-live old connection. Callers must hold m.mu.
+func (m *Manager) prepareReplayLocked() ([][]any, []replyWaiter) {
 	var cmds [][]any
+	var waiters []replyWaiter
 	for _, r := range []struct {
 		kind     string
 		registry map[string]*subscription
@@ -1663,14 +1661,29 @@ func (m *Manager) replayLocked() [][]any {
 		if len(r.registry) == 0 {
 			continue
 		}
-		for _, sub := range r.registry {
-			if sub.state == subStateSubscribed {
+		c, w := m.buildSubscribeCmdsLocked(r.kind, replyWaiter{broadcast: true}, collectAllChannelNames(r.registry))
+		cmds = append(cmds, c...)
+		waiters = append(waiters, w...)
+	}
+	return cmds, waiters
+}
+
+// commitReplayLocked installs the replay ledger entries and transitions
+// registered subscriptions back to Pending once the replay write has
+// succeeded on the new connection. Callers must hold m.mu.
+func (m *Manager) commitReplayLocked(waiters []replyWaiter) {
+	m.replyQueue = append(m.replyQueue, waiters...)
+	for _, registry := range []map[string]*subscription{
+		m.subscribers,
+		m.patternSubscribers,
+		m.shardSubscribers,
+	} {
+		for _, sub := range registry {
+			if sub.state == subStateSubscribed || sub.state == subStateRejected {
 				sub.state = subStatePending
 			}
 		}
-		cmds = append(cmds, m.prepareSubscribeLocked(r.kind, replyWaiter{broadcast: true}, collectAllChannelNames(r.registry))...)
 	}
-	return cmds
 }
 
 // resubscribeRejected re-sends every Rejected subscription — answered
@@ -1741,8 +1754,27 @@ func timeoutCtx(d time.Duration) (context.Context, context.CancelFunc) {
 // them itself for a fresh connection). Callers must hold m.mu through
 // the write.
 func (m *Manager) prepareSubscribeLocked(redisCommand string, w replyWaiter, names []string) [][]any {
-	if len(names) == 0 {
+	cmds, waiters := m.buildSubscribeCmdsLocked(redisCommand, w, names)
+	if len(cmds) == 0 {
 		return nil
+	}
+	m.replyQueue = append(m.replyQueue, waiters...)
+
+	switch redisCommand {
+	case "subscribe", "psubscribe", "ssubscribe":
+		registry := m.registryForKind(redisCommand)
+		for _, name := range names {
+			if sub := registry[name]; sub != nil && sub.state != subStateSubscribed {
+				sub.state = subStatePending
+			}
+		}
+	}
+	return cmds
+}
+
+func (m *Manager) buildSubscribeCmdsLocked(redisCommand string, w replyWaiter, names []string) ([][]any, []replyWaiter) {
+	if len(names) == 0 {
+		return nil, nil
 	}
 
 	batch, solo := names, []string(nil)
@@ -1768,6 +1800,7 @@ func (m *Manager) prepareSubscribeLocked(redisCommand string, w replyWaiter, nam
 	}
 
 	cmds := make([][]any, 0, len(groups))
+	waiters := make([]replyWaiter, 0, len(groups))
 	for _, group := range groups {
 		args := make([]any, 0, 1+len(group))
 		args = append(args, redisCommand)
@@ -1776,19 +1809,10 @@ func (m *Manager) prepareSubscribeLocked(redisCommand string, w replyWaiter, nam
 		}
 		cmds = append(cmds, args)
 		w.kind, w.names = redisCommand, slices.Clone(group)
-		m.replyQueue = append(m.replyQueue, w)
+		waiters = append(waiters, w)
 	}
 
-	switch redisCommand {
-	case "subscribe", "psubscribe", "ssubscribe":
-		registry := m.registryForKind(redisCommand)
-		for _, name := range names {
-			if sub := registry[name]; sub != nil && sub.state != subStateSubscribed {
-				sub.state = subStatePending
-			}
-		}
-	}
-	return cmds
+	return cmds, waiters
 }
 
 // slotGroups splits the names of a sharded command into one group per
