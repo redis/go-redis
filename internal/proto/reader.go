@@ -921,7 +921,7 @@ func (r *Reader) Discard(line []byte) (err error) {
 		return err
 	case RespArray, RespSet, RespPush:
 		for i := 0; i < n; i++ {
-			if err = r.DiscardNext(); err != nil {
+			if err = r.discardElement(); err != nil {
 				return err
 			}
 		}
@@ -932,10 +932,10 @@ func (r *Reader) Discard(line []byte) (err error) {
 		// would skip the body entirely and return nil, leaving the map bytes in
 		// the stream for the next reply to consume (a silent desync).
 		for i := 0; i < n; i++ {
-			if err = r.DiscardNext(); err != nil {
+			if err = r.discardElement(); err != nil {
 				return err
 			}
-			if err = r.DiscardNext(); err != nil {
+			if err = r.discardElement(); err != nil {
 				return err
 			}
 		}
@@ -943,6 +943,27 @@ func (r *Reader) Discard(line []byte) (err error) {
 	}
 
 	return fmt.Errorf("redis: can't parse %.100q", line)
+}
+
+// discardElement discards one element of an aggregate. An attribute in front
+// of an element decorates it and is not an element of its own, so it is
+// discarded together with the element that follows, as ReadReply,
+// ReadRawReply and bufferedValueLen treat it.
+func (r *Reader) discardElement() error {
+	for {
+		line, err := r.readLine()
+		if err != nil {
+			return err
+		}
+		// line points into the read buffer, which Discard may refill.
+		isAttr := line[0] == RespAttr
+		if err = r.Discard(line); err != nil {
+			return err
+		}
+		if !isAttr {
+			return nil
+		}
+	}
 }
 
 func replyLen(line []byte) (n int, err error) {
