@@ -1090,8 +1090,8 @@ func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, ho
 			if state == StateIdle || state == StateCreated {
 				return true
 			}
-			if state == StateUnusable && cn.GetHandoffEndpoint() == "" {
-				hasReauth = true // re-authentication may restore this connection
+			if (state == StateUnusable || state == StateInUse) && cn.GetHandoffEndpoint() == "" {
+				hasReauth = true // AUTH via SingleConnPool briefly enters StateInUse
 			}
 		}
 		// A popped OnGet connection may still be rejected and requeued.
@@ -1381,7 +1381,7 @@ retryIdle:
 			}
 			// Unusable entries still held by a handoff worker keep the
 			// handoff endpoint set; only re-auth entries qualify for the wait.
-			if state == StateUnusable && idle.GetHandoffEndpoint() == "" {
+			if (state == StateUnusable || state == StateInUse) && idle.GetHandoffEndpoint() == "" {
 				hasIdleOrPending = true
 				break
 			}
