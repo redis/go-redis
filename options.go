@@ -787,7 +787,11 @@ func (opt *Options) init() {
 	if opt.Dialer == nil {
 		opt.Dialer = NewDialer(opt)
 	}
-	if opt.PoolSize == 0 {
+	// <= 0, not == 0: a negative size cannot be a pool capacity — the pool
+	// allocates a semaphore and an idle slice of this size, so it panics — and
+	// ParseURL rejects it for URLs. Normalize here too, so an Options value set
+	// directly behaves like the default instead of crashing the caller.
+	if opt.PoolSize <= 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
 	}
 
@@ -1274,7 +1278,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.DisableIdentity = q.bool("disable_identity")
 	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
-	o.PoolSize = q.int("pool_size")
+	o.PoolSize = q.nonNegativeInt("pool_size")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")

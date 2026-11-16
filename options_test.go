@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +81,23 @@ func TestParseURLConnectionValidation(t *testing.T) {
 					}
 				})
 			}
+			// A negative pool size is not a capacity: the pool builds a
+			// semaphore and an idle slice of that size, so NewClient panicked
+			// with "makechan: size out of range" before it could connect.
+			for _, value := range []string{"-1", "-10", "bad"} {
+				t.Run("pool_size/"+value, func(t *testing.T) {
+					if _, err := parser.parse("pool_size=" + value); err == nil || !strings.Contains(err.Error(), "pool_size") {
+						t.Fatalf("expected a pool_size error, got %v", err)
+					}
+				})
+			}
+			for _, value := range []string{"0", "10"} {
+				t.Run("pool_size/"+value, func(t *testing.T) {
+					if _, err := parser.parse("pool_size=" + value); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
 			for _, field := range []string{"read_buffer_size", "write_buffer_size"} {
 				for _, value := range []string{"-1", "bad", "0", "65536"} {
 					t.Run(field+"/"+value, func(t *testing.T) {
@@ -109,6 +127,31 @@ func TestParseURLConnectionValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A pool size set on Options directly, rather than through a URL, is the
+// caller's value and no longer goes through ParseURL's validation. A negative
+// one cannot be a capacity, so init gives it the default like it does for 0.
+func TestOptionsNegativePoolSizeUsesDefault(t *testing.T) {
+	want := 10 * runtime.GOMAXPROCS(0)
+
+	opt := &Options{PoolSize: -1}
+	opt.init()
+	if opt.PoolSize != want {
+		t.Fatalf("PoolSize = %d, want %d", opt.PoolSize, want)
+	}
+
+	// The client allocates the pool from PoolSize, so construction is where the
+	// negative value used to panic.
+	c := NewClient(&Options{Addr: "localhost:6379", PoolSize: -1})
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if got := c.Options().PoolSize; got != want {
+		t.Fatalf("client PoolSize = %d, want %d", got, want)
 	}
 }
 
