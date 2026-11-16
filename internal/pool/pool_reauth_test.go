@@ -225,6 +225,97 @@ func TestGetWaitsForInFlightIdleHook(t *testing.T) {
 	}
 }
 
+// A re-auth worker can remove an idle connection while another Get is still
+// inside OnGet for that connection. The removed acquisition must not make a
+// subsequent Get/TryGet wait for a connection that no longer belongs to the pool.
+func TestRemovedInFlightIdleConnDoesNotBlockDial(t *testing.T) {
+	for _, try := range []bool{false, true} {
+		name := "Get"
+		if try {
+			name = "TryGet"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			var dials atomic.Int32
+			p := pool.NewConnPool(&pool.Options{
+				PoolSize: 2, MaxActiveConns: 2, MaxConcurrentDials: 2,
+				PoolTimeout: 200 * time.Millisecond,
+				Dialer: func(context.Context) (net.Conn, error) {
+					dials.Add(1)
+					return newDummyConn(), nil
+				},
+			})
+			t.Cleanup(func() { _ = p.Close() })
+			original, err := p.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original.GetStateMachine().Transition(pool.StateInUse)
+			p.Put(ctx, original)
+
+			h := &delayedIdleRejectHook{entered: make(chan struct{}), release: make(chan struct{})}
+			p.AddPoolHook(h)
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(h.release) }) }
+			defer unblock()
+
+			type result struct {
+				cn  *pool.Conn
+				err error
+			}
+			firstDone := make(chan result, 1)
+			firstCtx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			go func() {
+				cn, err := p.Get(firstCtx)
+				firstDone <- result{cn, err}
+			}()
+			select {
+			case <-h.entered:
+			case <-time.After(time.Second):
+				t.Fatal("first OnGet did not enter")
+			}
+
+			// Worker-owned removal bypasses the Get-owned teardown callback.
+			if err := p.CloseConn(ctx, original, pool.CloseReasonAuthError, pool.MetricStateUsed); err != nil {
+				t.Fatal(err)
+			}
+			if got := p.Len(); got != 0 {
+				t.Fatalf("removed connection still counted: %d", got)
+			}
+			var second *pool.Conn
+			if try {
+				second, err = p.TryGet(ctx)
+			} else {
+				second, err = p.Get(ctx)
+			}
+			if err != nil {
+				t.Fatalf("%s waited on a removed in-flight connection: %v", name, err)
+			}
+			if second == original || dials.Load() != 2 {
+				t.Fatalf("%s did not dial replacement: conn=%p original=%p dials=%d",
+					name, second, original, dials.Load())
+			}
+			second.GetStateMachine().Transition(pool.StateInUse)
+			p.Put(ctx, second)
+			unblock()
+			select {
+			case first := <-firstDone:
+				if first.err != nil {
+					t.Fatalf("first Get did not recover: %v", first.err)
+				}
+				first.cn.GetStateMachine().Transition(pool.StateInUse)
+				p.Put(ctx, first.cn)
+			case <-time.After(time.Second):
+				t.Fatal("first Get did not finish")
+			}
+			if got := p.QueueLen(); got != 0 {
+				t.Fatalf("pool turns leaked: %d", got)
+			}
+		})
+	}
+}
+
 // Closing a stale idle connection can outlast both the request and pool
 // deadlines. In that race the caller context error must take precedence.
 type slowStaleCloseConn struct{ net.Conn }
