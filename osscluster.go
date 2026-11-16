@@ -3739,6 +3739,9 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 			lastErr = dialErr
 			node = nil
 			asking = false
+			// An exhausted endpoint is not a redirect. Retry with backoff
+			// while the refreshed topology may select another master.
+			redirected = false
 			c.state.LazyReload()
 			continue
 		}
