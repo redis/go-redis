@@ -398,12 +398,8 @@ func TestGetWaitsForReAuth(t *testing.T) {
 			name = "capped"
 		}
 		t.Run(name, func(t *testing.T) {
-			for _, running := range []bool{false, true} {
-				name := "pending"
-				if running {
-					name = "running"
-				}
-				t.Run(name, func(t *testing.T) {
+			for _, phase := range []string{"pending", "running", "auth-command"} {
+				t.Run(phase, func(t *testing.T) {
 					ctx := context.Background()
 					var dials atomic.Int32
 					opt := &pool.Options{
@@ -433,6 +429,16 @@ func TestGetWaitsForReAuth(t *testing.T) {
 					unblock := func() { once.Do(func() { close(release) }) }
 					t.Cleanup(unblock)
 					listener, err := manager.Listener(cn, func(*pool.Conn, auth.Credentials) error {
+						if phase == "auth-command" {
+							// AUTH uses SingleConnPool, whose Get moves UNUSABLE to IN_USE
+							// while the connection remains in the regular idle list.
+							authPool := pool.NewSingleConnPool(p, cn)
+							active, err := authPool.Get(ctx)
+							if err != nil {
+								return err
+							}
+							defer authPool.Put(ctx, active)
+						}
 						close(started)
 						<-release
 						close(finished)
@@ -442,7 +448,7 @@ func TestGetWaitsForReAuth(t *testing.T) {
 						t.Fatal(err)
 					}
 					listener.OnNext(auth.NewBasicCredentials("app", "rotated"))
-					if running {
+					if phase != "pending" {
 						_, _, _ = manager.PoolHook().OnPut(ctx, cn)
 						select {
 						case <-started:
