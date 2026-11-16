@@ -134,7 +134,13 @@ func (m *Manager) Listener(
 func (m *Manager) MarkForReAuth(poolCn *pool.Conn, reAuthFn func(error)) {
 	if poolCn.IsPubSub() {
 		if !poolCn.IsClosed() {
-			go reAuthFn(nil)
+			// Pub/Sub connections never return to the pool, so the
+			// pool hook's OnPut never serializes their re-auth.
+			// Schedule through the hook's per-connection queue
+			// instead of a bare goroutine: two rotations arriving
+			// within milliseconds would otherwise race, and the
+			// older credentials could be written to the socket last.
+			m.poolHookRef.markPubSubForReAuth(poolCn, reAuthFn)
 		}
 		return
 	}
