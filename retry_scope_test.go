@@ -479,6 +479,32 @@ func TestUniversalClusterDialerRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestUniversalFailoverClusterDialerRetryPolicy(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		opt := (&UniversalOptions{
+			MasterName:             "mymaster",
+			Addrs:                  []string{"127.0.0.1:26379"},
+			IsClusterMode:          true,
+			DialerCanChangeAddress: enabled,
+		}).Failover()
+		if opt.DialerCanChangeAddress != enabled {
+			t.Fatalf("failover option lost endpoint-change policy: enabled=%v", enabled)
+		}
+		if got := opt.clusterOptions().DialerCanChangeAddress; got != enabled {
+			t.Fatalf("failover cluster option lost endpoint-change policy: got=%v want=%v", got, enabled)
+		}
+		if got := opt.clusterOptions().clientOptions().DialerCanChangeAddress; got != enabled {
+			t.Fatalf("failover cluster node lost endpoint-change policy: got=%v want=%v", got, enabled)
+		}
+		if got := opt.clientOptions().DialerCanChangeAddress; got != enabled {
+			t.Fatalf("failover client lost endpoint-change policy: got=%v want=%v", got, enabled)
+		}
+		if got := opt.sentinelOptions("127.0.0.1:26379").DialerCanChangeAddress; got != enabled {
+			t.Fatalf("sentinel client lost endpoint-change policy: got=%v want=%v", got, enabled)
+		}
+	}
+}
+
 func TestClusterPipelinesDoNotRestartFixedNodeDialBudget(t *testing.T) {
 	for _, transaction := range []bool{false, true} {
 		name := "pipeline"

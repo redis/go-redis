@@ -358,8 +358,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		MasterName:                             o.MasterName,
 		ClientName:                             o.ClientName,
 
-		Dialer:    o.Dialer,
-		OnConnect: o.OnConnect,
+		Dialer:                 o.Dialer,
+		DialerCanChangeAddress: o.DialerCanChangeAddress,
+		OnConnect:              o.OnConnect,
 
 		DB:                           o.DB,
 		Protocol:                     o.Protocol,

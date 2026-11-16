@@ -62,8 +62,10 @@ type FailoverOptions struct {
 
 	// Following options are copied from Options struct.
 
-	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
-	OnConnect func(ctx context.Context, cn *Conn) error
+	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+	// DialerCanChangeAddress: see Options.DialerCanChangeAddress.
+	DialerCanChangeAddress bool
+	OnConnect              func(ctx context.Context, cn *Conn) error
 
 	Protocol int
 	Username string
@@ -260,8 +262,9 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		Addr:       "FailoverClient",
 		ClientName: opt.ClientName,
 
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		Dialer:                 opt.Dialer,
+		DialerCanChangeAddress: opt.DialerCanChangeAddress,
+		OnConnect:              opt.OnConnect,
 
 		DB:                           opt.DB,
 		Protocol:                     opt.Protocol,
@@ -328,8 +331,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		Addr:       addr,
 		ClientName: opt.ClientName,
 
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		Dialer:                 opt.Dialer,
+		DialerCanChangeAddress: opt.DialerCanChangeAddress,
+		OnConnect:              opt.OnConnect,
 
 		DB:                0,
 		Username:          opt.SentinelUsername,
@@ -392,8 +396,9 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		ClientSideCacheInvalidationBatchWindow: opt.ClientSideCacheInvalidationBatchWindow,
 		ClientName:                             opt.ClientName,
 
-		Dialer:    opt.Dialer,
-		OnConnect: opt.OnConnect,
+		Dialer:                 opt.Dialer,
+		DialerCanChangeAddress: opt.DialerCanChangeAddress,
+		OnConnect:              opt.OnConnect,
 
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
