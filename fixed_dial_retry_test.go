@@ -63,6 +63,46 @@ func TestCommandRetryAfterPoolDialExhaustion(t *testing.T) {
 	}
 }
 
+func TestSentinelDoesNotRestartFixedDialSequence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		custom bool
+		want   int32
+	}{
+		{name: "fixed_endpoint", want: 2},
+		{name: "custom_dialer", custom: true, want: 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const addr = "127.0.0.1:6379"
+			dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("dial unavailable")}
+			var calls atomic.Int32
+			dial := func(context.Context, string, string) (net.Conn, error) {
+				calls.Add(1)
+				return nil, dialErr
+			}
+			opt := &Options{
+				Addr: addr, PoolSize: 16, MaxRetries: 2, DialerRetries: 2,
+				DialerRetryBackoff: func(int) time.Duration { return 0 },
+				MinRetryBackoff:    -1, MaxRetryBackoff: -1,
+			}
+			if tc.custom {
+				opt.Dialer = dial
+			}
+			client := NewSentinelClient(opt)
+			t.Cleanup(func() { _ = client.Close() })
+			if !tc.custom {
+				client.AddHook(fixedDialFailureHook{dial: dial})
+			}
+			if err := client.Ping(context.Background()).Err(); err != dialErr {
+				t.Fatalf("returned error = %v (%T), want original *net.OpError", err, err)
+			}
+			if got := calls.Load(); got != tc.want {
+				t.Errorf("dial calls = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRingDoesNotRestartDialSequenceForSameShard(t *testing.T) {
 	const addr = "127.0.0.1:6379"
 	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("dial unavailable")}

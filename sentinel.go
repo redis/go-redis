@@ -841,12 +841,14 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	// 5 second default on the second pass — and that same pointer is captured by
 	// the first client's dialer.
 	opt = opt.clone()
+	fixedDialEndpoint := opt.Dialer == nil
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{
-			apClosed: &atomic.Bool{},
-			opt:      opt,
-			onClose:  &onCloseHooks{},
+			apClosed:          &atomic.Bool{},
+			opt:               opt,
+			fixedDialEndpoint: fixedDialEndpoint,
+			onClose:           &onCloseHooks{},
 		},
 	}
 	c.rec, c.poolMetrics = clientRecorder(opt.OTelRecorder)
