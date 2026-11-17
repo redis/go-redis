@@ -155,6 +155,25 @@ func TestOptionsNegativePoolSizeUsesDefault(t *testing.T) {
 	}
 }
 
+// ClusterOptions sizes one pool per node, and init leaves the value to be
+// copied into each node's Options. A negative PoolSize therefore has to be
+// normalized here as well, or every node inherits a pool size it cannot use.
+func TestClusterOptionsNegativePoolSizeUsesDefault(t *testing.T) {
+	want := 5 * runtime.GOMAXPROCS(0)
+
+	opt := &ClusterOptions{Addrs: []string{"localhost:7000"}, PoolSize: -1}
+	opt.init()
+	if opt.PoolSize != want {
+		t.Fatalf("cluster PoolSize = %d, want %d", opt.PoolSize, want)
+	}
+
+	node := opt.clientOptions()
+	node.init()
+	if node.PoolSize != want {
+		t.Fatalf("node PoolSize = %d, want %d", node.PoolSize, want)
+	}
+}
+
 func TestParseURL(t *testing.T) {
 	cases := []struct {
 		url string

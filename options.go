@@ -366,8 +366,8 @@ type Options struct {
 
 	// PoolSize is the base number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
-	// When Options is set directly, zero and negative values use the default.
-	// ParseURL rejects negative pool_size values.
+	// Zero and negative values are both treated the same way: they select the default
+	// pool size. A negative size is not a capacity, so it is never used as one.
 	// If there is not enough connections in the pool, new connections will be allocated in excess of PoolSize,
 	// you can limit it through MaxActiveConns
 	//
