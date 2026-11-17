@@ -1517,7 +1517,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		if cn.TryAcquire() {
 			// Successfully acquired the connection
 			p.idleConnsLen.Add(-1)
-			break
+			return cn, nil
 		}
 
 		// Connection is in UNUSABLE, INITIALIZING, or other state - skip it

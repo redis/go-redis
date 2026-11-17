@@ -602,6 +602,97 @@ func TestPubSubRESP2StreamingCredsReconnectOnRotation(t *testing.T) {
 	}
 }
 
+// Rapid credential rotations must reach the server in rotation order: the
+// AUTH commands on the wire form an increasing subsequence of the rotations,
+// and the last AUTH always carries the newest credentials (#4302 point 1).
+// Intermediate rotations may be coalesced away while a re-auth is in flight,
+// but an older AUTH must never be written after a newer one.
+func TestPubSubRESP3StreamingCredsRotationsStayOrdered(t *testing.T) {
+	srv := newMockRESP3Server(t)
+	defer srv.Close()
+
+	provider := newTestStreamingProvider("init_user", "init_pass")
+	client := redis.NewClient(&redis.Options{
+		Addr:                         srv.ln.Addr().String(),
+		Protocol:                     3,
+		StreamingCredentialsProvider: provider,
+		PoolSize:                     1,
+		ReadTimeout:                  3 * time.Second,
+		WriteTimeout:                 3 * time.Second,
+		DisableIdentity:              true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ps := client.Subscribe(ctx, "ordered_channel")
+	defer ps.Close()
+
+	if _, err := ps.Receive(ctx); err != nil {
+		t.Fatalf("ps.Receive failed: %v", err)
+	}
+
+	// Snapshot the commands seen so far so the initial handshake AUTH
+	// does not interfere with the rotation assertions.
+	srv.mu.Lock()
+	base := len(srv.commands)
+	srv.mu.Unlock()
+
+	authUsers := func() []string {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		var users []string
+		for _, cmd := range srv.commands[base:] {
+			if strings.EqualFold(cmd[0], "AUTH") && len(cmd) > 1 {
+				users = append(users, cmd[1])
+			}
+		}
+		return users
+	}
+
+	// Fire ten rotations back to back.
+	const rotations = 10
+	for i := 0; i < rotations; i++ {
+		provider.Update(fmt.Sprintf("round_user_%d", i), "pass")
+	}
+
+	// Wait for the newest rotation's AUTH to land; once it is on the
+	// wire, no earlier rotation can follow it.
+	lastUser := fmt.Sprintf("round_user_%d", rotations-1)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		users := authUsers()
+		if len(users) > 0 && users[len(users)-1] == lastUser {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for AUTH %s (saw %v)", lastUser, users)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The AUTH usernames must be strictly increasing in rotation order.
+	users := authUsers()
+	prev := -1
+	for _, user := range users {
+		var n int
+		if _, err := fmt.Sscanf(user, "round_user_%d", &n); err != nil {
+			t.Fatalf("unexpected AUTH username %q", user)
+		}
+		if n <= prev {
+			t.Fatalf("AUTH out of order: %v", users)
+		}
+		prev = n
+	}
+	if prev != rotations-1 {
+		t.Fatalf("last AUTH is %q, want %q", users[len(users)-1], lastUser)
+	}
+}
+
 func TestPubSubRESP2FallbackStreamingCredsReconnect(t *testing.T) {
 	srv := newMockRESP3Server(t)
 	defer srv.Close()
