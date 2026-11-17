@@ -163,3 +163,37 @@ func TestCachedReadErrorIsDroppedBeforeNextCommand(t *testing.T) {
 		t.Fatalf("second command read %q, want OK", reply)
 	}
 }
+
+// Only a read that returns bytes together with an error leaves a cached error behind
+// for the next command; the flag is consumed once so WithReader's common path is a
+// single atomic load rather than a buffer copy.
+func TestDeadlineReaderFlagsReadWithError(t *testing.T) {
+	buf := make([]byte, 16)
+
+	withBoth := &deadlineReader{reader: &dataThenErrorReader{data: []byte("+OK\r\n"), err: socketTimeout{}}}
+	if n, err := withBoth.Read(buf); n == 0 || err == nil {
+		t.Fatalf("scripted read = (%d, %v); want bytes and an error", n, err)
+	}
+	if !withBoth.takeReadWithError() {
+		t.Fatal("a read with bytes and an error did not set the flag")
+	}
+	if withBoth.takeReadWithError() {
+		t.Fatal("the flag was not cleared by the first take")
+	}
+
+	withoutError := &deadlineReader{reader: &dataThenErrorReader{data: []byte("+OK\r\n")}}
+	if n, err := withoutError.Read(buf); n == 0 || err != nil {
+		t.Fatalf("scripted read = (%d, %v); want bytes and no error", n, err)
+	}
+	if withoutError.takeReadWithError() {
+		t.Fatal("a read without an error set the flag")
+	}
+
+	withoutBytes := &deadlineReader{reader: &dataThenErrorReader{err: socketTimeout{}}}
+	if n, err := withoutBytes.Read(buf); n != 0 || err == nil {
+		t.Fatalf("scripted read = (%d, %v); want no bytes and an error", n, err)
+	}
+	if withoutBytes.takeReadWithError() {
+		t.Fatal("an error without bytes set the flag")
+	}
+}

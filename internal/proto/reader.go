@@ -128,7 +128,9 @@ func NewReaderSize(rd io.Reader, size int) *Reader {
 // Bytes already buffered are kept: the cached error can sit behind frames the
 // previous command left in the buffer (a push, or the start of the next reply).
 // bufio has no API to clear its cached error without a Reset, so the buffered
-// bytes are copied out and replayed ahead of the underlying reader.
+// bytes are copied out and replayed ahead of the underlying reader. The connection
+// only calls this after a read returned bytes together with an error, and once per
+// such read: on the common path the buffer is left untouched.
 func (r *Reader) DiscardCachedReadError() {
 	r.resetMu.Lock()
 	defer r.resetMu.Unlock()
