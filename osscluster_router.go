@@ -381,6 +381,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
 				return lastErr
 			}
+			moved, ask, redirected = false, false, false
 			if exhaustedEndpoints == nil {
 				exhaustedEndpoints = make(map[string]error)
 			}
@@ -517,8 +518,12 @@ func (c *ClusterClient) executeCursorCommand(
 	}
 
 	c.cscCheckNode(cmd, node.Client)
-	err = node.Client.Process(ctx, cmd)
+	attemptCtx, exhausted := node.Client.captureFixedDialExhaustion(ctx)
+	err = node.Client.Process(attemptCtx, cmd)
 	if err != nil {
+		if exhausted != nil && exhausted.Load() {
+			return &clusterSpecialDialExhausted{err: err}
+		}
 		if moved, ask, _ := isMovedError(err); moved || ask {
 			return &redirectFromNodeError{node: node, endpoint: servingEndpointFromErr(err), err: err}
 		}

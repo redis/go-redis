@@ -205,18 +205,18 @@ func scanMatch(cmd Cmder) (string, bool) {
 	return "", false
 }
 
-// clusterScanDialExhausted signals that process must not replay a SCAN page
-// against a cursor owned by this endpoint. It is unwrapped before return.
-type clusterScanDialExhausted struct{ err error }
+// clusterSpecialDialExhausted prevents replaying a SCAN or FT.CURSOR request
+// after a fixed endpoint has exhausted its pool dial sequence.
+type clusterSpecialDialExhausted struct{ err error }
 
-func (e *clusterScanDialExhausted) Error() string { return e.err.Error() }
-func (e *clusterScanDialExhausted) Unwrap() error { return e.err }
+func (e *clusterSpecialDialExhausted) Error() string { return e.err.Error() }
+func (e *clusterSpecialDialExhausted) Unwrap() error { return e.err }
 
 func processClusterScanOnNode(ctx context.Context, node *clusterNode, cmd Cmder) error {
 	ctx, exhausted := node.Client.captureFixedDialExhaustion(ctx)
 	err := node.Client.Process(ctx, cmd)
 	if err != nil && exhausted != nil && exhausted.Load() {
-		return &clusterScanDialExhausted{err: err}
+		return &clusterSpecialDialExhausted{err: err}
 	}
 	return err
 }

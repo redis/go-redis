@@ -25,11 +25,7 @@ func (h clusterFixedDialFailureHook) ProcessHook(next ProcessHook) ProcessHook {
 }
 
 func TestClusterFixedEndpointDialExhaustion(t *testing.T) {
-	for _, fanout := range []bool{false, true} {
-		name := "scan"
-		if fanout {
-			name = "fanout"
-		}
+	for _, name := range []string{"scan", "fanout", "cursor", "cluster_pipeline"} {
 		t.Run(name, func(t *testing.T) {
 			const addr = "127.0.0.1:7301"
 			c := NewClusterClient(&ClusterOptions{
@@ -68,13 +64,20 @@ func TestClusterFixedEndpointDialExhaustion(t *testing.T) {
 				}
 			}})
 			ctx := context.Background()
-			if fanout {
+			if name == "fanout" {
 				err = c.executeParallelTarget(ctx, node, -1, NewCmd(ctx, "dbsize"))
 				select {
 				case <-reloaded:
 				case <-time.After(2 * time.Second):
 					t.Fatal("dial timeout did not schedule topology reload")
 				}
+			} else if name == "cursor" {
+				cmd := NewCmd(ctx, "ft.cursor", "read", "idx", int64(123))
+				err = c.Process(ctx, cmd)
+			} else if name == "cluster_pipeline" {
+				pipe := c.Pipeline()
+				pipe.Get(ctx, "key")
+				_, err = pipe.Exec(ctx)
 			} else {
 				cmd := NewScanCmd(ctx, c.Process, "scan", uint64(0))
 				decision := c.routingDecisionInView(ctx, cmd, defaultCommandMetadataView(), nil)
@@ -84,7 +87,7 @@ func TestClusterFixedEndpointDialExhaustion(t *testing.T) {
 			if err != dialErr {
 				t.Fatalf("returned error = %v (%T), want original *net.OpError", err, err)
 			}
-			if !fanout && scans.Load() != 1 {
+			if name == "scan" && scans.Load() != 1 {
 				t.Errorf("SCAN attempts = %d, want 1", scans.Load())
 			}
 			if got := calls.Load(); got != 2 {

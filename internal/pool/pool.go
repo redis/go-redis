@@ -1302,10 +1302,12 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 
 	// Don't apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
 	base := context.Background()
-	// The queued dial has independent cancellation. Share only the result
-	// marker, not the waiting request's deadline or other values.
-	if exhausted := p.DialExhaustion(ctx); exhausted != nil {
-		base = p.WithDialExhaustion(base, exhausted)
+	// A queued dial can lose a race to another worker that supplies an idle
+	// connection. Do not let a failed losing dial mark a successful Get.
+	var dialExhausted *atomic.Bool
+	if p.DialExhaustion(ctx) != nil {
+		dialExhausted = new(atomic.Bool)
+		base = p.WithDialExhaustion(base, dialExhausted)
 	}
 	dialCtx, cancel := context.WithCancel(base)
 
@@ -1368,6 +1370,9 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 		return nil, err
 	case result := <-w.result:
 		err = result.err
+		if err != nil && dialExhausted != nil && dialExhausted.Load() {
+			p.markDialExhaustion(ctx)
+		}
 		return result.cn, err
 	}
 }
@@ -1879,7 +1884,6 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 }
 
 func (p *ConnPool) recordConnectionMetrics(ctx context.Context, cn *Conn, reason string, fromState string, countCb connectionCountCallback) {
-
 	// Record connection count decrement (UpDownCounter) for the state the connection was in
 	if countCb != nil && fromState != "" {
 		countCb(ctx, -1, cn, fromState, false)

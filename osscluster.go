@@ -2292,13 +2292,15 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		if errors.As(lastErr, &fanoutErr) {
 			return fanoutErr.err
 		}
-		if scanErr, ok := lastErr.(*clusterScanDialExhausted); ok {
-			return scanErr.err
+		if specialErr, ok := lastErr.(*clusterSpecialDialExhausted); ok {
+			return specialErr.err
 		}
 		if dialExhausted != nil && dialExhausted.Load() {
 			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
 				return lastErr
 			}
+			// A dial failure after MOVED/ASK needs normal retry backoff.
+			moved, ask = false, false
 			if exhaustedEndpoints == nil {
 				exhaustedEndpoints = make(map[string]error)
 			}
@@ -3266,15 +3268,26 @@ func (c *ClusterClient) processPipelineNode(
 		// otherwise, preserving the previous behavior. entered distinguishes
 		// an acquisition failure (fn never ran) from an execution error.
 		entered := false
-		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		attemptCtx, dialExhausted := node.Client.captureFixedPipelineDialExhaustion(ctx)
+		err := node.Client.withPipelineConn(attemptCtx, func(ctx context.Context, cn *pool.Conn) error {
 			entered = true
 			return c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds, route)
 		})
+		if entered && dialExhausted != nil {
+			dialExhausted.Store(false)
+		}
 		if err != nil && !entered {
-			if !isContextError(err) {
+			if dialExhausted != nil && dialExhausted.Load() {
+				// Do not remap a batch onto an endpoint whose full dial
+				// sequence has already failed.
 				node.MarkAsFailing()
+				c.state.LazyReload()
+			} else {
+				if !isContextError(err) {
+					node.MarkAsFailing()
+				}
+				_ = c.mapCmdsByNodeInView(ctx, failedCmds, cmds, route)
 			}
-			_ = c.mapCmdsByNodeInView(ctx, failedCmds, cmds, route)
 			setCmdsErr(cmds, err)
 		}
 		return err
