@@ -105,3 +105,58 @@ func TestClusterFixedEndpointDialExhaustion(t *testing.T) {
 		})
 	}
 }
+
+func TestClusterPipelineRemapsExhaustedReplicaToMaster(t *testing.T) {
+	const masterAddr = "127.0.0.1:7301"
+	const replicaAddr = "127.0.0.1:7302"
+	c := NewClusterClient(&ClusterOptions{
+		Addrs: []string{masterAddr}, ReadOnly: true, MaxRedirects: 2,
+		DialerRetries: 2, PoolSize: 16,
+		DialerRetryBackoff: func(int) time.Duration { return 0 },
+		MinRetryBackoff:    -1, MaxRetryBackoff: -1,
+	})
+	t.Cleanup(func() { _ = c.Close() })
+	c.SetCommandInfoResolver(NewCommandMetadataResolver())
+	state, err := newClusterStateFromShards(c.nodes, []ClusterShard{{
+		Slots: []SlotRange{{Start: 0, End: 16383}},
+		Nodes: []Node{
+			{ID: "master", Endpoint: "127.0.0.1", Port: 7301, Role: "master", Health: "online"},
+			{ID: "replica", Endpoint: "127.0.0.1", Port: 7302, Role: "replica", Health: "online"},
+		},
+	}}, masterAddr, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.state.state.Store(state)
+	c.state.load = func(context.Context) (*clusterState, error) { return state, nil }
+	master, replica := state.declaredMasters()[0], state.declaredSlaves()[0]
+	if master.Client.opt.Addr != masterAddr || replica.Client.opt.Addr != replicaAddr {
+		t.Fatalf("unexpected cluster endpoints: %s, %s", master.Client.opt.Addr, replica.Client.opt.Addr)
+	}
+	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+	var calls atomic.Int32
+	replica.Client.AddHook(fixedDialFailureHook{dial: func(context.Context, string, string) (net.Conn, error) {
+		calls.Add(1)
+		return nil, dialErr
+	}})
+	ctx := context.Background()
+	cmd := NewStringCmd(ctx, "get", "key")
+	cmds := []Cmder{cmd}
+	route := c.resolvePipelineRouting(ctx, cmds)
+	defer route.clear(cmds)
+	initial, err := c.slotReadOnlyNode(state, clusterKeySlot("key"))
+	if err != nil || initial != replica {
+		t.Fatalf("initial read-only node = %v, want replica %v (err=%v)", initial, replica, err)
+	}
+	failed := newCmdsMap()
+	c.processPipelineNode(ctx, replica, cmds, failed, route)
+	if got := calls.Load(); got < 2 {
+		t.Errorf("failed replica dials = %d, want exhausted sequence", got)
+	}
+	if _, ok := failed.m[replica]; ok {
+		t.Fatal("must not requeue on the exhausted replica")
+	}
+	if got := failed.m[master]; len(got) != 1 || got[0] != cmd {
+		t.Errorf("retry nodes = %v, want command remapped to healthy master", failed.m)
+	}
+}

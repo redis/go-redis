@@ -3278,10 +3278,21 @@ func (c *ClusterClient) processPipelineNode(
 		}
 		if err != nil && !entered {
 			if dialExhausted != nil && dialExhausted.Load() {
-				// Do not remap a batch onto an endpoint whose full dial
-				// sequence has already failed.
+				// The endpoint's entire dial sequence failed, but a read-only
+				// batch may recover on a healthy replica or the master. Remap
+				// without ever retrying the exhausted endpoint itself.
 				node.MarkAsFailing()
 				c.state.LazyReload()
+				if !cmdsContainNoRetry(cmds) {
+					remapped := newCmdsMap()
+					if c.mapCmdsByNodeInView(ctx, remapped, cmds, route) == nil {
+						for next, batch := range remapped.m {
+							if next.Client.opt.Addr != node.Client.opt.Addr {
+								failedCmds.Add(next, batch...)
+							}
+						}
+					}
+				}
 			} else {
 				if !isContextError(err) {
 					node.MarkAsFailing()
