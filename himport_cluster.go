@@ -39,14 +39,21 @@ type himportForEach func(ctx context.Context, fn func(ctx context.Context, clien
 // invalidated by himportAfterBatch, so the next pipeline attempt re-prepares
 // lazily and re-executes only those SETs (a full replace, so idempotent).
 // Bounded by the cluster pipeline's attempt budget.
+func (c *ClusterClient) himportShouldRequeue(cmd Cmder) bool {
+	set, ok := cmd.(*HImportSetCmd)
+	if !ok || !himportNoSuchFieldset(set.rawErr()) {
+		return false
+	}
+	_, registered := c.himport.lookup(set.fieldsetName)
+	return registered
+}
+
 func (c *ClusterClient) himportRequeueFailedSets(ctx context.Context, cmds []Cmder, failedCmds *cmdsMap) {
 	for _, cmd := range cmds {
 		// rawErr: runs on the per-node execution goroutine, same
 		// self-deadlock rule as himportAfterBatch.
-		if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(set.rawErr()) {
-			if _, registered := c.himport.lookup(set.fieldsetName); registered {
-				_ = c.mapCmdsByNode(ctx, failedCmds, []Cmder{set})
-			}
+		if c.himportShouldRequeue(cmd) {
+			_ = c.mapCmdsByNode(ctx, failedCmds, []Cmder{cmd})
 		}
 	}
 }

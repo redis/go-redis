@@ -303,7 +303,7 @@ func TestClusterPipelineRetryDoesNotReplaySuccess(t *testing.T) {
 				return "+OK\r\n"
 			}
 		})
-		client := newPipelineReplayClusterClient(t, addr, srv)
+		client := newPipelineReplayClusterClient(t, addr, srv, 1)
 		ctx := context.Background()
 		var set *StatusCmd
 		var incr *IntCmd
@@ -326,7 +326,7 @@ func TestClusterPipelineRetryDoesNotReplaySuccess(t *testing.T) {
 	t.Run("read error", func(t *testing.T) {
 		var incrs atomic.Int32
 		srv := newCloseAfterIncrServer(t, &incrs)
-		client := newPipelineReplayClusterClient(t, addr, srv)
+		client := newPipelineReplayClusterClient(t, addr, srv, 1)
 		ctx := context.Background()
 		var incr *IntCmd
 		var get *StringCmd
@@ -347,12 +347,12 @@ func TestClusterPipelineRetryDoesNotReplaySuccess(t *testing.T) {
 	})
 }
 
-func newPipelineReplayClusterClient(t *testing.T, addr, srv string) *ClusterClient {
+func newPipelineReplayClusterClient(t *testing.T, addr, srv string, maxRedirects int) *ClusterClient {
 	t.Helper()
 	client := NewClusterClient(&ClusterOptions{
 		Protocol:                 3,
 		DisableIdentity:          true,
-		MaxRedirects:             1,
+		MaxRedirects:             maxRedirects,
 		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
 			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
@@ -467,7 +467,7 @@ func TestClusterPipelineRetryKeepsHImportRecovery(t *testing.T) {
 			return "+OK\r\n"
 		}
 	})
-	client := newPipelineReplayClusterClient(t, addr, ln)
+	client := newPipelineReplayClusterClient(t, addr, ln, 1)
 	ctx := context.Background()
 	if err := client.HImportPrepare(ctx, "fs", "f").Err(); err != nil {
 		t.Fatalf("HImportPrepare: %v", err)
@@ -533,6 +533,169 @@ func serveArgReply(netConn net.Conn, reply func(args []string) string) {
 		if _, err := netConn.Write([]byte(reply(args))); err != nil {
 			return
 		}
+	}
+}
+
+// TestClusterPipelineRetryKeepsHImportOrder tests a retryable command,
+// a registered HIMPORT SET that lost its fieldset, and a later retryable
+// DEL of that key. The retry must keep replace-then-delete order.
+func TestClusterPipelineRetryKeepsHImportOrder(t *testing.T) {
+	const addr = "node-1.example:6379"
+	var sets atomic.Int32
+	var dels atomic.Int32
+	var himportSets atomic.Int32
+	var mu sync.Mutex
+	var seen []string
+	ln := newArgReplyServer(t, func(args []string) string {
+		mu.Lock()
+		seen = append(seen, strings.Join(args, " "))
+		mu.Unlock()
+		if len(args) == 0 {
+			return "+OK\r\n"
+		}
+		switch strings.ToLower(args[0]) {
+		case "hello":
+			return "%0\r\n"
+		case "set":
+			if sets.Add(1) == 1 {
+				return "-TRYAGAIN Multiple keys request during rehashing of slot\r\n"
+			}
+			return "+OK\r\n"
+		case "del":
+			if dels.Add(1) == 1 {
+				return "-TRYAGAIN Multiple keys request during rehashing of slot\r\n"
+			}
+			return ":1\r\n"
+		case "himport":
+			sub := ""
+			if len(args) > 1 {
+				sub = strings.ToLower(args[1])
+			}
+			switch sub {
+			case "set":
+				if himportSets.Add(1) == 1 {
+					return "-ERR no such fieldset\r\n"
+				}
+				return "+OK\r\n"
+			case "discard", "discardall":
+				return ":1\r\n"
+			default:
+				return "+OK\r\n"
+			}
+		default:
+			return "+OK\r\n"
+		}
+	})
+	client := newPipelineReplayClusterClient(t, addr, ln, 1)
+	ctx := context.Background()
+	if err := client.HImportPrepare(ctx, "fs", "f").Err(); err != nil {
+		t.Fatalf("HImportPrepare: %v", err)
+	}
+	var set *StatusCmd
+	var himport *StatusCmd
+	var del *IntCmd
+	_, err := client.Pipelined(ctx, func(pipe Pipeliner) error {
+		set = pipe.Set(ctx, "hash", "v", 0)
+		himport = pipe.HImportSet(ctx, "hash", "fs", "value")
+		del = pipe.Del(ctx, "hash")
+		return nil
+	})
+	mu.Lock()
+	log := strings.Join(seen, "\n")
+	mu.Unlock()
+	if err != nil || set.Err() != nil || himport.Err() != nil || del.Err() != nil {
+		t.Fatalf("exec=%v set=%v himport=%v del=%v\n%s", err, set.Err(), himport.Err(), del.Err(), log)
+	}
+	var user []string
+	for _, line := range seen {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "set", "del":
+			user = append(user, strings.ToLower(fields[0]))
+		case "himport":
+			if len(fields) > 1 && strings.EqualFold(fields[1], "set") {
+				user = append(user, "himport")
+			}
+		}
+	}
+	got := strings.Join(user, " ")
+	const want = "set himport del set himport del"
+	if got != want {
+		t.Fatalf("order %q, want %q\n%s", got, want, log)
+	}
+}
+
+// TestClusterPipelineRetryIncludesHImportPrepareError tests an injected
+// PREPARE that fails with LOADING while its HIMPORT SET replies
+// "no such fieldset". The SET has to be retried with the PREPARE error.
+func TestClusterPipelineRetryIncludesHImportPrepareError(t *testing.T) {
+	const addr = "node-1.example:6379"
+	var sets atomic.Int32
+	var himportSets atomic.Int32
+	var prepares atomic.Int32
+	var mu sync.Mutex
+	var seen []string
+	ln := newArgReplyServer(t, func(args []string) string {
+		mu.Lock()
+		seen = append(seen, strings.Join(args, " "))
+		mu.Unlock()
+		if len(args) == 0 {
+			return "+OK\r\n"
+		}
+		switch strings.ToLower(args[0]) {
+		case "hello":
+			return "%0\r\n"
+		case "set":
+			if sets.Add(1) == 1 {
+				return "-TRYAGAIN Multiple keys request during rehashing of slot\r\n"
+			}
+			return "+OK\r\n"
+		case "himport":
+			sub := ""
+			if len(args) > 1 {
+				sub = strings.ToLower(args[1])
+			}
+			switch sub {
+			case "set":
+				if himportSets.Add(1) < 3 {
+					return "-ERR no such fieldset\r\n"
+				}
+				return "+OK\r\n"
+			case "prepare":
+				if prepares.Add(1) == 2 {
+					return "-LOADING Redis is loading the dataset in memory\r\n"
+				}
+				return "+OK\r\n"
+			case "discard", "discardall":
+				return ":1\r\n"
+			default:
+				return "+OK\r\n"
+			}
+		default:
+			return "+OK\r\n"
+		}
+	})
+	client := newPipelineReplayClusterClient(t, addr, ln, 2)
+	ctx := context.Background()
+	if err := client.HImportPrepare(ctx, "fs", "f").Err(); err != nil {
+		t.Fatalf("HImportPrepare: %v", err)
+	}
+	var set *StatusCmd
+	var himport *StatusCmd
+	_, err := client.Pipelined(ctx, func(pipe Pipeliner) error {
+		set = pipe.Set(ctx, "key", "v", 0)
+		himport = pipe.HImportSet(ctx, "hash", "fs", "value")
+		return nil
+	})
+	if err != nil || set.Err() != nil || himport.Err() != nil || sets.Load() != 2 || himportSets.Load() != 3 {
+		mu.Lock()
+		log := strings.Join(seen, "\n")
+		mu.Unlock()
+		t.Fatalf("exec=%v set=%v himport=%v sets=%d himportSets=%d\n%s",
+			err, set.Err(), himport.Err(), sets.Load(), himportSets.Load(), log)
 	}
 }
 

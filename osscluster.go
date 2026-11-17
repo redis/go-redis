@@ -3330,13 +3330,13 @@ func (c *ClusterClient) processPipelineNodeConn(
 			setCmdsErr(cmds, err)
 			return err
 		}
-		err := c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failedCmds, route, flags)
+		err := c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failedCmds, route, flags, injected)
 		if err == nil || isRedisError(err) {
-			node.Client.himportAfterBatch(cn, injected, cmds)
-			// "no such fieldset" is not selected by retryCmds. Re-queue those
-			// SETs on a Redis error too, including when another command in the
-			// batch is the one being retried. The next attempt re-prepares.
-			c.himportRequeueFailedSets(ctx, cmds, failedCmds)
+			// The retry pass already took registered "no such fieldset" SETs
+			// in their original positions. Append them only when it did not run.
+			if err == nil {
+				c.himportRequeueFailedSets(ctx, cmds, failedCmds)
+			}
 			// ref to #1914: if a node was replaced within a same hostname, the
 			// connection still points to the old node, which answers MOVED with
 			// that same hostname. When returning MOVED, a connection will be dropped.
@@ -3362,6 +3362,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	failedCmds *cmdsMap,
 	route *clusterPipelineRouting,
 	flags []byte,
+	injected []Cmder,
 ) error {
 	// Commands redirected by MOVED/ASK are queued for their new node at the
 	// end, in command order. A whole-batch retry queues them in their place
@@ -3369,6 +3370,9 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	// Track them by index: a Cmder value is not always comparable.
 	var redirects []pipelineRedirect
 	read := make([]bool, len(cmds))
+	// Read errors retry only what Redis asked to retry. Session-loss SETs
+	// join the pass after himportAfterBatch, once the whole batch is read.
+	includeHImport := false
 	defer func() {
 		for _, r := range redirects {
 			if r.node != nil {
@@ -3388,6 +3392,11 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 			}
 			err := cmds[i].rawErr()
 			if err != nil && isRedisError(err) && shouldRetry(err, true) {
+				return false
+			}
+			// Session-loss SETs are not shouldRetry. Keep them in this pass
+			// so a later retryable command cannot jump ahead of them.
+			if includeHImport && c.himportShouldRequeue(cmds[i]) {
 				return false
 			}
 			return true
@@ -3446,6 +3455,11 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 		}
 	}
 
+	// Swap a failed injected PREPARE onto its SETs before selection.
+	// A retryable PREPARE error (LOADING) must be visible here, or the
+	// SET is neither retried nor recovered as "no such fieldset".
+	node.Client.himportAfterBatch(cn, injected, cmds)
+
 	// rawErr: execution path; never await an async command's batch here.
 	if !cmdsContainNoRetry(cmds) {
 		var retryErr error
@@ -3460,6 +3474,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 			}
 		}
 		if retryErr != nil {
+			includeHImport = true
 			retryCmds()
 			return retryErr
 		}
