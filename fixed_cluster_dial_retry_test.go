@@ -25,14 +25,19 @@ func (h clusterFixedDialFailureHook) ProcessHook(next ProcessHook) ProcessHook {
 }
 
 func TestClusterFixedEndpointDialExhaustion(t *testing.T) {
-	for _, name := range []string{"scan", "fanout", "cursor", "cluster_pipeline"} {
+	for _, name := range []string{"scan", "fanout", "cursor", "cluster_pipeline", "cluster_tx_pipeline", "cluster_tx_dedicated"} {
 		t.Run(name, func(t *testing.T) {
 			const addr = "127.0.0.1:7301"
-			c := NewClusterClient(&ClusterOptions{
+			opt := &ClusterOptions{
 				Addrs: []string{addr}, MaxRedirects: 3, DialerRetries: 2, PoolSize: 16,
 				DialerRetryBackoff: func(int) time.Duration { return 0 },
 				MinRetryBackoff:    -1, MaxRetryBackoff: -1,
-			})
+			}
+			if name == "cluster_tx_dedicated" {
+				opt.PipelineReadBufferSize = 64 * 1024
+				opt.PipelineWriteBufferSize = 64 * 1024
+			}
+			c := NewClusterClient(opt)
 			t.Cleanup(func() { _ = c.Close() })
 			c.SetCommandInfoResolver(NewCommandMetadataResolver())
 			state, err := newClusterStateFromShards(c.nodes, []ClusterShard{{
@@ -76,6 +81,10 @@ func TestClusterFixedEndpointDialExhaustion(t *testing.T) {
 				err = c.Process(ctx, cmd)
 			} else if name == "cluster_pipeline" {
 				pipe := c.Pipeline()
+				pipe.Get(ctx, "key")
+				_, err = pipe.Exec(ctx)
+			} else if name == "cluster_tx_pipeline" || name == "cluster_tx_dedicated" {
+				pipe := c.TxPipeline()
 				pipe.Get(ctx, "key")
 				_, err = pipe.Exec(ctx)
 			} else {

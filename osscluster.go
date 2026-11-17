@@ -3886,7 +3886,8 @@ func (c *ClusterClient) processTxPipelineNode(
 		// connection release exactly like the explicit releaseConn did:
 		// redis errors keep the conn poolable, unread replies poison it.
 		entered := false
-		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		attemptCtx, dialExhausted := node.Client.captureFixedPipelineDialExhaustion(ctx)
+		err := node.Client.withPipelineConn(attemptCtx, func(ctx context.Context, cn *pool.Conn) error {
 			entered = true
 			outcome = c.processTxPipelineNodeConn(ctx, node, cn, wire, cmds, asking)
 			connErr := outcome.err
@@ -3904,7 +3905,9 @@ func (c *ClusterClient) processTxPipelineNode(
 		})
 		if !entered && err != nil {
 			// Connection acquisition failed — fn never ran.
-			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+			if dialExhausted != nil && dialExhausted.Load() {
+				outcome = &txOutcome{kind: txFatal, err: err}
+			} else if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 				outcome = &txOutcome{kind: txRetryConn, err: err}
 			} else {
 				outcome = &txOutcome{kind: txFatal, err: err}
