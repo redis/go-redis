@@ -3376,6 +3376,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	// instead, so it neither sends them twice nor reorders the batch.
 	// Track them by index: a Cmder value is not always comparable.
 	var redirects []pipelineRedirect
+	read := make([]bool, len(cmds))
 	defer func() {
 		for _, r := range redirects {
 			if r.node != nil {
@@ -3385,11 +3386,18 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	}()
 	retryCmds := func() {
 		_ = c.mapCmdsByNodeInViewWith(ctx, failedCmds, cmds, route, func(i int, _ *clusterNode) bool {
-			if redirects == nil || redirects[i].node == nil {
+			if redirects != nil && redirects[i].node != nil {
+				failedCmds.Add(redirects[i].node, redirects[i].cmds...)
+				redirects[i].node = nil
+				return true
+			}
+			if !read[i] {
+				return true
+			}
+			err := cmds[i].rawErr()
+			if err != nil && isRedisError(err) && shouldRetry(err, true) {
 				return false
 			}
-			failedCmds.Add(redirects[i].node, redirects[i].cmds...)
-			redirects[i].node = nil
 			return true
 		})
 	}
@@ -3414,6 +3422,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 		}
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
+		read[i] = true
 
 		if err == nil {
 			if samples {
@@ -3446,9 +3455,22 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	}
 
 	// rawErr: execution path; never await an async command's batch here.
-	if err := cmds[0].rawErr(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
-		retryCmds()
-		return err
+	if !cmdsContainNoRetry(cmds) {
+		var retryErr error
+		for i, cmd := range cmds {
+			if !read[i] {
+				continue
+			}
+			err := cmd.rawErr()
+			if err != nil && isRedisError(err) && shouldRetry(err, true) {
+				retryErr = err
+				break
+			}
+		}
+		if retryErr != nil {
+			retryCmds()
+			return retryErr
+		}
 	}
 
 	return nil

@@ -1,9 +1,11 @@
 package redis
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -278,6 +280,145 @@ func TestClusterPipelineRetryDoesNotDuplicateRedirect(t *testing.T) {
 	}
 	if n := incrs.Load(); n != 1 {
 		t.Fatalf("destination served %d INCRs, want 1", n)
+	}
+}
+
+func TestClusterPipelineRetryDoesNotReplaySuccess(t *testing.T) {
+	const addr = "node:6379"
+
+	t.Run("tryagain", func(t *testing.T) {
+		var sets, incrs atomic.Int32
+		srv := newClusterCSCTestServer(t, func(cmd string) string {
+			switch cmd {
+			case "hello":
+				return "%0\r\n"
+			case "set":
+				if sets.Add(1) == 1 {
+					return "-TRYAGAIN Multiple keys request during rehashing of slot\r\n"
+				}
+				return "+OK\r\n"
+			case "incr":
+				return fmt.Sprintf(":%d\r\n", incrs.Add(1))
+			default:
+				return "+OK\r\n"
+			}
+		})
+		client := newPipelineReplayClusterClient(t, addr, srv)
+		ctx := context.Background()
+		var set *StatusCmd
+		var incr *IntCmd
+		_, _ = client.Pipelined(ctx, func(pipe Pipeliner) error {
+			set = pipe.Set(ctx, "key", "v", 0)
+			incr = pipe.Incr(ctx, "counter")
+			return nil
+		})
+		if err := set.Err(); err != nil {
+			t.Fatalf("set error: %q; want nil", err)
+		}
+		if val, err := incr.Result(); err != nil || val != 1 {
+			t.Fatalf("incr %d, error: %q; want 1, nil", val, err)
+		}
+		if n := incrs.Load(); n != 1 {
+			t.Fatalf("server served %d INCRs, want 1", n)
+		}
+	})
+
+	t.Run("read error", func(t *testing.T) {
+		var incrs atomic.Int32
+		srv := newCloseAfterIncrServer(t, &incrs)
+		client := newPipelineReplayClusterClient(t, addr, srv)
+		ctx := context.Background()
+		var incr *IntCmd
+		var get *StringCmd
+		_, _ = client.Pipelined(ctx, func(pipe Pipeliner) error {
+			incr = pipe.Incr(ctx, "counter")
+			get = pipe.Get(ctx, "key")
+			return nil
+		})
+		if val, err := incr.Result(); err != nil || val != 1 {
+			t.Fatalf("incr %d, error: %q; want 1, nil", val, err)
+		}
+		if err := get.Err(); err == nil {
+			t.Fatal("get error: nil; want a read error")
+		}
+		if n := incrs.Load(); n != 1 {
+			t.Fatalf("server served %d INCRs, want 1", n)
+		}
+	})
+}
+
+func newPipelineReplayClusterClient(t *testing.T, addr, srv string) *ClusterClient {
+	t.Helper()
+	client := NewClusterClient(&ClusterOptions{
+		Protocol:                 3,
+		DisableIdentity:          true,
+		MaxRedirects:             1,
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: addr}}}}, nil
+		},
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, "127.0.0.1"+srv)
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+func newCloseAfterIncrServer(t *testing.T, incrs *atomic.Int32) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveCloseAfterIncr(conn, incrs)
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	return ":" + port
+}
+
+func serveCloseAfterIncr(netConn net.Conn, incrs *atomic.Int32) {
+	defer netConn.Close()
+	scanner := bufio.NewScanner(netConn)
+	for scanner.Scan() {
+		header := scanner.Text()
+		if !strings.HasPrefix(header, "*") {
+			return
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(header, "*"))
+		if err != nil || n <= 0 {
+			return
+		}
+		command := ""
+		for i := 0; i < n; i++ {
+			if !scanner.Scan() || !strings.HasPrefix(scanner.Text(), "$") || !scanner.Scan() {
+				return
+			}
+			if i == 0 {
+				command = strings.ToLower(scanner.Text())
+			}
+		}
+		reply := "+OK\r\n"
+		closeAfter := false
+		switch command {
+		case "hello":
+			reply = "%0\r\n"
+		case "incr":
+			reply = fmt.Sprintf(":%d\r\n", incrs.Add(1))
+			closeAfter = true
+		}
+		if _, err := netConn.Write([]byte(reply)); err != nil || closeAfter {
+			return
+		}
 	}
 }
 
