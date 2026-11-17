@@ -3400,6 +3400,9 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
 	conn := newConn(connOpt, sticky, &c.hooksMixin, c.himport)
+	// The sticky wrapper borrows this client's fixed endpoint and dial budget.
+	conn.baseClient.fixedDialEndpoint = c.fixedDialEndpoint
+	conn.baseClient.dialExhaustionPool, _ = c.connPool.(*pool.ConnPool)
 	if isolated {
 		// Never enable tracking or attach the parent's cache to a socket whose
 		// session state the caller may change freely.

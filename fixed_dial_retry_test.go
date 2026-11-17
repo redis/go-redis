@@ -103,6 +103,39 @@ func TestSentinelDoesNotRestartFixedDialSequence(t *testing.T) {
 	}
 }
 
+func TestStickyConnDoesNotRestartFixedDialSequence(t *testing.T) {
+	for _, operation := range []string{"conn", "ephemeral"} {
+		t.Run(operation, func(t *testing.T) {
+			dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("dial unavailable")}
+			var calls atomic.Int32
+			client := NewClient(&Options{
+				Addr: "127.0.0.1:6379", PoolSize: 16, MaxRetries: 2, DialerRetries: 2,
+				DialerRetryBackoff: func(int) time.Duration { return 0 },
+				MinRetryBackoff:    -1, MaxRetryBackoff: -1,
+			})
+			t.Cleanup(func() { _ = client.Close() })
+			client.AddHook(fixedDialFailureHook{dial: func(context.Context, string, string) (net.Conn, error) {
+				calls.Add(1)
+				return nil, dialErr
+			}})
+
+			var conn *Conn
+			if operation == "conn" {
+				conn = client.Conn()
+			} else {
+				conn = client.EphemeralConn()
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			if err := conn.Ping(context.Background()).Err(); err != dialErr {
+				t.Fatalf("returned error = %v (%T), want original *net.OpError", err, err)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Errorf("dial calls = %d, want 2", got)
+			}
+		})
+	}
+}
+
 func TestRingDoesNotRestartDialSequenceForSameShard(t *testing.T) {
 	const addr = "127.0.0.1:6379"
 	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("dial unavailable")}
