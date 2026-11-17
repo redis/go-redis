@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+# 9.24.0-beta.2 (2026-11-17)
+
+This is a beta release. It follows 9.24.0-beta.1 with bug fixes and one change to retry behavior. There are no new features. Read the behavior changes before you upgrade.
+
+## ⚠️ Behavior changes
+
+- **Command retries no longer replay a failed dial sequence:** for clients without a custom `Dialer` (single commands, pipelines, `Watch`, `Conn` and `Tx`, the Sentinel client, Ring shards and cluster nodes), `MaxRetries` no longer starts a new `DialerRetries` sequence on an endpoint where one has already failed. With default options a refused connection is now reported after about 0.4s, where it took about 1.7s before. Attempts on other cluster nodes or Ring shards are kept, and a custom `Dialer` keeps its previous retry behavior. `DialTimeout` still applies to each attempt, so a dial that hangs is still bounded by `DialTimeout` times `DialerRetries`. A keyed cluster or Ring command that reaches an exhausted endpoint now ends the call instead of choosing another node or shard on a later attempt ([#4304](https://github.com/redis/go-redis/pull/4304)) by [@xixi-box](https://github.com/xixi-box).
+- **Negative `pool_size`:** `ParseURL`, `ParseClusterURL` and `ParseFailoverURL` reject a negative `pool_size`, where they used to panic, and a negative `PoolSize` in the options structs selects the default ([#4325](https://github.com/redis/go-redis/pull/4325)) by [@ump45nose](https://github.com/ump45nose).
+- **`LimitOffset` without `Limit` returns a page of 10:** a search that sets `LimitOffset` and leaves `Limit` at 0 now returns up to 10 documents from that offset. On Redis 7 it returned an empty page before, so code that relied on the empty page now gets documents. On Redis 8 it was an error ([#4285](https://github.com/redis/go-redis/pull/4285)) by [@kevin9327](https://github.com/kevin9327).
+
+## 🐛 Bug Fixes
+
+- **Credential rotation with `MaxActiveConns`:** at the `MaxActiveConns` cap, `Get` now waits within `PoolTimeout` for an idle connection that is re-authenticating, and does not fail with `ErrPoolExhausted`. Without a cap, or with room under it, the behavior is unchanged ([#4313](https://github.com/redis/go-redis/pull/4313)) by [@xixi-box](https://github.com/xixi-box), issue [#4311](https://github.com/redis/go-redis/issues/4311)
+- **`ContextDeadlineError`:** a read timeout that arrives together with data no longer reaches the next command, and a socket timeout that fires slightly before the context deadline is still reported as `context.DeadlineExceeded`. This follows [#4263](https://github.com/redis/go-redis/pull/4263) from 9.24.0-beta.1 ([#4306](https://github.com/redis/go-redis/pull/4306)) by [@PerryLink](https://github.com/PerryLink), issue [#4305](https://github.com/redis/go-redis/issues/4305)
+- **Search:** `LimitOffset` without `Limit` in `FT.SEARCH` and `FT.HYBRID` options now uses the default page of 10. On Redis 8 the command was rejected with `SEARCH_LIMIT_OVER` ([#4285](https://github.com/redis/go-redis/pull/4285)) by [@kevin9327](https://github.com/kevin9327), issue [#4284](https://github.com/redis/go-redis/issues/4284)
+
+## 🧪 Testing & Infrastructure
+
+- **Documentation:** doc link definitions in the set and search command comments now render as links on pkg.go.dev ([#4328](https://github.com/redis/go-redis/pull/4328)) by [@farisbasha](https://github.com/farisbasha)
+
+## 👥 Contributors
+
+We'd like to thank all the contributors who worked on this release!
+
+[@farisbasha](https://github.com/farisbasha), [@kevin9327](https://github.com/kevin9327), [@PerryLink](https://github.com/PerryLink), [@ump45nose](https://github.com/ump45nose), [@xixi-box](https://github.com/xixi-box)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.24.0-beta.1...v9.24.0-beta.2
+
 # 9.24.0-beta.1 (2026-11-16)
 
 This is a **beta** release. The release adds:
