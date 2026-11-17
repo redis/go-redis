@@ -2251,7 +2251,15 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		if node != nil {
 			endpoint := node.Client.opt.Addr
 			if err := exhaustedEndpoints[endpoint]; err != nil {
-				return err
+				lastErr = err
+				if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+					return lastErr
+				}
+				// The slot owner can change during failover. Reselect within
+				// the retry budget without dialing this address again.
+				node = nil
+				moved, ask = false, false
+				continue
 			}
 			ctx, dialExhausted = node.Client.captureFixedDialExhaustion(ctx)
 		}
@@ -2308,11 +2316,16 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 					exhaustedEndpoints = make(map[string]error)
 				}
 				exhaustedEndpoints[specialErr.node.Client.opt.Addr] = specialErr.err
-				// A raw, unpinned SCAN can try another online master, but never
+				// A raw, unpinned SCAN can try another eligible node, but never
 				// re-dial an endpoint already exhausted by this invocation.
 				node = nil
 				if state, err := c.state.Get(ctx); err == nil {
-					for _, candidate := range state.Masters {
+					candidates := state.Masters
+					if c.opt.ReadOnly && decision.readOnly && decision.policyFromMetadata {
+						// Match ordinary keyless SCAN routing without mutating the topology.
+						candidates = append(append([]*clusterNode(nil), candidates...), state.Slaves...)
+					}
+					for _, candidate := range candidates {
 						if _, failed := exhaustedEndpoints[candidate.Client.opt.Addr]; !failed {
 							node = candidate
 							break

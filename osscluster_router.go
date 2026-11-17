@@ -349,7 +349,15 @@ func (c *ClusterClient) executeMultiSlotCommand(
 
 		endpoint := node.Client.opt.Addr
 		if err := exhaustedEndpoints[endpoint]; err != nil {
-			return err
+			lastErr = err
+			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+				return lastErr
+			}
+			// A topology refresh may replace this slot's owner. Keep routing
+			// attempts bounded and never restart an exhausted dial sequence.
+			node = nil
+			moved, ask = false, false
+			continue
 		}
 		ctx, dialExhausted := node.Client.captureFixedDialExhaustion(ctx)
 		c.cscCheckNode(cmd, node.Client)
