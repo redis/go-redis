@@ -134,8 +134,8 @@ func (s StructValue) decode(field *structField, v reflect.Value, value string) e
 
 	if err := field.fn(v, value); err != nil {
 		t := s.value.Type()
-		return fmt.Errorf("cannot scan redis.result %s into struct field %s.%s of type %s, error-%s",
-			value, t.Name(), t.Field(field.index).Name, t.Field(field.index).Type, err.Error())
+		return fmt.Errorf("cannot scan redis.result %s into struct field %s.%s of type %s, error-%w",
+			value, t.Name(), t.Field(field.index).Name, t.Field(field.index).Type, err)
 	}
 	return nil
 }

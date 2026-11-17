@@ -197,6 +197,8 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
+	// Socket timeouts caused by the context deadline match context.DeadlineExceeded with errors.Is.
+	// Earlier ReadTimeout or WriteTimeout limits still return network timeout errors.
 	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
 	ContextTimeoutEnabled bool
 
@@ -495,6 +497,11 @@ type Options struct {
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. The client's connection pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
 
 	// Client-side caching is eventually consistent. A cached value may be
 	// stale until its invalidation arrives, and reads are not guaranteed to
@@ -1179,11 +1186,21 @@ func (o *queryOptions) duration(name string) time.Duration {
 	if s == "" {
 		return 0
 	}
-	// try plain number first
-	if i, err := strconv.Atoi(s); err == nil {
+	// Plain integers are seconds. Use a 64-bit parse so large values work on
+	// 32-bit targets the same as on amd64, and keep the historical rule that
+	// any non-positive integer disables the timeout (including values that
+	// would overflow when expressed as a ParseDuration string).
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		if i <= 0 {
 			// disable timeouts
 			return -1
+		}
+		const maxSeconds = int64((1<<63 - 1) / int64(time.Second))
+		if i > maxSeconds {
+			if o.err == nil {
+				o.err = fmt.Errorf("redis: invalid %s duration: value out of range", name)
+			}
+			return 0
 		}
 		return time.Duration(i) * time.Second
 	}
@@ -1313,6 +1330,7 @@ func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 	poolName string,
+	metrics *pool.MetricCallbacks,
 ) (*pool.ConnPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -1356,6 +1374,7 @@ func newConnPool(
 		WriteBufferSize:          opt.WriteBufferSize,
 		PushNotificationsEnabled: opt.Protocol == 3,
 		Name:                     poolName,
+		Metrics:                  metrics,
 	}), nil
 }
 
@@ -1363,6 +1382,7 @@ func newPubSubPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 	poolName string,
+	metrics *pool.MetricCallbacks,
 ) (*pool.PubSubPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -1403,5 +1423,6 @@ func newPubSubPool(
 		WriteBufferSize:          32 * 1024,
 		PushNotificationsEnabled: opt.Protocol == 3,
 		Name:                     poolName,
+		Metrics:                  metrics,
 	}, dialer), nil
 }

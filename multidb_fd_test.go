@@ -437,7 +437,7 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 
 	t.Run("live caller context records the failure", func(t *testing.T) {
 		core, db, det := setup()
-		core.settleFDOutcome(context.Background(), db, cmd, dialErr, nil)
+		core.settleFDOutcome(context.Background(), db, cmd, dialErr, nil, fdOutcomeToken{})
 		if det.failures != 1 {
 			t.Errorf("detector failures = %d, want 1", det.failures)
 		}
@@ -450,7 +450,7 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 		core, db, det := setup()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		core.settleFDOutcome(ctx, db, cmd, dialErr, nil)
+		core.settleFDOutcome(ctx, db, cmd, dialErr, nil, fdOutcomeToken{})
 		if det.failures != 0 || det.successes != 0 {
 			t.Errorf("detector recorded %d failures, %d successes; want none", det.failures, det.successes)
 		}
@@ -464,7 +464,7 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		readErr := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
-		core.settleFDOutcome(ctx, db, cmd, readErr, nil)
+		core.settleFDOutcome(ctx, db, cmd, readErr, nil, fdOutcomeToken{})
 		if det.failures != 1 {
 			t.Errorf("detector failures = %d, want 1", det.failures)
 		}
@@ -484,14 +484,51 @@ func TestSettleFDOutcomeCallerContext(t *testing.T) {
 		core.active.Store(0)
 		grp := &fdFailGroup{}
 		for i := 0; i < 4; i++ {
-			core.settleFDOutcome(context.Background(), db, cmd, io.EOF, grp)
+			core.settleFDOutcome(context.Background(), db, cmd, io.EOF, grp, fdOutcomeToken{})
 		}
-		core.settleFDOutcome(context.Background(), db, cmd, io.EOF, &fdFailGroup{})
+		core.settleFDOutcome(context.Background(), db, cmd, io.EOF, &fdFailGroup{}, fdOutcomeToken{})
 		if got := db.cb.Stats().Failures; got != 2 {
 			t.Errorf("breaker failures = %d, want 2 (one per group)", got)
 		}
 		if det.failures != 2 {
 			t.Errorf("detector failures = %d, want 2 (one per group)", det.failures)
+		}
+	})
+
+	t.Run("stale group outcome does not suppress current generation", func(t *testing.T) {
+		det := &countingFD{}
+		core := newMultidbCore(&MultiDBOptions{FailureDetector: det})
+		db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1,
+		})}
+		core.dbs[0] = db
+		core.active.Store(0)
+
+		oldRes, ok := db.cb.CurrentClosedReservation()
+		if !ok {
+			t.Fatal("initial breaker not closed")
+		}
+		stale := fdOutcomeToken{res: oldRes, detectorGen: core.detectorGen.Load()}
+		db.cb.Reset()
+		core.resetDetectorSafely()
+		newRes, ok := db.cb.CurrentClosedReservation()
+		if !ok {
+			t.Fatal("reset breaker not closed")
+		}
+		fresh := fdOutcomeToken{res: newRes, detectorGen: core.detectorGen.Load()}
+
+		group := &fdFailGroup{}
+		core.settleFDOutcome(context.Background(), db, cmd, io.EOF, group, stale)
+		if db.cb.State() != imultidb.CircuitClosed || det.failures != 0 {
+			t.Fatal("stale admission affected fresh failure window")
+		}
+		core.settleFDOutcome(context.Background(), db, cmd, io.EOF, group, fresh)
+		if got := db.cb.State(); got != imultidb.CircuitOpen {
+			t.Errorf("breaker state = %v, want open", got)
+		}
+		if det.failures != 1 {
+			t.Errorf("detector failures = %d, want 1", det.failures)
 		}
 	})
 }
@@ -949,7 +986,7 @@ func TestFDRerouteAbortReportsOncePerAttempt(t *testing.T) {
 		return io.EOF
 	})
 	reports := 0
-	fd.outcome = func(context.Context, Cmder, error, *fdFailGroup) { reports++ }
+	fd.outcome = func(_ context.Context, _ Cmder, _ error, _ *fdFailGroup, _ fdOutcomeToken) { reports++ }
 	fd.maxBatch = 2 // two chunks: the second never runs
 	reqs := make([]fdReq, 4)
 	for i := range reqs {
@@ -973,7 +1010,7 @@ func TestFDRerouteSpentBudgetReportsOncePerAttempt(t *testing.T) {
 	ctx := context.Background()
 	fd, bounds := fdRerouteTestEngine(0, fdServeOK)
 	reports := 0
-	fd.outcome = func(context.Context, Cmder, error, *fdFailGroup) { reports++ }
+	fd.outcome = func(_ context.Context, _ Cmder, _ error, _ *fdFailGroup, _ fdOutcomeToken) { reports++ }
 	reqs := make([]fdReq, 3)
 	for i := range reqs {
 		reqs[i] = fdReq{cmd: NewStatusCmd(ctx, "set", "k"+strconv.Itoa(i), "v"), batch: newAPBatch(), attempts: 2, sent: true}
@@ -1115,7 +1152,7 @@ func TestFDRerouteNeverSentReportsNothing(t *testing.T) {
 	ctx := context.Background()
 	fd, _ := fdRerouteTestEngine(3, fdServeOK)
 	var reported []string
-	fd.outcome = func(_ context.Context, cmd Cmder, _ error, _ *fdFailGroup) {
+	fd.outcome = func(_ context.Context, cmd Cmder, _ error, _ *fdFailGroup, _ fdOutcomeToken) {
 		reported = append(reported, fmt.Sprint(cmd.Args()[1]))
 	}
 	reqs := []fdReq{
@@ -1249,7 +1286,7 @@ func TestFDShutdownFlushOwnerAbortSkipsQueuedReports(t *testing.T) {
 		return io.EOF
 	})
 	reports := 0
-	fd.outcome = func(context.Context, Cmder, error, *fdFailGroup) { reports++ }
+	fd.outcome = func(_ context.Context, _ Cmder, _ error, _ *fdFailGroup, _ fdOutcomeToken) { reports++ }
 	queued := NewStatusCmd(ctx, "set", "queued", "v")
 	if fd.q.push(fdReq{cmd: queued, batch: newAPBatch(), attempts: 1}) != fdPushOK {
 		t.Fatal("queue push failed")
@@ -1561,7 +1598,7 @@ func TestFDOwnerRerouteClosingKeepsReplyError(t *testing.T) {
 	fd.retrySem = make(chan struct{}, 1)
 	fd.retrySem <- struct{}{} // no free slot
 	var outcomes []error
-	fd.outcome = func(_ context.Context, cmd Cmder, err error, _ *fdFailGroup) {
+	fd.outcome = func(_ context.Context, cmd Cmder, err error, _ *fdFailGroup, _ fdOutcomeToken) {
 		if err == nil {
 			err = cmd.Err()
 		}

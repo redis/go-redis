@@ -482,6 +482,35 @@ func TestReader_Discard_MapCountOverflow(t *testing.T) {
 	}
 }
 
+func TestReader_Discard_AggregateWithAttributedElements(t *testing.T) {
+	// Inside an aggregate an attribute decorates the element after it and is
+	// not an element of its own, as ReadReply and ReadRawReply already treat
+	// it. Discarding the aggregate must consume the attribute together with
+	// that element and leave the next reply aligned.
+	attr := "|1\r\n+key-popularity\r\n,0.19\r\n"
+	frames := []string{
+		"*2\r\n" + attr + ":1\r\n:2\r\n",
+		"~2\r\n:1\r\n" + attr + attr + ":2\r\n",
+		">2\r\n+message\r\n" + attr + "$2\r\nhi\r\n",
+		"%1\r\n" + attr + "+field\r\n" + attr + "*1\r\n" + attr + ":3\r\n",
+		"*1\r\n|1\r\n" + attr + "+k\r\n*1\r\n" + attr + "+v\r\n:4\r\n",
+		// A long attribute value makes the reader refill its buffer while
+		// the attribute is being discarded.
+		"*1\r\n|1\r\n+k\r\n$40\r\n" + string(bytes.Repeat([]byte("x"), 40)) + "\r\n:5\r\n",
+	}
+	for _, frame := range frames {
+		for _, size := range []int{16, 4096} {
+			r := proto.NewReaderSize(bytes.NewReader([]byte(frame+"$5\r\nhello\r\n")), size)
+			if err := r.DiscardNext(); err != nil {
+				t.Fatalf("%q (buffer %d): DiscardNext: %v", frame, size, err)
+			}
+			if s, err := r.ReadString(); err != nil || s != "hello" {
+				t.Fatalf("%q (buffer %d): follow-up ReadString = %q, %v; want \"hello\", nil (stream left misaligned by Discard)", frame, size, s, err)
+			}
+		}
+	}
+}
+
 func TestReader_ReadStringInto_Large(t *testing.T) {
 	// Payload deliberately larger than the default bufio buffer (32 KiB)
 	// so we exercise the path where bufio.Reader drains its internal

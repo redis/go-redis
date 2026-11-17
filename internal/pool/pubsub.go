@@ -39,16 +39,19 @@ func NewPubSubPool(opt *Options, netDialer func(ctx context.Context, network, ad
 		opt:       opt,
 		netDialer: netDialer,
 	}
-	wp := weak.Make(p)
-	livePoolsMu.Lock()
-	livePubSubPools[wp] = struct{}{}
-	livePoolsMu.Unlock()
-	// Drops the entry for a pool that is collected without Close.
-	runtime.AddCleanup(p, func(wp weak.Pointer[PubSubPool]) {
+	if opt.Metrics == nil {
+		// Only pools on the global table are recounted by SetAllMetricCallbacks.
+		wp := weak.Make(p)
 		livePoolsMu.Lock()
-		delete(livePubSubPools, wp)
+		livePubSubPools[wp] = struct{}{}
 		livePoolsMu.Unlock()
-	}, wp)
+		// Drops the entry for a pool that is collected without Close.
+		runtime.AddCleanup(p, func(wp weak.Pointer[PubSubPool]) {
+			livePoolsMu.Lock()
+			delete(livePubSubPools, wp)
+			livePoolsMu.Unlock()
+		}, wp)
+	}
 	return p
 }
 
@@ -65,6 +68,7 @@ func (p *PubSubPool) NewConn(ctx context.Context, network string, addr string, c
 	cn.pubsub = true
 	// Set pool name for metrics
 	cn.SetPoolName(p.opt.Name)
+	cn.metrics = p.opt.Metrics
 	atomic.AddUint32(&p.stats.Created, 1)
 	return cn, nil
 }
@@ -82,7 +86,7 @@ func (p *PubSubPool) TrackConn(cn *Conn) error {
 
 	atomic.AddUint32(&p.stats.Active, 1)
 	p.activeConns.Store(cn.GetID(), cn)
-	cb := getMetricConnectionCountCallback()
+	cb := p.metrics().ConnectionCount
 	p.trackMu.Unlock()
 	// Emit +1 used for PubSub connection
 	if cb != nil {
@@ -99,7 +103,7 @@ func (p *PubSubPool) UntrackConn(cn *Conn) {
 		p.trackMu.Unlock()
 		return
 	}
-	cb := getMetricConnectionCountCallback()
+	cb := p.metrics().ConnectionCount
 	p.trackMu.Unlock()
 	atomic.AddUint32(&p.stats.Active, ^uint32(0))
 	atomic.AddUint32(&p.stats.Untracked, 1)
@@ -114,7 +118,7 @@ func (p *PubSubPool) Close() error {
 	livePoolsMu.Lock()
 	delete(livePubSubPools, weak.Make(p))
 	p.trackMu.Lock()
-	cb := getMetricConnectionCountCallback()
+	cb := p.metrics().ConnectionCount
 	livePoolsMu.Unlock()
 	var conns []*Conn
 	p.activeConns.Range(func(key, value interface{}) bool {

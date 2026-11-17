@@ -216,6 +216,11 @@ type fdReq struct {
 	// ctx is the caller's submit context, kept so the per-command OTel metric can
 	// be recorded against it (span/baggage correlation), mirroring process().
 	ctx context.Context
+	// ownerToken is the owner-supplied admission handle (see
+	// AutoPipelineOptions.fdOutcome), carried to the outcome report so an
+	// outcome that outlives a reselect of the same member settles in the
+	// episode it was admitted to. Zero for owners that do not account.
+	ownerToken fdOutcomeToken
 	// writtenOff is stamped at the command's FIRST flush to the wire and kept across
 	// replays; the reader uses write→reply as the command's operation duration for
 	// the OTel metric. Anchoring on the first write (not the last replay) makes the
@@ -722,7 +727,7 @@ type fdEngine struct {
 	// outcome, when set by the engine's owner (AutoPipelineOptions.fdOutcome),
 	// receives every command's final outcome the engine itself settles (see
 	// finish). Set once in newFDEngine.
-	outcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup)
+	outcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup, token fdOutcomeToken)
 	// ownerRetries / ownerRetryBudget: the owner's retry policy
 	// (AutoPipelineOptions.fdOwnerRetries / fdRetryBudget). When set,
 	// retryBudget returns ownerRetryBudget and a failed lease reroutes at once.
@@ -895,7 +900,7 @@ func (fd *fdEngine) finishGrouped(r fdReq, grp *fdFailGroup) {
 			r.batch.fdOutcomeOwed = true
 			r.batch.fdOutcomeGroup = grp
 		} else {
-			fd.reportOutcome(r.ctx, r.cmd, nil, grp)
+			fd.reportOutcome(r.ctx, r.cmd, nil, grp, r.ownerToken)
 		}
 	}
 	r.complete()
@@ -906,18 +911,26 @@ func (fd *fdEngine) finishGrouped(r fdReq, grp *fdFailGroup) {
 // can settle through up to three calls (failPipelines for the exhausted set,
 // failPipelines for the NoRetry tail, rerouteReqs), so it is charged once per
 // settle call (bounded per drop), not strictly once.
-type fdFailGroup struct{ charged, detected atomic.Bool }
+type fdFailGroup struct{ charged, detected sync.Map }
 
 // take reports whether the caller is the first to charge the group. A nil
 // group is never shared, so it always charges.
-func (g *fdFailGroup) take() bool {
-	return g == nil || g.charged.CompareAndSwap(false, true)
+func (g *fdFailGroup) take(gen uint64) bool {
+	if g == nil {
+		return true
+	}
+	_, loaded := g.charged.LoadOrStore(gen, struct{}{})
+	return !loaded
 }
 
 // takeDetector is take for a second per-event counter (the MultiDB failure
 // detector), charged independently of the first.
-func (g *fdFailGroup) takeDetector() bool {
-	return g == nil || g.detected.CompareAndSwap(false, true)
+func (g *fdFailGroup) takeDetector(gen uint64) bool {
+	if g == nil {
+		return true
+	}
+	_, loaded := g.detected.LoadOrStore(gen, struct{}{})
+	return !loaded
 }
 
 // fdGroupsByErr returns the failure group for each error of one settle: the
@@ -947,7 +960,7 @@ func fdGroupsByErr() func(err error) *fdFailGroup {
 // nil. The owner's callback and a custom Cmder's Err are user code running on
 // the reader or engine goroutine, so a panic is contained here (logged) and the
 // command still completes.
-func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup) {
+func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup, token fdOutcomeToken) {
 	defer func() {
 		if r := recover(); r != nil {
 			internal.Logger.Printf(context.Background(), "autopipeline: recovered full-duplex outcome panic: %v", r)
@@ -959,16 +972,17 @@ func (fd *fdEngine) reportOutcome(ctx context.Context, cmd Cmder, err error, grp
 		// itself.
 		err = cmd.rawErr()
 	}
-	fd.outcome(ctx, cmd, err, grp)
+	fd.outcome(ctx, cmd, err, grp, token)
 }
 
-// submit enqueues a command onto the ordered stream and returns its batch.
-// Blocks when the queue is full (backpressure) or bails if the engine is
-// closing. The caller (AutoPipeliner.submit) stamps setReady on the async face.
-// With process hooks installed a per-command host goroutine runs the hook chain
-// (see hostHook) and ctx parents its span; the hook-free path skips that
-// goroutine and channel entirely.
-func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
+// submitToken enqueues a command onto the ordered stream with the owner
+// admission token recorded on the request (see AutoPipelineOptions.fdOutcome)
+// and returns its batch. Blocks when the queue is full (backpressure) or bails
+// if the engine is closing. The caller (AutoPipeliner.submit) stamps setReady
+// on the async face. With process hooks installed a per-command host goroutine
+// runs the hook chain (see hostHook) and ctx parents its span; the hook-free
+// path skips that goroutine and channel entirely.
+func (fd *fdEngine) submitToken(ctx context.Context, cmd Cmder, token fdOutcomeToken) *apBatch {
 	if fd.ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return completedBatch
@@ -991,7 +1005,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	} else {
 		b = newAPBatch()
 	}
-	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx, attempts: 1}
+	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx, attempts: 1, ownerToken: token}
 
 	// Send under RLock and re-check closed so a send can never win the race with
 	// run()'s shutdown drain (takeQueue: WLock, set closed, drain fd.ch). Once the
@@ -1038,7 +1052,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 			// FullDuplex contract forbids it (see the FullDuplex field doc).
 			if hookDone != nil {
 				fd.hostWg.Add(1)
-				go fd.hostHook(ctx, cmd, b, hookDone)
+				go fd.hostHook(ctx, cmd, b, hookDone, token)
 			}
 			fd.submitMu.RUnlock()
 			return b
@@ -1088,7 +1102,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 // hookDone, so an observing hook spans the command's real write→reply latency and
 // a hook that rewrites the result is honored before the waiter wakes. Each
 // command is reported individually (withProcessHook), not as a pipeline batch.
-func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}) {
+func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}, token fdOutcomeToken) {
 	// Declared first so it runs last: Close waits hostWg (via run()), and the host
 	// is done only after the recover defer below has also run.
 	defer fd.hostWg.Done()
@@ -1129,7 +1143,7 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 			}
 			internal.Logger.Printf(ctx, "autopipeline: recovered full-duplex hook panic: %v\n%s", r, debug.Stack())
 			if b.fdOutcomeOwed {
-				fd.reportOutcome(ctx, cmd, nil, b.fdOutcomeGroup)
+				fd.reportOutcome(ctx, cmd, nil, b.fdOutcomeGroup, token)
 			}
 			b.close()
 		}
@@ -1154,7 +1168,7 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	fdSetErrSafe(cmd, err) // honor a hook that rewrote / short-circuited the result
 	if b.fdOutcomeOwed {
 		// The owner's report, on the chain's final result (see finish).
-		fd.reportOutcome(ctx, cmd, err, b.fdOutcomeGroup)
+		fd.reportOutcome(ctx, cmd, err, b.fdOutcomeGroup, token)
 	}
 	b.close() // now wake the waiter
 }
@@ -1191,6 +1205,15 @@ func (fd *fdEngine) emitMetricsGuarded(octx context.Context, emit func()) {
 	emit()
 }
 
+// recorder returns the owning client's recorder; an engine built without a
+// client (tests) records to the global recorder.
+func (fd *fdEngine) recorder() otel.Recorder {
+	if fd.client == nil {
+		return otel.Scoped(nil)
+	}
+	return fd.client.recorder()
+}
+
 // reportReplyMetrics runs the inline-completed command's user-settable metric
 // callbacks (OTel operation-duration; native error callback for a non-retryable
 // Redis error, reporting attempts-1 retries like processWithRetry) for parity
@@ -1198,10 +1221,16 @@ func (fd *fdEngine) emitMetricsGuarded(octx context.Context, emit func()) {
 // (panic containment; see there). gid is the calling goroutine's id, or 0 to
 // resolve it here: the reader passes its own, read once per session, because
 // curGoroutineID (runtime.Stack) once per reply capped the reader at about a
-// tenth of its throughput with OTel metrics on.
-func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error, cn *pool.Conn, gid int64) {
+// tenth of its throughput with OTel metrics on. sampled reports that the
+// command's per-command samples (recordCommandSamples) were already recorded:
+// the Close-time flush runs commands through a pooled pipeline whose read loop
+// samples them, so only the duration is recorded here.
+func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error, cn *pool.Conn, gid int64, sampled bool) {
+	if fd.client == nil { // an engine built without a client (tests) has nowhere to record
+		return
+	}
 	fd.emitMetricsGuarded(octx, func() {
-		if cb := otel.GetOperationDurationCallback(); cb != nil {
+		if otel.Enabled(fd.client.recorder()) {
 			// The reader has set req.cmd's final result but has NOT completed the
 			// batch yet — req.complete() runs only after this returns. A custom
 			// duration callback that reads its own command (cmd.Err()/cmd.String())
@@ -1221,13 +1250,15 @@ func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error,
 				req.batch.addExecutor(gid)
 				defer req.batch.removeExecutor(gid)
 			}
-			cb(octx, fd.sinceWritten(req.writtenOff), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
+			d := fd.sinceWritten(req.writtenOff)
+			if sampled {
+				fd.client.recorder().RecordOperationDuration(octx, d, req.cmd, req.attempts, e, cn, fd.client.opt.DB)
+			} else {
+				fd.client.recordCommand(octx, d, req.cmd, req.attempts, e, cn)
+			}
 		}
 		if e != nil {
-			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-				errorType, statusCode, isInternal := classifyCommandError(e)
-				errorCallback(octx, errorType, cn, statusCode, isInternal, req.attempts-1)
-			}
+			fd.client.recordCommandError(octx, e, cn, req.attempts-1)
 		}
 	})
 }
@@ -1432,7 +1463,7 @@ func (fd *fdEngine) runReplyReroutes(done chan struct{}) {
 			// Each reply is a failed attempt on this member: report it first,
 			// as rerouteReqs does; the owner's path settles the rerouted one.
 			if fd.outcome != nil {
-				fd.reportOutcome(r.req.ctx, r.req.cmd, r.cause, nil)
+				fd.reportOutcome(r.req.ctx, r.req.cmd, r.cause, nil, r.req.ownerToken)
 			}
 			reqs = append(reqs, r.req)
 		}
@@ -2129,12 +2160,18 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// is advanced, so recovery would re-own the already-consumed reply and
 					// replay it — a mutating command twice.
 					if req.pipelined {
-						// A pipelined command is measured with its batch, as in an
-						// ordinary pipeline (fdPipelineMetrics), not per command.
+						// A pipelined command's duration is measured with its batch, as
+						// in an ordinary pipeline (fdPipelineMetrics), not per command.
+						// Its samples are recorded here, per reply read, as the pooled
+						// read loops do: a batch read partly here and partly by the
+						// Close-time flush is then sampled once on each side.
 						req.batch.fdAttempts = req.attempts // published by complete()
 						req.batch.fdConn = cn
+						if e == nil && fd.client != nil && otel.Enabled(fd.client.recorder()) {
+							fd.emitMetricsGuarded(octx, func() { fd.client.recordCommandSamples(octx, req.cmd, cn) })
+						}
 					} else {
-						fd.reportReplyMetrics(octx, req, e, cn, readerGid)
+						fd.reportReplyMetrics(octx, req, e, cn, readerGid, false)
 					}
 					fd.finish(req) // wake the caller, or hand off to the hook host
 					done++
@@ -3242,10 +3279,11 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 	// completion, so emit the native error callback per command. One classification
 	// for the whole set (every req fails with the same err), and no duration metric
 	// — many of these were never written.
-	errorCallback := pool.GetMetricErrorCallback()
+	rec := fd.recorder()
+	recordErrors := otel.Enabled(rec)
 	var errorType, statusCode string
 	var isInternal bool
-	if errorCallback != nil && len(reqs) > 0 {
+	if recordErrors && len(reqs) > 0 {
 		errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 	}
 	// One settle: reqs failing with the same error share a failure group.
@@ -3266,7 +3304,7 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 		}
 		// A pipelined command's failure is reported once for its batch
 		// (fdPipelineMetrics), as an ordinary pipeline does.
-		if errorCallback != nil && !reqs[i].pipelined {
+		if recordErrors && !reqs[i].pipelined {
 			octx := reqs[i].ctx
 			if octx == nil {
 				octx = context.Background()
@@ -3277,7 +3315,7 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 			// panicking callback still lets THIS req and every later one settle below.
 			retries := max(0, reqs[i].attempts-1)
 			fd.emitMetricsGuarded(octx, func() {
-				errorCallback(octx, errorType, nil, statusCode, isInternal, retries)
+				rec.RecordError(octx, errorType, nil, statusCode, isInternal, retries)
 			})
 		}
 		if account {
@@ -3494,7 +3532,7 @@ func (fd *fdEngine) rerouteReqs(bg context.Context, reqs []fdReq, cause error) {
 		grp := &fdFailGroup{}
 		for i := range reqs {
 			if reqs[i].sent {
-				fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause, grp)
+				fd.reportOutcome(reqs[i].ctx, reqs[i].cmd, cause, grp, reqs[i].ownerToken)
 			}
 		}
 	}
@@ -3624,13 +3662,14 @@ func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries in
 			// Per-command metrics, as the reader reports them inline: this path
 			// bypasses the reader. A pipelined command is measured with its
 			// batch (fdPipelineMetrics). Telemetry, so on both branches below;
-			// account only decides the owner's outcome report.
+			// account only decides the owner's outcome report. run's read loop
+			// already recorded the per-command samples (sampled=true).
 			if !reqs[j].pipelined {
 				octx := reqs[j].ctx
 				if octx == nil {
 					octx = bg
 				}
-				fd.reportReplyMetrics(octx, reqs[j], reqs[j].cmd.rawErr(), nil, 0)
+				fd.reportReplyMetrics(octx, reqs[j], reqs[j].cmd.rawErr(), nil, 0, true)
 			}
 			if account {
 				fd.finish(reqs[j])
@@ -3664,7 +3703,8 @@ func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries in
 // channel receive is safe against a concurrent submit send, so no lock is taken
 // here.
 func (fd *fdEngine) failQueue(err error) {
-	errorCallback := pool.GetMetricErrorCallback()
+	rec := fd.recorder()
+	recordErrors := otel.Enabled(rec)
 	var errorType, statusCode string
 	var isInternal bool
 	classified := false
@@ -3677,7 +3717,7 @@ func (fd *fdEngine) failQueue(err error) {
 		fdSetErrSafe(r.cmd, err)
 		// A pipelined command's failure is reported once for its batch
 		// (fdPipelineMetrics), as in failReqs.
-		if errorCallback != nil && !r.pipelined {
+		if recordErrors && !r.pipelined {
 			if !classified {
 				errorType, statusCode, isInternal = classifyCommandErrorGuarded(err)
 				classified = true
@@ -3688,7 +3728,7 @@ func (fd *fdEngine) failQueue(err error) {
 			}
 			// Guarded per-req so a panicking callback still lets r.complete() run.
 			fd.emitMetricsGuarded(octx, func() {
-				errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
+				rec.RecordError(octx, errorType, nil, statusCode, isInternal, 0)
 			})
 		}
 		fd.finish(r)

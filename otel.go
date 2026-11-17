@@ -26,8 +26,15 @@ type PubSubPooler interface {
 	Stats() *pool.PubSubStats
 }
 
-// OTelRecorder is the interface for recording OpenTelemetry metrics.
-
+// OTelRecorder is the interface for recording OpenTelemetry metrics. It is the
+// type of the global recorder (SetOTelRecorder) and of the per-client one
+// (Options.OTelRecorder).
+//
+// A recorder may also implement Enabled() bool. go-redis consults it before
+// metric work whose inputs are expensive to obtain and skips recording while
+// it returns false; a recorder without it is always on. The other optional
+// capabilities are OTelConnectionCounter, OTelMultiDBRecorder and
+// OTelPoolRegistrar.
 type OTelRecorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
 	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn ConnInfo, dbIndex int)
@@ -153,6 +160,33 @@ func SetOTelRecorder(r OTelRecorder) {
 
 type otelRecorderAdapter struct {
 	recorder OTelRecorder
+}
+
+// clientRecorder resolves a client's recorder once, at construction: r wrapped
+// for internal use, or a view of the global recorder when r is nil. The pool
+// callback table is nil in the global case, so the client's pools follow the
+// global table and its recount.
+func clientRecorder(r OTelRecorder) (otel.Recorder, *pool.MetricCallbacks) {
+	if r == nil {
+		return otel.Scoped(nil), nil
+	}
+	rec := &otelRecorderAdapter{r}
+	return rec, otel.PoolCallbacks(rec)
+}
+
+// scopedRecorder is clientRecorder for clients that own no connection pool.
+func scopedRecorder(r OTelRecorder) otel.Recorder {
+	rec, _ := clientRecorder(r)
+	return rec
+}
+
+// Enabled forwards to the public recorder's optional Enabled method (see
+// otel.Enabled); a recorder without one is always on.
+func (a *otelRecorderAdapter) Enabled() bool {
+	if e, ok := a.recorder.(interface{ Enabled() bool }); ok {
+		return e.Enabled()
+	}
+	return true
 }
 
 // toConnInfo converts *pool.Conn to ConnInfo interface properly.

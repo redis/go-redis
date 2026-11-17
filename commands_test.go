@@ -161,6 +161,16 @@ var _ = Describe("Commands", func() {
 			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), 3*time.Second))
 		})
 
+		It("should Wait with a sub-millisecond timeout", func() {
+			// WAIT ... 0 blocks until the replicas acknowledge, which never
+			// happens here: the timeout has to round up to 1ms, not down to 0.
+			start := time.Now()
+			val, err := rawClient.Wait(ctx, 1, 500*time.Microsecond).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(0)))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
+		})
+
 		It("should WaitAOF", func() {
 			const waitAOF = 3 * time.Second
 
@@ -8346,6 +8356,29 @@ var _ = Describe("Commands", func() {
 				Block:   100 * time.Millisecond,
 			}).Result()
 			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should XRead with a sub-millisecond Block", func() {
+			// BLOCK 0 waits forever: a positive Block below 1ms has to round
+			// up to 1ms, not down to 0.
+			start := time.Now()
+			_, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "$"},
+				Block:   500 * time.Microsecond,
+			}).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
+
+			Expect(client.XGroupCreate(ctx, "stream", "group", "$").Err()).NotTo(HaveOccurred())
+			start = time.Now()
+			_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "group",
+				Consumer: "consumer",
+				Streams:  []string{"stream", ">"},
+				Block:    500 * time.Microsecond,
+			}).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
 		})
 
 		It("should XRead with per-stream IDs", Label("NonRedisEnterprise"), func() {

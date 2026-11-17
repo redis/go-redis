@@ -3,10 +3,14 @@ package redisotel
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/semconv/v1.38.0/dbconv"
 
@@ -58,9 +62,17 @@ var (
 
 // ObservabilityInstance manages the global observability singleton.
 type ObservabilityInstance struct {
-	mu          sync.RWMutex
-	config      *Config
-	recorder    *metricsRecorder
+	mu       sync.RWMutex
+	config   *Config
+	recorder *metricsRecorder
+	// provider is the meter provider Init resolved; NewRecorder defaults to it.
+	provider metric.MeterProvider
+	// stopped is shared by the global recorder and every recorder NewRecorder
+	// issued since Init; Shutdown sets it so they all stop recording together.
+	stopped *atomic.Bool
+	// ownQueues are the operation-duration queues of recorders NewRecorder
+	// built on another provider; Shutdown stops them with the global one.
+	ownQueues   []*opQueue
 	initialized bool
 }
 
@@ -98,22 +110,94 @@ func (o *ObservabilityInstance) Init(cfg *Config) error {
 		meterProvider = otel.GetMeterProvider()
 	}
 
-	meter := meterProvider.Meter(
-		"github.com/redis/go-redis",
-		metric.WithInstrumentationVersion(redis.Version()),
-	)
-
-	internalCfg := o.configToInternal(cfg)
-	recorder, err := o.createRecorder(meter, internalCfg)
+	o.stopped = &atomic.Bool{}
+	recorder, err := o.newRecorder(cfg, nil, meterProvider, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create metrics recorder: %w", err)
+		return err
 	}
 
 	o.recorder = recorder
+	o.provider = meterProvider
 	o.initialized = true
 	redis.SetOTelRecorder(recorder)
 
 	return nil
+}
+
+// NewRecorder returns a recorder for one client, built from cfg the way Init
+// builds the global one. Pass it as Options.OTelRecorder (the same field exists
+// on ClusterOptions, RingOptions, FailoverOptions, UniversalOptions and
+// MultiDBOptions): that client's commands, errors, Pub/Sub messages, stream lag
+// and pool events are recorded to it instead of the global recorder.
+//
+// Its metrics go to cfg.MeterProvider, or to the provider Init used when nil,
+// and carry the custom attributes Init was configured with followed by cfg's
+// own, so a per-client attribute overrides a global one with the same key,
+// which in turn overrides a built-in one. cfg.Enabled is ignored: Init decides
+// whether the process records. Histogram settings that differ from Init's on a
+// shared provider are subject to the SDK's duplicate-instrument rule (the first
+// registration wins). The recorder stops recording when Shutdown is called.
+//
+// If Init was called with a disabled config, NewRecorder returns a nil recorder
+// and no error: a client given a nil Options.OTelRecorder uses the global
+// recorder (a no-op unless one is set), so an app with a metrics on/off switch
+// can pass the result through unchanged. It returns an error only when Init
+// has not been called.
+func (o *ObservabilityInstance) NewRecorder(cfg *Config) (redis.OTelRecorder, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.initialized {
+		if o.config != nil && !o.config.Enabled {
+			return nil, nil
+		}
+		return nil, errors.New("redisotel: not initialized, call Init() first")
+	}
+	provider := cfg.MeterProvider
+	var shared *opQueue
+	if provider == nil || sameProvider(provider, o.provider) {
+		// Same provider, same instruments: share the global recorder's queue
+		// instead of starting another goroutine and gauge callback per client.
+		provider = o.provider
+		shared = o.recorder.opq
+	}
+	// The base layer is the global recorder's own copy of Init's attributes,
+	// not the caller-owned Config, which may have been mutated since Init.
+	rec, err := o.newRecorder(cfg, o.recorder.cfg.customAttributes, provider, shared)
+	if err != nil {
+		return nil, err
+	}
+	if shared == nil && rec.opq != nil {
+		o.ownQueues = append(o.ownQueues, rec.opq)
+	}
+	return rec, nil
+}
+
+// sameProvider reports whether a and b are the same provider. Interface
+// equality panics on a non-comparable dynamic type, so such providers are
+// treated as distinct.
+func sameProvider(a, b metric.MeterProvider) bool {
+	ta := reflect.TypeOf(a)
+	return ta == reflect.TypeOf(b) && ta.Comparable() && a == b
+}
+
+// newRecorder builds a recorder for cfg on provider. Its custom attributes are
+// base followed by cfg's own (later wins on a duplicate key); shared, when not
+// nil, is the operation-duration queue to record through instead of a new one.
+func (o *ObservabilityInstance) newRecorder(cfg *Config, base []attribute.KeyValue, provider metric.MeterProvider, shared *opQueue) (*metricsRecorder, error) {
+	meter := provider.Meter(
+		"github.com/redis/go-redis",
+		metric.WithInstrumentationVersion(redis.Version()),
+	)
+	internalCfg := o.configToInternal(cfg)
+	if len(base) > 0 {
+		internalCfg.customAttributes = slices.Concat(base, cfg.CustomAttributes)
+	}
+	recorder, err := o.createRecorder(meter, internalCfg, shared)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create metrics recorder: %w", err)
+	}
+	recorder.stopped = o.stopped
+	return recorder, nil
 }
 
 // IsEnabled returns true if observability is initialized and enabled.
@@ -137,9 +221,16 @@ func (o *ObservabilityInstance) shutdownLocked() error {
 	}
 
 	redis.SetOTelRecorder(nil)
+	// Recorders issued by NewRecorder stay referenced by their clients: the
+	// shared flag turns them off (see metricsRecorder.off).
+	o.stopped.Store(true)
 	if o.recorder != nil && o.recorder.opq != nil {
 		o.recorder.opq.stop() // record what is queued
 	}
+	for _, q := range o.ownQueues {
+		q.stop()
+	}
+	o.ownQueues = nil
 
 	// Note: We don't shutdown the MeterProvider since it's owned by the application
 	// The application should call provider.Shutdown() when appropriate
@@ -189,11 +280,13 @@ func (o *ObservabilityInstance) configToInternal(cfg *Config) config {
 		bucketsStreamProcessingDuration: cfg.BucketsStreamLag,
 		bucketsConnectionCreateTime:     cfg.BucketsConnectionCreateTime,
 		bucketsConnectionWaitTime:       cfg.BucketsConnectionWaitTime,
+		customAttributes:                slices.Clone(cfg.CustomAttributes),
 	}
 }
 
 // createRecorder creates a metricsRecorder with all instruments based on config.
-func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (*metricsRecorder, error) {
+// shared, when not nil, is used as the operation-duration queue instead of a new one.
+func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, shared *opQueue) (*metricsRecorder, error) {
 	var err error
 
 	var operationDuration metric.Float64Histogram
@@ -425,7 +518,11 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 	// recording (opq == nil), not a failed Init.
 	var opq *opQueue
 	if operationDuration != nil {
-		opq, _ = newOpQueue(meter, operationDuration)
+		if shared != nil {
+			opq = shared
+		} else {
+			opq, _ = newOpQueue(meter, operationDuration)
+		}
 	}
 
 	// Create recorder

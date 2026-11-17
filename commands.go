@@ -305,14 +305,14 @@ func (c statefulCmdable) AuthACL(ctx context.Context, username, password string)
 }
 
 func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration) *IntCmd {
-	cmd := NewIntCmd(ctx, "wait", numSlaves, int(timeout/time.Millisecond))
+	cmd := NewIntCmd(ctx, "wait", numSlaves, formatMs(ctx, timeout))
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntSliceCmd {
-	cmd := NewIntSliceCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
+	cmd := NewIntSliceCmd(ctx, "waitAOF", numLocal, numSlaves, formatMs(ctx, timeout))
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd

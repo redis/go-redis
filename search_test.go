@@ -1346,6 +1346,11 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("1"))
 		Expect(res.Docs[1].ID).To(BeEquivalentTo("2"))
 
+		info, err := client.FTInfo(ctx, "idx1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Attributes).To(HaveLen(1))
+		Expect(info.Attributes[0].CaseSensitive).To(BeFalse())
+
 		resDrop, err := client.FTDropIndex(ctx, "idx1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resDrop).To(BeEquivalentTo("OK"))
@@ -1361,6 +1366,10 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Total).To(BeEquivalentTo(1))
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("1"))
 
+		info, err = client.FTInfo(ctx, "idx1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Attributes).To(HaveLen(1))
+		Expect(info.Attributes[0].CaseSensitive).To(BeTrue())
 	})
 
 	It("should FTSearch ReturnFields", Label("search", "ftsearch"), func() {

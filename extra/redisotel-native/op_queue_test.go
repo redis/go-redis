@@ -265,7 +265,7 @@ func TestCreateRecorderWithoutQueueSupport(t *testing.T) {
 	defer func() { _ = mp.Shutdown(context.Background()) }()
 	o := &ObservabilityInstance{}
 	cfg := NewConfig().WithEnabled(true).WithMeterProvider(mp)
-	rec, err := o.createRecorder(gaugeRejectingMeter{mp.Meter("test")}, o.configToInternal(cfg))
+	rec, err := o.createRecorder(gaugeRejectingMeter{mp.Meter("test")}, o.configToInternal(cfg), nil)
 	if err != nil {
 		t.Fatalf("createRecorder: %v", err)
 	}

@@ -18,6 +18,9 @@ const maxBufferedFrameDepth = 32
 // reports false; the caller then reads it the normal way, which reports any
 // error.
 func (r *Reader) HasBufferedReply() bool {
+	if r.fatalErr != nil {
+		return false
+	}
 	b, _ := r.rd.Peek(r.rd.Buffered())
 	for len(b) > 0 {
 		n, ok := bufferedFrameLen(b, 0)
@@ -37,6 +40,9 @@ func (r *Reader) HasBufferedReply() bool {
 // with any attributes in front of it, so reading it needs no socket read. It
 // does not read from the socket and consumes nothing.
 func (r *Reader) HasBufferedFrame() bool {
+	if r.fatalErr != nil {
+		return false
+	}
 	b, _ := r.rd.Peek(r.rd.Buffered())
 	_, ok := bufferedValueLen(b, 0)
 	return ok

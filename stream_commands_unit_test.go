@@ -451,3 +451,93 @@ func TestXReadGroup_MaxArgs(t *testing.T) {
 		})
 	}
 }
+
+// A positive duration below one millisecond must not be sent as 0: for BLOCK
+// and WAIT a zero timeout means "wait forever", and for the idle-time
+// arguments it means "any entry". These builders round it up to 1ms like the
+// other millisecond arguments do (formatMs).
+func TestSubMillisecondDurationArgs(t *testing.T) {
+	ctx := context.Background()
+	const subMs = 500 * time.Microsecond
+
+	tests := []struct {
+		name string
+		call func(c cmdable) Cmder
+		want []interface{}
+	}{
+		{
+			name: "xread_block",
+			call: func(c cmdable) Cmder {
+				return c.XRead(ctx, &XReadArgs{Streams: []string{"stream", "$"}, Block: subMs})
+			},
+			want: []interface{}{"xread", "block", int64(1), "streams", "stream", "$"},
+		},
+		{
+			name: "xread_block_zero_still_blocks_forever",
+			call: func(c cmdable) Cmder {
+				return c.XRead(ctx, &XReadArgs{Streams: []string{"stream", "$"}, Block: 0})
+			},
+			want: []interface{}{"xread", "block", int64(0), "streams", "stream", "$"},
+		},
+		{
+			name: "xread_block_whole_milliseconds",
+			call: func(c cmdable) Cmder {
+				return c.XRead(ctx, &XReadArgs{Streams: []string{"stream", "$"}, Block: 2500 * time.Microsecond})
+			},
+			want: []interface{}{"xread", "block", int64(2), "streams", "stream", "$"},
+		},
+		{
+			name: "xreadgroup_block_and_claim",
+			call: func(c cmdable) Cmder {
+				return c.XReadGroup(ctx, &XReadGroupArgs{
+					Group: "group", Consumer: "consumer", Streams: []string{"stream", ">"},
+					Block: subMs, Claim: subMs,
+				})
+			},
+			want: []interface{}{
+				"xreadgroup", "group", "group", "consumer",
+				"block", int64(1), "claim", int64(1), "streams", "stream", ">",
+			},
+		},
+		{
+			name: "xclaim_min_idle",
+			call: func(c cmdable) Cmder {
+				return c.XClaim(ctx, &XClaimArgs{
+					Stream: "stream", Group: "group", Consumer: "consumer",
+					MinIdle: subMs, Messages: []string{"1-0"},
+				})
+			},
+			want: []interface{}{"xclaim", "stream", "group", "consumer", int64(1), "1-0"},
+		},
+		{
+			name: "xclaimjustid_min_idle",
+			call: func(c cmdable) Cmder {
+				return c.XClaimJustID(ctx, &XClaimArgs{
+					Stream: "stream", Group: "group", Consumer: "consumer",
+					MinIdle: subMs, Messages: []string{"1-0"},
+				})
+			},
+			want: []interface{}{"xclaim", "stream", "group", "consumer", int64(1), "1-0", "justid"},
+		},
+		{
+			name: "wait_timeout",
+			call: func(c cmdable) Cmder { return c.Wait(ctx, 1, subMs) },
+			want: []interface{}{"wait", 1, int64(1)},
+		},
+		{
+			name: "waitaof_timeout",
+			call: func(c cmdable) Cmder { return c.WaitAOF(ctx, 1, 1, subMs) },
+			want: []interface{}{"waitAOF", 1, 1, int64(1)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := tt.call(captureCmdable(&captured))
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}

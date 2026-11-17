@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/routing"
 )
@@ -388,7 +389,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		if moved || ask {
 			redirected = true
 			c.state.LazyReload()
-			recordClusterRedirectMetric(ctx, ask)
+			c.recordClusterRedirectMetric(ctx, ask)
 			redirected, err := c.nodes.GetOrCreate(redirectAddr(addr, node, servingEp))
 			if err != nil {
 				return err
@@ -409,13 +410,22 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	return lastErr
 }
 
-func recordClusterRedirectMetric(ctx context.Context, ask bool) {
-	if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+// recorder returns where the cluster client's metrics go. A hand-built value (tests) leaves
+// rec nil, which means the global recorder.
+func (c *ClusterClient) recorder() otel.Recorder {
+	if c.rec == nil {
+		return otel.Scoped(nil)
+	}
+	return c.rec
+}
+
+func (c *ClusterClient) recordClusterRedirectMetric(ctx context.Context, ask bool) {
+	if otel.Enabled(c.recorder()) {
 		errorType, statusCode := "MOVED", "MOVED"
 		if ask {
 			errorType, statusCode = "ASK", "ASK"
 		}
-		errorCallback(ctx, errorType, nil, statusCode, false, 0)
+		c.recorder().RecordError(ctx, errorType, nil, statusCode, false, 0)
 	}
 }
 
@@ -621,7 +631,7 @@ func (c *ClusterClient) executeParallelTarget(
 		if moved, ask, _ := isMovedError(lastErr); moved || ask {
 			// Do not redirect one keyless broadcast target into another.
 			c.state.LazyReload()
-			recordClusterRedirectMetric(ctx, ask)
+			c.recordClusterRedirectMetric(ctx, ask)
 			return lastErr
 		}
 		if !shouldRetry(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {

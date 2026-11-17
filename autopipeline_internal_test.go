@@ -1863,7 +1863,7 @@ func TestBlockingSetCoversEveryReadTimeoutHelper(t *testing.T) {
 	ctx := context.Background()
 	byName := []string{
 		"blpop", "brpop", "brpoplpush", "blmove", "blmovem", "blmpop",
-		"bzpopmin", "bzpopmax", "bzmpop", "wait", "waitaof", "migrate",
+		"bzpopmin", "bzpopmax", "bzmpop", "bzmove", "wait", "waitaof", "migrate",
 	}
 	for _, name := range byName {
 		if !isBlockingCmd(NewCmd(ctx, name, "k", 0)) {

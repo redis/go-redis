@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -179,6 +180,11 @@ type RingOptions struct {
 	// flag is a no-op. It is kept for backwards compatibility and will be removed
 	// in a future release.
 	UnstableResp3 bool
+
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. Every shard client and its pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
 }
 
 func (opt *RingOptions) init() {
@@ -229,9 +235,10 @@ func (opt *RingOptions) init() {
 
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
-		ClientName: opt.ClientName,
-		Dialer:     opt.Dialer,
-		OnConnect:  opt.OnConnect,
+		ClientName:   opt.ClientName,
+		Dialer:       opt.Dialer,
+		OnConnect:    opt.OnConnect,
+		OTelRecorder: opt.OTelRecorder,
 
 		Protocol:                     opt.Protocol,
 		Username:                     opt.Username,
@@ -622,6 +629,7 @@ type Ring struct {
 	hooksMixin
 
 	opt               *RingOptions
+	rec               otel.Recorder // see clientRecorder; shard clients carry their own
 	sharding          *ringSharding
 	cmdsInfoCache     *cmdsInfoCache
 	heartbeatCancelFn context.CancelFunc
@@ -649,6 +657,7 @@ func NewRing(opt *RingOptions) *Ring {
 
 	ring := Ring{
 		opt:               opt,
+		rec:               scopedRecorder(opt.OTelRecorder),
 		sharding:          newRingSharding(opt),
 		heartbeatCancelFn: hbCancel,
 	}
@@ -745,6 +754,7 @@ func (c *Ring) failedPubSub(err error) *PubSub {
 	internal.Logger.Printf(context.Background(), "redis: ring pubsub creation failed: %s", err)
 	pubsub := &PubSub{
 		opt:       c.opt.clientOptions(),
+		rec:       c.rec,
 		stickyErr: err,
 	}
 	pubsub.init()
