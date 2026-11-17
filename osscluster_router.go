@@ -522,7 +522,7 @@ func (c *ClusterClient) executeCursorCommand(
 	err = node.Client.Process(attemptCtx, cmd)
 	if err != nil {
 		if exhausted != nil && exhausted.Load() {
-			return &clusterSpecialDialExhausted{err: err}
+			return &clusterSpecialDialExhausted{err: err, node: node}
 		}
 		if moved, ask, _ := isMovedError(err); moved || ask {
 			return &redirectFromNodeError{node: node, endpoint: servingEndpointFromErr(err), err: err}

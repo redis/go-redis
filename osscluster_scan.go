@@ -54,7 +54,7 @@ func (c *ClusterClient) executeScanCommand(
 		sc.args[1] = uint64(0)
 		st.restart = false
 	}
-	if err := processClusterScanOnNode(ctx, st.masters[st.idx], sc); err != nil {
+	if err := processClusterScanOnNode(ctx, st.masters[st.idx], sc, false); err != nil {
 		return err
 	}
 	if sc.cursor == 0 && st.idx+1 < len(st.masters) {
@@ -157,7 +157,11 @@ func (c *ClusterClient) scanRoutedNode(
 			}
 		}
 	}
-	return processClusterScanOnNode(ctx, node, cmd)
+	// A SCAN without a walk or a hash-tag-constrained MATCH is not pinned
+	// to this node. If dialing fails, its retry can select another master.
+	match, hasMatch := scanMatch(cmd)
+	canReselect := !hasMatch || hashtag.PatternSlot(match) < 0
+	return processClusterScanOnNode(ctx, node, cmd, canReselect)
 }
 
 // scanTagMaster returns the master of the one slot a SCAN's MATCH pattern can
@@ -205,18 +209,22 @@ func scanMatch(cmd Cmder) (string, bool) {
 	return "", false
 }
 
-// clusterSpecialDialExhausted prevents replaying a SCAN or FT.CURSOR request
-// after a fixed endpoint has exhausted its pool dial sequence.
-type clusterSpecialDialExhausted struct{ err error }
+// clusterSpecialDialExhausted keeps the failed endpoint available to the
+// cluster retry loop without altering the original dial error.
+type clusterSpecialDialExhausted struct {
+	err         error
+	node        *clusterNode
+	canReselect bool
+}
 
 func (e *clusterSpecialDialExhausted) Error() string { return e.err.Error() }
 func (e *clusterSpecialDialExhausted) Unwrap() error { return e.err }
 
-func processClusterScanOnNode(ctx context.Context, node *clusterNode, cmd Cmder) error {
+func processClusterScanOnNode(ctx context.Context, node *clusterNode, cmd Cmder, canReselect bool) error {
 	ctx, exhausted := node.Client.captureFixedDialExhaustion(ctx)
 	err := node.Client.Process(ctx, cmd)
 	if err != nil && exhausted != nil && exhausted.Load() {
-		return &clusterSpecialDialExhausted{err: err}
+		return &clusterSpecialDialExhausted{err: err, node: node, canReselect: canReselect}
 	}
 	return err
 }

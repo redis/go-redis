@@ -2293,6 +2293,31 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			return fanoutErr.err
 		}
 		if specialErr, ok := lastErr.(*clusterSpecialDialExhausted); ok {
+			if specialErr.node != nil {
+				specialErr.node.MarkAsFailing()
+				c.state.LazyReload()
+			}
+			if specialErr.canReselect && specialErr.node != nil && !cmd.NoRetry() && ctx.Err() == nil && attempt < c.opt.MaxRedirects {
+				if exhaustedEndpoints == nil {
+					exhaustedEndpoints = make(map[string]error)
+				}
+				exhaustedEndpoints[specialErr.node.Client.opt.Addr] = specialErr.err
+				// A raw, unpinned SCAN can try another online master, but never
+				// re-dial an endpoint already exhausted by this invocation.
+				node = nil
+				if state, err := c.state.Get(ctx); err == nil {
+					for _, candidate := range state.Masters {
+						if _, failed := exhaustedEndpoints[candidate.Client.opt.Addr]; !failed {
+							node = candidate
+							break
+						}
+					}
+					if node != nil {
+						moved, ask = false, false
+						continue
+					}
+				}
+			}
 			return specialErr.err
 		}
 		if dialExhausted != nil && dialExhausted.Load() {
