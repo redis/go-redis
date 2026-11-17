@@ -7,7 +7,60 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+type pipelineSpillTimeoutPool struct {
+	pool.Pooler
+	gets atomic.Int32
+}
+
+func (p *pipelineSpillTimeoutPool) Get(context.Context) (*pool.Conn, error) {
+	p.gets.Add(1)
+	return nil, pool.ErrPoolTimeout
+}
+
+func TestPipelineSpillDoesNotCarryExhaustionIntoMainPoolTimeout(t *testing.T) {
+	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("pipeline dial unavailable")}
+	var dials atomic.Int32
+	client := NewClient(&Options{
+		Addr: "127.0.0.1:6379", PoolSize: 16, PipelinePoolSize: 1,
+		DialerRetries:      2,
+		DialerRetryBackoff: func(int) time.Duration { return 0 },
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	client.AddHook(fixedDialFailureHook{dial: func(context.Context, string, string) (net.Conn, error) {
+		dials.Add(1)
+		return nil, dialErr
+	}})
+
+	mainPool := client.baseClient.connPool.(*pool.ConnPool)
+	spill := &pipelineSpillTimeoutPool{Pooler: mainPool}
+	client.baseClient.connPool = spill
+	client.baseClient.dialExhaustionPool = mainPool
+
+	ctx, marker := client.baseClient.captureFixedPipelineDialExhaustion(context.Background())
+	if marker == nil {
+		t.Fatal("fixed endpoint must track dial exhaustion")
+	}
+	err := client.baseClient.withPipelineConn(ctx, func(context.Context, *pool.Conn) error {
+		t.Fatal("no connection should be acquired")
+		return nil
+	})
+	if !errors.Is(err, pool.ErrPoolTimeout) {
+		t.Fatalf("spill error = %v, want main pool timeout", err)
+	}
+	if got := dials.Load(); got < 2 {
+		t.Errorf("pipeline dial calls = %d, want an exhausted dial sequence", got)
+	}
+	if got := spill.gets.Load(); got != 1 {
+		t.Errorf("main pool acquisitions = %d, want 1", got)
+	}
+	if marker.Load() {
+		t.Fatal("pipeline dial exhaustion must not suppress retry of main pool timeout")
+	}
+}
 
 type fixedDialFailureHook struct {
 	dial DialHook

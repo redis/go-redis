@@ -1790,6 +1790,13 @@ func (c *baseClient) withPipelineConn(
 	}
 
 	if spill {
+		// The pipeline pool's failed dial sequence is not the result of this
+		// acquisition: the main pool may only be temporarily full, so a
+		// subsequent command retry must still be allowed. If the main pool
+		// also exhausts a dial sequence it will set the marker again.
+		if marker := pipelinePool.DialExhaustion(ctx); marker != nil {
+			marker.Store(false)
+		}
 		cn, retErr = c.connPool.Get(ctx)
 		if retErr != nil {
 			cn = nil
