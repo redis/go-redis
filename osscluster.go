@@ -184,8 +184,12 @@ type ClusterOptions struct {
 	// each node's Options so the pipeline pool can widen its own dial cap.
 	MaxConcurrentDials int
 
-	PoolFIFO              bool
-	PoolSize              int // applies per cluster node and not for the whole cluster
+	PoolFIFO bool
+
+	// PoolSize applies per cluster node and not for the whole cluster.
+	// Zero and negative values are both treated the same way: they select the
+	// default pool size (5 * runtime.GOMAXPROCS(0)) for every node.
+	PoolSize              int
 	PoolTimeout           time.Duration
 	MinIdleConns          int
 	MaxIdleConns          int
@@ -312,7 +316,9 @@ func (opt *ClusterOptions) init() {
 		opt.DialerRetryTimeout = 100 * time.Millisecond
 	}
 
-	if opt.PoolSize == 0 {
+	// <= 0, not == 0: a negative size is copied into every node's pool and
+	// would panic there, so it selects the default like an unset value does.
+	if opt.PoolSize <= 0 {
 		opt.PoolSize = 5 * runtime.GOMAXPROCS(0)
 	}
 	// Do NOT normalize MaxConcurrentDials here. clientOptions() copies this value
@@ -486,7 +492,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.DisableIdentity = q.bool("disable_identity")
 	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
-	o.PoolSize = q.int("pool_size")
+	o.PoolSize = q.nonNegativeInt("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
