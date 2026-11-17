@@ -65,7 +65,7 @@ type SDiffCardOptions struct {
 //
 // For more information about the command please refer to [SADD].
 //
-// [SADD]: (https://redis.io/docs/latest/commands/sadd/)
+// [SADD]: https://redis.io/docs/latest/commands/sadd/
 func (c cmdable) SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "sadd"
@@ -81,7 +81,7 @@ func (c cmdable) SAdd(ctx context.Context, key string, members ...interface{}) *
 //
 // For more information about the command please refer to [SCARD].
 //
-// [SCARD]: (https://redis.io/docs/latest/commands/scard/)
+// [SCARD]: https://redis.io/docs/latest/commands/scard/
 func (c cmdable) SCard(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd(ctx, "scard", key)
 	_ = c(ctx, cmd)
@@ -94,7 +94,7 @@ func (c cmdable) SCard(ctx context.Context, key string) *IntCmd {
 //
 // For more information about the command please refer to [SDIFF].
 //
-// [SDIFF]: (https://redis.io/docs/latest/commands/sdiff/)
+// [SDIFF]: https://redis.io/docs/latest/commands/sdiff/
 func (c cmdable) SDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sdiff"
@@ -112,7 +112,7 @@ func (c cmdable) SDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 //
 // For more information about the command please refer to [SDIFFSTORE].
 //
-// [SDIFFSTORE]: (https://redis.io/docs/latest/commands/sdiffstore/)
+// [SDIFFSTORE]: https://redis.io/docs/latest/commands/sdiffstore/
 func (c cmdable) SDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sdiffstore"
@@ -130,7 +130,7 @@ func (c cmdable) SDiffStore(ctx context.Context, destination string, keys ...str
 //
 // For more information about the command please refer to [SDIFFCARD].
 //
-// [SDIFFCARD]: (https://redis.io/docs/latest/commands/sdiffcard/)
+// [SDIFFCARD]: https://redis.io/docs/latest/commands/sdiffcard/
 func (c cmdable) SDiffCard(ctx context.Context, opts *SDiffCardOptions, keys ...string) *IntCmd {
 	if opts == nil {
 		opts = &SDiffCardOptions{}
@@ -155,7 +155,7 @@ func (c cmdable) SDiffCard(ctx context.Context, opts *SDiffCardOptions, keys ...
 //
 // For more information about the command please refer to [SINTER].
 //
-// [SINTER]: (https://redis.io/docs/latest/commands/sinter/)
+// [SINTER]: https://redis.io/docs/latest/commands/sinter/
 func (c cmdable) SInter(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sinter"
@@ -176,7 +176,7 @@ func (c cmdable) SInter(ctx context.Context, keys ...string) *StringSliceCmd {
 //
 // For more information about the command please refer to [SINTERCARD].
 //
-// [SINTERCARD]: (https://redis.io/docs/latest/commands/sintercard/)
+// [SINTERCARD]: https://redis.io/docs/latest/commands/sintercard/
 func (c cmdable) SInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd {
 	numKeys := len(keys)
 	args := make([]interface{}, 4+numKeys)
@@ -202,7 +202,7 @@ func (c cmdable) SInterCard(ctx context.Context, limit int64, keys ...string) *I
 //
 // For more information about the command please refer to [SINTERSTORE].
 //
-// [SINTERSTORE]: (https://redis.io/docs/latest/commands/sinterstore/)
+// [SINTERSTORE]: https://redis.io/docs/latest/commands/sinterstore/
 func (c cmdable) SInterStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sinterstore"
@@ -221,7 +221,7 @@ func (c cmdable) SInterStore(ctx context.Context, destination string, keys ...st
 //
 // For more information about the command please refer to [SISMEMBER].
 //
-// [SISMEMBER]: (https://redis.io/docs/latest/commands/sismember/)
+// [SISMEMBER]: https://redis.io/docs/latest/commands/sismember/
 func (c cmdable) SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "sismember", key, member)
 	_ = c(ctx, cmd)
@@ -234,7 +234,7 @@ func (c cmdable) SIsMember(ctx context.Context, key string, member interface{}) 
 //
 // For more information about the command please refer to [SMISMEMBER].
 //
-// [SMISMEMBER]: (https://redis.io/docs/latest/commands/smismember/)
+// [SMISMEMBER]: https://redis.io/docs/latest/commands/smismember/
 func (c cmdable) SMIsMember(ctx context.Context, key string, members ...interface{}) *BoolSliceCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "smismember"
@@ -250,7 +250,7 @@ func (c cmdable) SMIsMember(ctx context.Context, key string, members ...interfac
 //
 // For more information about the command please refer to [SMEMBERS].
 //
-// [SMEMBERS]: (https://redis.io/docs/latest/commands/smembers/)
+// [SMEMBERS]: https://redis.io/docs/latest/commands/smembers/
 func (c cmdable) SMembers(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "smembers", key)
 	_ = c(ctx, cmd)
@@ -262,7 +262,7 @@ func (c cmdable) SMembers(ctx context.Context, key string) *StringSliceCmd {
 //
 // For more information about the command please refer to [SMEMBERS].
 //
-// [SMEMBERS]: (https://redis.io/docs/latest/commands/smembers/)
+// [SMEMBERS]: https://redis.io/docs/latest/commands/smembers/
 func (c cmdable) SMembersMap(ctx context.Context, key string) *StringStructMapCmd {
 	cmd := NewStringStructMapCmd(ctx, "smembers", key)
 	_ = c(ctx, cmd)
@@ -275,7 +275,7 @@ func (c cmdable) SMembersMap(ctx context.Context, key string) *StringStructMapCm
 //
 // For more information about the command please refer to [SMOVE].
 //
-// [SMOVE]: (https://redis.io/docs/latest/commands/smove/)
+// [SMOVE]: https://redis.io/docs/latest/commands/smove/
 func (c cmdable) SMove(ctx context.Context, source, destination string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "smove", source, destination, member)
 	_ = c(ctx, cmd)
@@ -287,7 +287,7 @@ func (c cmdable) SMove(ctx context.Context, source, destination string, member i
 //
 // For more information about the command please refer to [SPOP].
 //
-// [SPOP]: (https://redis.io/docs/latest/commands/spop/)
+// [SPOP]: https://redis.io/docs/latest/commands/spop/
 func (c cmdable) SPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "spop", key)
 	_ = c(ctx, cmd)
@@ -299,7 +299,7 @@ func (c cmdable) SPop(ctx context.Context, key string) *StringCmd {
 //
 // For more information about the command please refer to [SPOP].
 //
-// [SPOP]: (https://redis.io/docs/latest/commands/spop/)
+// [SPOP]: https://redis.io/docs/latest/commands/spop/
 func (c cmdable) SPopN(ctx context.Context, key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "spop", key, count)
 	_ = c(ctx, cmd)
@@ -311,7 +311,7 @@ func (c cmdable) SPopN(ctx context.Context, key string, count int64) *StringSlic
 //
 // For more information about the command please refer to [SRANDMEMBER].
 //
-// [SRANDMEMBER]: (https://redis.io/docs/latest/commands/srandmember/)
+// [SRANDMEMBER]: https://redis.io/docs/latest/commands/srandmember/
 func (c cmdable) SRandMember(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "srandmember", key)
 	_ = c(ctx, cmd)
@@ -325,7 +325,7 @@ func (c cmdable) SRandMember(ctx context.Context, key string) *StringCmd {
 //
 // For more information about the command please refer to [SRANDMEMBER].
 //
-// [SRANDMEMBER]: (https://redis.io/docs/latest/commands/srandmember/)
+// [SRANDMEMBER]: https://redis.io/docs/latest/commands/srandmember/
 func (c cmdable) SRandMemberN(ctx context.Context, key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "srandmember", key, count)
 	_ = c(ctx, cmd)
@@ -338,7 +338,7 @@ func (c cmdable) SRandMemberN(ctx context.Context, key string, count int64) *Str
 //
 // For more information about the command please refer to [SREM].
 //
-// [SREM]: (https://redis.io/docs/latest/commands/srem/)
+// [SREM]: https://redis.io/docs/latest/commands/srem/
 func (c cmdable) SRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "srem"
@@ -354,7 +354,7 @@ func (c cmdable) SRem(ctx context.Context, key string, members ...interface{}) *
 //
 // For more information about the command please refer to [SUNION].
 //
-// [SUNION]: (https://redis.io/docs/latest/commands/sunion/)
+// [SUNION]: https://redis.io/docs/latest/commands/sunion/
 func (c cmdable) SUnion(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sunion"
@@ -372,7 +372,7 @@ func (c cmdable) SUnion(ctx context.Context, keys ...string) *StringSliceCmd {
 //
 // For more information about the command please refer to [SUNIONSTORE].
 //
-// [SUNIONSTORE]: (https://redis.io/docs/latest/commands/sunionstore/)
+// [SUNIONSTORE]: https://redis.io/docs/latest/commands/sunionstore/
 func (c cmdable) SUnionStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sunionstore"
@@ -390,7 +390,7 @@ func (c cmdable) SUnionStore(ctx context.Context, destination string, keys ...st
 //
 // For more information about the command please refer to [SUNIONCARD].
 //
-// [SUNIONCARD]: (https://redis.io/docs/latest/commands/sunioncard/)
+// [SUNIONCARD]: https://redis.io/docs/latest/commands/sunioncard/
 func (c cmdable) SUnionCard(ctx context.Context, opts *SUnionCardOptions, keys ...string) *IntCmd {
 	if opts == nil {
 		opts = &SUnionCardOptions{}
@@ -422,7 +422,7 @@ func (c cmdable) SUnionCard(ctx context.Context, opts *SUnionCardOptions, keys .
 //
 // For more information about the command please refer to [SSCAN].
 //
-// [SSCAN]: (https://redis.io/docs/latest/commands/sscan/)
+// [SSCAN]: https://redis.io/docs/latest/commands/sscan/
 func (c cmdable) SScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"sscan", key, cursor}
 	if match != "" {

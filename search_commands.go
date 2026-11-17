@@ -742,7 +742,7 @@ type AggregateQuery []interface{}
 
 // FT_List - Lists all the existing indexes in the database.
 // For more information, please refer to the Redis documentation:
-// [FT._LIST]: (https://redis.io/commands/ft._list/)
+// [FT._LIST]: https://redis.io/commands/ft._list/
 func (c cmdable) FT_List(ctx context.Context) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "FT._LIST")
 	_ = c(ctx, cmd)
@@ -752,7 +752,7 @@ func (c cmdable) FT_List(ctx context.Context) *StringSliceCmd {
 // FTAggregate - Performs a search query on an index and applies a series of aggregate transformations to the result.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // For more information, please refer to the Redis documentation:
-// [FT.AGGREGATE]: (https://redis.io/commands/ft.aggregate/)
+// [FT.AGGREGATE]: https://redis.io/commands/ft.aggregate/
 func (c cmdable) FTAggregate(ctx context.Context, index string, query string) *MapStringInterfaceCmd {
 	args := []interface{}{"FT.AGGREGATE", index, query}
 	cmd := NewMapStringInterfaceCmd(ctx, args...)
@@ -1234,7 +1234,7 @@ func (cmd *AggregateCmd) Clone() Cmder {
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // This function also allows for specifying additional options such as: Verbatim, LoadAll, Timeout, Steps, WithCursor, Params, and DialectVersion.
 // For more information, please refer to the Redis documentation:
-// [FT.AGGREGATE]: (https://redis.io/commands/ft.aggregate/)
+// [FT.AGGREGATE]: https://redis.io/commands/ft.aggregate/
 func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd {
 	args := []interface{}{"FT.AGGREGATE", index, query}
 	if options != nil {
@@ -1370,7 +1370,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 // FTAliasAdd - Adds an alias to an index.
 // The 'index' parameter specifies the index to which the alias is added, and the 'alias' parameter specifies the alias.
 // For more information, please refer to the Redis documentation:
-// [FT.ALIASADD]: (https://redis.io/commands/ft.aliasadd/)
+// [FT.ALIASADD]: https://redis.io/commands/ft.aliasadd/
 func (c cmdable) FTAliasAdd(ctx context.Context, index string, alias string) *StatusCmd {
 	args := []interface{}{"FT.ALIASADD", alias, index}
 	cmd := NewStatusCmd(ctx, args...)
@@ -1381,7 +1381,7 @@ func (c cmdable) FTAliasAdd(ctx context.Context, index string, alias string) *St
 // FTAliasDel - Removes an alias from an index.
 // The 'alias' parameter specifies the alias to be removed.
 // For more information, please refer to the Redis documentation:
-// [FT.ALIASDEL]: (https://redis.io/commands/ft.aliasdel/)
+// [FT.ALIASDEL]: https://redis.io/commands/ft.aliasdel/
 func (c cmdable) FTAliasDel(ctx context.Context, alias string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "FT.ALIASDEL", alias)
 	_ = c(ctx, cmd)
@@ -1395,7 +1395,7 @@ func (c cmdable) FTAliasDel(ctx context.Context, alias string) *StatusCmd {
 // by the server; an index with no aliases yields an empty result, not an
 // error. Available since Redis 8.10.
 // For more information, please refer to the Redis documentation:
-// [FT.ALIASLIST]: (https://redis.io/commands/ft.aliaslist/)
+// [FT.ALIASLIST]: https://redis.io/commands/ft.aliaslist/
 func (c cmdable) FTAliasList(ctx context.Context, index string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "FT.ALIASLIST", index)
 	_ = c(ctx, cmd)
@@ -1406,7 +1406,7 @@ func (c cmdable) FTAliasList(ctx context.Context, index string) *StringSliceCmd 
 // The 'index' parameter specifies the index to which the alias is updated, and the 'alias' parameter specifies the alias.
 // If the alias already exists for a different index, it updates the alias to point to the specified index instead.
 // For more information, please refer to the Redis documentation:
-// [FT.ALIASUPDATE]: (https://redis.io/commands/ft.aliasupdate/)
+// [FT.ALIASUPDATE]: https://redis.io/commands/ft.aliasupdate/
 func (c cmdable) FTAliasUpdate(ctx context.Context, index string, alias string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "FT.ALIASUPDATE", alias, index)
 	_ = c(ctx, cmd)
@@ -1417,7 +1417,7 @@ func (c cmdable) FTAliasUpdate(ctx context.Context, index string, alias string) 
 // The 'index' parameter specifies the index to alter, and the 'skipInitialScan' parameter specifies whether to skip the initial scan.
 // The 'definition' parameter specifies the new definition for the index.
 // For more information, please refer to the Redis documentation:
-// [FT.ALTER]: (https://redis.io/commands/ft.alter/)
+// [FT.ALTER]: https://redis.io/commands/ft.alter/
 func (c cmdable) FTAlter(ctx context.Context, index string, skipInitialScan bool, definition []interface{}) *StatusCmd {
 	args := []interface{}{"FT.ALTER", index}
 	if skipInitialScan {
@@ -1468,7 +1468,7 @@ func (c cmdable) FTConfigSet(ctx context.Context, option string, value interface
 // whether to index hashes or JSONs, prefixes, filters, default language, score, score field, payload field, etc.
 // The 'schema' parameter specifies the schema for the index, which includes the field name, field type, etc.
 // For more information, please refer to the Redis documentation:
-// [FT.CREATE]: (https://redis.io/commands/ft.create/)
+// [FT.CREATE]: https://redis.io/commands/ft.create/
 func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOptions, schema ...*FieldSchema) *StatusCmd {
 	args := []interface{}{"FT.CREATE", index}
 	if options != nil {
@@ -1724,7 +1724,7 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 // FTCursorDel - Deletes a cursor from an existing index.
 // The 'index' parameter specifies the index from which to delete the cursor, and the 'cursorId' parameter specifies the ID of the cursor to delete.
 // For more information, please refer to the Redis documentation:
-// [FT.CURSOR DEL]: (https://redis.io/commands/ft.cursor-del/)
+// [FT.CURSOR DEL]: https://redis.io/commands/ft.cursor-del/
 func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "FT.CURSOR", "DEL", index, cursorId)
 	_ = c(ctx, cmd)
@@ -1734,7 +1734,7 @@ func (c cmdable) FTCursorDel(ctx context.Context, index string, cursorId int) *S
 // FTCursorRead - Reads the next results from an existing cursor.
 // The 'index' parameter specifies the index from which to read the cursor, the 'cursorId' parameter specifies the ID of the cursor to read, and the 'count' parameter specifies the number of results to read.
 // For more information, please refer to the Redis documentation:
-// [FT.CURSOR READ]: (https://redis.io/commands/ft.cursor-read/)
+// [FT.CURSOR READ]: https://redis.io/commands/ft.cursor-read/
 func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int, count int) *MapStringInterfaceCmd {
 	args := []interface{}{"FT.CURSOR", "READ", index, cursorId}
 	if count > 0 {
@@ -1748,7 +1748,7 @@ func (c cmdable) FTCursorRead(ctx context.Context, index string, cursorId int, c
 // FTDictAdd - Adds terms to a dictionary.
 // The 'dict' parameter specifies the dictionary to which to add the terms, and the 'term' parameter specifies the terms to add.
 // For more information, please refer to the Redis documentation:
-// [FT.DICTADD]: (https://redis.io/commands/ft.dictadd/)
+// [FT.DICTADD]: https://redis.io/commands/ft.dictadd/
 func (c cmdable) FTDictAdd(ctx context.Context, dict string, term ...interface{}) *IntCmd {
 	args := []interface{}{"FT.DICTADD", dict}
 	args = append(args, term...)
@@ -1760,7 +1760,7 @@ func (c cmdable) FTDictAdd(ctx context.Context, dict string, term ...interface{}
 // FTDictDel - Deletes terms from a dictionary.
 // The 'dict' parameter specifies the dictionary from which to delete the terms, and the 'term' parameter specifies the terms to delete.
 // For more information, please refer to the Redis documentation:
-// [FT.DICTDEL]: (https://redis.io/commands/ft.dictdel/)
+// [FT.DICTDEL]: https://redis.io/commands/ft.dictdel/
 func (c cmdable) FTDictDel(ctx context.Context, dict string, term ...interface{}) *IntCmd {
 	args := []interface{}{"FT.DICTDEL", dict}
 	args = append(args, term...)
@@ -1772,7 +1772,7 @@ func (c cmdable) FTDictDel(ctx context.Context, dict string, term ...interface{}
 // FTDictDump - Returns all terms in the specified dictionary.
 // The 'dict' parameter specifies the dictionary from which to return the terms.
 // For more information, please refer to the Redis documentation:
-// [FT.DICTDUMP]: (https://redis.io/commands/ft.dictdump/)
+// [FT.DICTDUMP]: https://redis.io/commands/ft.dictdump/
 func (c cmdable) FTDictDump(ctx context.Context, dict string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "FT.DICTDUMP", dict)
 	_ = c(ctx, cmd)
@@ -1782,7 +1782,7 @@ func (c cmdable) FTDictDump(ctx context.Context, dict string) *StringSliceCmd {
 // FTDropIndex - Deletes an index.
 // The 'index' parameter specifies the index to delete.
 // For more information, please refer to the Redis documentation:
-// [FT.DROPINDEX]: (https://redis.io/commands/ft.dropindex/)
+// [FT.DROPINDEX]: https://redis.io/commands/ft.dropindex/
 func (c cmdable) FTDropIndex(ctx context.Context, index string) *StatusCmd {
 	args := []interface{}{"FT.DROPINDEX", index}
 	cmd := NewStatusCmd(ctx, args...)
@@ -1793,7 +1793,7 @@ func (c cmdable) FTDropIndex(ctx context.Context, index string) *StatusCmd {
 // FTDropIndexWithArgs - Deletes an index with options.
 // The 'index' parameter specifies the index to delete, and the 'options' parameter specifies the DeleteDocs option for docs deletion.
 // For more information, please refer to the Redis documentation:
-// [FT.DROPINDEX]: (https://redis.io/commands/ft.dropindex/)
+// [FT.DROPINDEX]: https://redis.io/commands/ft.dropindex/
 func (c cmdable) FTDropIndexWithArgs(ctx context.Context, index string, options *FTDropIndexOptions) *StatusCmd {
 	args := []interface{}{"FT.DROPINDEX", index}
 	if options != nil {
@@ -1809,7 +1809,7 @@ func (c cmdable) FTDropIndexWithArgs(ctx context.Context, index string, options 
 // FTExplain - Returns the execution plan for a complex query.
 // The 'index' parameter specifies the index to query, and the 'query' parameter specifies the query string.
 // For more information, please refer to the Redis documentation:
-// [FT.EXPLAIN]: (https://redis.io/commands/ft.explain/)
+// [FT.EXPLAIN]: https://redis.io/commands/ft.explain/
 func (c cmdable) FTExplain(ctx context.Context, index string, query string) *StringCmd {
 	cmd := NewStringCmd(ctx, "FT.EXPLAIN", index, query)
 	_ = c(ctx, cmd)
@@ -1819,7 +1819,7 @@ func (c cmdable) FTExplain(ctx context.Context, index string, query string) *Str
 // FTExplainWithArgs - Returns the execution plan for a complex query with options.
 // The 'index' parameter specifies the index to query, the 'query' parameter specifies the query string, and the 'options' parameter specifies the Dialect for the query.
 // For more information, please refer to the Redis documentation:
-// [FT.EXPLAIN]: (https://redis.io/commands/ft.explain/)
+// [FT.EXPLAIN]: https://redis.io/commands/ft.explain/
 func (c cmdable) FTExplainWithArgs(ctx context.Context, index string, query string, options *FTExplainOptions) *StringCmd {
 	if options == nil {
 		options = &FTExplainOptions{}
@@ -2447,7 +2447,7 @@ func (cmd *FTInfoCmd) Clone() Cmder {
 // FTInfo - Retrieves information about an index.
 // The 'index' parameter specifies the index to retrieve information about.
 // For more information, please refer to the Redis documentation:
-// [FT.INFO]: (https://redis.io/commands/ft.info/)
+// [FT.INFO]: https://redis.io/commands/ft.info/
 func (c cmdable) FTInfo(ctx context.Context, index string) *FTInfoCmd {
 	cmd := newFTInfoCmd(ctx, "FT.INFO", index)
 	_ = c(ctx, cmd)
@@ -2458,7 +2458,7 @@ func (c cmdable) FTInfo(ctx context.Context, index string) *FTInfoCmd {
 // For more details about spellcheck query please follow:
 // https://redis.io/docs/interact/search-and-query/advanced-concepts/spellcheck/
 // For more information, please refer to the Redis documentation:
-// [FT.SPELLCHECK]: (https://redis.io/commands/ft.spellcheck/)
+// [FT.SPELLCHECK]: https://redis.io/commands/ft.spellcheck/
 func (c cmdable) FTSpellCheck(ctx context.Context, index string, query string) *FTSpellCheckCmd {
 	args := []interface{}{"FT.SPELLCHECK", index, query}
 	cmd := newFTSpellCheckCmd(ctx, args...)
@@ -2470,7 +2470,7 @@ func (c cmdable) FTSpellCheck(ctx context.Context, index string, query string) *
 // For more details about spellcheck query please follow:
 // https://redis.io/docs/interact/search-and-query/advanced-concepts/spellcheck/
 // For more information, please refer to the Redis documentation:
-// [FT.SPELLCHECK]: (https://redis.io/commands/ft.spellcheck/)
+// [FT.SPELLCHECK]: https://redis.io/commands/ft.spellcheck/
 func (c cmdable) FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *FTSpellCheckCmd {
 	args := []interface{}{"FT.SPELLCHECK", index, query}
 	if options != nil {
@@ -3441,7 +3441,7 @@ func (cmd *FTHybridCmd) Clone() Cmder {
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // For more information, please refer to the Redis documentation about [FT.SEARCH].
 //
-// [FT.SEARCH]: (https://redis.io/commands/ft.search/)
+// [FT.SEARCH]: https://redis.io/commands/ft.search/
 func (c cmdable) FTSearch(ctx context.Context, index string, query string) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
 	cmd := newFTSearchCmd(ctx, &FTSearchOptions{}, args...)
@@ -3456,7 +3456,7 @@ type SearchQuery []interface{}
 // and the 'options' parameter specifies additional options for the search.
 // For more information, please refer to the Redis documentation about [FT.SEARCH].
 //
-// [FT.SEARCH]: (https://redis.io/commands/ft.search/)
+// [FT.SEARCH]: https://redis.io/commands/ft.search/
 func FTSearchQuery(query string, options *FTSearchOptions) (SearchQuery, error) {
 	queryArgs := []interface{}{query}
 	if options != nil {
@@ -3577,7 +3577,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) (SearchQuery, error) 
 // and the 'options' parameter specifies additional options for the search.
 // For more information, please refer to the Redis documentation about [FT.SEARCH].
 //
-// [FT.SEARCH]: (https://redis.io/commands/ft.search/)
+// [FT.SEARCH]: https://redis.io/commands/ft.search/
 func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query string, options *FTSearchOptions) *FTSearchCmd {
 	args := []interface{}{"FT.SEARCH", index, query}
 	if options != nil {
@@ -3858,7 +3858,7 @@ func (cmd *FTSynDumpCmd) Clone() Cmder {
 // FTSynDump - Dumps the contents of a synonym group.
 // The 'index' parameter specifies the index to dump.
 // For more information, please refer to the Redis documentation:
-// [FT.SYNDUMP]: (https://redis.io/commands/ft.syndump/)
+// [FT.SYNDUMP]: https://redis.io/commands/ft.syndump/
 func (c cmdable) FTSynDump(ctx context.Context, index string) *FTSynDumpCmd {
 	cmd := NewFTSynDumpCmd(ctx, "FT.SYNDUMP", index)
 	_ = c(ctx, cmd)
@@ -3868,7 +3868,7 @@ func (c cmdable) FTSynDump(ctx context.Context, index string) *FTSynDumpCmd {
 // FTSynUpdate - Creates or updates a synonym group with additional terms.
 // The 'index' parameter specifies the index to update, the 'synGroupId' parameter specifies the synonym group id, and the 'terms' parameter specifies the additional terms.
 // For more information, please refer to the Redis documentation:
-// [FT.SYNUPDATE]: (https://redis.io/commands/ft.synupdate/)
+// [FT.SYNUPDATE]: https://redis.io/commands/ft.synupdate/
 func (c cmdable) FTSynUpdate(ctx context.Context, index string, synGroupId interface{}, terms []interface{}) *StatusCmd {
 	args := []interface{}{"FT.SYNUPDATE", index, synGroupId}
 	args = append(args, terms...)
@@ -3880,7 +3880,7 @@ func (c cmdable) FTSynUpdate(ctx context.Context, index string, synGroupId inter
 // FTSynUpdateWithArgs - Creates or updates a synonym group with additional terms and options.
 // The 'index' parameter specifies the index to update, the 'synGroupId' parameter specifies the synonym group id, the 'options' parameter specifies additional options for the update, and the 'terms' parameter specifies the additional terms.
 // For more information, please refer to the Redis documentation:
-// [FT.SYNUPDATE]: (https://redis.io/commands/ft.synupdate/)
+// [FT.SYNUPDATE]: https://redis.io/commands/ft.synupdate/
 func (c cmdable) FTSynUpdateWithArgs(ctx context.Context, index string, synGroupId interface{}, options *FTSynUpdateOptions, terms []interface{}) *StatusCmd {
 	if options == nil {
 		options = &FTSynUpdateOptions{}
@@ -3898,7 +3898,7 @@ func (c cmdable) FTSynUpdateWithArgs(ctx context.Context, index string, synGroup
 // FTTagVals - Returns all distinct values indexed in a tag field.
 // The 'index' parameter specifies the index to check, and the 'field' parameter specifies the tag field to retrieve values from.
 // For more information, please refer to the Redis documentation:
-// [FT.TAGVALS]: (https://redis.io/commands/ft.tagvals/)
+// [FT.TAGVALS]: https://redis.io/commands/ft.tagvals/
 func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "FT.TAGVALS", index, field)
 	_ = c(ctx, cmd)
