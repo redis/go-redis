@@ -285,3 +285,31 @@ func TestDialConn_NoBackoffAfterLastAttempt(t *testing.T) {
 		t.Fatalf("dialConn took too long (%v); likely slept after last attempt (backoff=%v)", elapsed, backoff)
 	}
 }
+
+func TestOpenDialBreakerDoesNotMarkThisAttemptExhausted(t *testing.T) {
+	dialErr := errors.New("previous dial failed")
+	var dials atomic.Int32
+	p := NewConnPool(&Options{
+		PoolSize: 1,
+		Dialer: func(context.Context) (net.Conn, error) {
+			dials.Add(1)
+			return nil, dialErr
+		},
+	})
+	defer p.Close()
+	p.setLastDialError(dialErr)
+	p.dialErrorsNum.Store(1)
+
+	var exhausted atomic.Bool
+	ctx := p.WithDialExhaustion(context.Background(), &exhausted)
+	_, err := p.dialConn(ctx, true)
+	if err != dialErr {
+		t.Fatalf("open breaker returned %v, want original dial error", err)
+	}
+	if exhausted.Load() {
+		t.Fatal("open breaker did not run a dial sequence; retries must remain available")
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("open breaker made %d dials, want 0", got)
+	}
+}

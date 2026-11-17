@@ -898,11 +898,10 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
-		err := p.getLastDialError()
-		if err != nil {
-			p.markDialExhaustion(ctx)
-		}
-		return nil, err
+		// The breaker rejected this request before it could start a dial
+		// sequence. Keep command-level retries available while tryDial probes
+		// for recovery in the background.
+		return nil, p.getLastDialError()
 	}
 
 	// Record dial start time for connection creation metric

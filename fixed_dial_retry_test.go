@@ -255,3 +255,53 @@ func TestPipelineAndWatchDoNotRestartFixedDialSequence(t *testing.T) {
 		})
 	}
 }
+
+type ringRetrySelectionHash struct{ calls atomic.Int32 }
+
+func (h *ringRetrySelectionHash) Get(string) string {
+	if h.calls.Add(1) <= 2 {
+		return "dead"
+	}
+	return "healthy"
+}
+
+func TestRingKeylessRetrySkipsExhaustedShard(t *testing.T) {
+	const deadAddr = "127.0.0.1:7301"
+	const healthyAddr = "127.0.0.1:7302"
+	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("dial unavailable")}
+	var failedDials atomic.Int32
+	var healthyPings int
+	selection := &ringRetrySelectionHash{}
+	ring := NewRing(&RingOptions{
+		Addrs: map[string]string{"dead": deadAddr, "healthy": healthyAddr},
+		PoolSize: 16, MaxRetries: 2, DialerRetries: 2,
+		DialerRetryBackoff: func(int) time.Duration { return 0 },
+		MinRetryBackoff: -1, MaxRetryBackoff: -1, HeartbeatFrequency: time.Hour,
+		NewConsistentHash: func([]string) ConsistentHash { return selection },
+		NewClient: func(opt *Options) *Client {
+			client := NewClient(opt)
+			if opt.Addr == deadAddr {
+				client.AddHook(fixedDialFailureHook{dial: func(context.Context, string, string) (net.Conn, error) {
+					failedDials.Add(1)
+					return nil, dialErr
+				}})
+			} else {
+				client.AddHook(pongHook{pings: &healthyPings})
+			}
+			return client
+		},
+	})
+	t.Cleanup(func() { _ = ring.Close() })
+	if got, err := ring.Ping(context.Background()).Result(); err != nil || got != "PONG" {
+		t.Fatalf("keyless retry = (%q, %v), want (PONG, nil)", got, err)
+	}
+	if got := selection.calls.Load(); got != 3 {
+		t.Errorf("shard selections = %d, want 3 (dead, dead, healthy)", got)
+	}
+	if got := failedDials.Load(); got != 2 {
+		t.Errorf("failed shard dials = %d, want one exhausted sequence of 2", got)
+	}
+	if healthyPings != 1 {
+		t.Errorf("healthy shard PINGs = %d, want 1", healthyPings)
+	}
+}
