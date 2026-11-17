@@ -3333,18 +3333,10 @@ func (c *ClusterClient) processPipelineNodeConn(
 		err := c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failedCmds, route, flags)
 		if err == nil || isRedisError(err) {
 			node.Client.himportAfterBatch(cn, injected, cmds)
-			// SETs of registered fieldsets that lost their session state
-			// re-queue for the next attempt, which re-prepares lazily —
-			// the cluster equivalent of himportRetryFailedSets, bounded by
-			// the pipeline's attempt budget. A non-nil redis error here
-			// means pipelineReadCmds already re-queued the whole batch
-			// (retryable first-command error); adding the SETs again would
-			// duplicate them in the next attempt.
-			if err == nil {
-				c.himportRequeueFailedSets(ctx, cmds, failedCmds)
-			}
-		}
-		if err == nil || isRedisError(err) {
+			// "no such fieldset" is not selected by retryCmds. Re-queue those
+			// SETs on a Redis error too, including when another command in the
+			// batch is the one being retried. The next attempt re-prepares.
+			c.himportRequeueFailedSets(ctx, cmds, failedCmds)
 			// ref to #1914: if a node was replaced within a same hostname, the
 			// connection still points to the old node, which answers MOVED with
 			// that same hostname. When returning MOVED, a connection will be dropped.

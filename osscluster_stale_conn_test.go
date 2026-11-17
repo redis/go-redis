@@ -422,6 +422,120 @@ func serveCloseAfterIncr(netConn net.Conn, incrs *atomic.Int32) {
 	}
 }
 
+// TestClusterPipelineRetryKeepsHImportRecovery tests a batch whose first
+// reply is TRYAGAIN while a later HIMPORT SET of a registered fieldset
+// fails with "no such fieldset". The SET is retried, and the HIMPORT SET
+// is re-queued beside it so the session-loss recovery still runs.
+func TestClusterPipelineRetryKeepsHImportRecovery(t *testing.T) {
+	const addr = "node-1.example:6379"
+	var sets atomic.Int32
+	var himportSets atomic.Int32
+	var mu sync.Mutex
+	var seen []string
+	ln := newArgReplyServer(t, func(args []string) string {
+		mu.Lock()
+		seen = append(seen, strings.Join(args, " "))
+		mu.Unlock()
+		if len(args) == 0 {
+			return "+OK\r\n"
+		}
+		switch strings.ToLower(args[0]) {
+		case "hello":
+			return "%0\r\n"
+		case "set":
+			if sets.Add(1) == 1 {
+				return "-TRYAGAIN Multiple keys request during rehashing of slot\r\n"
+			}
+			return "+OK\r\n"
+		case "himport":
+			sub := ""
+			if len(args) > 1 {
+				sub = strings.ToLower(args[1])
+			}
+			switch sub {
+			case "set":
+				if himportSets.Add(1) == 1 {
+					return "-ERR no such fieldset\r\n"
+				}
+				return "+OK\r\n"
+			case "discard", "discardall":
+				return ":1\r\n"
+			default:
+				return "+OK\r\n"
+			}
+		default:
+			return "+OK\r\n"
+		}
+	})
+	client := newPipelineReplayClusterClient(t, addr, ln)
+	ctx := context.Background()
+	if err := client.HImportPrepare(ctx, "fs", "f").Err(); err != nil {
+		t.Fatalf("HImportPrepare: %v", err)
+	}
+	var set *StatusCmd
+	var himport *StatusCmd
+	_, err := client.Pipelined(ctx, func(pipe Pipeliner) error {
+		set = pipe.Set(ctx, "key", "v", 0)
+		himport = pipe.HImportSet(ctx, "hash", "fs", "value")
+		return nil
+	})
+	if err != nil || set.Err() != nil || himport.Err() != nil {
+		mu.Lock()
+		log := strings.Join(seen, "\n")
+		mu.Unlock()
+		t.Fatalf("exec=%v set=%v himport=%v sets=%d himportSets=%d\n%s",
+			err, set.Err(), himport.Err(), sets.Load(), himportSets.Load(), log)
+	}
+	if sets.Load() != 2 || himportSets.Load() != 2 {
+		t.Fatalf("sets=%d himportSets=%d, want 2 and 2", sets.Load(), himportSets.Load())
+	}
+}
+
+func newArgReplyServer(t *testing.T, reply func(args []string) string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveArgReply(conn, reply)
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	return ":" + port
+}
+
+func serveArgReply(netConn net.Conn, reply func(args []string) string) {
+	defer netConn.Close()
+	scanner := bufio.NewScanner(netConn)
+	for scanner.Scan() {
+		header := scanner.Text()
+		if !strings.HasPrefix(header, "*") {
+			return
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(header, "*"))
+		if err != nil || n <= 0 {
+			return
+		}
+		args := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			if !scanner.Scan() || !strings.HasPrefix(scanner.Text(), "$") || !scanner.Scan() {
+				return
+			}
+			args = append(args, scanner.Text())
+		}
+		if _, err := netConn.Write([]byte(reply(args))); err != nil {
+			return
+		}
+	}
+}
+
 // TestClusterPipelineRetryKeepsOrder tests a batch whose first reply is
 // retryable while a later command gets MOVED to the same node. The retry
 // must keep the original command order.
