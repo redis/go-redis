@@ -338,11 +338,31 @@ func TestClusterPipelineRetryDoesNotReplaySuccess(t *testing.T) {
 		if val, err := incr.Result(); err != nil || val != 1 {
 			t.Fatalf("incr %d, error: %q; want 1, nil", val, err)
 		}
-		if err := get.Err(); err == nil {
-			t.Fatal("get error: nil; want a read error")
+		if val, err := get.Result(); err != nil || val != "ok" {
+			t.Fatalf("get %q, error: %q; want ok, nil", val, err)
 		}
 		if n := incrs.Load(); n != 1 {
 			t.Fatalf("server served %d INCRs, want 1", n)
+		}
+	})
+
+	t.Run("closed before reply", func(t *testing.T) {
+		var sets atomic.Int32
+		srv := newDropFirstBatchServer(t, &sets)
+		client := newPipelineReplayClusterClient(t, addr, srv, 1)
+		ctx := context.Background()
+		var a, b, c *StatusCmd
+		_, err := client.Pipelined(ctx, func(pipe Pipeliner) error {
+			a = pipe.Set(ctx, "a", "1", 0)
+			b = pipe.Set(ctx, "b", "2", 0)
+			c = pipe.Set(ctx, "c", "3", 0)
+			return nil
+		})
+		if err != nil || a.Err() != nil || b.Err() != nil || c.Err() != nil {
+			t.Fatalf("exec=%v a=%v b=%v c=%v; want nil", err, a.Err(), b.Err(), c.Err())
+		}
+		if n := sets.Load(); n != 6 {
+			t.Fatalf("server saw %d SETs, want 6", n)
 		}
 	})
 }
@@ -415,8 +435,75 @@ func serveCloseAfterIncr(netConn net.Conn, incrs *atomic.Int32) {
 		case "incr":
 			reply = fmt.Sprintf(":%d\r\n", incrs.Add(1))
 			closeAfter = true
+		case "get":
+			reply = "$2\r\nok\r\n"
 		}
 		if _, err := netConn.Write([]byte(reply)); err != nil || closeAfter {
+			return
+		}
+	}
+}
+
+func newDropFirstBatchServer(t *testing.T, sets *atomic.Int32) string {
+	t.Helper()
+	var dropped atomic.Bool
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveDropFirstBatch(conn, sets, &dropped)
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	return ":" + port
+}
+
+func serveDropFirstBatch(netConn net.Conn, sets *atomic.Int32, dropped *atomic.Bool) {
+	defer netConn.Close()
+	scanner := bufio.NewScanner(netConn)
+	n := 0
+	for scanner.Scan() {
+		header := scanner.Text()
+		if !strings.HasPrefix(header, "*") {
+			return
+		}
+		argc, err := strconv.Atoi(strings.TrimPrefix(header, "*"))
+		if err != nil || argc <= 0 {
+			return
+		}
+		command := ""
+		for i := 0; i < argc; i++ {
+			if !scanner.Scan() || !strings.HasPrefix(scanner.Text(), "$") || !scanner.Scan() {
+				return
+			}
+			if i == 0 {
+				command = strings.ToLower(scanner.Text())
+			}
+		}
+		if command == "set" && !dropped.Load() {
+			sets.Add(1)
+			n++
+			if n == 3 {
+				dropped.Store(true)
+				return
+			}
+			continue
+		}
+		reply := "+OK\r\n"
+		if command == "hello" {
+			reply = "%0\r\n"
+		}
+		if command == "set" {
+			sets.Add(1)
+		}
+		if _, err := netConn.Write([]byte(reply)); err != nil {
 			return
 		}
 	}

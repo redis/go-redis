@@ -3370,8 +3370,12 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	// Track them by index: a Cmder value is not always comparable.
 	var redirects []pipelineRedirect
 	read := make([]bool, len(cmds))
-	// Read errors retry only what Redis asked to retry. Session-loss SETs
-	// join the pass after himportAfterBatch, once the whole batch is read.
+	// failedAt is the command whose reply could not be read. That command
+	// and the unread tail are queued again; parsed successes are not.
+	// -1 means this was not a transport read error.
+	failedAt := -1
+	// Session-loss SETs join the pass after himportAfterBatch, once the
+	// whole batch is read.
 	includeHImport := false
 	defer func() {
 		for _, r := range redirects {
@@ -3386,6 +3390,9 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 				failedCmds.Add(redirects[i].node, redirects[i].cmds...)
 				redirects[i].node = nil
 				return true
+			}
+			if failedAt >= 0 && i >= failedAt {
+				return false
 			}
 			if !read[i] {
 				return true
@@ -3448,6 +3455,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 
 		if !isRedisError(err) {
 			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+				failedAt = i
 				retryCmds()
 			}
 			setCmdsErr(cmds[i+1:], err)
