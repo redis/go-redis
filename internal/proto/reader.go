@@ -2,12 +2,14 @@ package proto
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"math/big"
 	"strconv"
+	"sync"
 
 	"github.com/redis/go-redis/v9/internal/util"
 )
@@ -78,7 +80,14 @@ const maxNestingDepth = 1000
 var errMaxNestingDepth = errors.New("redis: maximum nesting depth exceeded")
 
 type Reader struct {
-	rd       *bufio.Reader
+	rd  *bufio.Reader
+	src io.Reader
+
+	// Conn.WithReader may be entered concurrently for its usedAt bookkeeping
+	// (internal/pool/conn_used_at_test.go), and bufio.Reader is not safe for
+	// concurrent use. DiscardCachedReadError resets it, so serialise that reset.
+	resetMu sync.Mutex
+
 	depth    int
 	fatalErr error
 }
@@ -99,14 +108,47 @@ func (r *Reader) enterAggregate() error {
 
 func NewReader(rd io.Reader) *Reader {
 	return &Reader{
-		rd: bufio.NewReaderSize(rd, DefaultBufferSize),
+		rd:  bufio.NewReaderSize(rd, DefaultBufferSize),
+		src: rd,
 	}
 }
 
 func NewReaderSize(rd io.Reader, size int) *Reader {
 	return &Reader{
-		rd: bufio.NewReaderSize(rd, size),
+		rd:  bufio.NewReaderSize(rd, size),
+		src: rd,
 	}
+}
+
+// DiscardCachedReadError drops a read error that bufio cached from a previous
+// operation, leaving the parser state alone. A transport can return a complete
+// reply and a timeout together: the reply parses, but the wrapped timeout stays
+// cached and would be reported for the next command on the connection.
+//
+// Bytes already buffered are kept: the cached error can sit behind frames the
+// previous command left in the buffer (a push, or the start of the next reply).
+// bufio has no API to clear its cached error without a Reset, so the buffered
+// bytes are copied out and replayed ahead of the underlying reader. The connection
+// only calls this after a read returned bytes together with an error, and once per
+// such read: on the common path the buffer is left untouched.
+func (r *Reader) DiscardCachedReadError() {
+	r.resetMu.Lock()
+	defer r.resetMu.Unlock()
+	if r.src == nil {
+		return
+	}
+	n := r.rd.Buffered()
+	if n == 0 {
+		r.rd.Reset(r.src)
+		return
+	}
+	buffered := make([]byte, n)
+	if _, err := io.ReadFull(r.rd, buffered); err != nil {
+		// Reading bytes bufio already holds never touches the transport, so this is
+		// unreachable; leave the reader untouched rather than lose the bytes.
+		return
+	}
+	r.rd.Reset(io.MultiReader(bytes.NewReader(buffered), r.src))
 }
 
 func (r *Reader) Buffered() int {
@@ -127,6 +169,7 @@ func (r *Reader) Peek(n int) ([]byte, error) {
 
 func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
+	r.src = rd
 	r.depth = 0
 	r.fatalErr = nil
 }

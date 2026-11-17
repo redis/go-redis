@@ -1318,6 +1318,13 @@ func (cn *Conn) WithReader(
 			}()
 		}
 	}
+	// A read that returned bytes together with an error leaves that error cached by
+	// bufio, and it belongs to the previous command. Drop it before this one reads
+	// (#4305). The common path is a flag check: the buffer is only copied and reset
+	// in the rare read that produced both bytes and an error at once.
+	if cn.deadlineReader.takeReadWithError() {
+		cn.rd.DiscardCachedReadError()
+	}
 	return fn(cn.rd)
 }
 
