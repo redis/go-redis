@@ -872,12 +872,35 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	return cn, nil
 }
 
+type dialExhaustedKey struct{ pool *ConnPool }
+
+// WithDialExhaustion tracks a failed pool dial sequence without wrapping its
+// error. The returned marker belongs to this connection acquisition only.
+func (p *ConnPool) WithDialExhaustion(ctx context.Context, exhausted *atomic.Bool) context.Context {
+	return context.WithValue(ctx, dialExhaustedKey{p}, exhausted)
+}
+
+// DialExhaustion retrieves the marker for this pool, if the caller set one.
+func (p *ConnPool) DialExhaustion(ctx context.Context) *atomic.Bool {
+	exhausted, _ := ctx.Value(dialExhaustedKey{p}).(*atomic.Bool)
+	return exhausted
+}
+
+func (p *ConnPool) markDialExhaustion(ctx context.Context) {
+	if exhausted := p.DialExhaustion(ctx); exhausted != nil {
+		exhausted.Store(true)
+	}
+}
+
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
 
 	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
+		// The breaker rejected this request before it could start a dial
+		// sequence. Keep command-level retries available while tryDial probes
+		// for recovery in the background.
 		return nil, p.getLastDialError()
 	}
 
@@ -954,6 +977,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if p.dialErrorsNum.Add(1) == uint32(p.cfg.PoolSize) {
 		go p.tryDial()
 	}
+	p.markDialExhaustion(ctx)
 	return nil, lastErr
 }
 
@@ -1429,7 +1453,15 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 	}
 
 	// Don't apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
-	dialCtx, cancel := context.WithCancel(context.Background())
+	base := context.Background()
+	// A queued dial can lose a race to another worker that supplies an idle
+	// connection. Do not let a failed losing dial mark a successful Get.
+	var dialExhausted *atomic.Bool
+	if p.DialExhaustion(ctx) != nil {
+		dialExhausted = new(atomic.Bool)
+		base = p.WithDialExhaustion(base, dialExhausted)
+	}
+	dialCtx, cancel := context.WithCancel(base)
 
 	w := &wantConn{
 		ctx:       dialCtx,
@@ -1490,6 +1522,9 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 		return nil, err
 	case result := <-w.result:
 		err = result.err
+		if err != nil && dialExhausted != nil && dialExhausted.Load() {
+			p.markDialExhaustion(ctx)
+		}
 		return result.cn, err
 	}
 }
@@ -2001,7 +2036,6 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 }
 
 func (p *ConnPool) recordConnectionMetrics(ctx context.Context, cn *Conn, reason string, fromState string, countCb connectionCountCallback) {
-
 	// Record connection count decrement (UpDownCounter) for the state the connection was in
 	if countCb != nil && fromState != "" {
 		countCb(ctx, -1, cn, fromState, false)

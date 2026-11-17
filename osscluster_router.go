@@ -314,6 +314,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	var moved, ask bool
 	var redirected bool
 	var lastErr error
+	var exhaustedEndpoints map[string]error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		ctx = callerCtx
 		if redirected {
@@ -346,6 +347,11 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			}
 		}
 
+		endpoint := node.Client.opt.Addr
+		if err := exhaustedEndpoints[endpoint]; err != nil {
+			return err
+		}
+		ctx, dialExhausted := node.Client.captureFixedDialExhaustion(ctx)
 		c.cscCheckNode(cmd, node.Client)
 		if ask {
 			ask = false
@@ -371,6 +377,19 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			return nil
 		}
 
+		if dialExhausted != nil && dialExhausted.Load() {
+			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+				return lastErr
+			}
+			moved, ask, redirected = false, false, false
+			if exhaustedEndpoints == nil {
+				exhaustedEndpoints = make(map[string]error)
+			}
+			exhaustedEndpoints[endpoint] = lastErr
+			node.MarkAsFailing()
+			node = nil
+			continue
+		}
 		if readOnly := isReadOnlyError(lastErr); readOnly || lastErr == pool.ErrClosed {
 			if readOnly {
 				c.state.LazyReload()
@@ -499,8 +518,12 @@ func (c *ClusterClient) executeCursorCommand(
 	}
 
 	c.cscCheckNode(cmd, node.Client)
-	err = node.Client.Process(ctx, cmd)
+	attemptCtx, exhausted := node.Client.captureFixedDialExhaustion(ctx)
+	err = node.Client.Process(attemptCtx, cmd)
 	if err != nil {
+		if exhausted != nil && exhausted.Load() {
+			return &clusterSpecialDialExhausted{err: err, node: node}
+		}
 		if moved, ask, _ := isMovedError(err); moved || ask {
 			return &redirectFromNodeError{node: node, endpoint: servingEndpointFromErr(err), err: err}
 		}
@@ -613,9 +636,16 @@ func (c *ClusterClient) executeParallelTarget(
 			}
 		}
 		c.cscCheckNode(cmd, node.Client)
-		lastErr = node.Client.Process(ctx, cmd)
+		attemptCtx, dialExhausted := node.Client.captureFixedDialExhaustion(ctx)
+		lastErr = node.Client.Process(attemptCtx, cmd)
 		if lastErr == nil {
 			return nil
+		}
+		if dialExhausted != nil && dialExhausted.Load() {
+			if ctx.Err() == nil {
+				c.state.LazyReload()
+			}
+			return lastErr
 		}
 		if targetSlot >= 0 && (isReadOnlyError(lastErr) || lastErr == pool.ErrClosed) {
 			state, err := c.state.ReloadOrGet(ctx)

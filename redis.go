@@ -439,7 +439,10 @@ type pipelinePoolRef struct {
 }
 
 type baseClient struct {
-	cscPolicy cscPolicy
+	fixedDialEndpoint bool
+	// For a sticky transaction, the pool that actually performs dials.
+	dialExhaustionPool *pool.ConnPool
+	cscPolicy          cscPolicy
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -599,10 +602,11 @@ func (c *baseClient) clone() *baseClient {
 		// cscPoolHook and cscActive travel with the cache (read in processCached);
 		// the owner-only fields — cscDrainHandle, cscOwnsCache — do not, so a clone's
 		// Close never tears down the owner's resources.
-		cscPoolHook:  c.cscPoolHook,
-		cscActive:    c.cscActive,
-		cscKeyPrefix: c.cscKeyPrefix,
-		cscPolicy:    c.cscPolicy,
+		cscPoolHook:       c.cscPoolHook,
+		cscActive:         c.cscActive,
+		cscKeyPrefix:      c.cscKeyPrefix,
+		cscPolicy:         c.cscPolicy,
+		fixedDialEndpoint: c.fixedDialEndpoint,
 		// Derived clients share the owner's immutable metadata view.
 		cmdMeta:        c.cmdMeta,
 		metadataSource: c.metadataSource,
@@ -1786,6 +1790,13 @@ func (c *baseClient) withPipelineConn(
 	}
 
 	if spill {
+		// The pipeline pool's failed dial sequence is not the result of this
+		// acquisition: the main pool may only be temporarily full, so a
+		// subsequent command retry must still be allowed. If the main pool
+		// also exhausts a dial sequence it will set the marker again.
+		if marker := pipelinePool.DialExhaustion(ctx); marker != nil {
+			marker.Store(false)
+		}
 		cn, retErr = c.connPool.Get(ctx)
 		if retErr != nil {
 			cn = nil
@@ -2165,6 +2176,41 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	return "UNKNOWN", "UNKNOWN", true
 }
 
+// captureFixedDialExhaustion lets an outer router observe the same attempt
+// outcome as the client without altering the returned error.
+func (c *baseClient) captureFixedDialExhaustion(ctx context.Context) (context.Context, *atomic.Bool) {
+	if c.fixedDialEndpoint {
+		cp, ok := c.connPool.(*pool.ConnPool)
+		if !ok {
+			cp = c.dialExhaustionPool
+		}
+		if cp != nil {
+			if existing := cp.DialExhaustion(ctx); existing != nil {
+				return ctx, existing
+			}
+			marker := new(atomic.Bool)
+			return cp.WithDialExhaustion(ctx, marker), marker
+		}
+	}
+	return ctx, nil
+}
+
+// Pipelines may use a dedicated connection pool. Observe exhaustion from
+// either pool with one marker, including an ASK follow-up's pipeline.
+func (c *baseClient) captureFixedPipelineDialExhaustion(ctx context.Context) (context.Context, *atomic.Bool) {
+	ctx, marker := c.captureFixedDialExhaustion(ctx)
+	if !c.fixedDialEndpoint {
+		return ctx, nil
+	}
+	if ref := c.loadPipelinePool(); ref != nil {
+		if marker == nil {
+			marker = new(atomic.Bool)
+		}
+		ctx = ref.pool.WithDialExhaustion(ctx, marker)
+	}
+	return ctx, marker
+}
+
 // _process runs one attempt. It returns retry (the error is retryable), forced (the
 // error is a PRE-WRITE desync: the conn was closed before the command reached the
 // wire, so replay is its FIRST execution and safe even for a NoRetry command), the
@@ -2186,6 +2232,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 	// reject (a custom push-processor sentinel) and even for a NoRetry command (whose
 	// gate guards a SECOND execution, not a first).
 	var forceRetry atomic.Bool
+	ctx, dialExhausted := c.captureFixedDialExhaustion(ctx)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
 		// Process any pending push notifications before executing the command. A
@@ -2358,7 +2405,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		}
 		return readErr
 	}); err != nil {
-		retry := forceRetry.Load() || shouldRetry(err, retryTimeout.Load() == 1)
+		retry := forceRetry.Load() || ((dialExhausted == nil || !dialExhausted.Load()) && shouldRetry(err, retryTimeout.Load() == 1))
 		return retry, forceRetry.Load(), usedConn, err
 	}
 
@@ -2633,7 +2680,8 @@ func (c *baseClient) generalProcessPipelineFrom(
 		canRetry := true
 		// Route pipelines through the dedicated pipeline pool when configured;
 		// withPipelineConn falls back to the regular pool when it is not.
-		lastErr = c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		attemptCtx, dialExhausted := c.captureFixedPipelineDialExhaustion(ctx)
+		lastErr = c.withPipelineConn(attemptCtx, func(ctx context.Context, cn *pool.Conn) error {
 			connAcquired = true
 			lastConn = cn
 			// Drain pending push notifications before executing the pipeline. A drain
@@ -2652,10 +2700,15 @@ func (c *baseClient) generalProcessPipelineFrom(
 			canRetry, err = p(ctx, cn, cmds)
 			return err
 		})
+		// A successful acquisition can still yield a retryable Redis reply.
+		// Earlier failed spill attempts must not suppress that reply retry.
+		if connAcquired && dialExhausted != nil {
+			dialExhausted.Store(false)
+		}
 		// Don't retry if any command in the pipeline explicitly disables retries
 		// (e.g., RawWriteToCmd which writes directly to an io.Writer and cannot
 		// undo partial writes on retry)
-		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
+		if lastErr == nil || !canRetry || (dialExhausted != nil && dialExhausted.Load()) || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
 			// A setup failure (!connAcquired) stamps even Redis errors: no
 			// command was sent, so no per-command reply exists to preserve.
@@ -3058,17 +3111,19 @@ func NewClient(opt *Options) *Client {
 	}
 	// clone to not share options with the caller
 	opt = opt.clone()
+	fixedDialEndpoint := opt.Dialer == nil
 	opt.init()
 
 	// Push notifications are always enabled for RESP3 (cannot be disabled)
 
 	c := Client{
 		baseClient: &baseClient{
-			apClosed:  &atomic.Bool{},
-			opt:       opt,
-			cscPolicy: opt.cachePolicy(),
-			onClose:   &onCloseHooks{},
-			himport:   newHImportRegistry(),
+			apClosed:          &atomic.Bool{},
+			opt:               opt,
+			fixedDialEndpoint: fixedDialEndpoint,
+			cscPolicy:         opt.cachePolicy(),
+			onClose:           &onCloseHooks{},
+			himport:           newHImportRegistry(),
 		},
 	}
 	c.rec, c.poolMetrics = clientRecorder(opt.OTelRecorder)
@@ -3352,6 +3407,9 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
 	conn := newConn(connOpt, sticky, &c.hooksMixin, c.himport)
+	// The sticky wrapper borrows this client's fixed endpoint and dial budget.
+	conn.baseClient.fixedDialEndpoint = c.fixedDialEndpoint
+	conn.baseClient.dialExhaustionPool, _ = c.connPool.(*pool.ConnPool)
 	if isolated {
 		// Never enable tracking or attach the parent's cache to a socket whose
 		// session state the caller may change freely.

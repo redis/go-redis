@@ -396,15 +396,22 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should retry with backoff", func() {
+	It("should retry with backoff for a custom dialer", func() {
+		// A custom dialer may switch endpoints between command attempts.
+		// Fixed endpoints stop after the first exhausted dial sequence.
+		dialer := (&net.Dialer{}).DialContext
 		clientNoRetry := redis.NewClient(&redis.Options{
-			Addr:       ":1234",
-			MaxRetries: -1,
+			Addr:          ":1234",
+			Dialer:        dialer,
+			DialerRetries: 1,
+			MaxRetries:    -1,
 		})
 		defer clientNoRetry.Close()
 
 		clientRetry := redis.NewClient(&redis.Options{
 			Addr:            ":1234",
+			Dialer:          dialer,
+			DialerRetries:   1,
 			MaxRetries:      5,
 			MaxRetryBackoff: 128 * time.Millisecond,
 		})
