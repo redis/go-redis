@@ -14,7 +14,7 @@ This is a beta release. It follows 9.24.0-beta.1 with bug fixes and one change t
 
 ## 🐛 Bug Fixes
 
-- **Credential rotation with `MaxActiveConns`:** at the `MaxActiveConns` cap, `Get` now waits within `PoolTimeout` for an idle connection that is re-authenticating, and does not fail with `ErrPoolExhausted`. Without a cap, or with room under it, the behavior is unchanged ([#4313](https://github.com/redis/go-redis/pull/4313)) by [@xixi-box](https://github.com/xixi-box), issue [#4311](https://github.com/redis/go-redis/issues/4311)
+- **Credential rotation with `MaxActiveConns`:** at the `MaxActiveConns` cap, `Get` now waits within `PoolTimeout` for an idle connection that is re-authenticating, and does not fail with `ErrPoolExhausted`. Without a cap, or with room under it, the behavior is unchanged ([#4313](https://github.com/redis/go-redis/pull/4313)) by [@xixi-box](https://github.com/xixi-box), issue [#4311](https://github.com/redis/go-redis/issues/4311). A race at the cap, where the only connection finished re-authentication just before the capacity check, is closed by the same release ([#4333](https://github.com/redis/go-redis/pull/4333)) by [@Tidehyc](https://github.com/Tidehyc), issue [#4332](https://github.com/redis/go-redis/issues/4332)
 - **`ContextDeadlineError`:** a read timeout that arrives together with data no longer reaches the next command, and a socket timeout that fires slightly before the context deadline is still reported as `context.DeadlineExceeded`. This follows [#4263](https://github.com/redis/go-redis/pull/4263) from 9.24.0-beta.1 ([#4306](https://github.com/redis/go-redis/pull/4306)) by [@PerryLink](https://github.com/PerryLink), issue [#4305](https://github.com/redis/go-redis/issues/4305)
 - **Search:** `LimitOffset` without `Limit` in `FT.SEARCH` and `FT.HYBRID` options now uses the default page of 10. On Redis 8 the command was rejected with `SEARCH_LIMIT_OVER` ([#4285](https://github.com/redis/go-redis/pull/4285)) by [@kevin9327](https://github.com/kevin9327), issue [#4284](https://github.com/redis/go-redis/issues/4284)
 
@@ -26,7 +26,7 @@ This is a beta release. It follows 9.24.0-beta.1 with bug fixes and one change t
 
 We'd like to thank all the contributors who worked on this release!
 
-[@farisbasha](https://github.com/farisbasha), [@kevin9327](https://github.com/kevin9327), [@PerryLink](https://github.com/PerryLink), [@ump45nose](https://github.com/ump45nose), [@xixi-box](https://github.com/xixi-box)
+[@farisbasha](https://github.com/farisbasha), [@kevin9327](https://github.com/kevin9327), [@PerryLink](https://github.com/PerryLink), [@Tidehyc](https://github.com/Tidehyc), [@ump45nose](https://github.com/ump45nose), [@xixi-box](https://github.com/xixi-box)
 
 ---
 
