@@ -395,6 +395,7 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			}
 			exhaustedEndpoints[endpoint] = lastErr
 			node.MarkAsFailing()
+			c.state.LazyReload()
 			node = nil
 			continue
 		}

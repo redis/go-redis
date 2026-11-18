@@ -2350,6 +2350,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 			exhaustedEndpoints[node.Client.opt.Addr] = lastErr
 			node.MarkAsFailing()
+			c.state.LazyReload()
 			node = nil
 			continue
 		}

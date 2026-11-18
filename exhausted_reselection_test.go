@@ -43,15 +43,23 @@ func TestExhaustedEndpointReselection(t *testing.T) {
 				fresh := makeState(ClusterNode{Addr: server.addr})
 				stale.Slaves[0].MarkAsFailing()
 				c.state.state.Store(stale)
-				c.state.load = func(context.Context) (*clusterState, error) { return fresh, nil }
+				var reloads atomic.Int32
+				c.state.load = func(context.Context) (*clusterState, error) {
+					reloads.Add(1)
+					return fresh, nil
+				}
 				selections := 0
 				c.opt.ShardPicker = reselectionShardPicker{before: func() {
 					selections++
 					if selections == 2 {
-						// The second routing attempt already captured the stale state.
-						// Publish a failover now: only a later attempt can observe it.
-						if _, err := c.state.Reload(context.Background()); err != nil {
-							t.Fatal(err)
+						// Wait for the client's own lazy refresh. The picker must
+						// not publish the replacement topology on its behalf.
+						deadline := time.Now().Add(time.Second)
+						for c.state.state.Load() != fresh && time.Now().Before(deadline) {
+							time.Sleep(time.Millisecond)
+						}
+						if c.state.state.Load() != fresh {
+							t.Fatal("dial exhaustion did not trigger a topology reload")
 						}
 					}
 				}}
@@ -74,6 +82,9 @@ func TestExhaustedEndpointReselection(t *testing.T) {
 				}
 				if got := dials.Load(); got != 2 {
 					t.Errorf("exhausted endpoint dials = %d, want 2", got)
+				}
+				if got := reloads.Load(); got != 1 {
+					t.Errorf("topology reloads = %d, want 1", got)
 				}
 			})
 		}
@@ -231,8 +242,8 @@ func TestExhaustedEndpointRetryBounds(t *testing.T) {
 					if got := dials.Load(); got != 2 {
 						t.Errorf("exhausted endpoint dials = %d, want 2", got)
 					}
-					if got := probes.Load(); got != 0 {
-						t.Errorf("discovery probes = %d, want 0", got)
+					if got := probes.Load(); (noRetry && got != 0) || (!noRetry && got > 1) {
+						t.Errorf("discovery probes = %d, want 0 for no_retry or at most 1 for retryable", got)
 					}
 				})
 			}
