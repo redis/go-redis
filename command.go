@@ -5474,6 +5474,14 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 		withLen++
 	}
 	for i := 0; i < n; i++ {
+		// Without WITH flags the reply is a flat array of names.
+		if withLen == 1 {
+			if cmd.val[i].Name, err = rd.ReadString(); err != nil {
+				return err
+			}
+			continue
+		}
+
 		nn, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
