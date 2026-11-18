@@ -1232,6 +1232,12 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
+	// idleRechecked bounds the hard-cap idle recheck below to one extra
+	// scan per Get: it closes the window where a connection finishes
+	// re-authentication between the popIdle scan and the capacity check,
+	// without turning that recheck into a spin loop.
+	idleRechecked := false
+
 retryIdle:
 	if err := ctx.Err(); err != nil {
 		p.freeTurn()
@@ -1346,9 +1352,19 @@ retryIdle:
 	// Only a hard-cap exhaustion with an idle re-auth candidate should wait
 	// for that candidate to become usable instead of returning ErrPoolExhausted.
 	// In particular, PoolSize is a soft limit and must not trigger this wait.
+	//
+	// A connection can also finish re-authentication between the popIdle
+	// scan above and this check: the scan skipped it while the re-auth
+	// worker had it in use, but by now it is idle and acquirable. Recheck
+	// for such a connection once and retry acquisition instead of dialing
+	// into the hard cap. This is not the re-auth wait below: the connection
+	// needs no waiting, and treating every idle entry as a re-auth
+	// candidate would add spurious waits (a hook may reject the connection
+	// anyway). A hook-rejected idle entry therefore stays on the wait path.
 	p.connsMu.Lock()
 	capReached := p.cfg.MaxActiveConns > 0 && len(p.conns)+p.pendingConns >= int(p.cfg.MaxActiveConns)
 	hasReauthIdle := false
+	hasAcquirableIdle := false
 	if capReached {
 		for _, idle := range p.idleConns {
 			state := idle.GetStateMachine().GetState()
@@ -1357,11 +1373,24 @@ retryIdle:
 			if (hookRejected && state == StateIdle) ||
 				((state == StateUnusable || state == StateInUse) && idle.GetHandoffEndpoint() == "") {
 				hasReauthIdle = true
+			}
+			if !hookRejected && (state == StateIdle || state == StateCreated) {
+				hasAcquirableIdle = true
+			}
+			if hasReauthIdle && hasAcquirableIdle {
 				break
 			}
 		}
 	}
 	p.connsMu.Unlock()
+	if hasAcquirableIdle && !idleRechecked {
+		idleRechecked = true
+		// The connection became acquirable after the cached-time
+		// snapshot; check expiration against the current clock when we
+		// next inspect an idle connection.
+		nowNs = time.Now().UnixNano()
+		goto retryIdle
+	}
 	if hasReauthIdle {
 		if !wait {
 			p.freeTurn()
