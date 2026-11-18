@@ -449,7 +449,8 @@ type Options struct {
 	// connections past ConnMaxLifetime or idle longer than ConnMaxIdleTime,
 	// instead of waiting for a Get to find them. This also shrinks the pool
 	// after a spike. It runs every interval and refills toward MinIdleConns.
-	// Connections in use are not touched; they close when returned.
+	// Connections in use are not touched. One that expires while in use is
+	// closed by the first tick after it is returned, or by the next Get.
 	//
 	// If <= 0, the reaper is off and expired idle connections are closed lazily
 	// on Get. Has no effect unless ConnMaxLifetime or ConnMaxIdleTime is > 0.
@@ -1310,6 +1311,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	if q.has("conn_max_lifetime_jitter") {
 		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
 	}
+	o.ConnMaxLifetimeReapInterval = q.duration("conn_max_lifetime_reap_interval")
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
 	}

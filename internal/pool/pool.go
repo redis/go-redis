@@ -377,6 +377,10 @@ type ConnPool struct {
 	dialsInProgress chan struct{}
 	dialsQueue      *wantConnQueue
 	closedCh        chan struct{}
+
+	// reaperDone is closed when the lifetime reaper goroutine exits. Nil when
+	// no reaper was started.
+	reaperDone chan struct{}
 	// Fast semaphore for connection limiting with eventual fairness
 	// Uses fast path optimization to avoid timer allocation when tokens are available
 	semaphore *internal.FastSemaphore
@@ -1875,13 +1879,13 @@ func (p *ConnPool) removeConnWithLock(cn *Conn) (bool, connectionCountCallback) 
 	return removed, p.metrics().ConnectionCount
 }
 
-// removeConn removes a connection from the pool's internal data structures.
-// Returns whether the connection was present and removed, and whether it was
-// taken out of idleConns.
-func (p *ConnPool) removeConn(cn *Conn) (removed, wasIdle bool) {
+// forgetConn drops cn from p.conns and updates the stale and pool-size
+// counters. It reports false if cn was already gone (e.g. removed by Close()).
+// It does not touch idleConns. Caller holds connsMu.
+func (p *ConnPool) forgetConn(cn *Conn) bool {
 	cid := cn.GetID()
 	if _, exists := p.conns[cid]; !exists {
-		return false, false
+		return false
 	}
 	delete(p.conns, cid)
 	atomic.AddUint32(&p.stats.StaleConns, 1)
@@ -1889,6 +1893,16 @@ func (p *ConnPool) removeConn(cn *Conn) (removed, wasIdle bool) {
 	// Decrement pool size counter when removing a connection
 	if cn.pooled {
 		p.poolSize.Add(-1)
+	}
+	return true
+}
+
+// removeConn removes a connection from the pool's internal data structures.
+// Returns whether the connection was present and removed, and whether it was
+// taken out of idleConns.
+func (p *ConnPool) removeConn(cn *Conn) (removed, wasIdle bool) {
+	if !p.forgetConn(cn) {
+		return false, false
 	}
 	// An unpooled conn can be idle too: putIdleConn parks an undelivered
 	// overflow dial in idleConns.

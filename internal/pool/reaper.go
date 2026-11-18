@@ -4,25 +4,39 @@ import (
 	"context"
 	"errors"
 	"time"
+	"weak"
 )
 
 // startLifetimeReaper runs reapExpiredIdle every ConnMaxLifetimeReapInterval
-// until the pool is closed. It is a no-op unless the interval is set and at
-// least one of ConnMaxLifetime or ConnMaxIdleTime is set.
+// until the pool is closed or collected. It is a no-op unless the interval is
+// set and at least one of ConnMaxLifetime or ConnMaxIdleTime is set.
+//
+// The goroutine holds the pool through a weak pointer, so a pool that is
+// dropped without Close can still be collected (see the AddCleanup in
+// NewConnPool); the goroutine then exits.
 func (p *ConnPool) startLifetimeReaper() {
-	if p.cfg.ConnMaxLifetimeReapInterval <= 0 ||
-		(p.cfg.ConnMaxLifetime <= 0 && p.cfg.ConnMaxIdleTime <= 0) {
+	interval := p.cfg.ConnMaxLifetimeReapInterval
+	if interval <= 0 || (p.cfg.ConnMaxLifetime <= 0 && p.cfg.ConnMaxIdleTime <= 0) {
 		return
 	}
+	wp := weak.Make(p)
+	closedCh := p.closedCh
+	done := make(chan struct{})
+	p.reaperDone = done
 	go func() {
-		t := time.NewTicker(p.cfg.ConnMaxLifetimeReapInterval)
+		defer close(done)
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
 			select {
-			case <-p.closedCh:
+			case <-closedCh:
 				return
 			case <-t.C:
-				p.reapExpiredIdle(context.Background())
+				pool := wp.Value()
+				if pool == nil {
+					return
+				}
+				pool.reapExpiredIdle(context.Background())
 			}
 		}
 	}()
@@ -36,39 +50,48 @@ func (p *ConnPool) expiredIdle(cn *Conn, nowNs int64) bool {
 	return p.cfg.ConnMaxIdleTime > 0 && nowNs-cn.UsedAtNs() >= int64(p.cfg.ConnMaxIdleTime)
 }
 
-// reapableState matches what popIdle can acquire: IDLE, or CREATED for a conn
-// that was pooled before its first use.
-func reapableState(s ConnState) bool { return s == StateIdle || s == StateCreated }
+// takeExpiredIdleLocked removes expired idle conns from the pool and returns
+// them. The caller holds connsMu and closes the conns after unlocking.
+//
+// A conn is claimed with TryAcquire, like popIdle does, so a conn that a
+// re-auth or handoff worker already moved out of IDLE is left alone and a
+// worker cannot claim it afterwards. The claim also covers CREATED conns
+// (pooled before first use).
+func (p *ConnPool) takeExpiredIdleLocked(nowNs int64) []*Conn {
+	// One pass: keep survivors in order (FIFO/LIFO semantics depend on it),
+	// drop expired ones. O(idle) however many expire.
+	var removed []*Conn
+	kept := p.idleConns[:0]
+	for _, cn := range p.idleConns {
+		if p.expiredIdle(cn, nowNs) && cn.TryAcquire() {
+			if p.forgetConn(cn) {
+				removed = append(removed, cn)
+				continue
+			}
+			cn.Release() // not tracked by the pool; undo the claim
+		}
+		kept = append(kept, cn)
+	}
+	// Clear the tail so dropped conns are not kept alive by the backing array.
+	clear(p.idleConns[len(kept):])
+	p.idleConns = kept
+	p.idleConnsLen.Add(-int32(len(removed)))
+	return removed
+}
 
 // reapExpiredIdle closes idle connections past ConnMaxLifetime or idle for
 // ConnMaxIdleTime, and refills the pool toward MinIdleConns (so the floor is
-// recycled, not kept stale). Only IDLE or CREATED connections are taken; ones
-// owned by a handoff or re-auth worker (UNUSABLE) are left alone. Returns the
-// number closed.
+// recycled, not kept stale). Connections that are in use, or that a re-auth or
+// handoff worker owns, are left alone. Returns the number closed.
 func (p *ConnPool) reapExpiredIdle(ctx context.Context) int {
 	nowNs := time.Now().UnixNano()
 
-	var expired []*Conn
 	p.connsMu.Lock()
 	if p.closed() {
 		p.connsMu.Unlock()
 		return 0
 	}
-	for _, cn := range p.idleConns {
-		if !p.expiredIdle(cn, nowNs) {
-			continue
-		}
-		if sm := cn.GetStateMachine(); sm == nil || !reapableState(sm.GetState()) {
-			continue
-		}
-		expired = append(expired, cn)
-	}
-	removedConns := expired[:0]
-	for _, cn := range expired {
-		if removed, _ := p.removeConn(cn); removed {
-			removedConns = append(removedConns, cn)
-		}
-	}
+	removedConns := p.takeExpiredIdleLocked(nowNs)
 	countCb := p.metrics().ConnectionCount
 	p.connsMu.Unlock()
 
