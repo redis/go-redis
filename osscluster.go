@@ -184,15 +184,16 @@ type ClusterOptions struct {
 	// each node's Options so the pipeline pool can widen its own dial cap.
 	MaxConcurrentDials int
 
-	PoolFIFO              bool
-	PoolSize              int // applies per cluster node and not for the whole cluster
-	PoolTimeout           time.Duration
-	MinIdleConns          int
-	MaxIdleConns          int
-	MaxActiveConns        int // applies per cluster node and not for the whole cluster
-	ConnMaxIdleTime       time.Duration
-	ConnMaxLifetime       time.Duration
-	ConnMaxLifetimeJitter time.Duration
+	PoolFIFO                    bool
+	PoolSize                    int // applies per cluster node and not for the whole cluster
+	PoolTimeout                 time.Duration
+	MinIdleConns                int
+	MaxIdleConns                int
+	MaxActiveConns              int // applies per cluster node and not for the whole cluster
+	ConnMaxIdleTime             time.Duration
+	ConnMaxLifetime             time.Duration
+	ConnMaxLifetimeJitter       time.Duration
+	ConnMaxLifetimeReapInterval time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
@@ -586,18 +587,19 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:              opt.PoolFIFO,
-		PoolSize:              opt.PoolSize,
-		MaxConcurrentDials:    opt.MaxConcurrentDials,
-		PoolTimeout:           opt.PoolTimeout,
-		MinIdleConns:          opt.MinIdleConns,
-		MaxIdleConns:          opt.MaxIdleConns,
-		MaxActiveConns:        opt.MaxActiveConns,
-		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
-		ConnMaxLifetime:       opt.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
-		ReadBufferSize:        opt.ReadBufferSize,
-		WriteBufferSize:       opt.WriteBufferSize,
+		PoolFIFO:                    opt.PoolFIFO,
+		PoolSize:                    opt.PoolSize,
+		MaxConcurrentDials:          opt.MaxConcurrentDials,
+		PoolTimeout:                 opt.PoolTimeout,
+		MinIdleConns:                opt.MinIdleConns,
+		MaxIdleConns:                opt.MaxIdleConns,
+		MaxActiveConns:              opt.MaxActiveConns,
+		ConnMaxIdleTime:             opt.ConnMaxIdleTime,
+		ConnMaxLifetime:             opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       opt.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: opt.ConnMaxLifetimeReapInterval,
+		ReadBufferSize:              opt.ReadBufferSize,
+		WriteBufferSize:             opt.WriteBufferSize,
 
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,

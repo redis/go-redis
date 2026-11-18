@@ -328,18 +328,19 @@ type Options struct {
 	ReadBufferSize  int
 	WriteBufferSize int
 
-	PoolFIFO                 bool
-	PoolSize                 int32
-	MaxConcurrentDials       int
-	DialTimeout              time.Duration
-	PoolTimeout              time.Duration
-	MinIdleConns             int32
-	MaxIdleConns             int32
-	MaxActiveConns           int32
-	ConnMaxIdleTime          time.Duration
-	ConnMaxLifetime          time.Duration
-	ConnMaxLifetimeJitter    time.Duration
-	PushNotificationsEnabled bool
+	PoolFIFO                    bool
+	PoolSize                    int32
+	MaxConcurrentDials          int
+	DialTimeout                 time.Duration
+	PoolTimeout                 time.Duration
+	MinIdleConns                int32
+	MaxIdleConns                int32
+	MaxActiveConns              int32
+	ConnMaxIdleTime             time.Duration
+	ConnMaxLifetime             time.Duration
+	ConnMaxLifetimeJitter       time.Duration
+	ConnMaxLifetimeReapInterval time.Duration
+	PushNotificationsEnabled    bool
 
 	// DialerRetries is the maximum number of retry attempts when dialing fails.
 	// Default: 5
@@ -453,6 +454,8 @@ func NewConnPool(opt *Options) *ConnPool {
 		p.checkMinIdleConns()
 		p.connsMu.Unlock()
 	}
+
+	p.startLifetimeReaper()
 
 	return p
 }
