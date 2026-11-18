@@ -907,7 +907,7 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if exhaustedErr, ok := exhaustedAddrs[shard.addr]; ok {
-			// Keyless commands may select another shard on the next attempt.
+			// A rebalance may select another shard on the next attempt.
 			// Do not re-dial this exhausted endpoint, but keep the retry
 			// budget available for a healthy shard.
 			lastErr = exhaustedErr
@@ -919,11 +919,6 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 			return lastErr
 		}
 		if exhausted != nil && exhausted.Load() {
-			// Keyed commands are pinned to this shard and cannot recover by
-			// selecting another address. Avoid an unnecessary retry backoff.
-			if cmdFirstKeyPosWithInfo(cmd, nil) > 0 {
-				return lastErr
-			}
 			if exhaustedAddrs == nil {
 				exhaustedAddrs = make(map[string]error)
 			}
