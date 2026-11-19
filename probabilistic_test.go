@@ -224,8 +224,15 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 					err := client.BFReserveNonScaling(ctx, "testbfns1", 0.001, 1000).Err()
 					Expect(err).NotTo(HaveOccurred())
 
-					_, err = client.BFInfo(ctx, "testbfns1").Result()
-					Expect(err).To(HaveOccurred())
+					// A non-scaling filter has no expansion rate.
+					result, err := client.BFInfo(ctx, "testbfns1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.Capacity).To(BeEquivalentTo(int64(1000)))
+					Expect(result.ExpansionRate).To(BeEquivalentTo(int64(0)))
+
+					result, err = client.BFInfoExpansion(ctx, "testbfns1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.ExpansionRate).To(BeEquivalentTo(int64(0)))
 				})
 
 				It("should BFScanDump and BFLoadChunk", Label("bloom", "bfscandump", "bfloadchunk"), func() {
