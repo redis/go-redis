@@ -46,6 +46,12 @@ var _ = Describe("CmdString", func() {
 		Entry("", []interface{}{"hello", 3, "auth", "alice", "s3cret", "setname", "app"},
 			"hello 3 auth alice <redacted> setname app"),
 		Entry("", []interface{}{"hello", 3, "setname", "app"}, "hello 3 setname app"),
+		// The server accepts the HELLO options in either order.
+		Entry("", []interface{}{"hello", 3, "setname", "app", "auth", "alice", "s3cret"},
+			"hello 3 setname app auth alice <redacted>"),
+		// A client name equal to a keyword must not shift the redacted position.
+		Entry("", []interface{}{"hello", 3, "setname", "auth", "auth", "alice", "s3cret"},
+			"hello 3 setname auth auth alice <redacted>"),
 		Entry("", []interface{}{"config", "set", "requirepass", "s3cret"},
 			"config set requirepass <redacted>"),
 		Entry("", []interface{}{"config", "set", "maxmemory", "100mb", "masterauth", "s3cret"},

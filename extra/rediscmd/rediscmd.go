@@ -106,9 +106,16 @@ func secretArgs(args []interface{}) []bool {
 		mark(len(args) - 1)
 
 	case equalFoldArg(args, 0, "hello"):
-		// HELLO ver [AUTH username password] [SETNAME name]
-		if equalFoldArg(args, 2, "auth") {
-			mark(4)
+		// HELLO ver [AUTH username password] [SETNAME name], options in any
+		// order. Skip each option's values so that a client name or username
+		// equal to a keyword is not read as one.
+		for i := 2; i < len(args); i++ {
+			if equalFoldArg(args, i, "auth") {
+				mark(i + 2)
+				i += 2
+			} else if equalFoldArg(args, i, "setname") {
+				i++
+			}
 		}
 
 	case equalFoldArg(args, 0, "config") && equalFoldArg(args, 1, "set"):
