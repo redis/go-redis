@@ -726,6 +726,40 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(*cmd2.Val()[0]).To(Equal(int64(0)))
 			})
 
+			It("should parse replies to a legacy path", Label("json.objlen", "json.strlen", "json.strappend", "json.toggle", "json.type", "json"), func() {
+				err := client.JSONSet(ctx, "legacy1", "$", `{"a":[1,2,3],"s":"str","o":{"x":1,"y":2},"b":false}`).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				objLen, err := client.JSONObjLen(ctx, "legacy1", ".o").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(objLen).To(HaveLen(1))
+				Expect(*objLen[0]).To(Equal(int64(2)))
+
+				strLen, err := client.JSONStrLen(ctx, "legacy1", ".s").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(strLen).To(HaveLen(1))
+				Expect(*strLen[0]).To(Equal(int64(3)))
+
+				strAppend, err := client.JSONStrAppend(ctx, "legacy1", ".s", `"ing"`).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(strAppend).To(HaveLen(1))
+				Expect(*strAppend[0]).To(Equal(int64(6)))
+
+				toggle, err := client.JSONToggle(ctx, "legacy1", ".b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(toggle).To(HaveLen(1))
+				Expect(*toggle[0]).To(Equal(int64(1)))
+
+				toggle, err = client.JSONToggle(ctx, "legacy1", ".b").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(toggle).To(HaveLen(1))
+				Expect(*toggle[0]).To(Equal(int64(0)))
+
+				typ, err := client.JSONType(ctx, "legacy1", ".a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(typ).To(Equal([]interface{}{"array"}))
+			})
+
 			It("should JSONType", Label("json.type", "json"), func() {
 				cmd1 := client.JSONSet(ctx, "type1", "$", `[true]`)
 				Expect(cmd1.Err()).NotTo(HaveOccurred())
