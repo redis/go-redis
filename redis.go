@@ -2568,6 +2568,17 @@ func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
 	return cmdsFirstErr(cmds)
 }
 
+// processPipelineWholeBatch runs a pipeline whose replies must all come from
+// one connection: a failed attempt retries the whole batch, never a suffix.
+// Used by the internal command-metadata probes, where the HELLO / INFO
+// identity and the COMMAND records must describe the same server.
+func (c *baseClient) processPipelineWholeBatch(ctx context.Context, cmds []Cmder) error {
+	if err := c.generalProcessPipelineFrom(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", c.opt.MaxRetries, time.Time{}, 0, false); err != nil {
+		return err
+	}
+	return cmdsFirstErr(cmds)
+}
+
 // processPipelineRetries runs a pipeline with an explicit retry bound instead of
 // the client's configured MaxRetries. The autopipeliner's shutdown flush passes
 // maxRetries==0 to give an already-attempted carried command exactly one final
@@ -2588,6 +2599,27 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 
 type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
+// pipelineConnStateCmd reports whether cmd establishes state on the
+// connection that runs it, so later commands in the same batch only mean
+// the same thing on that connection: SELECT picks the database, MULTI /
+// WATCH open a transaction / watch, AUTH / HELLO / CLIENT ... configure the
+// session, READONLY / READWRITE / ASKING steer cluster routing, and a
+// subscription puts the connection in pub/sub mode. Dropping such a command
+// from a retry would run the rest of the batch on a fresh connection without
+// that state — e.g. a SET after a dropped SELECT lands in the wrong
+// database, and an EXEC after a dropped MULTI fails.
+func pipelineConnStateCmd(cmd Cmder) bool {
+	switch cmd.Name() {
+	case "select", "swapdb", "auth", "hello", "reset",
+		"multi", "exec", "watch", "unwatch", "discard",
+		"client", "readonly", "readwrite", "asking",
+		"subscribe", "psubscribe", "ssubscribe",
+		"unsubscribe", "punsubscribe", "sunsubscribe":
+		return true
+	}
+	return false
+}
+
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
 // still need a result: the suffix starting at the first command whose error
 // is a transport failure rather than a server reply. Commands before it were
@@ -2595,13 +2627,23 @@ type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 // executed again: a replied INCR has already applied. A Redis error as the
 // batch error (e.g. LOADING) means the server rejected the batch without
 // executing it, so the whole batch is returned unchanged and keeps its
-// established retry behaviour.
+// established retry behaviour. If an answered command established
+// connection-local state (see pipelineConnStateCmd), the whole batch is
+// returned instead: the retry must re-establish that state on the new
+// connection before running the rest, which a suffix retry cannot do. Those
+// batches keep the pre-existing whole-batch retry behaviour, including its
+// replay risk for non-idempotent commands in the same batch.
 func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
 	if err == nil || isRedisError(err) {
 		return cmds
 	}
 	for i, cmd := range cmds {
 		if e := cmd.rawErr(); e != nil && !isRedisError(e) {
+			for _, answered := range cmds[:i] {
+				if pipelineConnStateCmd(answered) {
+					return cmds
+				}
+			}
 			return cmds[i:]
 		}
 	}
@@ -2624,7 +2666,7 @@ func pipelineErrShouldStamp(err error) bool {
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
 ) error {
-	return c.generalProcessPipelineFrom(ctx, cmds, p, operationName, maxRetries, time.Time{}, 0)
+	return c.generalProcessPipelineFrom(ctx, cmds, p, operationName, maxRetries, time.Time{}, 0, true)
 }
 
 // processPipelineRetriesAfter is processPipelineRetries continuing an operation
@@ -2632,17 +2674,19 @@ func (c *baseClient) generalProcessPipeline(
 // metric, so a full-duplex attempt re-run on the pooled path is measured as a
 // single operation, the way an ordinary pipeline's own retries are.
 func (c *baseClient) processPipelineRetriesAfter(ctx context.Context, cmds []Cmder, maxRetries int, start time.Time, priorAttempts int) error {
-	if err := c.generalProcessPipelineFrom(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", maxRetries, start, priorAttempts); err != nil {
+	if err := c.generalProcessPipelineFrom(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", maxRetries, start, priorAttempts, true); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
 }
 
 // generalProcessPipelineFrom is generalProcessPipeline with its measurement
-// started at start (zero: now) and priorAttempts already spent.
+// started at start (zero: now) and priorAttempts already spent. When
+// partialRetry is false, a failed attempt retries the whole batch instead of
+// narrowing to the unanswered suffix (see processPipelineWholeBatch).
 func (c *baseClient) generalProcessPipelineFrom(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
-	start time.Time, priorAttempts int,
+	start time.Time, priorAttempts int, partialRetry bool,
 ) error {
 	// Pipeline commands never pass through process, so apply the same CSC state
 	// guard here. initConn's internal client is exempt.
@@ -2684,7 +2728,8 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// non-transaction pipeline attempt narrows it to the commands that were
 	// not answered, so a retry does not re-execute commands whose replies
 	// were already read (see pipelineRetrySuffix). Transaction pipelines
-	// (operationName "MULTI") are atomic and always keep the whole batch.
+	// (operationName "MULTI") are atomic and always keep the whole batch,
+	// as do callers that pass partialRetry=false.
 	pending := cmds
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
@@ -2754,8 +2799,9 @@ func (c *baseClient) generalProcessPipelineFrom(
 		}
 		// The attempt failed with a retryable error: narrow the next attempt
 		// to the commands that were not answered, so a replied command is
-		// not executed twice. Transaction pipelines stay whole-batch.
-		if operationName != "MULTI" {
+		// not executed twice. Transaction pipelines stay whole-batch, as do
+		// callers that require every reply to come from one connection.
+		if operationName != "MULTI" && partialRetry {
 			pending = pipelineRetrySuffix(pending, lastErr)
 		}
 	}
