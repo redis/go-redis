@@ -59,4 +59,13 @@ func TestCloneKeepsAllValueFields(t *testing.T) {
 			t.Errorf("got %+v, want %+v", got, cmd.Val())
 		}
 	})
+
+	t.Run("FTSearchCmd", func(t *testing.T) {
+		cmd := newFTSearchCmd(ctx, nil)
+		cmd.SetVal(FTSearchResult{Total: 1, Docs: []Document{{ID: "doc:1", Error: Nil}}})
+		got := cmd.Clone().(*FTSearchCmd).Val()
+		if !reflect.DeepEqual(got, cmd.Val()) {
+			t.Errorf("got %+v, want %+v", got, cmd.Val())
+		}
+	})
 }

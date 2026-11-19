@@ -3031,6 +3031,7 @@ func (cmd *FTSearchCmd) Clone() Cmder {
 				Score:   doc.Score,
 				Payload: doc.Payload,
 				SortKey: doc.SortKey,
+				Error:   doc.Error,
 			}
 			if doc.Fields != nil {
 				val.Docs[i].Fields = make(map[string]string, len(doc.Fields))
