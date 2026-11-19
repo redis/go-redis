@@ -11,6 +11,8 @@ type ClusterCmdable interface {
 	ClusterSlots(ctx context.Context) *ClusterSlotsCmd
 	ClusterShards(ctx context.Context) *ClusterShardsCmd
 	ClusterLinks(ctx context.Context) *ClusterLinksCmd
+	ClusterSlotStats(ctx context.Context, startSlot, endSlot int) *ClusterSlotStatsCmd
+	ClusterSlotStatsOrderBy(ctx context.Context, a *ClusterSlotStatsOrderByArgs) *ClusterSlotStatsCmd
 	ClusterNodes(ctx context.Context) *StringCmd
 	ClusterMeet(ctx context.Context, host, port string) *StatusCmd
 	ClusterForget(ctx context.Context, nodeID string) *StatusCmd
@@ -62,6 +64,52 @@ func (c cmdable) ClusterShards(ctx context.Context) *ClusterShardsCmd {
 
 func (c cmdable) ClusterLinks(ctx context.Context) *ClusterLinksCmd {
 	cmd := NewClusterLinksCmd(ctx, "cluster", "links")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClusterSlotStats returns the usage statistics of the slots in the inclusive
+// range [startSlot, endSlot], ordered by slot. A node reports only the slots it
+// owns. A ClusterClient with metadata routing policies, enabled by
+// SetCommandInfoResolver(NewCommandMetadataResolver()), asks every shard and
+// merges the replies; otherwise one node answers.
+//
+// Only KeyCount is reported unless the server runs with
+// cluster-slot-stats-enabled yes. Requires Redis 8.2 or newer.
+func (c cmdable) ClusterSlotStats(ctx context.Context, startSlot, endSlot int) *ClusterSlotStatsCmd {
+	cmd := NewClusterSlotStatsCmd(ctx, "cluster", "slot-stats", "slotsrange", startSlot, endSlot)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClusterSlotStatsOrderByArgs are the options of CLUSTER SLOT-STATS ORDERBY.
+type ClusterSlotStatsOrderByArgs struct {
+	// Metric to order by: "key-count", "memory-bytes", "cpu-usec",
+	// "network-bytes-in" or "network-bytes-out".
+	Metric string
+	// Limit is the maximum number of slots to return. Zero returns all of them.
+	Limit int
+	// Asc orders from the lowest value. The default is from the highest.
+	Asc bool
+}
+
+// ClusterSlotStatsOrderBy returns the usage statistics of the slots ordered by
+// a metric; slots with the same value are ordered by slot. A node reports only
+// the slots it owns. A ClusterClient with metadata routing policies (see
+// ClusterSlotStats) asks every shard, merges the replies and applies the order
+// and the limit again.
+//
+// Only KeyCount is reported unless the server runs with
+// cluster-slot-stats-enabled yes. Requires Redis 8.2 or newer.
+func (c cmdable) ClusterSlotStatsOrderBy(ctx context.Context, a *ClusterSlotStatsOrderByArgs) *ClusterSlotStatsCmd {
+	args := []interface{}{"cluster", "slot-stats", "orderby", a.Metric}
+	if a.Limit != 0 {
+		args = append(args, "limit", a.Limit)
+	}
+	if a.Asc {
+		args = append(args, "asc")
+	}
+	cmd := NewClusterSlotStatsCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
