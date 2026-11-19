@@ -893,6 +893,37 @@ func TestFTSearchQueryLimit(t *testing.T) {
 	}
 }
 
+// The server rejects "PARAMS 0" ("Parameters must be specified in PARAM VALUE
+// pairs"), so an empty Params map must not emit the clause.
+func TestFTSearchAndAggregateEmptyParams(t *testing.T) {
+	empty := map[string]interface{}{}
+	want := []interface{}{"*", "DIALECT", 2}
+
+	search, err := FTSearchQuery("*", &FTSearchOptions{Params: empty})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual([]interface{}(search), want) {
+		t.Errorf("FTSearchQuery args mismatch\n got: %#v\nwant: %#v", search, want)
+	}
+	searchCmd := captureCmdable(new(Cmder)).FTSearchWithArgs(context.Background(), "idx", "*", &FTSearchOptions{Params: empty})
+	if want := append([]interface{}{"FT.SEARCH", "idx"}, want...); !reflect.DeepEqual(searchCmd.Args(), want) {
+		t.Errorf("FTSearchWithArgs args mismatch\n got: %#v\nwant: %#v", searchCmd.Args(), want)
+	}
+
+	aggregate, err := FTAggregateQuery("*", &FTAggregateOptions{Params: empty})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual([]interface{}(aggregate), want) {
+		t.Errorf("FTAggregateQuery args mismatch\n got: %#v\nwant: %#v", aggregate, want)
+	}
+	aggregateCmd := captureCmdable(new(Cmder)).FTAggregateWithArgs(context.Background(), "idx", "*", &FTAggregateOptions{Params: empty})
+	if want := append([]interface{}{"FT.AGGREGATE", "idx"}, want...); !reflect.DeepEqual(aggregateCmd.Args(), want) {
+		t.Errorf("FTAggregateWithArgs args mismatch\n got: %#v\nwant: %#v", aggregateCmd.Args(), want)
+	}
+}
+
 func TestFTHybridWithArgsOffsetWithoutLimitUsesDefaultPageSize(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
