@@ -3109,12 +3109,8 @@ func (cmd *XMessageSliceCmd) Clone() Cmder {
 	if cmd.val != nil {
 		val = make([]XMessage, len(cmd.val))
 		for i, msg := range cmd.val {
-			val[i] = XMessage{
-				ID: msg.ID,
-			}
-			if msg.Values != nil {
-				val[i].Values = maps.Clone(msg.Values)
-			}
+			val[i] = msg
+			val[i].Values = maps.Clone(msg.Values)
 		}
 	}
 	return &XMessageSliceCmd{
@@ -3291,15 +3287,8 @@ func (cmd *XStreamSliceCmd) Clone() Cmder {
 			if stream.Messages != nil {
 				val[i].Messages = make([]XMessage, len(stream.Messages))
 				for j, msg := range stream.Messages {
-					val[i].Messages[j] = XMessage{
-						ID: msg.ID,
-					}
-					if msg.Values != nil {
-						val[i].Messages[j].Values = make(map[string]interface{}, len(msg.Values))
-						for k, v := range msg.Values {
-							val[i].Messages[j].Values[k] = v
-						}
-					}
+					val[i].Messages[j] = msg
+					val[i].Messages[j].Values = maps.Clone(msg.Values)
 				}
 			}
 		}
@@ -4216,35 +4205,10 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 func (cmd *XInfoStreamCmd) Clone() Cmder {
 	var val *XInfoStream
 	if cmd.val != nil {
-		val = &XInfoStream{
-			Length:               cmd.val.Length,
-			RadixTreeKeys:        cmd.val.RadixTreeKeys,
-			RadixTreeNodes:       cmd.val.RadixTreeNodes,
-			Groups:               cmd.val.Groups,
-			LastGeneratedID:      cmd.val.LastGeneratedID,
-			MaxDeletedEntryID:    cmd.val.MaxDeletedEntryID,
-			EntriesAdded:         cmd.val.EntriesAdded,
-			RecordedFirstEntryID: cmd.val.RecordedFirstEntryID,
-		}
-		// Clone XMessage fields
-		val.FirstEntry = XMessage{
-			ID: cmd.val.FirstEntry.ID,
-		}
-		if cmd.val.FirstEntry.Values != nil {
-			val.FirstEntry.Values = make(map[string]interface{}, len(cmd.val.FirstEntry.Values))
-			for k, v := range cmd.val.FirstEntry.Values {
-				val.FirstEntry.Values[k] = v
-			}
-		}
-		val.LastEntry = XMessage{
-			ID: cmd.val.LastEntry.ID,
-		}
-		if cmd.val.LastEntry.Values != nil {
-			val.LastEntry.Values = make(map[string]interface{}, len(cmd.val.LastEntry.Values))
-			for k, v := range cmd.val.LastEntry.Values {
-				val.LastEntry.Values[k] = v
-			}
-		}
+		v := *cmd.val
+		v.FirstEntry.Values = maps.Clone(v.FirstEntry.Values)
+		v.LastEntry.Values = maps.Clone(v.LastEntry.Values)
+		val = &v
 	}
 	return &XInfoStreamCmd{
 		baseCmd: cmd.cloneBaseCmd(),
@@ -9144,6 +9108,9 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 			OutputListLength:   cmd.val.OutputListLength,
 			OutputMemory:       cmd.val.OutputMemory,
 			TotalMemory:        cmd.val.TotalMemory,
+			TotalNetIn:         cmd.val.TotalNetIn,
+			TotalNetOut:        cmd.val.TotalNetOut,
+			TotalCmds:          cmd.val.TotalCmds,
 			IoThread:           cmd.val.IoThread,
 			Events:             cmd.val.Events,
 			LastCmd:            cmd.val.LastCmd,
