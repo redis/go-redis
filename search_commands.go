@@ -4114,11 +4114,10 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 					combineParams = append(combineParams, "CONSTANT", options.Combine.Constant)
 				}
 			case FTHybridCombineLinear:
-				if options.Combine.Alpha > 0 {
-					combineParams = append(combineParams, "ALPHA", options.Combine.Alpha)
-				}
-				if options.Combine.Beta > 0 {
-					combineParams = append(combineParams, "BETA", options.Combine.Beta)
+				// The server requires ALPHA and BETA together, so a zero
+				// weight is sent when the other one is set.
+				if options.Combine.Alpha > 0 || options.Combine.Beta > 0 {
+					combineParams = append(combineParams, "ALPHA", options.Combine.Alpha, "BETA", options.Combine.Beta)
 				}
 			}
 
