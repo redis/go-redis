@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -141,6 +142,7 @@ func TestConnectionFailureMatrix(t *testing.T) {
 				if e.mockOnly != "" {
 					skipIfRealMode(t, e.mockOnly)
 				}
+				settleAfterFault(t)
 				c := newFailureClient(t)
 				var restore func()
 				fault := func() {
@@ -171,13 +173,50 @@ func awaitFaultVisible(t *testing.T, e failureEffect, c *redis.Client) {
 	})
 }
 
-func awaitReachable(t *testing.T, addr string) {
+// awaitReachable waits for a TCP dial to a Topology endpoint to succeed. The
+// endpoint is a redis:// URL in real mode and host:port in the mock, so the
+// dial address comes from the parsed options, not the raw string.
+func awaitReachable(t *testing.T, endpoint string) {
 	t.Helper()
+	addr := endpointOptions(endpoint).Addr
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := AwaitTCPReachable(ctx, addr, 60*time.Second); err != nil {
-		t.Fatalf("member 0 did not come back: %v", err)
+		t.Fatalf("member 0 (%s) did not come back: %v", addr, err)
 	}
+}
+
+// settleAfterFault registers a cleanup that returns only once the Topology is
+// replicating again: a canary written through member 0 must show up on the
+// last member. Active-Active links need time to re-sync after an outage even
+// when every member is reachable, and the next scenario's first write would
+// otherwise race that recovery. Registered before the fault, so (LIFO) it
+// runs after the fault-injector cleanup that waits for the action to finish.
+func settleAfterFault(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		if len(e2eTopology.Endpoints) < 2 {
+			return
+		}
+		src := redis.NewClient(endpointOptions(e2eTopology.Endpoints[0]))
+		dst := redis.NewClient(endpointOptions(lastMemberAddr()))
+		defer func() { _ = src.Close(); _ = dst.Close() }()
+
+		canary := fmt.Sprintf("e2e:cf:canary:%d", time.Now().UnixNano())
+		deadline := time.Now().Add(90 * time.Second)
+		for time.Now().Before(deadline) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if src.Set(ctx, canary, "1", time.Minute).Err() == nil {
+				if v, err := dst.Get(ctx, canary).Result(); err == nil && v == "1" {
+					cancel()
+					return
+				}
+			}
+			cancel()
+			time.Sleep(500 * time.Millisecond)
+		}
+		t.Errorf("topology did not resume replicating within 90s of the fault ending")
+	})
 }
 
 // requireRecovered retries op until it succeeds on the SAME client: the pool
@@ -411,6 +450,7 @@ func runMixedWorkload(t *testing.T, e failureEffect, c *redis.Client, fault, rec
 // commands), and blocking commands work on the new active member afterwards.
 // Matrix: connection_failure x blocking commands x MultiDB.
 func TestMultiDBBlockingAcrossFailover(t *testing.T) {
+	settleAfterFault(t)
 	mdb := newE2EClient(t, fiMultiDBOptions())
 	ctx := context.Background()
 	const key = "e2e:cf:mdb-blocking"
@@ -466,6 +506,7 @@ func schEnabledOptions() *redis.MultiDBOptions {
 // commands and subscriptions still fail over when the active member dies.
 // Matrix: connection_failure x MultiDB client with SCH enabled.
 func TestMultiDBWithSCHFailoverOnMemberOutage(t *testing.T) {
+	settleAfterFault(t)
 	mdb := newE2EClient(t, schEnabledOptions())
 	ctx := context.Background()
 
@@ -509,6 +550,21 @@ func TestMultiDBWithSCHFailoverOnMemberOutage(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("subscription did not follow the failover with SCH enabled")
+		}
+	}
+}
+
+// Real-mode endpoints are redis:// URLs; the dial address must come out as
+// host:port. A raw URL passed to a TCP dial made every dropped-connection
+// cell fail against a real deployment while the mock (plain host:port) passed.
+func TestEndpointDialAddrFromURL(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"redis://redis-11236.example.com:11236", "redis-11236.example.com:11236"},
+		{"redis://user:pw@10.0.0.1:6379", "10.0.0.1:6379"},
+		{"127.0.0.1:17100", "127.0.0.1:17100"},
+	} {
+		if got := endpointOptions(tc.raw).Addr; got != tc.want {
+			t.Errorf("endpointOptions(%q).Addr = %q, want %q", tc.raw, got, tc.want)
 		}
 	}
 }
