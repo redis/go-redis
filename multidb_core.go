@@ -2510,7 +2510,7 @@ func (c *multidbCore) newPubSub() *PubSub {
 
 	pubsub := &PubSub{
 		rec: c.rec,
-		newConn: func(ctx context.Context, _ string, channels []string) (*pool.Conn, error) {
+		newConn: func(ctx context.Context, _ string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
 			if c.closed.Load() {
 				// ErrClosed (== pool.ErrClosed) is the only error the PubSub
 				// channel loop treats as terminal; anything else would make
@@ -2544,7 +2544,7 @@ func (c *multidbCore) newPubSub() *PubSub {
 				addr = a
 			}
 			ownersMu.Unlock()
-			cn, err := db.c.newPubSubConn(ctx, addr, channels)
+			cn, err := db.c.newPubSubConn(ctx, addr, channels, onInit...)
 			if err != nil {
 				return nil, pubSubDialErr(db, err, c.closed.Load())
 			}

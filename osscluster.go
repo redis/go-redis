@@ -184,15 +184,17 @@ type ClusterOptions struct {
 	// each node's Options so the pipeline pool can widen its own dial cap.
 	MaxConcurrentDials int
 
-	PoolFIFO                    bool
-	PoolSize                    int // applies per cluster node and not for the whole cluster
-	PoolTimeout                 time.Duration
-	MinIdleConns                int
-	MaxIdleConns                int
-	MaxActiveConns              int // applies per cluster node and not for the whole cluster
-	ConnMaxIdleTime             time.Duration
-	ConnMaxLifetime             time.Duration
-	ConnMaxLifetimeJitter       time.Duration
+	// PoolSize applies per cluster node and not for the whole cluster.
+	// Zero and negative values are both treated the same way: they select the
+	// default pool size (5 * runtime.GOMAXPROCS(0)) for every node.
+	PoolSize              int
+	PoolTimeout           time.Duration
+	MinIdleConns          int
+	MaxIdleConns          int
+	MaxActiveConns        int // applies per cluster node and not for the whole cluster
+	ConnMaxIdleTime       time.Duration
+	ConnMaxLifetime       time.Duration
+	ConnMaxLifetimeJitter time.Duration
 	ConnMaxLifetimeReapInterval time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
@@ -313,7 +315,9 @@ func (opt *ClusterOptions) init() {
 		opt.DialerRetryTimeout = 100 * time.Millisecond
 	}
 
-	if opt.PoolSize == 0 {
+	// <= 0, not == 0: a negative size is copied into every node's pool and
+	// would panic there, so it selects the default like an unset value does.
+	if opt.PoolSize <= 0 {
 		opt.PoolSize = 5 * runtime.GOMAXPROCS(0)
 	}
 	// Do NOT normalize MaxConcurrentDials here. clientOptions() copies this value
@@ -487,7 +491,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.DisableIdentity = q.bool("disable_identity")
 	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
-	o.PoolSize = q.int("pool_size")
+	o.PoolSize = q.nonNegativeInt("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
@@ -2207,6 +2211,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	var moved bool
 	var ask bool
 	var lastErr error
+	var exhaustedEndpoints map[string]error
 	needsInitialNode := c.opt.DisableRoutingPolicies || decision.policy == nil ||
 		decision.policy.Request == routing.ReqDefault
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
@@ -2241,6 +2246,23 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 				}
 				return err
 			}
+		}
+
+		var dialExhausted *atomic.Bool
+		if node != nil {
+			endpoint := node.Client.opt.Addr
+			if err := exhaustedEndpoints[endpoint]; err != nil {
+				lastErr = err
+				if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+					return lastErr
+				}
+				// The slot owner can change during failover. Reselect within
+				// the retry budget without dialing this address again.
+				node = nil
+				moved, ask = false, false
+				continue
+			}
+			ctx, dialExhausted = node.Client.captureFixedDialExhaustion(ctx)
 		}
 
 		if (newPolicy || c.opt.cscCustomFactory) && node != nil {
@@ -2284,6 +2306,54 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var fanoutErr *clusterFanoutExecutionError
 		if errors.As(lastErr, &fanoutErr) {
 			return fanoutErr.err
+		}
+		if specialErr, ok := lastErr.(*clusterSpecialDialExhausted); ok {
+			if specialErr.node != nil {
+				specialErr.node.MarkAsFailing()
+				c.state.LazyReload()
+			}
+			if specialErr.canReselect && specialErr.node != nil && !cmd.NoRetry() && ctx.Err() == nil && attempt < c.opt.MaxRedirects {
+				if exhaustedEndpoints == nil {
+					exhaustedEndpoints = make(map[string]error)
+				}
+				exhaustedEndpoints[specialErr.node.Client.opt.Addr] = specialErr.err
+				// A raw, unpinned SCAN can try another eligible node, but never
+				// re-dial an endpoint already exhausted by this invocation.
+				node = nil
+				if state, err := c.state.Get(ctx); err == nil {
+					candidates := state.Masters
+					if c.opt.ReadOnly && decision.readOnly && decision.policyFromMetadata {
+						// Match ordinary keyless SCAN routing without mutating the topology.
+						candidates = append(append([]*clusterNode(nil), candidates...), state.Slaves...)
+					}
+					for _, candidate := range candidates {
+						if _, failed := exhaustedEndpoints[candidate.Client.opt.Addr]; !failed {
+							node = candidate
+							break
+						}
+					}
+					if node != nil {
+						moved, ask = false, false
+						continue
+					}
+				}
+			}
+			return specialErr.err
+		}
+		if dialExhausted != nil && dialExhausted.Load() {
+			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+				return lastErr
+			}
+			// A dial failure after MOVED/ASK needs normal retry backoff.
+			moved, ask = false, false
+			if exhaustedEndpoints == nil {
+				exhaustedEndpoints = make(map[string]error)
+			}
+			exhaustedEndpoints[node.Client.opt.Addr] = lastErr
+			node.MarkAsFailing()
+			c.state.LazyReload()
+			node = nil
+			continue
 		}
 		// Fan-out may reject the topology before selecting any target. Only
 		// retry before dispatch; the execution-error guard above prevents replay.
@@ -3244,15 +3314,37 @@ func (c *ClusterClient) processPipelineNode(
 		// otherwise, preserving the previous behavior. entered distinguishes
 		// an acquisition failure (fn never ran) from an execution error.
 		entered := false
-		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		attemptCtx, dialExhausted := node.Client.captureFixedPipelineDialExhaustion(ctx)
+		err := node.Client.withPipelineConn(attemptCtx, func(ctx context.Context, cn *pool.Conn) error {
 			entered = true
 			return c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds, route)
 		})
+		if entered && dialExhausted != nil {
+			dialExhausted.Store(false)
+		}
 		if err != nil && !entered {
-			if !isContextError(err) {
+			if dialExhausted != nil && dialExhausted.Load() {
+				// The endpoint's entire dial sequence failed, but a read-only
+				// batch may recover on a healthy replica or the master. Remap
+				// without ever retrying the exhausted endpoint itself.
 				node.MarkAsFailing()
+				c.state.LazyReload()
+				if !cmdsContainNoRetry(cmds) {
+					remapped := newCmdsMap()
+					if c.mapCmdsByNodeInView(ctx, remapped, cmds, route) == nil {
+						for next, batch := range remapped.m {
+							if next.Client.opt.Addr != node.Client.opt.Addr {
+								failedCmds.Add(next, batch...)
+							}
+						}
+					}
+				}
+			} else {
+				if !isContextError(err) {
+					node.MarkAsFailing()
+				}
+				_ = c.mapCmdsByNodeInView(ctx, failedCmds, cmds, route)
 			}
-			_ = c.mapCmdsByNodeInView(ctx, failedCmds, cmds, route)
 			setCmdsErr(cmds, err)
 		}
 		return err
@@ -3851,7 +3943,8 @@ func (c *ClusterClient) processTxPipelineNode(
 		// connection release exactly like the explicit releaseConn did:
 		// redis errors keep the conn poolable, unread replies poison it.
 		entered := false
-		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		attemptCtx, dialExhausted := node.Client.captureFixedPipelineDialExhaustion(ctx)
+		err := node.Client.withPipelineConn(attemptCtx, func(ctx context.Context, cn *pool.Conn) error {
 			entered = true
 			outcome = c.processTxPipelineNodeConn(ctx, node, cn, wire, cmds, asking)
 			connErr := outcome.err
@@ -3869,7 +3962,9 @@ func (c *ClusterClient) processTxPipelineNode(
 		})
 		if !entered && err != nil {
 			// Connection acquisition failed — fn never ran.
-			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+			if dialExhausted != nil && dialExhausted.Load() {
+				outcome = &txOutcome{kind: txFatal, err: err}
+			} else if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 				outcome = &txOutcome{kind: txRetryConn, err: err}
 			} else {
 				outcome = &txOutcome{kind: txFatal, err: err}
@@ -4197,7 +4292,7 @@ func (c *ClusterClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
 		rec: c.rec,
-		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+		newConn: func(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
 			if node != nil {
 				panic("node != nil")
 			}
@@ -4231,7 +4326,7 @@ func (c *ClusterClient) pubSub() *PubSub {
 					return nil, err
 				}
 			}
-			cn, err := node.Client.newPubSubConn(ctx, node.Client.opt.Addr, channels)
+			cn, err := node.Client.newPubSubConn(ctx, node.Client.opt.Addr, channels, onInit...)
 			if err != nil {
 				node = nil
 				return nil, err

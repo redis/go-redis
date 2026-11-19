@@ -879,12 +879,35 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	return cn, nil
 }
 
+type dialExhaustedKey struct{ pool *ConnPool }
+
+// WithDialExhaustion tracks a failed pool dial sequence without wrapping its
+// error. The returned marker belongs to this connection acquisition only.
+func (p *ConnPool) WithDialExhaustion(ctx context.Context, exhausted *atomic.Bool) context.Context {
+	return context.WithValue(ctx, dialExhaustedKey{p}, exhausted)
+}
+
+// DialExhaustion retrieves the marker for this pool, if the caller set one.
+func (p *ConnPool) DialExhaustion(ctx context.Context) *atomic.Bool {
+	exhausted, _ := ctx.Value(dialExhaustedKey{p}).(*atomic.Bool)
+	return exhausted
+}
+
+func (p *ConnPool) markDialExhaustion(ctx context.Context) {
+	if exhausted := p.DialExhaustion(ctx); exhausted != nil {
+		exhausted.Store(true)
+	}
+}
+
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
 
 	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
+		// The breaker rejected this request before it could start a dial
+		// sequence. Keep command-level retries available while tryDial probes
+		// for recovery in the background.
 		return nil, p.getLastDialError()
 	}
 
@@ -961,6 +984,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if p.dialErrorsNum.Add(1) == uint32(p.cfg.PoolSize) {
 		go p.tryDial()
 	}
+	p.markDialExhaustion(ctx)
 	return nil, lastErr
 }
 
@@ -1051,10 +1075,111 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 // for a full pool. It returns ErrPoolTryFull at once instead. This lets a caller
 // with a fallback (the pipeline pool) spill without a stall. ErrPoolTryFull is
 // different from ErrPoolTimeout: no wait happened, so getConn does not count the
-// spill as a pool timeout. A hard MaxActiveConns ceiling still returns
-// ErrPoolExhausted. TryGet still dials a new connection under an acquired turn.
+// spill as a pool timeout. Re-authentication at the hard MaxActiveConns limit
+// returns ErrPoolTryFull, while exhaustion without re-auth returns
+// ErrPoolExhausted. TryGet dials under an acquired turn when capacity remains.
 func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 	return p.getConn(ctx, false)
+}
+
+// usableIdlePollInterval bounds the readiness check by both the pool budget
+// and the caller's deadline, without changing which timer expires the wait.
+func usableIdlePollInterval(ctx context.Context, poolRemaining time.Duration) time.Duration {
+	pollBudget := poolRemaining
+	if ctxDeadline, ok := ctx.Deadline(); ok {
+		pollBudget = min(pollBudget, time.Until(ctxDeadline))
+	}
+	if pollBudget <= 0 {
+		return 0
+	}
+	interval := min(10*time.Millisecond, pollBudget/4)
+	if interval <= 0 {
+		return pollBudget
+	}
+	return interval
+}
+
+// waitForUsableIdle polls the lightweight connection state rather than
+// repeatedly running popIdle (which rearranges the idle slice). A maintenance
+// worker updates state without calling Put, so there is no pool queue event to
+// wait for here. Waiting stops as soon as the hard cap has room to dial.
+func (p *ConnPool) waitForUsableIdle(ctx context.Context, deadline time.Time, hookRejected bool) error {
+	isReady := func() bool {
+		p.connsMu.Lock()
+		defer p.connsMu.Unlock()
+		if p.cfg.MaxActiveConns == 0 || len(p.conns)+p.pendingConns < int(p.cfg.MaxActiveConns) {
+			return true
+		}
+		// Return to acquisition when nothing can become ready without a
+		// fresh dial. Handoff-owned entries are not candidates for this wait.
+		hasReauth := false
+		for _, cn := range p.idleConns {
+			state := cn.GetStateMachine().GetState()
+			if state == StateIdle || state == StateCreated {
+				return true
+			}
+			if (state == StateUnusable || state == StateInUse) && cn.GetHandoffEndpoint() == "" {
+				hasReauth = true // AUTH via SingleConnPool briefly enters StateInUse
+			}
+		}
+		return !hasReauth
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.closed() {
+		return ErrClosed
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return ErrPoolTimeout
+	}
+	// An OnGet hook can reject StateIdle connections while re-authentication
+	// is scheduled but not yet running. After such a rejection, wait for at
+	// least one tick rather than immediately retrying the same idle entry.
+	if !hookRejected && isReady() {
+		return nil
+	}
+	// Poll promptly when the caller has a shorter deadline than PoolTimeout.
+	// The pool timer still owns the pool budget; ctx.Done owns the caller's.
+	interval := usableIdlePollInterval(ctx, remaining)
+	if interval <= 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.closedCh:
+			return ErrClosed
+		case <-timer.C:
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if p.closed() {
+				return ErrClosed
+			}
+			return ErrPoolTimeout
+		case <-ticker.C:
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if p.closed() {
+				return ErrClosed
+			}
+			if isReady() {
+				return nil
+			}
+		}
+	}
 }
 
 // getConn returns a connection from the pool. When wait is false it does not block
@@ -1091,7 +1216,7 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 		}
 	}()
 
-	// PoolTimeout is one budget for both the pool turn and a drainer handoff.
+	// PoolTimeout is one budget for the pool turn and temporary maintenance waits.
 	poolDeadline := time.Now().Add(p.cfg.PoolTimeout)
 
 	// Connection wait time measures only semaphore acquisition.
@@ -1114,10 +1239,30 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
-retryIdle:
-	drainGeneration := p.drainGeneration.Load()
-	for attempts := 0; attempts < getAttempts; attempts++ {
+	// idleRechecked bounds the hard-cap idle recheck below to one extra
+	// scan per Get: it closes the window where a connection finishes
+	// re-authentication between the popIdle scan and the capacity check,
+	// without turning that recheck into a spin loop.
+	idleRechecked := false
 
+retryIdle:
+	if err := ctx.Err(); err != nil {
+		p.freeTurn()
+		return nil, err
+	}
+	if p.closed() {
+		p.freeTurn()
+		return nil, ErrClosed
+	}
+	drainGeneration := p.drainGeneration.Load()
+	hookRejected := false
+	for attempts := 0; attempts < getAttempts; attempts++ {
+		// A blocked OnGet can return after cancellation; do not reacquire
+		// its requeued connection on the next attempt.
+		if err := ctx.Err(); err != nil {
+			p.freeTurn()
+			return nil, err
+		}
 		p.connsMu.Lock()
 		cn, err = p.popIdle()
 		if cn != nil {
@@ -1155,6 +1300,7 @@ retryIdle:
 					// Connection was already transitioned to MetricStateUsed under the lock above.
 					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateUsed)
 				} else {
+					hookRejected = true
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
 					// Connection is already in MetricStateUsed (transitioned under the lock above).
 					// Return connection to pool without freeing the turn that this Get() call holds.
@@ -1202,8 +1348,68 @@ retryIdle:
 			p.freeTurn()
 			return nil, err
 		}
+		nowNs = time.Now().UnixNano()
 		goto retryIdle
 	} else if retry {
+		nowNs = time.Now().UnixNano()
+		goto retryIdle
+	}
+
+	// Preserve the normal dial path whenever MaxActiveConns has spare room.
+	// Only a hard-cap exhaustion with an idle re-auth candidate should wait
+	// for that candidate to become usable instead of returning ErrPoolExhausted.
+	// In particular, PoolSize is a soft limit and must not trigger this wait.
+	//
+	// A connection can also finish re-authentication between the popIdle
+	// scan above and this check: the scan skipped it while the re-auth
+	// worker had it in use, but by now it is idle and acquirable. Recheck
+	// for such a connection once and retry acquisition instead of dialing
+	// into the hard cap. This is not the re-auth wait below: the connection
+	// needs no waiting, and treating every idle entry as a re-auth
+	// candidate would add spurious waits (a hook may reject the connection
+	// anyway). A hook-rejected idle entry therefore stays on the wait path.
+	p.connsMu.Lock()
+	capReached := p.cfg.MaxActiveConns > 0 && len(p.conns)+p.pendingConns >= int(p.cfg.MaxActiveConns)
+	hasReauthIdle := false
+	hasAcquirableIdle := false
+	if capReached {
+		for _, idle := range p.idleConns {
+			state := idle.GetStateMachine().GetState()
+			// OnGet can reject before the re-auth worker marks it unusable.
+			// Handoff-owned entries must still use the usual dial/error path.
+			if (hookRejected && state == StateIdle) ||
+				((state == StateUnusable || state == StateInUse) && idle.GetHandoffEndpoint() == "") {
+				hasReauthIdle = true
+			}
+			if !hookRejected && (state == StateIdle || state == StateCreated) {
+				hasAcquirableIdle = true
+			}
+			if hasReauthIdle && hasAcquirableIdle {
+				break
+			}
+		}
+	}
+	p.connsMu.Unlock()
+	if hasAcquirableIdle && !idleRechecked {
+		idleRechecked = true
+		// The connection became acquirable after the cached-time
+		// snapshot; check expiration against the current clock when we
+		// next inspect an idle connection.
+		nowNs = time.Now().UnixNano()
+		goto retryIdle
+	}
+	if hasReauthIdle {
+		if !wait {
+			p.freeTurn()
+			return nil, ErrPoolTryFull
+		}
+		if err = p.waitForUsableIdle(ctx, poolDeadline, hookRejected); err != nil {
+			p.freeTurn()
+			return nil, err
+		}
+		// Maintenance can outlast the cached-time window. Check expiration
+		// against the current clock when we next inspect an idle connection.
+		nowNs = time.Now().UnixNano()
 		goto retryIdle
 	}
 
@@ -1283,7 +1489,15 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 	}
 
 	// Don't apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
-	dialCtx, cancel := context.WithCancel(context.Background())
+	base := context.Background()
+	// A queued dial can lose a race to another worker that supplies an idle
+	// connection. Do not let a failed losing dial mark a successful Get.
+	var dialExhausted *atomic.Bool
+	if p.DialExhaustion(ctx) != nil {
+		dialExhausted = new(atomic.Bool)
+		base = p.WithDialExhaustion(base, dialExhausted)
+	}
+	dialCtx, cancel := context.WithCancel(base)
 
 	w := &wantConn{
 		ctx:       dialCtx,
@@ -1344,6 +1558,9 @@ func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) 
 		return nil, err
 	case result := <-w.result:
 		err = result.err
+		if err != nil && dialExhausted != nil && dialExhausted.Load() {
+			p.markDialExhaustion(ctx)
+		}
 		return result.cn, err
 	}
 }
@@ -1524,7 +1741,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		if cn.TryAcquire() {
 			// Successfully acquired the connection
 			p.idleConnsLen.Add(-1)
-			break
+			return cn, nil
 		}
 
 		// Connection is in UNUSABLE, INITIALIZING, or other state - skip it
@@ -1859,7 +2076,6 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 }
 
 func (p *ConnPool) recordConnectionMetrics(ctx context.Context, cn *Conn, reason string, fromState string, countCb connectionCountCallback) {
-
 	// Record connection count decrement (UpDownCounter) for the state the connection was in
 	if countCb != nil && fromState != "" {
 		countCb(ctx, -1, cn, fromState, false)

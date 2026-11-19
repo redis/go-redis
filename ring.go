@@ -895,6 +895,7 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
+	var exhaustedAddrs map[string]error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -907,9 +908,23 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 			return err
 		}
 
-		lastErr = shard.Client.Process(ctx, cmd)
+		if exhaustedErr, ok := exhaustedAddrs[shard.addr]; ok {
+			// A rebalance may select another shard on the next attempt.
+			// Do not re-dial this exhausted endpoint, but keep the retry
+			// budget available for a healthy shard.
+			lastErr = exhaustedErr
+			continue
+		}
+		attemptCtx, exhausted := shard.Client.captureFixedDialExhaustion(ctx)
+		lastErr = shard.Client.Process(attemptCtx, cmd)
 		if lastErr == nil || !shouldRetry(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {
 			return lastErr
+		}
+		if exhausted != nil && exhausted.Load() {
+			if exhaustedAddrs == nil {
+				exhaustedAddrs = make(map[string]error)
+			}
+			exhaustedAddrs[shard.addr] = lastErr
 		}
 	}
 	return lastErr

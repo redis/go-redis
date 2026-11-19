@@ -458,6 +458,139 @@ func TestClusterConditionalMSetEXFailsBeforeCrossSlotDispatch(t *testing.T) {
 	}
 }
 
+func TestClusterMSetEXSameSlotSendsOriginalCommand(t *testing.T) {
+	c := newMetadataTestCluster(t, nil)
+	ctx := context.Background()
+	node, err := c.nodes.GetOrCreate("127.0.0.1:16620")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	var got []interface{}
+	node.Client.AddHook(clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+		calls++
+		got = append([]interface{}(nil), cmd.Args()...)
+		cmd.(*IntCmd).SetVal(1)
+		return nil
+	}})
+	installMetadataClusterState(c, []*clusterNode{node}, &clusterSlot{start: 0, end: 16383, nodes: []*clusterNode{node}})
+
+	res := c.MSetEX(ctx, MSetEXArgs{Expiration: &ExpirationOption{Mode: EX, Value: 100}}, "{m}a", "1", "{m}b", "2")
+	want := []interface{}{"msetex", 2, "{m}a", "1", "{m}b", "2", "ex", int64(100)}
+	if res.Err() != nil || res.Val() != 1 || calls != 1 || !reflect.DeepEqual(got, want) || !reflect.DeepEqual(res.Args(), want) {
+		t.Fatalf("result=%d err=%v calls=%d dispatched=%#v original=%#v", res.Val(), res.Err(), calls, got, res.Args())
+	}
+}
+
+func TestClusterMSetEXCrossSlotRewritesNumKeys(t *testing.T) {
+	c := newMetadataTestCluster(t, nil)
+	ctx := context.Background()
+	const keyA, keyB = "{one}a", "{two}b"
+	slotA, slotB := hashtag.Slot(keyA), hashtag.Slot(keyB)
+	if slotA == slotB {
+		t.Fatal("test keys share a slot")
+	}
+	nodeA, err := c.nodes.GetOrCreate("127.0.0.1:16621")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeB, err := c.nodes.GetOrCreate("127.0.0.1:16622")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	got := map[string][]interface{}{}
+	hook := clusterMetadataNodeHook{process: func(_ context.Context, cmd Cmder) error {
+		args := append([]interface{}(nil), cmd.Args()...)
+		key, _ := args[2].(string)
+		mu.Lock()
+		got[key] = args
+		mu.Unlock()
+		cmd.(*IntCmd).SetVal(1)
+		return nil
+	}}
+	nodeA.Client.AddHook(hook)
+	nodeB.Client.AddHook(hook)
+	slots := []*clusterSlot{
+		{start: slotA, end: slotA, nodes: []*clusterNode{nodeA}},
+		{start: slotB, end: slotB, nodes: []*clusterNode{nodeB}},
+	}
+	if slotA > slotB {
+		slots[0], slots[1] = slots[1], slots[0]
+	}
+	installMetadataClusterState(c, []*clusterNode{nodeA, nodeB}, slots...)
+
+	res := c.MSetEX(ctx, MSetEXArgs{Expiration: &ExpirationOption{Mode: EX, Value: 100}}, keyA, "1", keyB, "2")
+	original := []interface{}{"msetex", 2, keyA, "1", keyB, "2", "ex", int64(100)}
+	want := map[string][]interface{}{
+		keyA: {"msetex", 1, keyA, "1", "ex", int64(100)},
+		keyB: {"msetex", 1, keyB, "2", "ex", int64(100)},
+	}
+	if res.Err() != nil || res.Val() != 1 || !reflect.DeepEqual(res.Args(), original) || !reflect.DeepEqual(got, want) {
+		t.Fatalf("result=%d err=%v original=%#v dispatched=%#v", res.Val(), res.Err(), res.Args(), got)
+	}
+}
+
+func TestClusterMultiShardReturnsSlotError(t *testing.T) {
+	c := newMetadataTestCluster(t, nil)
+	ctx := context.Background()
+	slotErr := proto.RedisError("ERR synthetic slot failure")
+
+	t.Run("all_succeeded", func(t *testing.T) {
+		for _, partial := range []bool{false, true} {
+			t.Run(fmt.Sprintf("partial=%v", partial), func(t *testing.T) {
+				original := NewIntCmd(ctx, "msetex", 2, "a", "1", "b", "2")
+				failed := NewIntCmd(ctx, "msetex", 1, "b", "2")
+				failed.SetErr(slotErr)
+				results := make(chan slotResult, 2)
+				if partial {
+					ok := NewIntCmd(ctx, "msetex", 1, "a", "1")
+					ok.SetVal(1)
+					results <- slotResult{cmd: ok, keys: []string{"a"}}
+				} else {
+					other := NewIntCmd(ctx, "msetex", 1, "a", "1")
+					other.SetErr(slotErr)
+					results <- slotResult{cmd: other, keys: []string{"a"}, err: slotErr}
+				}
+				results <- slotResult{cmd: failed, keys: []string{"b"}, err: slotErr}
+				close(results)
+
+				err := c.aggregateMultiSlotResults(ctx, original, results, []string{"a", "b"}, &routing.CommandPolicy{Response: routing.RespAllSucceeded})
+				if !errors.Is(err, slotErr) || !errors.Is(original.Err(), slotErr) || errors.Is(err, errNoResToAggregate) || original.Val() != 0 {
+					t.Fatalf("err=%v cmdErr=%v val=%d", err, original.Err(), original.Val())
+				}
+			})
+		}
+	})
+
+	t.Run("agg_sum", func(t *testing.T) {
+		for _, partial := range []bool{false, true} {
+			t.Run(fmt.Sprintf("partial=%v", partial), func(t *testing.T) {
+				original := NewIntCmd(ctx, "exists", "a", "b")
+				failed := NewIntCmd(ctx, "exists", "b")
+				failed.SetErr(slotErr)
+				results := make(chan slotResult, 2)
+				if partial {
+					ok := NewIntCmd(ctx, "exists", "a")
+					ok.SetVal(1)
+					results <- slotResult{cmd: ok, keys: []string{"a"}}
+				} else {
+					other := NewIntCmd(ctx, "exists", "a")
+					other.SetErr(slotErr)
+					results <- slotResult{cmd: other, keys: []string{"a"}, err: slotErr}
+				}
+				results <- slotResult{cmd: failed, keys: []string{"b"}, err: slotErr}
+				close(results)
+
+				err := c.aggregateMultiSlotResults(ctx, original, results, []string{"a", "b"}, &routing.CommandPolicy{Response: routing.RespAggSum})
+				if !errors.Is(err, slotErr) || !errors.Is(original.Err(), slotErr) || errors.Is(err, errNoResToAggregate) || original.Val() != 0 {
+					t.Fatalf("err=%v cmdErr=%v val=%d", err, original.Err(), original.Val())
+				}
+			})
+		}
+	})
+}
+
 func TestClusterMultiShardSumAggregatesOncePerShard(t *testing.T) {
 	c := newMetadataTestCluster(t, nil)
 	ctx := context.Background()

@@ -316,9 +316,11 @@ type AutoPipelineOptions struct {
 	// (unexported). ctx is the command's submit context. grp, when non-nil,
 	// groups the reports of one settle call that carry the same error, so the
 	// owner can count per-event state (the breaker) once per settle call
-	// (fdFailGroup.take); a drop is bounded to a few such calls. See
+	// (fdFailGroup.take); a drop is bounded to a few such calls. token is the
+	// owner's admission handle carried from submit, so the owner can settle
+	// the outcome in the episode the command was admitted to. See
 	// fdEngine.finish.
-	fdOutcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup)
+	fdOutcome func(ctx context.Context, cmd Cmder, err error, grp *fdFailGroup, token fdOutcomeToken)
 
 	// fdOwnerRetries and fdRetryBudget are set internally by an owner that has
 	// its own retry policy (the MultiDB full-duplex router, from CommandRetries;
@@ -2167,6 +2169,13 @@ func resetAutoPipelineCommand(cmd Cmder) {
 
 // submit queues a command without blocking and returns its completion future.
 func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
+	return ap.submitToken(ctx, cmd, fdOutcomeToken{})
+}
+
+// submitToken is submit with an owner admission token. Only an owner that
+// accounts full-duplex outcomes (the MultiDB router) supplies one; every other
+// caller uses submit and passes the zero token.
+func (ap *AutoPipeliner) submitToken(ctx context.Context, cmd Cmder, token fdOutcomeToken) AutoFuture {
 	if ap.captureCacheIntent {
 		cscBegin(ctx, cmd)
 	}
@@ -2250,7 +2259,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// command's slot. The child is a standalone FD autopipeliner sharing this
 		// face's blocking flag, so its submit honors the same setReady/blocking
 		// contract — return its AutoFuture directly.
-		f := ap.clusterFD.submit(ctx, cmd)
+		f := ap.clusterFD.submitToken(ctx, cmd, token)
 		if f.batch == completedBatch {
 			resetAutoPipelineCommand(cmd)
 		}
@@ -2260,7 +2269,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// Ordered full-duplex: stream on one held connection. enqueue's async
 		// setReady is replicated here since we bypass it. ctx is threaded so a
 		// per-command process-hook host can parent its span correctly.
-		b := ap.fdFor(cmd).submit(ctx, cmd)
+		b := ap.fdFor(cmd).submitToken(ctx, cmd, token)
 		if b == completedBatch {
 			resetAutoPipelineCommand(cmd)
 		}
