@@ -1083,7 +1083,7 @@ func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error
 }
 
 func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
-	v, err := c.masterAddrFlight.Do(ctx, "master", 0, func(shared context.Context) (interface{}, error) {
+	v, err := c.masterAddrFlight.Do(ctx, "master", func(shared context.Context) (interface{}, error) {
 		return c.masterAddrOnce(shared)
 	})
 	if err != nil {
@@ -1195,7 +1195,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	if useDisconnected {
 		key = "replicas-disconnected"
 	}
-	v, err := c.replicaAddrsFlight.Do(ctx, key, 0, func(shared context.Context) (interface{}, error) {
+	v, err := c.replicaAddrsFlight.Do(ctx, key, func(shared context.Context) (interface{}, error) {
 		return c.replicaAddrsOnce(shared, useDisconnected)
 	})
 	if err != nil {

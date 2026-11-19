@@ -25,7 +25,7 @@ func TestSingleflightGroupCoalesces(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			v, err := g.Do(context.Background(), "k", 0, func(shared context.Context) (interface{}, error) {
+			v, err := g.Do(context.Background(), "k", func(shared context.Context) (interface{}, error) {
 				if calls.Add(1) == 1 {
 					close(started)
 				}
@@ -76,7 +76,7 @@ func TestSingleflightGroupWaiterCancelDoesNotAbortShared(t *testing.T) {
 	leaderDone := make(chan struct{})
 	go func() {
 		defer close(leaderDone)
-		_, err := g.Do(context.Background(), "k", 0, func(shared context.Context) (interface{}, error) {
+		_, err := g.Do(context.Background(), "k", func(shared context.Context) (interface{}, error) {
 			calls.Add(1)
 			close(started)
 			<-release
@@ -95,7 +95,7 @@ func TestSingleflightGroupWaiterCancelDoesNotAbortShared(t *testing.T) {
 	waiterCtx, cancel := context.WithCancel(context.Background())
 	waiterErr := make(chan error, 1)
 	go func() {
-		_, err := g.Do(waiterCtx, "k", 0, func(shared context.Context) (interface{}, error) {
+		_, err := g.Do(waiterCtx, "k", func(shared context.Context) (interface{}, error) {
 			t.Error("waiter must not run shared fn")
 			return nil, nil
 		})
@@ -132,7 +132,7 @@ func TestSingleflightGroupLeaderCancelReturnsEarly(t *testing.T) {
 	leaderCtx, cancel := context.WithCancel(context.Background())
 	leaderErr := make(chan error, 1)
 	go func() {
-		_, err := g.Do(leaderCtx, "k", 0, func(shared context.Context) (interface{}, error) {
+		_, err := g.Do(leaderCtx, "k", func(shared context.Context) (interface{}, error) {
 			close(started)
 			<-shared.Done()
 			sharedErr <- shared.Err()
@@ -170,7 +170,7 @@ func TestSingleflightGroupAbandonedCallNotReused(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := g.Do(ctx, "k", 0, func(shared context.Context) (interface{}, error) {
+		_, err := g.Do(ctx, "k", func(shared context.Context) (interface{}, error) {
 			close(started)
 			<-release
 			return "stale", nil
@@ -182,7 +182,7 @@ func TestSingleflightGroupAbandonedCallNotReused(t *testing.T) {
 	<-errCh
 
 	// A new caller must start a fresh lookup, not join the abandoned one.
-	v, err := g.Do(context.Background(), "k", 0, func(shared context.Context) (interface{}, error) {
+	v, err := g.Do(context.Background(), "k", func(shared context.Context) (interface{}, error) {
 		return "fresh", nil
 	})
 	close(release)
@@ -193,33 +193,18 @@ func TestSingleflightGroupAbandonedCallNotReused(t *testing.T) {
 
 func TestSingleflightGroupPanicReturnsError(t *testing.T) {
 	var g singleflightGroup
-	_, err := g.Do(context.Background(), "k", 0, func(shared context.Context) (interface{}, error) {
+	_, err := g.Do(context.Background(), "k", func(shared context.Context) (interface{}, error) {
 		panic("boom")
 	})
 	if err == nil {
 		t.Fatal("want error from panicking fn")
 	}
 	// The key must not stay stuck after a panic.
-	v, err := g.Do(context.Background(), "k", 0, func(shared context.Context) (interface{}, error) {
+	v, err := g.Do(context.Background(), "k", func(shared context.Context) (interface{}, error) {
 		return "ok", nil
 	})
 	if err != nil || v != "ok" {
 		t.Fatalf("Do after panic = %v, %v; want ok, nil", v, err)
-	}
-}
-
-func TestSingleflightGroupSharedTimeout(t *testing.T) {
-	var g singleflightGroup
-	started := make(chan struct{})
-	ctx := context.Background()
-	_, err := g.Do(ctx, "k", 50*time.Millisecond, func(shared context.Context) (interface{}, error) {
-		close(started)
-		<-shared.Done()
-		return nil, shared.Err()
-	})
-	<-started
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v, want DeadlineExceeded", err)
 	}
 }
 
@@ -238,4 +223,3 @@ func TestSentinelOptionsMinIdleConnsZero(t *testing.T) {
 		t.Fatalf("sentinel PoolSize = %d, want inherited 100", sopt.PoolSize)
 	}
 }
-
