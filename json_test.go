@@ -252,6 +252,16 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(cmd10).To(Equal([]int64{0}))
 			})
 
+			It("should JSONArrTrim without a stop", Label("json.arrtrim", "json"), func() {
+				Expect(client.JSONSet(ctx, "trim6", "$", `[0,1,2,3,4]`).Err()).NotTo(HaveOccurred())
+
+				// The server requires start and stop; they default to 0 and -1.
+				Expect(client.JSONArrTrim(ctx, "trim6", "$").Result()).To(Equal([]int64{5}))
+				Expect(client.JSONArrTrimWithArgs(ctx, "trim6", "$", nil).Result()).To(Equal([]int64{5}))
+				Expect(client.JSONArrTrimWithArgs(ctx, "trim6", "$", &redis.JSONArrTrimArgs{Start: 2}).Result()).To(Equal([]int64{3}))
+				Expect(client.JSONGet(ctx, "trim6", "$").Result()).To(Equal(`[[2,3,4]]`))
+			})
+
 			It("should JSONArrPop", Label("json.arrpop", "json"), func() {
 				cmd1 := client.JSONSet(ctx, "pop4", "$", `[100, 200, 300, 200]`)
 				Expect(cmd1.Err()).NotTo(HaveOccurred())

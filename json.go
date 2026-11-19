@@ -471,28 +471,26 @@ func (c cmdable) JSONArrPop(ctx context.Context, key, path string, index int) *S
 	return cmd
 }
 
-// JSONArrTrim trims an array to contain only the specified inclusive range of elements.
+// JSONArrTrim keeps the whole array (start 0, stop -1) and returns its length.
+// Use JSONArrTrimWithArgs to trim to a range.
 // For more information, see https://redis.io/commands/json.arrtrim
 func (c cmdable) JSONArrTrim(ctx context.Context, key, path string) *IntSliceCmd {
-	args := []interface{}{"JSON.ARRTRIM", key, path}
-	cmd := NewIntSliceCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	return c.JSONArrTrimWithArgs(ctx, key, path, nil)
 }
 
 // JSONArrTrimWithArgs trims an array to contain only the specified inclusive range of elements.
+// Start defaults to 0 and Stop to -1 (the last element).
 // For more information, see https://redis.io/commands/json.arrtrim
 func (c cmdable) JSONArrTrimWithArgs(ctx context.Context, key, path string, options *JSONArrTrimArgs) *IntSliceCmd {
-	args := []interface{}{"JSON.ARRTRIM", key, path}
-
+	// The server requires both start and stop.
+	start, stop := 0, -1
 	if options != nil {
-		args = append(args, options.Start)
-
+		start = options.Start
 		if options.Stop != nil {
-			args = append(args, *options.Stop)
+			stop = *options.Stop
 		}
 	}
-	cmd := NewIntSliceCmd(ctx, args...)
+	cmd := NewIntSliceCmd(ctx, "JSON.ARRTRIM", key, path, start, stop)
 	_ = c(ctx, cmd)
 	return cmd
 }
