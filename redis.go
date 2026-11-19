@@ -2588,6 +2588,26 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 
 type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
+// pipelineRetrySuffix returns the commands of a failed pipeline attempt that
+// still need a result: the suffix starting at the first command whose error
+// is a transport failure rather than a server reply. Commands before it were
+// answered — with a value or with a Redis error reply — and must not be
+// executed again: a replied INCR has already applied. A Redis error as the
+// batch error (e.g. LOADING) means the server rejected the batch without
+// executing it, so the whole batch is returned unchanged and keeps its
+// established retry behaviour.
+func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
+	if err == nil || isRedisError(err) {
+		return cmds
+	}
+	for i, cmd := range cmds {
+		if e := cmd.rawErr(); e != nil && !isRedisError(e) {
+			return cmds[i:]
+		}
+	}
+	return cmds
+}
+
 // pipelineErrShouldStamp reports whether a pipeline-level error must be stamped
 // onto every command (setCmdsErr). A per-command Redis reply error (LOADING,
 // WRONGTYPE, ...) is left alone so each command keeps its own reply - EXCEPT when
@@ -2660,6 +2680,12 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// SELECT failure), which pipelineErrShouldStamp would otherwise skip
 	// on the assumption that per-command replies were read.
 	var connAcquired bool
+	// pending holds the commands the next attempt must execute. A failed
+	// non-transaction pipeline attempt narrows it to the commands that were
+	// not answered, so a retry does not re-execute commands whose replies
+	// were already read (see pipelineRetrySuffix). Transaction pipelines
+	// (operationName "MULTI") are atomic and always keep the whole batch.
+	pending := cmds
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		connAcquired = false
@@ -2668,7 +2694,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 			// priorAttempts times (a full-duplex attempt), as its own retries
 			// would: 0 for an ordinary pipeline.
 			if err := internal.Sleep(ctx, c.retryBackoff(priorAttempts+attempt)); err != nil {
-				setCmdsErr(cmds, err)
+				setCmdsErr(pending, err)
 				if recordDuration {
 					c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
 				}
@@ -2697,7 +2723,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 				return fmt.Errorf("%w: pipeline push drain: %w", errConnUnusable, err)
 			}
 			var err error
-			canRetry, err = p(ctx, cn, cmds)
+			canRetry, err = p(ctx, cn, pending)
 			return err
 		})
 		// A successful acquisition can still yield a retryable Redis reply.
@@ -2708,12 +2734,14 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// Don't retry if any command in the pipeline explicitly disables retries
 		// (e.g., RawWriteToCmd which writes directly to an io.Writer and cannot
 		// undo partial writes on retry)
-		if lastErr == nil || !canRetry || (dialExhausted != nil && dialExhausted.Load()) || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
+		if lastErr == nil || !canRetry || (dialExhausted != nil && dialExhausted.Load()) || !shouldRetry(lastErr, true) || cmdsContainNoRetry(pending) {
 			// The error should be set here only when failing to obtain the conn.
 			// A setup failure (!connAcquired) stamps even Redis errors: no
 			// command was sent, so no per-command reply exists to preserve.
+			// Only pending is stamped: commands an earlier attempt already
+			// answered keep their results.
 			if !connAcquired || pipelineErrShouldStamp(lastErr) {
-				setCmdsErr(cmds, lastErr)
+				setCmdsErr(pending, lastErr)
 			}
 			if recordDuration {
 				c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
@@ -2723,6 +2751,12 @@ func (c *baseClient) generalProcessPipelineFrom(
 				c.recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
 			}
 			return lastErr
+		}
+		// The attempt failed with a retryable error: narrow the next attempt
+		// to the commands that were not answered, so a replied command is
+		// not executed twice. Transaction pipelines stay whole-batch.
+		if operationName != "MULTI" {
+			pending = pipelineRetrySuffix(pending, lastErr)
 		}
 	}
 
@@ -2735,7 +2769,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// reply rather than being overwritten, except when connection setup
 	// failed and no command was sent at all.
 	if !connAcquired || pipelineErrShouldStamp(lastErr) {
-		setCmdsErr(cmds, lastErr)
+		setCmdsErr(pending, lastErr)
 	}
 
 	if recordDuration {
