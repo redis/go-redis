@@ -184,17 +184,16 @@ type ClusterOptions struct {
 	// each node's Options so the pipeline pool can widen its own dial cap.
 	MaxConcurrentDials int
 
-	
 	// PoolSize applies per cluster node and not for the whole cluster.
 	// Zero and negative values are both treated the same way: they select the
 	// default pool size (5 * runtime.GOMAXPROCS(0)) for every node.
-	PoolSize              int
-	PoolFIFO              bool
-	PoolTimeout           time.Duration
-	MinIdleConns          int
-	MaxIdleConns          int
-	MaxActiveConns        int // applies per cluster node and not for the whole cluster
-	
+	PoolSize       int
+	PoolFIFO       bool
+	PoolTimeout    time.Duration
+	MinIdleConns   int
+	MaxIdleConns   int
+	MaxActiveConns int // applies per cluster node and not for the whole cluster
+
 	// conn lifetime intervals
 	ConnMaxIdleTime             time.Duration
 	ConnMaxLifetime             time.Duration
