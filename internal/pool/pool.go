@@ -1693,8 +1693,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 					cb(ctx, -1, cn, "used", false)
 					cb(ctx, 1, cn, "idle", false)
 				}
-				p.connsMu.Unlock()
+				// Count it before unlocking so a reaper pass that removes this
+				// conn right after cannot decrement before the increment.
 				p.idleConnsLen.Add(1)
+				p.connsMu.Unlock()
 			} else {
 				shouldCloseConn = true
 				p.connsMu.Unlock()
@@ -1713,8 +1715,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 					cb(ctx, -1, cn, "used", false)
 					cb(ctx, 1, cn, "idle", false)
 				}
-				p.connsMu.Unlock()
+				// Count it before unlocking so a reaper pass that removes this
+				// conn right after cannot decrement before the increment.
 				p.idleConnsLen.Add(1)
+				p.connsMu.Unlock()
 			} else {
 				shouldCloseConn = true
 				p.connsMu.Unlock()
@@ -2266,6 +2270,11 @@ func (p *ConnPool) Close() error {
 		return ErrClosed
 	}
 	close(p.closedCh)
+	// Let an in-flight reaper pass finish closing the conns it already took
+	// out of the pool, so none outlive Close.
+	if p.reaperDone != nil {
+		<-p.reaperDone
+	}
 
 	var firstErr error
 	nowNs := time.Now().UnixNano()

@@ -64,11 +64,14 @@ func (p *ConnPool) takeExpiredIdleLocked(nowNs int64) []*Conn {
 	kept := p.idleConns[:0]
 	for _, cn := range p.idleConns {
 		if p.expiredIdle(cn, nowNs) && cn.TryAcquire() {
-			if p.forgetConn(cn) {
+			// Recheck after the claim: a re-auth worker may have used the conn
+			// (refreshing its idle time) between the first check and the claim.
+			// Undo the claim if it is no longer expired, or not tracked here.
+			if p.expiredIdle(cn, nowNs) && p.forgetConn(cn) {
 				removed = append(removed, cn)
 				continue
 			}
-			cn.Release() // not tracked by the pool; undo the claim
+			cn.Release()
 		}
 		kept = append(kept, cn)
 	}
@@ -95,18 +98,22 @@ func (p *ConnPool) reapExpiredIdle(ctx context.Context) int {
 	countCb := p.metrics().ConnectionCount
 	p.connsMu.Unlock()
 
-	if len(removedConns) == 0 {
-		return 0
-	}
-
 	hookManager := p.hookManager.Load()
 	for _, cn := range removedConns {
+		// Mark it closed before the hooks run, so a hook that tracks
+		// per-conn state (e.g. a re-auth marker) cannot re-create it after
+		// OnRemove cleared it: those paths check IsClosed. Close still runs
+		// its full teardown from CLOSED.
+		cn.GetStateMachine().Transition(StateClosed)
 		if hookManager != nil {
 			hookManager.ProcessOnRemove(ctx, cn, errors.New(CloseReasonStale))
 		}
 		p.recordConnectionMetrics(ctx, cn, CloseReasonStale, MetricStateIdle, countCb)
 		_ = p.closeConn(cn)
 	}
+	// Also on a pass that closed nothing: replacement dials from an earlier
+	// pass may have failed, and with an empty pool no later tick would retry
+	// them. Cheap when the idle floor is already met.
 	p.checkMinIdleConns()
 	return len(removedConns)
 }
