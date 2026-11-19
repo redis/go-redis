@@ -617,6 +617,15 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				res, err = client.JSONNumIncrBy(ctx, "doc2", "$.b[0].a", 3).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res).To(Equal(`[5]`))
+
+				// a match that is not a number is reported as null
+				res, err = client.JSONSet(ctx, "doc3", "$", `{"s": "x", "n": 5}`).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal("OK"))
+
+				res, err = client.JSONNumIncrBy(ctx, "doc3", "$.*", 2).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal(`[null,7]`))
 			})
 
 			It("should JSONObjKeys", Label("json.objkeys", "json"), func() {

@@ -173,7 +173,10 @@ func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 		expanded := make([]interface{}, size)
 
 		for i := 0; i < size; i++ {
-			if expanded[i], err = rd.ReadReply(); err != nil {
+			// A null element is a value, not a missing reply. With RESP3,
+			// JSON.NUMINCRBY reports null for each match that is not a
+			// number.
+			if expanded[i], err = rd.ReadReply(); err != nil && err != Nil {
 				return err
 			}
 		}
