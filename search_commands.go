@@ -4062,21 +4062,11 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 				cmd.SetErr(fmt.Errorf("FT.HYBRID: RERANK requires a KNN or RANGE method"))
 				return cmd
 			}
-			if vectorExpr.Method != "" {
-				args = append(args, vectorExpr.Method)
-				methodParams := vectorExpr.MethodParams
-				if vectorExpr.Rerank != FTRerankDefault {
-					methodParams = append(append([]interface{}{}, methodParams...), "RERANK", vectorExpr.Rerank.arg())
-				}
-				if len(methodParams) > 0 {
-					// Method params are key-value pairs; the count is the number of tokens
-					args = append(args, len(methodParams))
-					args = append(args, methodParams...)
-				}
-			}
+			methodParams := vectorExpr.MethodParams
 
 			// SHARD_K_RATIO applies to the KNN method only (Redis 8.8+, cluster only).
 			// Zero means "unset" and falls back to the server default of 1.0.
+			// The server reads it as one of the counted KNN arguments.
 			if vectorExpr.ShardKRatio > 0 {
 				if vectorExpr.Method != "KNN" {
 					cmd := newFTHybridCmd(ctx, options, args...)
@@ -4088,7 +4078,19 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 					cmd.SetErr(fmt.Errorf("FT.HYBRID: SHARD_K_RATIO must be between 0.1 and 1.0"))
 					return cmd
 				}
-				args = append(args, "SHARD_K_RATIO", vectorExpr.ShardKRatio)
+				methodParams = append(append([]interface{}{}, methodParams...), "SHARD_K_RATIO", vectorExpr.ShardKRatio)
+			}
+
+			if vectorExpr.Method != "" {
+				args = append(args, vectorExpr.Method)
+				if vectorExpr.Rerank != FTRerankDefault {
+					methodParams = append(append([]interface{}{}, methodParams...), "RERANK", vectorExpr.Rerank.arg())
+				}
+				if len(methodParams) > 0 {
+					// Method params are key-value pairs; the count is the number of tokens
+					args = append(args, len(methodParams))
+					args = append(args, methodParams...)
+				}
 			}
 
 			if vectorExpr.Filter != "" {

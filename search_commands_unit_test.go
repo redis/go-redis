@@ -388,8 +388,8 @@ func TestFTHybridWithArgsGeneratedNameAvoidsExplicitCollision(t *testing.T) {
 }
 
 // TestFTHybridWithArgs_ShardKRatio verifies the SHARD_K_RATIO option
-// (Redis 8.8+) is emitted on the VSIM clause after the KNN method block and
-// before FILTER when a positive ratio is set, and omitted entirely when the
+// (Redis 8.8+) is emitted as a counted KNN argument, before FILTER, when a
+// positive ratio is set, and omitted entirely when the
 // ratio is left at its zero value (server default of 1.0 applies).
 func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 	indexOf := func(args []interface{}, want string) int {
@@ -437,6 +437,11 @@ func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 		}
 		if got := gotCmd.args[idxShard+1]; got != ratio {
 			t.Fatalf("SHARD_K_RATIO value: got %v (%T), want %v", got, got, ratio)
+		}
+		// The server parses SHARD_K_RATIO as one of the counted KNN arguments:
+		// KNN 6 K 10 EF_RUNTIME 50 SHARD_K_RATIO 0.6
+		if got := gotCmd.args[idxKNN+1]; got != 6 {
+			t.Fatalf("KNN argument count: got %v, want 6 (args=%v)", got, gotCmd.args)
 		}
 	})
 
