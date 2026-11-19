@@ -98,6 +98,7 @@ type ClusterOptions struct {
 
 	// The maximum number of retries before giving up. Command is retried
 	// on network errors and MOVED/ASK redirects.
+	// -1 (not 0) disables retries. Any other negative value is treated as -1.
 	// Default is 3 retries.
 	MaxRedirects int
 

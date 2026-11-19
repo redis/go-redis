@@ -136,7 +136,7 @@ type Options struct {
 	DB int
 
 	// MaxRetries is the maximum number of retries before giving up.
-	// -1 (not 0) disables retries.
+	// -1 (not 0) disables retries. Any other negative value is treated as -1.
 	//
 	// default: 3 retries
 	MaxRetries int
