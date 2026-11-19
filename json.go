@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -254,7 +255,14 @@ func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
 		} else {
 			cmd.val = response.([]interface{})
 		}
-
+	} else if readType == proto.RespString {
+		// With RESP2 a legacy path (one that does not start with "$") gets
+		// a single value instead of an array.
+		s, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		cmd.val = []interface{}{s}
 	} else {
 		n, err := rd.ReadArrayLen()
 		if err != nil {
@@ -330,6 +338,38 @@ func (cmd *IntPointerSliceCmd) Result() ([]*int64, error) {
 }
 
 func (cmd *IntPointerSliceCmd) readReply(rd *proto.Reader) error {
+	// A legacy path (one that does not start with "$") gets a single value
+	// instead of an array with one value per match.
+	readType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+	switch readType {
+	case proto.RespInt:
+		val, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		cmd.val = []*int64{&val}
+		return nil
+	case proto.RespString:
+		// JSON.TOGGLE replies with the new value as "true" or "false".
+		s, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		var val int64
+		switch s {
+		case "true":
+			val = 1
+		case "false":
+		default:
+			return fmt.Errorf("redis: can't parse int reply: %.100q", s)
+		}
+		cmd.val = []*int64{&val}
+		return nil
+	}
+
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
