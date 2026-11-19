@@ -23,6 +23,22 @@ func TestJSONSliceCmdReturnsReadError(t *testing.T) {
 	}
 }
 
+// With RESP3, JSON.NUMINCRBY replies with an array that holds null for each
+// match that is not a number. A null element must not fail the command.
+func TestJSONCmdArrayWithNullElement(t *testing.T) {
+	cmd := newJSONCmd(context.Background())
+	rd := proto.NewReader(strings.NewReader("*4\r\n_\r\n_\r\n:7\r\n,3.5\r\n+NEXT\r\n"))
+	if err := cmd.readReply(rd); err != nil {
+		t.Fatalf("readReply() error = %v", err)
+	}
+	if got, want := cmd.Val(), "[null,null,7,3.5]"; got != want {
+		t.Fatalf("Val() = %q, want %q", got, want)
+	}
+	if next, err := rd.ReadString(); err != nil || next != "NEXT" {
+		t.Fatalf("next reply = %q, %v; reader is out of sync", next, err)
+	}
+}
+
 // A legacy path (one that does not start with "$") gets a single value
 // instead of an array with one value per match.
 func TestIntPointerSliceCmdLegacyPathReply(t *testing.T) {
