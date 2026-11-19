@@ -368,9 +368,11 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			return fmt.Errorf("redis: BLOOM.INFO unexpected key %s", key)
 		}
 
-		// Read the integer and assign to the field via pointer dereferencing
+		// Read the integer and assign to the field via pointer dereferencing.
+		// A non-scaling filter reports a null expansion rate, which is left
+		// as zero.
 		val, err := rd.ReadInt()
-		if err != nil {
+		if err != nil && err != Nil {
 			return err
 		}
 		*fieldPtr = val
