@@ -853,10 +853,11 @@ func (opt *Options) init() {
 
 	opt.ConnMaxLifetimeJitter = min(opt.ConnMaxLifetimeJitter, opt.ConnMaxLifetime)
 
-	switch opt.MaxRetries {
-	case -1:
+	// < 0, not == -1: the retry loops run while attempt <= MaxRetries, so a
+	// value below -1 would skip the first attempt and report success.
+	if opt.MaxRetries < 0 {
 		opt.MaxRetries = 0
-	case 0:
+	} else if opt.MaxRetries == 0 {
 		opt.MaxRetries = 3
 	}
 	switch opt.MinRetryBackoff {

@@ -295,10 +295,11 @@ type ClusterOptions struct {
 }
 
 func (opt *ClusterOptions) init() {
-	switch opt.MaxRedirects {
-	case -1:
+	// < 0, not == -1: the redirect loops run while attempt <= MaxRedirects, so
+	// a value below -1 would skip the first attempt and report success.
+	if opt.MaxRedirects < 0 {
 		opt.MaxRedirects = 0
-	case 0:
+	} else if opt.MaxRedirects == 0 {
 		opt.MaxRedirects = 3
 	}
 

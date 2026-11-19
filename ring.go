@@ -206,10 +206,11 @@ func (opt *RingOptions) init() {
 		opt.NewConsistentHash = newRendezvous
 	}
 
-	switch opt.MaxRetries {
-	case -1:
+	// < 0, not == -1: the retry loop runs while attempt <= MaxRetries, so a
+	// value below -1 would skip the first attempt and report success.
+	if opt.MaxRetries < 0 {
 		opt.MaxRetries = 0
-	case 0:
+	} else if opt.MaxRetries == 0 {
 		opt.MaxRetries = 3
 	}
 	switch opt.MinRetryBackoff {
