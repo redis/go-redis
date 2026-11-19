@@ -63,7 +63,11 @@ func (p *ConnPool) takeExpiredIdleLocked(nowNs int64) []*Conn {
 	var removed []*Conn
 	kept := p.idleConns[:0]
 	for _, cn := range p.idleConns {
-		if p.expiredIdle(cn, nowNs) && cn.TryAcquire() {
+		// A conn with a handoff pending is not the reaper's to close: the
+		// handoff worker re-initializes it in place and it shows IDLE while
+		// OnConnect is still running. It keeps its original expiry, so once
+		// the handoff clears it is reaped like any other expired conn.
+		if p.expiredIdle(cn, nowNs) && !cn.HandoffPending() && cn.TryAcquire() {
 			// Recheck after the claim: a re-auth worker may have used the conn
 			// (refreshing its idle time) between the first check and the claim.
 			// Undo the claim if it is no longer expired, or not tracked here.
