@@ -8590,14 +8590,17 @@ func (cmd *ClusterSlotStatsCmd) SetVal(val []ClusterSlotStat) {
 }
 
 func (cmd *ClusterSlotStatsCmd) Val() []ClusterSlotStat {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *ClusterSlotStatsCmd) Result() ([]ClusterSlotStat, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *ClusterSlotStatsCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
