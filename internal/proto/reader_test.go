@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -558,5 +560,59 @@ func TestReader_ReadSlice_RejectsNonArrayHeader(t *testing.T) {
 		if err != nil || len(v) != 2 {
 			t.Fatalf("%q: ReadSlice = %v, %v; want 2 elements", src, v, err)
 		}
+	}
+}
+
+func TestReadStringDoesNotPreallocateAnAnnouncedLength(t *testing.T) {
+	const declared = 1 << 30 // 1 GiB: a header the server never backs with bytes
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	rd := proto.NewReader(bytes.NewReader([]byte("$" + strconv.Itoa(declared) + "\r\n")))
+	if _, err := rd.ReadString(); err == nil {
+		t.Fatal("ReadString succeeded without a body")
+	}
+
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64<<20 {
+		t.Fatalf("ReadString allocated %d bytes for an announced %d-byte bulk", allocated, declared)
+	}
+}
+
+func TestReadRawReplyDoesNotPreallocateAnAnnouncedLength(t *testing.T) {
+	const declared = 1 << 30
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	rd := proto.NewReader(bytes.NewReader([]byte("$" + strconv.Itoa(declared) + "\r\n")))
+	if _, err := rd.ReadRawReply(); err == nil {
+		t.Fatal("ReadRawReply succeeded without a body")
+	}
+
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64<<20 {
+		t.Fatalf("ReadRawReply allocated %d bytes for an announced %d-byte bulk", allocated, declared)
+	}
+}
+
+func TestReadStringRejectsAnUnrepresentableBulkLength(t *testing.T) {
+	rd := proto.NewReader(bytes.NewReader([]byte("$9223372036854775807\r\n")))
+	if _, err := rd.ReadString(); err == nil {
+		t.Fatal("ReadString accepted a bulk length that cannot be represented")
+	}
+}
+
+func TestReadStringStillReadsABulkBody(t *testing.T) {
+	rd := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n")))
+	got, err := rd.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString: %v", err)
+	}
+	if got != "hello" {
+		t.Fatalf("ReadString = %q, want %q", got, "hello")
 	}
 }

@@ -531,13 +531,97 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 		return "", err
 	}
 
-	b := make([]byte, n+2)
-	_, err = io.ReadFull(r.rd, b)
+	b, err := r.readBulkBody(n)
 	if err != nil {
 		return "", err
 	}
 
 	return util.BytesToString(b[:n]), nil
+}
+
+// maxBulkPrealloc is the largest buffer a bulk reply allocates from its header
+// up front. Longer replies grow with the bytes that arrive, so a header that
+// announces GiBs cannot make the client reserve them before any body is
+// received. Redis itself caps a bulk string at proto-max-bulk-len (512 MiB by
+// default); this keeps the client's allocation proportional to received data.
+const maxBulkPrealloc = 1 << 20
+
+// bulkTotal returns the number of bytes a bulk string of length n occupies
+// (payload plus the trailing CRLF), and whether n can be represented.
+func bulkTotal(n int) (int, bool) {
+	if n < 0 || n > math.MaxInt-2 {
+		return 0, false
+	}
+	return n + 2, true
+}
+
+// readBulkBody reads the n payload bytes of a bulk string plus the trailing
+// CRLF. Small replies keep a single allocation; larger ones grow with the data
+// that arrives, so an announced length the server never sends only costs the
+// 1 MiB it actually buffered. A length that cannot be represented is an error,
+// not a panic.
+func (r *Reader) readBulkBody(n int) ([]byte, error) {
+	total, ok := bulkTotal(n)
+	if !ok {
+		return nil, fmt.Errorf("redis: invalid bulk length %d", n)
+	}
+	if total <= maxBulkPrealloc {
+		b := make([]byte, total)
+		if _, err := io.ReadFull(r.rd, b); err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
+	// Grow with the data instead of reserving the announced length.
+	b := make([]byte, 0, maxBulkPrealloc)
+	chunk := make([]byte, maxBulkPrealloc)
+	for remaining := total; remaining > 0; {
+		k := min(remaining, len(chunk))
+		m, err := r.rd.Read(chunk[:k])
+		if m > 0 {
+			b = append(b, chunk[:m]...)
+			remaining -= m
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+	}
+	return b, nil
+}
+
+// appendBulkBody appends the n payload bytes of a bulk string plus the trailing
+// CRLF to buf. Small replies keep the single allocation; larger ones grow with
+// the bytes that arrive (see readBulkBody).
+func (r *Reader) appendBulkBody(buf []byte, n int) ([]byte, error) {
+	total, ok := bulkTotal(n)
+	if !ok {
+		return buf, fmt.Errorf("redis: invalid bulk length %d", n)
+	}
+	if total <= maxBulkPrealloc {
+		start := len(buf)
+		buf = append(buf, make([]byte, total)...)
+		if _, err := io.ReadFull(r.rd, buf[start:]); err != nil {
+			return buf, err
+		}
+		return buf, nil
+	}
+	w := bulkAppender{buf: &buf}
+	if _, err := io.CopyN(w, r.rd, int64(total)); err != nil {
+		return buf, err
+	}
+	return buf, nil
+}
+
+// bulkAppender appends to a raw reply buffer as io.CopyN reads, so memory
+// follows the bytes received rather than the announced length.
+type bulkAppender struct{ buf *[]byte }
+
+func (w bulkAppender) Write(p []byte) (int, error) {
+	*w.buf = append(*w.buf, p...)
+	return len(p), nil
 }
 
 func (r *Reader) readVerb(line []byte) (string, error) {
@@ -1069,10 +1153,7 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			}
 			return buf, err
 		}
-		curLen := len(buf)
-		buf = append(buf, make([]byte, n+2)...)
-		_, err = io.ReadFull(r.rd, buf[curLen:])
-		return buf, err
+		return r.appendBulkBody(buf, n)
 
 	case RespArray, RespSet, RespPush:
 		n, err := replyLen(line)
