@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync/atomic"
 	"testing"
 
@@ -25,6 +26,28 @@ func TestClassifyCommandErrorNilReply(t *testing.T) {
 	errorType, _, _ := classifyCommandError(proto.RedisError("WRONGTYPE Operation"))
 	if errorType != "WRONGTYPE" {
 		t.Fatalf("errorType = %q, want WRONGTYPE", errorType)
+	}
+}
+
+// TestClassifyCommandErrorNonServerError pins that only a server error reply
+// yields a Redis error prefix. io.EOF reads "EOF", which looks like a prefix,
+// but it is a dropped connection and must be reported as internal.
+func TestClassifyCommandErrorNonServerError(t *testing.T) {
+	for _, err := range []error{io.EOF, fmt.Errorf("read: %w", io.EOF), io.ErrUnexpectedEOF} {
+		errorType, statusCode, isInternal := classifyCommandError(err)
+		if errorType != "UNKNOWN" || statusCode != "UNKNOWN" || !isInternal {
+			t.Errorf("classifyCommandError(%v) = %q, %q, %v, want UNKNOWN, UNKNOWN, true", err, errorType, statusCode, isInternal)
+		}
+	}
+
+	for _, err := range []error{
+		proto.RedisError("ERR unknown command"),
+		fmt.Errorf("hook: %w", proto.RedisError("ERR unknown command")),
+	} {
+		errorType, statusCode, isInternal := classifyCommandError(err)
+		if errorType != "ERR" || statusCode != "ERR" || isInternal {
+			t.Errorf("classifyCommandError(%v) = %q, %q, %v, want ERR, ERR, false", err, errorType, statusCode, isInternal)
+		}
 	}
 }
 
