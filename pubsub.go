@@ -292,14 +292,7 @@ func (c *PubSub) Subscribe(ctx context.Context, channels ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.subscribe(ctx, "subscribe", channels...)
-	if c.channels == nil {
-		c.channels = make(map[string]struct{})
-	}
-	for _, s := range channels {
-		c.channels[s] = struct{}{}
-	}
-	return err
+	return c.subscribe(ctx, "subscribe", &c.channels, channels...)
 }
 
 // PSubscribe the client to the given patterns. It returns
@@ -308,14 +301,7 @@ func (c *PubSub) PSubscribe(ctx context.Context, patterns ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.subscribe(ctx, "psubscribe", patterns...)
-	if c.patterns == nil {
-		c.patterns = make(map[string]struct{})
-	}
-	for _, s := range patterns {
-		c.patterns[s] = struct{}{}
-	}
-	return err
+	return c.subscribe(ctx, "psubscribe", &c.patterns, patterns...)
 }
 
 // SSubscribe Subscribes the client to the specified shard channels.
@@ -323,14 +309,7 @@ func (c *PubSub) SSubscribe(ctx context.Context, channels ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.subscribe(ctx, "ssubscribe", channels...)
-	if c.schannels == nil {
-		c.schannels = make(map[string]struct{})
-	}
-	for _, s := range channels {
-		c.schannels[s] = struct{}{}
-	}
-	return err
+	return c.subscribe(ctx, "ssubscribe", &c.schannels, channels...)
 }
 
 // Unsubscribe the client from the given channels, or from all of
@@ -348,7 +327,7 @@ func (c *PubSub) Unsubscribe(ctx context.Context, channels ...string) error {
 		clear(c.channels)
 	}
 
-	err := c.subscribe(ctx, "unsubscribe", channels...)
+	err := c.subscribe(ctx, "unsubscribe", nil, channels...)
 	return err
 }
 
@@ -367,7 +346,7 @@ func (c *PubSub) PUnsubscribe(ctx context.Context, patterns ...string) error {
 		clear(c.patterns)
 	}
 
-	err := c.subscribe(ctx, "punsubscribe", patterns...)
+	err := c.subscribe(ctx, "punsubscribe", nil, patterns...)
 	return err
 }
 
@@ -386,12 +365,27 @@ func (c *PubSub) SUnsubscribe(ctx context.Context, channels ...string) error {
 		clear(c.schannels)
 	}
 
-	err := c.subscribe(ctx, "sunsubscribe", channels...)
+	err := c.subscribe(ctx, "sunsubscribe", nil, channels...)
 	return err
 }
 
-func (c *PubSub) subscribe(ctx context.Context, redisCmd string, channels ...string) error {
+// subscribe sends redisCmd for channels. A non-nil subs is the set that tracks
+// them for resubscription.
+func (c *PubSub) subscribe(
+	ctx context.Context, redisCmd string, subs *map[string]struct{}, channels ...string,
+) error {
 	cn, err := c.conn(ctx, channels)
+	// Record after conn, which resubscribes to the recorded channels on a new
+	// connection, but before the write: a failed write reconnects and must
+	// resubscribe to these channels too.
+	if subs != nil {
+		if *subs == nil {
+			*subs = make(map[string]struct{})
+		}
+		for _, s := range channels {
+			(*subs)[s] = struct{}{}
+		}
+	}
 	if err != nil {
 		return err
 	}
