@@ -254,6 +254,7 @@ type Cmdable interface {
 	DebugObject(ctx context.Context, key string) *StringCmd
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
 	Latency(ctx context.Context) *LatencyCmd
+	LatencyHistogram(ctx context.Context, commands ...string) *LatencyHistogramCmd
 	LatencyReset(ctx context.Context, events ...interface{}) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
@@ -853,6 +854,27 @@ func (c cmdable) SlowLogReset(ctx context.Context) *StatusCmd {
 
 func (c cmdable) Latency(ctx context.Context) *LatencyCmd {
 	cmd := NewLatencyCmd(ctx, "latency", "latest")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// LatencyHistogram returns the cumulative latency distribution of the given
+// commands, keyed by command name, or of every command that has been called
+// when none is given. Commands without recorded calls are left out. The
+// server tracks the latencies while latency-tracking is enabled, which is the
+// default. Requires Redis 7.0+.
+//
+// On ClusterClient the command is sent to one node.
+//
+// See https://redis.io/docs/latest/commands/latency-histogram/
+func (c cmdable) LatencyHistogram(ctx context.Context, commands ...string) *LatencyHistogramCmd {
+	args := make([]interface{}, 2, 2+len(commands))
+	args[0] = "latency"
+	args[1] = "histogram"
+	for _, command := range commands {
+		args = append(args, command)
+	}
+	cmd := NewLatencyHistogramCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

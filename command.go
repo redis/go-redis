@@ -172,6 +172,7 @@ const (
 	CmdTypeBackupStatus
 	CmdTypeACLUser
 	CmdTypeClusterSlotStats
+	CmdTypeLatencyHistogram
 )
 
 type (
@@ -6910,6 +6911,128 @@ func (cmd *LatencyCmd) Clone() Cmder {
 
 //-----------------------------------------------------------------------
 
+// LatencyHistogram is the latency distribution of one command, as reported
+// by LATENCY HISTOGRAM.
+type LatencyHistogram struct {
+	// Calls is the total number of calls of the command.
+	Calls int64
+	// HistogramUsec maps the upper bound of a time bucket, in microseconds,
+	// to the number of calls that took at most that long. The counts are
+	// cumulative and empty buckets are left out.
+	HistogramUsec map[int64]int64
+}
+
+type LatencyHistogramCmd struct {
+	baseCmd
+
+	val map[string]LatencyHistogram
+}
+
+var _ Cmder = (*LatencyHistogramCmd)(nil)
+
+func NewLatencyHistogramCmd(ctx context.Context, args ...interface{}) *LatencyHistogramCmd {
+	return &LatencyHistogramCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeLatencyHistogram,
+		},
+	}
+}
+
+func (cmd *LatencyHistogramCmd) SetVal(val map[string]LatencyHistogram) {
+	cmd.val = val
+}
+
+func (cmd *LatencyHistogramCmd) Val() map[string]LatencyHistogram {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *LatencyHistogramCmd) Result() (map[string]LatencyHistogram, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *LatencyHistogramCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *LatencyHistogramCmd) readReply(rd *proto.Reader) error {
+	// The maps of the reply are flat arrays in RESP2.
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make(map[string]LatencyHistogram, n)
+
+	for i := 0; i < n; i++ {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		fields, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+
+		var hist LatencyHistogram
+		for j := 0; j < fields; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			switch key {
+			case "calls":
+				hist.Calls, err = rd.ReadInt()
+			case "histogram_usec":
+				hist.HistogramUsec, err = readLatencyBuckets(rd)
+			default:
+				err = rd.DiscardNext()
+			}
+			if err != nil {
+				return err
+			}
+		}
+		cmd.val[name] = hist
+	}
+
+	return nil
+}
+
+func readLatencyBuckets(rd *proto.Reader) (map[int64]int64, error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return nil, err
+	}
+	buckets := make(map[int64]int64, n)
+	for i := 0; i < n; i++ {
+		usec, err := rd.ReadInt()
+		if err != nil {
+			return nil, err
+		}
+		if buckets[usec], err = rd.ReadInt(); err != nil {
+			return nil, err
+		}
+	}
+	return buckets, nil
+}
+
+func (cmd *LatencyHistogramCmd) Clone() Cmder {
+	val := maps.Clone(cmd.val)
+	for name, hist := range val {
+		hist.HistogramUsec = maps.Clone(hist.HistogramUsec)
+		val[name] = hist
+	}
+	return &LatencyHistogramCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//-----------------------------------------------------------------------
+
 // HotKeysSlotRange represents a slot or slot range in the response.
 // Single element slice = individual slot, two element slice = slot range [start, end].
 type HotKeysSlotRange []int64
@@ -10445,6 +10568,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return slowLogCmd.Val(), slowLogCmd.Err()
+			}
+		case CmdTypeLatencyHistogram:
+			if latencyHistogramCmd, ok := cmd.(interface {
+				Val() map[string]LatencyHistogram
+				Err() error
+			}); ok {
+				return latencyHistogramCmd.Val(), latencyHistogramCmd.Err()
 			}
 		case CmdTypeACLUser:
 			if aclUserCmd, ok := cmd.(interface {
