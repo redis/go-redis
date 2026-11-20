@@ -249,16 +249,16 @@ func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
 			hwm.pending.Delete(request.Conn.GetID())
 			go hwm.closeConnFromRequest(ctx, request, err)
 		}
-
-		// Clear handoff state if not returned for retry
-		seqID := request.Conn.GetMovingSeqID()
-		connID := request.Conn.GetID()
-		if hwm.poolHook.operationsManager != nil {
-			hwm.poolHook.operationsManager.UntrackOperationWithConnID(seqID, connID)
-		}
 	} else {
 		// Success - remove from pending map
 		hwm.pending.Delete(request.Conn.GetID())
+	}
+
+	// The handoff is over (succeeded or will not be retried): untrack the
+	// operation. The request carries the seqID; the connection's handoff
+	// state is already cleared after a success.
+	if hwm.poolHook.operationsManager != nil {
+		hwm.poolHook.operationsManager.UntrackOperationWithConnID(request.SeqID, request.ConnID)
 	}
 }
 
