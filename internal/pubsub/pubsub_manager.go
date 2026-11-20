@@ -192,6 +192,39 @@ type Manager struct {
 	// delivered to their entry's handle; an error reply settles the
 	// entry of the command it rejected.
 	replyQueue []replyWaiter
+
+	// pendingAuth is the AUTH a credential rotation asked for while its
+	// connection was still being dialed; installLocked writes it after
+	// the replay (see ReAuth). Guarded by mu.
+	pendingAuth *pendingReAuth
+}
+
+// pendingReAuth is a deferred AUTH for a connection not yet installed.
+type pendingReAuth struct {
+	cn   *pool.Conn
+	args []any
+}
+
+// connInitKey carries, in a dial's context, the function the owner
+// runs on the new connection before its handshake (see ConnInitFrom).
+type connInitKey struct{}
+
+// ConnInitFrom returns the function the manager asks to run on a
+// connection it dials, before the handshake (nil when there is none).
+// The owner's dial passes it to the connection's init: it installs the
+// re-authentication callback, so a credential rotation during the
+// handshake is not lost.
+func ConnInitFrom(ctx context.Context) func(*pool.Conn) {
+	fn, _ := ctx.Value(connInitKey{}).(func(*pool.Conn))
+	return fn
+}
+
+// installReAuth installs the re-authentication callback on cn (see
+// ReAuth).
+func (m *Manager) installReAuth(cn *pool.Conn) {
+	cn.SetPubSubReAuth(func(username, password string) error {
+		return m.ReAuth(cn, username, password)
+	})
 }
 
 // replyKindPong marks a ledger entry whose reply is pong-shaped (PING,
@@ -259,7 +292,10 @@ func NewManager(cfg Config, hooks Hooks) *Manager {
 		wakeResync: make(chan struct{}, 1),
 		done:       make(chan struct{}),
 	}
-	m.dialer = newDialer(&m.mu, hooks.NewConn, cfg.DialRetries, cfg.DialRetryBackoff, cfg.MinRetryBackoff, cfg.ReconnectMaxBackoff)
+	newConn := func(ctx context.Context, addr string) (*pool.Conn, error) {
+		return hooks.NewConn(context.WithValue(ctx, connInitKey{}, m.installReAuth), addr)
+	}
+	m.dialer = newDialer(&m.mu, newConn, cfg.DialRetries, cfg.DialRetryBackoff, cfg.MinRetryBackoff, cfg.ReconnectMaxBackoff)
 	return m
 }
 
@@ -350,6 +386,54 @@ func (m *Manager) clientSetName(ctx context.Context, h *handle, name string) err
 	// silently) before the write, like every command.
 	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong, h: h})
 	return m.writeLocked(socketCtx, m.conn.Load(), [][]any{{"client", "setname", name}})
+}
+
+// ReAuth re-authenticates cn, the shared connection, with new
+// credentials. A connection that was already replaced (and so closed) is
+// skipped: its replacement authenticated with the current credentials
+// when it was dialed. A connection still being dialed — the rotation
+// arrived during its handshake — gets the AUTH once installed. RESP3
+// sends AUTH in place; a RESP2 connection cannot run AUTH while
+// subscribed, so it is replaced instead (the dial authenticates).
+func (m *Manager) ReAuth(cn *pool.Conn, username, password string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closedLocked() {
+		return pool.ErrClosed
+	}
+	args := []any{"auth", password}
+	if username != "" {
+		args = []any{"auth", username, password}
+	}
+	if m.conn.Load() != cn {
+		// Under m.mu, a connection that is neither live nor closed is one
+		// being dialed: installLocked swaps and closes in one critical
+		// section.
+		if !cn.IsClosed() {
+			m.pendingAuth = &pendingReAuth{cn: cn, args: args}
+		}
+		return nil
+	}
+	return m.reAuthLocked(cn, args)
+}
+
+// reAuthLocked sends AUTH args on cn, the live connection, or replaces
+// a RESP2 one (see ReAuth). Callers must hold m.mu.
+func (m *Manager) reAuthLocked(cn *pool.Conn, args []any) error {
+	if !cn.IsResp3() {
+		_, err := m.replaceLocked(cn, errReAuthRESP2)
+		if errors.Is(err, errPubSubNoConn) {
+			// Nothing subscribed: the connection was dropped, and the
+			// next subscribe dials with the current credentials.
+			return nil
+		}
+		return err
+	}
+
+	// The +OK reply parses as a pong: ledger it, consumed silently.
+	m.replyQueue = append(m.replyQueue, replyWaiter{kind: replyKindPong})
+	return m.writeLocked(socketCtx, cn, [][]any{args})
 }
 
 // Subscribe subscribes to the given channels and returns a handle that
@@ -1578,6 +1662,10 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 		return err
 	}
 
+	// The streaming credentials listener re-authenticates through this
+	// callback (see ReAuth); the dial installed it already when the
+	// owner ran ConnInitFrom, this covers owners that do not.
+	m.installReAuth(cn)
 	oldConn := m.conn.Swap(cn)
 	m.dropped = nil
 	if oldConn != nil {
@@ -1590,6 +1678,20 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 		m.replyQueue = nil
 	}
 	m.commitReplayLocked(waiters)
+	if p := m.pendingAuth; p != nil {
+		m.pendingAuth = nil
+		switch {
+		case p.cn != cn:
+		case cn.IsResp3():
+			// A rotation during the handshake: the replay went out under
+			// the handshake's credentials, AUTH follows it.
+			_ = m.reAuthLocked(cn, p.args)
+		default:
+			// RESP2 replaces the connection instead; not from here, the
+			// dialer is still installing this one.
+			go m.awaitReplace(cn, errReAuthRESP2)
+		}
+	}
 
 	if reason != nil {
 		internal.Logger.Printf(context.TODO(), "pubsub: reconnected (attempts: %d, due to: %v)", m.reconnectAttempts, reason)
@@ -2239,13 +2341,17 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 	}
 
 	// Record received-message telemetry.
+	rec := m.cfg.Recorder
+	if rec == nil {
+		rec = otel.Scoped(nil)
+	}
 	switch v := parsed.(type) {
 	case *shardMessage:
-		otel.RecordPubSubMessage(ctx, cn, "received", v.Channel, true)
+		rec.RecordPubSubMessage(ctx, cn, "received", v.Channel, true)
 	case *patternMessage:
-		otel.RecordPubSubMessage(ctx, cn, "received", v.Channel, false)
+		rec.RecordPubSubMessage(ctx, cn, "received", v.Channel, false)
 	case *Message:
-		otel.RecordPubSubMessage(ctx, cn, "received", v.Channel, false)
+		rec.RecordPubSubMessage(ctx, cn, "received", v.Channel, false)
 	}
 	return parsed, cn, nil
 }

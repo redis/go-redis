@@ -133,3 +133,20 @@ func TestFormatFloat(t *testing.T) {
 		})
 	}
 }
+
+func TestGetAddrIPv6WithEmbeddedIPv4(t *testing.T) {
+	// Redis prints IPv6 addresses in MOVED/ASK without brackets, including
+	// the forms that end in a dotted quad.
+	for in, want := range map[string]string{
+		"::ffff:10.0.0.1:6379":    "[::ffff:10.0.0.1]:6379",
+		"64:ff9b::192.0.2.1:6379": "[64:ff9b::192.0.2.1]:6379",
+		"127.0.0.1:6379":          "127.0.0.1:6379",
+		"redis.example.com:6379":  "redis.example.com:6379",
+		"[::ffff:10.0.0.1]:6379":  "[::ffff:10.0.0.1]:6379",
+		":6379":                   ":6379",
+	} {
+		if got := GetAddr(in); got != want {
+			t.Errorf("GetAddr(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

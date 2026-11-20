@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/pubsub"
@@ -46,6 +47,7 @@ type pubSubClienter interface {
 	pubsubProcessPush(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error
 	pubsubShouldReplaceConn(cn *pool.Conn) bool
 	pubsubResolveAddress(prev *pool.Conn, current string) string
+	recorder() otel.Recorder
 }
 
 var (
@@ -64,7 +66,9 @@ var (
 // failover client's master-resolving dialer) every reconnect
 // re-resolves the target through it.
 func newPubSubManager(h pubSubClienter, opt *Options) *pubsub.Manager {
-	return pubsub.NewManager(pubSubConfigFromOptions(opt), pubSubClientHooks{
+	cfg := pubSubConfigFromOptions(opt)
+	cfg.Recorder = h.recorder()
+	return pubsub.NewManager(cfg, pubSubClientHooks{
 		pubSubClienter: h,
 		addr:           opt.Addr,
 	})
@@ -379,6 +383,11 @@ func (c *PubSub) ChannelSize(size int) <-chan *Message {
 // ChannelWithSubscriptions is like Channel, but message type can be either
 // *Subscription or *Message. Subscription messages can be used to detect
 // reconnections.
+//
+// If the PubSub was created with a sticky error (e.g. Ring subscribe on empty
+// ring or shard lookup failure), or if ChannelWithSubscriptions is called after
+// Channel or ChannelSize, a warning is logged and an already-closed channel is
+// returned.
 //
 // ChannelWithSubscriptions can not be used together with Channel or ChannelSize.
 func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interface{} {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestCSCRefresherStopDrainSkipsRefetchEntirely(t *testing.T) {
 	const chunks = 3
 	const targets = chunks * cscRefreshBatchMax
 	for i := 0; i < targets; i++ {
-		key := "p:" + strconv.Itoa(i)
+		key := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, strconv.Itoa(i))
 		q.ch <- cscRefreshTarget{cacheKey: key, redisKeys: []string{key}}
 	}
 
@@ -120,7 +121,7 @@ func TestCSCRefresherNormalFlushAbortsOnClose(t *testing.T) {
 	// A full window (4 * cscRefreshBatchMax) triggers a NORMAL flush(false,false) from the
 	// q.ch case — this is NOT the stop-drain path (h.stop is not pre-closed).
 	for i := 0; i < cscRefreshWindowMaxKeys; i++ {
-		key := "p:" + strconv.Itoa(i)
+		key := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, strconv.Itoa(i))
 		q.ch <- cscRefreshTarget{cacheKey: key, redisKeys: []string{key}}
 	}
 
@@ -455,9 +456,10 @@ func TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic(t *testing.T) {
 	lc := NewLocalCache(CacheConfig{MaxEntries: 64, Sizer: sizer})
 	c := &baseClient{csc: lc, cscKeyPrefix: "p"}
 
+	prefix := cscEntryKey(c.cscKeyPrefix, c.metadataView().cscFingerprint, "")
 	targets := []cscRefreshTarget{
-		{cacheKey: "ck:1", redisKeys: []string{"rk:1"}},
-		{cacheKey: "ck:2", redisKeys: []string{"rk:2"}},
+		{cacheKey: prefix + "ck:1", redisKeys: []string{"rk:1"}},
+		{cacheKey: prefix + "ck:2", redisKeys: []string{"rk:2"}},
 	}
 
 	func() {
@@ -471,9 +473,77 @@ func TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic(t *testing.T) {
 
 	// ck:1 was reserved before the panic on ck:2; the defer must have cancelled it, so a
 	// fresh Reserve sees no lingering IN_PROGRESS placeholder (shouldFetch, non-zero tok).
-	tok, shouldFetch := lc.Reserve("ck:1", []string{"rk:1"})
+	tok, shouldFetch := lc.Reserve(targets[0].cacheKey, targets[0].redisKeys)
 	if !shouldFetch || tok == 0 {
 		t.Fatalf("ck:1 reservation not cancelled after the panic (Reserve = %d, %v); a reader "+
 			"would block on the orphaned placeholder until StaleTimeout (#3989)", tok, shouldFetch)
+	}
+}
+
+// CSC tracking modes: OPTIN/OPTOUT policy and integration.
+
+func TestCSCPolicyRefresh(t *testing.T) {
+	for _, mode := range []TrackingMode{TrackingModePlain, TrackingModeOptIn, TrackingModeOptOut} {
+		t.Run(mode.String(), func(t *testing.T) {
+			s := newCSCPolicyServer(t, nil)
+			opt := cscPolicyOptions(s.addr, mode)
+			var calls atomic.Int32
+			opt.ClientSideCacheable = func(string, []string) bool { calls.Add(1); return true }
+			c := policyClient(t, opt)
+			ctx := context.Background()
+			if err := c.Get(ctx, "k").Err(); err != nil {
+				t.Fatal(err)
+			}
+			view := c.metadataView()
+			key, ok := cscRenderEntryKey(c.cscKeyPrefix, view.cscFingerprint, NewStringCmd(ctx, "get", "k"))
+			if !ok {
+				t.Fatal("key")
+			}
+			c.csc.DeleteByCacheKey(key)
+			n, err := c.refreshInvalidatedBatch(ctx, []cscRefreshTarget{{cacheKey: key, redisKeys: []string{c.cscKeyPrefix + "k"}}})
+			if n != 1 || err != nil {
+				t.Fatalf("refresh %d %v", n, err)
+			}
+			if calls.Load() != 1 {
+				t.Fatal("refresh ran predicate")
+			}
+			if s.count("get") != 2 {
+				t.Fatal(s.count("get"))
+			}
+			if mode == TrackingModeOptIn && s.prefixes() != 2 {
+				t.Fatal("refresh missing YES")
+			}
+			s.assertPairs(t)
+		})
+	}
+}
+
+func TestCSCPolicyRefreshDeniedTracking(t *testing.T) {
+	var flags atomic.Int32
+	s := newCSCPolicyServer(t, func(a []string) string {
+		if len(a) > 1 && strings.EqualFold(a[1], "caching") && flags.Add(1) > 1 {
+			return "-NOPERM flag\r\n"
+		}
+		return ""
+	})
+	c := policyClient(t, cscPolicyOptions(s.addr, TrackingModeOptIn))
+	ctx := context.Background()
+	if err := c.Get(WithCache(ctx), "k").Err(); err != nil {
+		t.Fatal(err)
+	}
+	view := c.metadataView()
+	key, _ := cscRenderEntryKey(c.cscKeyPrefix, view.cscFingerprint, NewStringCmd(ctx, "get", "k"))
+	c.csc.DeleteByCacheKey(key)
+	n, err := c.refreshInvalidatedBatch(ctx, []cscRefreshTarget{{cacheKey: key, redisKeys: []string{c.cscKeyPrefix + "k"}}})
+	if err != nil || n != 0 || c.CSCStats().Entries != 0 {
+		t.Fatalf("untracked refresh published %d %v", n, err)
+	}
+}
+
+func TestCSCPolicyRefreshPreludeBudget(t *testing.T) {
+	targets := []cscRefreshTarget{{cacheKey: "123456", valBytes: 1}, {cacheKey: "123456", valBytes: 1}}
+	end := cscRefreshChunkEnd(targets, 0, 0, 12+len(cscYesWire), len(cscYesWire))
+	if end != 1 {
+		t.Fatalf("prelude excluded from byte budget: %d", end)
 	}
 }

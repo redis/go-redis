@@ -2,6 +2,7 @@ package hscan
 
 import (
 	"math"
+	"net"
 	"strconv"
 	"testing"
 	"time"
@@ -59,6 +60,42 @@ func (b *binaryUnmarshaler) UnmarshalBinary(data []byte) error {
 
 type BinaryData struct {
 	Binary *binaryUnmarshaler `redis:"binary"`
+}
+
+// inPlaceUnmarshaler decodes in place, which both encoding.BinaryUnmarshaler
+// and encoding.TextUnmarshaler allow: their contracts only forbid RETAINING
+// the slice, not writing to it (base64.Decode(b, b) is the canonical example).
+type inPlaceUnmarshaler struct {
+	s string
+}
+
+func (u *inPlaceUnmarshaler) UnmarshalBinary(data []byte) error {
+	lowerInPlace(data)
+	u.s = string(data)
+	return nil
+}
+
+type inPlaceTextUnmarshaler struct {
+	s string
+}
+
+func (u *inPlaceTextUnmarshaler) UnmarshalText(data []byte) error {
+	lowerInPlace(data)
+	u.s = string(data)
+	return nil
+}
+
+func lowerInPlace(b []byte) {
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+}
+
+type InPlaceData struct {
+	Binary *inPlaceUnmarshaler     `redis:"binary"`
+	Text   *inPlaceTextUnmarshaler `redis:"text"`
 }
 
 type i []interface{}
@@ -197,6 +234,62 @@ var _ = Describe("Scan", func() {
 		}))
 	})
 
+	It("scans the remaining fields after a bad value", func() {
+		var d data
+
+		Expect(Scan(&d, i{"bool", "string", "int"}, i{"-1", "str!", "123"})).To(HaveOccurred())
+		Expect(d).To(Equal(data{
+			String: "str!",
+			Int:    123,
+		}))
+	})
+
+	It("leaves nil pointers nil on bad values", func() {
+		var d data
+		Expect(Scan(&d, i{"boolRef"}, i{"abc"})).To(HaveOccurred())
+		Expect(d.BoolRef).To(BeNil())
+
+		var td TimeData
+		Expect(Scan(&td, i{"login"}, i{"abc"})).To(HaveOccurred())
+		Expect(td.Time).To(BeNil())
+	})
+
+	It("returns the first error when a later field can't be set", func() {
+		type withUintptr struct {
+			A int     `redis:"a"`
+			P uintptr `redis:"p"`
+		}
+		type withUnexported struct {
+			A int    `redis:"a"`
+			b string `redis:"b"`
+		}
+		type withUnexportedPtr struct {
+			A int     `redis:"a"`
+			b *string `redis:"b"`
+		}
+		type withUnexportedBytes struct {
+			A int    `redis:"a"`
+			b []byte `redis:"b"`
+		}
+		type withString struct {
+			A int    `redis:"a"`
+			B string `redis:"b"`
+		}
+
+		for _, dst := range []interface{}{
+			&withUintptr{}, &withUnexported{}, &withUnexportedPtr{},
+			&withUnexportedBytes{}, &withString{},
+		} {
+			err := Scan(dst, i{"a", "b", "p"}, i{"x", "1", "1"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(".A of type int"))
+		}
+
+		var u withUnexported
+		Expect(Scan(&u, i{"b"}, i{"1"})).To(HaveOccurred())
+		Expect(u.b).To(BeEmpty())
+	})
+
 	It("catches bad values", func() {
 		var d data
 
@@ -207,6 +300,22 @@ var _ = Describe("Scan", func() {
 		Expect(Scan(&d, i{"bool"}, i{"-1"})).To(HaveOccurred())
 		Expect(Scan(&d, i{"bool"}, i{""})).To(HaveOccurred())
 		Expect(Scan(&d, i{"bool"}, i{"123"})).To(HaveOccurred())
+	})
+
+	It("does not stop scanning on first failure", func() {
+		var d data
+
+		keys := i{"bool", "string", "int"}
+		vals := i{"-1", "foobar", "123"}
+
+		err := Scan(&d, keys, vals)
+		Expect(err).To(HaveOccurred())
+
+		Expect(d).To(Equal(data{
+			Bool:   false,
+			String: "foobar",
+			Int:    123,
+		}))
 	})
 
 	It("Implements Scanner", func() {
@@ -234,5 +343,41 @@ var _ = Describe("Scan", func() {
 		var bd BinaryData
 		Expect(Scan(&bd, i{"binary"}, i{"hello"})).NotTo(HaveOccurred())
 		Expect(bd.Binary.s).To(Equal("hello"))
+	})
+
+	It("does not expose the value to an in-place unmarshaler", func() {
+		// Built at run time so the write lands on heap memory: a string in
+		// read-only memory faults the process instead, which a spec cannot
+		// assert on.
+		val := string([]byte("HELLO"))
+
+		var d InPlaceData
+		Expect(Scan(&d, i{"binary", "text"}, i{val, val})).NotTo(HaveOccurred())
+		Expect(d.Binary.s).To(Equal("hello"))
+		Expect(d.Text.s).To(Equal("hello"))
+		Expect(val).To(Equal("HELLO"))
+	})
+
+	It("scans a net.IP stored as raw bytes or as text", func() {
+		type ipData struct {
+			IP net.IP `redis:"ip"`
+		}
+
+		// HSET stores a net.IP as its raw bytes.
+		for _, ip := range []net.IP{net.IPv4(10, 1, 2, 3).To4(), net.ParseIP("2001:db8::1")} {
+			var d ipData
+			Expect(Scan(&d, i{"ip"}, i{string(ip)})).NotTo(HaveOccurred())
+			Expect(d.IP.Equal(ip)).To(BeTrue(), "got %v, want %v", d.IP, ip)
+		}
+
+		var d ipData
+		Expect(Scan(&d, i{"ip"}, i{"10.1.2.3"})).NotTo(HaveOccurred())
+		Expect(d.IP.String()).To(Equal("10.1.2.3"))
+
+		// A 4-byte value that is also valid text is read as text.
+		Expect(Scan(&d, i{"ip"}, i{"1::1"})).NotTo(HaveOccurred())
+		Expect(d.IP.String()).To(Equal("1::1"))
+
+		Expect(Scan(&d, i{"ip"}, i{"not an ip"})).To(HaveOccurred())
 	})
 })

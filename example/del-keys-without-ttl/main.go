@@ -28,8 +28,8 @@ func main() {
 	checker.Start(ctx)
 
 	iter := rdb.Scan(ctx, 0, "", 0).Iterator()
-	for iter.Next(ctx) {
-		checker.Add(iter.Val())
+	for val := range iter.Vals(ctx) {
+		checker.Add(val)
 	}
 	if err := iter.Err(); err != nil {
 		panic(err)

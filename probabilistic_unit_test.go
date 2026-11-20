@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -89,5 +90,186 @@ func TestBFInfoCmdSingleUnknownAttributeStillErrors(t *testing.T) {
 	rd := proto.NewReader(strings.NewReader("*1\r\n:1\r\n"))
 	if err := cmd.readReply(rd); err == nil {
 		t.Fatal("readReply() = nil, want error for unknown attribute")
+	}
+}
+
+// BF.INFO matches the requested attribute case-insensitively and, in RESP2,
+// replies with the bare value, so the reply is read by the option name.
+func TestBFInfoCmdOptionCaseInsensitive(t *testing.T) {
+	for _, opt := range []string{"CAPACITY", "capacity", "Capacity"} {
+		t.Run(opt, func(t *testing.T) {
+			cmd := NewBFInfoCmd(context.Background(), "bf.info", "key", opt)
+			rd := proto.NewReader(strings.NewReader("*1\r\n:100\r\n+NEXT\r\n"))
+			if err := cmd.readReply(rd); err != nil {
+				t.Fatalf("readReply() error = %v", err)
+			}
+			if want := (BFInfo{Capacity: 100}); cmd.val != want {
+				t.Fatalf("val = %+v, want %+v", cmd.val, want)
+			}
+		})
+	}
+}
+
+// A filter created with NONSCALING has no expansion rate and the server
+// reports it as null. The rest of the reply must still be parsed.
+func TestBFInfoCmdNonScalingFilter(t *testing.T) {
+	fields := "+Capacity\r\n:100\r\n" +
+		"+Size\r\n:216\r\n" +
+		"+Number of filters\r\n:1\r\n" +
+		"+Number of items inserted\r\n:2\r\n" +
+		"+Expansion rate\r\n"
+	want := BFInfo{Capacity: 100, Size: 216, Filters: 1, ItemsInserted: 2}
+
+	tests := []struct {
+		name  string
+		reply string
+		args  []interface{}
+		want  BFInfo
+	}{
+		{
+			name:  "resp2",
+			reply: "*10\r\n" + fields + "$-1\r\n",
+			args:  []interface{}{"bf.info", "key"},
+			want:  want,
+		},
+		{
+			name:  "resp3",
+			reply: "%5\r\n" + fields + "_\r\n",
+			args:  []interface{}{"bf.info", "key"},
+			want:  want,
+		},
+		{
+			name:  "resp2_expansion_only",
+			reply: "*1\r\n$-1\r\n",
+			args:  []interface{}{"bf.info", "key", "EXPANSION"},
+		},
+		{
+			name:  "resp3_expansion_only",
+			reply: "%1\r\n+Expansion rate\r\n_\r\n",
+			args:  []interface{}{"bf.info", "key", "EXPANSION"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewBFInfoCmd(context.Background(), tc.args...)
+			rd := proto.NewReader(strings.NewReader(tc.reply + "+NEXT\r\n"))
+			if err := cmd.readReply(rd); err != nil {
+				t.Fatalf("readReply() error = %v", err)
+			}
+			if cmd.val != tc.want {
+				t.Fatalf("val = %+v, want %+v", cmd.val, tc.want)
+			}
+			if next, err := rd.ReadString(); err != nil || next != "NEXT" {
+				t.Fatalf("next reply = %q, %v; reader is out of sync", next, err)
+			}
+		})
+	}
+}
+
+// CF.SCANDUMP ends a dump, and answers for an empty filter, with iterator 0
+// and a null chunk. That is the end marker, not a failed command.
+func TestScanDumpCmdNullChunk(t *testing.T) {
+	for name, reply := range map[string]string{
+		"resp2": "*2\r\n:0\r\n$-1\r\n",
+		"resp3": "*2\r\n:0\r\n_\r\n",
+		"chunk": "*2\r\n:7\r\n$3\r\nabc\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := newScanDumpCmd(context.Background(), "CF.SCANDUMP", "cf", 7)
+			rd := proto.NewReader(strings.NewReader(reply + "+NEXT\r\n"))
+			if err := cmd.readReply(rd); err != nil {
+				t.Fatalf("readReply: %v", err)
+			}
+			want := ScanDump{}
+			if name == "chunk" {
+				want = ScanDump{Iter: 7, Data: "abc"}
+			}
+			if got := cmd.Val(); got != want {
+				t.Fatalf("got %+v, want %+v", got, want)
+			}
+			if next, err := rd.ReadString(); err != nil || next != "NEXT" {
+				t.Fatalf("next reply = %q, %v; reader is out of sync", next, err)
+			}
+		})
+	}
+}
+
+// A nil options pointer means "no options", as in BFReserveWithArgs: the
+// command is still built and the server reports what is missing, instead of
+// the client dereferencing the pointer and panicking.
+func TestCFReserveWithArgsNilOptions(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		options *CFReserveOptions
+		want    []interface{}
+	}{
+		{
+			name: "nil_options",
+			want: []interface{}{"CF.RESERVE", "cf"},
+		},
+		{
+			name:    "capacity",
+			options: &CFReserveOptions{Capacity: 1000},
+			want:    []interface{}{"CF.RESERVE", "cf", int64(1000)},
+		},
+		{
+			name:    "all_options",
+			options: &CFReserveOptions{Capacity: 1000, BucketSize: 2, MaxIterations: 20, Expansion: 1},
+			want: []interface{}{
+				"CF.RESERVE", "cf", int64(1000),
+				"BUCKETSIZE", int64(2),
+				"MAXITERATIONS", int64(20),
+				"EXPANSION", int64(1),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).CFReserveWithArgs(ctx, "cf", tt.options)
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
+// A single slice of elements is expanded into its items. Sent as one
+// argument, the slice can not be marshalled and the command fails. Any other
+// argument, a nil one included, is still sent as it is.
+func TestProbabilisticCmdsExpandSliceElements(t *testing.T) {
+	ctx := context.Background()
+	items := []string{"a", "b"}
+
+	var captured Cmder
+	c := captureCmdable(&captured)
+
+	tests := []struct {
+		name string
+		cmd  Cmder
+		want []interface{}
+	}{
+		{"BFInsert", c.BFInsert(ctx, "k", nil, items), []interface{}{"BF.INSERT", "k", "ITEMS", "a", "b"}},
+		{"BFMAdd", c.BFMAdd(ctx, "k", items), []interface{}{"BF.MADD", "k", "a", "b"}},
+		{"BFMExists", c.BFMExists(ctx, "k", items), []interface{}{"BF.MEXISTS", "k", "a", "b"}},
+		{"CFInsert", c.CFInsert(ctx, "k", nil, items), []interface{}{"CF.INSERT", "k", "ITEMS", "a", "b"}},
+		{"CFInsertNX", c.CFInsertNX(ctx, "k", nil, items), []interface{}{"CF.INSERTNX", "k", "ITEMS", "a", "b"}},
+		{"CFMExists", c.CFMExists(ctx, "k", items), []interface{}{"CF.MEXISTS", "k", "a", "b"}},
+		{"CMSQuery", c.CMSQuery(ctx, "k", items), []interface{}{"CMS.QUERY", "k", "a", "b"}},
+		{"interfaces", c.BFMAdd(ctx, "k", []interface{}{"a", 1}), []interface{}{"BF.MADD", "k", "a", 1}},
+		{"variadic", c.BFMAdd(ctx, "k", "a", "b"), []interface{}{"BF.MADD", "k", "a", "b"}},
+		{"nil", c.BFMAdd(ctx, "k", nil), []interface{}{"BF.MADD", "k", nil}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !reflect.DeepEqual(tt.cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", tt.cmd.Args(), tt.want)
+			}
+		})
 	}
 }

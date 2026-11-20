@@ -2,8 +2,48 @@ package routing
 
 import (
 	"errors"
+	"math"
+	"net"
+	"sync"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+func TestSuccessAggregatorsMixedErrors(t *testing.T) {
+	for _, policy := range []ResponsePolicy{RespAllSucceeded, RespOneSucceeded} {
+		t.Run(policy.String(), func(t *testing.T) {
+			agg := NewResponseAggregator(policy, "")
+			nodeErrors := []error{
+				proto.RedisError("NOTBUSY No scripts in execution right now."),
+				&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
+			}
+			var wg sync.WaitGroup
+			for _, err := range nodeErrors {
+				wg.Add(1)
+				go func(err error) {
+					defer wg.Done()
+					if err := agg.Add(nil, err); err != nil {
+						t.Errorf("Add: %v", err)
+					}
+				}(err)
+			}
+			wg.Wait()
+			_, err := agg.Aggregate()
+			if err != nodeErrors[0] && err != nodeErrors[1] {
+				t.Fatalf("Aggregate error = %v, want one of the shard errors", err)
+			}
+			if err := agg.Add("OK", nil); err != nil {
+				t.Fatal(err)
+			}
+			result, afterSuccess := agg.Aggregate()
+			if result != "OK" || (policy == RespOneSucceeded && afterSuccess != nil) ||
+				(policy == RespAllSucceeded && afterSuccess != err) {
+				t.Fatalf("Aggregate after success = (%v, %v)", result, afterSuccess)
+			}
+		})
+	}
+}
 
 func TestAggLogicalAndAggregator(t *testing.T) {
 	t.Run("all true values", func(t *testing.T) {
@@ -24,7 +64,7 @@ func TestAggLogicalAndAggregator(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		result, err := agg.Result()
+		result, err := agg.Aggregate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -52,7 +92,7 @@ func TestAggLogicalAndAggregator(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		result, err := agg.Result()
+		result, err := agg.Aggregate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -65,7 +105,7 @@ func TestAggLogicalAndAggregator(t *testing.T) {
 	t.Run("no results", func(t *testing.T) {
 		agg := NewResponseAggregator(RespAggLogicalAnd, "")
 
-		_, err := agg.Result()
+		_, err := agg.Aggregate()
 		if err != ErrAndAggregation {
 			t.Errorf("expected ErrAndAggregation, got %v", err)
 		}
@@ -80,7 +120,7 @@ func TestAggLogicalAndAggregator(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		_, err = agg.Result()
+		_, err = agg.Aggregate()
 		if err != testErr {
 			t.Errorf("expected test error, got %v", err)
 		}
@@ -106,7 +146,7 @@ func TestAggLogicalOrAggregator(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		result, err := agg.Result()
+		result, err := agg.Aggregate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -134,7 +174,7 @@ func TestAggLogicalOrAggregator(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		result, err := agg.Result()
+		result, err := agg.Aggregate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -147,7 +187,7 @@ func TestAggLogicalOrAggregator(t *testing.T) {
 	t.Run("no results", func(t *testing.T) {
 		agg := NewResponseAggregator(RespAggLogicalOr, "")
 
-		_, err := agg.Result()
+		_, err := agg.Aggregate()
 		if err != ErrOrAggregation {
 			t.Errorf("expected ErrOrAggregation, got %v", err)
 		}
@@ -162,11 +202,54 @@ func TestAggLogicalOrAggregator(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		_, err = agg.Result()
+		_, err = agg.Aggregate()
 		if err != testErr {
 			t.Errorf("expected test error, got %v", err)
 		}
 	})
+}
+
+func TestNumericAggregatorsPreserveExactIntegers(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy ResponsePolicy
+		values []AggregatorResErr
+		want   int64
+	}{
+		{
+			name:   "sum above float precision",
+			policy: RespAggSum,
+			values: []AggregatorResErr{{Result: int64(1 << 53)}, {Result: int64(1)}},
+			want:   int64(1<<53) + 1,
+		},
+		{
+			name:   "minimum above float precision",
+			policy: RespAggMin,
+			values: []AggregatorResErr{{Result: int64(1<<53) + 1}, {Result: int64(1 << 53)}},
+			want:   int64(1 << 53),
+		},
+		{
+			name:   "maximum above float precision",
+			policy: RespAggMax,
+			values: []AggregatorResErr{{Result: int64(1<<53) + 1}, {Result: int64(1 << 53)}},
+			want:   int64(1<<53) + 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agg := NewResponseAggregator(tt.policy, "")
+			if err := agg.BatchSlice(tt.values); err != nil {
+				t.Fatal(err)
+			}
+			got, err := agg.Aggregate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("result=%v (%T), want %d (int64)", got, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestAggLogicalAndBatchAdd(t *testing.T) {
@@ -184,7 +267,7 @@ func TestAggLogicalAndBatchAdd(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		result, err := agg.Result()
+		result, err := agg.Aggregate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -208,7 +291,7 @@ func TestAggLogicalAndBatchAdd(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		result, err := agg.Result()
+		result, err := agg.Aggregate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -234,7 +317,7 @@ func TestAggLogicalOrBatchAdd(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		result, err := agg.Result()
+		result, err := agg.Aggregate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -258,7 +341,7 @@ func TestAggLogicalOrBatchAdd(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		result, err := agg.Result()
+		result, err := agg.Aggregate()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -269,8 +352,9 @@ func TestAggLogicalOrBatchAdd(t *testing.T) {
 	})
 }
 
-func TestAggMinMaxAggregatorNonNumericReply(t *testing.T) {
+func TestNumericAggregatorsNonNumericReply(t *testing.T) {
 	policies := map[string]ResponsePolicy{
+		"sum": RespAggSum,
 		"min": RespAggMin,
 		"max": RespAggMax,
 	}
@@ -279,13 +363,29 @@ func TestAggMinMaxAggregatorNonNumericReply(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			agg := NewResponseAggregator(policy, "")
 
-			if err := agg.Add("not a number", nil); err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			addErr := agg.Add("not a number", nil)
+			if addErr == nil {
+				t.Fatal("Add accepted a non-numeric reply")
 			}
 
-			if _, err := agg.Result(); err == nil {
-				t.Fatal("expected an error for a non-numeric reply, got nil")
+			if _, err := agg.Aggregate(); err != addErr {
+				t.Fatalf("Aggregate error = %v, want Add error %v", err, addErr)
 			}
 		})
+	}
+}
+
+func TestNumericAggregatorsUnsignedReplies(t *testing.T) {
+	for policy, want := range map[ResponsePolicy]int64{RespAggSum: 5, RespAggMin: 2, RespAggMax: 3} {
+		agg := NewResponseAggregator(policy, "")
+		if err := agg.BatchSlice([]AggregatorResErr{{Result: uint64(2)}, {Result: uint64(3)}}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := agg.Aggregate(); got != want || err != nil {
+			t.Fatalf("%s unsigned aggregate=%v, %v; want %d", policy, got, err, want)
+		}
+		if err := agg.Add(uint64(math.MaxInt64)+1, nil); err == nil {
+			t.Fatalf("%s accepted integer outside Redis integer range", policy)
+		}
 	}
 }

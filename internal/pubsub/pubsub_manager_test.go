@@ -191,12 +191,10 @@ func TestManagerFanout(t *testing.T) {
 		srv.waitDial(t)
 		h.Channel()
 
-		defer func() {
-			if recover() == nil {
-				t.Fatal("ChannelWithSubscriptions after Channel did not panic")
-			}
-		}()
-		h.ChannelWithSubscriptions()
+		// The conflicting call returns an already-closed channel.
+		if _, ok := <-h.ChannelWithSubscriptions(); ok {
+			t.Fatal("ChannelWithSubscriptions after Channel returned an open channel")
+		}
 	})
 }
 

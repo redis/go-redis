@@ -100,7 +100,13 @@ func (h *handle) Channel(opt ...ChannelOption) <-chan *Message {
 
 	switch h.pump {
 	case pumpAll:
-		panic("redis: Channel can't be called after ChannelWithSubscriptions")
+		// A closed channel instead of a panic, so callers can recover
+		// (issue #3761).
+		internal.Logger.Printf(context.Background(),
+			"redis: Channel can't be called after ChannelWithSubscriptions")
+		ch := make(chan *Message)
+		close(ch)
+		return ch
 	case pumpNone:
 		h.pump = pumpMessages
 		h.msgCh = make(chan *Message, size)
@@ -125,7 +131,12 @@ func (h *handle) ChannelWithSubscriptions(opt ...ChannelOption) <-chan any {
 
 	switch h.pump {
 	case pumpMessages:
-		panic("redis: ChannelWithSubscriptions can't be called after Channel")
+		// A closed channel instead of a panic (issue #3761).
+		internal.Logger.Printf(context.Background(),
+			"redis: ChannelWithSubscriptions can't be called after Channel")
+		ch := make(chan any)
+		close(ch)
+		return ch
 	case pumpNone:
 		h.pump = pumpAll
 		h.allCh = make(chan any, size)

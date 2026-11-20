@@ -224,8 +224,15 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 					err := client.BFReserveNonScaling(ctx, "testbfns1", 0.001, 1000).Err()
 					Expect(err).NotTo(HaveOccurred())
 
-					_, err = client.BFInfo(ctx, "testbfns1").Result()
-					Expect(err).To(HaveOccurred())
+					// A non-scaling filter has no expansion rate.
+					result, err := client.BFInfo(ctx, "testbfns1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.Capacity).To(BeEquivalentTo(int64(1000)))
+					Expect(result.ExpansionRate).To(BeEquivalentTo(int64(0)))
+
+					result, err = client.BFInfoExpansion(ctx, "testbfns1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.ExpansionRate).To(BeEquivalentTo(int64(0)))
 				})
 
 				It("should BFScanDump and BFLoadChunk", Label("bloom", "bfscandump", "bfloadchunk"), func() {
@@ -322,6 +329,34 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 					cnt, err = client.CFCount(ctx, "testcf1", "item1").Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(cnt).To(BeEquivalentTo(int64(2)))
+				})
+
+				It("should CFCompact", Label("cuckoo", "cfcompact"), func() {
+					err := client.CFReserveWithArgs(ctx, "testcf1", &redis.CFReserveOptions{
+						Capacity:   2,
+						BucketSize: 1,
+						Expansion:  1,
+					}).Err()
+					Expect(err).NotTo(HaveOccurred())
+					for i := 0; i < 8; i++ {
+						Expect(client.CFAdd(ctx, "testcf1", fmt.Sprintf("item%d", i)).Err()).NotTo(HaveOccurred())
+					}
+					for i := 0; i < 6; i++ {
+						Expect(client.CFDel(ctx, "testcf1", fmt.Sprintf("item%d", i)).Err()).NotTo(HaveOccurred())
+					}
+
+					res, err := client.CFCompact(ctx, "testcf1").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(res).To(Equal("OK"))
+
+					for i := 6; i < 8; i++ {
+						exists, err := client.CFExists(ctx, "testcf1", fmt.Sprintf("item%d", i)).Result()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(exists).To(BeTrue())
+					}
+
+					err = client.CFCompact(ctx, "nosuchcf").Err()
+					Expect(err).To(HaveOccurred())
 				})
 
 				It("should CFDel and CFExists", Label("cuckoo", "cfdel", "cfexists"), func() {

@@ -593,6 +593,15 @@ func TestParseSentinelURL(t *testing.T) {
 			url: "redis://localhost/database",
 			err: errors.New(`redis: invalid database number: "database"`),
 		},
+		{
+			// a negative db parses as an int but fails on every SELECT
+			url: "redis://localhost:6379/-1",
+			err: errors.New(`redis: invalid database number: "-1"`),
+		},
+		{
+			url: "redis://localhost:6379?db=-1",
+			err: errors.New(`redis: invalid database number: "-1"`),
+		},
 	}
 
 	for i := range cases {
@@ -735,6 +744,39 @@ func compareSlices(t *testing.T, a, b []string, name string) {
 		if a[i] != b[i] {
 			t.Errorf("%s got %q, want %q", name, a, b)
 		}
+	}
+}
+
+func TestFailoverClusterClientKeepsOptions(t *testing.T) {
+	// The clients are only built, never used, so nothing needs to listen here.
+	addrs := []string{"127.0.0.1:1"}
+	clients := map[string]*redis.ClusterClient{
+		"NewFailoverClusterClient": redis.NewFailoverClusterClient(&redis.FailoverOptions{
+			MasterName:            "mymaster",
+			SentinelAddrs:         addrs,
+			RouteByLatency:        true,
+			ConnMaxLifetime:       time.Hour,
+			ConnMaxLifetimeJitter: 6 * time.Minute,
+			FailingTimeoutSeconds: 30,
+		}),
+		"NewUniversalClient": redis.NewUniversalClient(&redis.UniversalOptions{
+			MasterName:            "mymaster",
+			Addrs:                 addrs,
+			RouteByLatency:        true,
+			ConnMaxLifetime:       time.Hour,
+			ConnMaxLifetimeJitter: 6 * time.Minute,
+			FailingTimeoutSeconds: 30,
+		}).(*redis.ClusterClient),
+	}
+	for name, client := range clients {
+		opt := client.Options()
+		if opt.ConnMaxLifetimeJitter != 6*time.Minute {
+			t.Errorf("%s: ConnMaxLifetimeJitter = %v, want 6m0s", name, opt.ConnMaxLifetimeJitter)
+		}
+		if opt.FailingTimeoutSeconds != 30 {
+			t.Errorf("%s: FailingTimeoutSeconds = %d, want 30", name, opt.FailingTimeoutSeconds)
+		}
+		_ = client.Close()
 	}
 }
 

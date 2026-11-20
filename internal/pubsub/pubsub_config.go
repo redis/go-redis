@@ -1,6 +1,10 @@
 package pubsub
 
-import "time"
+import (
+	"time"
+
+	"github.com/redis/go-redis/v9/internal/otel"
+)
 
 // DefaultBacklogLimit is the per-handle backlog cap (see
 // Config.BacklogLimit): 32 MiB, the server's default hard
@@ -13,6 +17,10 @@ const DefaultBacklogLimit = 32 << 20
 // (Options.init) before building a Config, so every field arrives
 // resolved: the manager applies no defaults of its own.
 type Config struct {
+	// Recorder receives the received-message metrics; nil means the
+	// global recorder. The root package passes the owning client's.
+	Recorder otel.Recorder
+
 	// Addr is the target every (re)connect dials; a handoff can redirect
 	// the manager by rewriting it.
 	Addr string

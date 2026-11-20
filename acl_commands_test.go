@@ -103,6 +103,25 @@ var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 		Expect(res1).To(Equal("default"))
 	})
 
+	It("gets a user", func() {
+		SkipBeforeRedisVersion("7.0", "the selectors of ACL GETUSER require Redis 7.0+")
+
+		Expect(client.ACLSetUser(ctx, TestUserName,
+			"on", ">secret", "~app:*", "&news", "+get", "(~tmp:* +set)").Err()).NotTo(HaveOccurred())
+
+		user, err := client.ACLGetUser(ctx, TestUserName).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(user.Flags).To(ContainElement("on"))
+		Expect(user.Passwords).To(HaveLen(1))
+		Expect(user.Commands).To(Equal("-@all +get"))
+		Expect(user.Keys).To(Equal("~app:*"))
+		Expect(user.Channels).To(Equal("&news"))
+		Expect(user.Selectors).To(Equal([]redis.ACLSelector{{Commands: "-@all +set", Keys: "~tmp:*"}}))
+
+		_, err = client.ACLGetUser(ctx, "no-such-user").Result()
+		Expect(err).To(Equal(redis.Nil))
+	})
+
 	It("gen password", func() {
 		password, err := client.ACLGenPass(ctx, 0).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -115,16 +134,25 @@ var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 		Expect(add).To(Equal("OK"))
 
 		for _, protocol := range []int{3, 2} {
-			opt := redisOptions()
-			opt.Username = TestUserName
-			opt.Password = ""
-			opt.Protocol = protocol
-			userClient := redis.NewClient(opt)
+			for _, authEmptyPassword := range []bool{false, true} {
+				opt := redisOptions()
+				opt.Username = TestUserName
+				opt.Password = ""
+				opt.Protocol = protocol
+				opt.AuthEmptyPassword = authEmptyPassword
+				userClient := redis.NewClient(opt)
 
-			whoami, err := userClient.ACLWhoAmI(ctx).Result()
-			Expect(userClient.Close()).NotTo(HaveOccurred())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(whoami).To(Equal(TestUserName), "protocol %d", protocol)
+				whoami, err := userClient.ACLWhoAmI(ctx).Result()
+				Expect(userClient.Close()).NotTo(HaveOccurred())
+				Expect(err).NotTo(HaveOccurred())
+				// By default a username without a password sends no AUTH.
+				want := "default"
+				if authEmptyPassword {
+					want = TestUserName
+				}
+				Expect(whoami).To(Equal(want),
+					"protocol %d, AuthEmptyPassword %t", protocol, authEmptyPassword)
+			}
 		}
 	})
 

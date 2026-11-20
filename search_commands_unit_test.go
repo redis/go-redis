@@ -388,8 +388,8 @@ func TestFTHybridWithArgsGeneratedNameAvoidsExplicitCollision(t *testing.T) {
 }
 
 // TestFTHybridWithArgs_ShardKRatio verifies the SHARD_K_RATIO option
-// (Redis 8.8+) is emitted on the VSIM clause after the KNN method block and
-// before FILTER when a positive ratio is set, and omitted entirely when the
+// (Redis 8.8+) is emitted as a counted KNN argument, before FILTER, when a
+// positive ratio is set, and omitted entirely when the
 // ratio is left at its zero value (server default of 1.0 applies).
 func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 	indexOf := func(args []interface{}, want string) int {
@@ -437,6 +437,11 @@ func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 		}
 		if got := gotCmd.args[idxShard+1]; got != ratio {
 			t.Fatalf("SHARD_K_RATIO value: got %v (%T), want %v", got, got, ratio)
+		}
+		// The server parses SHARD_K_RATIO as one of the counted KNN arguments:
+		// KNN 6 K 10 EF_RUNTIME 50 SHARD_K_RATIO 0.6
+		if got := gotCmd.args[idxKNN+1]; got != 6 {
+			t.Fatalf("KNN argument count: got %v, want 6 (args=%v)", got, gotCmd.args)
 		}
 	})
 
@@ -514,6 +519,66 @@ func TestFTCreateHNSWRerank_Args(t *testing.T) {
 				FieldType:  SearchFieldTypeVector,
 				VectorArgs: &FTVectorArgs{HNSWOptions: tt.opts},
 			})
+			if cmd.Err() != nil {
+				t.Fatalf("unexpected error: %v", cmd.Err())
+			}
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
+// TestFTCreateSortableAfterFieldOptions verifies that SORTABLE, UNF and
+// NOINDEX follow the type-specific field options. FT.CREATE reads no
+// type-specific option after them, so "TEXT SORTABLE WEIGHT 2" fails.
+func TestFTCreateSortableAfterFieldOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema *FieldSchema
+		want   []interface{}
+	}{
+		{
+			name: "text",
+			schema: &FieldSchema{
+				FieldName: "t", FieldType: SearchFieldTypeText,
+				NoStem: true, PhoneticMatcher: "dm:en", Weight: 2, WithSuffixtrie: true,
+				IndexEmpty: true, IndexMissing: true, Sortable: true, UNF: true,
+			},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "t", "TEXT", "NOSTEM", "PHONETIC", "dm:en",
+				"WEIGHT", float64(2), "WITHSUFFIXTRIE", "INDEXEMPTY", "INDEXMISSING",
+				"SORTABLE", "UNF",
+			},
+		},
+		{
+			name: "tag",
+			schema: &FieldSchema{
+				FieldName: "g", FieldType: SearchFieldTypeTag,
+				Separator: ";", CaseSensitive: true, Sortable: true, NoIndex: true,
+			},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "g", "TAG", "SEPARATOR", ";", "CASESENSITIVE",
+				"SORTABLE", "NOINDEX",
+			},
+		},
+		{
+			name: "numeric",
+			schema: &FieldSchema{
+				FieldName: "n", FieldType: SearchFieldTypeNumeric,
+				IndexMissing: true, Sortable: true,
+			},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "n", "NUMERIC", "INDEXMISSING", "SORTABLE",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &mockCmdable{}
+			c := m.asCmdable()
+			cmd := c.FTCreate(context.Background(), "idx", nil, tt.schema)
 			if cmd.Err() != nil {
 				t.Fatalf("unexpected error: %v", cmd.Err())
 			}
@@ -696,5 +761,254 @@ func TestParseFTHybridWarnings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDropIndexBuilderDeleteDocs(t *testing.T) {
+	client := NewClient(&Options{Addr: "localhost:6379"})
+	defer client.Close()
+
+	builder := client.NewDropIndexBuilder(context.Background(), "idx").DeleteDocs()
+	if builder.options == nil || !builder.options.DeleteDocs {
+		t.Fatal("expected DeleteDocs to be true")
+	}
+}
+
+// A nil options pointer means "no options", as in BFReserveWithArgs,
+// FTAggregateWithArgs and every other "*WithArgs" helper. These two used to
+// dereference it and panic.
+
+func TestFTExplainWithArgsNilOptions(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		options *FTExplainOptions
+		want    []interface{}
+	}{
+		{
+			name: "nil_options_use_the_default_dialect",
+			want: []interface{}{"FT.EXPLAIN", "idx", "@a:1", "DIALECT", 2},
+		},
+		{
+			name:    "empty_options_use_the_default_dialect",
+			options: &FTExplainOptions{},
+			want:    []interface{}{"FT.EXPLAIN", "idx", "@a:1", "DIALECT", 2},
+		},
+		{
+			name:    "dialect",
+			options: &FTExplainOptions{Dialect: "3"},
+			want:    []interface{}{"FT.EXPLAIN", "idx", "@a:1", "DIALECT", "3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).FTExplainWithArgs(ctx, "idx", "@a:1", tt.options)
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
+func TestFTSynUpdateWithArgsNilOptions(t *testing.T) {
+	ctx := context.Background()
+	terms := []interface{}{"a", "b"}
+
+	tests := []struct {
+		name    string
+		options *FTSynUpdateOptions
+		want    []interface{}
+	}{
+		{
+			name: "nil_options_skip_the_scan_flag_only",
+			want: []interface{}{"FT.SYNUPDATE", "idx", "g1", "a", "b"},
+		},
+		{
+			name:    "empty_options_skip_the_scan_flag_only",
+			options: &FTSynUpdateOptions{},
+			want:    []interface{}{"FT.SYNUPDATE", "idx", "g1", "a", "b"},
+		},
+		{
+			name:    "skip_initial_scan",
+			options: &FTSynUpdateOptions{SkipInitialScan: true},
+			want:    []interface{}{"FT.SYNUPDATE", "idx", "g1", "SKIPINITIALSCAN", "a", "b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).FTSynUpdateWithArgs(ctx, "idx", "g1", tt.options, terms)
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
+// TestFTSearchQueryLimit verifies that FTSearchQuery builds the same LIMIT
+// arguments as FTSearchWithArgs, including CountOnly and an offset without a
+// limit.
+func TestFTSearchQueryLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		options *FTSearchOptions
+		want    []interface{}
+	}{
+		{
+			name:    "count_only",
+			options: &FTSearchOptions{CountOnly: true, LimitOffset: 5, Limit: 10},
+			want:    []interface{}{"*", "LIMIT", 0, 0, "DIALECT", 2},
+		},
+		{
+			name:    "offset_and_limit",
+			options: &FTSearchOptions{LimitOffset: 5, Limit: 10},
+			want:    []interface{}{"*", "LIMIT", 5, 10, "DIALECT", 2},
+		},
+		{
+			name:    "offset_without_limit",
+			options: &FTSearchOptions{LimitOffset: 5},
+			want:    []interface{}{"*", "LIMIT", 5, 10, "DIALECT", 2},
+		},
+		{
+			name:    "no_limit",
+			options: &FTSearchOptions{},
+			want:    []interface{}{"*", "DIALECT", 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FTSearchQuery("*", tt.options)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual([]interface{}(got), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", got, tt.want)
+			}
+
+			cmd := captureCmdable(new(Cmder)).FTSearchWithArgs(context.Background(), "idx", "*", tt.options)
+			if want := append([]interface{}{"FT.SEARCH", "idx"}, tt.want...); !reflect.DeepEqual(cmd.Args(), want) {
+				t.Errorf("FTSearchWithArgs args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
+			}
+		})
+	}
+}
+
+// The server rejects "PARAMS 0" ("Parameters must be specified in PARAM VALUE
+// pairs"), so an empty Params map must not emit the clause.
+func TestFTSearchAndAggregateEmptyParams(t *testing.T) {
+	empty := map[string]interface{}{}
+	want := []interface{}{"*", "DIALECT", 2}
+
+	search, err := FTSearchQuery("*", &FTSearchOptions{Params: empty})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual([]interface{}(search), want) {
+		t.Errorf("FTSearchQuery args mismatch\n got: %#v\nwant: %#v", search, want)
+	}
+	searchCmd := captureCmdable(new(Cmder)).FTSearchWithArgs(context.Background(), "idx", "*", &FTSearchOptions{Params: empty})
+	if want := append([]interface{}{"FT.SEARCH", "idx"}, want...); !reflect.DeepEqual(searchCmd.Args(), want) {
+		t.Errorf("FTSearchWithArgs args mismatch\n got: %#v\nwant: %#v", searchCmd.Args(), want)
+	}
+
+	aggregate, err := FTAggregateQuery("*", &FTAggregateOptions{Params: empty})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual([]interface{}(aggregate), want) {
+		t.Errorf("FTAggregateQuery args mismatch\n got: %#v\nwant: %#v", aggregate, want)
+	}
+	aggregateCmd := captureCmdable(new(Cmder)).FTAggregateWithArgs(context.Background(), "idx", "*", &FTAggregateOptions{Params: empty})
+	if want := append([]interface{}{"FT.AGGREGATE", "idx"}, want...); !reflect.DeepEqual(aggregateCmd.Args(), want) {
+		t.Errorf("FTAggregateWithArgs args mismatch\n got: %#v\nwant: %#v", aggregateCmd.Args(), want)
+	}
+}
+
+func TestFTHybridWithArgsOffsetWithoutLimitUsesDefaultPageSize(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	cmd := c.FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+		SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+		LimitOffset:       5,
+	})
+	if cmd.Err() != nil {
+		t.Fatalf("unexpected error: %v", cmd.Err())
+	}
+	if m.lastCmd == nil {
+		t.Fatalf("expected command to be executed")
+	}
+	gotCmd, ok := m.lastCmd.(*FTHybridCmd)
+	if !ok {
+		t.Fatalf("expected FTHybridCmd, got %T", m.lastCmd)
+	}
+	want := []interface{}{"FT.HYBRID", "idx", "SEARCH", "*", "LIMIT", 5, 10}
+	if !reflect.DeepEqual(gotCmd.args, want) {
+		t.Errorf("args mismatch\n got: %#v\nwant: %#v", gotCmd.args, want)
+	}
+}
+
+func TestFTHybridWithArgsCombineCount(t *testing.T) {
+	tests := []struct {
+		name    string
+		combine *FTHybridCombineOptions
+		want    []interface{}
+	}{
+		{
+			name:    "rrf_without_params",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineRRF},
+			want:    []interface{}{"COMBINE", "RRF", 0},
+		},
+		{
+			name:    "linear_without_params",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear},
+			want:    []interface{}{"COMBINE", "LINEAR", 0},
+		},
+		{
+			name:    "rrf_with_window",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineRRF, Window: 3},
+			want:    []interface{}{"COMBINE", "RRF", 2, "WINDOW", 3},
+		},
+		{
+			// The server rejects ALPHA without BETA ("Missing value for BETA").
+			name:    "linear_with_zero_beta",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear, Alpha: 1},
+			want:    []interface{}{"COMBINE", "LINEAR", 4, "ALPHA", 1.0, "BETA", 0.0},
+		},
+		{
+			name:    "linear_with_window",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear, Alpha: 0.5, Beta: 0.5, Window: 3},
+			want:    []interface{}{"COMBINE", "LINEAR", 6, "ALPHA", 0.5, "BETA", 0.5, "WINDOW", 3},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+				SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+				Combine:           tt.combine,
+			})
+			want := append([]interface{}{"FT.HYBRID", "idx", "SEARCH", "*"}, tt.want...)
+			if !reflect.DeepEqual(cmd.Args(), want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
+			}
+		})
+	}
+}
+
+// MAXTEXTFIELDS takes no value: the server answers "Unknown argument" to one.
+func TestFTCreateMaxTextFieldsIsBareFlag(t *testing.T) {
+	var captured Cmder
+	cmd := captureCmdable(&captured).FTCreate(context.Background(), "idx",
+		&FTCreateOptions{MaxTextFields: 1},
+		&FieldSchema{FieldName: "title", FieldType: SearchFieldTypeText})
+	want := []interface{}{"FT.CREATE", "idx", "MAXTEXTFIELDS", "SCHEMA", "title", "TEXT"}
+	if !reflect.DeepEqual(cmd.Args(), want) {
+		t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
 	}
 }

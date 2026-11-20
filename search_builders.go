@@ -562,10 +562,10 @@ type DropIndexBuilder struct {
 // NewDropIndexBuilder creates a new DropIndexBuilder for FT.DROPINDEX commands.
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewDropIndexBuilder(ctx context.Context, index string) *DropIndexBuilder {
-	return &DropIndexBuilder{c: c, ctx: ctx, index: index}
+	return &DropIndexBuilder{c: c, ctx: ctx, index: index, options: &FTDropIndexOptions{}}
 }
 
-// DeleteRuncs includes DD.
+// DeleteDocs includes DD.
 func (b *DropIndexBuilder) DeleteDocs() *DropIndexBuilder { b.options.DeleteDocs = true; return b }
 
 // Run executes FT.DROPINDEX.

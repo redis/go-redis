@@ -2098,6 +2098,12 @@ func (r *fdOtelRecorder) RecordStreamLag(context.Context, time.Duration, *pool.C
 }
 func (r *fdOtelRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
 func (r *fdOtelRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
+func (r *fdOtelRecorder) RecordMultiDBFailover(context.Context, string, string, string, time.Duration) {
+}
+func (r *fdOtelRecorder) RecordMultiDBActiveDatabaseChange(context.Context, string, string) {}
+func (r *fdOtelRecorder) RecordMultiDBCircuitStateChange(context.Context, string, string, string) {
+}
+func (r *fdOtelRecorder) RecordMultiDBHealthCheck(context.Context, string, bool, time.Duration) {}
 
 // TestFullDuplexRecordsOTelOperationDuration verifies the FD reader records the
 // native per-command OTel duration metric (redisotel-native) itself, which it
@@ -3417,10 +3423,8 @@ func (fdPanicErrorStr) Error() string { panic("boom: error Error() panic") }
 // Red-check: revert classifyCommandErrorGuarded back to classifyCommandError — the panic
 // escapes failReqs and the command below never completes (test times out).
 func TestFDFailReqsClassifyPanicStillCompletes(t *testing.T) {
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {},
-	})
-	defer pool.SetAllMetricCallbacks(nil)
+	setTestErrorRecorder(func(context.Context, string, *pool.Conn, string, bool, int) {})
+	defer otel.SetGlobalRecorder(nil)
 
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
 	done := make(chan struct{})
@@ -3779,13 +3783,11 @@ func TestFDLimiterReportPanicOnWriteFailureNoCrash(t *testing.T) {
 // the caller completes normally.
 func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(_ context.Context, _ string, _ *pool.Conn, _ string, _ bool, _ int) {
-			calls.Add(1)
-			panic("boom from a user metric callback")
-		},
+	setTestErrorRecorder(func(_ context.Context, _ string, _ *pool.Conn, _ string, _ bool, _ int) {
+		calls.Add(1)
+		panic("boom from a user metric callback")
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
 	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), attempts: 1}
@@ -3797,7 +3799,7 @@ func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 			}
 		}()
 		// A non-nil error routes to the panicking error callback.
-		fd.reportReplyMetrics(context.Background(), req, errors.New("WRONGTYPE Operation"), nil)
+		fd.reportReplyMetrics(context.Background(), req, errors.New("WRONGTYPE Operation"), nil, 0, false)
 	}()
 
 	if calls.Load() != 1 {
@@ -3811,18 +3813,16 @@ func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
 func TestFDReportReplyMetricsNilReplyType(t *testing.T) {
 	var gotType atomic.Value
 	var gotInternal atomic.Bool
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(_ context.Context, errorType string, _ *pool.Conn, _ string, isInternal bool, _ int) {
-			gotType.Store(errorType)
-			gotInternal.Store(isInternal)
-		},
+	setTestErrorRecorder(func(_ context.Context, errorType string, _ *pool.Conn, _ string, isInternal bool, _ int) {
+		gotType.Store(errorType)
+		gotInternal.Store(isInternal)
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
 	req := fdReq{cmd: NewStringCmd(context.Background(), "get", "k"), attempts: 1}
 
-	fd.reportReplyMetrics(context.Background(), req, Nil, nil)
+	fd.reportReplyMetrics(context.Background(), req, Nil, nil, 0, false)
 	if got := gotType.Load(); got != "NIL" || gotInternal.Load() {
 		t.Fatalf("errorType = %v, internal = %v, want NIL, false", got, gotInternal.Load())
 	}
@@ -3837,13 +3837,11 @@ func TestFDReportReplyMetricsNilReplyType(t *testing.T) {
 // server.
 func TestFDFailReqsRecoversMetricCallbackPanic(t *testing.T) {
 	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
-			calls.Add(1)
-			panic("boom from a user metric callback")
-		},
+	setTestErrorRecorder(func(context.Context, string, *pool.Conn, string, bool, int) {
+		calls.Add(1)
+		panic("boom from a user metric callback")
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	ctx := context.Background()
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
@@ -3889,13 +3887,11 @@ func TestFDFailReqsRecoversMetricCallbackPanic(t *testing.T) {
 // server.
 func TestFDFailQueueRecoversMetricCallbackPanic(t *testing.T) {
 	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
-			calls.Add(1)
-			panic("boom from a user metric callback")
-		},
+	setTestErrorRecorder(func(context.Context, string, *pool.Conn, string, bool, int) {
+		calls.Add(1)
+		panic("boom from a user metric callback")
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	ctx := context.Background()
 	const n = 3
@@ -3993,7 +3989,7 @@ func TestFDReportReplyMetricsDurationCallbackNoDeadlock(t *testing.T) {
 		// e == nil exercises the duration callback (the blocking-view path). The
 		// batch is deliberately left open, matching the real order where
 		// reportReplyMetrics runs before req.complete().
-		fd.reportReplyMetrics(ctx, req, nil, nil)
+		fd.reportReplyMetrics(ctx, req, nil, nil, 0, false)
 	}()
 
 	select {
@@ -6032,12 +6028,10 @@ func TestFDSubmitBatchNotStarvedBySingles(t *testing.T) {
 // command in the same backlog is still reported.
 func TestFDFailQueueSkipsPipelinedErrorMetric(t *testing.T) {
 	var calls atomic.Int64
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
-			calls.Add(1)
-		},
+	setTestErrorRecorder(func(context.Context, string, *pool.Conn, string, bool, int) {
+		calls.Add(1)
 	})
-	defer pool.SetAllMetricCallbacks(nil)
+	defer otel.SetGlobalRecorder(nil)
 
 	ctx := context.Background()
 	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}, q: newFDQueue(4)}
@@ -6593,9 +6587,11 @@ func TestFullDuplexGroupPanicDoesNotReplayReadReplies(t *testing.T) {
 		}
 	}()
 
-	cl := NewClient(&Options{Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
+	cl := NewClient(&Options{
+		Addr: ln.Addr().String(), Protocol: 2, DisableIdentity: true,
 		PipelinePoolSize: 2, MaxRetries: 1,
-		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond})
+		MinRetryBackoff: time.Millisecond, MaxRetryBackoff: time.Millisecond,
+	})
 	defer cl.Close()
 	ap, err := cl.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
 	if err != nil {
@@ -6908,6 +6904,427 @@ func BenchmarkFDQueueDeepDrain(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		dst = q.takeInto(dst[:0], wave)
 		q.pushBatch(refill)
+	}
+}
+
+// rerouteTo returns an fdReroute that runs the commands on target and counts
+// them.
+func rerouteTo(target *Client, n *atomic.Int64) func(context.Context, []Cmder, int) error {
+	return func(ctx context.Context, cmds []Cmder, maxRetries int) error {
+		n.Add(int64(len(cmds)))
+		return target.processPipelineRetries(ctx, cmds, maxRetries)
+	}
+}
+
+// fdRerouteTestEngine is an engine with only what the flush paths need, and
+// a reroute that records each call's retry bound and serves the commands with
+// serve.
+func fdRerouteTestEngine(budget int, serve func(cmds []Cmder) error) (*fdEngine, *[]int) {
+	var bounds []int
+	fd := &fdEngine{
+		ap:                 &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:             &Client{baseClient: &baseClient{opt: &Options{}}},
+		epoch:              time.Now(),
+		maxBatch:           8,
+		q:                  newFDQueue(8),
+		redirectAware:      true,
+		clusterRetryBudget: budget,
+	}
+	fd.reroute = func(_ context.Context, cmds []Cmder, maxRetries int) error {
+		bounds = append(bounds, maxRetries)
+		return serve(cmds)
+	}
+	return fd, &bounds
+}
+
+func fdServeOK(cmds []Cmder) error {
+	for _, c := range cmds {
+		c.SetErr(nil)
+	}
+	return nil
+}
+
+// A rerouted command keeps its remaining retry budget: the owner gets the
+// budget left after the attempts already made on the FD connection, not a
+// fresh one (codex P1 on #4111). Red before: the bound was dropped, and the
+// cluster owner ran its full MaxRedirects loop.
+func TestFDRerouteKeepsRemainingRetryBudget(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdRerouteTestEngine(3, fdServeOK)
+	// POST-BUMP carry: attempts=2 is one execution done on the FD connection.
+	// attempts=1 is a queued command never sent.
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "a", "1"), batch: newAPBatch(), attempts: 2},
+		{cmd: NewStatusCmd(ctx, "set", "b", "1"), batch: newAPBatch(), attempts: 2},
+		{cmd: NewStatusCmd(ctx, "set", "c", "1"), batch: newAPBatch(), attempts: 1},
+	}
+	fd.rerouteReqs(ctx, reqs, io.EOF)
+	if got, want := fmt.Sprint(*bounds), "[2 3]"; got != want {
+		t.Fatalf("reroute retry bounds = %s, want %s (budget 3 minus executions done)", got, want)
+	}
+}
+
+// The Close-time flush of an engine with an owner goes through the owner, not
+// through the engine's own client (codex P2 on #4111: a child closed by
+// topology GC flushed through its dropped node).
+func TestFDShutdownFlushReroutes(t *testing.T) {
+	ctx := context.Background()
+	fd, bounds := fdRerouteTestEngine(3, fdServeOK)
+	// Nothing listens here: a flush through the engine's own client fails.
+	fd.client = NewClient(&Options{Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond})
+	defer fd.client.Close()
+
+	carry := NewStatusCmd(ctx, "set", "a", "1")
+	queued := NewStatusCmd(ctx, "set", "b", "1")
+	if fd.q.push(fdReq{cmd: queued, batch: newAPBatch(), attempts: 1}) != fdPushOK {
+		t.Fatal("queue push failed")
+	}
+	fd.shutdownFlush(ctx, []fdReq{{cmd: carry, batch: newAPBatch(), attempts: 2}})
+	if got, want := fmt.Sprint(*bounds), "[2 3]"; got != want {
+		t.Fatalf("reroute retry bounds = %s, want %s", got, want)
+	}
+	for _, c := range []*StatusCmd{carry, queued} {
+		if err := c.rawErr(); err != nil {
+			t.Fatalf("%v: err = %v, want it served through the reroute", c.Args(), err)
+		}
+	}
+}
+
+// An owner pipeline that returns an earlier Redis error (redis.Nil) while a
+// later command failed in transport still aborts the rest of the flush
+// (codex P2 on #4111).
+func TestFDRerouteDetectsMaskedTransportError(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	fd, _ := fdRerouteTestEngine(3, func(cmds []Cmder) error {
+		calls++
+		cmds[0].SetErr(Nil)
+		for _, c := range cmds[1:] {
+			c.SetErr(io.EOF)
+		}
+		return Nil // first command error, as ClusterClient.processPipeline returns
+	})
+	fd.maxBatch = 2 // two chunks
+	reqs := make([]fdReq, 4)
+	for i := range reqs {
+		reqs[i] = fdReq{cmd: NewStringCmd(ctx, "get", "k"+itoa(i)), batch: newAPBatch(), attempts: 1}
+	}
+	fd.rerouteReqs(ctx, reqs, io.EOF)
+	if calls != 1 {
+		t.Fatalf("owner ran %d chunks, want 1: the second ran after a transport failure", calls)
+	}
+	for i := 2; i < len(reqs); i++ {
+		if err := reqs[i].cmd.rawErr(); !errors.Is(err, io.EOF) {
+			t.Fatalf("reqs[%d] err = %v, want io.EOF (failed by the abort)", i, err)
+		}
+	}
+}
+
+// Rerouted commands report the per-command duration metric the reader would
+// have reported (codex P2 on #4111).
+func TestFDRerouteRecordsCommandMetrics(t *testing.T) {
+	rec := &fdOtelRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	ctx := context.Background()
+	fd, _ := fdRerouteTestEngine(3, fdServeOK)
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "a", "1"), batch: newAPBatch(), attempts: 2},
+		{cmd: NewStatusCmd(ctx, "set", "b", "1"), batch: newAPBatch(), attempts: 1},
+	}
+	fd.rerouteReqs(ctx, reqs, io.EOF)
+	if n := rec.opDurations.Load(); n != int64(len(reqs)) {
+		t.Fatalf("operation durations recorded = %d, want %d", n, len(reqs))
+	}
+}
+
+// With an owner reroute, a persistent lease failure runs the accepted commands
+// through the owner instead of failing them.
+func TestFDLeaseFailureReroutesBacklog(t *testing.T) {
+	ctx := context.Background()
+	target := NewClient(&Options{Addr: ":6379"})
+	defer target.Close()
+	if err := target.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	c := NewClient(&Options{
+		Addr:             "127.0.0.1:1", // nothing listening: every lease fails
+		Protocol:         3,
+		PipelinePoolSize: 2,
+		PoolSize:         2,
+		MaxRetries:       2,
+		DialTimeout:      150 * time.Millisecond,
+		MinRetryBackoff:  time.Millisecond,
+		MaxRetryBackoff:  5 * time.Millisecond,
+	})
+	defer c.Close()
+	var rerouted atomic.Int64
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		fdReroute:  rerouteTo(target, &rerouted),
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil || ap.fd.reroute == nil {
+		t.Fatal("full-duplex engine with a reroute not active")
+	}
+
+	key := "fd:reroute:lease"
+	done := make(chan error, 1)
+	go func() { done <- ap.Set(ctx, key, "v", 0).Err() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Set = %v, want it served through the reroute", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("command hung on a persistent lease failure")
+	}
+	if rerouted.Load() == 0 {
+		t.Fatal("reroute not used")
+	}
+	if got, err := target.Get(ctx, key).Result(); err != nil || got != "v" {
+		t.Fatalf("GET on the reroute target = %q, %v", got, err)
+	}
+}
+
+// With an owner reroute, the replayable tail after a connection error runs
+// through the owner, in order: no worker sees a failed or misaligned reply.
+func TestFDConnErrReroutesTail(t *testing.T) {
+	ctx := context.Background()
+	target := NewClient(&Options{Addr: ":6379"})
+	defer target.Close()
+	if err := target.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	c := fdTestClient(":6379")
+	defer c.Close()
+	var rerouted atomic.Int64
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		fdReroute:  rerouteTo(target, &rerouted),
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	killer := NewClient(&Options{Addr: ":6379"})
+	defer killer.Close()
+
+	const workers = 16
+	var stop atomic.Bool
+	done := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			key := "fd:reroute:kill:" + itoa(w)
+			for n := 0; !stop.Load(); n++ {
+				val := itoa(w) + ":" + itoa(n)
+				if err := ap.Set(ctx, key, val, 0).Err(); err != nil {
+					done <- fmt.Errorf("worker %d set #%d: %w", w, n, err)
+					return
+				}
+				got, err := ap.Get(ctx, key).Result()
+				if err != nil {
+					done <- fmt.Errorf("worker %d get #%d: %w", w, n, err)
+					return
+				}
+				if got != val {
+					done <- fmt.Errorf("worker %d get #%d: got %q want %q", w, n, got, val)
+					return
+				}
+			}
+			done <- nil
+		}(w)
+	}
+
+	time.Sleep(120 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		_ = killer.Do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes").Err()
+		time.Sleep(90 * time.Millisecond)
+	}
+	time.Sleep(120 * time.Millisecond)
+	stop.Store(true)
+
+	deadline := time.After(15 * time.Second)
+	for w := 0; w < workers; w++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("timeout: a worker hung after a connection kill")
+		}
+	}
+	if rerouted.Load() == 0 {
+		t.Fatal("no command went through the reroute across 5 connection kills")
+	}
+}
+
+// With an owner reroute, the replayable tail after a connection error goes to
+// the owner before the reconnect backoff, not after it: the backoff only paces
+// the re-lease.
+func TestFDConnErrReroutesBeforeBackoff(t *testing.T) {
+	ctx := context.Background()
+	target := NewClient(&Options{Addr: ":6379"})
+	defer target.Close()
+	if err := target.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	const backoff = 2 * time.Second
+	c := NewClient(&Options{
+		Addr:             ":6379",
+		Protocol:         3,
+		PipelinePoolSize: 4,
+		PoolSize:         4,
+		MinRetryBackoff:  backoff,
+		MaxRetryBackoff:  backoff,
+	})
+	defer c.Close()
+	var rerouted atomic.Int64
+	var firstReroute atomic.Int64 // UnixNano of the first reroute call
+	inner := rerouteTo(target, &rerouted)
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex: true,
+		fdReroute: func(ctx context.Context, cmds []Cmder, maxRetries int) error {
+			firstReroute.CompareAndSwap(0, time.Now().UnixNano())
+			return inner(ctx, cmds, maxRetries)
+		},
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	killer := NewClient(&Options{Addr: ":6379"})
+	defer killer.Close()
+
+	const workers = 8
+	var stop atomic.Bool
+	done := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			key := "fd:reroute:backoff:" + itoa(w)
+			for n := 0; !stop.Load(); n++ {
+				if err := ap.Set(ctx, key, itoa(n), 0).Err(); err != nil {
+					done <- fmt.Errorf("worker %d set #%d: %w", w, n, err)
+					return
+				}
+			}
+			done <- nil
+		}(w)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	killAt := time.Now()
+	_ = killer.Do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes").Err()
+	time.Sleep(backoff + 500*time.Millisecond)
+	stop.Store(true)
+
+	deadline := time.After(10 * time.Second)
+	for w := 0; w < workers; w++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("timeout: a worker hung after a connection kill")
+		}
+	}
+	at := firstReroute.Load()
+	if at == 0 {
+		t.Skip("kill landed between sessions: nothing in flight to reroute")
+	}
+	if got := time.Unix(0, at).Sub(killAt); got >= backoff/2 {
+		t.Fatalf("first reroute %v after the connection kill, want < %v (it waited out the %v backoff)", got, backoff/2, backoff)
+	}
+}
+
+// The cluster full-duplex router gives its node children a reroute through
+// the ClusterClient, and Config never hands it back.
+func TestClusterFDRouterChildReroutes(t *testing.T) {
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:1"}})
+	defer cc.Close()
+	r := newClusterFDRouter(nil, cc, &AutoPipelineOptions{FullDuplex: true}, true)
+	if r.childCfg.fdReroute == nil {
+		t.Fatal("cluster FD child config has no reroute")
+	}
+
+	ap := &AutoPipeliner{config: r.childCfg}
+	if ap.Config().fdReroute != nil {
+		t.Fatal("Config() exposes the internal reroute")
+	}
+}
+
+// Cluster full-duplex under connection kills on every master: each node child's
+// replayable tail reroutes through the ClusterClient, in order, so no worker
+// sees a failed or misaligned reply.
+func TestClusterFDConnKillReroutesTail(t *testing.T) {
+	cc := dialClusterFDTest(t)
+	defer cc.Close()
+	ctx := context.Background()
+
+	ap, err := cc.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+	if ap.clusterFD == nil {
+		t.Fatal("cluster full-duplex router not active")
+	}
+
+	const workers = 24
+	var stop atomic.Bool
+	done := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			key := fmt.Sprintf("cfd:reroute:{%d}", w) // spread over all masters
+			for n := 0; !stop.Load(); n++ {
+				val := itoa(w) + ":" + itoa(n)
+				if err := ap.Set(ctx, key, val, 0).Err(); err != nil {
+					done <- fmt.Errorf("worker %d set #%d: %w", w, n, err)
+					return
+				}
+				got, err := ap.Get(ctx, key).Result()
+				if err != nil {
+					done <- fmt.Errorf("worker %d get #%d: %w", w, n, err)
+					return
+				}
+				if got != val {
+					done <- fmt.Errorf("worker %d get #%d: got %q want %q", w, n, got, val)
+					return
+				}
+			}
+			done <- nil
+		}(w)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	for i := 0; i < 4; i++ {
+		_ = cc.ForEachMaster(ctx, func(ctx context.Context, m *Client) error {
+			return m.Do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes").Err()
+		})
+		time.Sleep(100 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	stop.Store(true)
+
+	deadline := time.After(20 * time.Second)
+	for w := 0; w < workers; w++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("timeout: a worker hung after a connection kill")
+		}
 	}
 }
 
@@ -7228,5 +7645,119 @@ func TestPipelineMinIdleConnsWithoutFD(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if n := def.loadPipelinePool().pool.IdleLen(); n != 0 {
 		t.Fatalf("default pipeline IdleLen = %d, want 0", n)
+	}
+}
+
+// TestFDReaderDurationCallbackReadsOwnCommand runs the real reader with a duration
+// callback that reads its own command: the reader registers itself as the batch's
+// executor with the goroutine id it read once at session start, so the read must
+// return the just-set view instead of wedging the reader.
+func TestFDReaderDurationCallbackReadsOwnCommand(t *testing.T) {
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	rec := &fdBlockingDurationRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
+	defer client.Close()
+	for _, async := range []bool{false, true} {
+		var ap *AutoPipeliner
+		var err error
+		if async {
+			ap, err = client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+		} else {
+			ap, err = client.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := rec.called.Load()
+		done := make(chan error, 1)
+		go func() {
+			cmds := make([]*StatusCmd, 200)
+			for i := range cmds {
+				cmds[i] = ap.Set(ctx, "fd-reader-gid", i, 0)
+			}
+			for _, c := range cmds {
+				if err := c.Err(); err != nil {
+					done <- err
+					return
+				}
+			}
+			done <- nil
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("async=%v: %v", async, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("async=%v: commands did not complete: a duration callback reading its own command wedged the reader", async)
+		}
+		if got := rec.called.Load() - before; got < 200 {
+			t.Fatalf("async=%v: duration callback invoked %d times, want at least 200", async, got)
+		}
+		if v, _ := rec.gotErr.Load().(string); v != "" {
+			t.Fatalf("async=%v: callback saw cmd.Err() = %q, want \"\"", async, v)
+		}
+		_ = ap.Close()
+	}
+}
+
+// TestFDReaderLateDurationCallbackReadsOwnCommand: the session starts before the
+// duration callback is registered (metrics enabled later); the reader's executor
+// guard still uses its session goroutine id, so a callback reading its own
+// command does not wedge the reader.
+func TestFDReaderLateDurationCallbackReadsOwnCommand(t *testing.T) {
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	otel.SetGlobalRecorder(nil)
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
+	defer client.Close()
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+	if err := ap.Set(ctx, "fd-reader-gid-late", 0, 0).Err(); err != nil {
+		t.Fatal(err) // the session is up, with no callback registered
+	}
+
+	rec := &fdBlockingDurationRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	done := make(chan error, 1)
+	go func() {
+		cmds := make([]*StatusCmd, 200)
+		for i := range cmds {
+			cmds[i] = ap.Set(ctx, "fd-reader-gid-late", i, 0)
+		}
+		for _, c := range cmds {
+			if err := c.Err(); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("commands did not complete: a late duration callback reading its own command wedged the reader")
+	}
+	if got := rec.called.Load(); got < 200 {
+		t.Fatalf("duration callback invoked %d times, want at least 200", got)
+	}
+	if v, _ := rec.gotErr.Load().(string); v != "" {
+		t.Fatalf("callback saw cmd.Err() = %q, want \"\"", v)
 	}
 }

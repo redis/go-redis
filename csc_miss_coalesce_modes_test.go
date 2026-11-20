@@ -385,7 +385,7 @@ func TestFullDuplexDisabledMidMissRetriesUncached(t *testing.T) {
 	cached.disableCSCServing(ctx, "test: force retry-uncached path")
 
 	cmd := NewStringCmd(ctx, "get", key)
-	if _, err := mc.fetch(ctx, cmd, nsKey, token); err != errCSCRetryUncached {
+	if _, err := mc.fetch(ctx, cmd, nsKey, token, mc.c.metadataView(), nil); err != errCSCRetryUncached {
 		t.Fatalf("fetch after CSC disabled = %v; want errCSCRetryUncached (should not surface ErrClosed)", err)
 	}
 	// The reservation must be released, or later readers block IN_PROGRESS until
@@ -622,5 +622,53 @@ func TestCSCMissStopDrainCapsAfterCloseRaceInRecycle(t *testing.T) {
 
 	if !nc.closed.Load() {
 		t.Fatal("connection was not force-closed after the recycle-then-Close race")
+	}
+}
+
+// CSC tracking modes: OPTIN/OPTOUT policy and integration.
+
+func TestCSCPolicyConcurrentCoalescing(t *testing.T) {
+	s := newCSCPolicyServer(t, nil)
+	opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
+	opt.ClientSideCacheCoalesceMisses = true
+	c := policyClient(t, opt)
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := strconv.Itoa(i % 8)
+			if v, e := c.Get(WithCache(context.Background()), key).Result(); v != "v" || e != nil {
+				t.Errorf("%q %v", v, e)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if s.count("get") != 8 {
+		t.Fatalf("GETs %d", s.count("get"))
+	}
+	s.assertPairs(t)
+}
+
+func TestCSCPolicyCoalescerBudgetFallback(t *testing.T) {
+	s := newCSCPolicyServer(t, nil)
+	opt := cscPolicyOptions(s.addr, TrackingModeOptIn)
+	opt.ClientSideCacheCoalesceMisses = true
+
+	c := policyClient(t, opt)
+	mc := c.cscMissCoalescer.Load()
+	if mc == nil {
+		t.Fatal("no coalescer")
+	}
+	mc.wireBytes.Store(cscMissWireBudgetBytes)
+	if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
+		t.Fatal(err)
+	}
+	mc.wireBytes.Store(0)
+	if err := c.Get(WithCache(context.Background()), "k").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if s.count("get") != 1 || s.prefixes() != 1 {
+		t.Fatal("fallback lost cache intent", s.count("get"), s.prefixes())
 	}
 }

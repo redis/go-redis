@@ -20,6 +20,11 @@ const (
 	// handoff).
 	errConnUnusable pubSubError = "redis: pubsub: connection is not usable"
 
+	// errReAuthRESP2 is the reconnect reason when new credentials arrive
+	// for a RESP2 connection: it cannot run AUTH while subscribed, so the
+	// replacement authenticates when it is dialed.
+	errReAuthRESP2 pubSubError = "redis: pubsub: credentials changed on a RESP2 connection"
+
 	// errPingTimeout is the reconnect reason when the health-check PING
 	// got no reply within PingTimeout: replies on a connection are
 	// ordered, so a missing pong means the server is unresponsive or

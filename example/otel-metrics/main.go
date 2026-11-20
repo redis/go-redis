@@ -13,6 +13,7 @@ import (
 	redisotel "github.com/redis/go-redis/extra/redisotel-native/v9"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/sdk/metric"
 )
@@ -61,7 +62,11 @@ func main() {
 	// STEP_START redis_client_setup
 	// Initialize OTel instrumentation BEFORE creating Redis clients
 	otelInstance := redisotel.GetObservabilityInstance()
-	config := redisotel.NewConfig().WithEnabled(true)
+	// Custom attributes are added to every emitted metric; one with the
+	// same key as a built-in semconv attribute replaces it.
+	config := redisotel.NewConfig().
+		WithEnabled(true).
+		WithCustomAttributes(attribute.String("deployment.environment", "example"))
 	if err := otelInstance.Init(config); err != nil {
 		log.Fatalf("Failed to initialize OTel: %v", err)
 	}
@@ -72,6 +77,22 @@ func main() {
 		Addr: "localhost:6379",
 	})
 	defer rdb.Close()
+
+	// A client with its own recorder: its metrics carry the global
+	// attributes from Init plus this one, which wins on a duplicate key.
+	tenantRecorder, err := otelInstance.NewRecorder(redisotel.NewConfig().
+		WithCustomAttributes(attribute.String("tenant", "acme")))
+	if err != nil {
+		log.Fatalf("Failed to create per-client recorder: %v", err)
+	}
+	tenantClient := redis.NewClient(&redis.Options{
+		Addr:         "localhost:6379",
+		OTelRecorder: tenantRecorder,
+	})
+	defer tenantClient.Close()
+	if err := tenantClient.Ping(ctx).Err(); err != nil {
+		log.Printf("tenant client ping: %v", err)
+	}
 	// STEP_END
 
 	// STEP_START redis_operations

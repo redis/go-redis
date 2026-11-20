@@ -433,8 +433,10 @@ type MSetEXArgs struct {
 // MSetEX sets the given keys to their respective values.
 // This command is an extension of the MSETNX that adds expiration and XX options.
 // Available since Redis 8.4
-// Important: When this method is used with Cluster clients, all keys
-// must be in the same hash slot, otherwise CROSSSLOT error will be returned.
+// With a metadata routing resolver enabled, ClusterClient may split unconditional
+// MSetEX across slots; the resulting operation is not atomic. The default routing
+// policy does not split MSetEX across slots.
+// NX/XX require one slot; cross-slot calls return ErrCrossSlot before changes.
 // For more information, see https://redis.io/commands/msetex
 func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interface{}) *IntCmd {
 	expandedArgs := appendArgs([]interface{}{}, values)
@@ -788,7 +790,7 @@ func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, 
 //
 // Redis 8.4+. See https://redis.io/commands/set/
 //
-// NOTE SetIFNEQ is still experimental
+// NOTE SetIFDEQ is still experimental
 // its signature and behaviour may change
 func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
@@ -825,7 +827,7 @@ func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, ma
 //
 // Redis 8.4+. See https://redis.io/commands/set/
 //
-// NOTE SetIFNEQGet is still experimental
+// NOTE SetIFDEQGet is still experimental
 // its signature and behaviour may change
 func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}

@@ -277,6 +277,7 @@ var _ = Describe("TLS Cluster", Label("NonRedisEnterprise"), func() {
 			Expect(opt.Addrs).To(ContainElements("localhost:16800", "localhost:16801", "localhost:16802"))
 			Expect(opt.TLSConfig).NotTo(BeNil())
 			Expect(opt.TLSConfig.ServerName).To(Equal("localhost"))
+			Expect(opt.TLSConfig.MinVersion).To(Equal(uint16(tls.VersionTLS12)))
 		})
 	})
 })
