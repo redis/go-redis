@@ -256,6 +256,7 @@ type Cmdable interface {
 	Latency(ctx context.Context) *LatencyCmd
 	LatencyReset(ctx context.Context, events ...interface{}) *StatusCmd
 
+	ModuleList(ctx context.Context) *ModuleListCmd
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 
 	ACLCmdable
@@ -900,6 +901,18 @@ func (c cmdable) MemoryUsage(ctx context.Context, key string, samples ...int) *I
 }
 
 //------------------------------------------------------------------------------
+
+// ModuleList returns the modules loaded to the server: the name, the version,
+// the path and the load arguments of each.
+//
+// On ClusterClient the command is sent to one node.
+//
+// See https://redis.io/docs/latest/commands/module-list/
+func (c cmdable) ModuleList(ctx context.Context) *ModuleListCmd {
+	cmd := NewModuleListCmd(ctx, "module", "list")
+	_ = c(ctx, cmd)
+	return cmd
+}
 
 // ModuleLoadexConfig struct is used to specify the arguments for the MODULE LOADEX command of redis.
 // `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]`

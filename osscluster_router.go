@@ -1554,6 +1554,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 				return nil
 			}
 		}
+	case CmdTypeModuleList:
+		if c, ok := cmd.(interface{ SetVal([]ModuleInfo) }); ok {
+			if v, ok := value.([]ModuleInfo); ok {
+				c.SetVal(v)
+				return nil
+			}
+		}
 	case CmdTypeClusterShards:
 		if c, ok := cmd.(interface{ SetVal([]ClusterShard) }); ok {
 			if v, ok := value.([]ClusterShard); ok {
