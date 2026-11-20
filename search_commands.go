@@ -1513,7 +1513,8 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			args = append(args, "PAYLOAD_FIELD", options.PayloadField)
 		}
 		if options.MaxTextFields > 0 {
-			args = append(args, "MAXTEXTFIELDS", options.MaxTextFields)
+			// MAXTEXTFIELDS is a flag: the server rejects a value after it.
+			args = append(args, "MAXTEXTFIELDS")
 		}
 		if options.NoOffsets {
 			args = append(args, "NOOFFSETS")

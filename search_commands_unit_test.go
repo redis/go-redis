@@ -995,3 +995,15 @@ func TestFTHybridWithArgsCombineCount(t *testing.T) {
 		})
 	}
 }
+
+// MAXTEXTFIELDS takes no value: the server answers "Unknown argument" to one.
+func TestFTCreateMaxTextFieldsIsBareFlag(t *testing.T) {
+	var captured Cmder
+	cmd := captureCmdable(&captured).FTCreate(context.Background(), "idx",
+		&FTCreateOptions{MaxTextFields: 1},
+		&FieldSchema{FieldName: "title", FieldType: SearchFieldTypeText})
+	want := []interface{}{"FT.CREATE", "idx", "MAXTEXTFIELDS", "SCHEMA", "title", "TEXT"}
+	if !reflect.DeepEqual(cmd.Args(), want) {
+		t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
+	}
+}
