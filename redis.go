@@ -2630,21 +2630,25 @@ func pipelineConnStateCmd(cmd Cmder) bool {
 	return false
 }
 
+// scriptSubcommand returns the SCRIPT subcommand (LOAD, FLUSH, ...) of cmd,
+// normalised the way the command is sent: a raw command built with Do may
+// carry the subcommand as []byte or *string, and Writer.WriteArg sends
+// those exactly like a string, so the predicates must match them the same
+// way. baseCmd.stringArg already normalises all three representations.
+func scriptSubcommand(cmd Cmder) string {
+	if cmd.Name() != "script" {
+		return ""
+	}
+	return cmd.base().stringArg(1)
+}
+
 // isScriptLoadCmd reports whether cmd is a SCRIPT LOAD: it populates the
 // server's volatile script cache, so an EVALSHA later in the same batch only
 // succeeds on a server instance that ran it. Only the LOAD subcommand counts:
 // SCRIPT EXISTS / FLUSH / KILL do not populate the cache. A raw SCRIPT
 // command built with Do is matched on its arguments the same way.
 func isScriptLoadCmd(cmd Cmder) bool {
-	if cmd.Name() != "script" {
-		return false
-	}
-	args := cmd.Args()
-	if len(args) < 2 {
-		return false
-	}
-	sub, ok := args[1].(string)
-	return ok && strings.EqualFold(sub, "load")
+	return strings.EqualFold(scriptSubcommand(cmd), "load")
 }
 
 // isScriptFlushCmd reports whether cmd is a SCRIPT FLUSH: it empties the
@@ -2655,15 +2659,7 @@ func isScriptLoadCmd(cmd Cmder) bool {
 // batch had already removed. A raw SCRIPT command built with Do is matched
 // on its arguments the same way.
 func isScriptFlushCmd(cmd Cmder) bool {
-	if cmd.Name() != "script" {
-		return false
-	}
-	args := cmd.Args()
-	if len(args) < 2 {
-		return false
-	}
-	sub, ok := args[1].(string)
-	return ok && strings.EqualFold(sub, "flush")
+	return strings.EqualFold(scriptSubcommand(cmd), "flush")
 }
 
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
@@ -2688,11 +2684,20 @@ func isScriptFlushCmd(cmd Cmder) bool {
 // with it, in order: replaying the LOAD without the FLUSH would execute a
 // script the batch had already removed, where the whole-batch retry would
 // have returned NOSCRIPT.
-func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
+func pipelineRetrySuffix(cmds []Cmder, err error, staleErrs map[*baseCmd]bool) []Cmder {
 	if err == nil || isRedisError(err) {
 		return cmds
 	}
 	for i, cmd := range cmds {
+		// A stale error — one the command already carried when this
+		// invocation started, e.g. a Cmder reused from an earlier
+		// operation — is not a record of this invocation's progress and
+		// must not mark the answered/unanswered boundary: the command
+		// was never dispatched here, so the boundary is wherever this
+		// invocation first failed, not where the old error sits.
+		if staleErrs[cmd.base()] {
+			continue
+		}
 		if e := cmd.rawErr(); e != nil && (!isRedisError(e) || shouldRetry(e, true)) {
 			for _, answered := range cmds[:i] {
 				if pipelineConnStateCmd(answered) {
@@ -2740,9 +2745,15 @@ func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
 // not apply when the operation is ending and only per-command errors are
 // being stamped. When no command carries a transport error (e.g. the
 // connection was never acquired), the whole batch is returned so a setup
-// failure stamps every command, as before.
-func pipelineUnansweredSuffix(cmds []Cmder) []Cmder {
+// failure stamps every command, as before. Commands in staleErrs already
+// carried their error when this invocation started, so their error is not
+// this invocation's progress and cannot start the suffix: a fresh command
+// before one must still be stamped, not skipped as though answered.
+func pipelineUnansweredSuffix(cmds []Cmder, staleErrs map[*baseCmd]bool) []Cmder {
 	for i, cmd := range cmds {
+		if staleErrs[cmd.base()] {
+			continue
+		}
 		if e := cmd.rawErr(); e != nil && !isRedisError(e) {
 			return cmds[i:]
 		}
@@ -2788,6 +2799,24 @@ func (c *baseClient) generalProcessPipelineFrom(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
 	start time.Time, priorAttempts int, partialRetry bool,
 ) error {
+	// staleErrs records the commands that already carried an error when
+	// this invocation started: a Cmder reused from an earlier operation
+	// keeps its old error, and that error is not a record of this
+	// invocation's progress. The retry/unanswered suffix scans ignore
+	// it, so a stale io.EOF on a later command cannot pose as the
+	// answered/unanswered boundary and drop fresh commands before it
+	// from the retry or from the exit stamping. Errors gained during
+	// this invocation are not in the set, so in-invocation progress
+	// tracking is unchanged. The errors are deliberately not cleared
+	// instead: a prior round did clear them before an attempt, and it
+	// wiped the tail transport errors that mark the boundary after a
+	// real drop — see TestPipelineRetryDialFailureKeepsAnsweredResults.
+	staleErrs := make(map[*baseCmd]bool, len(cmds))
+	for _, cmd := range cmds {
+		if cmd.rawErr() != nil {
+			staleErrs[cmd.base()] = true
+		}
+	}
 	// Pipeline commands never pass through process, so apply the same CSC state
 	// guard here. initConn's internal client is exempt.
 	for _, cmd := range cmds {
@@ -2883,7 +2912,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 				// returned error and the metric still carry the ctx
 				// error, as TestFDPipelineRetryMetricOnBackoffCancel
 				// pins.
-				setCmdsErr(pipelineUnansweredSuffix(pending), err)
+				setCmdsErr(pipelineUnansweredSuffix(pending, staleErrs), err)
 				if recordDuration {
 					c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
 				}
@@ -2954,7 +2983,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 			// its whole-batch returns exist to force re-execution on
 			// retry, which does not apply on an exit path.
 			if !connAcquired || pipelineErrShouldStamp(lastErr) {
-				setCmdsErr(pipelineUnansweredSuffix(pending), lastErr)
+				setCmdsErr(pipelineUnansweredSuffix(pending, staleErrs), lastErr)
 			}
 			err := finalErr()
 			if recordDuration {
@@ -2971,7 +3000,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// not executed twice. Transaction pipelines stay whole-batch, as do
 		// callers that require every reply to come from one connection.
 		if operationName != "MULTI" && partialRetry {
-			pending = pipelineRetrySuffix(pending, lastErr)
+			pending = pipelineRetrySuffix(pending, lastErr, staleErrs)
 		}
 	}
 
@@ -2989,7 +3018,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// already answered, and stamping all of it would overwrite their
 	// success with the terminal error.
 	if !connAcquired || pipelineErrShouldStamp(lastErr) {
-		setCmdsErr(pipelineUnansweredSuffix(pending), lastErr)
+		setCmdsErr(pipelineUnansweredSuffix(pending, staleErrs), lastErr)
 	}
 
 	err := finalErr()
@@ -3097,7 +3126,7 @@ func (c *baseClient) pipelineProcessCmds(
 	// for a direct/again-buffered push.)
 	if err := c.processPushNotifications(ctx, cn); err != nil {
 		err = fmt.Errorf("%w: pipeline push drain: %w", errConnUnusable, err)
-		setCmdsErr(cmds, err)
+		setCmdsTransportErr(cmds, err)
 		return false, err
 	}
 	markPipelineExecuted(ctx, cmds)
@@ -3119,7 +3148,7 @@ func (c *baseClient) pipelineProcessCmds(
 		if flags != nil {
 			_ = cn.Close()
 		}
-		setCmdsErr(cmds, err)
+		setCmdsTransportErr(cmds, err)
 		return true, err
 	}
 
@@ -3131,7 +3160,7 @@ func (c *baseClient) pipelineProcessCmds(
 			// on its exit branch, not when attempts run out, so without
 			// this a batch that keeps dying here would surface an Exec
 			// error while every command still reports Err() == nil.
-			setCmdsErr(cmds, err)
+			setCmdsTransportErr(cmds, err)
 			return err
 		}
 		// read all replies
@@ -3215,7 +3244,7 @@ func (c *baseClient) txPipelineProcessCmds(
 	// once more before calling this — belt-and-suspenders gate.)
 	if err := c.processPushNotifications(ctx, cn); err != nil {
 		err = fmt.Errorf("%w: txpipeline push drain: %w", errConnUnusable, err)
-		setCmdsErr(cmds, err)
+		setCmdsTransportErr(cmds, err)
 		return false, err
 	}
 	markPipelineExecuted(ctx, cmds)
@@ -3237,7 +3266,7 @@ func (c *baseClient) txPipelineProcessCmds(
 		if flags != nil {
 			_ = cn.Close()
 		}
-		setCmdsErr(cmds, err)
+		setCmdsTransportErr(cmds, err)
 		return true, err
 	}
 
@@ -3245,7 +3274,7 @@ func (c *baseClient) txPipelineProcessCmds(
 		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
 			// Transport error with every transaction reply unread: stamp
 			// the batch like a write failure (see pipelineProcessCmds).
-			setCmdsErr(cmds, err)
+			setCmdsTransportErr(cmds, err)
 			return err
 		}
 

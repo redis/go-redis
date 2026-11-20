@@ -286,6 +286,25 @@ func setCmdsErr(cmds []Cmder, e error) {
 	}
 }
 
+// setCmdsTransportErr stamps e onto commands that do not already hold a
+// server reply: a nil error, or a stale transport error left by an earlier
+// attempt. A per-command Redis reply error is a real answer from the server
+// and is kept; a transport error is replaced, including an errConnUnusable
+// marker even when it wraps a redis.Error — pipelineErrShouldStamp draws
+// that line. Use it on paths where the attempt consumed no replies (a failed write, a failed push drain, unread injected
+// replies): there every transport error on the batch is stale, and keeping
+// the earliest one would report an old io.EOF instead of the current
+// failure — e.g. a retry write that hits the context deadline would no
+// longer satisfy errors.Is(err, context.DeadlineExceeded).
+func setCmdsTransportErr(cmds []Cmder, e error) {
+	for _, cmd := range cmds {
+		// rawErr: this runs on the execution path; never await here.
+		if err := cmd.rawErr(); err == nil || pipelineErrShouldStamp(err) {
+			cmd.SetErr(e)
+		}
+	}
+}
+
 func cmdsFirstErr(cmds []Cmder) error {
 	for _, cmd := range cmds {
 		// rawErr: this runs on the execution path; never await here.

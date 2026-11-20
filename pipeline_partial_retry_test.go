@@ -1783,3 +1783,289 @@ func TestPipelineRetryClearedLoadingCommandIsNotDropped(t *testing.T) {
 		t.Fatalf("server received %d SET commands, want 2 (the SET answered LOADING must be re-executed after the failed dial, not dropped as though it had been answered)", got)
 	}
 }
+
+// TestScriptCmdRawArgs: the SCRIPT LOAD / FLUSH predicates must match the
+// subcommand however the caller spelled it. Writer.WriteArg and
+// baseCmd.stringArg both accept string, *string and []byte, so a raw command
+// built with Do(ctx, "SCRIPT", []byte("FLUSH")) is a real SCRIPT FLUSH on
+// the wire — the predicates must not only recognise the string form.
+// Regression test for the review finding on #4351.
+func TestScriptCmdRawArgs(t *testing.T) {
+	ctx := context.Background()
+	flush := "FLUSH"
+	load := "LOAD"
+	cases := []struct {
+		name            string
+		args            []interface{}
+		isLoad, isFlush bool
+	}{
+		{"string LOAD", []interface{}{"SCRIPT", "LOAD", "return 1"}, true, false},
+		{"string FLUSH", []interface{}{"SCRIPT", "FLUSH"}, false, true},
+		{"bytes LOAD", []interface{}{"SCRIPT", []byte("LOAD"), "return 1"}, true, false},
+		{"bytes FLUSH", []interface{}{"SCRIPT", []byte("FLUSH")}, false, true},
+		{"stringptr LOAD", []interface{}{"SCRIPT", &load, "return 1"}, true, false},
+		{"stringptr FLUSH", []interface{}{"SCRIPT", &flush}, false, true},
+		{"lowercase bytes flush", []interface{}{"SCRIPT", []byte("flush")}, false, true},
+		{"string EXISTS", []interface{}{"SCRIPT", "EXISTS", "abc"}, false, false},
+		{"bytes EXISTS", []interface{}{"SCRIPT", []byte("EXISTS"), "abc"}, false, false},
+		{"not script", []interface{}{"EVALSHA", "abc"}, false, false},
+		{"no subcommand", []interface{}{"SCRIPT"}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewCmd(ctx, tc.args...)
+			if got := isScriptLoadCmd(cmd); got != tc.isLoad {
+				t.Fatalf("isScriptLoadCmd = %v, want %v", got, tc.isLoad)
+			}
+			if got := isScriptFlushCmd(cmd); got != tc.isFlush {
+				t.Fatalf("isScriptFlushCmd = %v, want %v", got, tc.isFlush)
+			}
+		})
+	}
+}
+
+// TestPipelineRetryReissuesScriptFlushRawArgs: the same LOAD / FLUSH /
+// EVALSHA batch as TestPipelineRetryReissuesScriptFlush, but the FLUSH is a
+// raw Do command carrying the subcommand as []byte. The retry must still
+// replay the FLUSH after the LOAD: replaying the LOAD without it executes a
+// script the batch had already removed. Regression test for the review
+// finding on #4351.
+func TestPipelineRetryReissuesScriptFlushRawArgs(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	pipe.ScriptLoad(ctx, src)
+	pipe.Do(ctx, "SCRIPT", []byte("FLUSH"))
+	eval := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("Exec: %v, want NOSCRIPT (the retry must replay the raw []byte FLUSH after the LOAD, so the flushed script stays gone)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT", err)
+	}
+	if got := server.loads.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 2 (the answered LOAD must be reissued on the retry connection)", got)
+	}
+	if got := server.flushes.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT FLUSH commands, want 2 (the answered []byte FLUSH must be reissued after the LOAD)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryStaleReusedCommandIsStampedOnDialFailure: a Cmder reused
+// from an earlier pipeline keeps its old io.EOF, and that stale error must
+// not act as the answered/unanswered boundary when the next pipeline never
+// acquires a connection. A fresh SET queued before the reused command was
+// never dispatched, so it must be stamped with the dial error instead of
+// keeping Err() == nil while Exec reports the failure. Regression test for
+// the review finding on #4351.
+func TestPipelineRetryStaleReusedCommandIsStampedOnDialFailure(t *testing.T) {
+	// First pipeline: stamp io.EOF onto the shared command. A single
+	// attempt (MaxRetries -1 normalises to 0) answers the warmup SET and
+	// drops before the shared SET's reply, so no retry heals it.
+	server := newPartialRetryServer(t)
+	first := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = first.Close() })
+
+	ctx := context.Background()
+	pipe := first.Pipeline()
+	pipe.Set(ctx, "warmup", "v", 0)
+	shared := pipe.Set(ctx, "shared", "v", 0)
+	if _, err := pipe.Exec(ctx); err == nil {
+		t.Fatalf("first Exec: nil, want the drop's transport error")
+	}
+	if err := shared.Err(); !errors.Is(err, io.EOF) {
+		t.Fatalf("shared SET after first Exec: %v, want io.EOF (the drop must leave the transport error on it)", err)
+	}
+
+	// Second pipeline: the same shared command, behind a fresh SET, against
+	// an address nothing listens on — every dial is refused, so no command
+	// is ever dispatched.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	dead := NewClient(&Options{
+		Addr:            addr,
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = dead.Close() })
+
+	pipe2 := dead.Pipeline()
+	fresh := pipe2.Set(ctx, "fresh", "v", 0)
+	_ = pipe2.BatchProcess(ctx, shared)
+	_, err = pipe2.Exec(ctx)
+	if err == nil {
+		t.Fatalf("second Exec: nil, want the dial error (nothing listens on %s)", addr)
+	}
+	if err := fresh.Err(); err == nil {
+		t.Fatal("fresh SET: nil, want the dial error (it was never dispatched, so it must not look successful)")
+	}
+	if err := shared.Err(); err == nil {
+		t.Fatal("shared SET: nil, want an error (stale EOF or the dial error)")
+	}
+}
+
+// staleTransportRetryServer is a scripted RESP server for the stale
+// transport-error pipeline retry test. The first connection reads the whole
+// batch and then closes without replying, so the first attempt leaves
+// io.EOF on every command. Later connections answer HELLO and then stop
+// reading forever, so the retry's write blocks until the caller's context
+// deadline.
+type staleTransportRetryServer struct {
+	ln       net.Listener
+	conns    atomic.Int32
+	sets     atomic.Int32
+	wantSets int32
+	done     chan struct{}
+}
+
+func newStaleTransportRetryServer(t *testing.T, wantSets int) *staleTransportRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &staleTransportRetryServer{ln: ln, wantSets: int32(wantSets), done: make(chan struct{})}
+	t.Cleanup(func() { close(s.done) })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *staleTransportRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	rd := bufio.NewReaderSize(conn, 64*1024)
+	if first {
+		for {
+			name, err := readStaleErrRESPCommand(rd)
+			if err != nil {
+				return
+			}
+			switch name {
+			case "hello":
+				_, _ = conn.Write([]byte("%0\r\n"))
+			case "set":
+				if s.sets.Add(1) >= s.wantSets {
+					// Whole batch read: close without replying, so
+					// the first attempt's read fails with io.EOF.
+					return
+				}
+			default:
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
+		}
+	}
+	// Later connections: answer the setup HELLO, then never read again.
+	for {
+		name, err := readStaleErrRESPCommand(rd)
+		if err != nil {
+			return
+		}
+		if name == "hello" {
+			_, _ = conn.Write([]byte("%0\r\n"))
+			<-s.done
+			return
+		}
+	}
+}
+
+// TestPipelineRetryReportsLatestTransportErrAfterRetryWriteFails: when the
+// first attempt leaves io.EOF on the pending commands and the retry's write
+// then hits the context deadline, Exec must report the latest transport
+// error — errors.Is(err, context.DeadlineExceeded) — not the stale EOF, and
+// the pipeline duration metric must describe the deadline failure, not the
+// earlier EOF. Regression test for the review finding on #4351.
+func TestPipelineRetryReportsLatestTransportErrAfterRetryWriteFails(t *testing.T) {
+	const nsets = 128
+	server := newStaleTransportRetryServer(t, nsets)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		// The retry write must fail with the caller's context deadline, not
+		// the socket WriteTimeout: c.context only forwards the caller's ctx
+		// when ContextTimeoutEnabled is set.
+		ContextTimeoutEnabled: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	value := strings.Repeat("x", 256*1024)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pipe := client.Pipeline()
+	var sets []*StatusCmd
+	for i := 0; i < nsets; i++ {
+		sets = append(sets, pipe.Set(ctx, fmt.Sprintf("k%d", i), value, 0))
+	}
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatalf("Exec: nil, want the retry write's context deadline error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Exec: %v, want context.DeadlineExceeded (the retry write hit the deadline; the stale io.EOF from the first attempt must not mask it)", err)
+	}
+	if errors.Is(err, io.EOF) {
+		t.Fatalf("Exec: %v, want the latest transport error, not the stale io.EOF", err)
+	}
+	if err := sets[0].Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SET[0]: %v, want context.DeadlineExceeded", err)
+	}
+	if got := server.sets.Load(); got != int32(nsets) {
+		t.Fatalf("server received %d SET commands on the first connection, want %d (the whole batch must have been read before the drop)", got, nsets)
+	}
+}
