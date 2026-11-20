@@ -10505,6 +10505,33 @@ var _ = Describe("Commands", func() {
 			Expect(len(result)).NotTo(BeZero())
 		})
 
+		It("returns the latency history of an event", func() {
+			SkipBeforeRedisVersion("2.8", "LATENCY HISTORY requires Redis 2.8.13+")
+			const key = "latency-monitor-threshold"
+
+			err := rawClient.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			old := rawClient.ConfigGet(ctx, key).Val()
+			rawClient.ConfigSet(ctx, key, "1")
+			defer rawClient.ConfigSet(ctx, key, old[key])
+
+			before := time.Now().Add(-3 * time.Second)
+			err = rawClient.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// DEBUG SLEEP is recorded as a "command" event.
+			samples, err := rawClient.LatencyHistory(ctx, "command").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(samples).NotTo(BeEmpty())
+			Expect(samples[0].Time).To(BeTemporally(">=", before))
+			Expect(samples[0].Latency).To(BeNumerically(">=", 10*time.Millisecond))
+
+			samples, err = rawClient.LatencyHistory(ctx, "no-such-event").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(samples).To(BeEmpty())
+		})
+
 		It("reset all latencies", func() {
 			const key = "latency-monitor-threshold"
 
