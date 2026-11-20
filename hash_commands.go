@@ -18,6 +18,7 @@ type HashCmdable interface {
 	HKeys(ctx context.Context, key string) *StringSliceCmd
 	HLen(ctx context.Context, key string) *IntCmd
 	HMGet(ctx context.Context, key string, fields ...string) *SliceCmd
+	HMGetStrings(ctx context.Context, key string, fields ...string) *NullableStringSliceCmd
 	HSet(ctx context.Context, key string, values ...interface{}) *IntCmd
 	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
 	HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd
@@ -124,6 +125,21 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 	return cmd
 }
 
+// HMGetStrings is HMGet with independently owned string values and a validity
+// vector. Missing fields have Valid[i] == false; an empty stored string has
+// Valid[i] == true. Field order and duplicates are preserved.
+// Redis 2.0.0+: https://redis.io/docs/latest/commands/hmget/
+func (c cmdable) HMGetStrings(ctx context.Context, key string, fields ...string) *NullableStringSliceCmd {
+	args := make([]interface{}, 2+len(fields))
+	args[0], args[1] = "hmget", key
+	for i, field := range fields {
+		args[2+i] = field
+	}
+	cmd := NewNullableStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // HSet accepts values in following formats:
 //
 //   - HSet(ctx, "myhash", "key1", "value1", "key2", "value2")
@@ -218,6 +234,7 @@ func (c cmdable) HStrLen(ctx context.Context, key, field string) *IntCmd {
 	_ = c(ctx, cmd)
 	return cmd
 }
+
 func (c cmdable) HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"hscan", key, cursor}
 	if match != "" {
@@ -346,7 +363,6 @@ func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration ti
 //
 // [HExpireAt Documentation]: https://redis.io/commands/hexpireat/
 func (c cmdable) HExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
-
 	args := []interface{}{"HEXPIREAT", key, tm.Unix(), "FIELDS", len(fields)}
 
 	for _, field := range fields {
