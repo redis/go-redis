@@ -248,7 +248,7 @@ func (ap *AutoPipeliner) fdPipelined(ctx context.Context, cmds []Cmder) (fdPipeR
 			}
 		}
 		if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) ||
-			isBlockingCmd(cmd) || isHImportCmd(cmd) {
+			isBlockingCmd(cmd) || isStreamingCmd(cmd) || isHImportCmd(cmd) {
 			return fdPipeResult{}, ErrFDPipelineDiverts
 		}
 		// A NoRetry command makes the whole batch unreplayable: an ordinary

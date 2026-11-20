@@ -219,6 +219,7 @@ type Cmdable interface {
 	ClientKill(ctx context.Context, ipPort string) *StatusCmd
 	ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
 	ClientList(ctx context.Context) *StringCmd
+	ClientListStreaming(ctx context.Context, fn func(*ClientInfo) error) *StreamingCmd
 	ClientInfo(ctx context.Context) *ClientInfoCmd
 	ClientPause(ctx context.Context, dur time.Duration) *BoolCmd
 	ClientUnpause(ctx context.Context) *BoolCmd
@@ -547,6 +548,31 @@ func (c cmdable) ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd
 
 func (c cmdable) ClientList(ctx context.Context) *StringCmd {
 	cmd := NewStringCmd(ctx, "client", "list")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClientListStreaming executes CLIENT LIST and streams each parsed entry to fn,
+// without holding the whole reply in memory. Val is the number of entries fn
+// handled without error. See StreamingCmd for the callback contract. fn must
+// not be nil.
+func (c cmdable) ClientListStreaming(ctx context.Context, fn func(*ClientInfo) error) *StreamingCmd {
+	cmd := newStreamingCmd(
+		ctx,
+		"\n",
+		func(line []byte) error {
+			info, err := parseClientInfo(strings.TrimSpace(string(line)))
+			if err != nil {
+				return err
+			}
+			return fn(info)
+		},
+		"client",
+		"list")
+	if fn == nil {
+		cmd.SetErr(errors.New("redis: ClientListStreaming needs a callback"))
+		return cmd
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }

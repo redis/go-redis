@@ -2039,6 +2039,14 @@ var outsidePipelineCommands = map[string]struct{}{
 	"readonly": {}, "readwrite": {}, "asking": {},
 }
 
+// isStreamingCmd reports whether cmd is a StreamingCmd. Its callback runs on
+// the reply reader while it holds the connection, so a batched one would stall
+// every other command on that connection.
+func isStreamingCmd(cmd Cmder) bool {
+	_, ok := cmd.(*StreamingCmd)
+	return ok
+}
+
 func runsOutsidePipeline(name string) bool {
 	_, ok := outsidePipelineCommands[name]
 	return ok
@@ -2224,7 +2232,7 @@ func (ap *AutoPipeliner) submitToken(ctx context.Context, cmd Cmder, token fdOut
 		cacheDivert := ap.cscAdmitMarked(cmd)
 		diverted = diverted || cacheDivert
 	}
-	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
+	diverted = diverted || cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) || isStreamingCmd(cmd) ||
 		// HIMPORT — managed or raw (see isHImportCmd) — rides connection-session
 		// state (the registered PREPARE) that the full-duplex writer never injects,
 		// so an HIMPORT SET on the FD pipe can fail "no such fieldset". Divert it to

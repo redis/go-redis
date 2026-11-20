@@ -552,6 +552,8 @@ func cursorRoutingKey(cmd Cmder) (string, error) {
 	return key, nil
 }
 
+var errStreamingFanout = errors.New("redis: streaming commands cannot run on several shards")
+
 // executeParallel executes a command on multiple nodes concurrently
 func (c *ClusterClient) executeParallel(
 	ctx context.Context,
@@ -576,6 +578,12 @@ func (c *ClusterClient) executeParallel(
 			return &clusterFanoutExecutionError{err: err}
 		}
 		return nil
+	}
+
+	// Clones share the callback, which would run from several goroutines, and
+	// the per-shard results have no aggregation.
+	if _, ok := cmd.(*StreamingCmd); ok {
+		return errStreamingFanout
 	}
 
 	type nodeResult struct {

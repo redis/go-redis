@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -172,6 +173,7 @@ const (
 	CmdTypeBackupStatus
 	CmdTypeACLUser
 	CmdTypeClusterSlotStats
+	CmdTypeStreaming
 )
 
 type (
@@ -9281,6 +9283,166 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
+}
+
+//------------------------------------------------------------------------------
+
+// maxStreamingSegment caps a single delimited segment. A reply with no
+// delimiter within this many bytes fails with ErrStreamingSegmentTooLong
+// instead of buffering the whole payload.
+const maxStreamingSegment = 1 << 20
+
+// ErrStreamingSegmentTooLong is returned when a StreamingCmd segment grows past
+// the segment limit without reaching a delimiter.
+var ErrStreamingSegmentTooLong = errors.New("redis: streaming segment too long")
+
+// StreamingCallbackError wraps an error returned by a StreamingCmd callback.
+// It tells a callback failure apart from a server or network error. The
+// reply is fully read before it is returned, so the connection stays usable.
+type StreamingCallbackError struct {
+	Err error
+}
+
+func (e *StreamingCallbackError) Error() string {
+	return "redis: streaming callback: " + e.Err.Error()
+}
+
+func (e *StreamingCallbackError) Unwrap() error { return e.Err }
+
+// RedisError marks the error as a reply-level error (see Error): the reply
+// was drained, so pipelines and full-duplex sessions keep their connection.
+func (e *StreamingCallbackError) RedisError() {}
+
+// StreamingCmd reads a bulk-string (RESP2) or verbatim-string (RESP3) reply
+// incrementally and passes it to a callback one delimited segment at a time,
+// so the full reply is never held in memory. Val is the number of segments the
+// callback handled without error.
+//
+// The segment passed to the callback may alias an internal buffer. It is valid
+// only until the callback returns; copy it to keep it.
+//
+// The callback:
+//   - runs while the command holds a pool connection, so calling the same
+//     client from it can block (or deadlock) when the pool is full;
+//   - runs inside the reply's read deadline (ReadTimeout), so a slow callback
+//     can fail the read with an i/o timeout;
+//   - stops further calls after its first error. The rest of the reply is
+//     discarded, and the error is returned wrapped in *StreamingCallbackError.
+//
+// StreamingCmd is not retried and cannot be fanned out across cluster shards.
+type StreamingCmd struct {
+	baseCmd
+
+	delimiter    []byte
+	fn           func(segment []byte) error
+	entriesCount int
+}
+
+var _ Cmder = (*StreamingCmd)(nil)
+
+// newStreamingCmd creates a StreamingCmd that splits the reply on delimiter.
+// delimiter must not be empty and fn must not be nil.
+func newStreamingCmd(
+	ctx context.Context,
+	delimiter string,
+	fn func(segment []byte) error,
+	args ...any) *StreamingCmd {
+	return &StreamingCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeStreaming,
+		},
+		delimiter: []byte(delimiter),
+		fn:        fn,
+	}
+}
+
+func (cmd *StreamingCmd) SetVal(n int) {
+	cmd.entriesCount = n
+}
+
+func (cmd *StreamingCmd) Val() int {
+	cmd.await()
+	return cmd.entriesCount
+}
+
+func (cmd *StreamingCmd) Result() (int, error) {
+	cmd.await()
+	return cmd.entriesCount, cmd.err
+}
+
+func (cmd *StreamingCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.entriesCount)
+}
+
+func (cmd *StreamingCmd) NoRetry() bool {
+	return true
+}
+
+func (cmd *StreamingCmd) Clone() Cmder {
+	return &StreamingCmd{
+		baseCmd:      cmd.cloneBaseCmd(),
+		delimiter:    cmd.delimiter,
+		fn:           cmd.fn,
+		entriesCount: cmd.entriesCount,
+	}
+}
+
+func (cmd *StreamingCmd) readReply(rd *proto.Reader) error {
+	cmd.entriesCount = 0
+	if cmd.fn == nil || len(cmd.delimiter) == 0 {
+		return errors.New("redis: StreamingCmd needs a callback and a delimiter")
+	}
+
+	emit := func(segment []byte) error {
+		if err := cmd.fn(segment); err != nil {
+			return &StreamingCallbackError{Err: err}
+		}
+		cmd.entriesCount++
+		return nil
+	}
+
+	// pending holds the unfinished tail of the last chunk. scanned is how much
+	// of it is already known to hold no delimiter, so each byte is searched once.
+	var pending []byte
+	scanned := 0
+	delim := cmd.delimiter
+	err := rd.ReadChunked(func(chunk []byte) error {
+		data := chunk
+		if len(pending) > 0 {
+			pending = append(pending, chunk...)
+			data = pending
+		} else {
+			scanned = 0
+		}
+		for {
+			i := bytes.Index(data[scanned:], delim)
+			if i < 0 {
+				break
+			}
+			if err := emit(data[:scanned+i]); err != nil {
+				return err
+			}
+			data = data[scanned+i+len(delim):]
+			scanned = 0
+		}
+		if len(data) > maxStreamingSegment {
+			return ErrStreamingSegmentTooLong
+		}
+		// A delimiter may start in the last len(delim)-1 bytes.
+		scanned = max(0, len(data)-len(delim)+1)
+		pending = append(pending[:0], data...)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(pending) > 0 {
+		return emit(pending)
+	}
+	return nil
 }
 
 // -------------------------------------------

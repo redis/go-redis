@@ -200,6 +200,13 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 		return false
 	}
 
+	// A streaming callback failure (even one wrapping a context error) leaves
+	// the connection aligned: the reply was fully read.
+	var cbErr *StreamingCallbackError
+	if errors.As(err, &cbErr) {
+		return false
+	}
+
 	// Check for context errors (works with wrapped errors)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
