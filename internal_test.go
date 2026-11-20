@@ -915,6 +915,42 @@ func TestRingShardsCleanup(t *testing.T) {
 		createCounter.expect(map[string]int{ringShard1Addr: 1, ringShard2Addr: 1})
 		closeCounter.expect(map[string]int{ringShard1Addr: 1, ringShard2Addr: 1})
 	})
+
+	t.Run("reuses and closes shards that share an address", func(t *testing.T) {
+		createCounter := newTestCounter(t)
+		closeCounter := newTestCounter(t)
+
+		addrs := map[string]string{
+			ringShard1Name: ringShard1Addr,
+			ringShard2Name: ringShard1Addr,
+		}
+		ring := NewRing(&RingOptions{
+			Addrs: addrs,
+			NewClient: func(opt *Options) *Client {
+				createCounter.increment(opt.Addr)
+				c := NewClient(opt)
+				c.baseClient.onClose.register(testOnCloseHookID, func() error {
+					closeCounter.increment(opt.Addr)
+					return nil
+				})
+				return c
+			},
+		})
+		createCounter.expect(map[string]int{ringShard1Addr: 2})
+
+		// no change due to the same addresses
+		ring.SetAddrs(addrs)
+		createCounter.expect(map[string]int{ringShard1Addr: 2})
+		closeCounter.expect(map[string]int{})
+
+		ring.SetAddrs(map[string]string{
+			ringShard1Name: ringShard1Addr,
+		})
+		closeCounter.expect(map[string]int{ringShard1Addr: 1})
+
+		ring.Close()
+		closeCounter.expect(map[string]int{ringShard1Addr: 2})
+	})
 }
 
 //------------------------------------------------------------------------------
