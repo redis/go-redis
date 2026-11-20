@@ -135,8 +135,11 @@ type Options struct {
 	// DB is the database to be selected after connecting to the server.
 	DB int
 
-	// MaxRetries is the maximum number of retries before giving up.
+	// MaxRetries is the maximum number of command retries before giving up.
 	// -1 (not 0) disables retries. Any other negative value is treated as -1.
+	//
+	// With the default dialer, command retries do not restart an exhausted dial
+	// sequence to the same address.
 	//
 	// default: 3 retries
 	MaxRetries int
@@ -152,12 +155,15 @@ type Options struct {
 	// default: 1 second;
 	MaxRetryBackoff time.Duration
 
-	// DialTimeout for establishing new connections.
+	// DialTimeout is the timeout for one attempt to establish a connection.
+	// With the default dialer, a failed dial sequence can take up to
+	// DialTimeout * DialerRetries plus the backoff between attempts. An earlier
+	// deadline on the command context also limits the sequence.
 	//
 	// default: 5 seconds
 	DialTimeout time.Duration
 
-	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	// DialerRetries is the maximum number of dial attempts, including the first.
 	// A value <= 0 uses the default.
 	//
 	// default: 5
