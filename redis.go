@@ -2630,25 +2630,48 @@ func pipelineConnStateCmd(cmd Cmder) bool {
 	return false
 }
 
+// isScriptLoadCmd reports whether cmd is a SCRIPT LOAD: it populates the
+// server's volatile script cache, so an EVALSHA later in the same batch only
+// succeeds on a server instance that ran it. Only the LOAD subcommand counts:
+// SCRIPT EXISTS / FLUSH / KILL do not populate the cache. A raw SCRIPT
+// command built with Do is matched on its arguments the same way.
+func isScriptLoadCmd(cmd Cmder) bool {
+	if cmd.Name() != "script" {
+		return false
+	}
+	args := cmd.Args()
+	if len(args) < 2 {
+		return false
+	}
+	sub, ok := args[1].(string)
+	return ok && strings.EqualFold(sub, "load")
+}
+
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
-// still need a result: the suffix starting at the first command whose error
-// is a transport failure rather than a server reply. Commands before it were
-// answered — with a value or with a Redis error reply — and must not be
-// executed again: a replied INCR has already applied. A Redis error as the
-// batch error (e.g. LOADING) means the server rejected the batch without
-// executing it, so the whole batch is returned unchanged and keeps its
-// established retry behaviour. If an answered command established
-// connection-local state (see pipelineConnStateCmd), the whole batch is
-// returned instead: the retry must re-establish that state on the new
-// connection before running the rest, which a suffix retry cannot do. Those
-// batches keep the pre-existing whole-batch retry behaviour, including its
-// replay risk for non-idempotent commands in the same batch.
+// still need a result: the suffix starting at the first command that was not
+// definitively answered — either a transport failure, or a retryable Redis
+// reply (LOADING, READONLY, ...) which means the server rejected the command
+// without executing it. Commands before it were answered — with a value or
+// with a definitive Redis error reply — and must not be executed again: a
+// replied INCR has already applied. A Redis error as the batch error (e.g.
+// LOADING) means the server rejected the batch without executing it, so the
+// whole batch is returned unchanged and keeps its established retry behaviour.
+// If an answered command established connection-local state (see
+// pipelineConnStateCmd), the whole batch is returned instead: the retry must
+// re-establish that state on the new connection before running the rest,
+// which a suffix retry cannot do. Those batches keep the pre-existing
+// whole-batch retry behaviour, including its replay risk for non-idempotent
+// commands in the same batch. An answered SCRIPT LOAD is reissued ahead of
+// the suffix instead: it populates the server's volatile script cache, which
+// a restarted server does not have, so an EVALSHA in the suffix would fail
+// NOSCRIPT without it. SCRIPT LOAD is idempotent, so reissuing it replays
+// nothing else.
 func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
 	if err == nil || isRedisError(err) {
 		return cmds
 	}
 	for i, cmd := range cmds {
-		if e := cmd.rawErr(); e != nil && !isRedisError(e) {
+		if e := cmd.rawErr(); e != nil && (!isRedisError(e) || shouldRetry(e, true)) {
 			for _, answered := range cmds[:i] {
 				if pipelineConnStateCmd(answered) {
 					return cmds
@@ -2666,7 +2689,17 @@ func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
 					return cmds
 				}
 			}
-			return cmds[i:]
+			// Reissue answered SCRIPT LOADs ahead of the suffix: a
+			// restarted server's script cache is empty, so the suffix's
+			// EVALSHA needs its prerequisite re-run on the new
+			// connection. Other answered commands are still not replayed.
+			var retry []Cmder
+			for _, answered := range cmds[:i] {
+				if isScriptLoadCmd(answered) {
+					retry = append(retry, answered)
+				}
+			}
+			return append(retry, cmds[i:]...)
 		}
 	}
 	return cmds

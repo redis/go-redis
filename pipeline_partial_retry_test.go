@@ -3,6 +3,9 @@ package redis
 import (
 	"bufio"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -953,5 +956,207 @@ func TestPipelineRetryRecordsFirstErrInMetrics(t *testing.T) {
 	e, _ := rec.lastErr.Load().(error)
 	if e == nil || !strings.Contains(e.Error(), "WRONGTYPE") {
 		t.Fatalf("metric error %v, want WRONGTYPE (a retained prefix error must not record as success)", e)
+	}
+}
+
+// loadingRetryServer is a scripted RESP server for retryable-reply pipeline
+// retry tests. The first connection answers SET with a LOADING error and then
+// drops before INCR's reply; later connections answer everything.
+type loadingRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	sets  atomic.Int32
+}
+
+func newLoadingRetryServer(t *testing.T) *loadingRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &loadingRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *loadingRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "set":
+			s.sets.Add(1)
+			if first {
+				_, _ = conn.Write([]byte("-LOADING Redis is loading the dataset in memory\r\n"))
+			} else {
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
+		case "incr":
+			if first {
+				// Drop before replying: the INCR must be retried
+				// together with the SET the LOADING reply never executed.
+				return
+			}
+			_, _ = conn.Write([]byte(":1\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryReexecutesLoadingCommand: when one command of a pipeline is
+// answered with a retryable LOADING error and a later command then fails at
+// the transport layer, the retry must re-execute the LOADING command — it
+// never applied — not drop it as though the LOADING reply had been a
+// definitive answer and keep reporting the stale error after the server has
+// recovered. Regression test for the review finding on #4351.
+func TestPipelineRetryReexecutesLoadingCommand(t *testing.T) {
+	server := newLoadingRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	incr := pipe.Incr(ctx, "counter")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the LOADING reply never executed the SET, so the retry must re-execute it)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the SET answered LOADING must be re-executed once the server has recovered)", got)
+	}
+}
+
+// scriptRetryServer is a scripted RESP server for SCRIPT LOAD pipeline retry
+// tests. Each connection holds its own (initially empty) script cache, like a
+// fresh server instance after a restart: SCRIPT LOAD records the digest,
+// EVALSHA answers only when the digest was loaded on that same connection.
+// The first connection answers the LOAD and then drops before EVALSHA's reply;
+// later connections answer everything.
+type scriptRetryServer struct {
+	ln        net.Listener
+	conns     atomic.Int32
+	loads     atomic.Int32
+	evalshas  atomic.Int32
+	noscripts atomic.Int32
+}
+
+func newScriptRetryServer(t *testing.T) *scriptRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &scriptRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	loaded := map[string]bool{}
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "script":
+			if len(args) >= 2 && strings.EqualFold(args[0], "load") {
+				s.loads.Add(1)
+				sum := sha1.Sum([]byte(args[1]))
+				digest := hex.EncodeToString(sum[:])
+				loaded[digest] = true
+				_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(digest), digest)
+			} else {
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
+		case "evalsha":
+			s.evalshas.Add(1)
+			if first {
+				// Drop before replying: the EVALSHA must be retried
+				// together with the SCRIPT LOAD that populates the
+				// restarted server's script cache.
+				return
+			}
+			if len(args) >= 1 && loaded[args[0]] {
+				_, _ = conn.Write([]byte(":1\r\n"))
+			} else {
+				s.noscripts.Add(1)
+				_, _ = conn.Write([]byte("-NOSCRIPT No matching script. Please use EVAL.\r\n"))
+			}
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryReissuesScriptLoad: a pipeline SCRIPT LOAD followed by
+// EVALSHA must not be trimmed to the EVALSHA on retry. The LOAD populates
+// the server's volatile script cache, which a restarted server does not
+// have, so the retried EVALSHA would fail NOSCRIPT without it. Regression
+// test for the review finding on #4351.
+func TestPipelineRetryReissuesScriptLoad(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	load := pipe.ScriptLoad(ctx, src)
+	eval := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must reissue the SCRIPT LOAD before the EVALSHA)", err)
+	}
+	if got := load.Val(); got != sha {
+		t.Fatalf("SCRIPT LOAD = %q, want %q", got, sha)
+	}
+	if got, err := eval.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.loads.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 2 (the answered LOAD must be reissued on the retry connection)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
 	}
 }
