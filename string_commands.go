@@ -106,9 +106,8 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 				args = append(args, a.MatchValue)
 			}
 		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
-			if a.MatchDigest != 0 {
-				args = append(args, fmt.Sprintf("%016x", a.MatchDigest))
-			}
+			// Zero is a valid digest, so it is always sent.
+			args = append(args, fmt.Sprintf("%016x", a.MatchDigest))
 		}
 	}
 
@@ -565,9 +564,8 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 				args = append(args, a.MatchValue)
 			}
 		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
-			if a.MatchDigest != 0 {
-				args = append(args, fmt.Sprintf("%016x", a.MatchDigest))
-			}
+			// Zero is a valid digest, so it is always sent.
+			args = append(args, fmt.Sprintf("%016x", a.MatchDigest))
 		}
 	}
 
