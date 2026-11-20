@@ -148,7 +148,7 @@ func shouldRetry(err error, retryTimeout bool) bool {
 
 	// Fallback to string checking for backward compatibility with plain errors
 	s := err.Error()
-	if strings.HasPrefix(s, "ERR max number of clients reached") {
+	if strings.HasPrefix(s, "ERR max number of clients") {
 		return true
 	}
 	if strings.HasPrefix(s, "LOADING ") {
@@ -192,6 +192,11 @@ func isRedisError(err error) bool {
 
 func isBadConn(err error, allowTimeout bool, addr string) bool {
 	if err == nil {
+		return false
+	}
+	// Pub/Sub permits receive timeouts even when the socket deadline came from ctx.
+	var deadlineErr *pool.ContextDeadlineError
+	if allowTimeout && errors.As(err, &deadlineErr) {
 		return false
 	}
 

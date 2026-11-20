@@ -9942,6 +9942,15 @@ var _ = Describe("Commands", func() {
 				},
 			}))
 
+			loc, err = client.GeoSearchLocation(ctx, "key1", &redis.GeoSearchLocationQuery{
+				GeoSearchQuery: q.GeoSearchQuery,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loc).To(Equal([]redis.GeoLocation{
+				{Name: "Catania"},
+				{Name: "Palermo"},
+			}))
+
 			v, err := client.ZRangeWithScores(ctx, "key2", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 

@@ -388,8 +388,8 @@ func TestFTHybridWithArgsGeneratedNameAvoidsExplicitCollision(t *testing.T) {
 }
 
 // TestFTHybridWithArgs_ShardKRatio verifies the SHARD_K_RATIO option
-// (Redis 8.8+) is emitted on the VSIM clause after the KNN method block and
-// before FILTER when a positive ratio is set, and omitted entirely when the
+// (Redis 8.8+) is emitted as a counted KNN argument, before FILTER, when a
+// positive ratio is set, and omitted entirely when the
 // ratio is left at its zero value (server default of 1.0 applies).
 func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 	indexOf := func(args []interface{}, want string) int {
@@ -437,6 +437,11 @@ func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 		}
 		if got := gotCmd.args[idxShard+1]; got != ratio {
 			t.Fatalf("SHARD_K_RATIO value: got %v (%T), want %v", got, got, ratio)
+		}
+		// The server parses SHARD_K_RATIO as one of the counted KNN arguments:
+		// KNN 6 K 10 EF_RUNTIME 50 SHARD_K_RATIO 0.6
+		if got := gotCmd.args[idxKNN+1]; got != 6 {
+			t.Fatalf("KNN argument count: got %v, want 6 (args=%v)", got, gotCmd.args)
 		}
 	})
 
@@ -866,7 +871,7 @@ func TestFTSearchQueryLimit(t *testing.T) {
 		{
 			name:    "offset_without_limit",
 			options: &FTSearchOptions{LimitOffset: 5},
-			want:    []interface{}{"*", "LIMIT", 5, 0, "DIALECT", 2},
+			want:    []interface{}{"*", "LIMIT", 5, 10, "DIALECT", 2},
 		},
 		{
 			name:    "no_limit",
@@ -893,6 +898,60 @@ func TestFTSearchQueryLimit(t *testing.T) {
 	}
 }
 
+// The server rejects "PARAMS 0" ("Parameters must be specified in PARAM VALUE
+// pairs"), so an empty Params map must not emit the clause.
+func TestFTSearchAndAggregateEmptyParams(t *testing.T) {
+	empty := map[string]interface{}{}
+	want := []interface{}{"*", "DIALECT", 2}
+
+	search, err := FTSearchQuery("*", &FTSearchOptions{Params: empty})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual([]interface{}(search), want) {
+		t.Errorf("FTSearchQuery args mismatch\n got: %#v\nwant: %#v", search, want)
+	}
+	searchCmd := captureCmdable(new(Cmder)).FTSearchWithArgs(context.Background(), "idx", "*", &FTSearchOptions{Params: empty})
+	if want := append([]interface{}{"FT.SEARCH", "idx"}, want...); !reflect.DeepEqual(searchCmd.Args(), want) {
+		t.Errorf("FTSearchWithArgs args mismatch\n got: %#v\nwant: %#v", searchCmd.Args(), want)
+	}
+
+	aggregate, err := FTAggregateQuery("*", &FTAggregateOptions{Params: empty})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual([]interface{}(aggregate), want) {
+		t.Errorf("FTAggregateQuery args mismatch\n got: %#v\nwant: %#v", aggregate, want)
+	}
+	aggregateCmd := captureCmdable(new(Cmder)).FTAggregateWithArgs(context.Background(), "idx", "*", &FTAggregateOptions{Params: empty})
+	if want := append([]interface{}{"FT.AGGREGATE", "idx"}, want...); !reflect.DeepEqual(aggregateCmd.Args(), want) {
+		t.Errorf("FTAggregateWithArgs args mismatch\n got: %#v\nwant: %#v", aggregateCmd.Args(), want)
+	}
+}
+
+func TestFTHybridWithArgsOffsetWithoutLimitUsesDefaultPageSize(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	cmd := c.FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+		SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+		LimitOffset:       5,
+	})
+	if cmd.Err() != nil {
+		t.Fatalf("unexpected error: %v", cmd.Err())
+	}
+	if m.lastCmd == nil {
+		t.Fatalf("expected command to be executed")
+	}
+	gotCmd, ok := m.lastCmd.(*FTHybridCmd)
+	if !ok {
+		t.Fatalf("expected FTHybridCmd, got %T", m.lastCmd)
+	}
+	want := []interface{}{"FT.HYBRID", "idx", "SEARCH", "*", "LIMIT", 5, 10}
+	if !reflect.DeepEqual(gotCmd.args, want) {
+		t.Errorf("args mismatch\n got: %#v\nwant: %#v", gotCmd.args, want)
+	}
+}
+
 func TestFTHybridWithArgsCombineCount(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -914,6 +973,17 @@ func TestFTHybridWithArgsCombineCount(t *testing.T) {
 			combine: &FTHybridCombineOptions{Method: FTHybridCombineRRF, Window: 3},
 			want:    []interface{}{"COMBINE", "RRF", 2, "WINDOW", 3},
 		},
+		{
+			// The server rejects ALPHA without BETA ("Missing value for BETA").
+			name:    "linear_with_zero_beta",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear, Alpha: 1},
+			want:    []interface{}{"COMBINE", "LINEAR", 4, "ALPHA", 1.0, "BETA", 0.0},
+		},
+		{
+			name:    "linear_with_window",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear, Alpha: 0.5, Beta: 0.5, Window: 3},
+			want:    []interface{}{"COMBINE", "LINEAR", 6, "ALPHA", 0.5, "BETA", 0.5, "WINDOW", 3},
+		},
 	}
 
 	for _, tt := range tests {
@@ -928,5 +998,17 @@ func TestFTHybridWithArgsCombineCount(t *testing.T) {
 				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
 			}
 		})
+	}
+}
+
+// MAXTEXTFIELDS takes no value: the server answers "Unknown argument" to one.
+func TestFTCreateMaxTextFieldsIsBareFlag(t *testing.T) {
+	var captured Cmder
+	cmd := captureCmdable(&captured).FTCreate(context.Background(), "idx",
+		&FTCreateOptions{MaxTextFields: 1},
+		&FieldSchema{FieldName: "title", FieldType: SearchFieldTypeText})
+	want := []interface{}{"FT.CREATE", "idx", "MAXTEXTFIELDS", "SCHEMA", "title", "TEXT"}
+	if !reflect.DeepEqual(cmd.Args(), want) {
+		t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), want)
 	}
 }

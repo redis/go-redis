@@ -2,12 +2,14 @@ package proto
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"math/big"
 	"strconv"
+	"sync"
 
 	"github.com/redis/go-redis/v9/internal/util"
 )
@@ -78,7 +80,14 @@ const maxNestingDepth = 1000
 var errMaxNestingDepth = errors.New("redis: maximum nesting depth exceeded")
 
 type Reader struct {
-	rd       *bufio.Reader
+	rd  *bufio.Reader
+	src io.Reader
+
+	// Conn.WithReader may be entered concurrently for its usedAt bookkeeping
+	// (internal/pool/conn_used_at_test.go), and bufio.Reader is not safe for
+	// concurrent use. DiscardCachedReadError resets it, so serialise that reset.
+	resetMu sync.Mutex
+
 	depth    int
 	fatalErr error
 }
@@ -99,14 +108,47 @@ func (r *Reader) enterAggregate() error {
 
 func NewReader(rd io.Reader) *Reader {
 	return &Reader{
-		rd: bufio.NewReaderSize(rd, DefaultBufferSize),
+		rd:  bufio.NewReaderSize(rd, DefaultBufferSize),
+		src: rd,
 	}
 }
 
 func NewReaderSize(rd io.Reader, size int) *Reader {
 	return &Reader{
-		rd: bufio.NewReaderSize(rd, size),
+		rd:  bufio.NewReaderSize(rd, size),
+		src: rd,
 	}
+}
+
+// DiscardCachedReadError drops a read error that bufio cached from a previous
+// operation, leaving the parser state alone. A transport can return a complete
+// reply and a timeout together: the reply parses, but the wrapped timeout stays
+// cached and would be reported for the next command on the connection.
+//
+// Bytes already buffered are kept: the cached error can sit behind frames the
+// previous command left in the buffer (a push, or the start of the next reply).
+// bufio has no API to clear its cached error without a Reset, so the buffered
+// bytes are copied out and replayed ahead of the underlying reader. The connection
+// only calls this after a read returned bytes together with an error, and once per
+// such read: on the common path the buffer is left untouched.
+func (r *Reader) DiscardCachedReadError() {
+	r.resetMu.Lock()
+	defer r.resetMu.Unlock()
+	if r.src == nil {
+		return
+	}
+	n := r.rd.Buffered()
+	if n == 0 {
+		r.rd.Reset(r.src)
+		return
+	}
+	buffered := make([]byte, n)
+	if _, err := io.ReadFull(r.rd, buffered); err != nil {
+		// Reading bytes bufio already holds never touches the transport, so this is
+		// unreachable; leave the reader untouched rather than lose the bytes.
+		return
+	}
+	r.rd.Reset(io.MultiReader(bytes.NewReader(buffered), r.src))
 }
 
 func (r *Reader) Buffered() int {
@@ -127,6 +169,7 @@ func (r *Reader) Peek(n int) ([]byte, error) {
 
 func (r *Reader) Reset(rd io.Reader) {
 	r.rd.Reset(rd)
+	r.src = rd
 	r.depth = 0
 	r.fatalErr = nil
 }
@@ -172,6 +215,16 @@ const MinRESP3ReadBufferSize = 128
 // ErrPushNotificationNameTooLong is returned when the push header does not fit
 // in the bounded peek window. Callers should consume the frame with ReadReply.
 var ErrPushNotificationNameTooLong = errors.New("redis: push notification name exceeds peek window")
+
+// ErrPushNotificationNameNotString is returned when the next push frame has a
+// well-formed header but its first element is a RESP type other than a string,
+// so there is no name to peek. Like ErrPushNotificationNameTooLong the header
+// gives ReadReply a frame to consume, so callers should consume it with
+// ReadReply. Only the type byte of the first element is checked: a body that
+// does not parse still stops ReadReply partway, as it does for a push with a
+// valid name. Any other error means there is nothing to consume: either the
+// frame has not fully arrived (I/O error) or its header does not parse.
+var ErrPushNotificationNameNotString = errors.New("redis: push notification name is not a string")
 
 // PeekPushNotificationName returns the notification name of the next RESP3
 // push frame without consuming it. The caller is expected to have already
@@ -276,7 +329,14 @@ func parsePushNotificationName(buf []byte) (string, bool, error) {
 		return "", false, nil
 	}
 	typeOfName := buf[pos]
-	if typeOfName != RespString && typeOfName != RespStatus {
+	switch typeOfName {
+	case RespString, RespStatus:
+	case RespError, RespInt, RespNil, RespFloat, RespBool, RespBlobError, RespVerbatim,
+		RespBigInt, RespArray, RespMap, RespSet, RespAttr, RespPush:
+		// A RESP type other than a string: the header parsed, the frame just
+		// has no name. Only the type byte is checked, not the value behind it.
+		return "", false, fmt.Errorf("%w: %.64q", ErrPushNotificationNameNotString, buf[pos:])
+	default:
 		return "", false, fmt.Errorf("redis: can't parse push notification name: %q", buf[pos:])
 	}
 	pos++
@@ -969,7 +1029,7 @@ func (r *Reader) Discard(line []byte) (err error) {
 		return err
 	case RespArray, RespSet, RespPush:
 		for i := 0; i < n; i++ {
-			if err = r.DiscardNext(); err != nil {
+			if err = r.discardElement(); err != nil {
 				return err
 			}
 		}
@@ -980,10 +1040,10 @@ func (r *Reader) Discard(line []byte) (err error) {
 		// would skip the body entirely and return nil, leaving the map bytes in
 		// the stream for the next reply to consume (a silent desync).
 		for i := 0; i < n; i++ {
-			if err = r.DiscardNext(); err != nil {
+			if err = r.discardElement(); err != nil {
 				return err
 			}
-			if err = r.DiscardNext(); err != nil {
+			if err = r.discardElement(); err != nil {
 				return err
 			}
 		}
@@ -991,6 +1051,27 @@ func (r *Reader) Discard(line []byte) (err error) {
 	}
 
 	return fmt.Errorf("redis: can't parse %.100q", line)
+}
+
+// discardElement discards one element of an aggregate. An attribute in front
+// of an element decorates it and is not an element of its own, so it is
+// discarded together with the element that follows, as ReadReply,
+// ReadRawReply and bufferedValueLen treat it.
+func (r *Reader) discardElement() error {
+	for {
+		line, err := r.readLine()
+		if err != nil {
+			return err
+		}
+		// line points into the read buffer, which Discard may refill.
+		isAttr := line[0] == RespAttr
+		if err = r.Discard(line); err != nil {
+			return err
+		}
+		if !isAttr {
+			return nil
+		}
+	}
 }
 
 func replyLen(line []byte) (n int, err error) {

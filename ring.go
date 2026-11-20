@@ -127,14 +127,15 @@ type RingOptions struct {
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
-	PoolSize              int
-	PoolTimeout           time.Duration
-	MinIdleConns          int
-	MaxIdleConns          int
-	MaxActiveConns        int
-	ConnMaxIdleTime       time.Duration
-	ConnMaxLifetime       time.Duration
-	ConnMaxLifetimeJitter time.Duration
+	PoolSize                    int
+	PoolTimeout                 time.Duration
+	MinIdleConns                int
+	MaxIdleConns                int
+	MaxActiveConns              int
+	ConnMaxIdleTime             time.Duration
+	ConnMaxLifetime             time.Duration
+	ConnMaxLifetimeJitter       time.Duration
+	ConnMaxLifetimeReapInterval time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
@@ -206,10 +207,11 @@ func (opt *RingOptions) init() {
 		opt.NewConsistentHash = newRendezvous
 	}
 
-	switch opt.MaxRetries {
-	case -1:
+	// < 0, not == -1: the retry loop runs while attempt <= MaxRetries, so a
+	// value below -1 would skip the first attempt and report success.
+	if opt.MaxRetries < 0 {
 		opt.MaxRetries = 0
-	case 0:
+	} else if opt.MaxRetries == 0 {
 		opt.MaxRetries = 3
 	}
 	switch opt.MinRetryBackoff {
@@ -259,17 +261,18 @@ func (opt *RingOptions) clientOptions() *Options {
 		WriteTimeout:          opt.WriteTimeout,
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:              opt.PoolFIFO,
-		PoolSize:              opt.PoolSize,
-		PoolTimeout:           opt.PoolTimeout,
-		MinIdleConns:          opt.MinIdleConns,
-		MaxIdleConns:          opt.MaxIdleConns,
-		MaxActiveConns:        opt.MaxActiveConns,
-		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
-		ConnMaxLifetime:       opt.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
-		ReadBufferSize:        opt.ReadBufferSize,
-		WriteBufferSize:       opt.WriteBufferSize,
+		PoolFIFO:                    opt.PoolFIFO,
+		PoolSize:                    opt.PoolSize,
+		PoolTimeout:                 opt.PoolTimeout,
+		MinIdleConns:                opt.MinIdleConns,
+		MaxIdleConns:                opt.MaxIdleConns,
+		MaxActiveConns:              opt.MaxActiveConns,
+		ConnMaxIdleTime:             opt.ConnMaxIdleTime,
+		ConnMaxLifetime:             opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       opt.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: opt.ConnMaxLifetimeReapInterval,
+		ReadBufferSize:              opt.ReadBufferSize,
+		WriteBufferSize:             opt.WriteBufferSize,
 
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
@@ -390,10 +393,10 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 	c.setAddrsMu.Lock()
 	defer c.setAddrsMu.Unlock()
 
-	cleanup := func(shards map[string]*ringShard) {
-		for addr, shard := range shards {
+	cleanup := func(shards []*ringShard) {
+		for _, shard := range shards {
 			if err := shard.Client.Close(); err != nil {
-				internal.Logger.Printf(context.Background(), "shard.Close %s failed: %s", addr, err)
+				internal.Logger.Printf(context.Background(), "shard.Close %s failed: %s", shard.addr, err)
 			}
 		}
 	}
@@ -424,25 +427,26 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 
 func (c *ringSharding) newRingShards(
 	addrs map[string]string, existing *ringShards, onNewNode []func(rdb *Client),
-) (shards *ringShards, created, unused map[string]*ringShard) {
+) (shards *ringShards, created, unused []*ringShard) {
 	shards = &ringShards{m: make(map[string]*ringShard, len(addrs))}
-	created = make(map[string]*ringShard) // indexed by addr
-	unused = make(map[string]*ringShard)  // indexed by addr
 
+	// Several shard names may share one address, so keep every existing
+	// shard per address instead of only the last one.
+	reusable := make(map[string][]*ringShard) // indexed by addr
 	if existing != nil {
 		for _, shard := range existing.list {
-			unused[shard.addr] = shard
+			reusable[shard.addr] = append(reusable[shard.addr], shard)
 		}
 	}
 
 	for name, addr := range addrs {
-		if shard, ok := unused[addr]; ok {
-			shards.m[name] = shard
-			delete(unused, addr)
+		if list := reusable[addr]; len(list) > 0 {
+			shards.m[name] = list[len(list)-1]
+			reusable[addr] = list[:len(list)-1]
 		} else {
 			shard := newRingShard(c.opt, addr)
 			shards.m[name] = shard
-			created[addr] = shard
+			created = append(created, shard)
 
 			for _, fn := range onNewNode {
 				fn(shard.Client)
@@ -452,6 +456,9 @@ func (c *ringSharding) newRingShards(
 
 	for _, shard := range shards.m {
 		shards.list = append(shards.list, shard)
+	}
+	for _, list := range reusable {
+		unused = append(unused, list...)
 	}
 
 	return
@@ -893,6 +900,7 @@ func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
 
 func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
+	var exhaustedAddrs map[string]error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -905,9 +913,23 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 			return err
 		}
 
-		lastErr = shard.Client.Process(ctx, cmd)
+		if exhaustedErr, ok := exhaustedAddrs[shard.addr]; ok {
+			// A rebalance may select another shard on the next attempt.
+			// Do not re-dial this exhausted endpoint, but keep the retry
+			// budget available for a healthy shard.
+			lastErr = exhaustedErr
+			continue
+		}
+		attemptCtx, exhausted := shard.Client.captureFixedDialExhaustion(ctx)
+		lastErr = shard.Client.Process(attemptCtx, cmd)
 		if lastErr == nil || !shouldRetry(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {
 			return lastErr
+		}
+		if exhausted != nil && exhausted.Load() {
+			if exhaustedAddrs == nil {
+				exhaustedAddrs = make(map[string]error)
+			}
+			exhaustedAddrs[shard.addr] = lastErr
 		}
 	}
 	return lastErr

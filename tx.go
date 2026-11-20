@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -40,14 +41,17 @@ type Tx struct {
 }
 
 func (c *Client) newTx() *Tx {
+	dialPool, _ := c.connPool.(*pool.ConnPool)
 	tx := Tx{
 		baseClient: baseClient{
-			opt:           c.cloneOpt(), // Clone options under optLock to avoid race with initConn
-			rec:           c.rec,
-			connPool:      c.baseClient.newStickyConnPool(),
-			hooksMixin:    c.hooksMixin.clone(),
-			pushProcessor: c.pushProcessor, // Copy push processor from parent client
-			onClose:       &onCloseHooks{},
+			fixedDialEndpoint:  c.fixedDialEndpoint,
+			dialExhaustionPool: dialPool,
+			opt:                c.cloneOpt(), // Clone options under optLock to avoid race with initConn
+			rec:                c.rec,
+			connPool:           c.baseClient.newStickyConnPool(),
+			hooksMixin:         c.hooksMixin.clone(),
+			pushProcessor:      c.pushProcessor, // Copy push processor from parent client
+			onClose:            &onCloseHooks{},
 			// Share the HIMPORT fieldset registry: the sticky pool borrows
 			// connections from the parent client's pool, so fieldsets
 			// prepared on them stay valid after the connections are
@@ -117,6 +121,15 @@ func (c *Tx) Close(ctx context.Context) error {
 	if c.watchArmed {
 		// Cleanup must not inherit the caller's cache intent.
 		_ = c.Unwatch(cscUnmarkedContext(ctx)).Err()
+		if c.watchArmed {
+			// A refused or queued UNWATCH is a complete reply, but does not
+			// prove that the connection is safe for another borrower. Remove
+			// the pinned connection without replaying cleanup or changing the
+			// callback's error. Get cannot dial here: WATCH already pinned it.
+			if cn, err := c.connPool.Get(ctx); err == nil {
+				c.connPool.Remove(ctx, cn, errors.New("redis: UNWATCH did not clear transaction state"))
+			}
+		}
 	}
 	return c.baseClient.Close()
 }
@@ -156,7 +169,7 @@ func (c *Tx) Unwatch(ctx context.Context, keys ...string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c.Process(ctx, cmd)
 	// The watched keys have been released, so Close need not UNWATCH again.
-	if cmd.Err() == nil {
+	if cmd.Err() == nil && cmd.Val() == "OK" {
 		c.watchArmed = false
 	}
 	return cmd

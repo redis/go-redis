@@ -1141,6 +1141,46 @@ func scriptExistsArgs(hashes []string) []interface{} {
 	return args
 }
 
+// ClusterSlotStats delegates to the active member so a cluster member asks
+// every master and merges the replies (see DBSize).
+func (c *MultiDBClient) ClusterSlotStats(ctx context.Context, startSlot, endSlot int) *ClusterSlotStatsCmd {
+	args := []interface{}{"cluster", "slot-stats", "slotsrange", startSlot, endSlot}
+	return c.clusterSlotStats(ctx, args, func(ctx context.Context, cc *ClusterClient) *ClusterSlotStatsCmd {
+		return cc.ClusterSlotStats(ctx, startSlot, endSlot)
+	})
+}
+
+// ClusterSlotStatsOrderBy delegates to the active member so a cluster member
+// asks every master and merges the replies (see DBSize).
+func (c *MultiDBClient) ClusterSlotStatsOrderBy(ctx context.Context, a *ClusterSlotStatsOrderByArgs) *ClusterSlotStatsCmd {
+	return c.clusterSlotStats(ctx, clusterSlotStatsOrderByArgs(a), func(ctx context.Context, cc *ClusterClient) *ClusterSlotStatsCmd {
+		return cc.ClusterSlotStatsOrderBy(ctx, a)
+	})
+}
+
+func (c *MultiDBClient) clusterSlotStats(
+	ctx context.Context, args []interface{}, run func(context.Context, *ClusterClient) *ClusterSlotStatsCmd,
+) *ClusterSlotStatsCmd {
+	db, err := c.controlTarget(ctx)
+	if err != nil {
+		cmd := NewClusterSlotStatsCmd(ctx, args...)
+		cmd.SetErr(err)
+		return cmd
+	}
+	if db != nil {
+		res := run(ctx, db.cc)
+		rewriteRemovedMemberErr(db, res, c.core.closed.Load())
+		return res
+	}
+	cmd := NewClusterSlotStatsCmd(ctx, args...)
+	_ = c.Process(withClusterControl(ctx, cmd, func(ctx context.Context, cc *ClusterClient) error {
+		res := run(ctx, cc)
+		cmd.SetVal(res.Val())
+		return res.Err()
+	}), cmd)
+	return cmd
+}
+
 // clusterControlKey marks a cluster control command (DBSize, ScriptLoad,
 // ScriptFlush, ScriptExists) that took the regular path because the active
 // was standalone. When core.process admits a cluster member for that command

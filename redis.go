@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -438,7 +439,10 @@ type pipelinePoolRef struct {
 }
 
 type baseClient struct {
-	cscPolicy cscPolicy
+	fixedDialEndpoint bool
+	// For a sticky transaction, the pool that actually performs dials.
+	dialExhaustionPool *pool.ConnPool
+	cscPolicy          cscPolicy
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
 	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
@@ -598,10 +602,11 @@ func (c *baseClient) clone() *baseClient {
 		// cscPoolHook and cscActive travel with the cache (read in processCached);
 		// the owner-only fields — cscDrainHandle, cscOwnsCache — do not, so a clone's
 		// Close never tears down the owner's resources.
-		cscPoolHook:  c.cscPoolHook,
-		cscActive:    c.cscActive,
-		cscKeyPrefix: c.cscKeyPrefix,
-		cscPolicy:    c.cscPolicy,
+		cscPoolHook:       c.cscPoolHook,
+		cscActive:         c.cscActive,
+		cscKeyPrefix:      c.cscKeyPrefix,
+		cscPolicy:         c.cscPolicy,
+		fixedDialEndpoint: c.fixedDialEndpoint,
 		// Derived clients share the owner's immutable metadata view.
 		cmdMeta:        c.cmdMeta,
 		metadataSource: c.metadataSource,
@@ -709,12 +714,17 @@ func admitted(limiter Limiter, denied func(error), fn func() error) error {
 
 // newPubSubConn dials, initializes, and tracks a PubSub connection as one
 // admitted operation against Options.Limiter.
-func (c *baseClient) newPubSubConn(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+func (c *baseClient) newPubSubConn(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
 	var cn *pool.Conn
 	err := admitted(c.limiter(), nil, func() error {
 		var err error
 		cn, err = c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
 		if err == nil {
+			for _, fn := range onInit {
+				if fn != nil {
+					fn(cn)
+				}
+			}
 			err = c.initConn(ctx, cn)
 		}
 		if err == nil {
@@ -1002,8 +1012,15 @@ func (c *baseClient) initStreamingCredentials() {
 
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
 	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
-		var err error
 		username, password := credentials.BasicAuth()
+		if poolCn.IsPubSub() {
+			if fn := poolCn.GetPubSubReAuth(); fn != nil {
+				return fn(username, password)
+			}
+			return errors.New("redis: pubsub connection is not ready for re-authentication")
+		}
+
+		var err error
 
 		// Use background context - timeout is handled by ReadTimeout in WithReader/WithWriter
 		ctx := context.Background()
@@ -1027,6 +1044,10 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
+			if poolCn.IsPubSub() {
+				internal.Logger.Printf(context.Background(), "redis: pubsub re-authentication failed: %v", err)
+				return
+			}
 			// A server-side rejection of the re-auth AUTH (WRONGPASS, NOPERM) is
 			// not a bad-conn error, so isBadConn alone would leave the connection
 			// pooled while it is still authenticated with the credentials the
@@ -1289,6 +1310,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if helloFallbackToRESP2 {
 		c.disableCSCServing(ctx, "HELLO 3 was rejected and the connection negotiated RESP2")
 	}
+	cn.SetResp3(c.opt.Protocol == 3 && helloOK)
 
 	// trackingEnabled reports whether THIS pool connection must issue
 	// CLIENT TRACKING ON during init. True when CSC (SharedTracking) is enabled:
@@ -1768,6 +1790,13 @@ func (c *baseClient) withPipelineConn(
 	}
 
 	if spill {
+		// The pipeline pool's failed dial sequence is not the result of this
+		// acquisition: the main pool may only be temporarily full, so a
+		// subsequent command retry must still be allowed. If the main pool
+		// also exhausts a dial sequence it will set the marker again.
+		if marker := pipelinePool.DialExhaustion(ctx); marker != nil {
+			marker.Store(false)
+		}
 		cn, retErr = c.connPool.Get(ctx)
 		if retErr != nil {
 			cn = nil
@@ -1993,9 +2022,11 @@ func (c *baseClient) processWithRetry(
 	// callback) counts attempts already spent before this loop — e.g. the FD socket
 	// attempt on a diverted retryable command — not just this loop's iterations.
 	totalAttempts := startAttempt
+	// Pre-write retirements re-run without spending the retry budget, capped by
+	// the pool size so a pool full of retired conns still terminates.
+	preWriteRetirements := 0
 	for attempt := startAttempt; attempt <= maxRetries; attempt++ {
 		totalAttempts++
-		attempt := attempt
 
 		retry, forced, cn, err := c._process(ctx, cmd, attempt, capture)
 		if cn != nil {
@@ -2004,6 +2035,21 @@ func (c *baseClient) processWithRetry(
 		if state != nil {
 			state.attempts = totalAttempts
 			state.lastConn = lastConn
+		}
+		// A conn retired by the pre-command drain never saw the command. It is
+		// typically an idle conn the server closed (over TLS, the drain reads the
+		// close_notify then EOF), which the pool health check cannot detect, so
+		// several can be handed out in a row. Re-run on the next conn at attempt
+		// 0: no backoff and no retry budget spent.
+		for err != nil && forced && isClosedConnErr(err) && preWriteRetirements < c.opt.PoolSize {
+			preWriteRetirements++
+			retry, forced, cn, err = c._process(ctx, cmd, 0, capture)
+			if cn != nil {
+				lastConn = cn
+			}
+			if state != nil {
+				state.lastConn = lastConn
+			}
 		}
 		// A "no such fieldset" reply for a registered fieldset means the
 		// connection lost its server session state (e.g. RESET, concurrent
@@ -2038,6 +2084,17 @@ func (c *baseClient) processWithRetry(
 	c.recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
 
 	return lastErr
+}
+
+// isClosedConnErr reports whether err means the connection was closed by the
+// peer or the network. Timeouts are excluded: a stalled mid-frame drain is a
+// desync, not a dead conn.
+func isClosedConnErr(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && !opErr.Timeout()
 }
 
 // recordCommandError emits the native error metric for a command's terminal
@@ -2119,6 +2176,41 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	return "UNKNOWN", "UNKNOWN", true
 }
 
+// captureFixedDialExhaustion lets an outer router observe the same attempt
+// outcome as the client without altering the returned error.
+func (c *baseClient) captureFixedDialExhaustion(ctx context.Context) (context.Context, *atomic.Bool) {
+	if c.fixedDialEndpoint {
+		cp, ok := c.connPool.(*pool.ConnPool)
+		if !ok {
+			cp = c.dialExhaustionPool
+		}
+		if cp != nil {
+			if existing := cp.DialExhaustion(ctx); existing != nil {
+				return ctx, existing
+			}
+			marker := new(atomic.Bool)
+			return cp.WithDialExhaustion(ctx, marker), marker
+		}
+	}
+	return ctx, nil
+}
+
+// Pipelines may use a dedicated connection pool. Observe exhaustion from
+// either pool with one marker, including an ASK follow-up's pipeline.
+func (c *baseClient) captureFixedPipelineDialExhaustion(ctx context.Context) (context.Context, *atomic.Bool) {
+	ctx, marker := c.captureFixedDialExhaustion(ctx)
+	if !c.fixedDialEndpoint {
+		return ctx, nil
+	}
+	if ref := c.loadPipelinePool(); ref != nil {
+		if marker == nil {
+			marker = new(atomic.Bool)
+		}
+		ctx = ref.pool.WithDialExhaustion(ctx, marker)
+	}
+	return ctx, marker
+}
+
 // _process runs one attempt. It returns retry (the error is retryable), forced (the
 // error is a PRE-WRITE desync: the conn was closed before the command reached the
 // wire, so replay is its FIRST execution and safe even for a NoRetry command), the
@@ -2140,6 +2232,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 	// reject (a custom push-processor sentinel) and even for a NoRetry command (whose
 	// gate guards a SECOND execution, not a first).
 	var forceRetry atomic.Bool
+	ctx, dialExhausted := c.captureFixedDialExhaustion(ctx)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
 		// Process any pending push notifications before executing the command. A
@@ -2312,7 +2405,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		}
 		return readErr
 	}); err != nil {
-		retry := forceRetry.Load() || shouldRetry(err, retryTimeout.Load() == 1)
+		retry := forceRetry.Load() || ((dialExhausted == nil || !dialExhausted.Load()) && shouldRetry(err, retryTimeout.Load() == 1))
 		return retry, forceRetry.Load(), usedConn, err
 	}
 
@@ -2559,8 +2652,17 @@ func (c *baseClient) generalProcessPipelineFrom(
 	totalAttempts := priorAttempts
 
 	var lastErr error
+	// connAcquired reports whether the latest attempt obtained a connection:
+	// the withPipelineConn callback only runs after getConn (including
+	// initConn) succeeds. When setup fails, no command was sent and no
+	// reply was read, so the failure must be stamped onto every command
+	// even when it is a Redis error reply (e.g. WRONGPASS from AUTH or a
+	// SELECT failure), which pipelineErrShouldStamp would otherwise skip
+	// on the assumption that per-command replies were read.
+	var connAcquired bool
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
+		connAcquired = false
 		if attempt > 0 {
 			// Continue the backoff of an operation that already ran
 			// priorAttempts times (a full-duplex attempt), as its own retries
@@ -2578,7 +2680,9 @@ func (c *baseClient) generalProcessPipelineFrom(
 		canRetry := true
 		// Route pipelines through the dedicated pipeline pool when configured;
 		// withPipelineConn falls back to the regular pool when it is not.
-		lastErr = c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		attemptCtx, dialExhausted := c.captureFixedPipelineDialExhaustion(ctx)
+		lastErr = c.withPipelineConn(attemptCtx, func(ctx context.Context, cn *pool.Conn) error {
+			connAcquired = true
 			lastConn = cn
 			// Drain pending push notifications before executing the pipeline. A drain
 			// error can mean a custom processor consumed part of a RESP3 push frame,
@@ -2596,12 +2700,19 @@ func (c *baseClient) generalProcessPipelineFrom(
 			canRetry, err = p(ctx, cn, cmds)
 			return err
 		})
+		// A successful acquisition can still yield a retryable Redis reply.
+		// Earlier failed spill attempts must not suppress that reply retry.
+		if connAcquired && dialExhausted != nil {
+			dialExhausted.Store(false)
+		}
 		// Don't retry if any command in the pipeline explicitly disables retries
 		// (e.g., RawWriteToCmd which writes directly to an io.Writer and cannot
 		// undo partial writes on retry)
-		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
+		if lastErr == nil || !canRetry || (dialExhausted != nil && dialExhausted.Load()) || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
-			if pipelineErrShouldStamp(lastErr) {
+			// A setup failure (!connAcquired) stamps even Redis errors: no
+			// command was sent, so no per-command reply exists to preserve.
+			if !connAcquired || pipelineErrShouldStamp(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
 			if recordDuration {
@@ -2621,8 +2732,9 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// per-command — notably AutoPipeline, which discards this function's returned
 	// error — see the error instead of a nil error and a zero value. Guard on
 	// !isRedisError so a per-command redis error (e.g. LOADING) keeps its own
-	// reply rather than being overwritten.
-	if pipelineErrShouldStamp(lastErr) {
+	// reply rather than being overwritten, except when connection setup
+	// failed and no command was sent at all.
+	if !connAcquired || pipelineErrShouldStamp(lastErr) {
 		setCmdsErr(cmds, lastErr)
 	}
 
@@ -2947,6 +3059,11 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
+		} else if !IsExecAbortError(err) {
+			// A refused EXEC can leave MULTI active even though its error
+			// is a complete Redis reply. Do not let another borrower inherit
+			// that state, including when no WATCH was issued.
+			cn.MarkCloseOnPut("tx: EXEC did not clear transaction state")
 		}
 		return err
 	}
@@ -2994,17 +3111,19 @@ func NewClient(opt *Options) *Client {
 	}
 	// clone to not share options with the caller
 	opt = opt.clone()
+	fixedDialEndpoint := opt.Dialer == nil
 	opt.init()
 
 	// Push notifications are always enabled for RESP3 (cannot be disabled)
 
 	c := Client{
 		baseClient: &baseClient{
-			apClosed:  &atomic.Bool{},
-			opt:       opt,
-			cscPolicy: opt.cachePolicy(),
-			onClose:   &onCloseHooks{},
-			himport:   newHImportRegistry(),
+			apClosed:          &atomic.Bool{},
+			opt:               opt,
+			fixedDialEndpoint: fixedDialEndpoint,
+			cscPolicy:         opt.cachePolicy(),
+			onClose:           &onCloseHooks{},
+			himport:           newHImportRegistry(),
 		},
 	}
 	c.rec, c.poolMetrics = clientRecorder(opt.OTelRecorder)
@@ -3288,6 +3407,9 @@ func (c *Client) conn(discardOnClose bool) *Conn {
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
 	conn := newConn(connOpt, sticky, &c.hooksMixin, c.himport)
+	// The sticky wrapper borrows this client's fixed endpoint and dial budget.
+	conn.baseClient.fixedDialEndpoint = c.fixedDialEndpoint
+	conn.baseClient.dialExhaustionPool, _ = c.connPool.(*pool.ConnPool)
 	if isolated {
 		// Never enable tracking or attach the parent's cache to a socket whose
 		// session state the caller may change freely.
@@ -3516,8 +3638,8 @@ func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.cloneOpt(),
 		rec: c.rec,
-		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
-			return c.newPubSubConn(ctx, addr, channels)
+		newConn: func(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
+			return c.newPubSubConn(ctx, addr, channels, onInit...)
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
