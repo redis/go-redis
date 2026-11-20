@@ -4686,15 +4686,9 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 func (cmd *XInfoStreamFullCmd) Clone() Cmder {
 	var val *XInfoStreamFull
 	if cmd.val != nil {
-		val = &XInfoStreamFull{
-			Length:               cmd.val.Length,
-			RadixTreeKeys:        cmd.val.RadixTreeKeys,
-			RadixTreeNodes:       cmd.val.RadixTreeNodes,
-			LastGeneratedID:      cmd.val.LastGeneratedID,
-			MaxDeletedEntryID:    cmd.val.MaxDeletedEntryID,
-			EntriesAdded:         cmd.val.EntriesAdded,
-			RecordedFirstEntryID: cmd.val.RecordedFirstEntryID,
-		}
+		// Copy the struct so a field added later is not left out.
+		v := *cmd.val
+		val = &v
 		// Clone Entries
 		if cmd.val.Entries != nil {
 			val.Entries = make([]XMessage, len(cmd.val.Entries))
@@ -4710,10 +4704,21 @@ func (cmd *XInfoStreamFullCmd) Clone() Cmder {
 				}
 			}
 		}
-		// Clone Groups - simplified copy for now due to complexity
+		// Clone Groups
 		if cmd.val.Groups != nil {
 			val.Groups = make([]XInfoStreamGroup, len(cmd.val.Groups))
-			copy(val.Groups, cmd.val.Groups)
+			for i, group := range cmd.val.Groups {
+				group.Pending = slices.Clone(group.Pending)
+				if group.Consumers != nil {
+					consumers := make([]XInfoStreamConsumer, len(group.Consumers))
+					for j, consumer := range group.Consumers {
+						consumer.Pending = slices.Clone(consumer.Pending)
+						consumers[j] = consumer
+					}
+					group.Consumers = consumers
+				}
+				val.Groups[i] = group
+			}
 		}
 	}
 	return &XInfoStreamFullCmd{
