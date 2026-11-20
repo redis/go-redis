@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/maintnotifications"
+	fi "github.com/redis/go-redis/v9/maintnotifications/e2e"
 )
 
 // Matrix rows: connection_failure / connection_dropped, connection_refused,
@@ -33,6 +35,7 @@ import (
 type failureEffect struct {
 	name     string
 	mockOnly string // non-empty: skip in real mode, with this reason
+	realOnly string // non-empty: skip in mock mode, with this reason
 	// inject breaks member 0 and returns restore, which must leave member 0
 	// reachable again.
 	inject func(t *testing.T) (restore func())
@@ -42,6 +45,57 @@ type failureEffect struct {
 }
 
 func isConnRefused(err error) bool { return errors.Is(err, syscall.ECONNREFUSED) }
+
+// isRealMode reports whether the suite talks to a real fault injector.
+func isRealMode() bool { return os.Getenv("FAULT_INJECTION_API_URL") != "" }
+
+// skipIfMockMode marks a test real-only: it needs a fault the mock cannot
+// produce (blackholed traffic, tc latency).
+func skipIfMockMode(t *testing.T, why string) {
+	t.Helper()
+	if !isRealMode() {
+		t.Skip("real-only: " + why)
+	}
+}
+
+// injectProxyStop stops the DMC proxy of the database behind member 0 and
+// returns restore, which starts it again. The start is registered as a cleanup
+// BEFORE the stop is sent, and runs at most once: the fault injector never
+// undoes a stop on its own, so a run that dies half way would otherwise leave
+// member 0 down for every later test.
+func injectProxyStop(t *testing.T) func() {
+	t.Helper()
+	var once sync.Once
+	start := func() {
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			resp, err := faultInjector.TriggerProxyFailure(ctx, fi.ProxyFailureRequest{
+				BDBID: e2eTopology.BDBID, ClusterIndex: 0, Op: fi.ProxyStart, WaitForActive: true,
+			})
+			if err != nil {
+				t.Errorf("proxy_failure start: %v", err)
+				return
+			}
+			st, err := faultInjector.WaitForAction(ctx, resp.ActionID, fi.WithMaxWaitTime(5*time.Minute))
+			if err != nil || st.Status == fi.StatusFailed {
+				t.Errorf("proxy_failure start did not finish: %v %+v", err, st)
+			}
+		})
+	}
+	t.Cleanup(start)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := faultInjector.TriggerProxyFailure(ctx, fi.ProxyFailureRequest{
+		BDBID: e2eTopology.BDBID, ClusterIndex: 0, Op: fi.ProxyStop,
+	})
+	if err != nil {
+		t.Fatalf("proxy_failure stop: %v", err)
+	}
+	waitForActionDone(t, resp.ActionID, 2*time.Minute)
+	return start
+}
 
 func isTimeout(err error) bool {
 	var ne net.Error
@@ -61,15 +115,28 @@ func failureEffects() []failureEffect {
 			},
 		},
 		{
-			// A stopped proxy refuses new TCP connections: proxy_failure(stop).
-			name:     "connection_refused/proxy_stop",
-			mockOnly: "drives docker directly; the real FI has no go-redis client for proxy_failure",
+			// proxy_failure(stop) takes the DMC proxy down, so new TCP
+			// connections are refused. Unlike network_failure the fault
+			// injector does NOT undo it: restore sends the matching start.
+			name:   "connection_refused/proxy_failure",
+			inject: injectProxyStop,
+			// The mock stops a container, so refused is exact there. On a real
+			// deployment the DMC proxy of every node hosting the database is
+			// stopped; any client-side error is accepted until the exact class
+			// is confirmed against one.
+			wantErr: func(err error) bool { return isRealMode() || isConnRefused(err) },
+		},
+		{
+			// The doc's other connection_timeout trigger: network_failure
+			// blackholes the nodes (iptables DROP), so fresh dials time out
+			// rather than being refused. The mock cannot blackhole.
+			name:     "connection_timeout/network_failure",
+			realOnly: "the mock stops a container, which refuses; it has no blackhole",
 			inject: func(t *testing.T) func() {
-				f := newProxyFarm(t)
-				f.Stop(0)
-				return func() { f.Start(0) }
+				id := triggerNetworkFailure(t, 0, 10*time.Second)
+				return func() { waitForActionDone(t, id, 60*time.Second) }
 			},
-			wantErr: isConnRefused,
+			wantErr: isTimeout,
 		},
 		{
 			// A paused proxy keeps accepting TCP but never answers: every
@@ -141,6 +208,9 @@ func TestConnectionFailureMatrix(t *testing.T) {
 			t.Run(e.name+"/"+w.name, func(t *testing.T) {
 				if e.mockOnly != "" {
 					skipIfRealMode(t, e.mockOnly)
+				}
+				if e.realOnly != "" {
+					skipIfMockMode(t, e.realOnly)
 				}
 				settleAfterFault(t)
 				c := newFailureClient(t)
@@ -552,6 +622,63 @@ func TestMultiDBWithSCHFailoverOnMemberOutage(t *testing.T) {
 			t.Fatal("subscription did not follow the failover with SCH enabled")
 		}
 	}
+}
+
+// TestMultiDBFailoverOnSlowResponse: a member that answers too slowly, not one
+// that is down, must be failed away from, and traffic must return once the
+// latency is gone. network_latency makes commands TIME OUT instead of being
+// refused, which is what drives the circuit breaker.
+// Matrix: response_degradation / slow_response x MultiDB.
+//
+// Real-only: the mock proxy image has no tc, so the mock FI rejects the action.
+func TestMultiDBFailoverOnSlowResponse(t *testing.T) {
+	skipIfMockMode(t, "network_latency needs tc on the nodes; the mock proxy image has none")
+	settleAfterFault(t)
+
+	const (
+		delay    = 3 * time.Second // above the 1s client read timeout and probe timeout
+		duration = 45 * time.Second
+	)
+	mdb := newE2EClient(t, fiMultiDBOptions())
+	ctx := context.Background()
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("initial active = %d, want 0 (highest weight)", got)
+	}
+	if err := mdb.Set(ctx, "e2e:cf:slow", "before", 0).Err(); err != nil {
+		t.Fatalf("Set before latency: %v", err)
+	}
+
+	actx, acancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer acancel()
+	resp, err := faultInjector.TriggerBDBNetworkLatency(actx, e2eTopology.BDBID, 0, delay, duration)
+	if err != nil {
+		t.Fatalf("network_latency: %v", err)
+	}
+	// The node removes the latency by itself `duration` after the action's
+	// result, so the next test must not start before then.
+	var applied time.Time
+	t.Cleanup(func() {
+		wctx, wcancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer wcancel()
+		if _, err := faultInjector.WaitForAction(wctx, resp.ActionID, fi.WithMaxWaitTime(3*time.Minute)); err != nil {
+			t.Errorf("waiting for network_latency action %s: %v", resp.ActionID, err)
+		}
+		if applied.IsZero() {
+			applied = time.Now()
+		}
+		time.Sleep(time.Until(applied.Add(duration + 5*time.Second)))
+	})
+	waitForActionDone(t, resp.ActionID, 2*time.Minute)
+	applied = time.Now()
+
+	eventually(t, 30*time.Second, "failover away from the slow member", func() bool {
+		return mdb.ActiveDatabaseID() != 0 && mdb.Set(ctx, "e2e:cf:slow", "during", 0).Err() == nil
+	})
+
+	// Once the node drops the latency, the higher-weight member takes over again.
+	eventually(t, duration+60*time.Second, "fallback to member 0 after the latency ends", func() bool {
+		return mdb.ActiveDatabaseID() == 0 && mdb.Set(ctx, "e2e:cf:slow", "after", 0).Err() == nil
+	})
 }
 
 // Real-mode endpoints are redis:// URLs; the dial address must come out as
