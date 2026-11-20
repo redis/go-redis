@@ -2834,8 +2834,22 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// while a retained prefix error stands. When no connection was
 	// acquired the attempt consumed no replies, so the setup error
 	// stands as-is.
+	// One exception: a transport failure anywhere in the batch takes
+	// precedence over an earlier Redis error. A transport error means
+	// the batch never completed and the connection may hold an unread
+	// reply, so it must not hide behind a per-command reply error:
+	// callers that branch on the error kind — notably initConn's
+	// identity setup, which deliberately tolerates Redis errors —
+	// would otherwise accept a desynchronized connection. When no
+	// command carries a transport error, the first per-command error
+	// still wins.
 	finalErr := func() error {
 		if connAcquired {
+			for _, cmd := range cmds {
+				if e := cmd.rawErr(); e != nil && pipelineErrShouldStamp(e) {
+					return e
+				}
+			}
 			if err := cmdsFirstErr(cmds); err != nil {
 				return err
 			}
@@ -2877,7 +2891,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 			}
 		}
 
-		// A retry re-dispatches pending: clear their errors first, or a
+		// A retry re-dispatches pending: clear their Redis errors first, or a
 		// Redis error left by an earlier attempt would survive a dispatch
 		// that never reached the command — a write failure stamps only
 		// nil errors (see setCmdsErr) — and pipelineRetrySuffix would
@@ -2885,8 +2899,19 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// the command, leaving Exec reporting the stale error even
 		// though the server has recovered and the command was never
 		// re-executed.
+		// Transport errors are NOT cleared: they mark the
+		// answered/unanswered boundary pipelineUnansweredSuffix relies
+		// on — commands before the first transport error were answered
+		// by a prior attempt and must keep their results if this
+		// attempt fails before reaching them (a dial failure, or a
+		// cancel after the clear). The read path overwrites the error
+		// of every command it answers (pipelineReadCmdsWithFlags sets
+		// each dispatched command's error from its reply), so a stale
+		// transport error cannot survive a successful re-dispatch.
 		for _, cmd := range pending {
-			cmd.SetErr(nil)
+			if e := cmd.rawErr(); e != nil && !pipelineErrShouldStamp(e) {
+				cmd.SetErr(nil)
+			}
 		}
 
 		// Enable retries by default to retry dial errors returned by withConn.

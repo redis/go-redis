@@ -1265,3 +1265,262 @@ func TestPipelineRetryBackoffCancelKeepsAnsweredResults(t *testing.T) {
 		t.Fatal("INCR: nil, want the attempt's transport error (it was never answered)")
 	}
 }
+
+// TestPipelineRetryReportsTransportErrOverFirstRedisErr: when the first
+// command of a pipeline is answered with a Redis error and a later command
+// fails with a transport error on the final attempt, Exec must report the
+// transport error, not the first command's Redis error. The transport error
+// means the batch never completed and the connection may hold an unread
+// reply: hiding it behind the earlier Redis error lets callers that branch
+// on the error kind — notably initConn's identity setup, which deliberately
+// tolerates Redis errors — accept a desynchronized connection. Regression
+// test for the review finding on #4351.
+func TestPipelineRetryReportsTransportErrOverFirstRedisErr(t *testing.T) {
+	server := newFirstErrRetryServer(t, true)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1, // a single attempt: the transport error is final
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	hget := pipe.HGet(ctx, "str", "f")
+	incr := pipe.Incr(ctx, "text")
+	_, err := pipe.Exec(ctx)
+	if err == nil || isRedisError(err) {
+		t.Fatalf("Exec: %v, want the transport error for the unanswered INCR, not the first command's WRONGTYPE", err)
+	}
+	if err := hget.Err(); err == nil || !strings.Contains(err.Error(), "WRONGTYPE") {
+		t.Fatalf("HGET: %v, want WRONGTYPE (its own reply is preserved)", err)
+	}
+	if err := incr.Err(); err == nil || isRedisError(err) {
+		t.Fatalf("INCR: %v, want the transport error (it was never answered)", err)
+	}
+}
+
+// dialFailRetryServer is a scripted RESP server for retry-acquisition tests.
+// The first connection answers SELECT and then drops mid-pipeline; the
+// listener is closed as soon as that connection drops, so every later dial
+// fails with connection refused.
+type dialFailRetryServer struct {
+	ln       net.Listener
+	conns    atomic.Int32
+	closeLn  sync.Once
+	dials    atomic.Int32 // connections accepted after the first
+	answered atomic.Int32 // SELECT replies sent
+}
+
+func newDialFailRetryServer(t *testing.T) *dialFailRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &dialFailRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			if n > 1 {
+				s.dials.Add(1)
+			}
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *dialFailRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "select":
+			s.answered.Add(1)
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			if first {
+				// Drop mid-pipeline and stop listening: the retry's
+				// dial must fail, not reach a fresh server.
+				s.closeLn.Do(func() { _ = s.ln.Close() })
+				return
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryDialFailureKeepsAnsweredResults: after a whole-batch retry
+// is narrowed (the first attempt answered SELECT, then dropped before SET),
+// the retry's dial failure must not stamp the dial error onto SELECT. The
+// pre-attempt error clear used to wipe the tail transport errors that
+// pipelineUnansweredSuffix uses as the answered/unanswered boundary, so a
+// dial failure after the clear stamped the whole batch — including the
+// command a prior attempt had already answered. The backoff-cancel test only
+// covers a cancel during the sleep that runs before that clear, not a
+// failure after it. Regression test for the review finding on #4351.
+func TestPipelineRetryDialFailureKeepsAnsweredResults(t *testing.T) {
+	server := newDialFailRetryServer(t)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 1)
+	set := pipe.Set(ctx, "k", "v", 0)
+	incr := pipe.Incr(ctx, "counter")
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatalf("Exec: nil, want the dial error (the listener is closed after the first drop)")
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v, want nil (it was answered before the drop and must keep its result)", err)
+	}
+	if err := set.Err(); err == nil {
+		t.Fatal("SET: nil, want the attempt's transport error (it was never answered)")
+	}
+	if err := incr.Err(); err == nil {
+		t.Fatal("INCR: nil, want the attempt's transport error (it was never answered)")
+	}
+}
+
+// identityTransportServer is a scripted RESP server for initConn identity
+// setup tests. It answers HELLO, rejects the first CLIENT SETINFO with a
+// Redis error (as a server older than 7.2 would), and withholds the second
+// SETINFO reply until it reads the next command — only then does it send
+// the late +OK. A client that accepts the connection anyway reads that
+// late reply as its next command's reply.
+type identityTransportServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+}
+
+func newIdentityTransportServer(t *testing.T) *identityTransportServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &identityTransportServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s.conns.Add(1)
+			go s.serve(conn)
+		}
+	}()
+	return s
+}
+
+func (s *identityTransportServer) serve(conn net.Conn) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	setinfo := 0
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "client":
+			// readConnStateRetryCommand strips the command name, so
+			// args[0] is "setinfo" and args[1] is LIB-NAME / LIB-VER.
+			if len(args) >= 2 && strings.EqualFold(args[0], "setinfo") {
+				setinfo++
+				if setinfo == 1 {
+					_, _ = conn.Write([]byte("-ERR unknown command 'client', with args beginning with: 'setinfo'\r\n"))
+				}
+				// The second SETINFO reply is withheld: the read
+				// times out on the client, and the late reply is
+				// only sent after the next command arrives.
+				continue
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "ping":
+			// Send the withheld SETINFO reply first: an accepted
+			// connection consumes it as PING's reply.
+			if setinfo >= 2 {
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
+			_, _ = conn.Write([]byte("+PONG\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestInitConnRejectsIdentityPipelineTransportFailure: with MaxRetries -1 and
+// identity setup enabled, a CLIENT SETINFO Redis error on the first setup
+// command must not hide a transport timeout on the second: initConn
+// deliberately ignores Redis errors, so if Exec reported only the Redis
+// error the connection would be accepted with a pending SETINFO reply in
+// its stream, and the next user command would consume that reply instead
+// of its own. Regression test for the review finding on #4351.
+func TestInitConnRejectsIdentityPipelineTransportFailure(t *testing.T) {
+	server := newIdentityTransportServer(t)
+	client := NewClient(&Options{
+		Addr:         server.ln.Addr().String(),
+		Protocol:     2,
+		PoolSize:     1,
+		MaxRetries:   -1, // a single attempt: the timeout is final
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  200 * time.Millisecond,
+		WriteTimeout: 5 * time.Second,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	val, err := client.Ping(ctx).Result()
+	if err == nil {
+		t.Fatalf("Ping = %q, nil; want a transport error (the identity pipeline's SETINFO reply timed out, so init must reject the connection)", val)
+	}
+	if isRedisError(err) {
+		t.Fatalf("Ping err = %v, want a transport error, not a Redis error", err)
+	}
+}
