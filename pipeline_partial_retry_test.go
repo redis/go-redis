@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/otel"
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -767,5 +769,154 @@ func TestPipelineRetryDoesNotReportStaleError(t *testing.T) {
 	}
 	if got := server.sets.Load(); got != 2 {
 		t.Fatalf("server received %d SET commands, want 2 (the SET must be re-executed once the server has recovered)", got)
+	}
+}
+
+// firstErrRetryServer is a scripted RESP server for first-failure
+// aggregation tests. The first connection answers HGET with a WRONGTYPE
+// error and then drops before INCR's reply; later connections answer INCR
+// with a Redis error (retryErr=true) or a value.
+type firstErrRetryServer struct {
+	ln       net.Listener
+	conns    atomic.Int32
+	hgets    atomic.Int32
+	incrs    atomic.Int32
+	retryErr bool
+}
+
+func newFirstErrRetryServer(t *testing.T, retryErr bool) *firstErrRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &firstErrRetryServer{ln: ln, retryErr: retryErr}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *firstErrRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "hget":
+			s.hgets.Add(1)
+			if n == 1 {
+				_, _ = conn.Write([]byte("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"))
+			} else {
+				_, _ = conn.Write([]byte("$1\r\nv\r\n"))
+			}
+		case "incr":
+			s.incrs.Add(1)
+			if n == 1 {
+				// Drop before replying: INCR must be retried on its own.
+				return
+			}
+			if s.retryErr {
+				_, _ = conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+			} else {
+				_, _ = conn.Write([]byte(":1\r\n"))
+			}
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryReportsFirstErr: when the first command of a pipeline is
+// answered with a Redis error and a later command is retried on its own and
+// fails with a different Redis error, Exec must report the first failed
+// command's error, per its documented contract — not the retried tail's
+// error. Regression test for the review finding on #4351.
+func TestPipelineRetryReportsFirstErr(t *testing.T) {
+	server := newFirstErrRetryServer(t, true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	hget := pipe.HGet(ctx, "str", "f")
+	incr := pipe.Incr(ctx, "text")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "WRONGTYPE") {
+		t.Fatalf("Exec: %v, want the first failed command's WRONGTYPE error, not the retried INCR's error", err)
+	}
+	if err := hget.Err(); err == nil || !strings.Contains(err.Error(), "WRONGTYPE") {
+		t.Fatalf("HGET: %v, want WRONGTYPE", err)
+	}
+	if err := incr.Err(); err == nil || !strings.Contains(err.Error(), "ERR") {
+		t.Fatalf("INCR: %v, want the retry's ERR", err)
+	}
+	if got := server.hgets.Load(); got != 1 {
+		t.Fatalf("server received %d HGET commands, want 1 (the answered HGET must not be re-executed)", got)
+	}
+	if got := server.incrs.Load(); got != 2 {
+		t.Fatalf("server received %d INCR commands, want 2 (the unanswered INCR retried once)", got)
+	}
+}
+
+// firstErrMetricRecorder captures the error passed to
+// RecordPipelineOperationDuration.
+type firstErrMetricRecorder struct {
+	fdOtelRecorder
+	calls   atomic.Int64
+	lastErr atomic.Value
+}
+
+func (r *firstErrMetricRecorder) RecordPipelineOperationDuration(_ context.Context, _ time.Duration, _ string, _ int, _ int, err error, _ *pool.Conn, _ int) {
+	r.calls.Add(1)
+	if err != nil {
+		r.lastErr.Store(err)
+	}
+}
+
+// TestPipelineRetryRecordsFirstErrInMetrics: when a pipeline's first command
+// keeps a Redis error and the retried tail then succeeds, Exec still
+// reports the first error — but the pipeline duration metric must also
+// record it as a failure, not as a success. Regression test for the
+// review finding on #4351.
+func TestPipelineRetryRecordsFirstErrInMetrics(t *testing.T) {
+	server := newFirstErrRetryServer(t, false)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+	rec := &firstErrMetricRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	hget := pipe.HGet(ctx, "str", "f")
+	incr := pipe.Incr(ctx, "text")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "WRONGTYPE") {
+		t.Fatalf("Exec: %v, want WRONGTYPE (the first failed command)", err)
+	}
+	if err := hget.Err(); err == nil || !strings.Contains(err.Error(), "WRONGTYPE") {
+		t.Fatalf("HGET: %v, want WRONGTYPE", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %v, %v; want 1, nil", got, err)
+	}
+	if n := rec.calls.Load(); n != 1 {
+		t.Fatalf("%d pipeline metrics for one operation, want 1", n)
+	}
+	e, _ := rec.lastErr.Load().(error)
+	if e == nil || !strings.Contains(e.Error(), "WRONGTYPE") {
+		t.Fatalf("metric error %v, want WRONGTYPE (a retained prefix error must not record as success)", e)
 	}
 }

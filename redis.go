@@ -2746,6 +2746,24 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// SELECT failure), which pipelineErrShouldStamp would otherwise skip
 	// on the assumption that per-command replies were read.
 	var connAcquired bool
+	// finalErr derives the operation's terminal error from the original
+	// batch once the final attempt has consumed its replies: the first
+	// per-command error wins, matching Exec's documented first-failed-
+	// command contract. The last attempt's error alone is not enough: a
+	// suffix retry only ran the unanswered tail, so an earlier command's
+	// retained Redis error — or a later error from the tail — must not
+	// hide behind it, and a successful tail must not report success
+	// while a retained prefix error stands. When no connection was
+	// acquired the attempt consumed no replies, so the setup error
+	// stands as-is.
+	finalErr := func() error {
+		if connAcquired {
+			if err := cmdsFirstErr(cmds); err != nil {
+				return err
+			}
+		}
+		return lastErr
+	}
 	// pending holds the commands the next attempt must execute. A failed
 	// non-transaction pipeline attempt narrows it to the commands that were
 	// not answered, so a retry does not re-execute commands whose replies
@@ -2822,14 +2840,15 @@ func (c *baseClient) generalProcessPipelineFrom(
 			if !connAcquired || pipelineErrShouldStamp(lastErr) {
 				setCmdsErr(pending, lastErr)
 			}
+			err := finalErr()
 			if recordDuration {
-				c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
+				c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
 			}
 
-			if lastErr != nil {
-				c.recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
+			if err != nil {
+				c.recordCommandError(ctx, err, lastConn, totalAttempts-1)
 			}
-			return lastErr
+			return err
 		}
 		// The attempt failed with a retryable error: narrow the next attempt
 		// to the commands that were not answered, so a replied command is
@@ -2852,13 +2871,16 @@ func (c *baseClient) generalProcessPipelineFrom(
 		setCmdsErr(pending, lastErr)
 	}
 
+	err := finalErr()
 	if recordDuration {
-		c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
+		c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
 	}
 
-	c.recordCommandError(ctx, lastErr, lastConn, totalAttempts-1)
+	if err != nil {
+		c.recordCommandError(ctx, err, lastConn, totalAttempts-1)
+	}
 
-	return lastErr
+	return err
 }
 
 // pipelineExecutedKey carries an *executedCmds that execution paths populate
