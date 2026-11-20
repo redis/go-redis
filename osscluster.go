@@ -660,6 +660,13 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = -1
 	}
+	// Same for the retry backoffs: -1 (no backoff) arrives here as 0.
+	if opt.MinRetryBackoff == 0 {
+		opt.MinRetryBackoff = -1
+	}
+	if opt.MaxRetryBackoff == 0 {
+		opt.MaxRetryBackoff = -1
+	}
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
 	}
