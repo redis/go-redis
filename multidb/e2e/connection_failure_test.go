@@ -110,8 +110,10 @@ func failureEffects() []failureEffect {
 			// the member's proxy container.
 			name: "connection_dropped/network_failure",
 			inject: func(t *testing.T) func() {
-				id := triggerNetworkFailure(t, 0, 10*time.Second)
-				return func() { waitForActionDone(t, id, 60*time.Second) }
+				// 30s covers the blocking workload's in-flight wait and the
+				// failFast call that follows it; a 10s outage could lift between.
+				id := triggerNetworkFailure(t, 0, 30*time.Second)
+				return func() { waitForActionDone(t, id, 90*time.Second) }
 			},
 		},
 		{
@@ -133,8 +135,10 @@ func failureEffects() []failureEffect {
 			name:     "connection_timeout/network_failure",
 			realOnly: "the mock stops a container, which refuses; it has no blackhole",
 			inject: func(t *testing.T) func() {
-				id := triggerNetworkFailure(t, 0, 10*time.Second)
-				return func() { waitForActionDone(t, id, 60*time.Second) }
+				// 30s covers the blocking workload's in-flight wait and the
+				// failFast call that follows it; a 10s outage could lift between.
+				id := triggerNetworkFailure(t, 0, 30*time.Second)
+				return func() { waitForActionDone(t, id, 90*time.Second) }
 			},
 			wantErr: isTimeout,
 		},
@@ -404,6 +408,9 @@ func runBlockingWorkload(t *testing.T, e failureEffect, c *redis.Client, fault, 
 
 	// In flight: the fault lands while a BLPOP is blocked server-side. It
 	// must come back with an error on the client's timeouts, not hang.
+	// Keep the 5s command timeout: its read deadline (about 15s) is still
+	// below the wait below, so a timeout-class fault surfaces as an error.
+	// A redis.Nil here means the command's own timeout fired, not the fault.
 	inflight := make(chan error, 1)
 	go func() {
 		_, err := c.BLPop(ctx, 5*time.Second, key).Result()
@@ -413,8 +420,8 @@ func runBlockingWorkload(t *testing.T, e failureEffect, c *redis.Client, fault, 
 	fault()
 	select {
 	case err := <-inflight:
-		if err == nil {
-			t.Fatal("in-flight BLPOP succeeded while member 0 is down")
+		if err == nil || errors.Is(err, redis.Nil) {
+			t.Fatalf("in-flight BLPOP was not broken by the fault: %v", err)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("in-flight BLPOP hung through the fault")
@@ -496,20 +503,26 @@ func runMixedWorkload(t *testing.T, e failureEffect, c *redis.Client, fault, rec
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
+	// Stop the load on every exit path: a Fatal below must not leave the loop
+	// issuing commands against a closed client for the rest of the suite.
+	stopLoad := func() {
+		stop.Store(true)
+		done := make(chan struct{})
+		go func() { load.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Errorf("background mixed load never stopped: a command is stuck")
+		}
+	}
+	t.Cleanup(stopLoad)
 
 	fault()
 	failFast(t, "mixed step during fault", e, step)
 	recovered()
 	requireRecovered(t, "mixed workload", step)
 
-	stop.Store(true)
-	done := make(chan struct{})
-	go func() { load.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("background mixed load never stopped: a command is stuck")
-	}
+	stopLoad()
 	if failures.Load() == 0 {
 		t.Fatalf("background load saw no failures across %d iterations: the fault never reached it", loops.Load())
 	}
@@ -527,6 +540,8 @@ func TestMultiDBBlockingAcrossFailover(t *testing.T) {
 	side := sideClient(t)
 	_ = side.Del(ctx, key).Err()
 
+	// The 5s command timeout keeps its read deadline (about 15s) below the
+	// wait below, so the connection error surfaces inside it.
 	inflight := make(chan error, 1)
 	go func() {
 		_, err := mdb.BLPop(ctx, 5*time.Second, key).Result()
@@ -537,6 +552,9 @@ func TestMultiDBBlockingAcrossFailover(t *testing.T) {
 
 	select {
 	case err := <-inflight:
+		// MultiDB can complete a blocking command on the new active member
+		// after the failover, so redis.Nil is a real reply rather than proof
+		// either way; only an immediate success contradicts the outage.
 		if err == nil {
 			t.Fatal("in-flight BLPOP succeeded while the active member is down")
 		}

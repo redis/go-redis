@@ -80,13 +80,16 @@ func (c *FaultInjectorClient) TriggerBDBNetworkLatency(ctx context.Context, bdbI
 	if duration <= 0 {
 		return nil, errors.New("network_latency: duration must be positive, a latency without one is permanent")
 	}
+	// The action takes whole seconds. Truncating a positive fraction below one
+	// second would send 0, which means permanent, so round up instead.
+	seconds := int((duration + time.Second - 1) / time.Second)
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNetworkLatency,
 		Parameters: map[string]interface{}{
 			"bdb_id":        strconv.Itoa(bdbID),
 			"cluster_index": clusterIndex,
 			"delay_ms":      int(delay / time.Millisecond),
-			"duration":      int(duration / time.Second),
+			"duration":      seconds,
 		},
 	})
 }

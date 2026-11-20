@@ -123,6 +123,16 @@ func (noopFaultMechanism) Restore(context.Context, string, string) error {
 	return nil
 }
 
+func (noopFaultMechanism) StopContainer(context.Context, string) error {
+	time.Sleep(2 * time.Millisecond)
+	return nil
+}
+
+func (noopFaultMechanism) StartContainer(context.Context, string, string) error {
+	time.Sleep(2 * time.Millisecond)
+	return nil
+}
+
 // The status handler must read an action under the mock's mutex: run with
 // -race while the action changes state.
 func TestMockFaultInjectorStatusWhileRunning(t *testing.T) {
