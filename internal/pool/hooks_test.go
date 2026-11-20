@@ -140,6 +140,35 @@ func TestHookErrorHandling(t *testing.T) {
 	}
 }
 
+// TestGetFreesTurnWhenHookFailsNewConn pins that Get releases its pool turn when
+// an OnGet hook fails a freshly dialed connection. A leaked turn makes the next
+// Get wait out PoolTimeout instead of dialing.
+func TestGetFreesTurnWhenHookFailsNewConn(t *testing.T) {
+	p := NewConnPool(&Options{
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			return &net.TCPConn{}, nil
+		},
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		DialTimeout:        time.Second,
+		PoolTimeout:        100 * time.Millisecond,
+	})
+	defer p.Close()
+
+	hookErr := errors.New("hook error")
+	p.AddPoolHook(&TestHook{GetError: hookErr})
+
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := p.Get(ctx); !errors.Is(err, hookErr) {
+			t.Fatalf("Get #%d err = %v, want %v", i+1, err, hookErr)
+		}
+	}
+	if n := p.QueueLen(); n != 0 {
+		t.Fatalf("pool turns held after failed Gets = %d, want 0", n)
+	}
+}
+
 func TestHookShouldRemove(t *testing.T) {
 	manager := NewPoolHookManager()
 
