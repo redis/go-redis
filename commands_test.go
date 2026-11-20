@@ -3544,6 +3544,18 @@ var _ = Describe("Commands", func() {
 			Expect(replace.Val()).To(Equal(int64(1)))
 		})
 
+		It("should ModuleList", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("4.0", "MODULE LIST requires Redis 4.0+")
+
+			modules, err := rawClient.ModuleList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			// The servers without modules reply with an empty list.
+			for _, module := range modules {
+				Expect(module.Name).NotTo(BeEmpty())
+				Expect(module.Version).To(BeNumerically(">", 0))
+			}
+		})
+
 		It("should fail module loadex", Label("NonRedisEnterprise"), func() {
 			dryRun := rawClient.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
 				Path: "/path/to/non-existent-library.so",
