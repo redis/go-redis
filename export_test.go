@@ -137,6 +137,36 @@ func (c *sentinelFailover) ReplicaAddrs(ctx context.Context) ([]string, error) {
 	return c.replicaAddrs(ctx, false)
 }
 
+// SentinelAddrs returns a copy of current sentinel addresses.
+func (c *sentinelFailover) SentinelAddrs() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]string, len(c.sentinelAddrs))
+	copy(out, c.sentinelAddrs)
+	return out
+}
+
+// SetSentinel sets the cached sentinel client for testing.
+func (c *sentinelFailover) SetSentinel(sentinel *SentinelClient) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sentinel = sentinel
+}
+
+// RotateSentinelAddr exports rotateSentinelAddr for testing.
+func (c *sentinelFailover) RotateSentinelAddr(addr string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rotateSentinelAddr(addr)
+}
+
+// Sentinel returns the cached sentinel client for testing.
+func (c *sentinelFailover) Sentinel() *SentinelClient {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sentinel
+}
+
 // TestBreakerRecordFailure records one failure on the given member's circuit
 // breaker. Exported for testing breaker-gate interactions.
 func (c *MultiDBClient) TestBreakerRecordFailure(id int) {
@@ -187,3 +217,4 @@ func (c *MultiDBClient) TestStaleRecordAfterRemoval(id int) {
 	}
 	db.cb.RecordFailure()
 }
+
