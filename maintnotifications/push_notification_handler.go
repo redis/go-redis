@@ -147,7 +147,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 		// do this in a goroutine to avoid blocking the notification handler
 		// NOTE: This timer is started while parsing the notification, so the connection is not marked for handoff
 		// and there should be no possibility of a race condition or double handoff.
-		time.AfterFunc(time.Duration(timeS/2)*time.Second, func() {
+		time.AfterFunc(time.Duration(timeS)*time.Second/2, func() {
 			if poolConn == nil || poolConn.IsClosed() {
 				return
 			}
