@@ -163,6 +163,26 @@ func (s *Script) ensureHash(ctx context.Context, c Scripter) error {
 	return nil
 }
 
+// reloadHash runs SCRIPT LOAD again after the server answered NOSCRIPT and
+// returns the digest to retry with: ensureHash alone would keep the cached
+// digest and load nothing. The cached digest is never cleared, so a failed
+// load leaves it in place and concurrent callers never read an empty one.
+func (s *Script) reloadHash(ctx context.Context, c Scripter) (string, error) {
+	cmd := c.ScriptLoad(ctx, s.src)
+	if err := cmd.Err(); err != nil {
+		return "", err
+	}
+	hash := cmd.Val()
+	if hash == "" {
+		// The load is only queued, see ensureHash.
+		return "", errNoScriptDigest
+	}
+	s.mu.Lock()
+	s.hash = hash
+	s.mu.Unlock()
+	return hash, nil
+}
+
 func (s *Script) EvalSha(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	// Default behavior: use client-side SHA-1 computed in NewScript.
 	if !s.serverSHA {
@@ -184,13 +204,11 @@ func (s *Script) EvalSha(ctx context.Context, c Scripter, keys []string, args ..
 	r := c.EvalSha(ctx, hash, keys, args...)
 	if HasErrorPrefix(r.Err(), "NOSCRIPT") {
 		// Script cache was flushed; reload and retry once.
-		if err := s.ensureHash(ctx, c); err != nil {
+		reloaded, err := s.reloadHash(ctx, c)
+		if err != nil {
 			return s.Eval(ctx, c, keys, args...)
 		}
-		s.mu.RLock()
-		hash = s.hash
-		s.mu.RUnlock()
-		return c.EvalSha(ctx, hash, keys, args...)
+		return c.EvalSha(ctx, reloaded, keys, args...)
 	}
 
 	return r
@@ -214,13 +232,11 @@ func (s *Script) EvalShaRO(ctx context.Context, c Scripter, keys []string, args 
 
 	r := c.EvalShaRO(ctx, hash, keys, args...)
 	if HasErrorPrefix(r.Err(), "NOSCRIPT") {
-		if err := s.ensureHash(ctx, c); err != nil {
+		reloaded, err := s.reloadHash(ctx, c)
+		if err != nil {
 			return s.EvalRO(ctx, c, keys, args...)
 		}
-		s.mu.RLock()
-		hash = s.hash
-		s.mu.RUnlock()
-		return c.EvalShaRO(ctx, hash, keys, args...)
+		return c.EvalShaRO(ctx, reloaded, keys, args...)
 	}
 
 	return r
