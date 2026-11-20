@@ -60,7 +60,7 @@ type Options struct {
 	// default: is tcp.
 	Network string
 
-	// Addr is the address formated as host:port
+	// Addr is the address formatted as host:port
 	Addr string
 
 	// NodeAddress is the address of the Redis node as reported by the server.
@@ -136,7 +136,7 @@ type Options struct {
 	DB int
 
 	// MaxRetries is the maximum number of retries before giving up.
-	// -1 (not 0) disables retries.
+	// -1 (not 0) disables retries. Any other negative value is treated as -1.
 	//
 	// default: 3 retries
 	MaxRetries int
@@ -853,10 +853,11 @@ func (opt *Options) init() {
 
 	opt.ConnMaxLifetimeJitter = min(opt.ConnMaxLifetimeJitter, opt.ConnMaxLifetime)
 
-	switch opt.MaxRetries {
-	case -1:
+	// < 0, not == -1: the retry loops run while attempt <= MaxRetries, so a
+	// value below -1 would skip the first attempt and report success.
+	if opt.MaxRetries < 0 {
 		opt.MaxRetries = 0
-	case 0:
+	} else if opt.MaxRetries == 0 {
 		opt.MaxRetries = 3
 	}
 	switch opt.MinRetryBackoff {

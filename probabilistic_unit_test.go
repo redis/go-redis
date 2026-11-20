@@ -93,6 +93,63 @@ func TestBFInfoCmdSingleUnknownAttributeStillErrors(t *testing.T) {
 	}
 }
 
+// A filter created with NONSCALING has no expansion rate and the server
+// reports it as null. The rest of the reply must still be parsed.
+func TestBFInfoCmdNonScalingFilter(t *testing.T) {
+	fields := "+Capacity\r\n:100\r\n" +
+		"+Size\r\n:216\r\n" +
+		"+Number of filters\r\n:1\r\n" +
+		"+Number of items inserted\r\n:2\r\n" +
+		"+Expansion rate\r\n"
+	want := BFInfo{Capacity: 100, Size: 216, Filters: 1, ItemsInserted: 2}
+
+	tests := []struct {
+		name  string
+		reply string
+		args  []interface{}
+		want  BFInfo
+	}{
+		{
+			name:  "resp2",
+			reply: "*10\r\n" + fields + "$-1\r\n",
+			args:  []interface{}{"bf.info", "key"},
+			want:  want,
+		},
+		{
+			name:  "resp3",
+			reply: "%5\r\n" + fields + "_\r\n",
+			args:  []interface{}{"bf.info", "key"},
+			want:  want,
+		},
+		{
+			name:  "resp2_expansion_only",
+			reply: "*1\r\n$-1\r\n",
+			args:  []interface{}{"bf.info", "key", "EXPANSION"},
+		},
+		{
+			name:  "resp3_expansion_only",
+			reply: "%1\r\n+Expansion rate\r\n_\r\n",
+			args:  []interface{}{"bf.info", "key", "EXPANSION"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewBFInfoCmd(context.Background(), tc.args...)
+			rd := proto.NewReader(strings.NewReader(tc.reply + "+NEXT\r\n"))
+			if err := cmd.readReply(rd); err != nil {
+				t.Fatalf("readReply() error = %v", err)
+			}
+			if cmd.val != tc.want {
+				t.Fatalf("val = %+v, want %+v", cmd.val, tc.want)
+			}
+			if next, err := rd.ReadString(); err != nil || next != "NEXT" {
+				t.Fatalf("next reply = %q, %v; reader is out of sync", next, err)
+			}
+		})
+	}
+}
+
 // A nil options pointer means "no options", as in BFReserveWithArgs: the
 // command is still built and the server reports what is missing, instead of
 // the client dereferencing the pointer and panicking.
