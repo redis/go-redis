@@ -170,6 +170,7 @@ const (
 	CmdTypeUintSlice
 	CmdTypeAREntrySlice
 	CmdTypeBackupStatus
+	CmdTypeACLUser
 )
 
 type (
@@ -9372,6 +9373,157 @@ func (cmd *ACLLogCmd) Clone() Cmder {
 	}
 }
 
+// -------------------------------------------
+
+// ACLSelector is a set of ACL permissions: the allowed commands, key patterns
+// and Pub/Sub channel patterns, each as a rule string.
+type ACLSelector struct {
+	Commands string
+	Keys     string
+	Channels string
+}
+
+// ACLUser is the reply of ACL GETUSER.
+type ACLUser struct {
+	Flags     []string
+	Passwords []string
+	// The root permissions of the user.
+	ACLSelector
+	// The selectors added to the user with "(...)" rules.
+	Selectors []ACLSelector
+}
+
+type ACLUserCmd struct {
+	baseCmd
+
+	val *ACLUser
+}
+
+var _ Cmder = (*ACLUserCmd)(nil)
+
+func NewACLUserCmd(ctx context.Context, args ...interface{}) *ACLUserCmd {
+	return &ACLUserCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeACLUser,
+		},
+	}
+}
+
+func (cmd *ACLUserCmd) SetVal(val *ACLUser) {
+	cmd.val = val
+}
+
+func (cmd *ACLUserCmd) Val() *ACLUser {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *ACLUserCmd) Result() (*ACLUser, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *ACLUserCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ACLUserCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	user := &ACLUser{}
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "flags":
+			user.Flags, err = readStringSlice(rd)
+		case "passwords":
+			user.Passwords, err = readStringSlice(rd)
+		case "selectors":
+			var m int
+			if m, err = rd.ReadArrayLen(); err != nil {
+				return err
+			}
+			user.Selectors = make([]ACLSelector, m)
+			for j := 0; j < m; j++ {
+				var fields int
+				if fields, err = rd.ReadMapLen(); err != nil {
+					return err
+				}
+				for k := 0; k < fields; k++ {
+					if key, err = rd.ReadString(); err != nil {
+						return err
+					}
+					if err = user.Selectors[j].readField(rd, key); err != nil {
+						return err
+					}
+				}
+			}
+		default:
+			err = user.readField(rd, key)
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd.val = user
+	return nil
+}
+
+func (s *ACLSelector) readField(rd *proto.Reader, key string) (err error) {
+	switch key {
+	case "commands":
+		s.Commands, err = rd.ReadString()
+	case "keys":
+		s.Keys, err = rd.ReadString()
+	case "channels":
+		s.Channels, err = rd.ReadString()
+	default:
+		// skip unknown fields
+		err = rd.DiscardNext()
+	}
+	return err
+}
+
+func readStringSlice(rd *proto.Reader) ([]string, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+	ss := make([]string, n)
+	for i := range ss {
+		if ss[i], err = rd.ReadString(); err != nil {
+			return nil, err
+		}
+	}
+	return ss, nil
+}
+
+func (cmd *ACLUserCmd) Clone() Cmder {
+	var val *ACLUser
+	if cmd.val != nil {
+		u := *cmd.val
+		u.Flags = slices.Clone(u.Flags)
+		u.Passwords = slices.Clone(u.Passwords)
+		u.Selectors = slices.Clone(u.Selectors)
+		val = &u
+	}
+	return &ACLUserCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
 // LibraryInfo holds the library info.
 type LibraryInfo struct {
 	LibName *string
@@ -10221,6 +10373,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return slowLogCmd.Val(), slowLogCmd.Err()
+			}
+		case CmdTypeACLUser:
+			if aclUserCmd, ok := cmd.(interface {
+				Val() *ACLUser
+				Err() error
+			}); ok {
+				return aclUserCmd.Val(), aclUserCmd.Err()
 			}
 		case CmdTypeHotKeys:
 			if hotKeysCmd, ok := cmd.(interface {
