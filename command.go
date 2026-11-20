@@ -172,6 +172,7 @@ const (
 	CmdTypeBackupStatus
 	CmdTypeACLUser
 	CmdTypeClusterSlotStats
+	CmdTypeLatencyHistory
 )
 
 type (
@@ -6910,6 +6911,87 @@ func (cmd *LatencyCmd) Clone() Cmder {
 
 //-----------------------------------------------------------------------
 
+// LatencySample is one latency spike of an event, as reported by
+// LATENCY HISTORY.
+type LatencySample struct {
+	Time    time.Time
+	Latency time.Duration
+}
+
+type LatencyHistoryCmd struct {
+	baseCmd
+
+	val []LatencySample
+}
+
+var _ Cmder = (*LatencyHistoryCmd)(nil)
+
+func NewLatencyHistoryCmd(ctx context.Context, args ...interface{}) *LatencyHistoryCmd {
+	return &LatencyHistoryCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeLatencyHistory,
+		},
+	}
+}
+
+func (cmd *LatencyHistoryCmd) SetVal(val []LatencySample) {
+	cmd.val = val
+}
+
+func (cmd *LatencyHistoryCmd) Val() []LatencySample {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *LatencyHistoryCmd) Result() ([]LatencySample, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *LatencyHistoryCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *LatencyHistoryCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]LatencySample, n)
+
+	for i := range cmd.val {
+		if err := rd.ReadFixedArrayLen(2); err != nil {
+			return err
+		}
+		sec, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		ms, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = LatencySample{
+			Time:    time.Unix(sec, 0),
+			Latency: time.Duration(ms) * time.Millisecond,
+		}
+	}
+
+	return nil
+}
+
+func (cmd *LatencyHistoryCmd) Clone() Cmder {
+	return &LatencyHistoryCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     slices.Clone(cmd.val),
+	}
+}
+
+//-----------------------------------------------------------------------
+
 // HotKeysSlotRange represents a slot or slot range in the response.
 // Single element slice = individual slot, two element slice = slot range [start, end].
 type HotKeysSlotRange []int64
@@ -10531,6 +10613,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return clusterSlotStatsCmd.Val(), clusterSlotStatsCmd.Err()
+			}
+		case CmdTypeLatencyHistory:
+			if latencyHistoryCmd, ok := cmd.(interface {
+				Val() []LatencySample
+				Err() error
+			}); ok {
+				return latencyHistoryCmd.Val(), latencyHistoryCmd.Err()
 			}
 		case CmdTypeClusterShards:
 			if clusterShardsCmd, ok := cmd.(interface {
