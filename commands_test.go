@@ -830,6 +830,16 @@ var _ = Describe("Commands", func() {
 			Expect(replicaOf.Val()).To(Equal("OK"))
 		})
 
+		It("should Role", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("2.8", "ROLE requires Redis 2.8.12+")
+
+			role, err := rawClient.Role(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(role.Role).To(Equal("master"))
+			Expect(role.ReplOffset).To(BeNumerically(">=", 0))
+			Expect(role.Replicas).To(BeEmpty())
+		})
+
 		It("should Time", func() {
 			tm, err := rawClient.Time(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())

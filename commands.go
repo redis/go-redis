@@ -247,6 +247,7 @@ type Cmdable interface {
 	ShutdownNoSave(ctx context.Context) *StatusCmd
 	SlaveOf(ctx context.Context, host, port string) *StatusCmd
 	ReplicaOf(ctx context.Context, host, port string) *StatusCmd
+	Role(ctx context.Context) *RoleCmd
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	SlowLogLen(ctx context.Context) *IntCmd
 	SlowLogReset(ctx context.Context) *StatusCmd
@@ -869,6 +870,16 @@ func (c cmdable) LatencyReset(ctx context.Context, events ...interface{}) *Statu
 
 func (c cmdable) Sync(_ context.Context) {
 	panic("not implemented")
+}
+
+// Role returns the replication role of the server: "master", "slave" or
+// "sentinel", with the replication state that belongs to that role.
+//
+// See https://redis.io/docs/latest/commands/role/
+func (c cmdable) Role(ctx context.Context) *RoleCmd {
+	cmd := NewRoleCmd(ctx, "role")
+	_ = c(ctx, cmd)
+	return cmd
 }
 
 func (c cmdable) Time(ctx context.Context) *TimeCmd {
