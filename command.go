@@ -9265,43 +9265,9 @@ func (cmd *ACLLogCmd) Clone() Cmder {
 				}
 				// Clone ClientInfo if present
 				if entry.ClientInfo != nil {
-					val[i].ClientInfo = &ClientInfo{
-						ID:                 entry.ClientInfo.ID,
-						Addr:               entry.ClientInfo.Addr,
-						LAddr:              entry.ClientInfo.LAddr,
-						FD:                 entry.ClientInfo.FD,
-						Name:               entry.ClientInfo.Name,
-						Age:                entry.ClientInfo.Age,
-						Idle:               entry.ClientInfo.Idle,
-						Flags:              entry.ClientInfo.Flags,
-						DB:                 entry.ClientInfo.DB,
-						Sub:                entry.ClientInfo.Sub,
-						PSub:               entry.ClientInfo.PSub,
-						SSub:               entry.ClientInfo.SSub,
-						Multi:              entry.ClientInfo.Multi,
-						Watch:              entry.ClientInfo.Watch,
-						QueryBuf:           entry.ClientInfo.QueryBuf,
-						QueryBufFree:       entry.ClientInfo.QueryBufFree,
-						ArgvMem:            entry.ClientInfo.ArgvMem,
-						MultiMem:           entry.ClientInfo.MultiMem,
-						BufferSize:         entry.ClientInfo.BufferSize,
-						BufferPeak:         entry.ClientInfo.BufferPeak,
-						OutputBufferLength: entry.ClientInfo.OutputBufferLength,
-						OutputListLength:   entry.ClientInfo.OutputListLength,
-						OutputMemory:       entry.ClientInfo.OutputMemory,
-						TotalMemory:        entry.ClientInfo.TotalMemory,
-						IoThread:           entry.ClientInfo.IoThread,
-						Events:             entry.ClientInfo.Events,
-						LastCmd:            entry.ClientInfo.LastCmd,
-						User:               entry.ClientInfo.User,
-						Redir:              entry.ClientInfo.Redir,
-						Resp:               entry.ClientInfo.Resp,
-						LibName:            entry.ClientInfo.LibName,
-						LibVer:             entry.ClientInfo.LibVer,
-						ReadEvents:         entry.ClientInfo.ReadEvents,
-						AvgPipelineLenSum:  entry.ClientInfo.AvgPipelineLenSum,
-						AvgPipelineLenCnt:  entry.ClientInfo.AvgPipelineLenCnt,
-					}
+					// Copy the struct so a field added later is not left out.
+					ci := *entry.ClientInfo
+					val[i].ClientInfo = &ci
 				}
 			}
 		}

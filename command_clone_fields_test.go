@@ -60,6 +60,21 @@ func TestCloneKeepsAllValueFields(t *testing.T) {
 		}
 	})
 
+	t.Run("ACLLogCmd", func(t *testing.T) {
+		cmd := NewACLLogCmd(ctx)
+		cmd.SetVal([]*ACLLogEntry{{
+			Count:      1,
+			ClientInfo: &ClientInfo{ID: 7, TotalNetIn: 10, TotalNetOut: 20, TotalCmds: 30},
+		}})
+		got := cmd.Clone().(*ACLLogCmd).Val()
+		if !reflect.DeepEqual(got, cmd.Val()) {
+			t.Errorf("got %+v, want %+v", got[0].ClientInfo, cmd.Val()[0].ClientInfo)
+		}
+		if got[0].ClientInfo == cmd.Val()[0].ClientInfo {
+			t.Error("clone shares ClientInfo with the original")
+		}
+	})
+
 	t.Run("FTSearchCmd", func(t *testing.T) {
 		cmd := newFTSearchCmd(ctx, nil)
 		cmd.SetVal(FTSearchResult{Total: 1, Docs: []Document{{ID: "doc:1", Error: Nil}}})
