@@ -556,14 +556,15 @@ func TestPubSubInitPanicSettlesLimiter(t *testing.T) {
 	})
 	defer client.Close()
 
-	var pubsub *PubSub
+	// The shared pub/sub connection is dialed on the manager's goroutine,
+	// so drive the admission-holding dial directly: a panic there must
+	// still settle the admission before it propagates.
 	recovered := recoverPanic(func() {
-		pubsub = client.Subscribe(ctx, "limiter-handshake")
-		_, _ = pubsub.Receive(ctx)
+		cn, err := client.newPubSubConn(ctx, client.opt.Addr, nil)
+		if err == nil {
+			_ = client.pubsubDisconnect(cn)
+		}
 	})
-	if pubsub != nil {
-		defer pubsub.Close()
-	}
 	if recovered == nil {
 		t.Fatal("the OnConnect panic did not propagate")
 	}

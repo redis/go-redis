@@ -121,12 +121,12 @@ func TestNewPubSubClusterActiveRetryableAfterStandaloneLoss(t *testing.T) {
 	core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
 	core.active.Store(1)
 
-	ps := core.newPubSub() // created while a standalone member (id 0) exists
+	core.newPubSub() // created while a standalone member (id 0) exists
 
 	// The standalone is removed; the cluster member stays active.
 	delete(core.dbs, 0)
 
-	_, err := ps.newConn(context.Background(), "", nil)
+	_, err := core.psHooks.NewConn(context.Background(), "")
 	if errors.Is(err, ErrClosed) {
 		t.Fatalf("newConn returned terminal ErrClosed for a config that had a standalone at creation")
 	}
@@ -148,15 +148,12 @@ func TestNewPubSubAdoptsStandaloneOptionsWhenClusterActive(t *testing.T) {
 	core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
 	core.active.Store(1)                                                                                              // cluster active at creation
 
-	ps := core.newPubSub()
-	if ps.opt == nil {
-		t.Fatal("PubSub opt is nil")
+	opt := core.pubSubOptions()
+	if opt.WriteTimeout != standalone.opt.WriteTimeout {
+		t.Errorf("PubSub WriteTimeout = %v, want the standalone's %v (zero-Options bug)", opt.WriteTimeout, standalone.opt.WriteTimeout)
 	}
-	if ps.opt.WriteTimeout != standalone.opt.WriteTimeout {
-		t.Errorf("PubSub WriteTimeout = %v, want the standalone's %v (zero-Options bug)", ps.opt.WriteTimeout, standalone.opt.WriteTimeout)
-	}
-	if ps.opt.Protocol != 3 {
-		t.Errorf("PubSub Protocol = %d, want 3 (standalone's)", ps.opt.Protocol)
+	if opt.Protocol != 3 {
+		t.Errorf("PubSub Protocol = %d, want 3 (standalone's)", opt.Protocol)
 	}
 }
 
@@ -168,9 +165,9 @@ func TestNewPubSubAllClusterAtCreationTerminal(t *testing.T) {
 	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
 	core.active.Store(0)
 
-	ps := core.newPubSub() // all-cluster at creation
+	core.newPubSub() // all-cluster at creation
 
-	_, err := ps.newConn(context.Background(), "", nil)
+	_, err := core.psHooks.NewConn(context.Background(), "")
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("all-cluster newConn err = %v, want terminal ErrClosed", err)
 	}
@@ -2521,9 +2518,9 @@ func TestMultiDBSSubscribeFallsBackToFollowerWhenGateRejects(t *testing.T) {
 
 	ps := mdb.SSubscribe(ctx, "ch")
 	t.Cleanup(func() { _ = ps.Close() })
-	// Only the MultiDB follower carries a per-connection processor lookup; a
-	// member's own PubSub does not.
-	if ps.processorFor == nil {
+	// Only the MultiDB follower is built on the core's shared manager; a
+	// member's own PubSub never creates it.
+	if !multidbFollowerCreated(mdb.core) {
 		t.Fatal("SSubscribe returned a PubSub pinned to the rejected member; want the follower")
 	}
 }
@@ -2552,11 +2549,19 @@ func TestMultiDBSSubscribeAllClusterGateRejectBindsToClusterMember(t *testing.T)
 
 	ps := mdb.SSubscribe(ctx, "ch")
 	t.Cleanup(func() { _ = ps.Close() })
-	// The MultiDB follower carries a per-connection processor lookup; a
-	// member's own PubSub does not.
-	if ps.processorFor != nil {
+	// The MultiDB follower is built on the core's shared manager; a
+	// member's own PubSub never creates it.
+	if multidbFollowerCreated(mdb.core) {
 		t.Fatal("SSubscribe returned the standalone-only follower for an all-cluster deployment; it can never attach")
 	}
+}
+
+// multidbFollowerCreated reports whether a MultiDB follower PubSub was
+// created: the core's shared pub/sub manager exists only then.
+func multidbFollowerCreated(core *multidbCore) bool {
+	core.pubsubMu.Lock()
+	defer core.pubsubMu.Unlock()
+	return core.psManager != nil
 }
 
 // resetInsideRecordFD simulates a detector reset (operator reselect, failover,
@@ -2820,27 +2825,28 @@ func TestMultiDBPubSubUsesConnectionOwnersPushProcessor(t *testing.T) {
 	// Created while the RESP2 member is active.
 	ps := mdb.core.newPubSub()
 	t.Cleanup(func() { _ = ps.Close() })
-	if ps.opt.Protocol != 2 {
-		t.Fatalf("PubSub creation-time protocol = %d, want 2 (member 0 is active)", ps.opt.Protocol)
+	if p := mdb.core.pubSubOptions().Protocol; p != 2 {
+		t.Fatalf("PubSub creation-time protocol = %d, want 2 (member 0 is active)", p)
 	}
+	hooks := mdb.core.psHooks
 
-	cn, err := ps.newConn(ctx, "", nil)
+	cn, err := hooks.NewConn(ctx, "")
 	if err != nil {
 		t.Fatalf("newConn on the active member: %v", err)
 	}
-	t.Cleanup(func() { _ = ps.closeConn(cn) })
-	if got := ps.pushProcessorFor(cn); got != nil {
+	t.Cleanup(func() { _ = hooks.CloseConn(cn) })
+	if got := hooks.processorFor(cn); got != nil {
 		t.Fatalf("pushes would be processed on a connection owned by the RESP2 member")
 	}
 
 	// Failover: the follower's next dial lands on member 1 (RESP3).
 	mdb.core.active.Store(1)
-	cn2, err := ps.newConn(ctx, "", nil)
+	cn2, err := hooks.NewConn(ctx, "")
 	if err != nil {
 		t.Fatalf("newConn after failover: %v", err)
 	}
-	t.Cleanup(func() { _ = ps.closeConn(cn2) })
-	if got := ps.pushProcessorFor(cn2); got != b.pushProcessor {
+	t.Cleanup(func() { _ = hooks.CloseConn(cn2) })
+	if got := hooks.processorFor(cn2); got != b.pushProcessor {
 		t.Fatalf("pushes on a connection owned by the RESP3 member 1 are not dispatched to its processor (got nil: %v, creation-time member's: %v)", got == nil, got == a.pushProcessor)
 	}
 }
@@ -2870,15 +2876,16 @@ func TestMultiDBPubSubDropsPushesOnClosedConnection(t *testing.T) {
 
 	ps := mdb.core.newPubSub()
 	t.Cleanup(func() { _ = ps.Close() })
-	cn, err := ps.newConn(ctx, "", nil)
+	hooks := mdb.core.psHooks
+	cn, err := hooks.NewConn(ctx, "")
 	if err != nil {
 		t.Fatalf("newConn: %v", err)
 	}
-	if ps.pushProcessorFor(cn) == nil {
+	if hooks.processorFor(cn) == nil {
 		t.Fatal("a live RESP3 connection has no processor")
 	}
-	_ = ps.closeConn(cn)
-	if got := ps.pushProcessorFor(cn); got != nil {
+	_ = hooks.CloseConn(cn)
+	if got := hooks.processorFor(cn); got != nil {
 		t.Fatal("a push on a closed connection would be dispatched through the creation-time member's processor; want dropped")
 	}
 }
@@ -2924,6 +2931,32 @@ func pubSubDialRecorder(t *testing.T) (*MultiDBClient, func() []string) {
 	}
 }
 
+// liveMultidbPubSubConns returns the open connections the MultiDB pub/sub
+// hooks currently know.
+func liveMultidbPubSubConns(hooks *multidbPubSubHooks) []*pool.Conn {
+	var conns []*pool.Conn
+	hooks.conns.Range(func(k, _ any) bool {
+		if cn := k.(*pool.Conn); !cn.IsClosed() {
+			conns = append(conns, cn)
+		}
+		return true
+	})
+	return conns
+}
+
+// waitDials waits until dials reports n addresses.
+func waitDials(t *testing.T, dials func() []string, n int) []string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got := dials()
+		if len(got) >= n || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A handoff (MOVING) on a PubSub connection re-dials the new endpoint of the
 // member that owns the connection, and only that member.
 func TestMultiDBPubSubHandoffDialsNewEndpoint(t *testing.T) {
@@ -2934,27 +2967,30 @@ func TestMultiDBPubSubHandoffDialsNewEndpoint(t *testing.T) {
 	if err := ps.Subscribe(ctx, "ch"); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	if err := ps.cn.MarkForHandoff("127.0.0.1:9", 1); err != nil {
+	hooks := mdb.core.psHooks
+	conns := liveMultidbPubSubConns(hooks)
+	if len(conns) != 1 {
+		t.Fatalf("live pub/sub conns = %d, want 1", len(conns))
+	}
+	if err := conns[0].MarkForHandoff("127.0.0.1:9", 1); err != nil {
 		t.Fatalf("MarkForHandoff: %v", err)
 	}
-	ps.mu.Lock()
-	ps.releaseConn(ctx, ps.cn, nil, false)
-	ps.mu.Unlock()
-	if got := dials(); len(got) != 2 || got[1] != "127.0.0.1:9" {
+	mdb.core.psManager.RecheckConn()
+	if got := waitDials(t, dials, 2); len(got) != 2 || got[1] != "127.0.0.1:9" {
 		t.Fatalf("dials = %v, want the handoff endpoint 127.0.0.1:9 last", got)
 	}
 
 	// After a failover the handoff endpoint of member 0 must not be used.
 	mdb.core.active.Store(1)
-	ps.forceReconnect(ctx, errors.New("switch"))
-	if got := dials(); len(got) != 3 || got[2] != "127.0.0.1:2" {
+	mdb.core.notifyPubSubs(ctx)
+	if got := waitDials(t, dials, 3); len(got) != 3 || got[2] != "127.0.0.1:2" {
 		t.Fatalf("dials = %v, want member 1's address 127.0.0.1:2 last", got)
 	}
 
 	// Failing back to member 0 dials its handoff endpoint again.
 	mdb.core.active.Store(0)
-	ps.forceReconnect(ctx, errors.New("switch"))
-	if got := dials(); len(got) != 4 || got[3] != "127.0.0.1:9" {
+	mdb.core.notifyPubSubs(ctx)
+	if got := waitDials(t, dials, 4); len(got) != 4 || got[3] != "127.0.0.1:9" {
 		t.Fatalf("dials = %v, want member 0's handoff endpoint 127.0.0.1:9 last", got)
 	}
 }
@@ -2964,27 +3000,42 @@ func TestMultiDBPubSubForceReconnectSkipsEmptyHandle(t *testing.T) {
 	mdb, dials := pubSubDialRecorder(t)
 	ps := mdb.core.newPubSub()
 	t.Cleanup(func() { _ = ps.Close() })
-	ps.forceReconnect(context.Background(), errors.New("switch"))
+	mdb.core.notifyPubSubs(context.Background())
+	time.Sleep(50 * time.Millisecond)
 	if got := dials(); len(got) != 0 {
 		t.Fatalf("dials = %v, want none for an empty PubSub", got)
 	}
 }
 
-// A reconnect whose switch was superseded (ctx canceled) while it waited for
-// the PubSub mutex must not close the connection the newer switch made.
+// Rapid active changes end on the newest active member: an older switch's
+// reconnect must not leave the subscription on a superseded member.
 func TestMultiDBPubSubSupersededReconnectKeepsConn(t *testing.T) {
 	mdb, dials := pubSubDialRecorder(t)
+	ctx := context.Background()
 	ps := mdb.core.newPubSub()
 	t.Cleanup(func() { _ = ps.Close() })
-	if err := ps.Subscribe(context.Background(), "ch"); err != nil {
+	if err := ps.Subscribe(ctx, "ch"); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	cn := ps.cn
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	ps.forceReconnect(ctx, errors.New("switch"))
-	if ps.cn != cn || cn.IsClosed() || len(dials()) != 1 {
-		t.Fatalf("superseded reconnect replaced the live connection (dials %v)", dials())
+	mdb.core.active.Store(1)
+	mdb.core.notifyPubSubs(ctx)
+	mdb.core.active.Store(0)
+	mdb.core.notifyPubSubs(ctx)
+
+	hooks := mdb.core.psHooks
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		conns := liveMultidbPubSubConns(hooks)
+		if len(conns) == 1 {
+			info := hooks.connInfo(conns[0])
+			if info != nil && info.owner == mdb.core.dbs[0].c && info.gen == hooks.gen.Load() {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("subscription did not settle on the newest active member (live conns %d, dials %v)", len(conns), dials())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

@@ -2,257 +2,166 @@ package redis
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/maintnotifications"
+	"github.com/redis/go-redis/v9/push"
 )
 
-// Client.pubSub / SentinelClient.pubSub used to alias the client's *Options
-// (opt: c.opt) instead of taking a private copy. PubSub.reconnect rewrites
-// c.opt.Addr (pubsub.go) under the PubSub mutex when a connection is handed
-// off, while the client's connection pool dialer reads opt.Addr (options.go,
-// the Dialer closure) lock-free on every dial. Both point at the same Options,
-// so the rewrite and the dial read race.
+// handoffOnPushHandler marks the connection a push notification arrived
+// on for handoff to endpoint, the way the MOVING handler does.
+type handoffOnPushHandler struct{ endpoint string }
+
+func (h handoffOnPushHandler) HandlePushNotification(_ context.Context, handlerCtx push.NotificationHandlerContext, _ []any) error {
+	cn, ok := handlerCtx.Conn.(*pool.Conn)
+	if !ok {
+		return fmt.Errorf("push handler got conn of type %T", handlerCtx.Conn)
+	}
+	return cn.MarkForHandoff(h.endpoint, 1)
+}
+
+// pubSubHandoffSetup is a client whose shared pub/sub connection is
+// handed off from server A to server B: A confirms the subscribe, then
+// pushes a notification that marks the connection for handoff to B, and
+// sends nothing more.
+type pubSubHandoffSetup struct {
+	client        *Client
+	addrA         string
+	subscribedOnB atomic.Bool // a subscribe reaching B proves the move
+}
+
+func newPubSubHandoffSetup(t *testing.T, opt *Options) *pubSubHandoffSetup {
+	t.Helper()
+	const pushName = "TEST_HANDOFF"
+	subscribeReply := func(channel string) string {
+		return fmt.Sprintf("*3\r\n$9\r\nsubscribe\r\n$%d\r\n%s\r\n:1\r\n", len(channel), channel)
+	}
+
+	listen := func(replyFor func(command string) string) string {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			for {
+				netConn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go serveTestRESPConn(netConn, replyFor)
+			}
+		}()
+		return ln.Addr().String()
+	}
+
+	s := &pubSubHandoffSetup{}
+	addrB := listen(func(command string) string {
+		switch command {
+		case "hello":
+			return "%0\r\n"
+		case "subscribe":
+			s.subscribedOnB.Store(true)
+			return subscribeReply(pubSubHandoffChannel)
+		}
+		return "+OK\r\n"
+	})
+	s.addrA = listen(func(command string) string {
+		switch command {
+		case "hello":
+			return "%0\r\n"
+		case "subscribe":
+			return subscribeReply(pubSubHandoffChannel) + fmt.Sprintf(">2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+				len(pushName), pushName, len(addrB), addrB)
+		}
+		return "+OK\r\n"
+	})
+
+	opt.Addr = s.addrA
+	opt.Protocol = 3
+	opt.MaxRetries = -1
+	opt.DisableIdentity = true
+	opt.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
+	s.client = NewClient(opt)
+	t.Cleanup(func() { _ = s.client.Close() })
+	if err := s.client.RegisterPushNotificationHandler(pushName, handoffOnPushHandler{endpoint: addrB}, false); err != nil {
+		t.Fatalf("register push handler: %v", err)
+	}
+	return s
+}
+
+const pubSubHandoffChannel = "handoff-ch"
+
+// waitHandedOff reports whether the pub/sub connection reached B within
+// timeout.
+func (s *pubSubHandoffSetup) waitHandedOff(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for !s.subscribedOnB.Load() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return true
+}
+
+// The pub/sub engine used to alias the client's *Options (the old PubSub
+// took opt: c.opt) and rewrote opt.Addr on a handoff, racing the pool
+// dialer's lock-free read of the same field. The manager must keep its
+// own copy: a handoff redirects only the pub/sub connection and never
+// writes the client's Options.
 //
-// Run with -race. Before the fix the shared Addr is read and written
-// concurrently; after it the PubSub owns a private copy and the pointer
-// identity check below also fails without -race.
-func TestPubSubDoesNotAliasClientOptions(t *testing.T) {
-	client := NewClient(&Options{Addr: "127.0.0.1:1"})
-	defer client.Close()
+// Run with -race: a write to the shared Options races the reader below.
+// Without -race, the Addr check still catches a redirect that leaked into
+// the client.
+func TestPubSubHandoffDoesNotWriteClientOptions(t *testing.T) {
+	s := newPubSubHandoffSetup(t, &Options{})
 
-	ps := client.pubSub()
-	defer ps.Close()
-
-	const iters = 100000
-
+	// Reader: the pool dialer reads the client's opt.Addr lock-free.
+	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Writer: mirror PubSub.reconnect rewriting opt.Addr under the PubSub mutex.
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iters; i++ {
-			ps.mu.Lock()
-			ps.opt.Addr = "127.0.0.1:2"
-			ps.mu.Unlock()
-		}
-	}()
-
-	// Reader: the pool dialer reads client.opt.Addr lock-free (options.go).
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iters; i++ {
-			_ = client.opt.Addr
-		}
-	}()
-
-	wg.Wait()
-
-	if ps.opt == client.opt {
-		t.Fatal("PubSub aliases the client's *Options; reconnect races the pool dialer")
-	}
-}
-
-// TestPubSubGetContextRace pins synchronization between PubSub.ReceiveTimeout
-// writing c.cmd and concurrent readers of c.getContext() (such as sentinelFailover.listen).
-func TestPubSubGetContextRace(t *testing.T) {
-	pubsub := &PubSub{}
-	pubsub.init()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	const iters = 100000
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Writer: mirrors PubSub.ReceiveTimeout updating c.cmd under c.mu.
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iters; i++ {
-			cmd := NewCmd(ctx)
-			pubsub.mu.Lock()
-			pubsub.cmd = cmd
-			pubsub.mu.Unlock()
-		}
-	}()
-
-	// Reader: mirrors sentinelFailover.listen calling pubsub.getContext().
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iters; i++ {
-			_ = pubsub.getContext()
-		}
-	}()
-
-	wg.Wait()
-}
-
-// TestPubSubReceiveTimeoutGetContextRace verifies that active execution of ReceiveTimeout
-// synchronizes c.cmd updates with concurrent getContext reads.
-func TestPubSubReceiveTimeoutGetContextRace(t *testing.T) {
-	pubsub := &PubSub{
-		opt: &Options{},
-	}
-	pubsub.init()
-
-	c1, c2 := net.Pipe()
-	defer c1.Close()
-	defer c2.Close()
-	pubsub.SetNetConn(c1)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	const iters = 500
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Writer: actively invokes ReceiveTimeout which writes c.cmd in its reader loop.
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iters; i++ {
-			_, _ = pubsub.ReceiveTimeout(ctx, time.Microsecond)
-		}
-	}()
-
-	// Reader: mirrors sentinelFailover.listen calling pubsub.getContext().
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iters; i++ {
-			_ = pubsub.getContext()
-		}
-	}()
-
-	wg.Wait()
-}
-
-// TestPubSubReceiveTimeoutReusesCmdPerConn verifies that ReceiveTimeout
-// allocates c.cmd once per connection, reuses it across frames and AUTH-OK
-// retries, resets it on closeTheCn, and remains race-free with getContext.
-func TestPubSubReceiveTimeoutReusesCmdPerConn(t *testing.T) {
-	client := NewClient(&Options{Addr: "127.0.0.1:1", Protocol: 3})
-	defer client.Close()
-
-	ps := client.pubSub()
-	defer ps.Close()
-
-	c1, c2 := net.Pipe()
-	defer c1.Close()
-	defer c2.Close()
-	ps.SetNetConn(c1)
-	ps.cn.SetResp3(true)
-
-	done := make(chan struct{})
-	var readerWG sync.WaitGroup
-	readerWG.Add(1)
-	go func() {
-		defer readerWG.Done()
+	wg.Go(func() {
 		for {
 			select {
-			case <-done:
+			case <-stop:
 				return
 			default:
-				_ = ps.getContext()
+				_ = s.client.opt.Addr
 			}
 		}
-	}()
-	defer func() {
-		close(done)
-		readerWG.Wait()
-	}()
+	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	pubsub := s.client.Subscribe(context.Background(), pubSubHandoffChannel)
+	t.Cleanup(func() { _ = pubsub.Close() })
 
-	// Frame 1 initializes ps.cmd once for the active connection.
-	go func() {
-		_, _ = c2.Write([]byte(">3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$2\r\nm1\r\n"))
-	}()
-	msg, err := ps.ReceiveTimeout(ctx, time.Second)
-	if err != nil {
-		t.Fatalf("first ReceiveTimeout failed: %v", err)
+	handedOff := s.waitHandedOff(5 * time.Second)
+	close(stop)
+	wg.Wait()
+	if !handedOff {
+		t.Fatal("pub/sub connection was not handed off to the second server")
 	}
-	m, ok := msg.(*Message)
-	if !ok || m.Payload != "m1" {
-		t.Fatalf("unexpected first message: %#v", msg)
+	if got := s.client.opt.Addr; got != s.addrA {
+		t.Fatalf("client Options.Addr = %q after pub/sub handoff, want %q", got, s.addrA)
 	}
+}
 
-	ps.mu.Lock()
-	firstCmd := ps.cmd
-	ps.mu.Unlock()
-	if firstCmd == nil {
-		t.Fatal("expected ps.cmd to be initialized after first ReceiveTimeout")
-	}
+// A push that marks the shared pub/sub connection for handoff is acted
+// on at once, not when the next frame arrives: after the push the
+// connection is idle, and with the health check disabled no frame ever
+// would — the connection would stay on the old endpoint indefinitely.
+func TestPubSubHandoffPushOnIdleConnRetiresAtOnce(t *testing.T) {
+	s := newPubSubHandoffSetup(t, &Options{PubSubHealthCheckInterval: -1})
 
-	// Frame 2 + AUTH-OK internal retry reuse the exact same *Cmd instance.
-	ps.mu.Lock()
-	ps.authPending++
-	ps.mu.Unlock()
+	pubsub := s.client.Subscribe(context.Background(), pubSubHandoffChannel)
+	t.Cleanup(func() { _ = pubsub.Close() })
 
-	go func() {
-		_, _ = c2.Write([]byte("+OK\r\n"))
-		_, _ = c2.Write([]byte(">3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$2\r\nm2\r\n"))
-	}()
-	msg, err = ps.ReceiveTimeout(ctx, time.Second)
-	if err != nil {
-		t.Fatalf("second ReceiveTimeout failed: %v", err)
-	}
-	m, ok = msg.(*Message)
-	if !ok || m.Payload != "m2" {
-		t.Fatalf("unexpected second message: %#v", msg)
-	}
-
-	ps.mu.Lock()
-	reusedCmd := ps.cmd
-	authPending := ps.authPending
-	ps.mu.Unlock()
-	if reusedCmd != firstCmd {
-		t.Fatalf("expected ps.cmd pointer reuse (%p), got %p", firstCmd, reusedCmd)
-	}
-	if authPending != 0 {
-		t.Fatalf("expected authPending decremented to 0, got %d", authPending)
-	}
-
-	// Closing the connection resets ps.cmd so a new connection allocates cleanly.
-	ps.mu.Lock()
-	if err := ps.closeTheCn(errors.New("reset")); err != nil {
-		ps.mu.Unlock()
-		t.Fatalf("closeTheCn failed: %v", err)
-	}
-	resetCmd := ps.cmd
-	ps.mu.Unlock()
-	if resetCmd != nil {
-		t.Fatalf("expected ps.cmd reset to nil after closeTheCn, got %p", resetCmd)
-	}
-
-	c3, c4 := net.Pipe()
-	defer c3.Close()
-	defer c4.Close()
-	ps.SetNetConn(c3)
-	ps.cn.SetResp3(true)
-
-	go func() {
-		_, _ = c4.Write([]byte(">3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$2\r\nm3\r\n"))
-	}()
-	msg, err = ps.ReceiveTimeout(ctx, time.Second)
-	if err != nil {
-		t.Fatalf("third ReceiveTimeout failed: %v", err)
-	}
-	m, ok = msg.(*Message)
-	if !ok || m.Payload != "m3" {
-		t.Fatalf("unexpected third message: %#v", msg)
-	}
-
-	ps.mu.Lock()
-	secondCmd := ps.cmd
-	ps.mu.Unlock()
-	if secondCmd == nil || secondCmd == firstCmd {
-		t.Fatalf("expected fresh ps.cmd after reconnect (first=%p, second=%p)", firstCmd, secondCmd)
+	if !s.waitHandedOff(2 * time.Second) {
+		t.Fatal("handoff push on an idle pub/sub connection was not acted on")
 	}
 }

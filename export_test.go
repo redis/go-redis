@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"testing"
 
@@ -19,10 +18,6 @@ func NewTestRedisAddr(t *testing.T) string {
 
 func (c *baseClient) Pool() pool.Pooler {
 	return c.connPool
-}
-
-func (c *PubSub) SetNetConn(netConn net.Conn) {
-	c.cn = pool.NewConn(netConn)
 }
 
 func (c *ClusterClient) LoadState(ctx context.Context) (*clusterState, error) {

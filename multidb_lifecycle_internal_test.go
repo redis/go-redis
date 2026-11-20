@@ -2369,7 +2369,7 @@ func TestMultiDBPubSubDialCompletedAfterRemovalIsRejected(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		cn, err := ps.newConn(context.Background(), "", nil)
+		cn, err := mdb.core.psHooks.NewConn(context.Background(), "")
 		done <- result{cn, err}
 	}()
 	<-entered
@@ -2386,7 +2386,7 @@ func TestMultiDBPubSubDialCompletedAfterRemovalIsRejected(t *testing.T) {
 		t.Fatal("newConn did not return")
 	}
 	if r.err == nil {
-		_ = ps.closeConn(r.cn)
+		_ = mdb.core.psHooks.CloseConn(r.cn)
 		t.Fatal("newConn returned a connection to the removed member")
 	}
 	if !errors.Is(r.err, ErrTemporarilyNotAvailable) {

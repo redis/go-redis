@@ -958,7 +958,7 @@ func (c *MultiDBClient) AddDatabaseHook(id int, hook Hook) error {
 func (c *MultiDBClient) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.core.newPubSub()
 	if len(channels) > 0 {
-		_ = pubsub.Subscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.Subscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -967,7 +967,7 @@ func (c *MultiDBClient) Subscribe(ctx context.Context, channels ...string) *PubS
 func (c *MultiDBClient) PSubscribe(ctx context.Context, patterns ...string) *PubSub {
 	pubsub := c.core.newPubSub()
 	if len(patterns) > 0 {
-		_ = pubsub.PSubscribe(ctx, patterns...)
+		pubsub.reportInitialErr(pubsub.PSubscribe(ctx, patterns...))
 	}
 	return pubsub
 }

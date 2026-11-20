@@ -21,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/pubsub"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -449,13 +450,20 @@ type baseClient struct {
 	// per pool-set, not one per wrapper. See baseClient.Close.
 	apClosed *atomic.Bool
 
-	opt        *Options
-	optLock    sync.RWMutex
-	connPool   pool.Pooler
+	opt      *Options
+	optLock  sync.RWMutex
+	connPool pool.Pooler
+	// pubSubManager multiplexes every PubSub of the client over one
+	// shared, unpooled connection (see newPubSubManager). Set by
+	// NewClient, NewFailoverClient and NewSentinelClient; nil on the
+	// internal Conn/Tx wrappers, which never subscribe.
+	pubSubManager pubsub.PubSubManagerer
+	// pubSubPool dials and tracks the pub/sub connections (see
+	// newPubSubConn); the manager owns their lifetime.
 	pubSubPool *pool.PubSubPool
 	// pipelinePool is the dedicated connection pool for pipelining
 	// operations (Pipeline, TxPipeline and autopipeline batches), created
-	// unconditionally at NewClient/NewFailoverClient — like pubSubPool — with
+	// unconditionally at NewClient/NewFailoverClient with
 	// pipeline-appropriate options (see pipelinePoolOptions): larger buffers,
 	// no pre-dialing by default (PipelineMinIdleConns), a small connection cap.
 	// It is pure burst capacity: an unused pipeline pool holds zero connections
@@ -591,8 +599,12 @@ func (c *baseClient) clone() *baseClient {
 		connPool:    c.connPool,
 		// Pointer copy on purpose: the clone shares the parent's already-created
 		// pipeline pool over the one shared pool set, rather than building its own.
-		pipelinePool:                c.pipelinePool,
-		pubSubPool:                  c.pubSubPool,
+		pipelinePool: c.pipelinePool,
+		pubSubPool:   c.pubSubPool,
+		// Also shared: pub/sub subscriptions are client-wide state
+		// multiplexed over the one manager, so a derived client (e.g.
+		// WithTimeout) subscribes through the parent's manager.
+		pubSubManager:               c.pubSubManager,
 		onClose:                     c.onClose,
 		pushProcessor:               c.pushProcessor,
 		maintNotificationsManager:   maintNotificationsManager,
@@ -2527,8 +2539,19 @@ func (c *baseClient) closeResources() error {
 	c.stopBackgroundDrainer()
 	c.cmdMeta.stopAndJoin()
 
-	// Close maintnotifications manager first
-	if err := c.disableMaintNotificationsUpgrades(); err != nil {
+	// Close the pub/sub manager first: it ends every PubSub's delivery
+	// channel so consumer loops terminate, and its connection is not
+	// pooled, so nothing below would close it. Manager.Close is
+	// idempotent; one already closed reports ErrClosed, which is not a
+	// failure of this Close.
+	if c.pubSubManager != nil {
+		if err := c.pubSubManager.Close(); err != nil && err != pool.ErrClosed {
+			firstErr = err
+		}
+	}
+
+	// Close maintnotifications manager
+	if err := c.disableMaintNotificationsUpgrades(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 
@@ -3154,10 +3177,10 @@ func NewClient(opt *Options) *Client {
 	// Generate unique pool names for metrics
 	uniqueID := generateUniqueID()
 	mainPoolName := opt.Addr + "_" + uniqueID
-	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
+	pubsubPoolName := mainPoolName + "_pubsub"
 
 	// Create connection pools. Assign the fields only AFTER the error check:
-	// newConnPool/newPubSubPool return a nil *pool on error, and assigning that
+	// newConnPool returns a nil *pool on error, and assigning that
 	// straight to the pool.Pooler field would leave a typed-nil interface that
 	// closeResources treats as present (its != nil check passes), so the
 	// panic-cleanup defer above would nil-deref inside ConnPool.Close instead of
@@ -3174,8 +3197,12 @@ func NewClient(opt *Options) *Client {
 	}
 	c.pubSubPool = pubSubPool
 
-	// Create the dedicated pipeline pool unconditionally, like pubSubPool: it
-	// is pure burst capacity (no pre-dialing by default, small cap, larger buffers — see
+	// The shared pub/sub connection is unpooled and dialed lazily on the
+	// first Subscribe; see newPubSubManager.
+	c.pubSubManager = newPubSubManager(c.baseClient, c.cloneOpt())
+
+	// Create the dedicated pipeline pool unconditionally: it
+	// is pure burst capacity (no pre-dialing, small cap, larger buffers — see
 	// pipelinePoolOptions), so an unused pipeline pool holds zero connections
 	// and costs nothing. Pipelines stop competing with regular commands for
 	// main-pool connections; a burst wider than the pool's cap spills back to
@@ -3511,7 +3538,9 @@ type PoolStats pool.Stats
 // PoolStats returns connection pool stats.
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
-	stats.PubSubStats = *c.pubSubPool.Stats()
+	if c.pubSubPool != nil {
+		stats.PubSubStats = *c.pubSubPool.Stats() //nolint:staticcheck // deprecated field kept filled for API compatibility
+	}
 	if pp := c.getPipelinePool(); pp != nil {
 		stats.PipelineStats = pp.Stats()
 	}
@@ -3634,24 +3663,27 @@ func (c *baseClient) removeStreamingCredentialsState(cn *pool.Conn) {
 	}
 }
 
-func (c *Client) pubSub() *PubSub {
-	pubsub := &PubSub{
-		opt: c.cloneOpt(),
-		rec: c.rec,
-		newConn: func(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
-			return c.newPubSubConn(ctx, addr, channels, onInit...)
-		},
-		closeConn: func(cn *pool.Conn) error {
-			// Untrack connection from PubSubPool
-			c.pubSubPool.UntrackConn(cn)
-			_ = cn.Close()
-			return nil
-		},
-		pushProcessor: c.pushProcessor,
+// pubsubConnect dials the shared pub/sub connection through newPubSubConn:
+// one Limiter admission for dial, handshake (HELLO/AUTH/SELECT, see
+// initConn) and tracking in the pub/sub pool. The pool marks the
+// connection as PubSub before the handshake, so nothing pool-specific
+// (like client-side-caching tracking) is enabled on it.
+func (c *baseClient) pubsubConnect(ctx context.Context, addr string) (*pool.Conn, error) {
+	// A client that began closing must not dial: nothing would ever
+	// close the connection.
+	if c.apClosed != nil && c.apClosed.Load() {
+		return nil, pool.ErrClosed
 	}
-	pubsub.init()
+	// The manager's init installs the re-auth callback before the
+	// handshake, so a credential rotation during it is not lost.
+	return c.newPubSubConn(ctx, addr, nil, pubsub.ConnInitFrom(ctx))
+}
 
-	return pubsub
+// pubsubDisconnect tears a pub/sub connection down: it is not pooled, so
+// untracking and closing it is the whole job.
+func (c *baseClient) pubsubDisconnect(cn *pool.Conn) error {
+	c.pubSubPool.UntrackConn(cn)
+	return cn.Close()
 }
 
 // Subscribe subscribes the client to the specified channels.
@@ -3681,9 +3713,9 @@ func (c *Client) pubSub() *PubSub {
 //
 //	ch := sub.Channel()
 func (c *Client) Subscribe(ctx context.Context, channels ...string) *PubSub {
-	pubsub := c.pubSub()
+	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.Subscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.Subscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -3691,9 +3723,9 @@ func (c *Client) Subscribe(ctx context.Context, channels ...string) *PubSub {
 // PSubscribe subscribes the client to the given patterns.
 // Patterns can be omitted to create empty subscription.
 func (c *Client) PSubscribe(ctx context.Context, channels ...string) *PubSub {
-	pubsub := c.pubSub()
+	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.PSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.PSubscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -3701,9 +3733,9 @@ func (c *Client) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 // SSubscribe Subscribes the client to the specified shard channels.
 // Channels can be omitted to create empty subscription.
 func (c *Client) SSubscribe(ctx context.Context, channels ...string) *PubSub {
-	pubsub := c.pubSub()
+	pubsub := newPubSub(c.pubSubManager)
 	if len(channels) > 0 {
-		_ = pubsub.SSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.SSubscribe(ctx, channels...))
 	}
 	return pubsub
 }
@@ -4206,4 +4238,49 @@ func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.Notifica
 		ConnPool: connPool,
 		Conn:     cn, // Wrap in adapter for easier interface access
 	}
+}
+
+// pubsubProcessPush mirrors
+// processPendingPushNotificationWithReader for the shared pub/sub
+// connection: the handler context is flagged blocking (the pub/sub read
+// loop waits open-endedly) and carries no pool — the connection is
+// unpooled. The context's PubSub field stays nil: the connection is
+// shared by every PubSub of the client, so no single instance can be
+// attributed.
+func (c *baseClient) pubsubProcessPush(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return nil
+	}
+	handlerCtx := push.NotificationHandlerContext{
+		Client:     c,
+		Conn:       cn,
+		IsBlocking: true,
+	}
+	// The built-in processor drains only what is buffered and returns,
+	// so the manager can act on a handoff a push just marked without
+	// waiting for the next frame. A custom processor keeps the blocking
+	// drain, which returns once a non-push frame is next.
+	if processor, ok := c.pushProcessor.(*push.Processor); ok {
+		return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
+	}
+	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+}
+
+// pubsubShouldReplaceConn and pubsubResolveAddress plug maintenance
+// notifications into the pub/sub manager, which stays unaware of them:
+// a MOVING notification — dispatched by the push processor during the
+// manager's read — marks the connection for handoff and names the
+// endpoint to move to; the manager only asks whether a connection must
+// be replaced and where to dial next.
+func (c *baseClient) pubsubShouldReplaceConn(cn *pool.Conn) bool {
+	return cn.ShouldHandoff()
+}
+
+// pubsubResolveAddress redirects the next dial to the handoff endpoint
+// prev was marked with; a null or missing endpoint keeps current.
+func (c *baseClient) pubsubResolveAddress(prev *pool.Conn, current string) string {
+	if prev == nil {
+		return current
+	}
+	return prev.ResolveAddress(current)
 }
