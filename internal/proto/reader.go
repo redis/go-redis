@@ -540,11 +540,11 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 }
 
 // maxBulkPrealloc is the largest buffer a bulk reply allocates from its header
-// up front. Longer replies grow with the bytes that arrive, so a header that
-// announces GiBs cannot make the client reserve them before any body is
-// received. Redis itself caps a bulk string at proto-max-bulk-len (512 MiB by
-// default); this keeps the client's allocation proportional to received data.
-const maxBulkPrealloc = 1 << 20
+// up front. Realistic large replies keep the single allocation; only a larger
+// announcement grows with the bytes that arrive, so a header that announces
+// GiBs cannot make the client reserve them before any body is received. Redis
+// itself caps a bulk string at proto-max-bulk-len (512 MiB by default).
+const maxBulkPrealloc = 32 << 20
 
 // bulkTotal returns the number of bytes a bulk string of length n occupies
 // (payload plus the trailing CRLF), and whether n can be represented.
@@ -556,10 +556,10 @@ func bulkTotal(n int) (int, bool) {
 }
 
 // readBulkBody reads the n payload bytes of a bulk string plus the trailing
-// CRLF. Small replies keep a single allocation; larger ones grow with the data
-// that arrives, so an announced length the server never sends only costs the
-// 1 MiB it actually buffered. A length that cannot be represented is an error,
-// not a panic.
+// CRLF. Replies up to maxBulkPrealloc keep a single allocation. A larger
+// announcement grows with the data that arrives, so it only costs the bytes
+// actually buffered. A length that cannot be represented is an error, not a
+// panic.
 func (r *Reader) readBulkBody(n int) ([]byte, error) {
 	total, ok := bulkTotal(n)
 	if !ok {
@@ -572,15 +572,26 @@ func (r *Reader) readBulkBody(n int) ([]byte, error) {
 		}
 		return b, nil
 	}
-	// Grow with the data instead of reserving the announced length.
+	// Grow with the data instead of reserving the announced length. Reading
+	// into the spare capacity avoids the scratch buffer and its second copy.
 	b := make([]byte, 0, maxBulkPrealloc)
-	chunk := make([]byte, maxBulkPrealloc)
-	for remaining := total; remaining > 0; {
-		k := min(remaining, len(chunk))
-		m, err := r.rd.Read(chunk[:k])
-		if m > 0 {
-			b = append(b, chunk[:m]...)
-			remaining -= m
+	for len(b) < total {
+		if len(b) == cap(b) {
+			next := cap(b) * 2
+			if next > total || next < cap(b) {
+				next = total
+			}
+			grown := make([]byte, len(b), next)
+			copy(grown, b)
+			b = grown
+		}
+		end := len(b) + min(cap(b)-len(b), total-len(b))
+		m, err := r.rd.Read(b[len(b):end])
+		b = b[:len(b)+m]
+		// Check completeness before the error: the final Read may return the
+		// last bytes together with io.EOF, which io.ReadFull accepts.
+		if len(b) == total {
+			return b, nil
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -608,20 +619,45 @@ func (r *Reader) appendBulkBody(buf []byte, n int) ([]byte, error) {
 		}
 		return buf, nil
 	}
-	w := bulkAppender{buf: &buf}
-	if _, err := io.CopyN(w, r.rd, int64(total)); err != nil {
-		return buf, err
-	}
-	return buf, nil
+	return r.appendLargeBulkBody(buf, total)
 }
 
-// bulkAppender appends to a raw reply buffer as io.CopyN reads, so memory
-// follows the bytes received rather than the announced length.
-type bulkAppender struct{ buf *[]byte }
-
-func (w bulkAppender) Write(p []byte) (int, error) {
-	*w.buf = append(*w.buf, p...)
-	return len(p), nil
+// appendLargeBulkBody appends a bulk body larger than maxBulkPrealloc to buf,
+// reading into its spare capacity and doubling it as the data arrives. It keeps
+// the small path free of the growth bookkeeping.
+func (r *Reader) appendLargeBulkBody(buf []byte, total int) ([]byte, error) {
+	start := len(buf)
+	want := start + min(maxBulkPrealloc, total)
+	if cap(buf) < want {
+		grown := make([]byte, len(buf), want)
+		copy(grown, buf)
+		buf = grown
+	}
+	for len(buf)-start < total {
+		if len(buf) == cap(buf) {
+			next := cap(buf) * 2
+			if next > start+total || next < cap(buf) {
+				next = start + total
+			}
+			grown := make([]byte, len(buf), next)
+			copy(grown, buf)
+			buf = grown
+		}
+		limit := start + total
+		end := len(buf) + min(cap(buf)-len(buf), limit-len(buf))
+		m, err := r.rd.Read(buf[len(buf):end])
+		buf = buf[:len(buf)+m]
+		if len(buf)-start == total {
+			return buf, nil
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return buf, err
+		}
+	}
+	return buf, nil
 }
 
 func (r *Reader) readVerb(line []byte) (string, error) {

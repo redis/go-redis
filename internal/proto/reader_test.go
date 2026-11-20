@@ -616,3 +616,73 @@ func TestReadStringStillReadsABulkBody(t *testing.T) {
 		t.Fatalf("ReadString = %q, want %q", got, "hello")
 	}
 }
+
+// bulkPrealloc is the boundary above which readBulkBody grows instead of
+// allocating the announced length in one span. Keep in sync with
+// proto.maxBulkPrealloc.
+const bulkPrealloc = 32 << 20
+
+func TestReadStringReadsBulkBodiesAcrossTheGrowthBoundary(t *testing.T) {
+	sizes := []int{
+		1<<20 - 1,
+		1 << 20,
+		1<<20 + 1,
+		3 << 20,
+		bulkPrealloc - 1,
+		bulkPrealloc,
+		bulkPrealloc + 1,
+	}
+	for _, size := range sizes {
+		payload := bytes.Repeat([]byte{'x'}, size)
+		frame := append([]byte("$"+strconv.Itoa(size)+"\r\n"), payload...)
+		frame = append(frame, "\r\n+OK\r\n"...)
+
+		rd := proto.NewReader(bytes.NewReader(frame))
+		got, err := rd.ReadString()
+		if err != nil {
+			t.Fatalf("size %d: ReadString: %v", size, err)
+		}
+		if len(got) != size || !bytes.Equal([]byte(got), payload) {
+			t.Fatalf("size %d: ReadString returned %d bytes", size, len(got))
+		}
+		next, err := rd.ReadString()
+		if err != nil {
+			t.Fatalf("size %d: next ReadString: %v", size, err)
+		}
+		if next != "OK" {
+			t.Fatalf("size %d: next ReadString = %q, want %q", size, next, "OK")
+		}
+	}
+}
+
+// eofWithFinalBytesReader returns its last bytes together with io.EOF, the
+// shape io.ReadFull accepts because the body is complete.
+type eofWithFinalBytesReader struct{ data []byte }
+
+func (r *eofWithFinalBytesReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func TestReadStringAcceptsTheFinalReadWithError(t *testing.T) {
+	size := bulkPrealloc + 1024
+	payload := bytes.Repeat([]byte{'y'}, size)
+	frame := append([]byte("$"+strconv.Itoa(size)+"\r\n"), payload...)
+	frame = append(frame, "\r\n"...)
+
+	rd := proto.NewReader(&eofWithFinalBytesReader{data: frame})
+	got, err := rd.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString: %v", err)
+	}
+	if len(got) != size || !bytes.Equal([]byte(got), payload) {
+		t.Fatalf("ReadString returned %d bytes, want %d", len(got), size)
+	}
+}
