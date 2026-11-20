@@ -218,8 +218,9 @@ func decodeSlice(f reflect.Value, s string) error {
 	// []byte slice ([]uint8).
 	if f.Type().Elem().Kind() == reflect.Uint8 {
 		f.SetBytes([]byte(s))
+		return nil
 	}
-	return nil
+	return decodeUnsupported(f, s)
 }
 
 func decodeUnsupported(v reflect.Value, s string) error {
