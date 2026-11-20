@@ -3,7 +3,27 @@ package redis
 import (
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/routing"
 )
+
+// A picker that repeats its choice must not hide a healthy replica behind a
+// failing one.
+func TestSlotShardPickerSlaveNodeTriesEveryReplica(t *testing.T) {
+	master := closestNodeTestNode(t, time.Millisecond, false)
+	failing := closestNodeTestNode(t, time.Millisecond, true)
+	healthy := closestNodeTestNode(t, time.Millisecond, false)
+
+	state := &clusterState{slots: []*clusterSlot{{start: 0, end: 16383, nodes: []*clusterNode{master, failing, healthy}}}}
+
+	got, err := state.slotShardPickerSlaveNode(0, routing.NewStaticShardPicker(0))
+	if err != nil {
+		t.Fatalf("slotShardPickerSlaveNode: %v", err)
+	}
+	if got != healthy {
+		t.Fatalf("want the healthy replica, got master=%v failing=%v", got == master, got == failing)
+	}
+}
 
 func closestNodeTestNode(t *testing.T, latency time.Duration, failing bool) *clusterNode {
 	t.Helper()
