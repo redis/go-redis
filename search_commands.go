@@ -2089,6 +2089,11 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 						att.PhoneticMatcher = internal.ToString(attrSlice[i+1])
 						continue
 					}
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "separator" && i+1 < attrLen {
+						// Skip the value: the separator "m" is not the HNSW M key.
+						i++
+						continue
+					}
 					if internal.ToLower(internal.ToString(attrSlice[i])) == "casesensitive" {
 						att.CaseSensitive = true
 						continue
