@@ -2246,6 +2246,53 @@ var _ = Describe("ClusterClient without valid nodes", func() {
 	})
 })
 
+var _ = Describe("ClusterClient with StandaloneFallback", func() {
+	var client *redis.ClusterClient
+
+	BeforeEach(func() {
+		if RECluster {
+			Skip("needs a standalone endpoint")
+		}
+		client = redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs:              []string{redisAddr},
+			StandaloneFallback: true,
+			RouteRandomly:      true, // READONLY is rejected by standalone servers
+		})
+	})
+
+	AfterEach(func() {
+		if client != nil {
+			Expect(client.Close()).NotTo(HaveOccurred())
+		}
+	})
+
+	It("should run commands against a standalone server", func() {
+		keys := []string{"fallback:a", "fallback:b", "fallback:c"}
+		DeferCleanup(func() { client.Del(ctx, keys...) })
+
+		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+		_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			for _, key := range keys {
+				pipe.Set(ctx, key, key, 0)
+			}
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		for _, key := range keys {
+			Expect(client.Get(ctx, key).Val()).To(Equal(key))
+		}
+
+		var masters int
+		err = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			masters++
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(masters).To(Equal(1))
+	})
+})
+
 var _ = Describe("ClusterClient with unavailable Cluster", func() {
 	var client *redis.ClusterClient
 
