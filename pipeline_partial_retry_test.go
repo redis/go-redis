@@ -159,6 +159,11 @@ type connStateRetryServer struct {
 	multiCount       atomic.Int32
 	execWithMulti    atomic.Int32
 	execWithoutMulti atomic.Int32
+	incrs            atomic.Int32
+	selects          atomic.Int32
+	// dropAfter is how many pipeline commands the first connection
+	// answers before dropping (1 = the historical behaviour).
+	dropAfter int
 }
 
 func newConnStateRetryServer(t *testing.T) *connStateRetryServer {
@@ -167,7 +172,7 @@ func newConnStateRetryServer(t *testing.T) *connStateRetryServer {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &connStateRetryServer{ln: ln}
+	s := &connStateRetryServer{ln: ln, dropAfter: 1}
 	s.setDB.Store(-1)
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
@@ -216,7 +221,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 	db := 0
 	inMulti := false
 	watched := false
-	answered := false
+	answered := 0
 	for {
 		name, args := readConnStateRetryCommand(scanner)
 		if name == "" {
@@ -225,8 +230,9 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 		// Connection setup commands (HELLO and friends) are not part of
 		// the pipeline: always answer them and never drop on them.
 		isPipelineCmd := name == "select" || name == "set" || name == "get" ||
-			name == "multi" || name == "exec" || name == "watch" || name == "unwatch"
-		if first && answered && isPipelineCmd {
+			name == "multi" || name == "exec" || name == "watch" || name == "unwatch" ||
+			name == "incr"
+		if first && answered >= s.dropAfter && isPipelineCmd {
 			// Drop the connection mid-pipeline: this command and the
 			// ones after it get no reply on this connection.
 			return
@@ -236,9 +242,14 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 		case "hello":
 			reply = "%0\r\n"
 		case "select":
+			s.selects.Add(1)
 			if len(args) > 0 {
 				if n, err := strconv.Atoi(args[0]); err == nil {
-					db = n
+					if n < 0 || n > 15 {
+						reply = "-ERR DB index is out of range\r\n"
+					} else {
+						db = n
+					}
 				}
 			}
 		case "set":
@@ -250,6 +261,9 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 			if inMulti {
 				reply = "+QUEUED\r\n"
 			}
+		case "incr":
+			s.incrs.Add(1)
+			reply = ":1\r\n"
 		case "watch":
 			watched = true
 		case "unwatch":
@@ -275,7 +289,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 			return
 		}
 		if isPipelineCmd {
-			answered = true
+			answered++
 		}
 	}
 }
@@ -1077,6 +1091,33 @@ type scriptRetryServer struct {
 	dropBefore    string
 	denyLoad      bool
 	dropRetryConn bool
+	// persistCache makes the script cache survive across connections
+	// (a still-running server), instead of a fresh cache per
+	// connection (a restarted server).
+	persistCache bool
+	cacheMu      sync.Mutex
+	sharedLoaded map[string]bool
+}
+
+func (s *scriptRetryServer) cacheHas(sha string) bool {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	return s.sharedLoaded[sha]
+}
+
+func (s *scriptRetryServer) cachePut(sha string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.sharedLoaded == nil {
+		s.sharedLoaded = map[string]bool{}
+	}
+	s.sharedLoaded[sha] = true
+}
+
+func (s *scriptRetryServer) cacheClear() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.sharedLoaded = map[string]bool{}
 }
 
 func newScriptRetryServer(t *testing.T) *scriptRetryServer {
@@ -1143,11 +1184,19 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				}
 				sum := sha1.Sum([]byte(args[1]))
 				digest := hex.EncodeToString(sum[:])
-				loaded[digest] = true
+				if s.persistCache {
+					s.cachePut(digest)
+				} else {
+					loaded[digest] = true
+				}
 				_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(digest), digest)
 			} else if len(args) >= 1 && strings.EqualFold(args[0], "flush") {
 				s.flushes.Add(1)
-				loaded = map[string]bool{}
+				if s.persistCache {
+					s.cacheClear()
+				} else {
+					loaded = map[string]bool{}
+				}
 				_, _ = conn.Write([]byte("+OK\r\n"))
 			} else {
 				_, _ = conn.Write([]byte("+OK\r\n"))
@@ -1169,12 +1218,34 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			}
 			if len(args) >= 1 {
 				sum := sha1.Sum([]byte(args[0]))
-				loaded[hex.EncodeToString(sum[:])] = true
+				digest := hex.EncodeToString(sum[:])
+				if s.persistCache {
+					s.cachePut(digest)
+				} else {
+					loaded[digest] = true
+				}
 			}
-			_, _ = conn.Write([]byte(":1\r\n"))
+			// A script that ran but returned nil, or failed at runtime,
+			// still populated the cache before producing its reply.
+			switch {
+			case len(args) >= 1 && args[0] == "if ARGV[1] then return 42 end":
+				_, _ = conn.Write([]byte("$-1\r\n"))
+			case len(args) >= 1 && args[0] == "return redis.call('BADCMD')":
+				_, _ = conn.Write([]byte("-ERR Error running script (call to f_0123456789abcdef): @user_script:1: Unknown Redis command called from Lua script\r\n"))
+			default:
+				_, _ = conn.Write([]byte(":1\r\n"))
+			}
 		case "evalsha":
 			s.evalshas.Add(1)
-			if len(args) >= 1 && loaded[args[0]] {
+			cached := false
+			if len(args) >= 1 {
+				if s.persistCache {
+					cached = s.cacheHas(args[0])
+				} else {
+					cached = loaded[args[0]]
+				}
+			}
+			if cached {
 				_, _ = conn.Write([]byte(":1\r\n"))
 			} else {
 				s.noscripts.Add(1)
@@ -2841,5 +2912,349 @@ func TestPipelineRetryWriteFailureKeepsAnsweredResultsOnFallback(t *testing.T) {
 	}
 	if got := server.sets.Load(); got != 1 {
 		t.Fatalf("server received %d SET commands, want 1 (the retry's write must have failed before re-executing it)", got)
+	}
+}
+
+// writeFailRetryServer is a scripted RESP server for write-failure retry
+// tests. The first connection answers the HELLO handshake and then closes
+// immediately, so the pipeline batch's write fails mid-batch; later
+// connections answer everything. It counts the commands it actually
+// answers, so tests can assert what a retry resent.
+type writeFailRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	incrs atomic.Int32
+	sets  atomic.Int32
+}
+
+func newWriteFailRetryServer(t *testing.T) *writeFailRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &writeFailRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *writeFailRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	rd := bufio.NewReaderSize(conn, 64*1024)
+	if first {
+		// Answer the handshake, then close before the batch is
+		// written: the client's write must fail, not its read.
+		name, err := readStaleErrRESPCommand(rd)
+		if err != nil || name != "hello" {
+			return
+		}
+		_, _ = conn.Write([]byte("%0\r\n"))
+		return
+	}
+	for {
+		name, err := readStaleErrRESPCommand(rd)
+		if err != nil {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "incr":
+			s.incrs.Add(1)
+			_, _ = conn.Write([]byte(":1\r\n"))
+		case "set":
+			s.sets.Add(1)
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "get":
+			_, _ = conn.Write([]byte("$1\r\n1\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryNilEvalIsPreloaded: an EVAL that ran but returned nil
+// (redis.Nil) still populated the script cache, so the retry must preload
+// its source before the retried EVALSHA. The previous guard only preloaded
+// an EVAL with a nil error, so the retried EVALSHA returned NOSCRIPT
+// instead of executing. Regression test for the review finding on #4351.
+func TestPipelineRetryNilEvalIsPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "if ARGV[1] then return 42 end"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, src, nil)
+	evalsha := pipe.EvalSha(ctx, sha, nil, "x")
+	_, err := pipe.Exec(ctx)
+	// The EVAL's own nil reply is the first command error, so Exec
+	// reports redis.Nil; what must hold is that the retried EVALSHA
+	// executed instead of returning NOSCRIPT.
+	if err == nil || !errors.Is(err, Nil) {
+		t.Fatalf("Exec: %v, want redis.Nil (the EVAL's own nil reply is the first command error)", err)
+	}
+	if err := eval.Err(); !errors.Is(err, Nil) {
+		t.Fatalf("EVAL: %v, want redis.Nil (the script ran and returned nil)", err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil (the answered EVAL ran and cached the script, so the retry must preload it)", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (the nil-returning EVAL populated the cache)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryRuntimeErrorEvalIsPreloaded: an EVAL that failed at
+// runtime (a Lua error) still populated the script cache before failing,
+// so the retry must preload its source before the retried EVALSHA. The
+// previous guard only preloaded an EVAL with a nil error, so the retried
+// EVALSHA returned NOSCRIPT instead of executing. Regression test for the
+// review finding on #4351.
+func TestPipelineRetryRuntimeErrorEvalIsPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return redis.call('BADCMD')"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, src, nil)
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "Error running script") {
+		t.Fatalf("Exec: %v, want the EVAL's Lua runtime error (it is the first command error)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "Error running script") {
+		t.Fatalf("EVAL: %v, want the Lua runtime error", err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil (the EVAL ran and cached the script before failing, so the retry must preload it)", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (a runtime-failing EVAL populated the cache)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryPreloadFailureDoesNotFailBatch: when the server is still
+// running, the script an answered EVAL cached is still there, so a
+// synthetic SCRIPT LOAD that fails (an ACL user without SCRIPT LOAD
+// permission) must not fail a batch whose own commands all succeed. The
+// retry still attempts the preload; only its failure is ignored when the
+// suffix it was built for succeeds. Regression test for the review finding
+// on #4351.
+func TestPipelineRetryPreloadFailureDoesNotFailBatch(t *testing.T) {
+	server := newScriptRetryServer(t)
+	server.denyLoad = true
+	server.persistCache = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, src, nil)
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the script is still cached on the live server, so the failed synthetic SCRIPT LOAD must not fail a batch whose own commands succeeded)", err)
+	}
+	if got, err := eval.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVAL = %v, %v; want 1, nil", got, err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil (it reads the cache the live server still holds)", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (the retry still attempts the preload; only its failure is ignored)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryConnStateReissueDoesNotReplayAnsweredWrites: a pipeline
+// whose answered prefix established connection-local state must not replay
+// its answered writes on retry. SELECT is re-established on the retry
+// connection by reissuing a fresh copy, and only the unanswered suffix
+// runs. Regression test for the review finding on #4351.
+func TestPipelineRetryConnStateReissueDoesNotReplayAnsweredWrites(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 2
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 2)
+	incr := pipe.Incr(ctx, "counter")
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR must not be replayed when the retry only re-establishes the SELECT)", got)
+	}
+	if got := server.selects.Load(); got != 2 {
+		t.Fatalf("server received %d SELECT commands, want 2 (the answered SELECT must be reissued on the retry connection)", got)
+	}
+	if got := server.setDB.Load(); got != 2 {
+		t.Fatalf("SET ran on DB %d, want 2 (the retried SET must run on the re-established database)", got)
+	}
+}
+
+// TestPipelineRetryWriteFailureRetiresStaleReusedCommand: a reused INCR
+// that entered with a stale io.EOF must still be retried when THIS
+// attempt's write fails on it. The write failure stamps a fresh transport
+// error via setCmdsTransportErr; the attempt must retire the stale marker
+// the way the read path already does, so the retry starts at the INCR
+// instead of trimming it out of the batch and leaving it with the fresh
+// error after a healthy reconnection. Regression test for the review
+// finding on #4351.
+func TestPipelineRetryWriteFailureRetiresStaleReusedCommand(t *testing.T) {
+	shared := seedStaleEOFIncr(t)
+
+	server := newWriteFailRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	value := strings.Repeat("x", 256*1024)
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	_ = pipe.BatchProcess(ctx, shared)
+	var sets []*StatusCmd
+	for i := 0; i < 128; i++ {
+		sets = append(sets, pipe.Set(ctx, fmt.Sprintf("k%d", i), value, 0))
+	}
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must resend the reused INCR whose stale EOF the failed write replaced)", err)
+	}
+	if got, err := shared.Result(); err != nil || got != int64(1) {
+		t.Fatalf("reused INCR = %v, %v; want 1, nil (it must be retried, not trimmed out of the batch)", got, err)
+	}
+	for i, set := range sets {
+		if err := set.Err(); err != nil {
+			t.Fatalf("SET[%d]: %v, want nil", i, err)
+		}
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server answered %d INCR commands, want 1 (the reused INCR must be dispatched on the retry connection)", got)
+	}
+	if got := server.sets.Load(); got != 128 {
+		t.Fatalf("server answered %d SET commands, want 128", got)
+	}
+}
+
+// TestPipelineRetryPreloadFailureSurfacesSuffixError: the mirror of
+// TestPipelineRetryPreloadFailureDoesNotFailBatch. When the server did
+// restart, the script is gone, so the retried EVALSHA fails NOSCRIPT —
+// and that suffix error, not the synthetic LOAD's NOPERM, is what Exec
+// must report. A failed preload is ignored only when the suffix it was
+// built for succeeds. Regression test for the review finding on #4351.
+func TestPipelineRetryPreloadFailureSurfacesSuffixError(t *testing.T) {
+	server := newScriptRetryServer(t)
+	server.denyLoad = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, src, nil)
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("Exec: %v, want NOSCRIPT (the restarted server lost the script, so the retried EVALSHA fails; the LOAD's NOPERM must not mask it)", err)
+	}
+	if got, err := eval.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVAL = %v, %v; want 1, nil", got, err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT", err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (the retry still attempts the preload)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryFailedConnStateReissueFailsBatch: a reissued
+// connection-state command is required, not best-effort. When the
+// reissued SELECT fails (a database index the server rejects), the suffix
+// must not silently run on the wrong database and report success: Exec
+// fails with the re-establishment error. Regression test for the review
+// finding on #4351.
+func TestPipelineRetryFailedConnStateReissueFailsBatch(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 2
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 99)
+	incr := pipe.Incr(ctx, "counter")
+	set := pipe.Set(ctx, "k", "v", 0)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "DB index is out of range") {
+		t.Fatalf("Exec: %v, want the DB-index error (the reissued SELECT failed, so the batch must fail loudly instead of running the SET on the wrong database)", err)
+	}
+	if err := sel.Err(); err == nil || !strings.Contains(err.Error(), "DB index is out of range") {
+		t.Fatalf("SELECT: %v, want the DB-index error", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil (it was answered by the first attempt and must not be replayed)", got, err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil (it ran on the default database; the batch failure is reported through Exec, not the SET)", err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR must not be replayed)", got)
+	}
+	if got := server.selects.Load(); got != 2 {
+		t.Fatalf("server received %d SELECT commands, want 2 (the answered SELECT must be reissued on the retry connection)", got)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (the reissued SELECT failed, so the retried SET could only run on the default database — and Exec fails loudly for it)", got)
 	}
 }
