@@ -991,7 +991,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery
 				}
 			}
 		}
-		if options.Params != nil {
+		if len(options.Params) > 0 {
 			queryArgs = append(queryArgs, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
 				queryArgs = append(queryArgs, key, value)
@@ -1356,7 +1356,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 				}
 			}
 		}
-		if options.Params != nil {
+		if len(options.Params) > 0 {
 			args = append(args, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
 				args = append(args, key, value)
@@ -3578,7 +3578,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) (SearchQuery, error) 
 			}
 		}
 		queryArgs = appendFTLimit(queryArgs, options.LimitOffset, options.Limit, options.CountOnly)
-		if options.Params != nil {
+		if len(options.Params) > 0 {
 			queryArgs = append(queryArgs, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
 				queryArgs = append(queryArgs, key, value)
@@ -3695,7 +3695,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 			}
 		}
 		args = appendFTLimit(args, options.LimitOffset, options.Limit, options.CountOnly)
-		if options.Params != nil {
+		if len(options.Params) > 0 {
 			args = append(args, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
 				args = append(args, key, value)
