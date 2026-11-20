@@ -2253,11 +2253,17 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 
 	// Parse index_definition - handle both RESP2 (array) and RESP3 (map) formats
 	if indexDef, ok := data["index_definition"].([]interface{}); ok {
-		// RESP2 format
-		ftInfo.IndexDefinition = IndexDefinition{
-			KeyType:      internal.ToString(indexDef[1]),
-			Prefixes:     internal.ToStringSlice(indexDef[3]),
-			DefaultScore: internal.ToFloat(indexDef[5]),
+		// RESP2 format: optional entries (filter, default_language, ...) shift
+		// the positions, so read by key.
+		for i := 0; i+1 < len(indexDef); i += 2 {
+			switch internal.ToString(indexDef[i]) {
+			case "key_type":
+				ftInfo.IndexDefinition.KeyType = internal.ToString(indexDef[i+1])
+			case "prefixes":
+				ftInfo.IndexDefinition.Prefixes = internal.ToStringSlice(indexDef[i+1])
+			case "default_score":
+				ftInfo.IndexDefinition.DefaultScore = internal.ToFloat(indexDef[i+1])
+			}
 		}
 	} else if indexDef, ok := data["index_definition"].(map[interface{}]interface{}); ok {
 		// RESP3 format
