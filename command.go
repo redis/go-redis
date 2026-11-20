@@ -171,6 +171,7 @@ const (
 	CmdTypeAREntrySlice
 	CmdTypeBackupStatus
 	CmdTypeACLUser
+	CmdTypeClusterSlotStats
 )
 
 type (
@@ -8154,8 +8155,9 @@ func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScri
 func (cmd *FunctionStatsCmd) Clone() Cmder {
 	val := FunctionStats{
 		isRunning: cmd.val.isRunning,
-		rs:        cmd.val.rs, // RunningScript is a simple struct, can be copied directly
+		rs:        cmd.val.rs,
 	}
+	val.rs.Command = slices.Clone(cmd.val.rs.Command)
 	if cmd.val.Engines != nil {
 		val.Engines = make([]Engine, len(cmd.val.Engines))
 		copy(val.Engines, cmd.val.Engines)
@@ -8588,6 +8590,119 @@ func (cmd *ClusterLinksCmd) Clone() Cmder {
 	return &ClusterLinksCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
+	}
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+
+// ClusterSlotStat is the usage of one slot, as reported by CLUSTER SLOT-STATS.
+// Without cluster-slot-stats-enabled the server reports KeyCount only.
+type ClusterSlotStat struct {
+	Slot            int64
+	KeyCount        int64
+	MemoryBytes     int64
+	CPUUsec         int64
+	NetworkBytesIn  int64
+	NetworkBytesOut int64
+}
+
+type ClusterSlotStatsCmd struct {
+	baseCmd
+
+	val []ClusterSlotStat
+}
+
+var _ Cmder = (*ClusterSlotStatsCmd)(nil)
+
+func NewClusterSlotStatsCmd(ctx context.Context, args ...interface{}) *ClusterSlotStatsCmd {
+	return &ClusterSlotStatsCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeClusterSlotStats,
+		},
+	}
+}
+
+func (cmd *ClusterSlotStatsCmd) SetVal(val []ClusterSlotStat) {
+	cmd.val = val
+}
+
+func (cmd *ClusterSlotStatsCmd) Val() []ClusterSlotStat {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *ClusterSlotStatsCmd) Result() ([]ClusterSlotStat, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *ClusterSlotStatsCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterSlotStatsCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]ClusterSlotStat, n)
+
+	for i := range cmd.val {
+		stat := &cmd.val[i]
+		if err := rd.ReadFixedArrayLen(2); err != nil {
+			return err
+		}
+		if stat.Slot, err = rd.ReadInt(); err != nil {
+			return err
+		}
+		// A map in RESP3, a flat array in RESP2.
+		m, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		for j := 0; j < m; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			if field := stat.metric(key); field != nil {
+				*field, err = rd.ReadInt()
+			} else {
+				err = rd.DiscardNext()
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// metric returns the field that holds the named metric, or nil.
+func (s *ClusterSlotStat) metric(name string) *int64 {
+	switch name {
+	case "key-count":
+		return &s.KeyCount
+	case "memory-bytes":
+		return &s.MemoryBytes
+	case "cpu-usec":
+		return &s.CPUUsec
+	case "network-bytes-in":
+		return &s.NetworkBytesIn
+	case "network-bytes-out":
+		return &s.NetworkBytesOut
+	}
+	return nil
+}
+
+func (cmd *ClusterSlotStatsCmd) Clone() Cmder {
+	return &ClusterSlotStatsCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     slices.Clone(cmd.val),
 	}
 }
 
@@ -10476,6 +10591,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return clusterLinksCmd.Val(), clusterLinksCmd.Err()
+			}
+		case CmdTypeClusterSlotStats:
+			if clusterSlotStatsCmd, ok := cmd.(interface {
+				Val() []ClusterSlotStat
+				Err() error
+			}); ok {
+				return clusterSlotStatsCmd.Val(), clusterSlotStatsCmd.Err()
 			}
 		case CmdTypeClusterShards:
 			if clusterShardsCmd, ok := cmd.(interface {

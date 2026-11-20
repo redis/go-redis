@@ -979,6 +979,11 @@ func TestFTHybridWithArgsCombineCount(t *testing.T) {
 			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear, Alpha: 1},
 			want:    []interface{}{"COMBINE", "LINEAR", 4, "ALPHA", 1.0, "BETA", 0.0},
 		},
+		{
+			name:    "linear_with_window",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear, Alpha: 0.5, Beta: 0.5, Window: 3},
+			want:    []interface{}{"COMBINE", "LINEAR", 6, "ALPHA", 0.5, "BETA", 0.5, "WINDOW", 3},
+		},
 	}
 
 	for _, tt := range tests {

@@ -304,6 +304,10 @@ func TestMultiDBClusterControlCommandsGateErrorSkipsGenericPath(t *testing.T) {
 		{"ScriptLoad", func() Cmder { return mdb.ScriptLoad(ctx, "return 1") }},
 		{"ScriptFlush", func() Cmder { return mdb.ScriptFlush(ctx) }},
 		{"ScriptExists", func() Cmder { return mdb.ScriptExists(ctx, "abc") }},
+		{"ClusterSlotStats", func() Cmder { return mdb.ClusterSlotStats(ctx, 0, 16383) }},
+		{"ClusterSlotStatsOrderBy", func() Cmder {
+			return mdb.ClusterSlotStatsOrderBy(ctx, &ClusterSlotStatsOrderByArgs{Metric: "key-count"})
+		}},
 	} {
 		generic.Store(0)
 		err := tc.run().Err()
@@ -330,6 +334,10 @@ func TestMultiDBClusterControlCommandsFailoverToClusterUsesTypedPath(t *testing.
 		{"ScriptLoad", func(m *MultiDBClient) Cmder { return m.ScriptLoad(ctx, "return 1") }},
 		{"ScriptFlush", func(m *MultiDBClient) Cmder { return m.ScriptFlush(ctx) }},
 		{"ScriptExists", func(m *MultiDBClient) Cmder { return m.ScriptExists(ctx, "abc") }},
+		{"ClusterSlotStats", func(m *MultiDBClient) Cmder { return m.ClusterSlotStats(ctx, 0, 16383) }},
+		{"ClusterSlotStatsOrderBy", func(m *MultiDBClient) Cmder {
+			return m.ClusterSlotStatsOrderBy(ctx, &ClusterSlotStatsOrderByArgs{Metric: "key-count"})
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mdb := newLifecycleTestClient(

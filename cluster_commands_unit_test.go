@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // CLUSTER ADDSLOTS/DELSLOTS take a list of slots, and the *SlotsRange helpers
@@ -69,6 +71,163 @@ func TestClusterDelSlotsRange_Args(t *testing.T) {
 	if !reflect.DeepEqual(captured.Args(), want) {
 		t.Errorf("args = %#v, want %#v", captured.Args(), want)
 	}
+}
+
+func TestClusterSlotStats_Args(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		call func(c cmdable)
+		want []any
+	}{
+		{
+			name: "slots range",
+			call: func(c cmdable) { c.ClusterSlotStats(ctx, 0, 100) },
+			want: []any{"cluster", "slot-stats", "slotsrange", 0, 100},
+		},
+		{
+			name: "order by",
+			call: func(c cmdable) {
+				c.ClusterSlotStatsOrderBy(ctx, &ClusterSlotStatsOrderByArgs{Metric: "key-count"})
+			},
+			want: []any{"cluster", "slot-stats", "orderby", "key-count"},
+		},
+		{
+			name: "order by with limit and asc",
+			call: func(c cmdable) {
+				c.ClusterSlotStatsOrderBy(ctx, &ClusterSlotStatsOrderByArgs{Metric: "cpu-usec", Limit: 5, Asc: true})
+			},
+			want: []any{"cluster", "slot-stats", "orderby", "cpu-usec", "limit", 5, "asc"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured Cmder
+			tc.call(captureCmdable(&captured))
+			if !reflect.DeepEqual(captured.Args(), tc.want) {
+				t.Errorf("args = %#v, want %#v", captured.Args(), tc.want)
+			}
+		})
+	}
+}
+
+// Replies of Redis 8.10.3 started with cluster-slot-stats-enabled yes, plus one
+// field this client does not know.
+func TestClusterSlotStatsCmd_readReply(t *testing.T) {
+	want := []ClusterSlotStat{
+		{Slot: 3300, KeyCount: 1, MemoryBytes: 20, CPUUsec: 92, NetworkBytesIn: 27, NetworkBytesOut: 32},
+		{Slot: 0},
+	}
+	fields := "$9\r\nkey-count\r\n:1\r\n$12\r\nmemory-bytes\r\n:20\r\n$8\r\ncpu-usec\r\n:92\r\n" +
+		"$16\r\nnetwork-bytes-in\r\n:27\r\n$17\r\nnetwork-bytes-out\r\n:32\r\n$6\r\nfuture\r\n*1\r\n:7\r\n"
+	replies := map[string]string{
+		"RESP2": "*2\r\n*2\r\n:3300\r\n*12\r\n" + fields + "*2\r\n:0\r\n*2\r\n$9\r\nkey-count\r\n:0\r\n",
+		"RESP3": "*2\r\n*2\r\n:3300\r\n%6\r\n" + fields + "*2\r\n:0\r\n%1\r\n$9\r\nkey-count\r\n:0\r\n",
+	}
+
+	for name, reply := range replies {
+		t.Run(name, func(t *testing.T) {
+			cmd := NewClusterSlotStatsCmd(context.Background(), "cluster", "slot-stats", "slotsrange", 0, 16383)
+			if err := cmd.readReply(proto.NewReader(strings.NewReader(reply))); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cmd.Val(), want) {
+				t.Fatalf("val = %+v, want %+v", cmd.Val(), want)
+			}
+
+			clone := cmd.Clone().(*ClusterSlotStatsCmd)
+			clone.Val()[0].KeyCount = 99
+			if cmd.Val()[0].KeyCount != 1 {
+				t.Error("Clone shares its slice with the original")
+			}
+		})
+	}
+}
+
+// Every shard orders and limits its own slots, so the merged reply has to be
+// ordered and limited again.
+func TestClusterSlotStats_Aggregate(t *testing.T) {
+	c := newMetadataTestCluster(t, nil)
+	ctx := context.Background()
+	stat := func(slot, keys int64) ClusterSlotStat { return ClusterSlotStat{Slot: slot, KeyCount: keys} }
+	// What two shards answer to ORDERBY key-count (DESC by default).
+	desc := [][]ClusterSlotStat{
+		{stat(9000, 5), stat(8000, 1), stat(8001, 1)},
+		{stat(100, 7), stat(200, 5), stat(50, 0)},
+	}
+	asc := [][]ClusterSlotStat{
+		{stat(8000, 1), stat(8001, 1), stat(9000, 5)},
+		{stat(50, 0), stat(200, 5), stat(100, 7)},
+	}
+
+	tests := []struct {
+		name   string
+		args   []any
+		shards [][]ClusterSlotStat
+		want   []ClusterSlotStat
+	}{
+		{
+			name:   "slots range is ordered by slot",
+			args:   []any{"slotsrange", 0, 16383},
+			shards: desc,
+			want:   []ClusterSlotStat{stat(50, 0), stat(100, 7), stat(200, 5), stat(8000, 1), stat(8001, 1), stat(9000, 5)},
+		},
+		{
+			name:   "order by is descending with ties by slot",
+			args:   []any{"orderby", "key-count"},
+			shards: desc,
+			want:   []ClusterSlotStat{stat(100, 7), stat(200, 5), stat(9000, 5), stat(8000, 1), stat(8001, 1), stat(50, 0)},
+		},
+		{
+			name:   "limit is applied to the merged reply",
+			args:   []any{"ORDERBY", "key-count", "LIMIT", 2, "DESC"},
+			shards: [][]ClusterSlotStat{desc[0][:2], desc[1][:2]},
+			want:   []ClusterSlotStat{stat(100, 7), stat(200, 5)},
+		},
+		{
+			name:   "ascending",
+			args:   []any{"orderby", "key-count", "limit", 3, "asc"},
+			shards: asc,
+			want:   []ClusterSlotStat{stat(50, 0), stat(8000, 1), stat(8001, 1)},
+		},
+		{
+			name:   "limit above the number of slots",
+			args:   []any{"orderby", "key-count", "limit", 100},
+			shards: [][]ClusterSlotStat{{stat(1, 1)}, nil},
+			want:   []ClusterSlotStat{stat(1, 1)},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewClusterSlotStatsCmd(ctx, append([]any{"cluster", "slot-stats"}, tc.args...)...)
+			var parts []Cmder
+			for _, shard := range tc.shards {
+				parts = append(parts, metadataTestResult(NewClusterSlotStatsCmd(ctx), shard))
+			}
+			decision := c.commandRoutingDecision(ctx, cmd)
+			if err := c.aggregateResponses(cmd, parts, decision.policy, &decision); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cmd.Val(), tc.want) {
+				t.Fatalf("val = %+v, want %+v", cmd.Val(), tc.want)
+			}
+		})
+	}
+
+	t.Run("untyped command keeps one reply per shard", func(t *testing.T) {
+		cmd := NewCmd(ctx, "cluster", "slot-stats", "orderby", "key-count")
+		parts := []Cmder{NewCmdResult([]any{"a"}, nil), NewCmdResult([]any{"b"}, nil)}
+		decision := c.commandRoutingDecision(ctx, cmd)
+		if err := c.aggregateResponses(cmd, parts, decision.policy, &decision); err != nil {
+			t.Fatal(err)
+		}
+		want := []any{[]any{"a"}, []any{"b"}}
+		if !reflect.DeepEqual(cmd.Val(), want) {
+			t.Fatalf("val = %#v, want %#v", cmd.Val(), want)
+		}
+	})
 }
 
 func TestClusterSlotsRange_InvalidRange(t *testing.T) {

@@ -237,3 +237,39 @@ func TestCFReserveWithArgsNilOptions(t *testing.T) {
 		})
 	}
 }
+
+// A single slice of elements is expanded into its items. Sent as one
+// argument, the slice can not be marshalled and the command fails. Any other
+// argument, a nil one included, is still sent as it is.
+func TestProbabilisticCmdsExpandSliceElements(t *testing.T) {
+	ctx := context.Background()
+	items := []string{"a", "b"}
+
+	var captured Cmder
+	c := captureCmdable(&captured)
+
+	tests := []struct {
+		name string
+		cmd  Cmder
+		want []interface{}
+	}{
+		{"BFInsert", c.BFInsert(ctx, "k", nil, items), []interface{}{"BF.INSERT", "k", "ITEMS", "a", "b"}},
+		{"BFMAdd", c.BFMAdd(ctx, "k", items), []interface{}{"BF.MADD", "k", "a", "b"}},
+		{"BFMExists", c.BFMExists(ctx, "k", items), []interface{}{"BF.MEXISTS", "k", "a", "b"}},
+		{"CFInsert", c.CFInsert(ctx, "k", nil, items), []interface{}{"CF.INSERT", "k", "ITEMS", "a", "b"}},
+		{"CFInsertNX", c.CFInsertNX(ctx, "k", nil, items), []interface{}{"CF.INSERTNX", "k", "ITEMS", "a", "b"}},
+		{"CFMExists", c.CFMExists(ctx, "k", items), []interface{}{"CF.MEXISTS", "k", "a", "b"}},
+		{"CMSQuery", c.CMSQuery(ctx, "k", items), []interface{}{"CMS.QUERY", "k", "a", "b"}},
+		{"interfaces", c.BFMAdd(ctx, "k", []interface{}{"a", 1}), []interface{}{"BF.MADD", "k", "a", 1}},
+		{"variadic", c.BFMAdd(ctx, "k", "a", "b"), []interface{}{"BF.MADD", "k", "a", "b"}},
+		{"nil", c.BFMAdd(ctx, "k", nil), []interface{}{"BF.MADD", "k", nil}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !reflect.DeepEqual(tt.cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", tt.cmd.Args(), tt.want)
+			}
+		})
+	}
+}
