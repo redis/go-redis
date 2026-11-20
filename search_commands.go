@@ -529,7 +529,7 @@ type FTHybridVectorExpression struct {
 type FTHybridCombineOptions struct {
 	Method       FTHybridCombineMethod
 	Count        int
-	Window       int     // For RRF
+	Window       int     // For RRF and LINEAR
 	Constant     float64 // For RRF
 	Alpha        float64 // For LINEAR
 	Beta         float64 // For LINEAR
@@ -4137,6 +4137,9 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 				// weight is sent when the other one is set.
 				if options.Combine.Alpha > 0 || options.Combine.Beta > 0 {
 					combineParams = append(combineParams, "ALPHA", options.Combine.Alpha, "BETA", options.Combine.Beta)
+				}
+				if options.Combine.Window > 0 {
+					combineParams = append(combineParams, "WINDOW", options.Combine.Window)
 				}
 			}
 
