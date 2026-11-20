@@ -68,17 +68,38 @@ If all attempts fail, `tryDial` keeps probing in the background once a second so
 `Get`:
 1. `waitTurn` — acquire a semaphore token (blocks).
 2. `popIdle` — pop an idle conn, retrying past `StateUnusable`/`StateClosed` ones.
-3. If no idle conn, queue a `wantConn` and let `queuedNewConn` dial in a background goroutine.
-4. Run `OnGet` hooks (auth, handoff guard).
-5. Transition `StateIdle → StateInUse` and return.
+3. `isHealthyConn` — close the conn (reason `stale`) and pop again if it is past `ConnMaxLifetime` or `ConnMaxIdleTime`, or its socket fails `connCheck`. This is the only place expiry is checked on the request path; see [Expired idle conns](#expired-idle-conns-and-the-reaper).
+4. If no idle conn, queue a `wantConn` and let `queuedNewConn` dial in a background goroutine.
+5. Run `OnGet` hooks (auth, handoff guard).
+6. Transition `StateIdle → StateInUse` and return.
 
 `Put`:
 1. If the conn has unread bytes, peek for a RESP3 push notification. If it's a push frame, leave the buffered data in place (the push processor will consume it on the next `Get`); otherwise, treat the conn as broken and remove it.
 2. Run `OnPut` hooks. A hook may transition the conn to `StateUnusable` to schedule a background operation; if so, `Put` returns the conn to the pool **without** recycling so the worker can pick it up.
-3. If the conn is past `ConnMaxIdleTime` / `ConnMaxLifetime` (with jitter), close it.
-4. Otherwise transition `StateInUse → StateIdle` and prepend to `idleConns`.
+3. Transition `StateInUse → StateIdle` and add to `idleConns` (if `MaxIdleConns` is set and already reached, close the conn instead).
+
+`Put` does **not** check `ConnMaxIdleTime` / `ConnMaxLifetime`. A conn that expires while in use goes back to the pool and is only closed when a `Get` pops it or, if enabled, the reaper finds it.
 
 The "unread data on Put → check for push frame" path is what makes RESP3 maintenance notifications work without dedicated reader goroutines. Don't simplify it.
+
+### Expired idle conns and the reaper
+
+By default expiry is lazy: nothing looks at an idle conn until `Get` pops it. Two consequences:
+
+- The `Get` that pops an expired conn pays for the close and an inline dial.
+- Conns that are never popped never close. With the default LIFO order the conns at the bottom of `idleConns` can sit past `ConnMaxIdleTime` indefinitely, so a pool does not shrink after a spike.
+
+`ConnMaxLifetimeReapInterval` (off by default; `conn_max_lifetime_reap_interval` in URLs) starts one goroutine per pool (`internal/pool/reaper.go`). Every interval it closes idle conns that are past `ConnMaxLifetime` or `ConnMaxIdleTime`, then calls `checkMinIdleConns` to refill. It starts only if the interval is > 0 and at least one of the two limits is > 0.
+
+Invariants:
+
+- **Claim with `TryAcquire`.** The reaper takes a conn the same way `popIdle` does. A conn that re-auth or handoff already moved to `StateUnusable` is skipped, and a worker cannot claim a conn the reaper took. Reading the state without claiming it lets a worker start AUTH on a socket the reaper is closing.
+- **Single pass under `connsMu`.** `takeExpiredIdleLocked` filters `idleConns` in place, keeping survivor order (FIFO/LIFO depend on it) and clearing the tail. Do not call `removeConn` per conn in a loop: it is O(idle) each, so a spike shrink becomes O(n²) under the lock (about 1 ms at 5,000 conns, against about 0.13 ms for the single pass). Hooks, metrics and `closeConn` run after the lock is released.
+- **Weak pointer.** The goroutine holds the pool through `weak.Pointer` and exits on `Close` or when the pool is collected. A strong reference would defeat the `runtime.AddCleanup` in `NewConnPool` for pools dropped without `Close`.
+- **Only idle conns.** In-use conns are never touched.
+- **Floor is recycled.** Idle-expired conns close even down to `MinIdleConns`, and the refill dials fresh ones, because a stale floor conn would be rejected by the next `Get` anyway.
+
+Trade-offs. The reaper alone only moves the *close* off the request path; the replacement dial still happens inline unless `MinIdleConns` is set. With `MinIdleConns` it also dials replacements for spares that may never be used, roughly doubling dials in a low-concurrency workload. For delayed scale-down after a spike, use a high `MaxIdleConns` (or 0) with `ConnMaxIdleTime` and the reaper; a low `MaxIdleConns` shrinks immediately on `Put` and re-dials on the next burst.
 
 ### Errors on close are noise for stale conns
 
@@ -114,9 +135,10 @@ The contract now: a conn that is `StateUnusable` *for handoff* must not be picke
 | `MinIdleConns` | 0 | Pre-warmed at init; replenished after `Remove`. Background goroutine fills these via `dialHook`, hence the read-lock in `dialHook` (#3225). |
 | `MaxActiveConns` | 0 (unlimited) | Hard cap including excess (non-pooled) conns used during bursts. |
 | `PoolTimeout` | `ReadTimeout + 1s` | How long `waitTurn` will block. |
-| `ConnMaxIdleTime` | 30 min | Eviction in `Put`. |
-| `ConnMaxLifetime` | 0 (none) | Absolute age limit; checked on `Put`. |
+| `ConnMaxIdleTime` | 30 min | Idle conns older than this are closed on `Get`, or by the reaper if enabled. |
+| `ConnMaxLifetime` | 0 (none) | Absolute age limit; checked on `Get`, or by the reaper if enabled. |
 | `ConnMaxLifetimeJitter` | 0 | Random ±jitter on `ConnMaxLifetime` to avoid all conns expiring together (#3666). |
+| `ConnMaxLifetimeReapInterval` | 0 (off) | Opt-in background reaper for expired idle conns; see [Expired idle conns](#expired-idle-conns-and-the-reaper). |
 | `ReadBufferSize` / `WriteBufferSize` | 32 KiB (since v9.12) | Was 4 KiB before. Sentinel client uses 4 KiB (#3476) because its connections are short-lived. If you see odd performance regressions, flip back to 4 KiB and compare. |
 
 `ConnMaxLifetimeJitter` matters in deployments where many clients started at the same time: without jitter, all their connections expire in the same second and reconnect simultaneously, hammering the server (thundering herd).
