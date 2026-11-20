@@ -1061,6 +1061,7 @@ type scriptRetryServer struct {
 	conns     atomic.Int32
 	loads     atomic.Int32
 	flushes   atomic.Int32
+	evals     atomic.Int32
 	evalshas  atomic.Int32
 	noscripts atomic.Int32
 }
@@ -1112,6 +1113,15 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			} else {
 				_, _ = conn.Write([]byte("+OK\r\n"))
 			}
+		case "eval", "eval_ro":
+			s.evals.Add(1)
+			// EVAL populates this connection's script cache with the
+			// script it runs, exactly like SCRIPT LOAD.
+			if len(args) >= 2 {
+				sum := sha1.Sum([]byte(args[1]))
+				loaded[hex.EncodeToString(sum[:])] = true
+			}
+			_, _ = conn.Write([]byte(":1\r\n"))
 		case "evalsha":
 			s.evalshas.Add(1)
 			if first {
@@ -2067,5 +2077,485 @@ func TestPipelineRetryReportsLatestTransportErrAfterRetryWriteFails(t *testing.T
 	}
 	if got := server.sets.Load(); got != int32(nsets) {
 		t.Fatalf("server received %d SET commands on the first connection, want %d (the whole batch must have been read before the drop)", got, nsets)
+	}
+}
+
+// TestPipelineRetryReissuesEvalAsScriptLoad: a pipeline EVAL followed by
+// EVALSHA must not be trimmed to the EVALSHA on retry. EVAL populates the
+// server's volatile script cache like SCRIPT LOAD, so a retry on a
+// restarted server must reissue the answered EVAL's source as a SCRIPT LOAD
+// ahead of the EVALSHA — without executing the answered script again.
+// Regression test for the review finding on #4351.
+func TestPipelineRetryReissuesEvalAsScriptLoad(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, src, nil)
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must reissue the answered EVAL's source as SCRIPT LOAD before the EVALSHA)", err)
+	}
+	if got, err := eval.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVAL = %v, %v; want 1, nil", got, err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (the answered EVAL's source must be reissued once as a LOAD on the retry connection)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// seedStaleEOFIncr runs one pipeline that leaves io.EOF on a shared INCR
+// and returns it: a warmup SET is answered, then the connection drops
+// before the INCR's reply. The returned command carries the stale EOF a
+// later pipeline must not mistake for its own progress.
+func seedStaleEOFIncr(t *testing.T) *IntCmd {
+	t.Helper()
+	server := newPartialRetryServer(t)
+	seeder := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = seeder.Close() })
+
+	ctx := context.Background()
+	pipe := seeder.Pipeline()
+	pipe.Set(ctx, "warmup", "v", 0)
+	shared := pipe.Incr(ctx, "counter")
+	if _, err := pipe.Exec(ctx); err == nil {
+		t.Fatalf("seeding Exec: nil, want the drop's transport error")
+	}
+	if err := shared.Err(); !errors.Is(err, io.EOF) {
+		t.Fatalf("shared INCR after seeding: %v, want io.EOF", err)
+	}
+	return shared
+}
+
+// TestPipelineRetryReusedCommandFreshFailureIsRetried: a reused INCR that
+// carries a stale io.EOF must still be retried when THIS attempt records a
+// fresh EOF on it. The batch is a fresh SET, the reused INCR, and a fresh
+// GET; the first connection answers the SET and then drops. The stale
+// marker must be retired once the attempt dispatches the command, so the
+// retry starts at the INCR instead of skipping it and leaving it with EOF
+// after a healthy reconnection. Regression test for the review finding on
+// #4351.
+func TestPipelineRetryReusedCommandFreshFailureIsRetried(t *testing.T) {
+	shared := seedStaleEOFIncr(t)
+
+	server := newPartialRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	_ = pipe.BatchProcess(ctx, shared)
+	get := pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must start at the reused INCR, whose fresh EOF is this attempt's progress)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil", err)
+	}
+	if got, err := shared.Result(); err != nil || got != int64(1) {
+		t.Fatalf("reused INCR = %v, %v; want 1, nil (it must be retried, not left with the stale EOF)", got, err)
+	}
+	if got, err := get.Result(); err != nil || got != "1" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "1")
+	}
+	if got := server.incrs.Load(); got != 2 {
+		t.Fatalf("server received %d INCR commands, want 2 (the reused INCR must be dispatched once per attempt)", got)
+	}
+}
+
+// freshLoadingRetryServer is a scripted RESP server for the reused-command
+// LOADING test. The first connection answers INCR with LOADING and then
+// drops before SET's reply; later connections answer everything.
+type freshLoadingRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	incrs atomic.Int32
+	sets  atomic.Int32
+}
+
+func newFreshLoadingRetryServer(t *testing.T) *freshLoadingRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &freshLoadingRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *freshLoadingRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "incr":
+			s.incrs.Add(1)
+			if first {
+				_, _ = conn.Write([]byte("-LOADING Redis is loading the dataset in memory\r\n"))
+			} else {
+				_, _ = conn.Write([]byte(":1\r\n"))
+			}
+		case "set":
+			s.sets.Add(1)
+			if first {
+				// Drop before replying: the SET gets no reply on
+				// this connection.
+				return
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryReusedCommandFreshLoadingIsRetried: a reused INCR that
+// carries a stale io.EOF must still be retried when THIS attempt records a
+// fresh LOADING reply on it. The batch is the reused INCR and a fresh SET;
+// the first connection answers the INCR with LOADING and then drops before
+// the SET's reply. The stale marker must be retired once the attempt
+// dispatches the command, so the retry starts at the INCR's retryable
+// LOADING instead of treating the command as an answered prefix and
+// dropping it. Regression test for the review finding on #4351.
+func TestPipelineRetryReusedCommandFreshLoadingIsRetried(t *testing.T) {
+	shared := seedStaleEOFIncr(t)
+
+	server := newFreshLoadingRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	_ = pipe.BatchProcess(ctx, shared)
+	set := pipe.Set(ctx, "k", "v", 0)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must start at the reused INCR's fresh LOADING, not drop it as an answered prefix)", err)
+	}
+	if got, err := shared.Result(); err != nil || got != int64(1) {
+		t.Fatalf("reused INCR = %v, %v; want 1, nil (its fresh LOADING must be retried, not kept)", got, err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil", err)
+	}
+	if got := server.incrs.Load(); got != 2 {
+		t.Fatalf("server received %d INCR commands, want 2 (the reused INCR must be dispatched once per attempt)", got)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the SET must be retried with the INCR)", got)
+	}
+}
+
+// answeredWriteFailRetryServer is a scripted RESP server for the
+// answered-results-on-write-failure test. The first connection answers
+// SELECT and then drops before the next pipeline command's reply; later
+// connections answer HELLO and then stop reading forever, so the retry's
+// write blocks until the caller's context deadline.
+type answeredWriteFailRetryServer struct {
+	ln      net.Listener
+	conns   atomic.Int32
+	selects atomic.Int32
+	sets    atomic.Int32
+	done    chan struct{}
+}
+
+func newAnsweredWriteFailRetryServer(t *testing.T) *answeredWriteFailRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &answeredWriteFailRetryServer{ln: ln, done: make(chan struct{})}
+	t.Cleanup(func() { close(s.done) })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *answeredWriteFailRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	rd := bufio.NewReaderSize(conn, 64*1024)
+	if !first {
+		// Later connections: answer the setup HELLO, then never
+		// read again, so the retry's write blocks until the
+		// caller's context deadline.
+		for {
+			name, err := readStaleErrRESPCommand(rd)
+			if err != nil {
+				return
+			}
+			if name == "hello" {
+				_, _ = conn.Write([]byte("%0\r\n"))
+				<-s.done
+				return
+			}
+		}
+	}
+	answered := false
+	for {
+		name, err := readStaleErrRESPCommand(rd)
+		if err != nil {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "select":
+			s.selects.Add(1)
+			_, _ = conn.Write([]byte("+OK\r\n"))
+			answered = true
+		case "set":
+			s.sets.Add(1)
+			if answered {
+				// Drop before replying: the rest of the batch
+				// gets no reply on this connection.
+				return
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			if answered {
+				// Drop before replying: the rest of the batch
+				// gets no reply on this connection.
+				return
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryWriteFailureKeepsAnsweredResults: when the first attempt
+// answers SELECT (a connection-local state command, so the retry is
+// whole-batch) and then drops, and the retry's write fails on the
+// context deadline, the answered SELECT must keep its +OK. A batch-level
+// transport stamp must not overwrite results a prior attempt already
+// read. Regression test for the review finding on #4351.
+func TestPipelineRetryWriteFailureKeepsAnsweredResults(t *testing.T) {
+	server := newAnsweredWriteFailRetryServer(t)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		// The retry write must fail with the caller's context deadline, not
+		// the socket WriteTimeout: c.context only forwards the caller's ctx
+		// when ContextTimeoutEnabled is set.
+		ContextTimeoutEnabled: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 1)
+	set := pipe.Set(ctx, "k", strings.Repeat("x", 32*1024*1024), 0)
+	incr := pipe.Incr(ctx, "counter")
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatalf("Exec: nil, want the retry write's context deadline error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Exec: %v, want context.DeadlineExceeded", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v, want nil (it was answered by the first attempt and the retry never re-executed it)", err)
+	}
+	if err := set.Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SET: %v, want context.DeadlineExceeded (it was never answered)", err)
+	}
+	if err := incr.Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("INCR: %v, want context.DeadlineExceeded (it was never answered)", err)
+	}
+	if got := server.selects.Load(); got != 1 {
+		t.Fatalf("server received %d SELECT commands, want 1 (the retry's write must have blocked before re-executing it)", got)
+	}
+	if got := server.sets.Load(); got != 1 {
+		t.Fatalf("server received %d SET commands, want 1 (the retry's write must have blocked before re-executing it)", got)
+	}
+}
+
+// loadingWriteFailRetryServer is a scripted RESP server for the
+// write-failure fallback test. The first connection answers SET with
+// LOADING and GET with a value, then closes; later connections answer
+// HELLO and then stop reading forever, so a retry write that reaches a
+// fresh connection blocks until the caller's context deadline.
+type loadingWriteFailRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	sets  atomic.Int32
+	done  chan struct{}
+}
+
+func newLoadingWriteFailRetryServer(t *testing.T) *loadingWriteFailRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &loadingWriteFailRetryServer{ln: ln, done: make(chan struct{})}
+	t.Cleanup(func() { close(s.done) })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *loadingWriteFailRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	rd := bufio.NewReaderSize(conn, 64*1024)
+	if !first {
+		// Later connections: answer the setup HELLO, then never
+		// read again, so a retry write that reaches a fresh
+		// connection blocks until the caller's context deadline.
+		for {
+			name, err := readStaleErrRESPCommand(rd)
+			if err != nil {
+				return
+			}
+			if name == "hello" {
+				_, _ = conn.Write([]byte("%0\r\n"))
+				<-s.done
+				return
+			}
+		}
+	}
+	for {
+		name, err := readStaleErrRESPCommand(rd)
+		if err != nil {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "set":
+			s.sets.Add(1)
+			_, _ = conn.Write([]byte("-LOADING Redis is loading the dataset in memory\r\n"))
+		case "get":
+			_, _ = conn.Write([]byte("$1\r\nv\r\n"))
+			// The batch is fully answered: close, so the retry
+			// cannot silently re-run it on this connection.
+			return
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryWriteFailureKeepsAnsweredResultsOnFallback: the same
+// answered-results guarantee as TestPipelineRetryWriteFailureKeepsAnsweredResults,
+// but on the exit path where no command carries a transport error. The
+// first attempt answers SET with LOADING and GET with a value, so the
+// retry's write fails with nothing stamped; the exit stamping must still
+// leave the answered GET alone instead of falling back to stamping the
+// whole batch. Regression test for the review finding on #4351.
+func TestPipelineRetryWriteFailureKeepsAnsweredResultsOnFallback(t *testing.T) {
+	server := newLoadingWriteFailRetryServer(t)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		// The retry write must fail with the caller's context deadline, not
+		// the socket WriteTimeout: c.context only forwards the caller's ctx
+		// when ContextTimeoutEnabled is set.
+		ContextTimeoutEnabled: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", strings.Repeat("x", 32*1024*1024), 0)
+	get := pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "LOADING") {
+		t.Fatalf("Exec: %v, want the retained LOADING (the retry write failed, but the answered GET must keep its value and the SET its LOADING reply)", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil (it was answered by the first attempt)", got, err, "v")
+	}
+	if err := set.Err(); err == nil || !strings.Contains(err.Error(), "LOADING") {
+		t.Fatalf("SET: %v, want LOADING (its first-attempt reply must survive the failed retry write)", err)
+	}
+	if got := server.sets.Load(); got != 1 {
+		t.Fatalf("server received %d SET commands, want 1 (the retry's write must have failed before re-executing it)", got)
 	}
 }

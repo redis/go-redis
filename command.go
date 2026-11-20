@@ -286,19 +286,50 @@ func setCmdsErr(cmds []Cmder, e error) {
 	}
 }
 
+// pipelineAnsweredKey carries the per-invocation set of pipeline commands
+// that already hold a result read from the server in an earlier attempt of
+// the same invocation (see generalProcessPipelineFrom). A nil error on a
+// command in the set means the server answered it with a value; the set is
+// what distinguishes that from a command that was never dispatched, which
+// also carries a nil error. generalProcessPipelineFrom creates the set and
+// stores it in the ctx the pipeline processor runs with; paths that run
+// without it simply see no answered commands.
+type pipelineAnsweredKey struct{}
+
+// pipelineAnsweredFromCtx returns the answered set stored in ctx, or nil
+// when the pipeline did not run through generalProcessPipelineFrom.
+func pipelineAnsweredFromCtx(ctx context.Context) map[*baseCmd]bool {
+	if ctx == nil {
+		return nil
+	}
+	answered, _ := ctx.Value(pipelineAnsweredKey{}).(map[*baseCmd]bool)
+	return answered
+}
+
 // setCmdsTransportErr stamps e onto commands that do not already hold a
 // server reply: a nil error, or a stale transport error left by an earlier
 // attempt. A per-command Redis reply error is a real answer from the server
 // and is kept; a transport error is replaced, including an errConnUnusable
 // marker even when it wraps a redis.Error — pipelineErrShouldStamp draws
-// that line. Use it on paths where the attempt consumed no replies (a failed write, a failed push drain, unread injected
-// replies): there every transport error on the batch is stale, and keeping
-// the earliest one would report an old io.EOF instead of the current
-// failure — e.g. a retry write that hits the context deadline would no
-// longer satisfy errors.Is(err, context.DeadlineExceeded).
-func setCmdsTransportErr(cmds []Cmder, e error) {
+// that line. A command answered by a prior attempt of this invocation
+// already holds its result, so it is skipped even though its error is nil:
+// stamping it would report failure for work that already applied — e.g.
+// after a whole-batch retry (connection-local state or WAIT) or a prepended
+// SCRIPT LOAD / FLUSH, pending still holds answered commands, and a retry
+// that then fails on write, push drain, or unread injected replies must
+// not overwrite their success before pipelineUnansweredSuffix runs. Use it
+// on paths where the attempt consumed no replies (a failed write, a failed
+// push drain, unread injected replies): there every transport error on the
+// batch is stale, and keeping the earliest one would report an old io.EOF
+// instead of the current failure — e.g. a retry write that hits the context
+// deadline would no longer satisfy errors.Is(err, context.DeadlineExceeded).
+func setCmdsTransportErr(ctx context.Context, cmds []Cmder, e error) {
+	answered := pipelineAnsweredFromCtx(ctx)
 	for _, cmd := range cmds {
 		// rawErr: this runs on the execution path; never await here.
+		if answered[cmd.base()] {
+			continue
+		}
 		if err := cmd.rawErr(); err == nil || pipelineErrShouldStamp(err) {
 			cmd.SetErr(e)
 		}
