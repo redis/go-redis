@@ -164,6 +164,11 @@ type connStateRetryServer struct {
 	// dropAfter is how many pipeline commands the first connection
 	// answers before dropping (1 = the historical behaviour).
 	dropAfter int
+	// secondMaxDB is the highest DB index the replacement (second and
+	// later) connections accept; the first connection always accepts
+	// 0-15. Tests that need a reissued SELECT to fail on the retry
+	// connection set it below 15.
+	secondMaxDB int
 }
 
 func newConnStateRetryServer(t *testing.T) *connStateRetryServer {
@@ -172,7 +177,7 @@ func newConnStateRetryServer(t *testing.T) *connStateRetryServer {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &connStateRetryServer{ln: ln, dropAfter: 1}
+	s := &connStateRetryServer{ln: ln, dropAfter: 1, secondMaxDB: 15}
 	s.setDB.Store(-1)
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
@@ -245,7 +250,11 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 			s.selects.Add(1)
 			if len(args) > 0 {
 				if n, err := strconv.Atoi(args[0]); err == nil {
-					if n < 0 || n > 15 {
+					maxDB := 15
+					if !first {
+						maxDB = s.secondMaxDB
+					}
+					if n < 0 || n > maxDB {
 						reply = "-ERR DB index is out of range\r\n"
 					} else {
 						db = n
@@ -1091,6 +1100,10 @@ type scriptRetryServer struct {
 	dropBefore    string
 	denyLoad      bool
 	dropRetryConn bool
+	// loadUser, when set, is the only user allowed to SCRIPT LOAD;
+	// other users get NOPERM. Tests that need a LOAD to run under a
+	// specific AUTH use it.
+	loadUser string
 	// persistCache makes the script cache survive across connections
 	// (a still-running server), instead of a fresh cache per
 	// connection (a restarted server).
@@ -1145,6 +1158,7 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
 	loaded := map[string]bool{}
+	user := "default"
 	for {
 		name, args := readConnStateRetryCommand(scanner)
 		if name == "" {
@@ -1175,10 +1189,19 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 		switch name {
 		case "hello":
 			_, _ = conn.Write([]byte("%0\r\n"))
+		case "auth":
+			if len(args) >= 1 {
+				user = args[0]
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "script":
 			if len(args) >= 2 && strings.EqualFold(args[0], "load") {
 				s.loads.Add(1)
 				if s.denyLoad {
+					_, _ = conn.Write([]byte("-NOPERM this user has no permissions to run the 'script|load' command\r\n"))
+					continue
+				}
+				if s.loadUser != "" && user != s.loadUser {
 					_, _ = conn.Write([]byte("-NOPERM this user has no permissions to run the 'script|load' command\r\n"))
 					continue
 				}
@@ -3256,5 +3279,181 @@ func TestPipelineRetryFailedConnStateReissueFailsBatch(t *testing.T) {
 	}
 	if got := server.setDB.Load(); got != 0 {
 		t.Fatalf("SET ran on DB %d, want 0 (the reissued SELECT failed, so the retried SET could only run on the default database — and Exec fails loudly for it)", got)
+	}
+}
+
+// TestPipelineRetryReportsLaterConnStateReissueFailure: the mirror of
+// TestPipelineRetryFailedConnStateReissueFailsBatch where the FIRST
+// reissued SELECT succeeds. The read loop reports only the first
+// command's error, so when the replacement server rejects a LATER
+// reissued SELECT, the batch must still fail: Exec must not report
+// success while the suffix ran on the wrong database. Regression test
+// for the review finding on #4351.
+func TestPipelineRetryReportsLaterConnStateReissueFailure(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 2
+	server.secondMaxDB = 0
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel0 := pipe.Select(ctx, 0)
+	sel2 := pipe.Select(ctx, 2)
+	set := pipe.Set(ctx, "k", "v", 0)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "DB index is out of range") {
+		t.Fatalf("Exec: %v, want the DB-index error (the reissued SELECT 2 failed on the replacement server, so the batch must fail loudly instead of reporting success with the SET on the wrong database)", err)
+	}
+	if err := sel0.Err(); err != nil {
+		t.Fatalf("SELECT 0: %v, want nil (it was answered by the first attempt)", err)
+	}
+	if err := sel2.Err(); err != nil {
+		t.Fatalf("SELECT 2: %v, want nil (it was answered by the first attempt; the failure belongs to the reissued copy, not the original)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil (it ran on the default database; the batch failure is reported through Exec, not the SET)", err)
+	}
+	if got := server.selects.Load(); got != 4 {
+		t.Fatalf("server received %d SELECT commands, want 4 (two answered, two reissued)", got)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (the reissued SELECT 2 failed, so the retried SET could only run on the default database — and Exec fails loudly for it)", got)
+	}
+}
+
+// helloRetryServer is a scripted RESP server for the HELLO reissue test.
+// The first connection answers the pipeline HELLO (a RESP3 map, as a
+// real server would) and then drops before the GET; later connections
+// answer everything.
+type helloRetryServer struct {
+	ln     net.Listener
+	conns  atomic.Int32
+	hellos atomic.Int32
+	gets   atomic.Int32
+}
+
+func newHelloRetryServer(t *testing.T) *helloRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &helloRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *helloRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			s.hellos.Add(1)
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "get":
+			s.gets.Add(1)
+			if first {
+				// Drop before replying: the GET must be retried, and
+				// the retry must reissue the HELLO ahead of it.
+				return
+			}
+			_, _ = conn.Write([]byte("$1\r\nv\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryReissuesHelloWithMapReply: a pipeline HELLO answered
+// on the first attempt must be reissued on the retry with the same reply
+// decoder. HELLO returns a map (RESP3) or an array (RESP2), which a
+// fresh StringCmd cannot read, so reissuing it as one fails every retry
+// attempt and the GET reply is never read. Regression test for the
+// review finding on #4351.
+func TestPipelineRetryReissuesHelloWithMapReply(t *testing.T) {
+	server := newHelloRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	hello := pipe.Hello(ctx, 2, "", "", "")
+	get := pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must reissue the HELLO with its map decoder, then read the GET)", err)
+	}
+	if err := hello.Err(); err != nil {
+		t.Fatalf("HELLO: %v, want nil", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want \"v\", nil (the retried GET must be read after the reissued HELLO)", got, err)
+	}
+	if got := server.hellos.Load(); got < 2 {
+		t.Fatalf("server received %d HELLO commands, want at least 2 (the answered HELLO must be reissued on the retry connection)", got)
+	}
+	if got := server.gets.Load(); got != 2 {
+		t.Fatalf("server received %d GET commands, want 2 (one dropped, one answered)", got)
+	}
+}
+
+// TestPipelineRetryPreservesSessionAndScriptPrerequisiteOrder: when the
+// answered prefix mixes session commands and script prerequisites, the
+// retry must replay them in the original prefix order. Grouping all
+// session reissues before all script preloads runs the SCRIPT LOAD as
+// the wrong user (AUTH runner) when only the loader may load scripts,
+// so the LOAD gets NOPERM and the retried EVALSHA fails NOSCRIPT.
+// Regression test for the review finding on #4351.
+func TestPipelineRetryPreservesSessionAndScriptPrerequisiteOrder(t *testing.T) {
+	server := newScriptRetryServer(t)
+	server.dropBefore = "evalsha"
+	server.loadUser = "loader"
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	authLoader := pipe.Do(ctx, "auth", "loader", "pass")
+	load := pipe.ScriptLoad(ctx, src)
+	authRunner := pipe.Do(ctx, "auth", "runner", "pass")
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must replay AUTH loader, SCRIPT LOAD, AUTH runner in order, so the LOAD runs as loader and the EVALSHA finds the script)", err)
+	}
+	if err := authLoader.Err(); err != nil {
+		t.Fatalf("AUTH loader: %v, want nil", err)
+	}
+	if got, err := load.Result(); err != nil || got != sha {
+		t.Fatalf("SCRIPT LOAD = %q, %v; want %q, nil", got, err, sha)
+	}
+	if err := authRunner.Err(); err != nil {
+		t.Fatalf("AUTH runner: %v, want nil", err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.loads.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 2 (one per attempt)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0 (the LOAD must run as loader, before the runner AUTH)", got)
 	}
 }

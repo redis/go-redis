@@ -2784,6 +2784,9 @@ func evalScriptCached(cmd Cmder) bool {
 // followed a reissued LOAD is reissued with it, in order: replaying the
 // LOAD without the FLUSH would execute a script the batch had already
 // removed, where the whole-batch retry would have returned NOSCRIPT.
+// Session reissues and script preloads are emitted in the order the
+// original prefix established them, so an AUTH that guards a SCRIPT LOAD
+// stays ahead of it instead of being grouped before all preloads.
 func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs map[*baseCmd]bool) []Cmder {
 	if err == nil || isRedisError(err) {
 		return cmds
@@ -2833,45 +2836,59 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				}
 			}
 			var retry []Cmder
-			// Re-establish answered connection-local state first, as
-			// fresh commands: the retry must run the suffix under the
+			// Re-establish answered connection-local state and rebuild
+			// script cache entries in the order the original prefix
+			// established them. The retry must run the suffix under the
 			// same state the first attempt established, and a fresh
 			// command's failure lands on it instead of overwriting the
 			// original's answer. A failed re-establishment fails the
 			// batch (see pipelineRetryAttemptErr): the suffix would
-			// otherwise run on a misconfigured connection.
+			// otherwise run on a misconfigured connection. Session
+			// commands and script prerequisites interleave: an AUTH
+			// that may load scripts must stay ahead of the SCRIPT LOAD
+			// it guards, so both are emitted in a single pass over the
+			// answered prefix instead of two grouped passes.
 			for _, answered := range cmds[:i] {
 				if pipelineConnStateReissueCmd(answered) {
-					fresh := NewStringCmd(ctx, answered.Args()...)
+					// Clone, not a fresh StringCmd: the reissued
+					// command must keep the original's reply
+					// decoder — HELLO returns a map (RESP3) or an
+					// array (RESP2), which StringCmd.readReply
+					// rejects, and aggregate-returning CLIENT
+					// subcommands have the same problem. The
+					// clone's stale error is cleared: it is the
+					// first attempt's answer, not this attempt's.
+					fresh := answered.Clone()
+					fresh.SetErr(nil)
 					retry = append(retry, fresh)
 					markPipelineSynthetic(ctx, true, fresh)
+					continue
 				}
-			}
-			if needsScripts {
-				for _, answered := range cmds[:i] {
-					switch {
-					case isScriptLoadCmd(answered) || isScriptFlushCmd(answered):
-						// Fresh command, not the original: a retry that
-						// fails while reading must not stamp its
-						// transport error over the digest / OK the
-						// first attempt already answered.
-						fresh := NewStringCmd(ctx, answered.Args()...)
+				if !needsScripts {
+					continue
+				}
+				switch {
+				case isScriptLoadCmd(answered) || isScriptFlushCmd(answered):
+					// Fresh command, not the original: a retry that
+					// fails while reading must not stamp its
+					// transport error over the digest / OK the
+					// first attempt already answered.
+					fresh := NewStringCmd(ctx, answered.Args()...)
+					retry = append(retry, fresh)
+					markPipelineSynthetic(ctx, false, fresh)
+				case isEvalCmd(answered) && evalScriptCached(answered):
+					// Only an EVAL that actually ran populates the
+					// cache: a rejected one (a negative key count,
+					// a compile error) never ran, so preloading its
+					// source would let a retried EVALSHA execute
+					// writes the original pipeline would have
+					// refused with NOSCRIPT. A nil reply or a Lua
+					// runtime error still means the script ran and
+					// was cached, so those preload.
+					if src, ok := evalScriptSource(answered); ok {
+						fresh := NewStringCmd(ctx, "script", "load", src)
 						retry = append(retry, fresh)
 						markPipelineSynthetic(ctx, false, fresh)
-					case isEvalCmd(answered) && evalScriptCached(answered):
-						// Only an EVAL that actually ran populates the
-						// cache: a rejected one (a negative key count,
-						// a compile error) never ran, so preloading its
-						// source would let a retried EVALSHA execute
-						// writes the original pipeline would have
-						// refused with NOSCRIPT. A nil reply or a Lua
-						// runtime error still means the script ran and
-						// was cached, so those preload.
-						if src, ok := evalScriptSource(answered); ok {
-							fresh := NewStringCmd(ctx, "script", "load", src)
-							retry = append(retry, fresh)
-							markPipelineSynthetic(ctx, false, fresh)
-						}
 					}
 				}
 			}
@@ -3398,6 +3415,26 @@ func pipelineRetryAttemptErr(ctx context.Context, cmds []Cmder) error {
 	return firstOriginal
 }
 
+// pipelineRequiredSyntheticErr returns the first error of a required
+// synthetic command in cmds, if any. The read loop reports only the
+// first command's error, so without this a required re-establishment
+// that fails later in the batch (a second SELECT the replacement server
+// rejects while the first one succeeds) would stay invisible and Exec
+// would report success while the suffix ran on a misconfigured
+// connection.
+func pipelineRequiredSyntheticErr(ctx context.Context, cmds []Cmder) error {
+	required := pipelineRequiredSyntheticFromCtx(ctx)
+	if required == nil {
+		return nil
+	}
+	for _, cmd := range cmds {
+		if e := cmd.rawErr(); e != nil && required[cmd.base()] {
+			return e
+		}
+	}
+	return nil
+}
+
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
@@ -3488,9 +3525,15 @@ func (c *baseClient) pipelineProcessCmds(
 	// The error is derived from the original commands, not the synthetic
 	// ones prepended to the retry: a failed best-effort script preload
 	// must not fail a batch whose own commands succeeded, while a failed
-	// required re-establishment must (see pipelineRetryAttemptErr).
+	// required re-establishment must (see pipelineRetryAttemptErr). The
+	// read loop reports only the first command's error, so a required
+	// re-establishment that fails later in the batch needs its own check
+	// even when the first command succeeded (see
+	// pipelineRequiredSyntheticErr).
 	if readErr != nil {
 		readErr = pipelineRetryAttemptErr(ctx, cmds)
+	} else {
+		readErr = pipelineRequiredSyntheticErr(ctx, cmds)
 	}
 	return readErr != nil, readErr
 }
