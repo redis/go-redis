@@ -246,7 +246,11 @@ func appendArg(b []byte, v interface{}) []byte {
 		if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && !rv.IsNil() {
 			e := rv.Elem()
 			_, isTime := e.Interface().(time.Time)
-			if isTime || e.Kind() == reflect.String || (e.Kind() >= reflect.Bool && e.Kind() <= reflect.Float64) {
+			// PkgPath is empty only for the predeclared types. A named type is
+			// left as is: secretArgs cannot read it, so it must not be printed.
+			basic := e.Type().PkgPath() == "" &&
+				(e.Kind() == reflect.String || (e.Kind() >= reflect.Bool && e.Kind() <= reflect.Float64))
+			if isTime || basic {
 				return appendArg(b, e.Interface())
 			}
 		}
