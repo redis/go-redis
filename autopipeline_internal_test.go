@@ -556,7 +556,7 @@ func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
 	cmd2 := NewStringCmd(ctx, "get", "k2")
 	cmds := []Cmder{cmd1, cmd2}
 	failed := newCmdsMap()
-	if err := cc.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failed, cc.resolvePipelineRouting(ctx, cmds), nil); err != nil {
+	if err := cc.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failed, cc.resolvePipelineRouting(ctx, cmds), nil, nil); err != nil {
 		t.Fatalf("pipelineReadCmds: %v", err)
 	}
 	if cmd1.Val() != "v1" || cmd2.Val() != "v2" {

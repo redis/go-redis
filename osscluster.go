@@ -3426,21 +3426,13 @@ func (c *ClusterClient) processPipelineNodeConn(
 			setCmdsErr(cmds, err)
 			return err
 		}
-		err := c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failedCmds, route, flags)
+		err := c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failedCmds, route, flags, injected)
 		if err == nil || isRedisError(err) {
-			node.Client.himportAfterBatch(cn, injected, cmds)
-			// SETs of registered fieldsets that lost their session state
-			// re-queue for the next attempt, which re-prepares lazily —
-			// the cluster equivalent of himportRetryFailedSets, bounded by
-			// the pipeline's attempt budget. A non-nil redis error here
-			// means pipelineReadCmds already re-queued the whole batch
-			// (retryable first-command error); adding the SETs again would
-			// duplicate them in the next attempt.
+			// The retry pass already took registered "no such fieldset" SETs
+			// in their original positions. Append them only when it did not run.
 			if err == nil {
 				c.himportRequeueFailedSets(ctx, cmds, failedCmds)
 			}
-		}
-		if err == nil || isRedisError(err) {
 			// ref to #1914: if a node was replaced within a same hostname, the
 			// connection still points to the old node, which answers MOVED with
 			// that same hostname. When returning MOVED, a connection will be dropped.
@@ -3466,12 +3458,21 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	failedCmds *cmdsMap,
 	route *clusterPipelineRouting,
 	flags []byte,
+	injected []Cmder,
 ) error {
 	// Commands redirected by MOVED/ASK are queued for their new node at the
 	// end, in command order. A whole-batch retry queues them in their place
 	// instead, so it neither sends them twice nor reorders the batch.
 	// Track them by index: a Cmder value is not always comparable.
 	var redirects []pipelineRedirect
+	read := make([]bool, len(cmds))
+	// failedAt is the command whose reply could not be read. That command
+	// and the unread tail are queued again; parsed successes are not.
+	// -1 means this was not a transport read error.
+	failedAt := -1
+	// Session-loss SETs join the pass after himportAfterBatch, once the
+	// whole batch is read.
+	includeHImport := false
 	defer func() {
 		for _, r := range redirects {
 			if r.node != nil {
@@ -3481,11 +3482,26 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 	}()
 	retryCmds := func() {
 		_ = c.mapCmdsByNodeInViewWith(ctx, failedCmds, cmds, route, func(i int, _ *clusterNode) bool {
-			if redirects == nil || redirects[i].node == nil {
+			if redirects != nil && redirects[i].node != nil {
+				failedCmds.Add(redirects[i].node, redirects[i].cmds...)
+				redirects[i].node = nil
+				return true
+			}
+			if failedAt >= 0 && i >= failedAt {
 				return false
 			}
-			failedCmds.Add(redirects[i].node, redirects[i].cmds...)
-			redirects[i].node = nil
+			if !read[i] {
+				return true
+			}
+			err := cmds[i].rawErr()
+			if err != nil && isRedisError(err) && shouldRetry(err, true) {
+				return false
+			}
+			// Session-loss SETs are not shouldRetry. Keep them in this pass
+			// so a later retryable command cannot jump ahead of them.
+			if includeHImport && c.himportShouldRequeue(cmds[i]) {
+				return false
+			}
 			return true
 		})
 	}
@@ -3510,6 +3526,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 		}
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
+		read[i] = true
 
 		if err == nil {
 			if samples {
@@ -3534,6 +3551,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 
 		if !isRedisError(err) {
 			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+				failedAt = i
 				retryCmds()
 			}
 			setCmdsErr(cmds[i+1:], err)
@@ -3541,10 +3559,29 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 		}
 	}
 
+	// Swap a failed injected PREPARE onto its SETs before selection.
+	// A retryable PREPARE error (LOADING) must be visible here, or the
+	// SET is neither retried nor recovered as "no such fieldset".
+	node.Client.himportAfterBatch(cn, injected, cmds)
+
 	// rawErr: execution path; never await an async command's batch here.
-	if err := cmds[0].rawErr(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
-		retryCmds()
-		return err
+	if !cmdsContainNoRetry(cmds) {
+		var retryErr error
+		for i, cmd := range cmds {
+			if !read[i] {
+				continue
+			}
+			err := cmd.rawErr()
+			if err != nil && isRedisError(err) && shouldRetry(err, true) {
+				retryErr = err
+				break
+			}
+		}
+		if retryErr != nil {
+			includeHImport = true
+			retryCmds()
+			return retryErr
+		}
 	}
 
 	return nil
