@@ -470,6 +470,9 @@ type Options struct {
 
 	// readOnly enables read only queries on slave/follower nodes.
 	readOnly bool
+	// ignoreReadOnlyUnsupported skips a READONLY rejected by a non-cluster
+	// node. Set by ClusterOptions.StandaloneFallback.
+	ignoreReadOnlyUnsupported bool
 
 	// DisableIndentity - Disable set-lib on connect.
 	//
