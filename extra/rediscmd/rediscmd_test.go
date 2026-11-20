@@ -80,6 +80,10 @@ var _ = Describe("CmdString", func() {
 		// rename-command takes two values, which shifts the option parity.
 		Entry("", []interface{}{"sentinel", "set", "mymaster", "rename-command", "CONFIG", "cfg", "auth-pass", "s3cret"},
 			"sentinel set mymaster rename-command CONFIG cfg auth-pass <redacted>"),
+		Entry("", []interface{}{"sentinel", "config", "set", "sentinel-pass", "s3cret"},
+			"sentinel config set sentinel-pass <redacted>"),
+		Entry("", []interface{}{"sentinel", "config", "set", "sentinel-user", "alice", "sentinel-pass", "s3cret"},
+			"sentinel config set sentinel-user alice sentinel-pass <redacted>"),
 		Entry("", []interface{}{"get", "key"}, "get key"),
 		Entry("", []interface{}{"set", "auth", "value"}, "set auth value"),
 		// Keywords and rules passed as *string are still recognised.

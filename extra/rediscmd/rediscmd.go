@@ -175,6 +175,15 @@ func secretArgs(args []interface{}) []bool {
 				mark(i + 1)
 			}
 		}
+
+	case equalFoldArg(args, 0, "sentinel") && equalFoldArg(args, 1, "config") && equalFoldArg(args, 2, "set"):
+		// SENTINEL CONFIG SET param value [param value ...]; sentinel-pass
+		// holds the password Sentinels use to authenticate with each other.
+		for i := 3; i+1 < len(args); i += 2 {
+			if equalFoldArg(args, i, "sentinel-pass") {
+				mark(i + 1)
+			}
+		}
 	}
 
 	return marks
