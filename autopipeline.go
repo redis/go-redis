@@ -1868,6 +1868,18 @@ func (ap *AutoPipeliner) ScriptExists(ctx context.Context, hashes ...string) *Bo
 	return ap.pipeliner.ScriptExists(ctx, hashes...)
 }
 
+// ClusterSlotStats delegates to the underlying client (asks every master and
+// merges on ClusterClient).
+func (ap *AutoPipeliner) ClusterSlotStats(ctx context.Context, startSlot, endSlot int) *ClusterSlotStatsCmd {
+	return ap.pipeliner.ClusterSlotStats(ctx, startSlot, endSlot)
+}
+
+// ClusterSlotStatsOrderBy delegates to the underlying client (asks every
+// master and merges on ClusterClient).
+func (ap *AutoPipeliner) ClusterSlotStatsOrderBy(ctx context.Context, a *ClusterSlotStatsOrderByArgs) *ClusterSlotStatsCmd {
+	return ap.pipeliner.ClusterSlotStatsOrderBy(ctx, a)
+}
+
 // HImportPrepare, HImportDiscard and HImportDiscardAll are the remaining
 // cluster-wide overrides (see the delegation note above): ClusterClient fans
 // them out to every master and updates the shared fieldset registry, so
