@@ -449,6 +449,19 @@ type Options struct {
 	// default: 0
 	ConnMaxLifetimeJitter time.Duration
 
+	// ConnMaxLifetimeReapInterval enables a background reaper that closes idle
+	// connections past ConnMaxLifetime or idle longer than ConnMaxIdleTime,
+	// instead of waiting for a Get to find them. This also shrinks the pool
+	// after a spike. It runs every interval and refills toward MinIdleConns.
+	// Connections in use are not touched. One that expires while in use is
+	// closed by the first tick after it is returned, or by the next Get.
+	//
+	// If <= 0, the reaper is off and expired idle connections are closed lazily
+	// on Get. Has no effect unless ConnMaxLifetime or ConnMaxIdleTime is > 0.
+	//
+	// default: 0
+	ConnMaxLifetimeReapInterval time.Duration
+
 	// TLSConfig to use. When set, TLS will be negotiated.
 	TLSConfig *tls.Config
 
@@ -1307,6 +1320,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	if q.has("conn_max_lifetime_jitter") {
 		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
 	}
+	o.ConnMaxLifetimeReapInterval = q.duration("conn_max_lifetime_reap_interval")
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
 	}
@@ -1363,25 +1377,26 @@ func newConnPool(
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:                 opt.PoolFIFO,
-		PoolSize:                 poolSize,
-		MaxConcurrentDials:       opt.MaxConcurrentDials,
-		PoolTimeout:              opt.PoolTimeout,
-		DialTimeout:              opt.DialTimeout,
-		DialerRetries:            opt.DialerRetries,
-		DialerRetryTimeout:       opt.DialerRetryTimeout,
-		DialerRetryBackoff:       opt.DialerRetryBackoff,
-		MinIdleConns:             minIdleConns,
-		MaxIdleConns:             maxIdleConns,
-		MaxActiveConns:           maxActiveConns,
-		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
-		ConnMaxLifetime:          opt.ConnMaxLifetime,
-		ConnMaxLifetimeJitter:    opt.ConnMaxLifetimeJitter,
-		ReadBufferSize:           opt.ReadBufferSize,
-		WriteBufferSize:          opt.WriteBufferSize,
-		PushNotificationsEnabled: opt.Protocol == 3,
-		Name:                     poolName,
-		Metrics:                  metrics,
+		PoolFIFO:                    opt.PoolFIFO,
+		PoolSize:                    poolSize,
+		MaxConcurrentDials:          opt.MaxConcurrentDials,
+		PoolTimeout:                 opt.PoolTimeout,
+		DialTimeout:                 opt.DialTimeout,
+		DialerRetries:               opt.DialerRetries,
+		DialerRetryTimeout:          opt.DialerRetryTimeout,
+		DialerRetryBackoff:          opt.DialerRetryBackoff,
+		MinIdleConns:                minIdleConns,
+		MaxIdleConns:                maxIdleConns,
+		MaxActiveConns:              maxActiveConns,
+		ConnMaxIdleTime:             opt.ConnMaxIdleTime,
+		ConnMaxLifetime:             opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       opt.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: opt.ConnMaxLifetimeReapInterval,
+		ReadBufferSize:              opt.ReadBufferSize,
+		WriteBufferSize:             opt.WriteBufferSize,
+		PushNotificationsEnabled:    opt.Protocol == 3,
+		Name:                        poolName,
+		Metrics:                     metrics,
 	}), nil
 }
 
@@ -1412,24 +1427,25 @@ func newPubSubPool(
 	}
 
 	return pool.NewPubSubPool(&pool.Options{
-		PoolFIFO:                 opt.PoolFIFO,
-		PoolSize:                 poolSize,
-		MaxConcurrentDials:       opt.MaxConcurrentDials,
-		PoolTimeout:              opt.PoolTimeout,
-		DialTimeout:              opt.DialTimeout,
-		DialerRetries:            opt.DialerRetries,
-		DialerRetryTimeout:       opt.DialerRetryTimeout,
-		DialerRetryBackoff:       opt.DialerRetryBackoff,
-		MinIdleConns:             minIdleConns,
-		MaxIdleConns:             maxIdleConns,
-		MaxActiveConns:           maxActiveConns,
-		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
-		ConnMaxLifetime:          opt.ConnMaxLifetime,
-		ConnMaxLifetimeJitter:    opt.ConnMaxLifetimeJitter,
-		ReadBufferSize:           32 * 1024,
-		WriteBufferSize:          32 * 1024,
-		PushNotificationsEnabled: opt.Protocol == 3,
-		Name:                     poolName,
-		Metrics:                  metrics,
+		PoolFIFO:                    opt.PoolFIFO,
+		PoolSize:                    poolSize,
+		MaxConcurrentDials:          opt.MaxConcurrentDials,
+		PoolTimeout:                 opt.PoolTimeout,
+		DialTimeout:                 opt.DialTimeout,
+		DialerRetries:               opt.DialerRetries,
+		DialerRetryTimeout:          opt.DialerRetryTimeout,
+		DialerRetryBackoff:          opt.DialerRetryBackoff,
+		MinIdleConns:                minIdleConns,
+		MaxIdleConns:                maxIdleConns,
+		MaxActiveConns:              maxActiveConns,
+		ConnMaxIdleTime:             opt.ConnMaxIdleTime,
+		ConnMaxLifetime:             opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       opt.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: opt.ConnMaxLifetimeReapInterval,
+		ReadBufferSize:              32 * 1024,
+		WriteBufferSize:             32 * 1024,
+		PushNotificationsEnabled:    opt.Protocol == 3,
+		Name:                        poolName,
+		Metrics:                     metrics,
 	}, dialer), nil
 }

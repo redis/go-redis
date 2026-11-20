@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -268,8 +269,9 @@ func (cmd *ScanDumpCmd) readReply(rd *proto.Reader) (err error) {
 		if err != nil {
 			return err
 		}
+		// CF.SCANDUMP ends the dump with a null chunk.
 		data, err := rd.ReadString()
-		if err != nil {
+		if err != nil && err != Nil {
 			return err
 		}
 		cmd.val.Data = data
@@ -390,7 +392,8 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			return err
 		}
 		if key, ok := cmd.args[2].(string); ok && n == 1 {
-			if err := readAndAssignValue(key, false); err != nil {
+			// The server matches the option case-insensitively.
+			if err := readAndAssignValue(strings.ToUpper(key), false); err != nil {
 				return err
 			}
 		} else {

@@ -1221,6 +1221,12 @@ func TestFTSearchCmdReadReplyRESP2(t *testing.T) {
 			reply:   "*3\r\n:2\r\n$5\r\ndoc:2\r\n$5\r\ndoc:1\r\n",
 			want:    []Document{{ID: "doc:2", Fields: map[string]string{}}, {ID: "doc:1", Fields: map[string]string{}}},
 		},
+		{
+			name:    "JSON null field",
+			options: nil,
+			reply:   "*3\r\n:1\r\n$5\r\ndoc:1\r\n*4\r\n$1\r\na\r\n$3\r\nfoo\r\n$3\r\n$.b\r\n$-1\r\n",
+			want:    []Document{{ID: "doc:1", Fields: map[string]string{"a": "foo"}}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2192,6 +2198,14 @@ func TestParseFTInfoCaseSensitiveTag(t *testing.T) {
 			attr: []interface{}{
 				"identifier", "t", "attribute", "t", "type", "TAG",
 				"SEPARATOR", "|", "CASESENSITIVE", "SORTABLE", "UNF",
+			},
+		},
+		{
+			// The separator value must not be read as the HNSW "M" key.
+			name: "RESP2 separator m",
+			attr: []interface{}{
+				"identifier", "t", "attribute", "t", "type", "TAG",
+				"SEPARATOR", "m", "CASESENSITIVE", "SORTABLE", "UNF",
 			},
 		},
 		{

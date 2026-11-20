@@ -271,6 +271,9 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost:123/?conn_max_lifetime_jitter=6m",
 			o:   &Options{Addr: "localhost:123", ConnMaxLifetimeJitter: 0},
 		}, {
+			url: "redis://localhost:123/?conn_max_lifetime=1h&conn_max_lifetime_reap_interval=30s",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetime: time.Hour, ConnMaxLifetimeReapInterval: 30 * time.Second},
+		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
 		}, {

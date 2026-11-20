@@ -944,6 +944,11 @@ func (cmd *Cmd) Uint64() (uint64, error) {
 func toUint64(val interface{}) (uint64, error) {
 	switch val := val.(type) {
 	case int64:
+		if val < 0 {
+			// Give the error ParseUint gives for the same number in a
+			// bulk string, not a wrapped value.
+			return toUint64(strconv.FormatInt(val, 10))
+		}
 		return uint64(val), nil
 	case string:
 		return strconv.ParseUint(val, 10, 64)
@@ -4681,15 +4686,9 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 func (cmd *XInfoStreamFullCmd) Clone() Cmder {
 	var val *XInfoStreamFull
 	if cmd.val != nil {
-		val = &XInfoStreamFull{
-			Length:               cmd.val.Length,
-			RadixTreeKeys:        cmd.val.RadixTreeKeys,
-			RadixTreeNodes:       cmd.val.RadixTreeNodes,
-			LastGeneratedID:      cmd.val.LastGeneratedID,
-			MaxDeletedEntryID:    cmd.val.MaxDeletedEntryID,
-			EntriesAdded:         cmd.val.EntriesAdded,
-			RecordedFirstEntryID: cmd.val.RecordedFirstEntryID,
-		}
+		// Copy the struct so a field added later is not left out.
+		v := *cmd.val
+		val = &v
 		// Clone Entries
 		if cmd.val.Entries != nil {
 			val.Entries = make([]XMessage, len(cmd.val.Entries))
@@ -4705,10 +4704,21 @@ func (cmd *XInfoStreamFullCmd) Clone() Cmder {
 				}
 			}
 		}
-		// Clone Groups - simplified copy for now due to complexity
+		// Clone Groups
 		if cmd.val.Groups != nil {
 			val.Groups = make([]XInfoStreamGroup, len(cmd.val.Groups))
-			copy(val.Groups, cmd.val.Groups)
+			for i, group := range cmd.val.Groups {
+				group.Pending = slices.Clone(group.Pending)
+				if group.Consumers != nil {
+					consumers := make([]XInfoStreamConsumer, len(group.Consumers))
+					for j, consumer := range group.Consumers {
+						consumer.Pending = slices.Clone(consumer.Pending)
+						consumers[j] = consumer
+					}
+					group.Consumers = consumers
+				}
+				val.Groups[i] = group
+			}
 		}
 	}
 	return &XInfoStreamFullCmd{
@@ -9817,7 +9827,7 @@ func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
 func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	return &VectorScoreSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		val:     cmd.val,
+		val:     slices.Clone(cmd.val),
 	}
 }
 
@@ -10038,9 +10048,16 @@ func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *VectorAttribSliceCmd) Clone() Cmder {
+	val := slices.Clone(cmd.val)
+	for i := range val {
+		if val[i].Attribs != nil {
+			attribs := *val[i].Attribs
+			val[i].Attribs = &attribs
+		}
+	}
 	return &VectorAttribSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		val:     cmd.val,
+		val:     val,
 	}
 }
 
@@ -10140,9 +10157,16 @@ func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
+	val := slices.Clone(cmd.val)
+	for i := range val {
+		if val[i].Attribs != nil {
+			attribs := *val[i].Attribs
+			val[i].Attribs = &attribs
+		}
+	}
 	return &VectorScoreAttribSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		val:     cmd.val,
+		val:     val,
 	}
 }
 
