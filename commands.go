@@ -64,6 +64,23 @@ func appendArgs(dst, src []interface{}) []interface{} {
 	return dst
 }
 
+// appendElements appends src to dst. A single slice argument is expanded
+// into its elements. Any other argument, a nil one included, is sent as it is.
+func appendElements(dst, src []interface{}) []interface{} {
+	if len(src) == 1 {
+		switch arg := src[0].(type) {
+		case []string:
+			for _, s := range arg {
+				dst = append(dst, s)
+			}
+			return dst
+		case []interface{}:
+			return append(dst, arg...)
+		}
+	}
+	return append(dst, src...)
+}
+
 func appendArg(dst []interface{}, arg interface{}) []interface{} {
 	switch arg := arg.(type) {
 	case []string:
