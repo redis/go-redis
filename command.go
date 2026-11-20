@@ -172,6 +172,7 @@ const (
 	CmdTypeBackupStatus
 	CmdTypeACLUser
 	CmdTypeClusterSlotStats
+	CmdTypeModuleList
 )
 
 type (
@@ -6811,6 +6812,104 @@ func (cmd *SlowLogCmd) Clone() Cmder {
 
 //-----------------------------------------------------------------------
 
+// ModuleInfo is one loaded module, as reported by MODULE LIST.
+type ModuleInfo struct {
+	Name    string
+	Version int64
+	Path    string
+	Args    []string
+}
+
+type ModuleListCmd struct {
+	baseCmd
+
+	val []ModuleInfo
+}
+
+var _ Cmder = (*ModuleListCmd)(nil)
+
+func NewModuleListCmd(ctx context.Context, args ...interface{}) *ModuleListCmd {
+	return &ModuleListCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeModuleList,
+		},
+	}
+}
+
+func (cmd *ModuleListCmd) SetVal(val []ModuleInfo) {
+	cmd.val = val
+}
+
+func (cmd *ModuleListCmd) Val() []ModuleInfo {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *ModuleListCmd) Result() ([]ModuleInfo, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *ModuleListCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ModuleListCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]ModuleInfo, n)
+
+	for i := range cmd.val {
+		module := &cmd.val[i]
+		// A module is a map in RESP3 and a flat array in RESP2.
+		fields, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		for j := 0; j < fields; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			switch key {
+			case "name":
+				module.Name, err = rd.ReadString()
+			case "ver":
+				module.Version, err = rd.ReadInt()
+			case "path":
+				module.Path, err = rd.ReadString()
+			case "args":
+				module.Args, err = readStringSlice(rd)
+			default:
+				err = rd.DiscardNext()
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (cmd *ModuleListCmd) Clone() Cmder {
+	val := slices.Clone(cmd.val)
+	for i := range val {
+		val[i].Args = slices.Clone(val[i].Args)
+	}
+	return &ModuleListCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//-----------------------------------------------------------------------
+
 type Latency struct {
 	Name   string
 	Time   time.Time
@@ -10531,6 +10630,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return clusterSlotStatsCmd.Val(), clusterSlotStatsCmd.Err()
+			}
+		case CmdTypeModuleList:
+			if moduleListCmd, ok := cmd.(interface {
+				Val() []ModuleInfo
+				Err() error
+			}); ok {
+				return moduleListCmd.Val(), moduleListCmd.Err()
 			}
 		case CmdTypeClusterShards:
 			if clusterShardsCmd, ok := cmd.(interface {
