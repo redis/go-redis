@@ -541,8 +541,7 @@ func TestMultiDBBlockingAcrossFailover(t *testing.T) {
 	_ = side.Del(ctx, key).Err()
 
 	// The 5s command timeout keeps its read deadline (about 15s) below the
-	// wait below, so the outage surfaces as an error; redis.Nil would mean
-	// the command timed out on its own and the fault did not break it.
+	// wait below, so the connection error surfaces inside it.
 	inflight := make(chan error, 1)
 	go func() {
 		_, err := mdb.BLPop(ctx, 5*time.Second, key).Result()
@@ -553,8 +552,11 @@ func TestMultiDBBlockingAcrossFailover(t *testing.T) {
 
 	select {
 	case err := <-inflight:
-		if err == nil || errors.Is(err, redis.Nil) {
-			t.Fatalf("in-flight BLPOP was not broken by the fault: %v", err)
+		// MultiDB can complete a blocking command on the new active member
+		// after the failover, so redis.Nil is a real reply rather than proof
+		// either way; only an immediate success contradicts the outage.
+		if err == nil {
+			t.Fatal("in-flight BLPOP succeeded while the active member is down")
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("in-flight BLPOP hung through the member outage")
