@@ -2647,6 +2647,25 @@ func isScriptLoadCmd(cmd Cmder) bool {
 	return ok && strings.EqualFold(sub, "load")
 }
 
+// isScriptFlushCmd reports whether cmd is a SCRIPT FLUSH: it empties the
+// server's volatile script cache, so a SCRIPT LOAD it follows no longer
+// counts — an EVALSHA after it must fail NOSCRIPT. It matters when a LOAD
+// is reissued ahead of a retry suffix (see pipelineRetrySuffix): replaying
+// the LOAD without the FLUSH that invalidated it would execute a script the
+// batch had already removed. A raw SCRIPT command built with Do is matched
+// on its arguments the same way.
+func isScriptFlushCmd(cmd Cmder) bool {
+	if cmd.Name() != "script" {
+		return false
+	}
+	args := cmd.Args()
+	if len(args) < 2 {
+		return false
+	}
+	sub, ok := args[1].(string)
+	return ok && strings.EqualFold(sub, "flush")
+}
+
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
 // still need a result: the suffix starting at the first command that was not
 // definitively answered — either a transport failure, or a retryable Redis
@@ -2665,7 +2684,10 @@ func isScriptLoadCmd(cmd Cmder) bool {
 // the suffix instead: it populates the server's volatile script cache, which
 // a restarted server does not have, so an EVALSHA in the suffix would fail
 // NOSCRIPT without it. SCRIPT LOAD is idempotent, so reissuing it replays
-// nothing else.
+// nothing else. A SCRIPT FLUSH that followed a reissued LOAD is reissued
+// with it, in order: replaying the LOAD without the FLUSH would execute a
+// script the batch had already removed, where the whole-batch retry would
+// have returned NOSCRIPT.
 func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
 	if err == nil || isRedisError(err) {
 		return cmds
@@ -2689,13 +2711,17 @@ func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
 					return cmds
 				}
 			}
-			// Reissue answered SCRIPT LOADs ahead of the suffix: a
-			// restarted server's script cache is empty, so the suffix's
-			// EVALSHA needs its prerequisite re-run on the new
-			// connection. Other answered commands are still not replayed.
+			// Reissue answered SCRIPT LOADs — and any SCRIPT FLUSH that
+			// followed them — ahead of the suffix, in their original
+			// order: a restarted server's script cache is empty, so the
+			// suffix's EVALSHA needs its prerequisite re-run on the new
+			// connection, but a LOAD replayed without the FLUSH that
+			// invalidated it would execute a script the batch had
+			// already removed. Other answered commands are still not
+			// replayed.
 			var retry []Cmder
 			for _, answered := range cmds[:i] {
-				if isScriptLoadCmd(answered) {
+				if isScriptLoadCmd(answered) || isScriptFlushCmd(answered) {
 					retry = append(retry, answered)
 				}
 			}
@@ -2831,7 +2857,19 @@ func (c *baseClient) generalProcessPipelineFrom(
 			// priorAttempts times (a full-duplex attempt), as its own retries
 			// would: 0 for an ordinary pipeline.
 			if err := internal.Sleep(ctx, c.retryBackoff(priorAttempts+attempt)); err != nil {
-				setCmdsErr(pending, err)
+				// Stamp only the unanswered suffix, as on the other exit
+				// paths: pending may still hold commands a prior attempt
+				// already answered — whole-batch retries for
+				// connection-local state or WAIT, and SCRIPT LOADs
+				// prepended to the retry — and stamping all of pending
+				// would overwrite their success with the cancel error.
+				// When no command carries a transport error (e.g. the
+				// prior attempt failed with a Redis reply), the suffix is
+				// the whole batch, so that case is unchanged. The
+				// returned error and the metric still carry the ctx
+				// error, as TestFDPipelineRetryMetricOnBackoffCancel
+				// pins.
+				setCmdsErr(pipelineUnansweredSuffix(pending), err)
 				if recordDuration {
 					c.recorder().RecordPipelineOperationDuration(ctx, time.Since(operationStart), operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
 				}

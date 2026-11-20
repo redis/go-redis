@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1059,6 +1060,7 @@ type scriptRetryServer struct {
 	ln        net.Listener
 	conns     atomic.Int32
 	loads     atomic.Int32
+	flushes   atomic.Int32
 	evalshas  atomic.Int32
 	noscripts atomic.Int32
 }
@@ -1103,6 +1105,10 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				digest := hex.EncodeToString(sum[:])
 				loaded[digest] = true
 				_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(digest), digest)
+			} else if len(args) >= 1 && strings.EqualFold(args[0], "flush") {
+				s.flushes.Add(1)
+				loaded = map[string]bool{}
+				_, _ = conn.Write([]byte("+OK\r\n"))
 			} else {
 				_, _ = conn.Write([]byte("+OK\r\n"))
 			}
@@ -1158,5 +1164,104 @@ func TestPipelineRetryReissuesScriptLoad(t *testing.T) {
 	}
 	if got := server.noscripts.Load(); got != 0 {
 		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryReissuesScriptFlush: a pipeline SCRIPT LOAD, SCRIPT FLUSH,
+// EVALSHA must not be rebuilt as LOAD, EVALSHA on retry. The flush
+// invalidated the script the LOAD populated, so a retry that drops it
+// executes a script the flush had removed — the previous whole-batch retry
+// repeated the flush and returned NOSCRIPT instead. Regression test for the
+// review finding on #4351.
+func TestPipelineRetryReissuesScriptFlush(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	pipe.ScriptLoad(ctx, src)
+	pipe.ScriptFlush(ctx)
+	eval := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("Exec: %v, want NOSCRIPT (the retry must replay the FLUSH after the LOAD, so the flushed script stays gone)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT", err)
+	}
+	if got := server.loads.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 2 (the answered LOAD must be reissued on the retry connection)", got)
+	}
+	if got := server.flushes.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT FLUSH commands, want 2 (the answered FLUSH must be reissued after the LOAD)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryBackoffCancelKeepsAnsweredResults: cancelling the context
+// while the retry backoff sleeps must not overwrite commands a prior attempt
+// already answered. The first attempt answers SELECT (a connection-local
+// state command, so the retry is whole-batch) and then drops before SET's
+// reply; the cancel lands in the backoff before the second attempt. The
+// SELECT keeps its +OK, while the unanswered SET and INCR take the cancel
+// error. Regression test for the review finding on #4351.
+func TestPipelineRetryBackoffCancelKeepsAnsweredResults(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: 5 * time.Second,
+		MaxRetryBackoff: 5 * time.Second,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 1)
+	set := pipe.Set(ctx, "k", "v", 0)
+	incr := pipe.Incr(ctx, "counter")
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := pipe.Exec(ctx)
+		errCh <- err
+	}()
+	// The first attempt fails in milliseconds; the backoff lasts 5s, so
+	// cancelling now lands inside the backoff sleep.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Exec err=%v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Exec did not return after the context was cancelled")
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v, want nil (it was answered before the drop and must keep its result)", err)
+	}
+	if err := set.Err(); err == nil {
+		t.Fatal("SET: nil, want the attempt's transport error (it was never answered)")
+	}
+	// INCR keeps the read path's transport error: it was never answered
+	// either, and setCmdsErr only stamps commands with a nil error.
+	if err := incr.Err(); err == nil {
+		t.Fatal("INCR: nil, want the attempt's transport error (it was never answered)")
 	}
 }
