@@ -38,6 +38,24 @@ jobs:
           echo "min=$min oldstable=$old matrix=$matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
+  # Exported API vs. the latest v9 release. Allowlist: scripts/apidiff-allow.txt.
+  apidiff:
+    name: apidiff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # release tags are the comparison base
+
+      - name: Check API compatibility
+        run: make apidiff
+
   test-386:
     name: test-386
     runs-on: ubuntu-latest
