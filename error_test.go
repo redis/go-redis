@@ -43,6 +43,7 @@ var _ = Describe("error", func() {
 			&net.OpError{Op: "dial"}: true,
 			// Use typed errors instead of plain errors.New()
 			proto.ParseErrorReply([]byte("-ERR max number of clients reached")):                                                                                   true,
+			proto.ParseErrorReply([]byte("-ERR max number of clients + cluster connections reached")):                                                             true,
 			proto.ParseErrorReply([]byte("-LOADING Redis is loading the dataset in memory")):                                                                      true,
 			proto.ParseErrorReply([]byte("-READONLY You can't write against a read only replica")):                                                                true,
 			proto.ParseErrorReply([]byte("-ERR Error running script (call to f_abc123): @user_script:1: -READONLY You can't write against a read only replica.")): true,
