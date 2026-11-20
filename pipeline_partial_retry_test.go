@@ -1229,6 +1229,8 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			// A rejected EVAL never runs, so it populates nothing: a
 			// negative key count is refused before the script is
 			// cached. Only a successful EVAL counts as a cache entry.
+			// A CROSSSLOT rejection is the same kind of pre-execution
+			// refusal: the script never ran, so it cached nothing.
 			rejected := false
 			if len(args) >= 2 {
 				if n, err := strconv.Atoi(args[1]); err == nil && n < 0 {
@@ -1237,6 +1239,10 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			}
 			if rejected {
 				_, _ = conn.Write([]byte("-ERR wrong number of keys for 'eval' command\r\n"))
+				continue
+			}
+			if len(args) >= 1 && args[0] == "crossslot" {
+				_, _ = conn.Write([]byte("-CROSSSLOT Keys in request don't hash to the same slot\r\n"))
 				continue
 			}
 			if len(args) >= 1 {
@@ -2281,6 +2287,44 @@ func TestPipelineRetryRejectedEvalIsNotPreloaded(t *testing.T) {
 	}
 	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "wrong number of keys") {
 		t.Fatalf("EVAL: %v, want the wrong-number-of-keys rejection", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a rejected EVAL establishes no cache entry to reissue)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the rejected script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryCrossslotEvalIsNotPreloaded: a CROSSSLOT rejection is a
+// pre-execution cluster refusal — the script never ran, so it cached
+// nothing. The retry must not turn it into a successful SCRIPT LOAD: the
+// retried EVALSHA would then execute writes the original batch refused.
+// Regression test for the Cursor Bugbot finding on #4351.
+func TestPipelineRetryCrossslotEvalIsNotPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "crossslot"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Do(ctx, "eval", src, 0)
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "CROSSSLOT") {
+		t.Fatalf("Exec: %v, want the CROSSSLOT rejection (the first failed command wins; the retry must not turn the rejection into a successful SCRIPT LOAD)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "CROSSSLOT") {
+		t.Fatalf("EVAL: %v, want the CROSSSLOT rejection", err)
 	}
 	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
 		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)

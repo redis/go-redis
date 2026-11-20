@@ -2731,7 +2731,9 @@ func evalScriptSource(cmd Cmder) (string, bool) {
 // returned false) and a Lua runtime error both come from an execution that
 // already loaded the script. Only a rejection before execution leaves the
 // cache empty: a script that failed to compile, a wrong key count, a
-// permission or memory refusal, a BUSY server, or a MOVED/ASK redirect. A
+// permission or memory refusal, a BUSY server, a MOVED/ASK redirect, or a
+// CROSSSLOT pre-execution rejection (the keys hash to different slots, so
+// the script never ran and never loaded). A
 // transport error says nothing about whether the script ran, so it counts
 // as not cached. The wording is checked against Redis 8.2's eval.c
 // ("Error compiling script (new function)", "Number of keys can't be
@@ -2750,6 +2752,7 @@ func evalScriptCached(cmd Cmder) bool {
 		HasErrorPrefix(err, "Number of keys can't be negative") ||
 		HasErrorPrefix(err, "Number of keys can't be greater than number of args") ||
 		HasErrorPrefix(err, "wrong number of keys") ||
+		HasErrorPrefix(err, "CROSSSLOT ") ||
 		HasErrorPrefix(err, "BUSY ") ||
 		proto.IsPermissionError(err) ||
 		proto.IsOOMError(err) {
