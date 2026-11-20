@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,6 +66,11 @@ func (c cmdable) DecrBy(ctx context.Context, key string, decrement int64) *IntCm
 	return cmd
 }
 
+// errZeroMatchDigest is set by DelExArgs and SetArgs when the mode is IFDEQ or
+// IFDNE and MatchDigest is zero. An unset digest cannot be told apart from a
+// digest of zero, so the command is not sent.
+var errZeroMatchDigest = errors.New("redis: MatchDigest is required with IFDEQ and IFDNE")
+
 // DelExArgs provides arguments for the DelExArgs function.
 type DelExArgs struct {
 	// Mode can be `IFEQ`, `IFNE`, `IFDEQ`, or `IFDNE`.
@@ -79,7 +85,8 @@ type DelExArgs struct {
 	// - IFDEQ: only delete if current value's digest equals MatchDigest
 	// - IFDNE: only delete if current value's digest does not equal MatchDigest
 	//
-	// The digest is a uint64 xxh3 hash value.
+	// The digest is a uint64 xxh3 hash value. A zero MatchDigest is treated as
+	// unset: the command is not sent and returns an error.
 	//
 	// For examples of client-side digest generation, see:
 	// example/digest-optimistic-locking/
@@ -106,7 +113,11 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 				args = append(args, a.MatchValue)
 			}
 		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
-			// Zero is a valid digest, so it is always sent.
+			if a.MatchDigest == 0 {
+				cmd := NewIntCmd(ctx, args...)
+				cmd.SetErr(errZeroMatchDigest)
+				return cmd
+			}
 			args = append(args, fmt.Sprintf("%016x", a.MatchDigest))
 		}
 	}
@@ -510,7 +521,9 @@ type SetArgs struct {
 	// - IFDEQ: only set if current value's digest equals MatchDigest
 	// - IFDNE: only set if current value's digest does not equal MatchDigest
 	//
-	// The digest is a uint64 xxh3 hash value.
+	// The digest is a uint64 xxh3 hash value. A zero MatchDigest is treated as
+	// unset: the command is not sent and returns an error. Use SetIFDEQ or
+	// SetIFDNE to match a digest of zero.
 	//
 	// For examples of client-side digest generation, see:
 	// example/digest-optimistic-locking/
@@ -564,7 +577,11 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 				args = append(args, a.MatchValue)
 			}
 		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
-			// Zero is a valid digest, so it is always sent.
+			if a.MatchDigest == 0 {
+				cmd := NewStatusCmd(ctx, args...)
+				cmd.SetErr(errZeroMatchDigest)
+				return cmd
+			}
 			args = append(args, fmt.Sprintf("%016x", a.MatchDigest))
 		}
 	}
