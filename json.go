@@ -525,9 +525,9 @@ func (c cmdable) JSONGetWithArgs(ctx context.Context, key string, options *JSONG
 		if options.Space != "" {
 			args = append(args, "SPACE", options.Space)
 		}
-		for _, path := range paths {
-			args = append(args, path)
-		}
+	}
+	for _, path := range paths {
+		args = append(args, path)
 	}
 	cmd := newJSONCmd(ctx, args...)
 	_ = c(ctx, cmd)

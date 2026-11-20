@@ -121,7 +121,38 @@ The contract now: a conn that is `StateUnusable` *for handoff* must not be picke
 
 `ConnMaxLifetimeJitter` matters in deployments where many clients started at the same time: without jitter, all their connections expire in the same second and reconnect simultaneously, hammering the server (thundering herd).
 
+### Statistics snapshots
+
+`Stats()` reads `TotalConns` and `IdleConns` from `conns` and `idleConns` under one
+`connsMu` lock, so they describe the same instant. Do not use `idleConnsLen` for
+this snapshot: that scheduling counter also includes reserved `MinIdleConns`
+dials that have not yet produced open connections. Other statistics are loaded
+independently and are not part of this coherent pair.
+
 ---
+
+## Metric callbacks
+
+Pool-level metrics (connection count, pending requests, wait time, create
+time, closed, handoff, relaxed timeout, maintenance notifications, errors) go
+through a `MetricCallbacks` table. A pool uses its own `Options.Metrics` when
+set, otherwise the process-global table installed by `SetAllMetricCallbacks`
+(what `redis.SetOTelRecorder` drives). Every connection remembers the table of
+the pool that dialed it (`MetricsOf(cn)`), so code that only has a `*Conn`
+(maintnotifications) records where the pool does.
+
+Invariants:
+
+- `connection.count` and `pending_requests` are UpDown counters: the -1 must
+  reach the table that saw the +1. Sites read the callback once under
+  `connsMu`/`trackMu` and reuse it for both deltas.
+- `SetAllMetricCallbacks` recounts the live connections of every pool on the
+  global table (-1 on the old table, +1 on the new one) while holding every
+  such pool's `connsMu` and `trackMu`. Pools with their own table are never in
+  the live sets and are not recounted; their table is immutable for the pool's
+  life and their count returns to zero on `Close`.
+- Callbacks may run with `connsMu` or `trackMu` held and must not re-enter the
+  pool.
 
 ## Hook integration (`hooks.go`)
 

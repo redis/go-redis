@@ -9,7 +9,7 @@ Zed, …) read `AGENTS.md` directly. Edit repository guidance here, not in
 ## Repository
 
 go-redis is the official Redis client for Go. Module path:
-`github.com/redis/go-redis/v9` (Go 1.24+). The repo is a multi-module workspace
+`github.com/redis/go-redis/v9` (Go 1.26+). The repo is a multi-module workspace
 — every directory containing a `go.mod` is built and tested independently:
 
 - root (`github.com/redis/go-redis/v9`) — the client library.
@@ -177,7 +177,10 @@ issues `AUTH` on each refresh.
 - `internal/routing` — aggregator policies and shard pickers used by
   `ClusterClient` for multi-shard commands.
 - `internal/otel` — small OpenTelemetry shim used to keep root free of telemetry
-  deps; full instrumentation lives in `extra/redisotel-native`.
+  deps; full instrumentation lives in `extra/redisotel-native`. Every client
+  resolves its recorder once (`Options.OTelRecorder`, else a view of the global
+  one) and its pools get a matching callback table; see
+  `.claude/specs/otel-per-client-recorder.md`.
 
 ## Architectural specs
 

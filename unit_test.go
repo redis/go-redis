@@ -75,6 +75,26 @@ func TestCmdFirstKeyPosWithInfo_UsesCommandInfoWhenWarm(t *testing.T) {
 	}
 }
 
+// TestCmdFirstKeyPosWithInfo_RawFCall checks that a raw FCALL/FCALL_RO, which
+// has no key position set by a constructor, resolves its key after numkeys
+// (position 3) the way EVAL does, instead of hashing the function name. Ring
+// shard selection, cluster slot routing and full-duplex engine routing all
+// use this resolver.
+func TestCmdFirstKeyPosWithInfo_RawFCall(t *testing.T) {
+	ctx := context.Background()
+	for _, name := range []string{"fcall", "fcall_ro"} {
+		if got := cmdFirstKeyPosWithInfo(NewCmd(ctx, name, "myfn", "1", "k", "arg"), nil); got != 3 {
+			t.Fatalf("%s with one key: got %d, want 3", name, got)
+		}
+		if got := cmdFirstKeyPosWithInfo(NewCmd(ctx, name, "myfn", 1, "k"), nil); got != 3 {
+			t.Fatalf("%s with an int numkeys: got %d, want 3", name, got)
+		}
+		if got := cmdFirstKeyPosWithInfo(NewCmd(ctx, name, "myfn", "0", "arg"), nil); got != 0 {
+			t.Fatalf("%s with no keys: got %d, want 0 (keyless)", name, got)
+		}
+	}
+}
+
 // TestCmdFirstKeyPosWithInfo_PolicyTableKeyless checks that a module command
 // registered keyless in the static policy table routes as keyless even on a
 // cold command-info cache, and that key-carrying or specially-routed module

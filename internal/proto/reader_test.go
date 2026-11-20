@@ -506,3 +506,28 @@ func TestReader_ReadStringInto_Large(t *testing.T) {
 		t.Fatal("payload mismatch")
 	}
 }
+
+func TestReader_ReadSlice_RejectsNonArrayHeader(t *testing.T) {
+	// ReadSlice used to size the slice from any header line. A map header
+	// read only half its frames, an integer was taken as an element count and
+	// read the next reply into the slice, and :-1 panicked in make.
+	for _, src := range []string{
+		"%1\r\n+k\r\n+v\r\n",
+		":1\r\n+next\r\n",
+		":-1\r\n",
+		"$1\r\nx\r\n",
+	} {
+		r := proto.NewReader(bytes.NewReader([]byte(src)))
+		if v, err := r.ReadSlice(); err == nil {
+			t.Fatalf("%q: ReadSlice = %v, nil; want an error", src, v)
+		}
+	}
+
+	for _, src := range []string{"*2\r\n+a\r\n:1\r\n", "~2\r\n+a\r\n:1\r\n", ">2\r\n+a\r\n:1\r\n"} {
+		r := proto.NewReader(bytes.NewReader([]byte(src)))
+		v, err := r.ReadSlice()
+		if err != nil || len(v) != 2 {
+			t.Fatalf("%q: ReadSlice = %v, %v; want 2 elements", src, v, err)
+		}
+	}
+}

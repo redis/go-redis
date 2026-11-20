@@ -32,3 +32,20 @@ func TestParseClientInfoForwardCompatFlags(t *testing.T) {
 		})
 	}
 }
+
+// TestParseClientInfoEqualsInValue pins that a value can contain "=". Redis
+// accepts "=" in a client name, a user name and lib-name, and go-redis puts
+// Options.IdentitySuffix into lib-name, so the parser must split each field
+// at the first "=" only.
+func TestParseClientInfoEqualsInValue(t *testing.T) {
+	info, err := parseClientInfo("id=1 addr=127.0.0.1:6379 name=app=web user=a=b lib-name=go-redis(env=prod,go1.26.0) db=0")
+	if err != nil {
+		t.Fatalf("parseClientInfo errored: %v", err)
+	}
+	if info.Name != "app=web" || info.User != "a=b" || info.LibName != "go-redis(env=prod,go1.26.0)" {
+		t.Fatalf("Name=%q User=%q LibName=%q", info.Name, info.User, info.LibName)
+	}
+	if _, err := parseClientInfo("id=1 garbage db=0"); err == nil {
+		t.Fatal("a field without \"=\" must still return an error")
+	}
+}
