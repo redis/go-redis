@@ -172,7 +172,7 @@ func TestAutoPipelineHeterogeneousReplyDemux(t *testing.T) {
 // (redis.go), which was previously untested: the CI harness runs with
 // MaxRetries=-1 (-> 0), so the retry loop never iterated. AutoPipeline dispatches
 // through this same execer, so it inherits whatever is proven here
-// (see autopipeline_retry_test.go for the AutoPipeline-specific coverage).
+// (see autopipeline_test.go for the AutoPipeline-specific coverage).
 
 // TestPipelineRetriesOnNetworkError arms the pooled conn's next write to fail
 // at the wire (a seeded broken idle conn would be filtered by the pool health

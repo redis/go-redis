@@ -355,3 +355,41 @@ func TestPutConnStateClosedByHookInvokesOnRemove(t *testing.T) {
 		t.Errorf("Expected OnRemove to fire once for StateClosed-on-Put, got %d", hook.onRemoveCalled)
 	}
 }
+
+// TestFilterInvokesOnRemove checks Filter runs OnRemove for the idle conns it
+// drops, so per-connection hook state (e.g. streaming credentials listeners)
+// does not leak on every Sentinel failover.
+func TestFilterInvokesOnRemove(t *testing.T) {
+	opt := &Options{
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			c, _ := net.Pipe()
+			return c, nil
+		},
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		DialTimeout:        time.Second,
+		PoolTimeout:        time.Second,
+	}
+
+	p := NewConnPool(opt)
+	defer p.Close()
+
+	hook := &TestHook{ShouldPool: true, ShouldAccept: true}
+	p.AddPoolHook(hook)
+
+	ctx := context.Background()
+	cn, err := p.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	p.Put(ctx, cn)
+
+	_ = p.Filter(func(*Conn) bool { return true })
+
+	if hook.OnRemoveCalled != 1 {
+		t.Errorf("Expected OnRemove to fire once for Filter, got %d", hook.OnRemoveCalled)
+	}
+	if n := p.Len(); n != 0 {
+		t.Errorf("Expected Len=0 after Filter, got %d", n)
+	}
+}

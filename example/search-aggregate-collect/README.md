@@ -12,10 +12,10 @@ Redis 8.8+ with the Search module, listening on `localhost:6379`. COLLECT is
 gated behind unstable search features; the example enables the gate itself
 with `CONFIG SET search-enable-unstable-features yes`.
 
-The client is configured with `Protocol: 2` because the RESP3 response shape
-of `FT.AGGREGATE` is still marked unstable; set `UnstableResp3: true` instead
-if you want to use RESP3. `AggregateRow.Collect` decodes both the RESP2 and
-RESP3 entry shapes, so no other code changes are needed.
+The client is configured with `Protocol: 2`. RESP3 needs no extra flag for
+`FT.AGGREGATE`: its response is parsed into the same typed results on both
+protocols. `AggregateRow.Collect` decodes both the RESP2 and RESP3 entry
+shapes, so no other code changes are needed.
 
 ## Run
 

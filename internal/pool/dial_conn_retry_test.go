@@ -78,6 +78,82 @@ func TestDialConn_HangingDial_RetriesWithPerAttemptTimeout(t *testing.T) {
 	}
 }
 
+func TestQueuedDialExhaustionDoesNotTaintDeliveredConnection(t *testing.T) {
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	var calls atomic.Int32
+	dialErr := errors.New("second dial failed")
+	p := NewConnPool(&Options{
+		PoolSize: 2, MaxConcurrentDials: 2, DialerRetries: 1,
+		Dialer: func(context.Context) (net.Conn, error) {
+			switch calls.Add(1) {
+			case 1:
+				close(firstStarted)
+				<-releaseFirst
+				client, server := net.Pipe()
+				t.Cleanup(func() { _ = server.Close() })
+				return client, nil
+			case 2:
+				close(secondStarted)
+				<-releaseSecond
+				return nil, dialErr
+			default:
+				return nil, errors.New("unexpected background dial")
+			}
+		},
+	})
+	defer p.Close()
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	firstDone := make(chan struct{})
+	go func() {
+		_, _ = p.Get(firstCtx)
+		close(firstDone)
+	}()
+	<-firstStarted
+
+	var exhausted atomic.Bool
+	secondCtx := p.WithDialExhaustion(context.Background(), &exhausted)
+	type outcome struct {
+		cn  *Conn
+		err error
+	}
+	secondDone := make(chan outcome, 1)
+	go func() {
+		cn, err := p.Get(secondCtx)
+		secondDone <- outcome{cn, err}
+	}()
+	<-secondStarted
+
+	cancelFirst()
+	<-firstDone
+	close(releaseFirst)
+	var got outcome
+	select {
+	case got = <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle connection was not transferred to the second waiter")
+	}
+	if got.err != nil || got.cn == nil {
+		t.Fatalf("second waiter received (%v, %v), want a connection", got.cn, got.err)
+	}
+	close(releaseSecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(p.dialsInProgress) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(p.dialsInProgress) != 0 {
+		t.Fatal("losing dial did not finish")
+	}
+	if exhausted.Load() {
+		t.Fatal("failed losing dial marked the successful acquisition exhausted")
+	}
+	p.Put(secondCtx, got.cn)
+}
+
 func TestDialConn_DoesNotExtendEarlierParentDeadline(t *testing.T) {
 	var calls atomic.Int32
 
@@ -207,5 +283,33 @@ func TestDialConn_NoBackoffAfterLastAttempt(t *testing.T) {
 	// If we slept after the last attempt, this will be ~backoff.
 	if elapsed >= backoff/2 {
 		t.Fatalf("dialConn took too long (%v); likely slept after last attempt (backoff=%v)", elapsed, backoff)
+	}
+}
+
+func TestOpenDialBreakerDoesNotMarkThisAttemptExhausted(t *testing.T) {
+	dialErr := errors.New("previous dial failed")
+	var dials atomic.Int32
+	p := NewConnPool(&Options{
+		PoolSize: 1,
+		Dialer: func(context.Context) (net.Conn, error) {
+			dials.Add(1)
+			return nil, dialErr
+		},
+	})
+	defer p.Close()
+	p.setLastDialError(dialErr)
+	p.dialErrorsNum.Store(1)
+
+	var exhausted atomic.Bool
+	ctx := p.WithDialExhaustion(context.Background(), &exhausted)
+	_, err := p.dialConn(ctx, true)
+	if err != dialErr {
+		t.Fatalf("open breaker returned %v, want original dial error", err)
+	}
+	if exhausted.Load() {
+		t.Fatal("open breaker did not run a dial sequence; retries must remain available")
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("open breaker made %d dials, want 0", got)
 	}
 }

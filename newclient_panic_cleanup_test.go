@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,12 +117,15 @@ func TestNewClientPanicClosesPartialClient(t *testing.T) {
 // nil (not a typed-nil pool.Pooler) so closeResources skips it and the ORIGINAL
 // construction error surfaces to the caller, not a nil-deref from the cleanup.
 func TestNewClientPanicCleanupSurvivesNilPool(t *testing.T) {
+	if strconv.IntSize == 32 {
+		t.Skip("int cannot exceed math.MaxInt32 on 32-bit platforms")
+	}
 	var recovered any
 	func() {
 		defer func() { recovered = recover() }()
 		// PoolSize overflows int32 -> newConnPool returns (nil, err) -> NewClient
 		// panics at pool creation, before the field is assigned.
-		NewClient(&Options{PoolSize: math.MaxInt32 + 1})
+		NewClient(&Options{PoolSize: math.MaxInt})
 	}()
 	if recovered == nil {
 		t.Fatal("expected NewClient to panic on an out-of-range PoolSize")
@@ -140,13 +144,16 @@ func TestNewClientPanicCleanupSurvivesNilPool(t *testing.T) {
 // nil-derefing, and the original construction error must still surface. MinIdleConns
 // is 0 so the panic precedes any dialing and the sentinel addrs are never contacted.
 func TestNewFailoverClientPanicClosesPartialClient(t *testing.T) {
+	if strconv.IntSize == 32 {
+		t.Skip("int cannot exceed math.MaxInt32 on 32-bit platforms")
+	}
 	var recovered any
 	func() {
 		defer func() { recovered = recover() }()
 		NewFailoverClient(&FailoverOptions{
 			MasterName:       "mymaster",
 			SentinelAddrs:    []string{"127.0.0.1:26379"}, // never contacted: panic precedes dialing
-			PipelinePoolSize: math.MaxInt32 + 1,           // overflows int32 in buildPipelinePool
+			PipelinePoolSize: math.MaxInt,                 // overflows int32 in buildPipelinePool
 			MinIdleConns:     0,
 		})
 	}()
@@ -169,13 +176,16 @@ func TestNewFailoverClientPanicClosesPartialClient(t *testing.T) {
 // connection pool" panic. MinIdleConns is 0 and the sentinel addrs are never
 // contacted: the panic precedes any dialing.
 func TestNewFailoverClientPanicCleanupSurvivesNilPool(t *testing.T) {
+	if strconv.IntSize == 32 {
+		t.Skip("int cannot exceed math.MaxInt32 on 32-bit platforms")
+	}
 	var recovered any
 	func() {
 		defer func() { recovered = recover() }()
 		NewFailoverClient(&FailoverOptions{
 			MasterName:    "mymaster",
 			SentinelAddrs: []string{"127.0.0.1:26379"}, // never contacted: panic precedes dialing
-			PoolSize:      math.MaxInt32 + 1,           // overflows int32 in newConnPool
+			PoolSize:      math.MaxInt,                 // overflows int32 in newConnPool
 			MinIdleConns:  0,
 		})
 	}()

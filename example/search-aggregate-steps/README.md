@@ -12,9 +12,9 @@ The main motivation is shard-level trimming: running a `SORTBY ... MAX N`
 A Redis instance with the Search module loaded (Redis 8+, or Redis Stack)
 listening on `localhost:6379`.
 
-The client is configured with `Protocol: 2` because the RESP3 response shape
-of `FT.AGGREGATE` is still marked unstable; set `UnstableResp3: true` instead
-if you want to use RESP3.
+The client is configured with `Protocol: 2`. RESP3 needs no extra flag for
+`FT.AGGREGATE`: its response is parsed into the same typed results on both
+protocols.
 
 ## Run
 

@@ -109,6 +109,21 @@ func TestGeoSearchLocationEntryLengthReconciled(t *testing.T) {
 	})
 }
 
+// Without WITH flags GEOSEARCH replies with a flat array of member names, not
+// an array of entry arrays.
+func TestGeoSearchLocationWithoutFlags(t *testing.T) {
+	rd := proto.NewReader(strings.NewReader(
+		"*2\r\n$1\r\na\r\n$1\r\nb\r\n+PONG\r\n"))
+	cmd := NewGeoSearchLocationCmd(context.Background(), &GeoSearchLocationQuery{})
+	if err := cmd.readReply(rd); err != nil {
+		t.Fatalf("readReply: %v", err)
+	}
+	if len(cmd.val) != 2 || cmd.val[0].Name != "a" || cmd.val[1].Name != "b" {
+		t.Fatalf("unexpected val: %+v", cmd.val)
+	}
+	assertSentinel(t, rd)
+}
+
 func assertSentinel(t *testing.T, rd *proto.Reader) {
 	t.Helper()
 	s, err := rd.ReadString()

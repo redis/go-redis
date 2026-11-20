@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +17,87 @@ import (
 
 	"github.com/redis/go-redis/v9"
 )
+
+// BenchmarkClusterRoutingServer includes real server I/O, unlike the isolated
+// routing benchmarks in internal_test.go. REDIS_ENDPOINTS_CONFIG_PATH selects
+// the dedicated Enterprise database; otherwise it uses the local test cluster.
+func BenchmarkClusterRoutingServer(b *testing.B) {
+	ctx := context.Background()
+	opt := redis.ClusterOptions{Addrs: []string{"127.0.0.1:16600"}}
+	if os.Getenv("REDIS_ENDPOINTS_CONFIG_PATH") != "" {
+		conn, err := loadREConnection()
+		if err != nil {
+			b.Fatal(err)
+		}
+		opt.Addrs = []string{conn.Addr}
+		opt.Username, opt.Password = conn.Username, conn.Password
+		if conn.TLS {
+			opt.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+		}
+	}
+	for _, metadata := range []bool{false, true} {
+		b.Run(fmt.Sprintf("metadata=%v", metadata), func(b *testing.B) {
+			clientOpt := opt
+			client := redis.NewClusterClient(&clientOpt)
+			b.Cleanup(func() { _ = client.Close() })
+			if metadata {
+				client.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+			}
+			prefix := fmt.Sprintf("go-redis:routing-bench:%d:", time.Now().UnixNano())
+			keys := []string{prefix + "{a}", prefix + "{b}", prefix + "{c}"}
+			for _, key := range keys {
+				if err := client.Set(ctx, key, "value", 10*time.Minute).Err(); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.Cleanup(func() {
+				for _, key := range keys {
+					if err := client.Del(ctx, key).Err(); err != nil {
+						b.Error(err)
+					}
+				}
+			})
+			b.Run("GET", func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					if value, err := client.Get(ctx, keys[i%len(keys)]).Result(); err != nil || value != "value" {
+						b.Fatalf("GET value=%q error=%v", value, err)
+					}
+				}
+			})
+			b.Run("Pipeline100", func(b *testing.B) {
+				// Initialize each node's separate pipeline pool outside the timed
+				// region, just as the seed commands warm the ordinary GET pools.
+				if _, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+					for _, key := range keys {
+						pipe.Get(ctx, key)
+					}
+					return nil
+				}); err != nil {
+					b.Fatal(err)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					commands, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+						for j := range 100 {
+							pipe.Get(ctx, keys[j%len(keys)])
+						}
+						return nil
+					})
+					if err != nil {
+						b.Fatal(err)
+					}
+					for _, cmd := range commands {
+						if cmd.(*redis.StringCmd).Val() != "value" {
+							b.Fatal("incorrect pipeline value")
+						}
+					}
+				}
+			})
+		})
+	}
+}
 
 func benchmarkRedisClient(ctx context.Context, poolSize int) *redis.Client {
 	client := redis.NewClient(&redis.Options{

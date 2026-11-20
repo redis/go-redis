@@ -3,6 +3,7 @@ package rediscmd
 import (
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -106,9 +107,16 @@ func secretArgs(args []interface{}) []bool {
 		mark(len(args) - 1)
 
 	case equalFoldArg(args, 0, "hello"):
-		// HELLO ver [AUTH username password] [SETNAME name]
-		if equalFoldArg(args, 2, "auth") {
-			mark(4)
+		// HELLO ver [AUTH username password] [SETNAME name], options in any
+		// order. Skip each option's values so that a client name or username
+		// equal to a keyword is not read as one.
+		for i := 2; i < len(args); i++ {
+			if equalFoldArg(args, i, "auth") {
+				mark(i + 2)
+				i += 2
+			} else if equalFoldArg(args, i, "setname") {
+				i++
+			}
 		}
 
 	case equalFoldArg(args, 0, "config") && equalFoldArg(args, 1, "set"):
@@ -142,10 +150,29 @@ func secretArgs(args []interface{}) []bool {
 			if equalFoldArg(args, i, "keys") {
 				break
 			}
+			// Advance past the marked value(s): otherwise a password that is
+			// itself "auth"/"auth2" would be re-checked as a keyword and redact
+			// the following argument (and leave the real password in the clear).
 			if equalFoldArg(args, i, "auth") {
 				mark(i + 1)
+				i++
 			} else if equalFoldArg(args, i, "auth2") {
 				mark(i + 2)
+				i += 2
+			}
+		}
+
+	case equalFoldArg(args, 0, "sentinel") && equalFoldArg(args, 1, "set"):
+		// SENTINEL SET <master> option value [option value ...]; auth-pass holds
+		// the monitored master's password. Every option takes one value except
+		// rename-command <oldname> <newname>, which takes two.
+		for i := 3; i+1 < len(args); i += 2 {
+			if equalFoldArg(args, i, "rename-command") {
+				i++
+				continue
+			}
+			if equalFoldArg(args, i, "auth-pass") {
+				mark(i + 1)
 			}
 		}
 	}
@@ -166,6 +193,15 @@ func argString(args []interface{}, i int) string {
 		return v
 	case []byte:
 		return String(v)
+	}
+	// Named string types and pointers to strings: a keyword in either form
+	// must still be recognised, or the credential next to it is printed.
+	rv := reflect.ValueOf(args[i])
+	if rv.Kind() == reflect.Pointer && !rv.IsNil() {
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.String {
+		return rv.String()
 	}
 	return ""
 }
@@ -209,7 +245,23 @@ func appendArg(b []byte, v interface{}) []byte {
 		return append(b, "false"...)
 	case time.Time:
 		return v.AppendFormat(b, time.RFC3339Nano)
+	case *time.Time:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return v.AppendFormat(b, time.RFC3339Nano)
 	default:
+		// proto.Writer sends a pointer to a basic type by value, so print the
+		// value, not the address.
+		if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && !rv.IsNil() {
+			// PkgPath is empty only for the predeclared types. A named type is
+			// left as is: secretArgs cannot read it, so it must not be printed.
+			e := rv.Elem()
+			if e.Type().PkgPath() == "" &&
+				(e.Kind() == reflect.String || (e.Kind() >= reflect.Bool && e.Kind() <= reflect.Float64)) {
+				return appendArg(b, e.Interface())
+			}
+		}
 		return append(b, fmt.Sprint(v)...)
 	}
 }
