@@ -4675,11 +4675,11 @@ func (cmd *XInfoStreamFullCmd) Clone() Cmder {
 		if cmd.val.Groups != nil {
 			val.Groups = make([]XInfoStreamGroup, len(cmd.val.Groups))
 			for i, group := range cmd.val.Groups {
-				group.Pending = append([]XInfoStreamGroupPending(nil), group.Pending...)
+				group.Pending = slices.Clone(group.Pending)
 				if group.Consumers != nil {
 					consumers := make([]XInfoStreamConsumer, len(group.Consumers))
 					for j, consumer := range group.Consumers {
-						consumer.Pending = append([]XInfoStreamConsumerPending(nil), consumer.Pending...)
+						consumer.Pending = slices.Clone(consumer.Pending)
 						consumers[j] = consumer
 					}
 					group.Consumers = consumers

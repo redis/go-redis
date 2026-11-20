@@ -30,6 +30,14 @@ func TestXInfoStreamFullCmdClone(t *testing.T) {
 					Name:    "c",
 					Pending: []XInfoStreamConsumerPending{{ID: "1-0"}},
 				}},
+			}, {
+				// Nothing pending is read as a non-nil empty slice.
+				Name:    "idle",
+				Pending: []XInfoStreamGroupPending{},
+				Consumers: []XInfoStreamConsumer{{
+					Name:    "c",
+					Pending: []XInfoStreamConsumerPending{},
+				}},
 			}},
 		}
 	}
