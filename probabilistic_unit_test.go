@@ -93,6 +93,23 @@ func TestBFInfoCmdSingleUnknownAttributeStillErrors(t *testing.T) {
 	}
 }
 
+// BF.INFO matches the requested attribute case-insensitively and, in RESP2,
+// replies with the bare value, so the reply is read by the option name.
+func TestBFInfoCmdOptionCaseInsensitive(t *testing.T) {
+	for _, opt := range []string{"CAPACITY", "capacity", "Capacity"} {
+		t.Run(opt, func(t *testing.T) {
+			cmd := NewBFInfoCmd(context.Background(), "bf.info", "key", opt)
+			rd := proto.NewReader(strings.NewReader("*1\r\n:100\r\n+NEXT\r\n"))
+			if err := cmd.readReply(rd); err != nil {
+				t.Fatalf("readReply() error = %v", err)
+			}
+			if want := (BFInfo{Capacity: 100}); cmd.val != want {
+				t.Fatalf("val = %+v, want %+v", cmd.val, want)
+			}
+		})
+	}
+}
+
 // A filter created with NONSCALING has no expansion rate and the server
 // reports it as null. The rest of the reply must still be parsed.
 func TestBFInfoCmdNonScalingFilter(t *testing.T) {
