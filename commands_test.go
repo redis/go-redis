@@ -10524,8 +10524,11 @@ var _ = Describe("Commands", func() {
 			samples, err := rawClient.LatencyHistory(ctx, "command").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(samples).NotTo(BeEmpty())
-			Expect(samples[0].Time).To(BeTemporally(">=", before))
-			Expect(samples[0].Latency).To(BeNumerically(">=", 10*time.Millisecond))
+			// The history is oldest first and a slow CONFIG SET can be
+			// recorded before the sleep, so check the newest sample.
+			last := samples[len(samples)-1]
+			Expect(last.Time).To(BeTemporally(">=", before))
+			Expect(last.Latency).To(BeNumerically(">=", 10*time.Millisecond))
 
 			samples, err = rawClient.LatencyHistory(ctx, "no-such-event").Result()
 			Expect(err).NotTo(HaveOccurred())
