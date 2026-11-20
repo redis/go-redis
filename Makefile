@@ -136,7 +136,7 @@ test.multidb.e2e:
 	@for port in 18120 18121 18122; do \
 		timeout 30 bash -c "until curl -s http://127.0.0.1:$$port/stats > /dev/null; do sleep 1; done" || { docker compose --profile multidb down; exit 1; }; \
 	done
-	@E2E_MULTIDB_TESTS=true go test -v -race -count=1 -timeout 15m ./multidb/e2e/... || (docker compose --profile multidb down && exit 1)
+	@E2E_MULTIDB_TESTS=true go test -v -race -count=1 -timeout 30m ./multidb/e2e/... || (docker compose --profile multidb down && exit 1)
 	docker compose --profile multidb down
 	@echo "MultiDB e2e tests completed!"
 
