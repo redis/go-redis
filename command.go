@@ -172,6 +172,7 @@ const (
 	CmdTypeBackupStatus
 	CmdTypeACLUser
 	CmdTypeClusterSlotStats
+	CmdTypeRole
 )
 
 type (
@@ -2019,6 +2020,163 @@ func (cmd *TimeCmd) Clone() Cmder {
 	return &TimeCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// RoleReplica is a replica connected to a master, as reported by ROLE.
+type RoleReplica struct {
+	IP   string
+	Port int64
+	// The last replication offset the replica acknowledged.
+	Offset int64
+}
+
+// Role is the reply of ROLE. Role is "master", "slave" or "sentinel" and
+// decides which of the other fields are set.
+type Role struct {
+	Role string
+
+	// The replication offset of a master, or the offset a replica received
+	// from its master.
+	ReplOffset int64
+	// The replicas connected to a master.
+	Replicas []RoleReplica
+
+	// The master of a replica and the state of the link to it: "connect",
+	// "connecting", "sync", "connected", "handshake", "none" or "unknown".
+	MasterHost string
+	MasterPort int64
+	State      string
+
+	// The names of the masters a sentinel monitors.
+	Masters []string
+}
+
+type RoleCmd struct {
+	baseCmd
+
+	val *Role
+}
+
+var _ Cmder = (*RoleCmd)(nil)
+
+func NewRoleCmd(ctx context.Context, args ...interface{}) *RoleCmd {
+	return &RoleCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeRole,
+		},
+	}
+}
+
+func (cmd *RoleCmd) SetVal(val *Role) {
+	cmd.val = val
+}
+
+func (cmd *RoleCmd) Val() *Role {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *RoleCmd) Result() (*Role, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *RoleCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *RoleCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n < 1 {
+		return fmt.Errorf("redis: got %d elements in ROLE reply, expected at least 1", n)
+	}
+
+	role := &Role{}
+	if role.Role, err = rd.ReadString(); err != nil {
+		return err
+	}
+
+	want, ok := map[string]int{"master": 3, "slave": 5, "sentinel": 2}[role.Role]
+	if ok && n != want {
+		return fmt.Errorf("redis: got %d elements in ROLE reply of a %s, expected %d", n, role.Role, want)
+	}
+
+	switch role.Role {
+	case "master":
+		if role.ReplOffset, err = rd.ReadInt(); err != nil {
+			return err
+		}
+		m, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		role.Replicas = make([]RoleReplica, m)
+		for i := range role.Replicas {
+			replica := &role.Replicas[i]
+			if err := rd.ReadFixedArrayLen(3); err != nil {
+				return err
+			}
+			if replica.IP, err = rd.ReadString(); err != nil {
+				return err
+			}
+			// The port and the offset are bulk strings here.
+			if replica.Port, err = rd.ReadInt(); err != nil {
+				return err
+			}
+			if replica.Offset, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		}
+	case "slave":
+		if role.MasterHost, err = rd.ReadString(); err != nil {
+			return err
+		}
+		if role.MasterPort, err = rd.ReadInt(); err != nil {
+			return err
+		}
+		if role.State, err = rd.ReadString(); err != nil {
+			return err
+		}
+		if role.ReplOffset, err = rd.ReadInt(); err != nil {
+			return err
+		}
+	case "sentinel":
+		if role.Masters, err = readStringSlice(rd); err != nil {
+			return err
+		}
+	default:
+		// skip the state of an unknown role
+		for i := 1; i < n; i++ {
+			if err := rd.DiscardNext(); err != nil {
+				return err
+			}
+		}
+	}
+
+	cmd.val = role
+	return nil
+}
+
+func (cmd *RoleCmd) Clone() Cmder {
+	var val *Role
+	if cmd.val != nil {
+		r := *cmd.val
+		r.Replicas = slices.Clone(r.Replicas)
+		r.Masters = slices.Clone(r.Masters)
+		val = &r
+	}
+	return &RoleCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
 	}
 }
 
@@ -10531,6 +10689,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return clusterSlotStatsCmd.Val(), clusterSlotStatsCmd.Err()
+			}
+		case CmdTypeRole:
+			if roleCmd, ok := cmd.(interface {
+				Val() *Role
+				Err() error
+			}); ok {
+				return roleCmd.Val(), roleCmd.Err()
 			}
 		case CmdTypeClusterShards:
 			if clusterShardsCmd, ok := cmd.(interface {
