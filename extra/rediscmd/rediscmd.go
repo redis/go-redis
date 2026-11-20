@@ -3,6 +3,7 @@ package rediscmd
 import (
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -190,6 +191,10 @@ func argString(args []interface{}, i int) string {
 	switch v := args[i].(type) {
 	case string:
 		return v
+	case *string:
+		if v != nil {
+			return *v
+		}
 	case []byte:
 		return String(v)
 	}
@@ -236,6 +241,15 @@ func appendArg(b []byte, v interface{}) []byte {
 	case time.Time:
 		return v.AppendFormat(b, time.RFC3339Nano)
 	default:
+		// proto.Writer sends a pointer to a basic type or time.Time by value,
+		// so print the value, not the address.
+		if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && !rv.IsNil() {
+			e := rv.Elem()
+			_, isTime := e.Interface().(time.Time)
+			if isTime || e.Kind() == reflect.String || (e.Kind() >= reflect.Bool && e.Kind() <= reflect.Float64) {
+				return appendArg(b, e.Interface())
+			}
+		}
 		return append(b, fmt.Sprint(v)...)
 	}
 }
