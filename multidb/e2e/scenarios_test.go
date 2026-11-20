@@ -47,6 +47,10 @@ func TestFailoverOnMemberOutage(t *testing.T) {
 	if err := mdb.Set(ctx, "e2e:failover", "before", 0).Err(); err != nil {
 		t.Fatalf("Set before outage: %v", err)
 	}
+	// The outage below also cuts member 0 off from replication, so give the
+	// value time to reach member 1 first: the check after the failover
+	// expects to read it through the new active.
+	awaitReplicatedTo(t, 1, "e2e:failover", "before", 10*time.Second)
 
 	// Outlasts every assertion below with margin; cleanup waits for the
 	// action's own timer to restore it before the next test starts.
