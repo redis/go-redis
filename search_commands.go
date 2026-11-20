@@ -2805,6 +2805,11 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 				if !ok {
 					return FTSearchResult{}, fmt.Errorf("invalid field key format")
 				}
+				if fields[j+1] == nil {
+					// A JSON null has no string value. RESP3 leaves the
+					// field out too.
+					continue
+				}
 				value, ok := fields[j+1].(string)
 				if !ok {
 					return FTSearchResult{}, fmt.Errorf("invalid field value format")
