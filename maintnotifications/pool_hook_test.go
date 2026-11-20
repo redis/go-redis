@@ -1123,3 +1123,49 @@ func TestPoolHookNeverReturnsConnectionMarkedForHandoff(t *testing.T) {
 		}
 	})
 }
+
+func TestSuccessfulHandoffUntracksMovingOperation(t *testing.T) {
+	manager := createTestManager("127.0.0.1:6379")
+	processor := NewPoolHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return &mockNetConn{addr: addr}, nil
+	}, "tcp", &Config{
+		Mode:              ModeAuto,
+		EndpointType:      EndpointTypeAuto,
+		MaxWorkers:        1,
+		HandoffQueueSize:  10,
+		MaxHandoffRetries: 3,
+	}, manager)
+	defer processor.Shutdown(context.Background())
+
+	conn := createMockPoolConnection()
+	conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error { return nil })
+
+	handler := &NotificationHandler{manager: manager, operationsManager: manager}
+	if err := handler.markConnForHandoff(conn, "new-endpoint:6379", 12345, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("markConnForHandoff: %v", err)
+	}
+	if got := manager.GetActiveOperationCount(); got != 1 {
+		t.Fatalf("active operations after MOVING: got %d, want 1", got)
+	}
+
+	if _, _, err := processor.OnPut(context.Background(), conn); err != nil {
+		t.Fatalf("OnPut: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn.IsUsable() && !processor.IsHandoffPending(conn) && manager.GetActiveOperationCount() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !conn.IsUsable() || processor.IsHandoffPending(conn) {
+		t.Fatalf("handoff did not complete (IsUsable=%v, pending=%v)", conn.IsUsable(), processor.IsHandoffPending(conn))
+	}
+	if got := manager.GetActiveOperationCount(); got != 0 {
+		t.Fatalf("active operations after successful handoff: got %d, want 0", got)
+	}
+	if manager.IsHandoffInProgress() {
+		t.Fatal("IsHandoffInProgress is true after the handoff succeeded")
+	}
+}
