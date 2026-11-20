@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -391,7 +392,8 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			return err
 		}
 		if key, ok := cmd.args[2].(string); ok && n == 1 {
-			if err := readAndAssignValue(key, false); err != nil {
+			// The server matches the option case-insensitively.
+			if err := readAndAssignValue(strings.ToUpper(key), false); err != nil {
 				return err
 			}
 		} else {
