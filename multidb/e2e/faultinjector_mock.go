@@ -215,7 +215,17 @@ func (s *MockFaultInjector) handleAction(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("decode request: %v", err), http.StatusBadRequest)
 		return
 	}
-	if req.Type != fi.ActionNetworkFailure {
+	switch req.Type {
+	case fi.ActionNetworkFailure:
+	case fi.ActionProxyFailure:
+		s.handleProxyFailure(w, req)
+		return
+	case fi.ActionNetworkLatency:
+		// The proxy image has neither tc nor iptables, so a latency cannot be
+		// injected here. Say so instead of pretending: callers skip in mock mode.
+		http.Error(w, "network_latency is not supported by the mock fault injector", http.StatusBadRequest)
+		return
+	default:
 		http.Error(w, fmt.Sprintf("unsupported action type %q", req.Type), http.StatusBadRequest)
 		return
 	}
@@ -246,6 +256,63 @@ func (s *MockFaultInjector) handleAction(w http.ResponseWriter, r *http.Request)
 	go s.execute(id, member, delay)
 
 	writeJSON(w, http.StatusOK, fi.ActionResponse{ActionID: id, Status: string(fi.StatusPending)})
+}
+
+// handleProxyFailure mirrors the real proxy_failure action for the one shape
+// the client sends: the proxy of the member at cluster_index, selected by
+// bdb_id. As on the real service a stop is not undone: a later start does that.
+// Stopping the member's proxy container stands in for stopping DMC. node_id
+// targeting is rejected: a mock member is one container, not a node.
+func (s *MockFaultInjector) handleProxyFailure(w http.ResponseWriter, req fi.ActionRequest) {
+	if _, ok := req.Parameters["node_id"]; ok {
+		http.Error(w, "node_id is not supported by the mock; target the database with bdb_id", http.StatusBadRequest)
+		return
+	}
+	clusterIndex, err := intParam(req.Parameters, "cluster_index", 0)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if clusterIndex < 0 || clusterIndex >= len(s.members) {
+		http.Error(w, fmt.Sprintf("cluster_index %d out of range [0,%d)", clusterIndex, len(s.members)), http.StatusBadRequest)
+		return
+	}
+	op, _ := req.Parameters["action"].(string)
+	if op == "" {
+		op = "restart"
+	}
+	switch op {
+	case "stop", "start", "restart":
+	default:
+		http.Error(w, fmt.Sprintf("proxy_failure action %q: want stop, start or restart", op), http.StatusBadRequest)
+		return
+	}
+
+	id := newActionID()
+	s.mu.Lock()
+	s.actions[id] = &mockAction{status: fi.StatusPending}
+	s.mu.Unlock()
+
+	go s.executeProxyFailure(id, s.members[clusterIndex], op)
+	writeJSON(w, http.StatusOK, fi.ActionResponse{ActionID: id, Status: string(fi.StatusPending)})
+}
+
+func (s *MockFaultInjector) executeProxyFailure(id string, member MockMember, op string) {
+	s.setStatus(id, fi.StatusRunning, "")
+	ctx := context.Background()
+	if op == "stop" || op == "restart" {
+		if err := s.mech.Sever(ctx, member.Container); err != nil {
+			s.setStatus(id, fi.StatusFailed, fmt.Sprintf("stop %s: %v", member.Container, err))
+			return
+		}
+	}
+	if op == "start" || op == "restart" {
+		if err := s.mech.Restore(ctx, member.Container, member.Addr); err != nil {
+			s.setStatus(id, fi.StatusFailed, fmt.Sprintf("start %s: %v", member.Container, err))
+			return
+		}
+	}
+	s.setStatus(id, fi.StatusSuccess, "")
 }
 
 // intParam reads an integer parameter out of a decoded JSON parameters map,
