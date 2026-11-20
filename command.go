@@ -8154,8 +8154,9 @@ func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScri
 func (cmd *FunctionStatsCmd) Clone() Cmder {
 	val := FunctionStats{
 		isRunning: cmd.val.isRunning,
-		rs:        cmd.val.rs, // RunningScript is a simple struct, can be copied directly
+		rs:        cmd.val.rs,
 	}
+	val.rs.Command = slices.Clone(cmd.val.rs.Command)
 	if cmd.val.Engines != nil {
 		val.Engines = make([]Engine, len(cmd.val.Engines))
 		copy(val.Engines, cmd.val.Engines)
