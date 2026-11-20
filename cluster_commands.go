@@ -70,9 +70,9 @@ func (c cmdable) ClusterLinks(ctx context.Context) *ClusterLinksCmd {
 
 // ClusterSlotStats returns the usage statistics of the slots in the inclusive
 // range [startSlot, endSlot], ordered by slot. A node reports only the slots it
-// owns. A ClusterClient with metadata routing policies, enabled by
-// SetCommandInfoResolver(NewCommandMetadataResolver()), asks every shard and
-// merges the replies; otherwise one node answers.
+// owns, so a ClusterClient asks every master and merges the replies. In a
+// pipeline the command is still sent to one node and returns only the slots
+// of that node.
 //
 // Only KeyCount is reported unless the server runs with
 // cluster-slot-stats-enabled yes. Requires Redis 8.2 or newer.
@@ -95,13 +95,19 @@ type ClusterSlotStatsOrderByArgs struct {
 
 // ClusterSlotStatsOrderBy returns the usage statistics of the slots ordered by
 // a metric; slots with the same value are ordered by slot. A node reports only
-// the slots it owns. A ClusterClient with metadata routing policies (see
-// ClusterSlotStats) asks every shard, merges the replies and applies the order
-// and the limit again.
+// the slots it owns, so a ClusterClient asks every master, merges the replies
+// and applies the order and the limit again. In a pipeline the command is
+// still sent to one node and returns only the slots of that node.
 //
 // Only KeyCount is reported unless the server runs with
 // cluster-slot-stats-enabled yes. Requires Redis 8.2 or newer.
 func (c cmdable) ClusterSlotStatsOrderBy(ctx context.Context, a *ClusterSlotStatsOrderByArgs) *ClusterSlotStatsCmd {
+	cmd := NewClusterSlotStatsCmd(ctx, clusterSlotStatsOrderByArgs(a)...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func clusterSlotStatsOrderByArgs(a *ClusterSlotStatsOrderByArgs) []interface{} {
 	args := []interface{}{"cluster", "slot-stats", "orderby", a.Metric}
 	if a.Limit != 0 {
 		args = append(args, "limit", a.Limit)
@@ -109,9 +115,7 @@ func (c cmdable) ClusterSlotStatsOrderBy(ctx context.Context, a *ClusterSlotStat
 	if a.Asc {
 		args = append(args, "asc")
 	}
-	cmd := NewClusterSlotStatsCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	return args
 }
 
 func (c cmdable) ClusterNodes(ctx context.Context) *StringCmd {
