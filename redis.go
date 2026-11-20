@@ -2672,6 +2672,25 @@ func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
 	return cmds
 }
 
+// pipelineUnansweredSuffix returns the commands of a dispatched batch that
+// still need a result: the suffix starting at the first command whose error
+// is a transport failure rather than a server reply. Commands before it were
+// answered — with a value or with a Redis error reply — and keep their
+// results. Unlike pipelineRetrySuffix it never returns the whole batch: the
+// whole-batch returns there exist to force re-execution on retry, which does
+// not apply when the operation is ending and only per-command errors are
+// being stamped. When no command carries a transport error (e.g. the
+// connection was never acquired), the whole batch is returned so a setup
+// failure stamps every command, as before.
+func pipelineUnansweredSuffix(cmds []Cmder) []Cmder {
+	for i, cmd := range cmds {
+		if e := cmd.rawErr(); e != nil && !isRedisError(e) {
+			return cmds[i:]
+		}
+	}
+	return cmds
+}
+
 // pipelineErrShouldStamp reports whether a pipeline-level error must be stamped
 // onto every command (setCmdsErr). A per-command Redis reply error (LOADING,
 // WRONGTYPE, ...) is left alone so each command keeps its own reply - EXCEPT when
@@ -2835,10 +2854,15 @@ func (c *baseClient) generalProcessPipelineFrom(
 			// The error should be set here only when failing to obtain the conn.
 			// A setup failure (!connAcquired) stamps even Redis errors: no
 			// command was sent, so no per-command reply exists to preserve.
-			// Only pending is stamped: commands an earlier attempt already
-			// answered keep their results.
+			// Only the unanswered suffix of pending is stamped: commands an
+			// earlier attempt already answered keep their results, and so
+			// do commands this attempt already answered — stamping all of
+			// pending would overwrite their success with the terminal
+			// transport error. pipelineRetrySuffix cannot be used here:
+			// its whole-batch returns exist to force re-execution on
+			// retry, which does not apply on an exit path.
 			if !connAcquired || pipelineErrShouldStamp(lastErr) {
-				setCmdsErr(pending, lastErr)
+				setCmdsErr(pipelineUnansweredSuffix(pending), lastErr)
 			}
 			err := finalErr()
 			if recordDuration {
@@ -2866,9 +2890,14 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// error — see the error instead of a nil error and a zero value. Guard on
 	// !isRedisError so a per-command redis error (e.g. LOADING) keeps its own
 	// reply rather than being overwritten, except when connection setup
-	// failed and no command was sent at all.
+	// failed and no command was sent at all. Stamp only the unanswered
+	// suffix, as in the early-exit branch: when the last attempt's
+	// pipelineRetrySuffix returned the whole batch (connection-local state
+	// or a WAIT in the suffix), pending still holds commands this attempt
+	// already answered, and stamping all of it would overwrite their
+	// success with the terminal error.
 	if !connAcquired || pipelineErrShouldStamp(lastErr) {
-		setCmdsErr(pending, lastErr)
+		setCmdsErr(pipelineUnansweredSuffix(pending), lastErr)
 	}
 
 	err := finalErr()

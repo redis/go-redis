@@ -871,6 +871,41 @@ func TestPipelineRetryReportsFirstErr(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryKeepsAnsweredResultsOnNonRetryableExit: when one attempt
+// answers the first command and the connection then drops before the next
+// reply, a non-retryable failure must not stamp the terminal error onto the
+// command that already succeeded. The batch holds a NoRetry command (as a
+// RawWriteToCmd would), so the early-exit branch runs instead of a retry:
+// stamping the whole pending set would overwrite the answered SET's success
+// with the transport error, so callers would observe failure for a command
+// that already applied. Regression test for the review finding on #4351.
+func TestPipelineRetryKeepsAnsweredResultsOnNonRetryableExit(t *testing.T) {
+	server := newPartialRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	incr := pipe.Incr(ctx, "text")
+	incr.setNoRetry(true) // stands in for a RawWriteToCmd in the batch
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatalf("Exec: nil, want the transport error for the unanswered INCR")
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil (the answered SET must keep its success, not inherit the terminal error)", err)
+	}
+	if got, err := set.Result(); err != nil || got != "OK" {
+		t.Fatalf("SET = %q, %v; want OK, nil", got, err)
+	}
+	if err := incr.Err(); err == nil {
+		t.Fatalf("INCR: nil, want the transport error for the unanswered command")
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (no retry on a non-retryable exit)", got)
+	}
+}
+
 // firstErrMetricRecorder captures the error passed to
 // RecordPipelineOperationDuration.
 type firstErrMetricRecorder struct {
