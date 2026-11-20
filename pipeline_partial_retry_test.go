@@ -1524,3 +1524,262 @@ func TestInitConnRejectsIdentityPipelineTransportFailure(t *testing.T) {
 		t.Fatalf("Ping err = %v, want a transport error, not a Redis error", err)
 	}
 }
+
+// dialFailLoadingServer is a scripted RESP server for rejected-command
+// retry tests. The first connection answers SET with a retryable LOADING
+// error and then drops before INCR's reply, and closes the listener, so
+// every later dial fails instead of reaching a fresh server.
+type dialFailLoadingServer struct {
+	ln      net.Listener
+	conns   atomic.Int32
+	closeLn sync.Once
+}
+
+func newDialFailLoadingServer(t *testing.T) *dialFailLoadingServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &dialFailLoadingServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *dialFailLoadingServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "set":
+			if first {
+				_, _ = conn.Write([]byte("-LOADING Redis is loading the dataset in memory\r\n"))
+			} else {
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
+		case "incr":
+			if first {
+				// Drop before replying and stop listening: the
+				// retry's dial must fail, not reach a fresh server.
+				s.closeLn.Do(func() { _ = s.ln.Close() })
+				return
+			}
+			_, _ = conn.Write([]byte(":1\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryDialFailureKeepsRejectedCommandError: when SET is answered
+// with a retryable LOADING error (the server rejected it without executing
+// it) and INCR's reply is then lost, a later dial failure must not make SET
+// look successful: the SET was never executed, so its error must survive
+// until a retry can dispatch it again. Regression test for the review
+// finding on #4351.
+func TestPipelineRetryDialFailureKeepsRejectedCommandError(t *testing.T) {
+	server := newDialFailLoadingServer(t)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	incr := pipe.Incr(ctx, "counter")
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatalf("Exec: nil, want the dial error (the listener is closed after the first drop)")
+	}
+	if err := set.Err(); err == nil {
+		t.Fatal("SET: nil, want the LOADING rejection (it was never executed, so it must not look successful)")
+	}
+	if err := incr.Err(); err == nil {
+		t.Fatal("INCR: nil, want the attempt's transport error (it was never answered)")
+	}
+}
+
+// relistenLoadingServer is a scripted RESP server for the cleared-reply
+// retry test. The first connection answers SET with LOADING and drops
+// before INCR's reply; the listener then closes for reopenDelay and
+// re-opens on the same address. reopenDelay is chosen so that one retry
+// attempt's whole dial sequence is exhausted while the listener is down
+// (the pool retries a failed dial up to 5 times, 100ms apart, inside a
+// single getConn) and a later attempt's dial sequence reaches the fresh
+// server that answers everything.
+type relistenLoadingServer struct {
+	ln          net.Listener
+	addr        string
+	conns       atomic.Int32
+	sets        atomic.Int32
+	closeLn     sync.Once
+	reopenOnce  sync.Once
+	reopenDelay time.Duration
+	reopenErr   atomic.Value // error, if re-listening failed
+}
+
+func newRelistenLoadingServer(t *testing.T, reopenDelay time.Duration) *relistenLoadingServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &relistenLoadingServer{ln: ln, addr: ln.Addr().String(), reopenDelay: reopenDelay}
+	t.Cleanup(func() { _ = ln.Close() })
+	go s.acceptLoop(ln)
+	return s
+}
+
+func (s *relistenLoadingServer) acceptLoop(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		n := s.conns.Add(1)
+		go s.serve(conn, n == 1)
+	}
+}
+
+func (s *relistenLoadingServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "set":
+			s.sets.Add(1)
+			if first {
+				_, _ = conn.Write([]byte("-LOADING Redis is loading the dataset in memory\r\n"))
+			} else {
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
+		case "incr":
+			if first {
+				// Drop before replying, close the listener, and
+				// re-open it after reopenDelay: the next dial
+				// fails, the one after it reaches a fresh server.
+				s.closeLn.Do(func() { _ = s.ln.Close() })
+				s.reopenOnce.Do(func() {
+					go func() {
+						time.Sleep(s.reopenDelay)
+						ln, err := net.Listen("tcp", s.addr)
+						if err != nil {
+							s.reopenErr.Store(err)
+							return
+						}
+						s.ln = ln
+						go s.acceptLoop(ln)
+					}()
+				})
+				return
+			}
+			_, _ = conn.Write([]byte(":1\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryClearedLoadingCommandIsNotDropped: when SET is answered
+// with a retryable LOADING error and INCR's reply is then lost, a later
+// dial failure must not drop SET from the retry: the LOADING reply never
+// executed it, so a succeeding retry must re-execute it — Exec must not
+// report success for a write that never applied. Regression test for the
+// review finding on #4351.
+func TestPipelineRetryClearedLoadingCommandIsNotDropped(t *testing.T) {
+	// Timeline (client backoff fixed at 50ms): attempt 0 answers SET
+	// with LOADING and loses INCR's reply. Attempt 1 dispatches ~50ms
+	// later; one dispatch runs TWO dial sequences back to back — the
+	// pipeline pool's TryGet dials (5 dials, 100ms apart, ~400ms) and,
+	// on failure, spills to the main pool which dials again (~400ms) —
+	// so the retry loop only sees a dial failure at ~850ms. Attempt 2
+	// dispatches ~900ms in; its dial sequence reaches the reopened
+	// listener (~1250ms, the ~1300ms dial) and dispatches the pending
+	// commands. PoolSize 2 keeps the pool's dial breaker (which trips
+	// when dialErrorsNum reaches PoolSize) from short-circuiting
+	// attempt 2's dial sequence after attempt 1's sequences were
+	// exhausted.
+	server := newRelistenLoadingServer(t, 1250*time.Millisecond)
+	client := NewClient(&Options{
+		Addr:     server.addr,
+		Protocol: 2,
+		// A custom Dialer makes this a non-fixed-endpoint client
+		// (fixedDialEndpoint is opt.Dialer == nil): only then does the
+		// retry loop keep going after a dial failure. With the default
+		// dialer, an exhausted dial sequence sets the dialExhausted
+		// marker and the loop exits at once, so no later attempt could
+		// ever succeed — the dropped write would surface only as a
+		// dial error, never as a silent success.
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
+		},
+		PoolSize:        2,
+		MaxRetries:      3,
+		MinRetryBackoff: 50 * time.Millisecond,
+		MaxRetryBackoff: 50 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	incr := pipe.Incr(ctx, "counter")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry after the failed dial must succeed)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil (it must have been re-executed once the server recovered)", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %v, %v; want 1, nil", got, err)
+	}
+	if err, ok := server.reopenErr.Load().(error); ok && err != nil {
+		t.Fatalf("re-listening failed: %v", err)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the SET answered LOADING must be re-executed after the failed dial, not dropped as though it had been answered)", got)
+	}
+}

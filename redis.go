@@ -2891,28 +2891,24 @@ func (c *baseClient) generalProcessPipelineFrom(
 			}
 		}
 
-		// A retry re-dispatches pending: clear their Redis errors first, or a
-		// Redis error left by an earlier attempt would survive a dispatch
-		// that never reached the command — a write failure stamps only
-		// nil errors (see setCmdsErr) — and pipelineRetrySuffix would
-		// then mistake it for an answer from the latest attempt and drop
-		// the command, leaving Exec reporting the stale error even
-		// though the server has recovered and the command was never
-		// re-executed.
-		// Transport errors are NOT cleared: they mark the
-		// answered/unanswered boundary pipelineUnansweredSuffix relies
-		// on — commands before the first transport error were answered
-		// by a prior attempt and must keep their results if this
-		// attempt fails before reaching them (a dial failure, or a
-		// cancel after the clear). The read path overwrites the error
-		// of every command it answers (pipelineReadCmdsWithFlags sets
-		// each dispatched command's error from its reply), so a stale
-		// transport error cannot survive a successful re-dispatch.
-		for _, cmd := range pending {
-			if e := cmd.rawErr(); e != nil && !pipelineErrShouldStamp(e) {
-				cmd.SetErr(nil)
-			}
-		}
+		// A retry re-dispatches pending WITHOUT clearing their errors
+		// first. A command's error field is the record of whether it was
+		// answered: a Redis error means it was answered with that reply —
+		// and a retryable one (LOADING, READONLY, ...) means the server
+		// refused it, so it was never executed — while a transport error
+		// marks the answered/unanswered boundary. Clearing a retryable
+		// Redis error before dispatch erases the only record that the
+		// command was never executed: if the dispatch then fails before
+		// reaching it (a dial failure, or a cancel), the narrowed retry
+		// and the exit stamping both treat the nil error as "answered"
+		// and drop the command, so Exec can report success for a write
+		// that never applied. The read path overwrites the error of
+		// every command it dispatches (pipelineReadCmdsWithFlags sets
+		// each command's error from its reply), so a stale Redis error
+		// cannot survive a successful re-dispatch; and
+		// pipelineRetrySuffix treats a retryable Redis error as an
+		// unanswered boundary, so a stale one cannot cause a drop there
+		// either (see TestPipelineRetryDoesNotReportStaleError).
 
 		// Enable retries by default to retry dial errors returned by withConn.
 		canRetry := true
