@@ -191,12 +191,17 @@ func argString(args []interface{}, i int) string {
 	switch v := args[i].(type) {
 	case string:
 		return v
-	case *string:
-		if v != nil {
-			return *v
-		}
 	case []byte:
 		return String(v)
+	}
+	// Named string types and pointers to strings: a keyword in either form
+	// must still be recognised, or the credential next to it is printed.
+	rv := reflect.ValueOf(args[i])
+	if rv.Kind() == reflect.Pointer && !rv.IsNil() {
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.String {
+		return rv.String()
 	}
 	return ""
 }

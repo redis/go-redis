@@ -96,13 +96,14 @@ var _ = Describe("CmdString", func() {
 		Expect(CmdString(cmd)).To(Equal("set key value 42 1.5 true 2026-01-02T03:04:05Z <nil>"))
 	})
 
-	It("does not print a pointer to a named type by value", func() {
-		// secretArgs does not read named string types, so the rule below is
-		// not redacted and must stay unprinted.
-		type rule string
-		r := rule(">s3cret")
+	It("redacts when a keyword or rule is a named string type", func() {
+		type named string
+		r := named(">s3cret")
 		cmd := redis.NewCmd(context.Background(), "acl", "setuser", "bob", &r)
 		Expect(CmdString(cmd)).NotTo(ContainSubstring("s3cret"))
+
+		cmd = redis.NewCmd(context.Background(), "config", "set", named("requirepass"), ptr("s3cret"))
+		Expect(CmdString(cmd)).To(Equal("config set requirepass <redacted>"))
 	})
 })
 
