@@ -36,12 +36,19 @@ type deadlineReader struct {
 	// then caches that error while it still hands the bytes to the caller. Only such
 	// a read needs the command boundary to drop the cached error (see WithReader).
 	readWithError atomic.Bool
+	// bytesRead counts every byte pulled from the transport. A command compares it
+	// before and after its reply read to prove that a timed-out read consumed
+	// nothing, i.e. the reader still sits on a frame boundary.
+	bytesRead atomic.Uint64
 }
 
 func (r *deadlineReader) Read(b []byte) (int, error) {
 	n, err := r.reader.Read(b)
-	if n > 0 && err != nil {
-		r.readWithError.Store(true)
+	if n > 0 {
+		r.bytesRead.Add(uint64(n))
+		if err != nil {
+			r.readWithError.Store(true)
+		}
 	}
 	return n, contextDeadlineError(r.ctx, r.deadline, err)
 }

@@ -202,6 +202,28 @@ type Options struct {
 	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
 	ContextTimeoutEnabled bool
 
+	// DrainOnContextTimeout keeps a connection whose command hit its context
+	// deadline instead of closing it, when that is safe. Requires
+	// ContextTimeoutEnabled. The caller still gets the context error right away.
+	// The connection stays checked out (it keeps its pool slot) while a background
+	// goroutine reads and discards the late reply, then returns to the pool. If the
+	// reply does not arrive within ContextTimeoutDrainTimeout, the connection is
+	// closed as before.
+	//
+	// Only single commands whose deadline expired before any reply bytes arrived
+	// are drained. Write timeouts, partially read replies, pipelines, transactions,
+	// blocking commands, Pub/Sub and client-side caching reads always close the
+	// connection.
+	//
+	// default: false
+	DrainOnContextTimeout bool
+
+	// ContextTimeoutDrainTimeout bounds how long DrainOnContextTimeout waits for
+	// the late reply before closing the connection.
+	//
+	// default: 100 milliseconds
+	ContextTimeoutDrainTimeout time.Duration
+
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
 	// Smaller buffers can improve memory usage for larger pools.

@@ -96,6 +96,15 @@ type UniversalOptions struct {
 	// See https://redis.io/docs/latest/develop/clients/go/produsage/#timeouts
 	ContextTimeoutEnabled bool
 
+	// DrainOnContextTimeout reuses a connection whose command hit its context
+	// deadline once the late reply has been drained in the background.
+	// See Options.DrainOnContextTimeout.
+	DrainOnContextTimeout bool
+
+	// ContextTimeoutDrainTimeout bounds the background drain.
+	// See Options.ContextTimeoutDrainTimeout.
+	ContextTimeoutDrainTimeout time.Duration
+
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
 	// Smaller buffers can improve memory usage for larger pools.
@@ -300,7 +309,9 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		ReadTimeout:        o.ReadTimeout,
 		WriteTimeout:       o.WriteTimeout,
 
-		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      o.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      o.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: o.ContextTimeoutDrainTimeout,
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
@@ -384,7 +395,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ReadTimeout:        o.ReadTimeout,
 		WriteTimeout:       o.WriteTimeout,
 
-		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      o.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      o.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: o.ContextTimeoutDrainTimeout,
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
@@ -453,7 +466,9 @@ func (o *UniversalOptions) Simple() *Options {
 		ReadTimeout:        o.ReadTimeout,
 		WriteTimeout:       o.WriteTimeout,
 
-		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      o.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      o.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: o.ContextTimeoutDrainTimeout,
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,

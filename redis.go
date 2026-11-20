@@ -1623,6 +1623,12 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 	if ep := cn.ServingEndpoint(); ep != "" {
 		connAddr = ep
 	}
+	if replies := cn.TakePendingReplies(); replies > 0 && c.canDrainOnRelease(p, cn, err) {
+		// The conn stays checked out, holding its pool turn, until the drain
+		// either Puts it back or Removes it.
+		go c.drainAndRelease(p, cn, replies, err)
+		return
+	}
 	if isBadConn(err, false, connAddr) || errors.Is(err, errConnUnusable) {
 		p.Remove(ctx, cn, err)
 		return
@@ -1647,6 +1653,72 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 		cn.MarkCscReadPending()
 	}
 	p.Put(ctx, cn)
+}
+
+// defaultContextTimeoutDrainTimeout is the drain budget when
+// Options.ContextTimeoutDrainTimeout is unset.
+const defaultContextTimeoutDrainTimeout = 100 * time.Millisecond
+
+func (c *baseClient) contextTimeoutDrainTimeout() time.Duration {
+	if c.opt.ContextTimeoutDrainTimeout > 0 {
+		return c.opt.ContextTimeoutDrainTimeout
+	}
+	return defaultContextTimeoutDrainTimeout
+}
+
+// isContextDeadlineError reports whether err is a socket timeout raised by the
+// caller's context deadline (as opposed to ReadTimeout or a transport error).
+func isContextDeadlineError(err error) bool {
+	var deadlineErr *pool.ContextDeadlineError
+	return errors.As(err, &deadlineErr)
+}
+
+// canDrainOnRelease decides whether a conn released with pending replies is
+// drained in the background instead of removed. Only the shared ConnPool
+// qualifies: a sticky or single-conn pool hands the same conn straight back to
+// its owner, which would then race the drain on the reader.
+func (c *baseClient) canDrainOnRelease(p pool.Pooler, cn *pool.Conn, err error) bool {
+	if !c.opt.DrainOnContextTimeout || !isContextDeadlineError(err) || errors.Is(err, errConnUnusable) {
+		return false
+	}
+	if _, ok := p.(*pool.ConnPool); !ok {
+		return false
+	}
+	return !cn.IsClosed()
+}
+
+// drainAndRelease reads and discards the replies the server still owes on cn
+// after its command hit the context deadline, then releases cn through the
+// normal path. Push notifications that arrive first go to the push processor
+// instead of being discarded. Any failure, including the drain budget running
+// out, removes the conn as an undrained context timeout always did.
+func (c *baseClient) drainAndRelease(p pool.Pooler, cn *pool.Conn, replies int, cause error) {
+	ctx := context.Background()
+	err := cn.WithReaderHardDeadline(c.contextTimeoutDrainTimeout(), func(rd *proto.Reader) error {
+		for ; replies > 0; replies-- {
+			if c.opt.Protocol == 3 && c.pushProcessor != nil {
+				// Blocking mode: handles every push ahead of the reply and stops
+				// when a non-push frame is next.
+				if err := c.drainPushFrames(ctx, cn, rd, true); err != nil {
+					return err
+				}
+			}
+			// PeekReplyType consumes any RESP3 attribute ahead of the reply, so
+			// DiscardNext below always lands on the reply itself.
+			if _, err := rd.PeekReplyType(); err != nil {
+				return err
+			}
+			if err := rd.DiscardNext(); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		p.Remove(ctx, cn, cause)
+		return
+	}
+	c.releaseConnToPool(ctx, p, cn, nil)
 }
 
 func (c *baseClient) withConn(
@@ -2301,6 +2373,18 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 			retryTimeout.Store(1)
 			return err
 		}
+		// A reply that hits the context deadline can be drained later instead of
+		// closing the conn, but only when this read is the plain one-reply case:
+		// no CSC prefix or raw capture, no injected HIMPORT replies, not a blocking
+		// command (its server-side wait can outlive any drain budget), and nothing
+		// already buffered, so a zero-byte read proves a frame boundary.
+		canDrain := c.opt.DrainOnContextTimeout && c.opt.ContextTimeoutEnabled &&
+			flag == 0 && capture == nil && len(injected) == 0 &&
+			cmd.readTimeout() == nil && !cn.HasBufferedData()
+		var readStart uint64
+		if canDrain {
+			readStart = cn.BytesRead()
+		}
 		readReplyFunc := cmd.readReply
 		// When the caller requested raw-reply capture (client-side cache),
 		// read the reply as raw RESP bytes and re-parse them through the
@@ -2387,6 +2471,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 				retryTimeout.Store(1)
 			} else {
 				retryTimeout.Store(0)
+			}
+			if canDrain && cn.BytesRead() == readStart && isContextDeadlineError(readErr) {
+				// The deadline fired before any reply byte arrived: the server still
+				// owes exactly this one reply and the reader is on a frame boundary.
+				cn.SetPendingReplies(1)
 			}
 			// Carry the held connection's logical endpoint with hostless redirects
 			// so ClusterClient can resolve them after release (#4233 review).

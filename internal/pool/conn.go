@@ -223,6 +223,12 @@ type Conn struct {
 	// lastCscPeriodicProbeNs throttles bounded fallback reads on platforms and
 	// opaque transports without a non-consuming readiness mechanism.
 	lastCscPeriodicProbeNs atomic.Int64
+
+	// pendingReplies is the number of whole replies the server still owes after a
+	// command's read hit its context deadline on a frame boundary. The client sets
+	// it before releasing the conn and the release path consumes it to decide
+	// whether the conn can be drained and reused instead of closed.
+	pendingReplies atomic.Int32
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -1479,6 +1485,29 @@ func (cn *Conn) CheckForData() (bool, error) {
 		return checkForData(netConn)
 	}
 	return false, nil
+}
+
+// BytesRead reports how many bytes the reader has pulled from the transport over
+// the connection's life. Comparing two snapshots around a reply read tells
+// whether the read consumed anything.
+func (cn *Conn) BytesRead() uint64 {
+	return cn.deadlineReader.bytesRead.Load()
+}
+
+// SetPendingReplies records that the server still owes n whole replies on this
+// connection, none of which has been started. Only valid when the reader sits on
+// a frame boundary; the release path drains exactly n frames.
+func (cn *Conn) SetPendingReplies(n int) {
+	cn.pendingReplies.Store(int32(n))
+}
+
+// TakePendingReplies consumes the count set by SetPendingReplies. It runs on
+// every release, so the common zero case is a plain load.
+func (cn *Conn) TakePendingReplies() int {
+	if cn.pendingReplies.Load() == 0 {
+		return 0
+	}
+	return int(cn.pendingReplies.Swap(0))
 }
 
 // MarkCscReadPending requests one conservative CSC drain after a command read
