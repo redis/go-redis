@@ -254,6 +254,7 @@ type Cmdable interface {
 	DebugObject(ctx context.Context, key string) *StringCmd
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
 	Latency(ctx context.Context) *LatencyCmd
+	LatencyHistory(ctx context.Context, event string) *LatencyHistoryCmd
 	LatencyReset(ctx context.Context, events ...interface{}) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
@@ -853,6 +854,19 @@ func (c cmdable) SlowLogReset(ctx context.Context) *StatusCmd {
 
 func (c cmdable) Latency(ctx context.Context) *LatencyCmd {
 	cmd := NewLatencyCmd(ctx, "latency", "latest")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// LatencyHistory returns the latency spikes recorded for an event, such as
+// "command" or "fork", oldest first. The server keeps up to 160 samples per
+// event and returns none for an event it has not recorded.
+//
+// On ClusterClient the command is sent to one node.
+//
+// See https://redis.io/docs/latest/commands/latency-history/
+func (c cmdable) LatencyHistory(ctx context.Context, event string) *LatencyHistoryCmd {
+	cmd := NewLatencyHistoryCmd(ctx, "latency", "history", event)
 	_ = c(ctx, cmd)
 	return cmd
 }
