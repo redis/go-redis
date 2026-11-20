@@ -9638,7 +9638,7 @@ func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
 func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	return &VectorScoreSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		val:     append([]VectorScore(nil), cmd.val...),
+		val:     slices.Clone(cmd.val),
 	}
 }
 
@@ -9859,7 +9859,7 @@ func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *VectorAttribSliceCmd) Clone() Cmder {
-	val := append([]VectorAttrib(nil), cmd.val...)
+	val := slices.Clone(cmd.val)
 	for i := range val {
 		if val[i].Attribs != nil {
 			attribs := *val[i].Attribs
@@ -9968,7 +9968,7 @@ func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
-	val := append([]VectorScoreAttrib(nil), cmd.val...)
+	val := slices.Clone(cmd.val)
 	for i := range val {
 		if val[i].Attribs != nil {
 			attribs := *val[i].Attribs

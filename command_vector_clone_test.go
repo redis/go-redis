@@ -40,4 +40,20 @@ func TestVectorSliceCmdCloneCopiesVal(t *testing.T) {
 			t.Errorf("changing the clone changed the original: %q %q", got.Name, *got.Attribs)
 		}
 	})
+
+	// An empty reply is a non-nil empty slice and must stay one.
+	t.Run("empty", func(t *testing.T) {
+		scores := NewVectorInfoSliceCmd(ctx, "vsim")
+		scores.SetVal([]VectorScore{})
+		attrs := NewVectorAttribSliceCmd(ctx, "vsim")
+		attrs.SetVal([]VectorAttrib{})
+		scoreAttrs := NewVectorScoreAttribSliceCmd(ctx, "vsim")
+		scoreAttrs.SetVal([]VectorScoreAttrib{})
+
+		if scores.Clone().(*VectorScoreSliceCmd).Val() == nil ||
+			attrs.Clone().(*VectorAttribSliceCmd).Val() == nil ||
+			scoreAttrs.Clone().(*VectorScoreAttribSliceCmd).Val() == nil {
+			t.Error("clone of an empty result is nil")
+		}
+	})
 }
