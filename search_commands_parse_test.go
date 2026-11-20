@@ -2201,6 +2201,14 @@ func TestParseFTInfoCaseSensitiveTag(t *testing.T) {
 			},
 		},
 		{
+			// The separator value must not be read as the HNSW "M" key.
+			name: "RESP2 separator m",
+			attr: []interface{}{
+				"identifier", "t", "attribute", "t", "type", "TAG",
+				"SEPARATOR", "m", "CASESENSITIVE", "SORTABLE", "UNF",
+			},
+		},
+		{
 			name: "RESP3",
 			attr: map[interface{}]interface{}{
 				"identifier": "t",
