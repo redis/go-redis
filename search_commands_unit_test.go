@@ -942,6 +942,12 @@ func TestFTHybridWithArgsCombineCount(t *testing.T) {
 			combine: &FTHybridCombineOptions{Method: FTHybridCombineRRF, Window: 3},
 			want:    []interface{}{"COMBINE", "RRF", 2, "WINDOW", 3},
 		},
+		{
+			// The server rejects ALPHA without BETA ("Missing value for BETA").
+			name:    "linear_with_zero_beta",
+			combine: &FTHybridCombineOptions{Method: FTHybridCombineLinear, Alpha: 1},
+			want:    []interface{}{"COMBINE", "LINEAR", 4, "ALPHA", 1.0, "BETA", 0.0},
+		},
 	}
 
 	for _, tt := range tests {
