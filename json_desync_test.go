@@ -87,6 +87,44 @@ func TestIntPointerSliceCmdLegacyPathReply(t *testing.T) {
 	})
 }
 
+// The JSON array commands reply to a legacy path with a single value instead
+// of an array with one value per match.
+func TestSliceCmdLegacyPathReply(t *testing.T) {
+	ctx := context.Background()
+
+	intCmd := NewIntSliceCmd(ctx)
+	rd := proto.NewReader(strings.NewReader(":3\r\n+NEXT\r\n"))
+	if err := intCmd.readReply(rd); err != nil {
+		t.Fatalf("IntSliceCmd.readReply() error = %v", err)
+	}
+	if len(intCmd.val) != 1 || intCmd.val[0] != 3 {
+		t.Fatalf("IntSliceCmd val = %v, want [3]", intCmd.val)
+	}
+	if next, err := rd.ReadString(); err != nil || next != "NEXT" {
+		t.Fatalf("next reply = %q, %v; reader is out of sync", next, err)
+	}
+
+	strCmd := NewStringSliceCmd(ctx)
+	rd = proto.NewReader(strings.NewReader("$1\r\n4\r\n+NEXT\r\n"))
+	if err := strCmd.readReply(rd); err != nil {
+		t.Fatalf("StringSliceCmd.readReply() error = %v", err)
+	}
+	if len(strCmd.val) != 1 || strCmd.val[0] != "4" {
+		t.Fatalf("StringSliceCmd val = %v, want [4]", strCmd.val)
+	}
+	if next, err := rd.ReadString(); err != nil || next != "NEXT" {
+		t.Fatalf("next reply = %q, %v; reader is out of sync", next, err)
+	}
+
+	// JSON.ARRPOP on an empty array replies with null.
+	for _, reply := range []string{"$-1\r\n", "_\r\n"} {
+		strCmd = NewStringSliceCmd(ctx)
+		if err := strCmd.readReply(proto.NewReader(strings.NewReader(reply))); err != Nil {
+			t.Fatalf("StringSliceCmd.readReply(%q) error = %v, want Nil", reply, err)
+		}
+	}
+}
+
 // With RESP2, JSON.TYPE with a legacy path replies with a single string.
 func TestJSONSliceCmdLegacyPathReply(t *testing.T) {
 	cmd := NewJSONSliceCmd(context.Background())

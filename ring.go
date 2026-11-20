@@ -395,10 +395,10 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 	c.setAddrsMu.Lock()
 	defer c.setAddrsMu.Unlock()
 
-	cleanup := func(shards map[string]*ringShard) {
-		for addr, shard := range shards {
+	cleanup := func(shards []*ringShard) {
+		for _, shard := range shards {
 			if err := shard.Client.Close(); err != nil {
-				internal.Logger.Printf(context.Background(), "shard.Close %s failed: %s", addr, err)
+				internal.Logger.Printf(context.Background(), "shard.Close %s failed: %s", shard.addr, err)
 			}
 		}
 	}
@@ -429,25 +429,26 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 
 func (c *ringSharding) newRingShards(
 	addrs map[string]string, existing *ringShards, onNewNode []func(rdb *Client),
-) (shards *ringShards, created, unused map[string]*ringShard) {
+) (shards *ringShards, created, unused []*ringShard) {
 	shards = &ringShards{m: make(map[string]*ringShard, len(addrs))}
-	created = make(map[string]*ringShard) // indexed by addr
-	unused = make(map[string]*ringShard)  // indexed by addr
 
+	// Several shard names may share one address, so keep every existing
+	// shard per address instead of only the last one.
+	reusable := make(map[string][]*ringShard) // indexed by addr
 	if existing != nil {
 		for _, shard := range existing.list {
-			unused[shard.addr] = shard
+			reusable[shard.addr] = append(reusable[shard.addr], shard)
 		}
 	}
 
 	for name, addr := range addrs {
-		if shard, ok := unused[addr]; ok {
-			shards.m[name] = shard
-			delete(unused, addr)
+		if list := reusable[addr]; len(list) > 0 {
+			shards.m[name] = list[len(list)-1]
+			reusable[addr] = list[:len(list)-1]
 		} else {
 			shard := newRingShard(c.opt, addr)
 			shards.m[name] = shard
-			created[addr] = shard
+			created = append(created, shard)
 
 			for _, fn := range onNewNode {
 				fn(shard.Client)
@@ -457,6 +458,9 @@ func (c *ringSharding) newRingShards(
 
 	for _, shard := range shards.m {
 		shards.list = append(shards.list, shard)
+	}
+	for _, list := range reusable {
+		unused = append(unused, list...)
 	}
 
 	return

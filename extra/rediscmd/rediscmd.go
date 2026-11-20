@@ -3,6 +3,7 @@ package rediscmd
 import (
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -193,6 +194,15 @@ func argString(args []interface{}, i int) string {
 	case []byte:
 		return String(v)
 	}
+	// Named string types and pointers to strings: a keyword in either form
+	// must still be recognised, or the credential next to it is printed.
+	rv := reflect.ValueOf(args[i])
+	if rv.Kind() == reflect.Pointer && !rv.IsNil() {
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.String {
+		return rv.String()
+	}
 	return ""
 }
 
@@ -235,7 +245,23 @@ func appendArg(b []byte, v interface{}) []byte {
 		return append(b, "false"...)
 	case time.Time:
 		return v.AppendFormat(b, time.RFC3339Nano)
+	case *time.Time:
+		if v == nil {
+			return append(b, "<nil>"...)
+		}
+		return v.AppendFormat(b, time.RFC3339Nano)
 	default:
+		// proto.Writer sends a pointer to a basic type by value, so print the
+		// value, not the address.
+		if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && !rv.IsNil() {
+			// PkgPath is empty only for the predeclared types. A named type is
+			// left as is: secretArgs cannot read it, so it must not be printed.
+			e := rv.Elem()
+			if e.Type().PkgPath() == "" &&
+				(e.Kind() == reflect.String || (e.Kind() >= reflect.Bool && e.Kind() <= reflect.Float64)) {
+				return appendArg(b, e.Interface())
+			}
+		}
 		return append(b, fmt.Sprint(v)...)
 	}
 }

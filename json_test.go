@@ -252,6 +252,16 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(cmd10).To(Equal([]int64{0}))
 			})
 
+			It("should JSONArrTrim without a stop", Label("json.arrtrim", "json"), func() {
+				Expect(client.JSONSet(ctx, "trim6", "$", `[0,1,2,3,4]`).Err()).NotTo(HaveOccurred())
+
+				// The server requires start and stop; they default to 0 and -1.
+				Expect(client.JSONArrTrim(ctx, "trim6", "$").Result()).To(Equal([]int64{5}))
+				Expect(client.JSONArrTrimWithArgs(ctx, "trim6", "$", nil).Result()).To(Equal([]int64{5}))
+				Expect(client.JSONArrTrimWithArgs(ctx, "trim6", "$", &redis.JSONArrTrimArgs{Start: 2}).Result()).To(Equal([]int64{3}))
+				Expect(client.JSONGet(ctx, "trim6", "$").Result()).To(Equal(`[[2,3,4]]`))
+			})
+
 			It("should JSONArrPop", Label("json.arrpop", "json"), func() {
 				cmd1 := client.JSONSet(ctx, "pop4", "$", `[100, 200, 300, 200]`)
 				Expect(cmd1.Err()).NotTo(HaveOccurred())
@@ -767,6 +777,38 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				typ, err := client.JSONType(ctx, "legacy1", ".a").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(typ).To(Equal([]interface{}{"array"}))
+			})
+
+			It("should parse array replies to a legacy path", Label("json.arrlen", "json.arrappend", "json.arrindex", "json.arrinsert", "json.arrtrim", "json.arrpop", "json"), func() {
+				err := client.JSONSet(ctx, "legacy2", "$", `{"a":[1,2,3]}`).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				arrLen, err := client.JSONArrLen(ctx, "legacy2", ".a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(arrLen).To(Equal([]int64{3}))
+
+				arrAppend, err := client.JSONArrAppend(ctx, "legacy2", ".a", 4).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(arrAppend).To(Equal([]int64{4}))
+
+				arrIndex, err := client.JSONArrIndex(ctx, "legacy2", ".a", 2).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(arrIndex).To(Equal([]int64{1}))
+
+				arrInsert, err := client.JSONArrInsert(ctx, "legacy2", ".a", 0, 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(arrInsert).To(Equal([]int64{5}))
+
+				stop := 3
+				arrTrim, err := client.JSONArrTrimWithArgs(ctx, "legacy2", ".a", &redis.JSONArrTrimArgs{Start: 1, Stop: &stop}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(arrTrim).To(Equal([]int64{3}))
+
+				arrPop, err := client.JSONArrPop(ctx, "legacy2", ".a", -1).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(arrPop).To(Equal([]string{"3"}))
+
+				Expect(client.JSONGet(ctx, "legacy2", "$.a").Val()).To(Equal("[[1,2]]"))
 			})
 
 			It("should JSONType", Label("json.type", "json"), func() {
