@@ -489,7 +489,7 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOpti
 		}
 	}
 	args = append(args, "ITEMS")
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -501,7 +501,7 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOpti
 // For more information - https://redis.io/commands/bf.madd/
 func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"BF.MADD", key}
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -512,7 +512,7 @@ func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}
 // For more information - https://redis.io/commands/bf.mexists/
 func (c cmdable) BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"BF.MEXISTS", key}
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -804,7 +804,7 @@ func (c cmdable) getCfInsertWithArgs(args []interface{}, options *CFInsertOption
 		}
 	}
 	args = append(args, "ITEMS")
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 
 	return args
 }
@@ -814,7 +814,7 @@ func (c cmdable) getCfInsertWithArgs(args []interface{}, options *CFInsertOption
 // For more information - https://redis.io/commands/cf.mexists/
 func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"CF.MEXISTS", key}
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -1039,7 +1039,7 @@ func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceK
 // For more information - https://redis.io/commands/cms.query/
 func (c cmdable) CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
 	args := []interface{}{"CMS.QUERY", key}
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
