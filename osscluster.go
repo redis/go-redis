@@ -660,6 +660,13 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = -1
 	}
+	// Same for the retry backoffs: -1 (no backoff) arrives here as 0.
+	if opt.MinRetryBackoff == 0 {
+		opt.MinRetryBackoff = -1
+	}
+	if opt.MaxRetryBackoff == 0 {
+		opt.MaxRetryBackoff = -1
+	}
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
 	}
@@ -2030,9 +2037,28 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		panic("redis: NewClusterClient nil options")
 	}
 	opt.cscCustomFactory = opt.NewClient != nil
+	orig := *opt
 	opt.init()
 	// Preserve caller-visible defaults before taking the private CSC snapshot.
 	optCopy := *opt
+	// init turns a disabled (negative) value into 0, which a second
+	// NewClusterClient call with the same options would read as unset and
+	// replace with the default. Keep what the caller set.
+	if orig.MaxRedirects < 0 {
+		opt.MaxRedirects = orig.MaxRedirects
+	}
+	if orig.ReadTimeout == -1 {
+		opt.ReadTimeout = -1
+	}
+	if orig.WriteTimeout == -1 {
+		opt.WriteTimeout = -1
+	}
+	if orig.MinRetryBackoff == -1 {
+		opt.MinRetryBackoff = -1
+	}
+	if orig.MaxRetryBackoff == -1 {
+		opt.MaxRetryBackoff = -1
+	}
 	if opt.ClientSideCacheConfig != nil {
 		cfg := *opt.ClientSideCacheConfig
 		optCopy.ClientSideCacheConfig = &cfg

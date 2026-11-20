@@ -1575,6 +1575,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 				return nil
 			}
 		}
+	case CmdTypeACLUser:
+		if c, ok := cmd.(interface{ SetVal(*ACLUser) }); ok {
+			if v, ok := value.(*ACLUser); ok {
+				c.SetVal(v)
+				return nil
+			}
+		}
 	case CmdTypeACLLog:
 		if c, ok := cmd.(interface{ SetVal([]*ACLLogEntry) }); ok {
 			if v, ok := value.([]*ACLLogEntry); ok {

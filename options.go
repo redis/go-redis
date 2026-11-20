@@ -60,7 +60,7 @@ type Options struct {
 	// default: is tcp.
 	Network string
 
-	// Addr is the address formated as host:port
+	// Addr is the address formatted as host:port
 	Addr string
 
 	// NodeAddress is the address of the Redis node as reported by the server.
