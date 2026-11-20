@@ -150,6 +150,34 @@ func TestBFInfoCmdNonScalingFilter(t *testing.T) {
 	}
 }
 
+// CF.SCANDUMP ends a dump, and answers for an empty filter, with iterator 0
+// and a null chunk. That is the end marker, not a failed command.
+func TestScanDumpCmdNullChunk(t *testing.T) {
+	for name, reply := range map[string]string{
+		"resp2": "*2\r\n:0\r\n$-1\r\n",
+		"resp3": "*2\r\n:0\r\n_\r\n",
+		"chunk": "*2\r\n:7\r\n$3\r\nabc\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := newScanDumpCmd(context.Background(), "CF.SCANDUMP", "cf", 7)
+			rd := proto.NewReader(strings.NewReader(reply + "+NEXT\r\n"))
+			if err := cmd.readReply(rd); err != nil {
+				t.Fatalf("readReply: %v", err)
+			}
+			want := ScanDump{}
+			if name == "chunk" {
+				want = ScanDump{Iter: 7, Data: "abc"}
+			}
+			if got := cmd.Val(); got != want {
+				t.Fatalf("got %+v, want %+v", got, want)
+			}
+			if next, err := rd.ReadString(); err != nil || next != "NEXT" {
+				t.Fatalf("next reply = %q, %v; reader is out of sync", next, err)
+			}
+		})
+	}
+}
+
 // A nil options pointer means "no options", as in BFReserveWithArgs: the
 // command is still built and the server reports what is missing, instead of
 // the client dereferencing the pointer and panicking.

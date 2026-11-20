@@ -268,8 +268,9 @@ func (cmd *ScanDumpCmd) readReply(rd *proto.Reader) (err error) {
 		if err != nil {
 			return err
 		}
+		// CF.SCANDUMP ends the dump with a null chunk.
 		data, err := rd.ReadString()
-		if err != nil {
+		if err != nil && err != Nil {
 			return err
 		}
 		cmd.val.Data = data
