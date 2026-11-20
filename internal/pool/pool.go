@@ -1432,6 +1432,8 @@ retryIdle:
 			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
 			// newConn emitted +1 used; CloseConn will emit -1 used if we own the removal.
 			_ = p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateUsed)
+			// The delivered connection came with this Get's turn; CloseConn does not free it.
+			p.freeTurn()
 			return nil, err
 		}
 
