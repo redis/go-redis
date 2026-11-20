@@ -408,12 +408,12 @@ func runBlockingWorkload(t *testing.T, e failureEffect, c *redis.Client, fault, 
 
 	// In flight: the fault lands while a BLPOP is blocked server-side. It
 	// must come back with an error on the client's timeouts, not hang.
-	// The BLPOP must outlive the fault: with a 5s timeout it returned
-	// redis.Nil on its own before the outage could break it, and the
-	// assertion counted that as a broken connection.
+	// Keep the 5s command timeout: its read deadline (about 15s) is still
+	// below the wait below, so a timeout-class fault surfaces as an error.
+	// A redis.Nil here means the command's own timeout fired, not the fault.
 	inflight := make(chan error, 1)
 	go func() {
-		_, err := c.BLPop(ctx, 30*time.Second, key).Result()
+		_, err := c.BLPop(ctx, 5*time.Second, key).Result()
 		inflight <- err
 	}()
 	time.Sleep(300 * time.Millisecond)
@@ -540,11 +540,12 @@ func TestMultiDBBlockingAcrossFailover(t *testing.T) {
 	side := sideClient(t)
 	_ = side.Del(ctx, key).Err()
 
-	// Outlive the outage: a 5s BLPOP would return redis.Nil on its own, which
-	// the old assertion treated as the fault breaking the connection.
+	// The 5s command timeout keeps its read deadline (about 15s) below the
+	// wait below, so the outage surfaces as an error; redis.Nil would mean
+	// the command timed out on its own and the fault did not break it.
 	inflight := make(chan error, 1)
 	go func() {
-		_, err := mdb.BLPop(ctx, 60*time.Second, key).Result()
+		_, err := mdb.BLPop(ctx, 5*time.Second, key).Result()
 		inflight <- err
 	}()
 	time.Sleep(300 * time.Millisecond)
