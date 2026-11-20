@@ -110,8 +110,10 @@ func failureEffects() []failureEffect {
 			// the member's proxy container.
 			name: "connection_dropped/network_failure",
 			inject: func(t *testing.T) func() {
-				id := triggerNetworkFailure(t, 0, 10*time.Second)
-				return func() { waitForActionDone(t, id, 60*time.Second) }
+				// 30s covers the blocking workload's in-flight wait and the
+				// failFast call that follows it; a 10s outage could lift between.
+				id := triggerNetworkFailure(t, 0, 30*time.Second)
+				return func() { waitForActionDone(t, id, 90*time.Second) }
 			},
 		},
 		{
@@ -133,8 +135,10 @@ func failureEffects() []failureEffect {
 			name:     "connection_timeout/network_failure",
 			realOnly: "the mock stops a container, which refuses; it has no blackhole",
 			inject: func(t *testing.T) func() {
-				id := triggerNetworkFailure(t, 0, 10*time.Second)
-				return func() { waitForActionDone(t, id, 60*time.Second) }
+				// 30s covers the blocking workload's in-flight wait and the
+				// failFast call that follows it; a 10s outage could lift between.
+				id := triggerNetworkFailure(t, 0, 30*time.Second)
+				return func() { waitForActionDone(t, id, 90*time.Second) }
 			},
 			wantErr: isTimeout,
 		},
@@ -404,17 +408,20 @@ func runBlockingWorkload(t *testing.T, e failureEffect, c *redis.Client, fault, 
 
 	// In flight: the fault lands while a BLPOP is blocked server-side. It
 	// must come back with an error on the client's timeouts, not hang.
+	// The BLPOP must outlive the fault: with a 5s timeout it returned
+	// redis.Nil on its own before the outage could break it, and the
+	// assertion counted that as a broken connection.
 	inflight := make(chan error, 1)
 	go func() {
-		_, err := c.BLPop(ctx, 5*time.Second, key).Result()
+		_, err := c.BLPop(ctx, 30*time.Second, key).Result()
 		inflight <- err
 	}()
 	time.Sleep(300 * time.Millisecond)
 	fault()
 	select {
 	case err := <-inflight:
-		if err == nil {
-			t.Fatal("in-flight BLPOP succeeded while member 0 is down")
+		if err == nil || errors.Is(err, redis.Nil) {
+			t.Fatalf("in-flight BLPOP was not broken by the fault: %v", err)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("in-flight BLPOP hung through the fault")
@@ -496,20 +503,26 @@ func runMixedWorkload(t *testing.T, e failureEffect, c *redis.Client, fault, rec
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
+	// Stop the load on every exit path: a Fatal below must not leave the loop
+	// issuing commands against a closed client for the rest of the suite.
+	stopLoad := func() {
+		stop.Store(true)
+		done := make(chan struct{})
+		go func() { load.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Errorf("background mixed load never stopped: a command is stuck")
+		}
+	}
+	t.Cleanup(stopLoad)
 
 	fault()
 	failFast(t, "mixed step during fault", e, step)
 	recovered()
 	requireRecovered(t, "mixed workload", step)
 
-	stop.Store(true)
-	done := make(chan struct{})
-	go func() { load.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("background mixed load never stopped: a command is stuck")
-	}
+	stopLoad()
 	if failures.Load() == 0 {
 		t.Fatalf("background load saw no failures across %d iterations: the fault never reached it", loops.Load())
 	}
@@ -527,9 +540,11 @@ func TestMultiDBBlockingAcrossFailover(t *testing.T) {
 	side := sideClient(t)
 	_ = side.Del(ctx, key).Err()
 
+	// Outlive the outage: a 5s BLPOP would return redis.Nil on its own, which
+	// the old assertion treated as the fault breaking the connection.
 	inflight := make(chan error, 1)
 	go func() {
-		_, err := mdb.BLPop(ctx, 5*time.Second, key).Result()
+		_, err := mdb.BLPop(ctx, 60*time.Second, key).Result()
 		inflight <- err
 	}()
 	time.Sleep(300 * time.Millisecond)
@@ -537,8 +552,8 @@ func TestMultiDBBlockingAcrossFailover(t *testing.T) {
 
 	select {
 	case err := <-inflight:
-		if err == nil {
-			t.Fatal("in-flight BLPOP succeeded while the active member is down")
+		if err == nil || errors.Is(err, redis.Nil) {
+			t.Fatalf("in-flight BLPOP was not broken by the fault: %v", err)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("in-flight BLPOP hung through the member outage")
