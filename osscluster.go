@@ -98,6 +98,7 @@ type ClusterOptions struct {
 
 	// The maximum number of retries before giving up. Command is retried
 	// on network errors and MOVED/ASK redirects.
+	// -1 (not 0) disables retries. Any other negative value is treated as -1.
 	// Default is 3 retries.
 	MaxRedirects int
 
@@ -184,19 +185,21 @@ type ClusterOptions struct {
 	// each node's Options so the pipeline pool can widen its own dial cap.
 	MaxConcurrentDials int
 
-	PoolFIFO bool
-
 	// PoolSize applies per cluster node and not for the whole cluster.
 	// Zero and negative values are both treated the same way: they select the
 	// default pool size (5 * runtime.GOMAXPROCS(0)) for every node.
-	PoolSize              int
-	PoolTimeout           time.Duration
-	MinIdleConns          int
-	MaxIdleConns          int
-	MaxActiveConns        int // applies per cluster node and not for the whole cluster
-	ConnMaxIdleTime       time.Duration
-	ConnMaxLifetime       time.Duration
-	ConnMaxLifetimeJitter time.Duration
+	PoolSize       int
+	PoolFIFO       bool
+	PoolTimeout    time.Duration
+	MinIdleConns   int
+	MaxIdleConns   int
+	MaxActiveConns int // applies per cluster node and not for the whole cluster
+
+	// conn lifetime intervals
+	ConnMaxIdleTime             time.Duration
+	ConnMaxLifetime             time.Duration
+	ConnMaxLifetimeJitter       time.Duration
+	ConnMaxLifetimeReapInterval time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
@@ -295,10 +298,11 @@ type ClusterOptions struct {
 }
 
 func (opt *ClusterOptions) init() {
-	switch opt.MaxRedirects {
-	case -1:
+	// < 0, not == -1: the redirect loops run while attempt <= MaxRedirects, so
+	// a value below -1 would skip the first attempt and report success.
+	if opt.MaxRedirects < 0 {
 		opt.MaxRedirects = 0
-	case 0:
+	} else if opt.MaxRedirects == 0 {
 		opt.MaxRedirects = 3
 	}
 
@@ -508,6 +512,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	if q.has("conn_max_lifetime_jitter") {
 		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
 	}
+	o.ConnMaxLifetimeReapInterval = q.duration("conn_max_lifetime_reap_interval")
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.FailingTimeoutSeconds = q.int("failing_timeout_seconds")
 	if o.TLSConfig != nil && q.has("skip_verify") {
@@ -592,18 +597,19 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:              opt.PoolFIFO,
-		PoolSize:              opt.PoolSize,
-		MaxConcurrentDials:    opt.MaxConcurrentDials,
-		PoolTimeout:           opt.PoolTimeout,
-		MinIdleConns:          opt.MinIdleConns,
-		MaxIdleConns:          opt.MaxIdleConns,
-		MaxActiveConns:        opt.MaxActiveConns,
-		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
-		ConnMaxLifetime:       opt.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
-		ReadBufferSize:        opt.ReadBufferSize,
-		WriteBufferSize:       opt.WriteBufferSize,
+		PoolFIFO:                    opt.PoolFIFO,
+		PoolSize:                    opt.PoolSize,
+		MaxConcurrentDials:          opt.MaxConcurrentDials,
+		PoolTimeout:                 opt.PoolTimeout,
+		MinIdleConns:                opt.MinIdleConns,
+		MaxIdleConns:                opt.MaxIdleConns,
+		MaxActiveConns:              opt.MaxActiveConns,
+		ConnMaxIdleTime:             opt.ConnMaxIdleTime,
+		ConnMaxLifetime:             opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       opt.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: opt.ConnMaxLifetimeReapInterval,
+		ReadBufferSize:              opt.ReadBufferSize,
+		WriteBufferSize:             opt.WriteBufferSize,
 
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
@@ -657,6 +663,13 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 	}
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = -1
+	}
+	// Same for the retry backoffs: -1 (no backoff) arrives here as 0.
+	if opt.MinRetryBackoff == 0 {
+		opt.MinRetryBackoff = -1
+	}
+	if opt.MaxRetryBackoff == 0 {
+		opt.MaxRetryBackoff = -1
 	}
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
@@ -2028,9 +2041,28 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		panic("redis: NewClusterClient nil options")
 	}
 	opt.cscCustomFactory = opt.NewClient != nil
+	orig := *opt
 	opt.init()
 	// Preserve caller-visible defaults before taking the private CSC snapshot.
 	optCopy := *opt
+	// init turns a disabled (negative) value into 0, which a second
+	// NewClusterClient call with the same options would read as unset and
+	// replace with the default. Keep what the caller set.
+	if orig.MaxRedirects < 0 {
+		opt.MaxRedirects = orig.MaxRedirects
+	}
+	if orig.ReadTimeout == -1 {
+		opt.ReadTimeout = -1
+	}
+	if orig.WriteTimeout == -1 {
+		opt.WriteTimeout = -1
+	}
+	if orig.MinRetryBackoff == -1 {
+		opt.MinRetryBackoff = -1
+	}
+	if orig.MaxRetryBackoff == -1 {
+		opt.MaxRetryBackoff = -1
+	}
 	if opt.ClientSideCacheConfig != nil {
 		cfg := *opt.ClientSideCacheConfig
 		optCopy.ClientSideCacheConfig = &cfg

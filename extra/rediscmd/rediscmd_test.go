@@ -3,6 +3,7 @@ package rediscmd
 import (
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -46,6 +47,12 @@ var _ = Describe("CmdString", func() {
 		Entry("", []interface{}{"hello", 3, "auth", "alice", "s3cret", "setname", "app"},
 			"hello 3 auth alice <redacted> setname app"),
 		Entry("", []interface{}{"hello", 3, "setname", "app"}, "hello 3 setname app"),
+		// The server accepts the HELLO options in either order.
+		Entry("", []interface{}{"hello", 3, "setname", "app", "auth", "alice", "s3cret"},
+			"hello 3 setname app auth alice <redacted>"),
+		// A client name equal to a keyword must not shift the redacted position.
+		Entry("", []interface{}{"hello", 3, "setname", "auth", "auth", "alice", "s3cret"},
+			"hello 3 setname auth auth alice <redacted>"),
 		Entry("", []interface{}{"config", "set", "requirepass", "s3cret"},
 			"config set requirepass <redacted>"),
 		Entry("", []interface{}{"config", "set", "maxmemory", "100mb", "masterauth", "s3cret"},
@@ -75,5 +82,29 @@ var _ = Describe("CmdString", func() {
 			"sentinel set mymaster rename-command CONFIG cfg auth-pass <redacted>"),
 		Entry("", []interface{}{"get", "key"}, "get key"),
 		Entry("", []interface{}{"set", "auth", "value"}, "set auth value"),
+		// Keywords and rules passed as *string are still recognised.
+		Entry("", []interface{}{"config", "set", ptr("requirepass"), "s3cret"},
+			"config set requirepass <redacted>"),
+		Entry("", []interface{}{"acl", "setuser", "bob", ptr(">s3cret")}, "acl setuser bob <redacted>"),
 	)
+
+	It("prints pointer arguments by value", func() {
+		var nilStr *string
+		ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		cmd := redis.NewCmd(context.Background(),
+			"set", "key", ptr("value"), ptr(42), ptr(1.5), ptr(true), &ts, nilStr)
+		Expect(CmdString(cmd)).To(Equal("set key value 42 1.5 true 2026-01-02T03:04:05Z <nil>"))
+	})
+
+	It("redacts when a keyword or rule is a named string type", func() {
+		type named string
+		r := named(">s3cret")
+		cmd := redis.NewCmd(context.Background(), "acl", "setuser", "bob", &r)
+		Expect(CmdString(cmd)).NotTo(ContainSubstring("s3cret"))
+
+		cmd = redis.NewCmd(context.Background(), "config", "set", named("requirepass"), ptr("s3cret"))
+		Expect(CmdString(cmd)).To(Equal("config set requirepass <redacted>"))
+	})
 })
+
+func ptr[T any](v T) *T { return &v }

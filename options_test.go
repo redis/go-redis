@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -269,6 +270,9 @@ func TestParseURL(t *testing.T) {
 			// jitter without lifetime should be capped to 0
 			url: "redis://localhost:123/?conn_max_lifetime_jitter=6m",
 			o:   &Options{Addr: "localhost:123", ConnMaxLifetimeJitter: 0},
+		}, {
+			url: "redis://localhost:123/?conn_max_lifetime=1h&conn_max_lifetime_reap_interval=30s",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetime: time.Hour, ConnMaxLifetimeReapInterval: 30 * time.Second},
 		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
@@ -1065,5 +1069,42 @@ func TestParseURLConnectionOptions(t *testing.T) {
 	}
 	if _, err = ParseClusterURL("redis://localhost:6379?read_buffer_size=big"); err == nil {
 		t.Fatal("ParseClusterURL accepted an invalid read_buffer_size")
+	}
+}
+
+// A retry budget below -1 must disable retries like -1 does. It must not skip
+// the first attempt: the command would then report success without being sent.
+func TestNegativeRetryBudgetStillExecutes(t *testing.T) {
+	ctx := context.Background()
+	errDial := errors.New("dial refused")
+	dialer := func(context.Context, string, string) (net.Conn, error) { return nil, errDial }
+	pipelined := func(p Pipeliner) error { p.Set(ctx, "k", "v", 0); return nil }
+
+	client := NewClient(&Options{Dialer: dialer, MaxRetries: -2, DialerRetries: 1})
+	defer client.Close()
+	if _, err := client.Pipelined(ctx, pipelined); err == nil {
+		t.Error("Client pipeline with MaxRetries=-2 reported success without sending")
+	}
+	if _, err := client.TxPipelined(ctx, pipelined); err == nil {
+		t.Error("Client tx pipeline with MaxRetries=-2 reported success without sending")
+	}
+
+	ring := NewRing(&RingOptions{
+		Addrs: map[string]string{"a": "127.0.0.1:1"}, Dialer: dialer, MaxRetries: -2, DialerRetries: 1,
+	})
+	defer ring.Close()
+	if err := ring.Set(ctx, "k", "v", 0).Err(); err == nil {
+		t.Error("Ring command with MaxRetries=-2 reported success without sending")
+	}
+
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{"127.0.0.1:1"}, Dialer: dialer, MaxRedirects: -2, DialerRetries: 1,
+	})
+	defer cluster.Close()
+	if err := cluster.Set(ctx, "k", "v", 0).Err(); err == nil {
+		t.Error("ClusterClient command with MaxRedirects=-2 reported success without sending")
+	}
+	if _, err := cluster.Pipelined(ctx, pipelined); err == nil {
+		t.Error("ClusterClient pipeline with MaxRedirects=-2 reported success without sending")
 	}
 }
