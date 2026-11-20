@@ -1760,6 +1760,20 @@ func (cmd *IntSliceCmd) String() string {
 }
 
 func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
+	// JSON.ARRLEN and the other JSON array commands reply to a legacy path
+	// (one that does not start with "$") with a single integer instead of an
+	// array with one integer per match.
+	if typ, err := rd.PeekReplyType(); err != nil {
+		return err
+	} else if typ == proto.RespInt {
+		num, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		cmd.val = []int64{num}
+		return nil
+	}
+
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
@@ -2356,6 +2370,19 @@ func (cmd *StringSliceCmd) ScanSlice(container interface{}) error {
 }
 
 func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {
+	// JSON.ARRPOP replies to a legacy path (one that does not start with "$")
+	// with a single string instead of an array with one string per match.
+	if typ, err := rd.PeekReplyType(); err != nil {
+		return err
+	} else if typ == proto.RespString {
+		s, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		cmd.val = []string{s}
+		return nil
+	}
+
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
