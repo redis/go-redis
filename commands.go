@@ -552,7 +552,10 @@ func (c cmdable) ClientList(ctx context.Context) *StringCmd {
 	return cmd
 }
 
-// ClientListStreaming executes CLIENT LIST and streams each parsed entry to fn
+// ClientListStreaming executes CLIENT LIST and streams each parsed entry to fn,
+// without holding the whole reply in memory. Val is the number of entries fn
+// handled without error. See StreamingCmd for the callback contract. fn must
+// not be nil.
 func (c cmdable) ClientListStreaming(ctx context.Context, fn func(*ClientInfo) error) *StreamingCmd {
 	cmd := newStreamingCmd(
 		ctx,
@@ -566,6 +569,10 @@ func (c cmdable) ClientListStreaming(ctx context.Context, fn func(*ClientInfo) e
 		},
 		"client",
 		"list")
+	if fn == nil {
+		cmd.SetErr(errors.New("redis: ClientListStreaming needs a callback"))
+		return cmd
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }

@@ -290,6 +290,18 @@ func (s *smallReads) Read(p []byte) (int, error) {
 	return s.r.Read(p)
 }
 
+func TestClientListStreamingNilCallback(t *testing.T) {
+	rd := proto.NewReader(strings.NewReader(clientListWire(t, false, 3) + "+OK\r\n"))
+	cmd := readerCmdable(rd).ClientListStreaming(context.Background(), nil)
+	if cmd.Err() == nil {
+		t.Fatal("nil callback: want error, not a panic")
+	}
+	// Nothing was sent, so nothing was read.
+	if s, err := rd.ReadString(); err != nil || !strings.Contains(s, "id=0") {
+		t.Fatalf("reply was consumed: %q, %v", s, err)
+	}
+}
+
 func TestStreamingCmdRejectsClusterFanout(t *testing.T) {
 	c := &ClusterClient{}
 	cmd := newStreamingCmd(context.Background(), "\n", func([]byte) error { return nil }, "client", "list")
