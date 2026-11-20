@@ -3,9 +3,11 @@ package redis
 import (
 	"bufio"
 	"context"
+	"io"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -386,5 +388,384 @@ func TestPipelineRetryDoesNotReplayAnsweredCommands(t *testing.T) {
 	}
 	if got := server.incrs.Load(); got != 1 {
 		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR must not be replayed)", got)
+	}
+}
+
+// waitRetryServer is a scripted RESP server for WAIT pipeline retry tests.
+// The first connection answers SET and then drops before WAIT's reply;
+// later connections answer everything. It counts WAITs that arrive on a
+// connection which never ran a SET, i.e. a barrier retried without the
+// write whose replication it is supposed to confirm.
+type waitRetryServer struct {
+	ln             net.Listener
+	conns          atomic.Int32
+	sets           atomic.Int32
+	waits          atomic.Int32
+	waitWithoutSet atomic.Int32
+}
+
+func newWaitRetryServer(t *testing.T) *waitRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &waitRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *waitRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	seenSet := false
+	answered := false
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+			continue
+		case "set":
+			s.sets.Add(1)
+			seenSet = true
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "wait":
+			s.waits.Add(1)
+			if !seenSet {
+				s.waitWithoutSet.Add(1)
+			}
+			if first && answered {
+				// Drop the connection before replying: the WAIT
+				// must be retried together with its SET.
+				return
+			}
+			_, _ = conn.Write([]byte(":1\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+		answered = true
+	}
+}
+
+// TestPipelineRetryKeepsWaitWithWrite: WAIT reads the replication offset of
+// the connection that runs it (the server's per-connection woff), so a WAIT
+// retried alone on a fresh connection would report success at once while
+// the answered SET is still unreplicated. Regression test for the review
+// finding on #4351 (SET + WAIT trimmed to WAIT-only on retry).
+func TestPipelineRetryKeepsWaitWithWrite(t *testing.T) {
+	server := newWaitRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	// Pipeliner has no Wait helper; issue the barrier as a raw command.
+	wait := pipe.Do(ctx, "wait", 1, 1000)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(1) {
+		t.Fatalf("WAIT = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.waitWithoutSet.Load(); got != 0 {
+		t.Fatalf("WAIT ran %d time(s) on a connection that never ran the SET it follows", got)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the answered SET must be re-run with its WAIT)", got)
+	}
+}
+
+// himportSetRecord records one HIMPORT SET received by the scripted server:
+// the connection number and the fields of the last HIMPORT PREPARE for that
+// fieldset on the same connection.
+type himportSetRecord struct {
+	conn   int32
+	fields []string
+}
+
+// himportRetryServer is a scripted RESP server for HIMPORT pipeline retry
+// tests. The first connection answers the user-issued HIMPORT PREPARE and
+// then drops before the SET's reply; later connections answer everything.
+type himportRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	mu    sync.Mutex
+	sets  []himportSetRecord
+}
+
+func newHImportRetryServer(t *testing.T) *himportRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &himportRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *himportRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	prepared := map[string][]string{}
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "himport":
+			// readConnStateRetryCommand strips the command name, so
+			// args[0] is the subcommand (prepare/set), args[1] the
+			// fieldset for PREPARE and the key for SET.
+			if len(args) < 1 {
+				_, _ = conn.Write([]byte("-ERR wrong number of arguments\r\n"))
+				continue
+			}
+			switch strings.ToLower(args[0]) {
+			case "prepare":
+				if len(args) >= 2 {
+					prepared[args[1]] = append([]string(nil), args[2:]...)
+				}
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			case "set":
+				var fields []string
+				if len(args) >= 3 {
+					fields = append([]string(nil), prepared[args[2]]...)
+				}
+				s.mu.Lock()
+				s.sets = append(s.sets, himportSetRecord{conn: n, fields: fields})
+				s.mu.Unlock()
+				if n == 1 {
+					// Drop before replying: the SET must be retried
+					// together with its PREPARE.
+					return
+				}
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			default:
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryKeepsHImportPrepare: a pipeline HIMPORT PREPARE followed
+// by HIMPORT SET must not be trimmed to the SET on retry. The client-side
+// registry still holds the old fields (himportAfterBatch never ran on the
+// dropped connection), so a trimmed retry would inject a PREPARE with the
+// stale fields and write under the wrong field names. Regression test for
+// the review finding on #4351.
+func TestPipelineRetryKeepsHImportPrepare(t *testing.T) {
+	server := newHImportRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	// Seed the client-side registry as if fs had been registered with
+	// field "old" by an earlier HImportPrepare.
+	client.himport.register("fs", []string{"old"})
+
+	pipe := client.Pipeline()
+	prep := pipe.HImportPrepare(ctx, "fs", "new")
+	set := pipe.HImportSet(ctx, "k", "fs", "v")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := prep.Err(); err != nil {
+		t.Fatalf("PREPARE: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	var retry []himportSetRecord
+	for _, rec := range server.sets {
+		if rec.conn == 2 {
+			retry = append(retry, rec)
+		}
+	}
+	if len(retry) != 1 {
+		t.Fatalf("server received %d SET commands on the retry connection, want 1", len(retry))
+	}
+	if got := retry[0].fields; len(got) != 1 || got[0] != "new" {
+		t.Fatalf("SET on the retry connection ran under PREPARE fields %v, want [new] (the answered PREPARE must not be trimmed)", got)
+	}
+}
+
+// staleErrRetryServer is a scripted RESP server for stale-error pipeline
+// retry tests. The first connection answers the first batch (SET with a
+// LOADING error, GET with a value) and then stops reading forever, so the
+// retry's write blocks until the write timeout; later connections answer
+// everything.
+type staleErrRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	sets  atomic.Int32
+	done  chan struct{}
+}
+
+func newStaleErrRetryServer(t *testing.T) *staleErrRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &staleErrRetryServer{ln: ln, done: make(chan struct{})}
+	t.Cleanup(func() { close(s.done) })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+// readStaleErrRESPCommand reads one RESP array command from rd and returns its
+// lower-cased name. Unlike the bufio.Scanner helpers above it reads bulk
+// strings by their declared length, so a multi-megabyte argument does not
+// depend on scanner token buffering.
+func readStaleErrRESPCommand(rd *bufio.Reader) (string, error) {
+	line, err := rd.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	line = strings.TrimRight(line, "\r\n")
+	if !strings.HasPrefix(line, "*") {
+		return "", io.EOF
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(line, "*"))
+	if err != nil || n <= 0 {
+		return "", io.EOF
+	}
+	var args []string
+	for i := 0; i < n; i++ {
+		hline, err := rd.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		hline = strings.TrimRight(hline, "\r\n")
+		if !strings.HasPrefix(hline, "$") {
+			return "", io.EOF
+		}
+		size, err := strconv.Atoi(strings.TrimPrefix(hline, "$"))
+		if err != nil || size < 0 {
+			return "", io.EOF
+		}
+		buf := make([]byte, size+2)
+		if _, err := io.ReadFull(rd, buf); err != nil {
+			return "", err
+		}
+		args = append(args, string(buf[:size]))
+	}
+	if len(args) == 0 {
+		return "", io.EOF
+	}
+	return strings.ToLower(args[0]), nil
+}
+
+func (s *staleErrRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	rd := bufio.NewReaderSize(conn, 64*1024)
+	answered := 0
+	for {
+		name, err := readStaleErrRESPCommand(rd)
+		if err != nil {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+			continue
+		case "set":
+			s.sets.Add(1)
+			if first {
+				_, _ = conn.Write([]byte("-LOADING Redis is loading the dataset in memory\r\n"))
+			} else {
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
+		case "get":
+			_, _ = conn.Write([]byte("$1\r\nv\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+		if first {
+			answered++
+			if answered >= 2 {
+				// Stop reading: the retry's write must block
+				// until the write timeout instead of being
+				// answered by this connection.
+				<-s.done
+				return
+			}
+		}
+	}
+}
+
+// TestPipelineRetryDoesNotReportStaleError: when the first attempt reads a
+// retryable LOADING error for SET and a successful GET, and the next
+// attempt fails during its write, the retry must re-execute SET — not drop
+// it as though the earlier LOADING had been this attempt's answer and
+// report the stale error after the server has recovered. (LOADING, not
+// READONLY, seeds the stale error: a READONLY batch error makes the pool
+// drop the connection outright, see #790, so the write failure this test
+// needs would never happen.) Regression test for the review finding on
+// #4351.
+func TestPipelineRetryDoesNotReportStaleError(t *testing.T) {
+	server := newStaleErrRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+	client.opt.WriteTimeout = 100 * time.Millisecond
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", strings.Repeat("x", 32*1024*1024), 0)
+	get := pipe.Get(ctx, "k")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v (a LOADING reply from the first attempt must not survive a retry that never re-executed it)", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the SET must be re-executed once the server has recovered)", got)
 	}
 }

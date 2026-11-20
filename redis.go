@@ -2607,8 +2607,18 @@ type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 // subscription puts the connection in pub/sub mode. Dropping such a command
 // from a retry would run the rest of the batch on a fresh connection without
 // that state — e.g. a SET after a dropped SELECT lands in the wrong
-// database, and an EXEC after a dropped MULTI fails.
+// database, and an EXEC after a dropped MULTI fails. HIMPORT commands count
+// too: PREPARE registers a fieldset on the connection (and the client
+// registry only learns the new fields from himportAfterBatch, which never
+// runs when the connection dies mid-read), DISCARD/DISCARDALL remove one,
+// and a SET depends on the fieldset the session holds — so a retry that
+// trims a answered PREPARE would re-prepare the fieldset with the registry's
+// stale fields and write under the wrong field names. isHImportCmd also
+// matches raw HIMPORT commands built with NewCmd, which carry no marker.
 func pipelineConnStateCmd(cmd Cmder) bool {
+	if isHImportCmd(cmd) {
+		return true
+	}
 	switch cmd.Name() {
 	case "select", "swapdb", "auth", "hello", "reset",
 		"multi", "exec", "watch", "unwatch", "discard",
@@ -2641,6 +2651,18 @@ func pipelineRetrySuffix(cmds []Cmder, err error) []Cmder {
 		if e := cmd.rawErr(); e != nil && !isRedisError(e) {
 			for _, answered := range cmds[:i] {
 				if pipelineConnStateCmd(answered) {
+					return cmds
+				}
+			}
+			// A WAIT/WAITAOF in the retry suffix reads the replication
+			// offset of the connection that runs it (the server's
+			// per-connection woff), not the connection that ran the
+			// answered writes: on a fresh pooled connection woff is 0,
+			// so WAIT would report success at once while the answered
+			// write is still unreplicated. Re-run the whole batch so
+			// the barrier follows its writes on one connection.
+			for _, pending := range cmds[i:] {
+				if name := pending.Name(); name == "wait" || name == "waitaof" {
 					return cmds
 				}
 			}
@@ -2745,6 +2767,18 @@ func (c *baseClient) generalProcessPipelineFrom(
 				}
 				return err
 			}
+		}
+
+		// A retry re-dispatches pending: clear their errors first, or a
+		// Redis error left by an earlier attempt would survive a dispatch
+		// that never reached the command — a write failure stamps only
+		// nil errors (see setCmdsErr) — and pipelineRetrySuffix would
+		// then mistake it for an answer from the latest attempt and drop
+		// the command, leaving Exec reporting the stale error even
+		// though the server has recovered and the command was never
+		// re-executed.
+		for _, cmd := range pending {
+			cmd.SetErr(nil)
 		}
 
 		// Enable retries by default to retry dial errors returned by withConn.
