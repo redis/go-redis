@@ -10505,6 +10505,27 @@ var _ = Describe("Commands", func() {
 			Expect(len(result)).NotTo(BeZero())
 		})
 
+		It("returns the latency histogram of a command", func() {
+			SkipBeforeRedisVersion("7.0", "LATENCY HISTOGRAM requires Redis 7.0+")
+
+			err := rawClient.Ping(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			hists, err := rawClient.LatencyHistogram(ctx, "ping").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hists).To(HaveKey("ping"))
+			Expect(hists["ping"].Calls).To(BeNumerically(">", 0))
+			Expect(hists["ping"].HistogramUsec).NotTo(BeEmpty())
+
+			hists, err = rawClient.LatencyHistogram(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hists).To(HaveKey("ping"))
+
+			hists, err = rawClient.LatencyHistogram(ctx, "no-such-command").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hists).To(BeEmpty())
+		})
+
 		It("reset all latencies", func() {
 			const key = "latency-monitor-threshold"
 
