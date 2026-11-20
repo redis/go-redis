@@ -187,14 +187,18 @@ func isRedisError(err error) bool {
 	}
 	// Also check for proto.RedisError specifically
 	var protoRedisErr proto.RedisError
-	if errors.As(err, &protoRedisErr) {
-		return true
-	}
-	return errors.Is(err, errStreamingCallback)
+	return errors.As(err, &protoRedisErr)
 }
 
 func isBadConn(err error, allowTimeout bool, addr string) bool {
 	if err == nil {
+		return false
+	}
+
+	// A streaming callback failure (even one wrapping a context error) leaves
+	// the connection aligned: the reply was fully read.
+	var cbErr *StreamingCallbackError
+	if errors.As(err, &cbErr) {
 		return false
 	}
 

@@ -537,13 +537,16 @@ func (c cmdable) ClientList(ctx context.Context) *StringCmd {
 
 // ClientListStreaming executes CLIENT LIST and streams each parsed entry to fn
 func (c cmdable) ClientListStreaming(ctx context.Context, fn func(*ClientInfo) error) *StreamingCmd {
-	cmd := NewStreamingCmd(
+	cmd := newStreamingCmd(
 		ctx,
 		"\n",
-		StreamingParser(func(line []byte) (*ClientInfo, error) {
-			return parseClientInfo(strings.TrimSpace(string(line)))
-		}, fn),
-		0,
+		func(line []byte) error {
+			info, err := parseClientInfo(strings.TrimSpace(string(line)))
+			if err != nil {
+				return err
+			}
+			return fn(info)
+		},
 		"client",
 		"list")
 	_ = c(ctx, cmd)

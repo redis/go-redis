@@ -56,17 +56,12 @@ func BenchmarkClientListVsStream(b *testing.B) {
 				src.Reset(wire)
 				rd.Reset(src)
 
-				cmd := NewStreamingCmd(ctx, "\n", StreamingParser(
-					func(line []byte) (*ClientInfo, error) {
-						return parseClientInfo(strings.TrimSpace(string(line)))
-					},
-					func(info *ClientInfo) error {
-						benchClientInfoSink = info
-						return nil
-					},
-				), 0, "client", "list")
-				if err := cmd.readReply(rd); err != nil {
-					b.Fatalf("readReply: %v", err)
+				cmd := readerCmdable(rd).ClientListStreaming(ctx, func(info *ClientInfo) error {
+					benchClientInfoSink = info
+					return nil
+				})
+				if err := cmd.Err(); err != nil {
+					b.Fatalf("ClientListStreaming: %v", err)
 				}
 				if cmd.entriesCount != entries {
 					b.Fatalf("streamed %d entries, want %d", cmd.entriesCount, entries)
@@ -141,24 +136,18 @@ func BenchmarkClientListVsStreamPeakMem(b *testing.B) {
 
 				var inflight uint64
 				n := 0
-				cmd := NewStreamingCmd(ctx, "\n", StreamingParser(
-					func(line []byte) (*ClientInfo, error) {
-						return parseClientInfo(strings.TrimSpace(string(line)))
-					},
-					func(info *ClientInfo) error {
-						benchClientInfoSink = info
-						if n == mid {
-							// The chunk buffer and pending slice are live on
-							// readReply's stack here — this is the high-water
-							// point of the streaming path.
-							inflight = liveHeap()
-						}
-						n++
-						return nil
-					},
-				), 0, "client", "list")
-				if err := cmd.readReply(rd); err != nil {
-					b.Fatalf("readReply: %v", err)
+				cmd := readerCmdable(rd).ClientListStreaming(ctx, func(info *ClientInfo) error {
+					benchClientInfoSink = info
+					if n == mid {
+						// The pending slice is live here: the high-water
+						// point of the streaming path.
+						inflight = liveHeap()
+					}
+					n++
+					return nil
+				})
+				if err := cmd.Err(); err != nil {
+					b.Fatalf("ClientListStreaming: %v", err)
 				}
 				if inflight > base {
 					peak = max(peak, inflight-base)

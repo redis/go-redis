@@ -743,62 +743,68 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 }
 
 // ReadChunked streams a bulk string ($) or RESP3 verbatim string (=) reply
-// through fn in bounded chunks, without materializing the payload.
-func (r *Reader) ReadChunked(buf []byte, fn func(chunk []byte) error) (int, error) {
-	if len(buf) == 0 {
-		return 0, fmt.Errorf("redis: ReadChunked: empty chunk buffer")
-	}
+// through fn in chunks, without materializing the payload.
+//
+// Each chunk aliases the reader's internal buffer: it is valid only until fn
+// returns, and its size is whatever the reader has buffered (at most the
+// buffer size). If fn fails, the rest of the reply is still drained so the
+// stream stays aligned, and fn's error is returned.
+//
+// A malformed reply returns an error without draining. Such errors are not
+// Redis errors, so the connection is dropped.
+func (r *Reader) ReadChunked(fn func(chunk []byte) error) error {
 	line, err := r.ReadLine()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	switch line[0] {
 	case RespString, RespVerbatim:
 	default:
-		return 0, fmt.Errorf("redis: can't parse reply=%.100q reading chunked bulk string", line)
+		return fmt.Errorf("redis: can't parse reply=%.100q reading chunked bulk string", line)
 	}
 	n, err := replyLen(line)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
-	const verbatimTagLength = 4
-	payload := n
 	if line[0] == RespVerbatim {
-		var verbatimTag [verbatimTagLength]byte // txt:
-		if n < len(verbatimTag) {
-			if _, derr := r.rd.Discard(n + 2); derr != nil {
-				return 0, derr
-			}
-			return 0, fmt.Errorf("redis: can't parse verbatim string reply: %q", line)
+		// The payload starts with a 4-byte "txt:" style format tag.
+		var tag [4]byte
+		if n < len(tag) {
+			return fmt.Errorf("redis: can't parse verbatim string reply: %.100q", line)
 		}
-		if _, err := io.ReadFull(r.rd, verbatimTag[:]); err != nil {
-			return 0, err
+		if _, err := io.ReadFull(r.rd, tag[:]); err != nil {
+			return err
 		}
-		payload = n - verbatimTagLength
+		if tag[3] != ':' {
+			return fmt.Errorf("redis: can't parse verbatim string reply: bad format tag %q", tag[:])
+		}
+		n -= len(tag)
 	}
 
-	var delivered int
 	var fnErr error
-	for payload > 0 {
-		chunk := buf
-		if payload < len(chunk) {
-			chunk = buf[:payload]
+	for n > 0 {
+		// Peek(1) waits for data; Buffered then says how much is ready.
+		if _, err := r.rd.Peek(1); err != nil {
+			return err
 		}
-		if _, err := io.ReadFull(r.rd, chunk); err != nil {
-			return delivered, err
+		size := min(r.rd.Buffered(), n)
+		chunk, err := r.rd.Peek(size)
+		if err != nil {
+			return err
 		}
-		payload -= len(chunk)
-
-		if fnErr == nil { // dont deliver, only drain
-			delivered += len(chunk)
+		if fnErr == nil { // after a failure, only drain
 			fnErr = fn(chunk)
 		}
+		if _, err := r.rd.Discard(size); err != nil {
+			return err
+		}
+		n -= size
 	}
 	if _, err := r.rd.Discard(2); err != nil { // trailing CRLF
-		return delivered, err
+		return err
 	}
-	return delivered, fnErr
+	return fnErr
 }
 
 func (r *Reader) ReadString() (string, error) {

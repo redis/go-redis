@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -291,6 +292,101 @@ var _ = Describe("Commands", func() {
 			val, err = rawClient.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).ShouldNot(ContainSubstring("name=killmyid"))
+		})
+
+		Describe("ClientListStreaming", func() {
+			collect := func(ctx context.Context, c redis.Cmdable, ids *[]int64) *redis.StreamingCmd {
+				return c.ClientListStreaming(ctx, func(info *redis.ClientInfo) error {
+					*ids = append(*ids, info.ID)
+					return nil
+				})
+			}
+
+			for _, protocol := range []int{2, 3} {
+				protocol := protocol
+				Context(fmt.Sprintf("RESP%d", protocol), func() {
+					var c *redis.Client
+
+					BeforeEach(func() {
+						opt := redisOptions()
+						opt.Protocol = protocol
+						opt.ClientName = "streamlist"
+						c = redis.NewClient(opt)
+						Expect(c.Ping(ctx).Err()).NotTo(HaveOccurred())
+					})
+
+					AfterEach(func() {
+						Expect(c.Close()).NotTo(HaveOccurred())
+					})
+
+					It("streams every client and counts them", func() {
+						var ids []int64
+						cmd := collect(ctx, c, &ids)
+						Expect(cmd.Err()).NotTo(HaveOccurred())
+						Expect(cmd.Val()).To(Equal(len(ids)))
+						Expect(ids).To(ContainElement(c.ClientID(ctx).Val()))
+					})
+
+					It("keeps the connection usable after a callback error", func() {
+						boom := errors.New("boom")
+						cmd := c.ClientListStreaming(ctx, func(*redis.ClientInfo) error { return boom })
+						Expect(cmd.Err()).To(MatchError(boom))
+						var cbErr *redis.StreamingCallbackError
+						Expect(errors.As(cmd.Err(), &cbErr)).To(BeTrue())
+						Expect(cmd.Val()).To(Equal(0))
+
+						// The same connection must answer the next command.
+						Expect(c.Ping(ctx).Err()).NotTo(HaveOccurred())
+					})
+
+					It("keeps the connection usable when the callback returns a context error", func() {
+						cmd := c.ClientListStreaming(ctx, func(*redis.ClientInfo) error { return context.Canceled })
+						Expect(cmd.Err()).To(MatchError(context.Canceled))
+						Expect(c.Ping(ctx).Err()).NotTo(HaveOccurred())
+					})
+
+					It("stays aligned inside Pipeline", func() {
+						var ids []int64
+						var cmd *redis.StreamingCmd
+						cmds, err := c.Pipelined(ctx, func(p redis.Pipeliner) error {
+							cmd = collect(ctx, p, &ids)
+							p.Set(ctx, "streamlist-key", "v", 0)
+							p.Get(ctx, "streamlist-key")
+							return nil
+						})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(cmd.Val()).To(Equal(len(ids)))
+						Expect(cmds[2].(*redis.StringCmd).Val()).To(Equal("v"))
+						Expect(c.Del(ctx, "streamlist-key").Err()).NotTo(HaveOccurred())
+					})
+
+					It("stays aligned inside TxPipeline", func() {
+						var ids []int64
+						var cmd *redis.StreamingCmd
+						cmds, err := c.TxPipelined(ctx, func(p redis.Pipeliner) error {
+							cmd = collect(ctx, p, &ids)
+							p.Set(ctx, "streamlist-key", "v", 0)
+							p.Get(ctx, "streamlist-key")
+							return nil
+						})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(cmd.Val()).To(Equal(len(ids)))
+						Expect(cmds[2].(*redis.StringCmd).Val()).To(Equal("v"))
+						Expect(c.Del(ctx, "streamlist-key").Err()).NotTo(HaveOccurred())
+					})
+
+					It("keeps a Pipeline aligned after a callback error", func() {
+						boom := errors.New("boom")
+						cmds, err := c.Pipelined(ctx, func(p redis.Pipeliner) error {
+							p.ClientListStreaming(ctx, func(*redis.ClientInfo) error { return boom })
+							p.Ping(ctx)
+							return nil
+						})
+						Expect(err).To(MatchError(boom))
+						Expect(cmds[1].Err()).NotTo(HaveOccurred())
+					})
+				})
+			}
 		})
 
 		It("should ClientKillByFilter with MAXAGE", Label("NonRedisEnterprise"), func() {
