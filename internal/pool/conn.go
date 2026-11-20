@@ -493,6 +493,20 @@ func (cn *Conn) ShouldHandoff() bool {
 	return false
 }
 
+// HandoffPending reports whether a handoff owns, or is about to own, the
+// connection: it is marked (ShouldHandoff) or queued/running (an endpoint is
+// set until ClearHandoffState). During a handoff the worker re-initializes the
+// connection while it is still in the pool, and initConn leaves it IDLE before
+// OnConnect has finished, so a state check alone cannot tell it is in use.
+// Lock-free.
+func (cn *Conn) HandoffPending() bool {
+	if v := cn.handoffStateAtomic.Load(); v != nil {
+		s := v.(*HandoffState)
+		return s.ShouldHandoff || s.Endpoint != ""
+	}
+	return false
+}
+
 // GetHandoffEndpoint returns the new endpoint for handoff (lock-free).
 func (cn *Conn) GetHandoffEndpoint() string {
 	if v := cn.handoffStateAtomic.Load(); v != nil {
