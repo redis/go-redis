@@ -943,6 +943,11 @@ func (cmd *Cmd) Uint64() (uint64, error) {
 func toUint64(val interface{}) (uint64, error) {
 	switch val := val.(type) {
 	case int64:
+		if val < 0 {
+			// Give the error ParseUint gives for the same number in a
+			// bulk string, not a wrapped value.
+			return toUint64(strconv.FormatInt(val, 10))
+		}
 		return uint64(val), nil
 	case string:
 		return strconv.ParseUint(val, 10, 64)
