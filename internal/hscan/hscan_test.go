@@ -1,6 +1,7 @@
 package hscan
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"testing"
@@ -98,6 +99,16 @@ type InPlaceData struct {
 }
 
 type i []interface{}
+
+type testUUID [16]byte
+
+func (uuid *testUUID) UnmarshalBinary(data []byte) error {
+	if len(data) != 16 {
+		return fmt.Errorf("invalid UUID (got %d bytes)", len(data))
+	}
+	copy(uuid[:], data)
+	return nil
+}
 
 func TestGinkgoSuite(t *testing.T) {
 	RegisterFailHandler(Fail)
