@@ -3976,3 +3976,458 @@ func TestPipelineRetryPreservesSessionAndScriptPrerequisiteOrder(t *testing.T) {
 		t.Fatalf("server returned NOSCRIPT %d time(s), want 0 (the LOAD must run as loader, before the runner AUTH)", got)
 	}
 }
+
+// oneShotRetryServer is a scripted RESP server for one-shot
+// connection-state commands (CLIENT CACHING, ASKING). The first
+// connection answers the one-shot command and its follower, then drops
+// before the next command's reply; later connections answer everything.
+// It records the command sequence per connection so tests can assert
+// which command a reissued one-shot flag ended up attached to.
+type oneShotRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	incrs atomic.Int32
+	mu    sync.Mutex
+	seqs  map[int32][]string
+}
+
+func newOneShotRetryServer(t *testing.T) *oneShotRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &oneShotRetryServer{ln: ln, seqs: make(map[int32][]string)}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *oneShotRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	answered := 0
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		s.mu.Lock()
+		s.seqs[n] = append(s.seqs[n], name)
+		s.mu.Unlock()
+		isPipelineCmd := name == "client" || name == "asking" || name == "get" || name == "incr"
+		if n == 1 && answered >= 2 && isPipelineCmd {
+			// Drop the connection mid-pipeline: this command and the
+			// ones after it get no reply on this connection.
+			return
+		}
+		reply := "+OK\r\n"
+		switch name {
+		case "hello":
+			reply = "%0\r\n"
+		case "get":
+			reply = "$1\r\n1\r\n"
+		case "incr":
+			s.incrs.Add(1)
+			reply = ":1\r\n"
+		}
+		if _, err := conn.Write([]byte(reply)); err != nil {
+			return
+		}
+		if isPipelineCmd {
+			answered++
+		}
+	}
+}
+
+func (s *oneShotRetryServer) sequence(n int32) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.seqs[n]...)
+}
+
+// TestPipelineRetryDoesNotReissueOneShotClientCaching: CLIENT CACHING
+// applies only to the next command, so reissuing an answered one ahead
+// of a retry suffix attaches the flag to a later command instead of its
+// original follower. Here the first connection answers CLIENT CACHING
+// YES and GET k, then drops before INCR's reply: without the fix the
+// retry resends [CLIENT CACHING YES, INCR], so the flag lands on the
+// INCR instead of the GET. Regression test for the review finding on
+// #4351.
+func TestPipelineRetryDoesNotReissueOneShotClientCaching(t *testing.T) {
+	server := newOneShotRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	caching := pipe.Do(ctx, "client", "caching", "yes")
+	get := pipe.Get(ctx, "k")
+	incr := pipe.Incr(ctx, "counter")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := caching.Err(); err != nil {
+		t.Fatalf("CLIENT CACHING: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "1" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "1")
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1", got)
+	}
+	seq := server.sequence(2)
+	// The second connection must replay the whole batch, so the
+	// one-shot flag still lands on the GET it was issued for.
+	idx := -1
+	for i, name := range seq {
+		if name == "client" {
+			idx = i
+		}
+	}
+	if idx < 0 || idx+1 >= len(seq) || seq[idx+1] != "get" {
+		t.Fatalf("second connection ran %v, want CLIENT CACHING immediately before GET", seq)
+	}
+}
+
+// TestPipelineRetryDoesNotReissueOneShotAsking: ASKING lasts for one
+// command only, so the same reissue fault applies: an answered ASKING
+// reissued ahead of a retry suffix would steer the first suffix
+// command instead of the GET it was issued for. Same shape as the
+// CLIENT CACHING test above. Regression test for the review finding on
+// #4351.
+func TestPipelineRetryDoesNotReissueOneShotAsking(t *testing.T) {
+	server := newOneShotRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	asking := pipe.Do(ctx, "asking")
+	get := pipe.Get(ctx, "k")
+	incr := pipe.Incr(ctx, "counter")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := asking.Err(); err != nil {
+		t.Fatalf("ASKING: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "1" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "1")
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1", got)
+	}
+	seq := server.sequence(2)
+	idx := -1
+	for i, name := range seq {
+		if name == "asking" {
+			idx = i
+		}
+	}
+	if idx < 0 || idx+1 >= len(seq) || seq[idx+1] != "get" {
+		t.Fatalf("second connection ran %v, want ASKING immediately before GET", seq)
+	}
+}
+
+// optionalPreloadRetryServer is a scripted RESP server for the optional
+// preload retry test. The first connection answers EVAL and drops before
+// INCR's reply; the second answers the retry's SCRIPT LOAD with LOADING,
+// answers INCR, and drops before EVALSHA's reply; later connections
+// answer everything. It counts INCRs so a retry that re-runs the
+// answered INCR shows up as a double increment.
+type optionalPreloadRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	incrs atomic.Int32
+	loads atomic.Int32
+}
+
+func newOptionalPreloadRetryServer(t *testing.T) *optionalPreloadRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &optionalPreloadRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *optionalPreloadRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "eval":
+			_, _ = conn.Write([]byte(":1\r\n"))
+		case "incr":
+			if n == 1 {
+				// Drop before replying: the INCR must be retried
+				// with a script preload ahead of it.
+				return
+			}
+			s.incrs.Add(1)
+			_, _ = conn.Write([]byte(":1\r\n"))
+		case "script":
+			s.loads.Add(1)
+			if n == 2 {
+				// The dataset is still loading on the retry: a
+				// retryable error on the best-effort preload.
+				_, _ = conn.Write([]byte("-LOADING Redis is loading the dataset in memory\r\n"))
+				continue
+			}
+			// SCRIPT LOAD answers the script SHA.
+			sha := ""
+			if len(args) > 1 {
+				sum := sha1.Sum([]byte(args[1]))
+				sha = hex.EncodeToString(sum[:])
+			}
+			_, _ = conn.Write([]byte("$" + strconv.Itoa(len(sha)) + "\r\n" + sha + "\r\n"))
+		case "evalsha":
+			if n == 2 {
+				// Drop before replying: the EVALSHA must be retried
+				// without re-running the answered INCR.
+				return
+			}
+			_, _ = conn.Write([]byte(":1\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryIgnoresOptionalPreloadErrorForSuffix: when a retry's
+// best-effort SCRIPT LOAD fails with a retryable error, that failure
+// must not start the retry suffix: the LOAD is not an original command,
+// and starting there re-runs the answered originals behind it. Here the
+// second attempt's LOAD answers LOADING, INCR answers, and the
+// connection drops before EVALSHA's reply: without the fix the next
+// retry resends [LOAD, INCR, EVALSHA] and the counter increments twice
+// while Exec reports success. Regression test for the review finding on
+// #4351.
+func TestPipelineRetryIgnoresOptionalPreloadErrorForSuffix(t *testing.T) {
+	server := newOptionalPreloadRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	src := "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, src, []string{"k"})
+	incr := pipe.Incr(ctx, "counter")
+	evalsha := pipe.EvalSha(ctx, sha, []string{"k"})
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("EVAL: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := evalsha.Err(); err != nil {
+		t.Fatalf("EVALSHA: %v", err)
+	}
+	if got := server.conns.Load(); got != 3 {
+		t.Fatalf("server saw %d connections, want 3", got)
+	}
+	if got := server.loads.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 2 (one per retry attempt)", got)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR must not be re-run when only the optional preload failed)", got)
+	}
+}
+
+// lateRestoreRetryServer is a scripted RESP server for the failed
+// restoration connection-retirement test. The first connection answers
+// SELECT and drops before SET a's reply; the second rejects the
+// synthetic SELECT, answers SET a, and answers SET b only after a delay
+// past the client's read timeout, so the late reply is still
+// outstanding when the attempt returns the restoration error. A third
+// connection would accept everything.
+type lateRestoreRetryServer struct {
+	ln         net.Listener
+	conns      atomic.Int32
+	setsA      atomic.Int32
+	selectErrs atomic.Int32
+}
+
+func newLateRestoreRetryServer(t *testing.T) *lateRestoreRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &lateRestoreRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *lateRestoreRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "ping":
+			_, _ = conn.Write([]byte("+PONG\r\n"))
+		case "select":
+			if n == 2 {
+				// The replacement server has no DB 2: the
+				// required re-establishment fails, so the SETs
+				// that follow run in DB 0.
+				s.selectErrs.Add(1)
+				_, _ = conn.Write([]byte("-ERR DB index is out of range\r\n"))
+				continue
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "set":
+			if len(args) > 0 && args[0] == "a" {
+				s.setsA.Add(1)
+			}
+			if n == 1 {
+				// Drop before replying: the SET must be retried.
+				return
+			}
+			if n == 2 && len(args) > 0 && args[0] == "b" {
+				// Answer late, past the client's read timeout:
+				// the reply is still outstanding when the
+				// attempt reports the restoration failure.
+				time.Sleep(500 * time.Millisecond)
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+func newLateRestoreRetryClient(t *testing.T, addr string) *Client {
+	t.Helper()
+	client := NewClient(&Options{
+		Addr:            addr,
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     100 * time.Millisecond,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+// TestPipelineRetryRetiresConnAfterFailedRequiredReissue: when a retry's
+// required synthetic SELECT fails and the read loop then dies partway
+// with a transport error, the attempt reports the restoration error —
+// but the connection may still hold unread replies, so it must be
+// removed, not returned to the pool for the next pipeline to reuse.
+// Here the second connection's SET b reply arrives after the client's
+// read timeout: without the fix the connection is Put back with the
+// Redis error and the next pipeline reuses it, consuming the late +OK
+// as its PING reply instead of PONG. Regression test for the review
+// finding on #4351.
+func TestPipelineRetryRetiresConnAfterFailedRequiredReissue(t *testing.T) {
+	server := newLateRestoreRetryServer(t)
+	client := newLateRestoreRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 2)
+	setA := pipe.Set(ctx, "a", "v", 0)
+	setB := pipe.Set(ctx, "b", "v", 0)
+	if _, err := pipe.Exec(ctx); err == nil {
+		t.Fatalf("Exec: nil, want an error (the failed SELECT 2 restoration must fail the batch)")
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v, want nil (it was answered OK on the first connection)", err)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2", got)
+	}
+	if got := server.selectErrs.Load(); got != 1 {
+		t.Fatalf("server rejected SELECT %d time(s), want 1", got)
+	}
+	if got := server.setsA.Load(); got != 2 {
+		t.Fatalf("server received %d SET a commands, want 2", got)
+	}
+	if err := setA.Err(); err != nil {
+		t.Fatalf("SET a: %v, want nil (it was answered OK in DB 0)", err)
+	}
+	if err := setB.Err(); err == nil {
+		t.Fatalf("SET b: nil, want an error (its reply was never read)")
+	}
+	// The second connection may still hold SET b's late reply when it
+	// is released with the restoration error: it must be removed, not
+	// returned to the pipeline pool for the next pipeline to reuse. The
+	// next pipeline runs before the late reply arrives (so the pool
+	// health check cannot see it yet) and reads past it: without the
+	// fix it consumes the late +OK as the PING reply instead of PONG.
+	client.opt.MaxRetries = 0
+	client.opt.ReadTimeout = 2 * time.Second
+	pipe2 := client.Pipeline()
+	pong := pipe2.Ping(ctx)
+	if _, err := pipe2.Exec(ctx); err != nil {
+		t.Fatalf("second pipeline Exec: %v, want nil (it must run on a fresh connection)", err)
+	}
+	if got := pong.Val(); got != "PONG" {
+		t.Fatalf("PING = %q, want %q (the late reply of the failed attempt must not be consumed as this pipeline's reply)", got, "PONG")
+	}
+	if got := server.conns.Load(); got != 3 {
+		t.Fatalf("server saw %d connections after the next pipeline, want 3 (the connection released with replies outstanding must not be reused)", got)
+	}
+}

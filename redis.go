@@ -2626,20 +2626,59 @@ func pipelineConnStateCmd(cmd Cmder) bool {
 	return false
 }
 
+// clientSubcommand returns the CLIENT subcommand (CACHING, TRACKING, ...)
+// of cmd, normalised the way the command is sent: a raw command built
+// with Do may carry the subcommand as []byte or *string, and
+// Writer.WriteArg sends those exactly like a string, so the predicate
+// must match them the same way. baseCmd.stringArg already normalises
+// all three representations.
+func clientSubcommand(cmd Cmder) string {
+	if cmd.Name() != "client" {
+		return ""
+	}
+	return cmd.base().stringArg(1)
+}
+
+// pipelineOneShotStateCmd reports whether cmd is a connection-state
+// command that applies only to the next command the connection runs, so
+// reissuing it ahead of a retry suffix would attach it to a different
+// command than the one it was issued for: CLIENT CACHING sets the
+// tracking flag for the next command only (Redis tracking.c clears
+// CLIENT_TRACKING_CACHING after one command), and ASKING lasts for one
+// command. The other CLIENT subcommands (TRACKING, SETNAME, SETINFO,
+// ...) set persistent session state and are not one-shot.
+func pipelineOneShotStateCmd(cmd Cmder) bool {
+	switch cmd.Name() {
+	case "asking":
+		return true
+	case "client":
+		return strings.EqualFold(clientSubcommand(cmd), "caching")
+	}
+	return false
+}
+
 // pipelineConnStateReissueCmd reports whether an answered connection-state
 // command can be re-established on the retry connection by reissuing a
 // fresh copy of it, instead of forcing the whole batch to re-run. Only
 // commands that set the same state every time they run qualify: SELECT,
-// AUTH, HELLO, RESET, CLIENT, READONLY, READWRITE, ASKING, WATCH and
-// UNWATCH. The rest of the connection-state commands do not: MULTI, EXEC
+// AUTH, HELLO, RESET, CLIENT (except the one-shot CACHING
+// subcommand), READONLY, READWRITE, WATCH and UNWATCH. The rest of the
+// connection-state commands do not: MULTI, EXEC
 // and DISCARD frame a transaction whose queued commands are part of the
 // batch (reissuing the frame without them would run a different
 // transaction), SWAPDB swaps the databases back if run twice, a
 // subscription changes the connection's reply framing, and an HIMPORT
 // PREPARE re-registered from the registry's stale fields writes under the
-// wrong field names. Those keep the whole-batch retry.
+// wrong field names. One-shot state commands do not either (see
+// pipelineOneShotStateCmd): CLIENT CACHING and ASKING apply only to the
+// next command, so reissuing one ahead of a retry suffix would attach it
+// to a later command instead of its original follower. Those keep the
+// whole-batch retry.
 func pipelineConnStateReissueCmd(cmd Cmder) bool {
 	if isHImportCmd(cmd) {
+		return false
+	}
+	if pipelineOneShotStateCmd(cmd) {
 		return false
 	}
 	switch cmd.Name() {
@@ -2826,11 +2865,25 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 	if err == nil || (isRedisError(err) && !shouldRetry(err, true)) {
 		return cmds
 	}
+	synthetic := pipelineSyntheticFromCtx(ctx)
+	required := pipelineRequiredSyntheticFromCtx(ctx)
 	for i, cmd := range cmds {
 		// A stale error — one the command already carried when this
 		// invocation started — is not a record of this invocation's
 		// progress and must not mark the answered/unanswered boundary.
 		if staleErrs[cmd.base()] {
+			continue
+		}
+		// A failed best-effort script preload is not an original
+		// command: its retryable error must not start the retry
+		// suffix, or the answered originals behind it would run
+		// again (an acknowledged INCR would apply twice while Exec
+		// reports success). The preload is rebuilt ahead of the
+		// suffix below when the suffix needs it. A failed required
+		// synthetic (state re-establishment) still starts the
+		// suffix: the suffix would otherwise run on a misconfigured
+		// connection.
+		if synthetic[cmd.base()] && !required[cmd.base()] {
 			continue
 		}
 		if e := cmd.rawErr(); e != nil && (!isRedisError(e) || shouldRetry(e, true)) {
@@ -3595,8 +3648,14 @@ func (c *baseClient) pipelineProcessCmds(
 		// write is retained as the batch's outcome. Report the
 		// restoration failure as the attempt error instead: a
 		// retryable one retries from the failed SELECT, a
-		// non-retryable one fails the batch outright.
+		// non-retryable one fails the batch outright. Replies are
+		// still outstanding on this connection after the transport
+		// failure, so mark it for removal before surfacing the
+		// Redis error: a Redis error is not a bad-conn error, and
+		// returning the connection to the pool would let the next
+		// borrower consume a delayed reply as its own.
 		if synthErr := pipelineRequiredSyntheticErr(ctx, cmds); synthErr != nil {
+			cn.MarkCloseOnPut("pipeline: required re-establishment failed with replies outstanding")
 			return true, synthErr
 		}
 		return true, err
