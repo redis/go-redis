@@ -2786,8 +2786,10 @@ func evalScriptCached(cmd Cmder) bool {
 // (LOADING, READONLY, ...) that means the server rejected the command without
 // executing it. Commands before it were answered and must not run again: a
 // replied INCR has already applied. A Redis error as the batch error means
-// the server rejected the batch without executing it, so the whole batch is
-// returned unchanged. An answered command that established connection-local
+// the server rejected the batch without executing it only when the error is
+// on the first command (or is not retryable at all), so the whole batch is
+// returned unchanged in that case; a retryable error on a later command
+// narrows to that command instead (see the scan below). An answered command that established connection-local
 // state (see pipelineConnStateCmd) forces the whole batch only when that
 // state cannot be re-established on its own: commands
 // pipelineConnStateReissueCmd accepts are reissued ahead of the suffix as
@@ -2812,7 +2814,16 @@ func evalScriptCached(cmd Cmder) bool {
 // original prefix established them, so an AUTH that guards a SCRIPT LOAD
 // stays ahead of it instead of being grouped before all preloads.
 func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs map[*baseCmd]bool) []Cmder {
-	if err == nil || isRedisError(err) {
+	// A non-retryable Redis error as the batch error means the server
+	// rejected the batch without executing it, so the whole batch is
+	// returned unchanged. A retryable Redis error is different: when
+	// it sits on a later command (a SET answering READONLY behind a
+	// synthetic SELECT that succeeded), the commands before it were
+	// answered, so fall through to the scan below — it narrows to the
+	// rejected command and rebuilds its prerequisites instead of
+	// re-running the answered writes (a replied INCR would apply
+	// twice while Exec still reports success).
+	if err == nil || (isRedisError(err) && !shouldRetry(err, true)) {
 		return cmds
 	}
 	for i, cmd := range cmds {
@@ -2831,6 +2842,21 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			for _, answered := range cmds[:i] {
 				if pipelineConnStateCmd(answered) && !pipelineConnStateReissueCmd(answered) {
 					return cmds
+				}
+			}
+			// A failed required re-establishment in the answered prefix
+			// (a synthetic SELECT the server rejected) means the
+			// commands after it ran under the wrong session state: a
+			// SET answered OK in DB 0 after a failed SELECT 2 is not
+			// the batch's outcome. Keep the whole batch so the retry
+			// re-establishes the state and re-runs those writes under
+			// it, instead of retaining them and letting a later retry
+			// erase the restoration failure.
+			if required := pipelineRequiredSyntheticFromCtx(ctx); required != nil {
+				for _, answered := range cmds[:i] {
+					if required[answered.base()] && answered.rawErr() != nil {
+						return cmds
+					}
 				}
 			}
 			// A reissued WATCH is only the same watch when nothing
@@ -3561,6 +3587,18 @@ func (c *baseClient) pipelineProcessCmds(
 		c.himportAfterBatch(cn, injected, cmds)
 		return nil
 	}); err != nil {
+		// A transport failure partway through the replies must not
+		// hide a failed required re-establishment: a synthetic
+		// SELECT the server rejected, with a SET answered OK under
+		// the wrong session state behind it, would otherwise be
+		// dropped by the narrowing below while the mis-executed
+		// write is retained as the batch's outcome. Report the
+		// restoration failure as the attempt error instead: a
+		// retryable one retries from the failed SELECT, a
+		// non-retryable one fails the batch outright.
+		if synthErr := pipelineRequiredSyntheticErr(ctx, cmds); synthErr != nil {
+			return true, synthErr
+		}
 		return true, err
 	}
 

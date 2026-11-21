@@ -595,6 +595,280 @@ func TestPipelineRetryClassifiesOriginalErrorAfterSyntheticPrefix(t *testing.T) 
 	}
 }
 
+// syntheticPrefixTrimServer is a scripted RESP server for the
+// synthetic-prefix trim test. The first connection answers SELECT and
+// then drops before INCR's reply; the second answers the synthetic
+// SELECT and the INCR, then rejects the SET with READONLY (failover in
+// progress); later connections answer everything. It counts INCRs the
+// server actually answered, so a retry that re-runs an answered INCR
+// shows up as a second increment.
+type syntheticPrefixTrimServer struct {
+	ln            net.Listener
+	conns         atomic.Int32
+	incrsAnswered atomic.Int32
+	setsReceived  atomic.Int32
+	readonlySets  atomic.Int32
+	setsApplied   atomic.Int32
+	setDB         atomic.Int32 // DB in effect when SET last ran, -1 = never
+}
+
+func newSyntheticPrefixTrimServer(t *testing.T) *syntheticPrefixTrimServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &syntheticPrefixTrimServer{ln: ln}
+	s.setDB.Store(-1)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *syntheticPrefixTrimServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	db := 0
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "select":
+			if len(args) > 0 {
+				if v, err := strconv.Atoi(args[0]); err == nil {
+					db = v
+				}
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "incr":
+			if n == 1 {
+				// Drop before replying: the INCR must be
+				// retried with a synthetic SELECT ahead of it.
+				return
+			}
+			s.incrsAnswered.Add(1)
+			_, _ = conn.Write([]byte(":1\r\n"))
+		case "set":
+			s.setsReceived.Add(1)
+			s.setDB.Store(int32(db))
+			if n == 2 && s.readonlySets.Load() == 0 {
+				s.readonlySets.Add(1)
+				_, _ = conn.Write([]byte("-READONLY You can't write against a read only replica.\r\n"))
+				continue
+			}
+			s.setsApplied.Add(1)
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryTrimsAnsweredWritesAfterSyntheticPrefixError: when a
+// retry opens with a synthetic SELECT that succeeds, a retryable error
+// on a later original command must narrow the next retry to that
+// command, not return the whole batch. Here the retried SET answers
+// READONLY behind a synthetic SELECT: the whole-batch return keeps the
+// already-answered INCR in pending, so the next healthy attempt
+// increments the counter a second time and Exec still reports success.
+// Regression test for the review finding on #4351.
+func TestPipelineRetryTrimsAnsweredWritesAfterSyntheticPrefixError(t *testing.T) {
+	server := newSyntheticPrefixTrimServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 2)
+	incr := pipe.Incr(ctx, "counter")
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the READONLY reply on the retried SET must be retried, not reported as success)", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil (it must be retried after the failover, not left with the READONLY error)", err)
+	}
+	if got := server.setDB.Load(); got != 2 {
+		t.Fatalf("SET ran on DB %d, want 2 (the retried SET must run on the re-established database)", got)
+	}
+	if got := server.readonlySets.Load(); got != 1 {
+		t.Fatalf("server returned READONLY %d time(s), want 1", got)
+	}
+	if got := server.incrsAnswered.Load(); got != 1 {
+		t.Fatalf("server answered %d INCR commands, want 1 (the answered INCR must not be re-run by the retry after the READONLY SET)", got)
+	}
+	if got := server.setsApplied.Load(); got != 1 {
+		t.Fatalf("server applied %d SET commands, want 1 (the SET rejected READONLY must be applied by a later retry)", got)
+	}
+}
+
+// failedRestoreRetryServer is a scripted RESP server for the failed
+// state-restoration test. The first connection answers SELECT and then
+// drops before either SET's reply; the second connection rejects the
+// synthetic SELECT (the DB does not exist there) and then answers the
+// first SET in DB 0 before dropping before the second SET's reply; a
+// third connection would accept everything. It records which DB each
+// SET ran in, so a retry that keeps the DB-0 SET and only re-runs the
+// second SET shows up as a success with the first SET missing from
+// DB 2.
+type failedRestoreRetryServer struct {
+	ln           net.Listener
+	conns        atomic.Int32
+	setsA        atomic.Int32
+	setsB        atomic.Int32
+	setsAApplied atomic.Int32 // SET a commands answered +OK
+	setsBApplied atomic.Int32 // SET b commands answered +OK
+	setADB       atomic.Int32 // DB in effect when SET a last ran, -1 = never
+	selectErrs   atomic.Int32
+}
+
+func newFailedRestoreRetryServer(t *testing.T) *failedRestoreRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &failedRestoreRetryServer{ln: ln}
+	s.setADB.Store(-1)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *failedRestoreRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	db := 0
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "select":
+			if n == 2 {
+				// The replacement server has no DB 2: the
+				// required re-establishment fails, so the
+				// SETs that follow run in DB 0.
+				s.selectErrs.Add(1)
+				_, _ = conn.Write([]byte("-ERR DB index is out of range\r\n"))
+				continue
+			}
+			if len(args) > 0 {
+				if v, err := strconv.Atoi(args[0]); err == nil {
+					db = v
+				}
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "set":
+			if len(args) > 0 && args[0] == "a" {
+				s.setsA.Add(1)
+				s.setADB.Store(int32(db))
+			} else {
+				s.setsB.Add(1)
+			}
+			if n == 1 || (n == 2 && len(args) > 0 && args[0] == "b") {
+				// Drop before replying: the SET must be retried.
+				return
+			}
+			if len(args) > 0 && args[0] == "a" {
+				s.setsAApplied.Add(1)
+			} else {
+				s.setsBApplied.Add(1)
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryKeepsFailedStateRestoration: when a retry's required
+// synthetic SELECT fails, the writes that followed it ran under the
+// wrong session state and must not be retained as the batch's outcome.
+// Here the second connection rejects SELECT 2, SET a answers OK in
+// DB 0, and the connection drops before SET b's reply: without the fix
+// the transport return bypasses required-synthetic validation, the
+// narrowing drops SET a and reissues a cleared SELECT, and a third
+// connection runs only SET b in DB 2 while Exec reports success even
+// though SET a never landed in DB 2. Regression test for the review
+// finding on #4351.
+func TestPipelineRetryKeepsFailedStateRestoration(t *testing.T) {
+	server := newFailedRestoreRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 2)
+	setA := pipe.Set(ctx, "a", "v", 0)
+	setB := pipe.Set(ctx, "b", "v", 0)
+	if _, err := pipe.Exec(ctx); err == nil {
+		t.Fatalf("Exec: nil, want an error (the failed SELECT 2 restoration must not be erased by a retry that only re-runs SET b)")
+	}
+	// The original SELECT was answered OK on the first connection; the
+	// failure belongs to the synthetic reissue, so it surfaces as the
+	// Exec error, not on the original command.
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v, want nil (it was answered OK on the first connection; the failed reissue is reported on Exec)", err)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (no third attempt may run after the restoration failure)", got)
+	}
+	if got := server.selectErrs.Load(); got != 1 {
+		t.Fatalf("server rejected SELECT %d time(s), want 1", got)
+	}
+	if got := server.setsA.Load(); got != 2 {
+		t.Fatalf("server received %d SET a commands, want 2 (dropped once on the first connection, answered once in the wrong DB)", got)
+	}
+	if got := server.setsAApplied.Load(); got != 1 {
+		t.Fatalf("server applied %d SET a commands, want 1 (only the DB-0 run was answered; it must not be re-run in DB 2 as a silent success)", got)
+	}
+	if got := server.setADB.Load(); got != 0 {
+		t.Fatalf("SET a ran on DB %d, want 0 (it only ever ran under the failed SELECT, never in DB 2)", got)
+	}
+	if got := server.setsB.Load(); got != 1 {
+		t.Fatalf("server received %d SET b commands, want 1 (it must not be re-run on a third connection as if the batch had succeeded)", got)
+	}
+	if got := server.setsBApplied.Load(); got != 0 {
+		t.Fatalf("server applied %d SET b commands, want 0 (its reply was never read)", got)
+	}
+	if err := setA.Err(); err != nil {
+		t.Fatalf("SET a: %v, want nil (it was answered OK in DB 0; the failure is reported on Exec, not by rewriting its reply)", err)
+	}
+	if err := setB.Err(); err == nil {
+		t.Fatalf("SET b: nil, want an error (its reply was never read)")
+	}
+}
+
 func TestPipelineRetryDoesNotReplayAnsweredCommands(t *testing.T) {
 	server := newPartialRetryServer(t)
 	client := newPartialRetryClient(t, server.ln.Addr().String())
