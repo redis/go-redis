@@ -157,8 +157,9 @@ type Options struct {
 
 	// DialTimeout is the timeout for one attempt to establish a connection.
 	// With the default dialer, a failed dial sequence can take up to
-	// DialTimeout * DialerRetries plus the backoff between attempts. An earlier
-	// deadline on the command context also limits the sequence.
+	// DialTimeout * DialerRetries plus the backoff between attempts. A command
+	// context deadline limits the caller's wait for a pooled connection, but the
+	// background dial sequence can continue after that deadline.
 	//
 	// default: 5 seconds
 	DialTimeout time.Duration
