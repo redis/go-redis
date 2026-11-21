@@ -405,7 +405,7 @@ func (c *PubSub) reconnect(ctx context.Context, reason error) {
 func (c *PubSub) reconnectAllLocked(ctx context.Context, reason error) {
 	c.ensureMuxLocked()
 	for key, cn := range c.conns {
-		c.closeKeyLocked(key, cn)
+		_ = c.closeKeyLocked(key, cn)
 	}
 	c.cn = nil
 	c.cmd = nil
@@ -419,7 +419,7 @@ func (c *PubSub) reconnectKey(ctx context.Context, key string, cn *pool.Conn, re
 	if c.conns[key] != cn {
 		return
 	}
-	c.closeKeyLocked(key, cn)
+	_ = c.closeKeyLocked(key, cn)
 	nc, err := c.dialKeyLocked(ctx, key, nil)
 	if err != nil {
 		// Leave the key absent; the next Receive/Ping re-dials it.
@@ -1080,7 +1080,7 @@ func (c *PubSub) readLoop(key string, cn *pool.Conn) {
 		if fatal {
 			// Drop the connection; the next Receive/Ping re-dials this key
 			// (and resubscribes its channels) on a fresh connection.
-			c.closeKeyLocked(key, cn)
+			_ = c.closeKeyLocked(key, cn)
 		}
 		c.mu.Unlock()
 		if fatal {
