@@ -33,12 +33,17 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
-	if err := redisotel.InstrumentTracing(rdb); err != nil {
+	// Basic tracing with performance-optimized command exclusion
+	if err := redisotel.InstrumentTracing(rdb,
+		redisotel.WithExcludedCommands("PING", "INFO")); err != nil {
 		panic(err)
 	}
 	if err := redisotel.InstrumentMetrics(rdb); err != nil {
 		panic(err)
 	}
+
+	// Run advanced filtering examples
+	runAdvancedFilteringExamples()
 
 	for i := 0; i < 1e6; i++ {
 		ctx, rootSpan := tracer.Start(ctx, "handleRequest")
