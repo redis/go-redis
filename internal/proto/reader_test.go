@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
+	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -558,5 +561,176 @@ func TestReader_ReadSlice_RejectsNonArrayHeader(t *testing.T) {
 		if err != nil || len(v) != 2 {
 			t.Fatalf("%q: ReadSlice = %v, %v; want 2 elements", src, v, err)
 		}
+	}
+}
+
+func TestReadStringDoesNotPreallocateAnAnnouncedLength(t *testing.T) {
+	const declared = 1 << 30 // 1 GiB: a header the server never backs with bytes
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	rd := proto.NewReader(bytes.NewReader([]byte("$" + strconv.Itoa(declared) + "\r\n")))
+	if _, err := rd.ReadString(); err == nil {
+		t.Fatal("ReadString succeeded without a body")
+	}
+
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64<<20 {
+		t.Fatalf("ReadString allocated %d bytes for an announced %d-byte bulk", allocated, declared)
+	}
+}
+
+func TestReadRawReplyDoesNotPreallocateAnAnnouncedLength(t *testing.T) {
+	const declared = 1 << 30
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	rd := proto.NewReader(bytes.NewReader([]byte("$" + strconv.Itoa(declared) + "\r\n")))
+	if _, err := rd.ReadRawReply(); err == nil {
+		t.Fatal("ReadRawReply succeeded without a body")
+	}
+
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64<<20 {
+		t.Fatalf("ReadRawReply allocated %d bytes for an announced %d-byte bulk", allocated, declared)
+	}
+}
+
+func TestReadStringRejectsAnUnrepresentableBulkLength(t *testing.T) {
+	rd := proto.NewReader(bytes.NewReader([]byte("$9223372036854775807\r\n")))
+	if _, err := rd.ReadString(); err == nil {
+		t.Fatal("ReadString accepted a bulk length that cannot be represented")
+	}
+}
+
+func TestReadStringStillReadsABulkBody(t *testing.T) {
+	rd := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n")))
+	got, err := rd.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString: %v", err)
+	}
+	if got != "hello" {
+		t.Fatalf("ReadString = %q, want %q", got, "hello")
+	}
+}
+
+// bulkPrealloc is the boundary above which readBulkBody grows instead of
+// allocating the announced length in one span. Keep in sync with
+// proto.maxBulkPrealloc.
+const bulkPrealloc = 32 << 20
+
+func TestReadStringReadsBulkBodiesAcrossTheGrowthBoundary(t *testing.T) {
+	sizes := []int{
+		1<<20 - 1,
+		1 << 20,
+		1<<20 + 1,
+		3 << 20,
+		bulkPrealloc - 1,
+		bulkPrealloc,
+		bulkPrealloc + 1,
+	}
+	for _, size := range sizes {
+		payload := bytes.Repeat([]byte{'x'}, size)
+		frame := append([]byte("$"+strconv.Itoa(size)+"\r\n"), payload...)
+		frame = append(frame, "\r\n+OK\r\n"...)
+
+		rd := proto.NewReader(bytes.NewReader(frame))
+		got, err := rd.ReadString()
+		if err != nil {
+			t.Fatalf("size %d: ReadString: %v", size, err)
+		}
+		if len(got) != size || !bytes.Equal([]byte(got), payload) {
+			t.Fatalf("size %d: ReadString returned %d bytes", size, len(got))
+		}
+		next, err := rd.ReadString()
+		if err != nil {
+			t.Fatalf("size %d: next ReadString: %v", size, err)
+		}
+		if next != "OK" {
+			t.Fatalf("size %d: next ReadString = %q, want %q", size, next, "OK")
+		}
+	}
+}
+
+// eofWithFinalBytesReader returns its last bytes together with io.EOF, the
+// shape io.ReadFull accepts because the body is complete.
+type eofWithFinalBytesReader struct{ data []byte }
+
+func (r *eofWithFinalBytesReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func TestReadStringAcceptsTheFinalReadWithError(t *testing.T) {
+	size := bulkPrealloc + 1024
+	payload := bytes.Repeat([]byte{'y'}, size)
+	frame := append([]byte("$"+strconv.Itoa(size)+"\r\n"), payload...)
+	frame = append(frame, "\r\n"...)
+
+	rd := proto.NewReader(&eofWithFinalBytesReader{data: frame})
+	got, err := rd.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString: %v", err)
+	}
+	if len(got) != size || !bytes.Equal([]byte(got), payload) {
+		t.Fatalf("ReadString returned %d bytes, want %d", len(got), size)
+	}
+}
+
+// The raw path adds the bulk length to the length of the accumulated reply. A
+// length that is representable on its own overflows that sum, and a peer that
+// keeps sending must get an error instead of a panic.
+func TestReadRawReplyRejectsAnOverflowingBulkLength(t *testing.T) {
+	declared := math.MaxInt - 10
+	frame := []byte("$" + strconv.Itoa(declared) + "\r\n")
+	frame = append(frame, bytes.Repeat([]byte{'x'}, bulkPrealloc)...)
+
+	rd := proto.NewReader(bytes.NewReader(frame))
+	if _, err := rd.ReadRawReply(); err == nil {
+		t.Fatal("ReadRawReply accepted a bulk length that overflows the reply buffer")
+	}
+}
+
+// A raw reply accumulates several large bulks in one buffer: the spare
+// capacity the buffer already has must be filled before it is reallocated, and
+// the exact reply bytes must come back.
+func TestReadRawReplyReadsAnArrayOfLargeBulks(t *testing.T) {
+	size := bulkPrealloc + 1
+	payload := bytes.Repeat([]byte{'x'}, size)
+	frame := []byte("*2\r\n")
+	for i := 0; i < 2; i++ {
+		frame = append(frame, '$')
+		frame = strconv.AppendInt(frame, int64(size), 10)
+		frame = append(frame, "\r\n"...)
+		frame = append(frame, payload...)
+		frame = append(frame, "\r\n"...)
+	}
+	frame = append(frame, "+OK\r\n"...)
+
+	rd := proto.NewReader(bytes.NewReader(frame))
+	raw, err := rd.ReadRawReply()
+	if err != nil {
+		t.Fatalf("ReadRawReply: %v", err)
+	}
+	if !bytes.Equal(raw, frame[:len(frame)-5]) {
+		t.Fatalf("ReadRawReply returned %d bytes that do not match the frame", len(raw))
+	}
+	next, err := rd.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString after the raw reply: %v", err)
+	}
+	if next != "OK" {
+		t.Fatalf("ReadString after the raw reply = %q, want %q", next, "OK")
 	}
 }
