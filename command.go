@@ -288,6 +288,65 @@ func setCmdsErr(cmds []Cmder, e error) {
 	}
 }
 
+// setCmdsErrSkippingAnswered is setCmdsErr for a read that failed partway
+// through a retried batch: commands a prior attempt of this invocation
+// already answered hold a result read from the server, so their nil error
+// is not an unanswered command and must not be stamped over. Commands never
+// answered are stamped exactly like setCmdsErr.
+func setCmdsErrSkippingAnswered(ctx context.Context, cmds []Cmder, e error) {
+	answered := pipelineAnsweredFromCtx(ctx)
+	for _, cmd := range cmds {
+		// rawErr: this runs on the execution path; never await here.
+		if answered[cmd.base()] {
+			continue
+		}
+		if cmd.rawErr() == nil {
+			cmd.SetErr(e)
+		}
+	}
+}
+
+// pipelineAnsweredKey carries the per-invocation set of pipeline commands
+// that already hold a result read from the server in an earlier attempt of
+// the same invocation (see generalProcessPipelineFrom). A nil error on a
+// command in the set means the server answered it with a value; the set is
+// what distinguishes that from a command that was never dispatched, which
+// also carries a nil error.
+type pipelineAnsweredKey struct{}
+
+// pipelineAnsweredFromCtx returns the answered set stored in ctx, or nil
+// when the pipeline did not run through generalProcessPipelineFrom.
+func pipelineAnsweredFromCtx(ctx context.Context) map[*baseCmd]bool {
+	if ctx == nil {
+		return nil
+	}
+	answered, _ := ctx.Value(pipelineAnsweredKey{}).(map[*baseCmd]bool)
+	return answered
+}
+
+// setCmdsTransportErr stamps e onto commands that do not already hold a
+// server reply: a nil error, or a stale transport error left by an earlier
+// attempt. A per-command Redis reply error is a real answer from the server
+// and is kept; a transport error is replaced, including an errConnUnusable
+// marker even when it wraps a redis.Error. A command answered by a prior
+// attempt of this invocation already holds its result, so it is skipped
+// even though its error is nil. Use it on paths where the attempt consumed
+// no replies (a failed write, a failed push drain, unread injected replies):
+// there every transport error on the batch is stale, and keeping the
+// earliest one would report an old io.EOF instead of the current failure.
+func setCmdsTransportErr(ctx context.Context, cmds []Cmder, e error) {
+	answered := pipelineAnsweredFromCtx(ctx)
+	for _, cmd := range cmds {
+		// rawErr: this runs on the execution path; never await here.
+		if answered[cmd.base()] {
+			continue
+		}
+		if err := cmd.rawErr(); err == nil || pipelineErrShouldStamp(err) {
+			cmd.SetErr(e)
+		}
+	}
+}
+
 func cmdsFirstErr(cmds []Cmder) error {
 	for _, cmd := range cmds {
 		// rawErr: this runs on the execution path; never await here.
