@@ -555,6 +555,31 @@ func bulkTotal(n int) (int, bool) {
 	return n + 2, true
 }
 
+// bulkGrowFactor is how many times the bytes already buffered the next buffer
+// may hold. Doubling would honour the announced length too literally: a
+// 512 MiB body would grow five times, copying its own tail again right before
+// it completes. Four keeps the buffer within four times the bytes received
+// while that body pays two growth steps instead of five.
+const bulkGrowFactor = 4
+
+// growBulkBuffer returns b, which is full, with room for more bytes: it is
+// passed the length the buffer ultimately has to hold (need). The new capacity
+// is bulkGrowFactor times the bytes already buffered, rounded up to need when
+// the growth step would leave less than an eighth of a step missing, so the
+// last few bytes do not copy the whole buffer again. Memory therefore follows
+// the data received rather than an announced length.
+func growBulkBuffer(b []byte, need int) []byte {
+	next := cap(b) * bulkGrowFactor
+	if next > need || next < cap(b) {
+		next = need
+	} else if need-next < cap(b)/8 {
+		next = need
+	}
+	grown := make([]byte, len(b), next)
+	copy(grown, b)
+	return grown
+}
+
 // readBulkBody reads the n payload bytes of a bulk string plus the trailing
 // CRLF. Replies up to maxBulkPrealloc keep a single allocation. A larger
 // announcement grows with the data that arrives, so it only costs the bytes
@@ -577,13 +602,7 @@ func (r *Reader) readBulkBody(n int) ([]byte, error) {
 	b := make([]byte, 0, maxBulkPrealloc)
 	for len(b) < total {
 		if len(b) == cap(b) {
-			next := cap(b) * 2
-			if next > total || next < cap(b) {
-				next = total
-			}
-			grown := make([]byte, len(b), next)
-			copy(grown, b)
-			b = grown
+			b = growBulkBuffer(b, total)
 		}
 		end := len(b) + min(cap(b)-len(b), total-len(b))
 		m, err := r.rd.Read(b[len(b):end])
@@ -635,13 +654,7 @@ func (r *Reader) appendLargeBulkBody(buf []byte, total int) ([]byte, error) {
 	}
 	for len(buf)-start < total {
 		if len(buf) == cap(buf) {
-			next := cap(buf) * 2
-			if next > start+total || next < cap(buf) {
-				next = start + total
-			}
-			grown := make([]byte, len(buf), next)
-			copy(grown, buf)
-			buf = grown
+			buf = growBulkBuffer(buf, start+total)
 		}
 		limit := start + total
 		end := len(buf) + min(cap(buf)-len(buf), limit-len(buf))
