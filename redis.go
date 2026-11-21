@@ -2780,6 +2780,65 @@ func evalScriptSource(cmd Cmder) (string, bool) {
 	return "", false
 }
 
+// rawReplyErr decodes the Redis error a raw command's reply carries, if any.
+// RawCmd.readReply preserves the RESP frame verbatim in Val() and returns nil
+// even for an error frame, so rawErr() alone cannot see it: the retry
+// machinery would mistake a rejected raw command for an answered one —
+// synthesising a SCRIPT LOAD for a rejected raw EVAL, or accepting a failed
+// raw session-command reissue as a successful restoration. Only a top-level
+// error frame counts ('-' or, in RESP3, a blob error '!'); any other first
+// byte means the reply is a value. The stored bytes are read directly, not
+// through Val(): this runs on the execution path, where awaiting would
+// self-deadlock for autopipelined commands.
+func rawReplyErr(cmd Cmder) error {
+	raw, ok := cmd.(*RawCmd)
+	if !ok {
+		return nil
+	}
+	val := raw.val
+	if len(val) == 0 {
+		return nil
+	}
+	switch val[0] {
+	case proto.RespError:
+		line := val
+		if i := bytes.Index(line, []byte("\r\n")); i >= 0 {
+			line = line[:i]
+		}
+		return proto.ParseErrorReply(line)
+	case proto.RespBlobError:
+		// !<len>\r\n<msg>\r\n — the message is the second line.
+		rest := val
+		if i := bytes.Index(rest, []byte("\r\n")); i >= 0 {
+			rest = rest[i+2:]
+		} else {
+			return nil
+		}
+		msg := rest
+		if i := bytes.Index(msg, []byte("\r\n")); i >= 0 {
+			msg = msg[:i]
+		}
+		return proto.ParseErrorReply(append([]byte("-"), msg...))
+	}
+	return nil
+}
+
+// pipelineCmdErr returns the error a command's reply carries, for the retry
+// machinery's internal decisions: rawErr() for ordinary commands, and for a
+// raw command the Redis error decoded from its raw reply bytes when
+// readReply reported none (see rawReplyErr). The raw bytes are only
+// consulted when rawErr() is nil: a non-nil error is this attempt's own
+// record, and the stored bytes could be stale from an earlier operation.
+// Callers that report results to the user (finalErr,
+// pipelineUnansweredSuffix) keep using rawErr(): a raw command's contract
+// is that its error frame stays in Val().
+func pipelineCmdErr(cmd Cmder) error {
+	if err := cmd.rawErr(); err != nil {
+		return err
+	}
+	return rawReplyErr(cmd)
+}
+
 // evalScriptCached reports whether an answered EVAL or EVAL_RO populated
 // the server's script cache, so a retried EVALSHA may rely on it. A script
 // is cached when the server ran it: a nil reply (redis.Nil — the script
@@ -2796,7 +2855,10 @@ func evalScriptSource(cmd Cmder) (string, bool) {
 // wording the script test server (and older Redis) uses for the same
 // rejection.
 func evalScriptCached(cmd Cmder) bool {
-	err := cmd.rawErr()
+	// A raw EVAL's rejection lives in its reply bytes, not rawErr()
+	// (see rawReplyErr): without the decode a rejected raw EVAL would
+	// count as cached and the retry would synthesise a SCRIPT LOAD for it.
+	err := pipelineCmdErr(cmd)
 	if err == nil || errors.Is(err, Nil) {
 		return true
 	}
@@ -2886,7 +2948,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 		if synthetic[cmd.base()] && !required[cmd.base()] {
 			continue
 		}
-		if e := cmd.rawErr(); e != nil && (!isRedisError(e) || shouldRetry(e, true)) {
+		// A raw command's retryable error lives in its reply bytes, not
+		// rawErr() (see rawReplyErr): without the decode a raw command
+		// rejected with e.g. LOADING would be dropped as answered and
+		// never re-run, while Exec still reports success.
+		if e := pipelineCmdErr(cmd); e != nil && (!isRedisError(e) || shouldRetry(e, true)) {
 			// Connection-local state the suffix cannot re-establish on
 			// its own forces the whole batch; state that can be
 			// re-established (see pipelineConnStateReissueCmd) is
@@ -2907,7 +2973,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// erase the restoration failure.
 			if required := pipelineRequiredSyntheticFromCtx(ctx); required != nil {
 				for _, answered := range cmds[:i] {
-					if required[answered.base()] && answered.rawErr() != nil {
+					if required[answered.base()] && pipelineCmdErr(answered) != nil {
 						return cmds
 					}
 				}
@@ -2946,6 +3012,32 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					return cmds
 				}
 			}
+			// The suffix after the boundary may hold commands an earlier
+			// attempt already answered: a retryable error on one command
+			// does not un-answer the commands after it (their replies
+			// were read in the same attempt), so re-running them would
+			// apply their writes twice — an INCR answered 1 after a
+			// TRYAGAIN MGET would increment to 2 while Exec reports
+			// success. Drop definitively answered originals from the
+			// tail, keeping synthetic prerequisites and connection-local
+			// state (both must be re-established on the new connection),
+			// commands this attempt never dispatched (a stale error is
+			// not this attempt's record), and anything not definitively
+			// answered (a transport failure, or a retryable Redis reply).
+			// A fresh slice: appending to cmds[i:] would overwrite the
+			// original batch the caller still reads results from.
+			tail := make([]Cmder, 0, len(cmds)-i)
+			tail = append(tail, cmds[i])
+			for _, cmd := range cmds[i+1:] {
+				if synthetic[cmd.base()] || pipelineConnStateCmd(cmd) || staleErrs[cmd.base()] {
+					tail = append(tail, cmd)
+					continue
+				}
+				if e := pipelineCmdErr(cmd); e == nil || (isRedisError(e) && !shouldRetry(e, true)) {
+					continue
+				}
+				tail = append(tail, cmd)
+			}
 			// Only rebuild cache entries the suffix actually needs: a
 			// retried EVALSHA fails NOSCRIPT without them, but any other
 			// suffix runs fine without a preload — and a preload is a new
@@ -2954,7 +3046,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// whose own commands all succeed (an ACL user without
 			// SCRIPT LOAD would see NOPERM).
 			needsScripts := false
-			for _, pending := range cmds[i:] {
+			for _, pending := range tail {
 				if isEvalShaCmd(pending) {
 					needsScripts = true
 					break
@@ -3017,7 +3109,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					}
 				}
 			}
-			return append(retry, cmds[i:]...)
+			return append(retry, tail...)
 		}
 	}
 	return cmds
@@ -3523,7 +3615,18 @@ func pipelineRetryAttemptErr(ctx context.Context, cmds []Cmder) error {
 	required := pipelineRequiredSyntheticFromCtx(ctx)
 	var firstOriginal error
 	for _, cmd := range cmds {
-		e := cmd.rawErr()
+		// A required synthetic's error is decoded from its raw reply
+		// bytes when it is a raw command (see rawReplyErr): a failed
+		// re-establishment must fail the batch even when the clone's
+		// readReply reported nil. Original commands keep rawErr() —
+		// a raw original's error frame stays in Val() by contract, and
+		// promoting it here would change what Exec reports for it.
+		var e error
+		if required[cmd.base()] {
+			e = pipelineCmdErr(cmd)
+		} else {
+			e = cmd.rawErr()
+		}
 		if e == nil {
 			continue
 		}
@@ -3553,8 +3656,14 @@ func pipelineRequiredSyntheticErr(ctx context.Context, cmds []Cmder) error {
 		return nil
 	}
 	for _, cmd := range cmds {
-		if e := cmd.rawErr(); e != nil && required[cmd.base()] {
-			return e
+		// A required synthetic that is a raw command reports its
+		// failure only in its reply bytes (see rawReplyErr): without
+		// the decode a rejected re-establishment looks successful and
+		// the suffix runs on a misconfigured connection.
+		if required[cmd.base()] {
+			if e := pipelineCmdErr(cmd); e != nil {
+				return e
+			}
 		}
 	}
 	return nil

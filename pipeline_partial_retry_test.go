@@ -4431,3 +4431,216 @@ func TestPipelineRetryRetiresConnAfterFailedRequiredReissue(t *testing.T) {
 		t.Fatalf("server saw %d connections after the next pipeline, want 3 (the connection released with replies outstanding must not be reused)", got)
 	}
 }
+
+// TestPipelineRetryRawRejectedEvalIsNotPreloaded: a raw EVAL the server
+// rejected (negative key count) never ran, so it cached nothing — the same
+// hole as TestPipelineRetryRejectedEvalIsNotPreloaded, but through a RawCmd.
+// RawCmd.readReply preserves the error frame verbatim in Val() and returns
+// nil, so the retry machinery must classify the raw response before
+// concluding the EVAL populated the cache: without that the retry
+// synthesizes a successful SCRIPT LOAD and the retried EVALSHA executes a
+// write script the original pipeline refused with NOSCRIPT. Regression test
+// for the Codex review finding on #4351.
+func TestPipelineRetryRawRejectedEvalIsNotPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := NewRawCmd(ctx, "eval", src, -1)
+	if err := pipe.BatchProcess(ctx, eval); err != nil {
+		t.Fatalf("BatchProcess: %v", err)
+	}
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("Exec: %v, want NOSCRIPT (the retried EVALSHA must not execute a script the rejected raw EVAL never cached)", err)
+	}
+	if got := string(eval.Val()); !strings.Contains(got, "wrong number of keys") {
+		t.Fatalf("raw EVAL Val() = %q, want it to keep the wrong-number-of-keys error frame", got)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("raw EVAL Err(): %v, want nil (a raw command's error frame stays in Val() by contract)", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a rejected EVAL establishes no cache entry to reissue)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the rejected script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryRawRequiredReissueErrorSurfaces: a raw session command
+// reissued as a required synthetic must surface its failure. The first
+// connection answers a raw SELECT 2 and drops before SET; the replacement
+// server has no DB 2, so the cloned synthetic SELECT is rejected — but its
+// RawCmd.readReply captures the error frame in Val() while leaving
+// rawErr() nil, so both required-synthetic error checks accept the failed
+// restoration, SET executes in DB 0, and Exec reports success. Regression
+// test for the Codex review finding on #4351.
+func TestPipelineRetryRawRequiredReissueErrorSurfaces(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.secondMaxDB = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := NewRawCmd(ctx, "SELECT", 2)
+	set := NewStringCmd(ctx, "set", "k", "v")
+	if err := pipe.BatchProcess(ctx, sel, set); err != nil {
+		t.Fatalf("BatchProcess: %v", err)
+	}
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "DB index is out of range") {
+		t.Fatalf("Exec: %v, want the failed SELECT 2 restoration error (a rejected required reissue must fail the batch, not report success)", err)
+	}
+	if got := string(sel.Val()); !strings.Contains(got, "+OK") {
+		t.Fatalf("raw SELECT Val() = %q, want the +OK it was answered with on the first connection", got)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the restoration error is not retryable)", got)
+	}
+	if got := server.selects.Load(); got != 2 {
+		t.Fatalf("server received %d SELECT commands, want 2 (the answered SELECT must be reissued on the retry connection)", got)
+	}
+	if got := server.sets.Load(); got != 1 {
+		t.Fatalf("server received %d SET commands, want 1", got)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (it ran after the failed restoration — the fix surfaces the error, it cannot undo the write)", got)
+	}
+}
+
+// tryagainRetryServer is a scripted RESP server for the answered-tail
+// retry test. The first connection answers SELECT and drops before MGET;
+// the second answers SELECT, rejects MGET with TRYAGAIN (slot migration)
+// and answers INCR; later connections answer everything. It records how
+// many INCR and MGET commands were answered, so tests can assert a retry
+// did not re-run commands the previous attempt already answered.
+type tryagainRetryServer struct {
+	ln    net.Listener
+	conns atomic.Int32
+	incrs atomic.Int32
+	mgets atomic.Int32
+}
+
+func newTryagainRetryServer(t *testing.T) *tryagainRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &tryagainRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *tryagainRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	answered := 0
+	mgetsThisConn := 0
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		isPipelineCmd := name == "select" || name == "mget" || name == "incr"
+		if n == 1 && answered >= 1 && isPipelineCmd {
+			// Drop the connection mid-pipeline: this command and the
+			// ones after it get no reply on this connection.
+			return
+		}
+		reply := "+OK\r\n"
+		switch name {
+		case "hello":
+			reply = "%0\r\n"
+		case "ping":
+			reply = "+PONG\r\n"
+		case "mget":
+			s.mgets.Add(1)
+			mgetsThisConn++
+			if n == 2 && mgetsThisConn == 1 {
+				// Slot migration on the first batch this
+				// connection serves: the key moved mid-pipeline.
+				// The connection stays healthy, so the retry
+				// reuses it and the next MGET succeeds — the
+				// TRYAGAIN must fire exactly once.
+				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+			} else {
+				reply = "*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+			}
+		case "incr":
+			s.incrs.Add(1)
+			reply = ":1\r\n"
+		}
+		if _, err := conn.Write([]byte(reply)); err != nil {
+			return
+		}
+		if isPipelineCmd {
+			answered++
+		}
+	}
+}
+
+// TestPipelineRetryOmitsAnsweredTailAfterRedisRejection: when a retryable
+// Redis error on one command triggers another retry, commands after it
+// that a previous attempt already answered must not be re-run: their
+// replies were read in the same attempt. Here the second attempt receives
+// [OK, TRYAGAIN, 1] for [SELECT, MGET, INCR] during slot migration; the
+// retry after the TRYAGAIN must resend only the MGET (plus its SELECT
+// prerequisite), not the INCR that already returned 1 — a healthy next
+// attempt would otherwise increment the counter to 2 while Exec reports
+// success. Regression test for the Codex review finding on #4351.
+func TestPipelineRetryOmitsAnsweredTailAfterRedisRejection(t *testing.T) {
+	server := newTryagainRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 0)
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	incr := pipe.Incr(ctx, "counter")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must resend only the rejected MGET)", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the dropped first connection is replaced once; the healthy second one is reused for the retry)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR must not be re-run after the TRYAGAIN)", got)
+	}
+}
