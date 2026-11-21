@@ -2780,6 +2780,54 @@ func evalScriptSource(cmd Cmder) (string, bool) {
 	return "", false
 }
 
+// pipelineCmdQueued reports whether cmd's reply is +QUEUED: the server
+// accepted the command into a MULTI/EXEC transaction instead of executing
+// it. A queued command has no execution result yet — it runs only when
+// EXEC runs on the same connection — so it is not definitively answered
+// the way an OK or an integer reply is. The stored reply is read
+// directly, not through Val(): this runs on the execution path, where
+// awaiting would self-deadlock for autopipelined commands (see
+// rawReplyErr). A typed command (INCR, ...) needs no case here: its
+// readReply rejects a +QUEUED frame as a protocol error, so
+// pipelineCmdErr already keeps it. Only the generic and string replies
+// below parse +QUEUED cleanly.
+func pipelineCmdQueued(cmd Cmder) bool {
+	switch c := cmd.(type) {
+	case *Cmd:
+		s, ok := c.val.(string)
+		return ok && s == "QUEUED"
+	case *StringCmd:
+		return c.val == "QUEUED"
+	case *StatusCmd:
+		return c.val == "QUEUED"
+	case *RawCmd:
+		line := c.val
+		if i := bytes.Index(line, []byte("\r\n")); i >= 0 {
+			line = line[:i]
+		}
+		return string(line) == "+QUEUED"
+	}
+	return false
+}
+
+// pipelineQueuedCmdNeedsRetry reports whether a command answered +QUEUED
+// still needs to run on retry. It does when its transaction's EXEC
+// follows it in cmds and that EXEC did not answer successfully on this
+// attempt — the connection dropped before EXEC ran, or EXEC aborted — so
+// the queued command never executed. It does not when the EXEC already
+// answered successfully (the command ran and must not run again), or
+// when no EXEC follows it at all (no transaction to commit it: a stray
+// +QUEUED outside MULTI is treated as answered, as before).
+func pipelineQueuedCmdNeedsRetry(cmds []Cmder, queued int) bool {
+	for _, cmd := range cmds[queued+1:] {
+		if cmd.Name() != "exec" {
+			continue
+		}
+		return pipelineCmdErr(cmd) != nil
+	}
+	return false
+}
+
 // rawReplyErr decodes the Redis error a raw command's reply carries, if any.
 // RawCmd.readReply preserves the RESP frame verbatim in Val() and returns nil
 // even for an error frame, so rawErr() alone cannot see it: the retry
@@ -2910,7 +2958,10 @@ func evalScriptCached(cmd Cmder) bool {
 // the answered script itself is never executed again. A SCRIPT FLUSH that
 // followed a reissued LOAD is reissued with it, in order: replaying the
 // LOAD without the FLUSH would execute a script the batch had already
-// removed, where the whole-batch retry would have returned NOSCRIPT.
+// removed, where the whole-batch retry would have returned NOSCRIPT. The
+// same holds for a LOAD or FLUSH the tail filter dropped after the
+// boundary: the reconstruction sees the answered tail too, not just the
+// prefix, so the effective load/flush ordering survives the trim.
 // Session reissues and script preloads are emitted in the order the
 // original prefix established them, so an AUTH that guards a SCRIPT LOAD
 // stays ahead of it instead of being grouped before all preloads.
@@ -3024,16 +3075,36 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// commands this attempt never dispatched (a stale error is
 			// not this attempt's record), and anything not definitively
 			// answered (a transport failure, or a retryable Redis reply).
-			// A fresh slice: appending to cmds[i:] would overwrite the
-			// original batch the caller still reads results from.
+			// A +QUEUED reply is not a definitive answer either: the
+			// command runs only when its transaction's EXEC runs, so a
+			// queued command whose EXEC never answered must be kept and
+			// re-queued, or the retry would commit an empty transaction
+			// and report success while the write never ran (see
+			// pipelineQueuedCmdNeedsRetry). A fresh slice: appending to
+			// cmds[i:] would overwrite the original batch the caller
+			// still reads results from.
 			tail := make([]Cmder, 0, len(cmds)-i)
 			tail = append(tail, cmds[i])
-			for _, cmd := range cmds[i+1:] {
+			// answeredTail holds the original commands after the
+			// boundary the filter drops as definitively answered. The
+			// reconstruction below must see them too: their script
+			// effects (a LOAD that populated the cache, a FLUSH that
+			// emptied it, an EVAL that ran) still decide what the
+			// retry's EVALSHA may rely on — a FLUSH answered after the
+			// boundary that the loop never sees would let the retry
+			// re-execute a script the batch had already removed.
+			var answeredTail []Cmder
+			for j, cmd := range cmds[i+1:] {
 				if synthetic[cmd.base()] || pipelineConnStateCmd(cmd) || staleErrs[cmd.base()] {
 					tail = append(tail, cmd)
 					continue
 				}
+				if pipelineCmdQueued(cmd) && pipelineQueuedCmdNeedsRetry(cmds, i+1+j) {
+					tail = append(tail, cmd)
+					continue
+				}
 				if e := pipelineCmdErr(cmd); e == nil || (isRedisError(e) && !shouldRetry(e, true)) {
+					answeredTail = append(answeredTail, cmd)
 					continue
 				}
 				tail = append(tail, cmd)
@@ -3054,9 +3125,10 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			}
 			var retry []Cmder
 			// Re-establish answered connection-local state and rebuild
-			// script cache entries in the order the original prefix
-			// established them. The retry must run the suffix under the
-			// same state the first attempt established, and a fresh
+			// script cache entries in the order the original batch
+			// established them: the answered prefix, then the answered
+			// tail the filter dropped. The retry must run the suffix under
+			// the same state the first attempt established, and a fresh
 			// command's failure lands on it instead of overwriting the
 			// original's answer. A failed re-establishment fails the
 			// batch (see pipelineRetryAttemptErr): the suffix would
@@ -3064,8 +3136,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// commands and script prerequisites interleave: an AUTH
 			// that may load scripts must stay ahead of the SCRIPT LOAD
 			// it guards, so both are emitted in a single pass over the
-			// answered prefix instead of two grouped passes.
-			for _, answered := range cmds[:i] {
+			// answered commands instead of two grouped passes.
+			replay := make([]Cmder, 0, i+len(answeredTail))
+			replay = append(replay, cmds[:i]...)
+			replay = append(replay, answeredTail...)
+			for _, answered := range replay {
 				if pipelineConnStateReissueCmd(answered) {
 					// Clone, not a fresh StringCmd: the reissued
 					// command must keep the original's reply
