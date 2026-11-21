@@ -2651,6 +2651,22 @@ func pipelineConnStateReissueCmd(cmd Cmder) bool {
 	return false
 }
 
+// pipelineWatchSafeFollowerCmd reports whether an answered command that
+// followed a WATCH can be left out of the retry without changing what a
+// reissued WATCH means. A reissued WATCH on a fresh connection is clean,
+// so it is only the same watch when nothing the first attempt answered
+// after it could have dirtied it. Only followers the retry re-emits
+// without replaying their writes qualify: re-established connection
+// state (see pipelineConnStateReissueCmd) and SCRIPT LOAD/FLUSH cache
+// rebuilds, neither of which modifies a key. An answered EVAL does not:
+// its preload replays only the script source, not the writes it ran,
+// so a script that wrote a watched key would leave the reissued watch
+// clean. Every other answered follower keeps the whole batch (see
+// pipelineRetrySuffix).
+func pipelineWatchSafeFollowerCmd(cmd Cmder) bool {
+	return pipelineConnStateReissueCmd(cmd) || isScriptLoadCmd(cmd) || isScriptFlushCmd(cmd)
+}
+
 // scriptSubcommand returns the SCRIPT subcommand (LOAD, FLUSH, ...) of cmd,
 // normalised the way the command is sent: a raw command built with Do may
 // carry the subcommand as []byte or *string, and Writer.WriteArg sends
@@ -2776,7 +2792,12 @@ func evalScriptCached(cmd Cmder) bool {
 // state cannot be re-established on its own: commands
 // pipelineConnStateReissueCmd accepts are reissued ahead of the suffix as
 // fresh copies instead, so the retry re-establishes the state without
-// re-running the answered writes that followed it. An answered
+// re-running the answered writes that followed it. A reissued WATCH is
+// the exception: it is only reissued when nothing the first attempt
+// answered after it could have dirtied it (see
+// pipelineWatchSafeFollowerCmd); otherwise the whole batch is kept, so
+// the retried watch is dirtied the same way and a later EXEC aborts
+// instead of silently committing. An answered
 // SCRIPT LOAD is reissued ahead of the suffix instead: it populates the
 // server's volatile script cache, which a restarted server does not have, so
 // an EVALSHA in the suffix would fail NOSCRIPT without it. SCRIPT LOAD is
@@ -2810,6 +2831,28 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			for _, answered := range cmds[:i] {
 				if pipelineConnStateCmd(answered) && !pipelineConnStateReissueCmd(answered) {
 					return cmds
+				}
+			}
+			// A reissued WATCH is only the same watch when nothing
+			// the first attempt answered after it could have dirtied
+			// it: the replacement connection's watch is clean, so
+			// dropping an answered write that followed the WATCH (an
+			// INCR on the watched key) would let a later EXEC commit
+			// a transaction the original ordering would have
+			// aborted. A follower the retry re-emits without
+			// replaying its writes (see
+			// pipelineWatchSafeFollowerCmd) is safe; any other
+			// answered follower keeps the whole batch, which
+			// re-runs the write and dirties the retried watch the
+			// same way.
+			for j, answered := range cmds[:i] {
+				if answered.Name() != "watch" {
+					continue
+				}
+				for _, after := range cmds[j+1 : i] {
+					if !pipelineWatchSafeFollowerCmd(after) {
+						return cmds
+					}
 				}
 			}
 			// A WAIT/WAITAOF in the suffix reads the replication offset
@@ -3438,6 +3481,22 @@ func pipelineRequiredSyntheticErr(ctx context.Context, cmds []Cmder) error {
 	return nil
 }
 
+// pipelineHasSyntheticCmd reports whether cmds contains a synthetic
+// command pipelineRetrySuffix created for this retry (a reissued
+// connection-state command or a script preload).
+func pipelineHasSyntheticCmd(ctx context.Context, cmds []Cmder) bool {
+	synthetic := pipelineSyntheticFromCtx(ctx)
+	if synthetic == nil {
+		return false
+	}
+	for _, cmd := range cmds {
+		if synthetic[cmd.base()] {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
@@ -3532,11 +3591,23 @@ func (c *baseClient) pipelineProcessCmds(
 	// read loop reports only the first command's error, so a required
 	// re-establishment that fails later in the batch needs its own check
 	// even when the first command succeeded (see
-	// pipelineRequiredSyntheticErr).
+	// pipelineRequiredSyntheticErr). The same holds for a later original
+	// command's retryable error when the batch opens with synthetic
+	// commands that succeeded (a synthetic SELECT ahead of a SET that
+	// answers READONLY during failover): without its own check the
+	// attempt reports success and the outer loop exits with retries
+	// left, returning the error too late to retry it. That check is
+	// scoped to batches with a synthetic prefix: without one the first
+	// command's error stays the batch error, as before, since a later
+	// original's retryable error cannot be retried without re-running
+	// the commands the first attempt already answered (see
+	// pipelineHasSyntheticCmd).
 	if readErr != nil {
 		readErr = pipelineRetryAttemptErr(ctx, cmds)
-	} else {
-		readErr = pipelineRequiredSyntheticErr(ctx, cmds)
+	} else if err := pipelineRequiredSyntheticErr(ctx, cmds); err != nil {
+		readErr = err
+	} else if pipelineHasSyntheticCmd(ctx, cmds) {
+		readErr = pipelineRetryAttemptErr(ctx, cmds)
 	}
 	return readErr != nil, readErr
 }

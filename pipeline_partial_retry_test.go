@@ -159,6 +159,7 @@ type connStateRetryServer struct {
 	multiCount       atomic.Int32
 	execWithMulti    atomic.Int32
 	execWithoutMulti atomic.Int32
+	execAborted      atomic.Int32 // EXECs that aborted because a watched key was modified
 	incrs            atomic.Int32
 	selects          atomic.Int32
 	// dropAfter is how many pipeline commands the first connection
@@ -226,6 +227,11 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 	db := 0
 	inMulti := false
 	watched := false
+	// watchedKeys tracks the keys this connection watches, and dirty
+	// whether one of them was modified since the WATCH: like a real
+	// server, an EXEC then aborts (nil array) instead of committing.
+	watchedKeys := map[string]bool{}
+	dirty := false
 	answered := 0
 	for {
 		name, args := readConnStateRetryCommand(scanner)
@@ -267,16 +273,27 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 			if watched {
 				s.setWhileWatched.Add(1)
 			}
+			if len(args) > 0 && watchedKeys[args[0]] {
+				dirty = true
+			}
 			if inMulti {
 				reply = "+QUEUED\r\n"
 			}
 		case "incr":
 			s.incrs.Add(1)
+			if len(args) > 0 && watchedKeys[args[0]] {
+				dirty = true
+			}
 			reply = ":1\r\n"
 		case "watch":
 			watched = true
+			for _, key := range args {
+				watchedKeys[key] = true
+			}
 		case "unwatch":
 			watched = false
+			clear(watchedKeys)
+			dirty = false
 		case "get":
 			reply = "$1\r\nv\r\n"
 		case "multi":
@@ -284,9 +301,17 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 			inMulti = true
 		case "exec":
 			if inMulti {
-				s.execWithMulti.Add(1)
 				inMulti = false
-				reply = "*1\r\n+OK\r\n"
+				clear(watchedKeys)
+				watched = false
+				if dirty {
+					dirty = false
+					s.execAborted.Add(1)
+					reply = "*-1\r\n"
+				} else {
+					s.execWithMulti.Add(1)
+					reply = "*1\r\n+OK\r\n"
+				}
 			} else {
 				s.execWithoutMulti.Add(1)
 				reply = "-ERR EXEC without MULTI\r\n"
@@ -391,6 +416,182 @@ func TestPipelineRetryKeepsWatch(t *testing.T) {
 	}
 	if got := server.setWhileWatched.Load(); got != 1 {
 		t.Fatalf("SET ran %d time(s) while watched, want 1 (the answered WATCH must not be dropped by the retry)", got)
+	}
+}
+
+// TestPipelineRetryDirtyWatchAbortsExec: a WATCH followed by an answered
+// write that dirtied it must keep the whole batch on retry. Reissuing
+// the WATCH alone on a fresh connection would give it a clean watch, so
+// the retried EXEC would commit a transaction the original ordering
+// would have aborted (the client's own INCR invalidates the watch).
+// Regression test for the review finding on #4351.
+func TestPipelineRetryDirtyWatchAbortsExec(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 2
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	watch := pipe.Do(ctx, "watch", "k")
+	incr := pipe.Incr(ctx, "k")
+	multi := pipe.Do(ctx, "multi")
+	set := pipe.Set(ctx, "other", "v", 0)
+	exec := pipe.Do(ctx, "exec")
+	// The aborted EXEC surfaces as redis.Nil, exactly as the same
+	// batch would without any disconnect: the transaction aborted
+	// because the client's own INCR invalidated the watch.
+	if _, err := pipe.Exec(ctx); !errors.Is(err, Nil) {
+		t.Fatalf("Exec: %v, want redis.Nil (the retried EXEC must abort, like the same batch without a disconnect)", err)
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("WATCH: %v", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := exec.Err(); !errors.Is(err, Nil) {
+		t.Fatalf("EXEC: %v, want redis.Nil (the aborted EXEC reply)", err)
+	}
+	// The retried transaction must abort: the answered INCR dirtied the
+	// watch, so a clean reissued WATCH would silently commit the SET.
+	if got := server.execAborted.Load(); got != 1 {
+		t.Fatalf("EXEC aborted %d time(s), want 1 (the retried transaction must abort, not silently commit)", got)
+	}
+	if got := server.execWithMulti.Load(); got != 0 {
+		t.Fatalf("EXEC committed %d time(s), want 0 (a reissued clean WATCH must not let the transaction commit)", got)
+	}
+	// Whole-batch retry re-runs the answered INCR (the pre-existing
+	// whole-batch cost): it ran once on the first connection and once
+	// on the retry, which is what dirties the retried watch.
+	if got := server.incrs.Load(); got != 2 {
+		t.Fatalf("server received %d INCR commands, want 2 (the answered INCR must be re-run with the whole batch)", got)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil (the retried INCR overwrites the first attempt's reply)", got, err)
+	}
+}
+
+// syntheticPrefixRetryServer is a scripted RESP server for the synthetic
+// prefix retry test. The first connection answers INCR and SELECT and
+// then drops before SET's reply; the next connection answers the
+// synthetic SELECT and rejects the retried SET with READONLY (failover
+// in progress); later connections answer everything, so a correct retry
+// eventually applies the SET.
+type syntheticPrefixRetryServer struct {
+	ln           net.Listener
+	conns        atomic.Int32
+	setsReceived atomic.Int32
+	readonlySets atomic.Int32
+	setsApplied  atomic.Int32
+	setDB        atomic.Int32 // DB in effect when SET last ran, -1 = never
+}
+
+func newSyntheticPrefixRetryServer(t *testing.T) *syntheticPrefixRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &syntheticPrefixRetryServer{ln: ln}
+	s.setDB.Store(-1)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n == 1)
+		}
+	}()
+	return s
+}
+
+func (s *syntheticPrefixRetryServer) serve(conn net.Conn, first bool) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	db := 0
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "select":
+			if len(args) > 0 {
+				if n, err := strconv.Atoi(args[0]); err == nil {
+					db = n
+				}
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "incr":
+			_, _ = conn.Write([]byte(":1\r\n"))
+		case "set":
+			s.setsReceived.Add(1)
+			s.setDB.Store(int32(db))
+			if first {
+				// Drop before replying: the SET must be retried
+				// with a synthetic SELECT ahead of it.
+				return
+			}
+			if s.readonlySets.Load() == 0 {
+				s.readonlySets.Add(1)
+				_, _ = conn.Write([]byte("-READONLY You can't write against a read only replica.\r\n"))
+				continue
+			}
+			s.setsApplied.Add(1)
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryClassifiesOriginalErrorAfterSyntheticPrefix: when a
+// retry opens with synthetic commands that succeed, a retryable error on
+// a later original command must still be classified for retry. Here the
+// retried SET answers READONLY during failover behind a synthetic SELECT
+// that succeeded: without the fix the attempt reports success, the outer
+// loop exits with retries left, and Exec returns the READONLY too late
+// to retry it. Regression test for the review finding on #4351.
+func TestPipelineRetryClassifiesOriginalErrorAfterSyntheticPrefix(t *testing.T) {
+	server := newSyntheticPrefixRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	incr := pipe.Incr(ctx, "counter")
+	sel := pipe.Select(ctx, 2)
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the READONLY reply on the retried SET must be retried, not reported as success)", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil (it must be retried after the failover, not left with the READONLY error)", err)
+	}
+	if got := server.setDB.Load(); got != 2 {
+		t.Fatalf("SET ran on DB %d, want 2 (the retried SET must run on the re-established database)", got)
+	}
+	if got := server.readonlySets.Load(); got != 1 {
+		t.Fatalf("server returned READONLY %d time(s), want 1", got)
+	}
+	if got := server.setsApplied.Load(); got != 1 {
+		t.Fatalf("server applied %d SET commands, want 1 (the SET rejected READONLY must be applied by a later retry)", got)
+	}
+	if got := server.setsReceived.Load(); got != 3 {
+		t.Fatalf("server received %d SET commands, want 3 (dropped once, READONLY once, applied once)", got)
 	}
 }
 
