@@ -562,18 +562,47 @@ func bulkTotal(n int) (int, bool) {
 // while that body pays two growth steps instead of five.
 const bulkGrowFactor = 4
 
-// growBulkBuffer returns b, which is full, with room for more bytes: it is
-// passed the length the buffer ultimately has to hold (need). The new capacity
-// is bulkGrowFactor times the bytes already buffered, rounded up to need when
+// maxRespHeaderLen bounds the raw RESP line that precedes a reply element: the
+// type byte, at most 19 digits of length and CRLF.
+const maxRespHeaderLen = 1 + 19 + 2
+
+// bulkGrowCap returns the capacity to give a full buffer so that it can hold
+// need bytes. It adds up to maxBulkPrealloc of headroom (bounded by need) so a
+// large body does not grow in tiny steps, and it jumps straight to need when
 // the growth step would leave less than an eighth of a step missing, so the
-// last few bytes do not copy the whole buffer again. Memory therefore follows
-// the data received rather than an announced length.
-func growBulkBuffer(b []byte, need int) []byte {
+// last few bytes do not copy the whole buffer again.
+func bulkGrowCap(b []byte, need int) int {
 	next := cap(b) * bulkGrowFactor
+	if headroom := len(b) + min(maxBulkPrealloc, need-len(b)); headroom > next {
+		next = headroom
+	}
 	if next > need || next < cap(b) {
 		next = need
 	} else if need-next < cap(b)/8 {
 		next = need
+	}
+	return next
+}
+
+// growBulkBuffer returns b, which is full, with room for more bytes: it is
+// passed the length the buffer ultimately has to hold (need). The new capacity
+// is at most bulkGrowFactor times the bytes already buffered, so memory follows
+// the data received rather than an announced length.
+func growBulkBuffer(b []byte, need int) []byte {
+	grown := make([]byte, len(b), bulkGrowCap(b, need))
+	copy(grown, b)
+	return grown
+}
+
+// growAppendBulkBuffer grows b for a bulk body appended to a raw reply. It is
+// growBulkBuffer plus one header's worth of spare capacity when the body ends
+// at need: the next reply element appends its header before reading its body,
+// and without that spare the append would reallocate and copy the whole
+// accumulated reply again.
+func growAppendBulkBuffer(b []byte, need int) []byte {
+	next := bulkGrowCap(b, need)
+	if next == need && next <= math.MaxInt-maxRespHeaderLen {
+		next += maxRespHeaderLen
 	}
 	grown := make([]byte, len(b), next)
 	copy(grown, b)
@@ -642,22 +671,24 @@ func (r *Reader) appendBulkBody(buf []byte, n int) ([]byte, error) {
 }
 
 // appendLargeBulkBody appends a bulk body larger than maxBulkPrealloc to buf,
-// reading into its spare capacity and doubling it as the data arrives. It keeps
+// reading into its spare capacity and growing it as the data arrives. It keeps
 // the small path free of the growth bookkeeping.
 func (r *Reader) appendLargeBulkBody(buf []byte, total int) ([]byte, error) {
 	start := len(buf)
-	want := start + min(maxBulkPrealloc, total)
-	if cap(buf) < want {
-		grown := make([]byte, len(buf), want)
-		copy(grown, buf)
-		buf = grown
+	// total is representable on its own, but adding it to the reply already
+	// accumulated can overflow the int used for the buffer length; reject that
+	// instead of wrapping around into a negative capacity.
+	if total > math.MaxInt-start {
+		return buf, fmt.Errorf("redis: bulk length %d overflows the reply buffer", total-2)
 	}
+	need := start + total
 	for len(buf)-start < total {
+		// Consume the spare capacity already in buf before reallocating: a raw
+		// reply accumulates several bodies and the buffer often still has room.
 		if len(buf) == cap(buf) {
-			buf = growBulkBuffer(buf, start+total)
+			buf = growAppendBulkBuffer(buf, need)
 		}
-		limit := start + total
-		end := len(buf) + min(cap(buf)-len(buf), limit-len(buf))
+		end := len(buf) + min(cap(buf)-len(buf), need-len(buf))
 		m, err := r.rd.Read(buf[len(buf):end])
 		buf = buf[:len(buf)+m]
 		if len(buf)-start == total {

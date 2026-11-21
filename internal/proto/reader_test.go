@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"runtime"
 	"strconv"
 	"testing"
@@ -684,5 +685,52 @@ func TestReadStringAcceptsTheFinalReadWithError(t *testing.T) {
 	}
 	if len(got) != size || !bytes.Equal([]byte(got), payload) {
 		t.Fatalf("ReadString returned %d bytes, want %d", len(got), size)
+	}
+}
+
+// The raw path adds the bulk length to the length of the accumulated reply. A
+// length that is representable on its own overflows that sum, and a peer that
+// keeps sending must get an error instead of a panic.
+func TestReadRawReplyRejectsAnOverflowingBulkLength(t *testing.T) {
+	declared := math.MaxInt - 10
+	frame := []byte("$" + strconv.Itoa(declared) + "\r\n")
+	frame = append(frame, bytes.Repeat([]byte{'x'}, bulkPrealloc)...)
+
+	rd := proto.NewReader(bytes.NewReader(frame))
+	if _, err := rd.ReadRawReply(); err == nil {
+		t.Fatal("ReadRawReply accepted a bulk length that overflows the reply buffer")
+	}
+}
+
+// A raw reply accumulates several large bulks in one buffer: the spare
+// capacity the buffer already has must be filled before it is reallocated, and
+// the exact reply bytes must come back.
+func TestReadRawReplyReadsAnArrayOfLargeBulks(t *testing.T) {
+	size := bulkPrealloc + 1
+	payload := bytes.Repeat([]byte{'x'}, size)
+	frame := []byte("*2\r\n")
+	for i := 0; i < 2; i++ {
+		frame = append(frame, '$')
+		frame = strconv.AppendInt(frame, int64(size), 10)
+		frame = append(frame, "\r\n"...)
+		frame = append(frame, payload...)
+		frame = append(frame, "\r\n"...)
+	}
+	frame = append(frame, "+OK\r\n"...)
+
+	rd := proto.NewReader(bytes.NewReader(frame))
+	raw, err := rd.ReadRawReply()
+	if err != nil {
+		t.Fatalf("ReadRawReply: %v", err)
+	}
+	if !bytes.Equal(raw, frame[:len(frame)-5]) {
+		t.Fatalf("ReadRawReply returned %d bytes that do not match the frame", len(raw))
+	}
+	next, err := rd.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString after the raw reply: %v", err)
+	}
+	if next != "OK" {
+		t.Fatalf("ReadString after the raw reply = %q, want %q", next, "OK")
 	}
 }
