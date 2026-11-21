@@ -594,14 +594,28 @@ func growBulkBuffer(b []byte, need int) []byte {
 	return grown
 }
 
-// growAppendBulkBuffer grows b for a bulk body appended to a raw reply. It is
-// growBulkBuffer plus one header's worth of spare capacity when the body ends
-// at need: the next reply element appends its header before reading its body,
-// and without that spare the append would reallocate and copy the whole
-// accumulated reply again.
+// growAppendBulkBuffer grows b, which is full, for a bulk body appended to a
+// raw reply. need is the length the accumulated reply reaches at the end of
+// this body; the new capacity may exceed it, because a raw reply keeps
+// appending elements and ending every allocation at need would copy the whole
+// reply once per element. Doubling the bytes already buffered keeps the
+// allocations for a reply of many elements amortized linear: every step doubles
+// the buffer, so the total copied is proportional to the final size. Growth is
+// also never more than one maxBulkPrealloc read-ahead chunk beyond the bytes
+// received, so an announced length that the peer does not send still cannot
+// reserve more than received bytes plus one chunk. One RESP header of room is
+// left past need so the header of the next element does not reallocate either.
 func growAppendBulkBuffer(b []byte, need int) []byte {
-	next := bulkGrowCap(b, need)
-	if next == need && next <= math.MaxInt-maxRespHeaderLen {
+	next := len(b) * 2
+	if next < len(b) { // overflow
+		next = need
+	}
+	if readAhead := len(b) + min(maxBulkPrealloc, need-len(b)); readAhead > next {
+		next = readAhead
+	}
+	if next > math.MaxInt-maxRespHeaderLen {
+		next = need
+	} else if next >= need {
 		next += maxRespHeaderLen
 	}
 	grown := make([]byte, len(b), next)
