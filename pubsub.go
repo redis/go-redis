@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -32,11 +34,26 @@ type PubSub struct {
 	newConn   func(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error)
 	closeConn func(*pool.Conn) error
 
+	// connKey, when set, maps a sharded channel to a connection key (for a
+	// cluster client: the address of the shard owning the channel's slot).
+	// Sharded channels with different keys are subscribed on separate
+	// connections, and Receive merges messages from all of them. This makes
+	// one PubSub able to SSubscribe to channels across different shards
+	// (https://github.com/redis/go-redis/issues/3133). When nil, the PubSub
+	// uses a single connection for everything.
+	connKey func(ctx context.Context, channel string) (string, error)
+
 	mu        sync.Mutex
 	cn        *pool.Conn
 	channels  map[string]struct{}
 	patterns  map[string]struct{}
 	schannels map[string]struct{}
+
+	// conns holds one connection per connKey when connKey is set ("" is the
+	// default connection used for non-sharded subscriptions, pings, etc.).
+	// recvCh merges the replies read by the per-connection reader goroutines.
+	conns  map[string]*pool.Conn
+	recvCh chan pubSubRecv
 
 	closed bool
 	exit   chan struct{}
@@ -64,12 +81,42 @@ type PubSub struct {
 	// Cleanup callback for maintenanceNotifications upgrade tracking
 	onClose func()
 
-	// In-place re-authentication pending reply count (RESP3)
-	authPending int
+	// In-place re-authentication pending reply count (RESP3). authPending is
+	// used by single-connection PubSubs; connAuthPending is the per-connection
+	// variant used by mux (multi-connection) PubSubs.
+	authPending     int
+	connAuthPending map[*pool.Conn]int
+}
+
+// pubSubRecv is one reply read from a PubSub connection by a reader goroutine.
+type pubSubRecv struct {
+	cn  *pool.Conn
+	msg interface{}
+	err error
 }
 
 func (c *PubSub) init() {
 	c.exit = make(chan struct{})
+}
+
+// mux reports whether this PubSub multiplexes several connections (connKey
+// set, e.g. cluster sharded pub/sub spanning multiple shards).
+func (c *PubSub) mux() bool {
+	return c.connKey != nil
+}
+
+// ensureMuxLocked lazily initializes the multi-connection state. Callers must
+// hold c.mu.
+func (c *PubSub) ensureMuxLocked() {
+	if c.conns == nil {
+		c.conns = make(map[string]*pool.Conn)
+	}
+	if c.recvCh == nil {
+		c.recvCh = make(chan pubSubRecv, 100)
+	}
+	if c.connAuthPending == nil {
+		c.connAuthPending = make(map[*pool.Conn]int)
+	}
 }
 
 func (c *PubSub) recorder() otel.Recorder {
@@ -97,6 +144,11 @@ func (c *PubSub) connWithLock(ctx context.Context) (*pool.Conn, error) {
 }
 
 func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, error) {
+	if c.mux() {
+		// Multi-connection PubSub: the default ("") connection carries
+		// non-sharded subscriptions, pings, etc.
+		return c.connForKey(ctx, "", newChannels)
+	}
 	if c.closed {
 		return nil, pool.ErrClosed
 	}
@@ -127,18 +179,12 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	channels = append(channels, slices.Collect(maps.Keys(c.schannels))...)
 	channels = append(channels, newChannels...)
 
-	cn, err := c.newConn(ctx, c.opt.Addr, channels, func(cn *pool.Conn) {
-		// Bind the callback to this connection so a re-auth scheduled for it
-		// never reaches a replacement connection (see PubSub.reauth).
-		cn.SetPubSubReAuth(func(username, password string) error {
-			return c.reauth(cn, username, password)
-		})
-	})
+	cn, err := c.newConn(ctx, c.opt.Addr, channels, c.pubSubOnInit())
 	if err != nil {
 		return nil, err
 	}
 
-	if err := c.resubscribe(ctx, cn); err != nil {
+	if err := c.resubscribe(ctx, cn, ""); err != nil {
 		_ = c.closeConn(cn)
 		return nil, err
 	}
@@ -147,30 +193,109 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	return cn, nil
 }
 
+// pubSubOnInit returns the onInit hook binding the re-auth callback to the
+// connection being created.
+func (c *PubSub) pubSubOnInit() func(*pool.Conn) {
+	return func(cn *pool.Conn) {
+		// Bind the callback to this connection so a re-auth scheduled for it
+		// never reaches a replacement connection (see PubSub.reauth).
+		cn.SetPubSubReAuth(func(username, password string) error {
+			return c.reauth(cn, username, password)
+		})
+	}
+}
+
+// connForKey returns the connection for the given connKey, creating it if
+// needed. Callers must hold c.mu. newChannels are the channels being
+// subscribed right now; they are included in the channel list passed to
+// newConn so the connection factory can route the connection (a cluster
+// client picks the shard owning channels[0]'s slot).
+func (c *PubSub) connForKey(ctx context.Context, key string, newChannels []string) (*pool.Conn, error) {
+	if c.closed {
+		return nil, pool.ErrClosed
+	}
+	if c.stickyErr != nil {
+		return nil, c.stickyErr
+	}
+	c.ensureMuxLocked()
+	if cn := c.conns[key]; cn != nil {
+		return cn, nil
+	}
+
+	cn, err := c.dialKeyLocked(ctx, key, newChannels)
+	if err != nil {
+		return nil, err
+	}
+	// In mux mode every connection gets a dedicated reader goroutine feeding
+	// recvCh; Receive reads from there instead of reading the connection
+	// directly.
+	go c.readLoop(key, cn)
+	return cn, nil
+}
+
+// keyOfLocked returns the connKey owning cn, and whether cn is known.
+// Callers must hold c.mu.
+func (c *PubSub) keyOfLocked(cn *pool.Conn) (string, bool) {
+	if c.cn == cn {
+		return "", true
+	}
+	for key, kcn := range c.conns {
+		if kcn == cn {
+			return key, true
+		}
+	}
+	return "", false
+}
+
 func (c *PubSub) writeCmd(ctx context.Context, cn *pool.Conn, cmd Cmder) error {
 	return cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmd(wr, cmd)
 	})
 }
 
-func (c *PubSub) resubscribe(ctx context.Context, cn *pool.Conn) error {
+// resubscribe replays the subscriptions that belong to the connection cn on
+// it. key is the connKey of cn ("" for the default connection): in mux mode
+// the default connection carries regular channels and patterns, while each
+// keyed connection carries only the sharded channels assigned to its key.
+func (c *PubSub) resubscribe(ctx context.Context, cn *pool.Conn, key string) error {
 	var firstErr error
 
-	if len(c.channels) > 0 {
-		firstErr = c._subscribe(ctx, cn, "subscribe", slices.Collect(maps.Keys(c.channels)))
-	}
+	if key == "" {
+		if len(c.channels) > 0 {
+			firstErr = c._subscribe(ctx, cn, "subscribe", slices.Collect(maps.Keys(c.channels)))
+		}
 
-	if len(c.patterns) > 0 {
-		err := c._subscribe(ctx, cn, "psubscribe", slices.Collect(maps.Keys(c.patterns)))
-		if err != nil && firstErr == nil {
-			firstErr = err
+		if len(c.patterns) > 0 {
+			err := c._subscribe(ctx, cn, "psubscribe", slices.Collect(maps.Keys(c.patterns)))
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 
 	if len(c.schannels) > 0 {
-		err := c._subscribe(ctx, cn, "ssubscribe", slices.Collect(maps.Keys(c.schannels)))
-		if err != nil && firstErr == nil {
-			firstErr = err
+		var chans []string
+		if c.mux() {
+			for ch := range c.schannels {
+				k, err := c.connKey(ctx, ch)
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				if k == key {
+					chans = append(chans, ch)
+				}
+			}
+		} else {
+			chans = slices.Collect(maps.Keys(c.schannels))
+		}
+		if len(chans) > 0 {
+			err := c._subscribe(ctx, cn, "ssubscribe", chans)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 
@@ -201,6 +326,20 @@ func (c *PubSub) releaseConnWithLock(
 }
 
 func (c *PubSub) releaseConn(ctx context.Context, cn *pool.Conn, err error, allowTimeout bool) {
+	if c.mux() {
+		key, ok := c.keyOfLocked(cn)
+		if !ok {
+			return
+		}
+		if !cn.IsUsable() || cn.ShouldHandoff() {
+			c.reconnectKey(ctx, key, cn, fmt.Errorf("pubsub: connection is not usable"))
+			return
+		}
+		if isBadConn(err, allowTimeout, c.opt.Addr) {
+			c.reconnectKey(ctx, key, cn, err)
+		}
+		return
+	}
 	if c.cn != cn {
 		return
 	}
@@ -231,13 +370,18 @@ func (c *PubSub) forceReconnect(ctx context.Context, reason error) {
 		return
 	}
 	// Nothing to move: an empty handle dials lazily on first use.
-	if c.cn == nil && len(c.channels) == 0 && len(c.patterns) == 0 && len(c.schannels) == 0 {
+	if c.cn == nil && len(c.conns) == 0 &&
+		len(c.channels) == 0 && len(c.patterns) == 0 && len(c.schannels) == 0 {
 		return
 	}
 	c.reconnect(ctx, reason)
 }
 
 func (c *PubSub) reconnect(ctx context.Context, reason error) {
+	if c.mux() {
+		c.reconnectAllLocked(ctx, reason)
+		return
+	}
 	if c.cn != nil && c.cn.ShouldHandoff() {
 		newEndpoint := c.cn.GetHandoffEndpoint()
 		// If new endpoint is NULL, use the original address
@@ -256,7 +400,148 @@ func (c *PubSub) reconnect(ctx context.Context, reason error) {
 	_, _ = c.conn(ctx, nil)
 }
 
+// reconnectAllLocked re-dials every connection of a mux PubSub, resubscribing
+// each key's channels on its own connection. Callers must hold c.mu.
+func (c *PubSub) reconnectAllLocked(ctx context.Context, reason error) {
+	c.ensureMuxLocked()
+	for key, cn := range c.conns {
+		c.closeKeyLocked(key, cn)
+	}
+	c.cn = nil
+	c.cmd = nil
+	// Re-dial every key (errors are left to the next use, like conn()).
+	_ = c.ensureConnsLocked(ctx)
+}
+
+// reconnectKey re-dials the connection for a single key after its connection
+// failed (write path). Callers must hold c.mu.
+func (c *PubSub) reconnectKey(ctx context.Context, key string, cn *pool.Conn, reason error) {
+	if c.conns[key] != cn {
+		return
+	}
+	c.closeKeyLocked(key, cn)
+	nc, err := c.dialKeyLocked(ctx, key, nil)
+	if err != nil {
+		// Leave the key absent; the next Receive/Ping re-dials it.
+		return
+	}
+	go c.readLoop(key, nc)
+}
+
+// ensureConnsLocked makes sure every connection key the PubSub needs exists
+// (the default connection when there are regular subscriptions or no
+// connections at all, plus one connection per sharded channel key) and starts
+// a reader goroutine for each new one. Callers must hold c.mu.
+func (c *PubSub) ensureConnsLocked(ctx context.Context) error {
+	c.ensureMuxLocked()
+	need := make(map[string]struct{})
+	if len(c.conns) == 0 || len(c.channels) > 0 || len(c.patterns) > 0 {
+		if _, ok := c.conns[""]; !ok {
+			need[""] = struct{}{}
+		}
+	}
+	for ch := range c.schannels {
+		key, err := c.connKey(ctx, ch)
+		if err != nil {
+			return err
+		}
+		if _, ok := c.conns[key]; !ok {
+			need[key] = struct{}{}
+		}
+	}
+	var firstErr error
+	for key := range need {
+		cn, err := c.dialKeyLocked(ctx, key, nil)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		go c.readLoop(key, cn)
+	}
+	return firstErr
+}
+
+// closeKeyLocked closes and forgets the connection for key if it is still cn.
+// Callers must hold c.mu.
+func (c *PubSub) closeKeyLocked(key string, cn *pool.Conn) error {
+	if c.conns[key] != cn {
+		return nil
+	}
+	delete(c.conns, key)
+	delete(c.connAuthPending, cn)
+	if c.cn == cn {
+		c.cn = nil
+	}
+	cn.SetPubSubReAuth(nil)
+	return c.closeConn(cn)
+}
+
+// dialKeyLocked creates the connection for key (which must be absent),
+// resubscribes key's channels on it and records it. It does NOT start a
+// reader goroutine; callers decide who reads the connection. Callers must
+// hold c.mu.
+func (c *PubSub) dialKeyLocked(ctx context.Context, key string, newChannels []string) (*pool.Conn, error) {
+	if c.closed {
+		return nil, pool.ErrClosed
+	}
+	if c.stickyErr != nil {
+		return nil, c.stickyErr
+	}
+	c.ensureMuxLocked()
+	if cn := c.conns[key]; cn != nil {
+		return cn, nil
+	}
+
+	if c.opt.Addr == "" {
+		c.opt.Addr = internal.RedisNull
+	}
+
+	var channels []string
+	if key == "" {
+		channels = append(channels, slices.Collect(maps.Keys(c.channels))...)
+		channels = append(channels, slices.Collect(maps.Keys(c.patterns))...)
+	}
+	for ch := range c.schannels {
+		k, err := c.connKey(ctx, ch)
+		if err != nil {
+			return nil, err
+		}
+		if k == key {
+			channels = append(channels, ch)
+		}
+	}
+	channels = append(channels, newChannels...)
+
+	cn, err := c.newConn(ctx, c.opt.Addr, channels, c.pubSubOnInit())
+	if err != nil {
+		return nil, err
+	}
+	if err := c.resubscribe(ctx, cn, key); err != nil {
+		_ = c.closeConn(cn)
+		return nil, err
+	}
+	c.conns[key] = cn
+	if key == "" {
+		c.cn = cn
+	}
+	return cn, nil
+}
+
 func (c *PubSub) closeTheCn(reason error) error {
+	if c.mux() {
+		c.ensureMuxLocked()
+		var firstErr error
+		for key, cn := range c.conns {
+			if err := c.closeKeyLocked(key, cn); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		c.cn = nil
+		c.cmd = nil
+		return firstErr
+	}
 	if c.cn == nil {
 		return nil
 	}
@@ -391,6 +676,13 @@ func (c *PubSub) SUnsubscribe(ctx context.Context, channels ...string) error {
 }
 
 func (c *PubSub) subscribe(ctx context.Context, redisCmd string, channels ...string) error {
+	if c.mux() && (redisCmd == "ssubscribe" || redisCmd == "sunsubscribe") {
+		// Sharded subscriptions must reach the shard owning each channel's
+		// slot, so group the channels by connection key and write each group
+		// on its own connection (https://github.com/redis/go-redis/issues/3133).
+		return c.subscribeSharded(ctx, redisCmd, channels...)
+	}
+
 	cn, err := c.conn(ctx, channels)
 	if err != nil {
 		return err
@@ -399,6 +691,59 @@ func (c *PubSub) subscribe(ctx context.Context, redisCmd string, channels ...str
 	err = c._subscribe(ctx, cn, redisCmd, channels)
 	c.releaseConn(ctx, cn, err, false)
 	return err
+}
+
+// subscribeSharded writes a sharded subscribe/unsubscribe command, grouping
+// channels by their connection key so that each group goes to the connection
+// of the shard that owns those channels. Callers must hold c.mu.
+func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels ...string) error {
+	if len(channels) == 0 {
+		// Unsubscribe from all shard channels: send the command to every
+		// connection that may carry sharded subscriptions.
+		c.ensureMuxLocked()
+		if len(c.conns) == 0 {
+			if _, err := c.connForKey(ctx, "", nil); err != nil {
+				return err
+			}
+		}
+		var firstErr error
+		// Snapshot: releaseConn may reconnect (and thus replace) a connection
+		// while we iterate.
+		for _, cn := range slices.Collect(maps.Values(c.conns)) {
+			err := c._subscribe(ctx, cn, redisCmd, nil)
+			c.releaseConn(ctx, cn, err, false)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
+
+	groups := make(map[string][]string)
+	for _, ch := range channels {
+		key, err := c.connKey(ctx, ch)
+		if err != nil {
+			return err
+		}
+		groups[key] = append(groups[key], ch)
+	}
+
+	var firstErr error
+	for key, chans := range groups {
+		cn, err := c.connForKey(ctx, key, chans)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		err = c._subscribe(ctx, cn, redisCmd, chans)
+		c.releaseConn(ctx, cn, err, false)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
@@ -410,6 +755,26 @@ func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.mux() {
+		// Ping every connection: the health check must cover all shards the
+		// PubSub is subscribed on. Also re-dial any key dropped after a read
+		// error.
+		if err := c.ensureConnsLocked(ctx); err != nil {
+			return err
+		}
+		var firstErr error
+		// Snapshot: releaseConn may reconnect (and thus replace) a connection
+		// while we iterate.
+		for _, cn := range slices.Collect(maps.Values(c.conns)) {
+			err := c.writeCmd(ctx, cn, cmd)
+			c.releaseConn(ctx, cn, err, false)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
 
 	cn, err := c.conn(ctx, nil)
 	if err != nil {
@@ -547,6 +912,9 @@ func (c *PubSub) newMessage(ctx context.Context, cn *pool.Conn, reply interface{
 // is not received in time. This is low-level API and in most cases
 // Channel should be used instead.
 func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (interface{}, error) {
+	if c.mux() {
+		return c.receiveMux(ctx, timeout)
+	}
 	// Don't hold the lock to allow subscriptions and pings.
 	cn, err := c.connWithLock(ctx)
 	if err != nil {
@@ -607,6 +975,118 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 	}
 
 	return c.newMessage(ctx, cn, cmd.Val())
+}
+
+// receiveMux is ReceiveTimeout for a mux (multi-connection) PubSub: replies
+// from all connections are read by per-connection reader goroutines and
+// merged into recvCh, so a single Receive sees messages from every shard.
+func (c *PubSub) receiveMux(ctx context.Context, timeout time.Duration) (interface{}, error) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, pool.ErrClosed
+	}
+	if c.stickyErr != nil {
+		err := c.stickyErr
+		c.mu.Unlock()
+		return nil, err
+	}
+	// (Re-)dial any connection key that is missing, e.g. after a read error
+	// dropped it; this is the mux counterpart of conn() re-dialing lazily.
+	if err := c.ensureConnsLocked(ctx); err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+	c.mu.Unlock()
+
+	var timeoutCh <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+
+	select {
+	case res := <-c.recvCh:
+		return res.msg, res.err
+	case <-timeoutCh:
+		// Match the net.Error timeout the direct read path returns.
+		return nil, &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.exit:
+		return nil, pool.ErrClosed
+	}
+}
+
+// readLoop is the dedicated reader of the connection for key in a mux PubSub.
+// It reads replies, converts them to messages and delivers them on recvCh. On
+// a fatal connection error it drops the connection so the next Receive/Ping
+// re-dials that key (the mux counterpart of the single-connection reconnect).
+func (c *PubSub) readLoop(key string, cn *pool.Conn) {
+	ctx := context.Background()
+	for {
+		cmd := NewCmd(ctx)
+		readErr := cn.WithReader(ctx, 0, func(rd *proto.Reader) error {
+			// To be sure there are no buffered push notifications, we process them before reading the reply
+			if perr := c.processPendingPushNotificationWithReader(ctx, cn, rd); perr != nil {
+				internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), perr)
+			}
+			return cmd.readReply(rd)
+		})
+
+		if readErr == nil {
+			// Swallow the OK reply of an in-place re-AUTH (see reauth).
+			c.mu.Lock()
+			if c.connAuthPending[cn] > 0 {
+				if val, ok := cmd.Val().(string); ok && strings.EqualFold(val, "OK") {
+					c.connAuthPending[cn]--
+					c.mu.Unlock()
+					continue
+				}
+			}
+			c.mu.Unlock()
+		}
+
+		err := readErr
+		var msg interface{}
+		if err == nil {
+			msg, err = c.newMessage(ctx, cn, cmd.Val())
+		}
+
+		select {
+		case c.recvCh <- pubSubRecv{cn: cn, msg: msg, err: err}:
+		case <-c.exit:
+			return
+		}
+
+		if readErr == nil {
+			// Like the direct read path, a message-decode error is reported
+			// but does not drop the connection.
+			continue
+		}
+
+		// Read error: apply the same bad-conn policy as the direct read path.
+		c.mu.Lock()
+		if c.closed || c.conns[key] != cn {
+			c.mu.Unlock()
+			return
+		}
+		authReauth := isRedisError(readErr) && c.connAuthPending[cn] > 0
+		if authReauth {
+			c.connAuthPending[cn]--
+		}
+		fatal := authReauth || !cn.IsUsable() || cn.ShouldHandoff() || isBadConn(readErr, false, c.opt.Addr)
+		if fatal {
+			// Drop the connection; the next Receive/Ping re-dials this key
+			// (and resubscribes its channels) on a fresh connection.
+			c.closeKeyLocked(key, cn)
+		}
+		c.mu.Unlock()
+		if fatal {
+			return
+		}
+	}
 }
 
 // Receive returns a message as a Subscription, Message, Pong or error.
@@ -1025,17 +1505,18 @@ func (c *PubSub) reauth(target *pool.Conn, username, password string) error {
 	if c.closed {
 		return pool.ErrClosed
 	}
-	if c.cn == nil {
-		return errors.New("redis: pubsub connection is not ready for re-authentication")
-	}
-	if c.cn != target {
+	_, ok := c.keyOfLocked(target)
+	if !ok {
 		// The connection was replaced (reconnect, handoff) after the re-auth
 		// was scheduled. The replacement authenticated with the provider's
 		// current credentials when it was dialed, so sending AUTH to it here
 		// could only apply credentials that are older than that.
+		if c.cn == nil && !c.mux() {
+			return errors.New("redis: pubsub connection is not ready for re-authentication")
+		}
 		return nil
 	}
-	cn := c.cn
+	cn := target
 
 	if !cn.IsResp3() {
 		// When the negotiated protocol is RESP2 (either configured or negotiated
@@ -1058,8 +1539,13 @@ func (c *PubSub) reauth(target *pool.Conn, username, password string) error {
 	if err != nil {
 		return err
 	}
-	if c.cn == cn {
-		c.authPending++
+	if _, ok := c.keyOfLocked(cn); ok {
+		if c.mux() {
+			c.ensureMuxLocked()
+			c.connAuthPending[cn]++
+		} else {
+			c.authPending++
+		}
 	}
 	return nil
 }
