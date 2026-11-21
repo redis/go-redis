@@ -9,7 +9,9 @@ import (
 	"net"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -136,7 +138,42 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 
 // appendStructField appends the field and value held by the structure v to dst, and returns the appended dst.
 func appendStructField(dst []interface{}, v reflect.Value) []interface{} {
-	typ := v.Type()
+	fields := structArgFieldsOf(v.Type())
+	dst = slices.Grow(dst, 2*len(fields))
+	for i := range fields {
+		f := &fields[i]
+		field := v.Field(f.index)
+
+		// miss field
+		if f.omitEmpty && isEmptyValue(field) {
+			continue
+		}
+
+		if field.CanInterface() {
+			dst = append(dst, f.name, field.Interface())
+		}
+	}
+
+	return dst
+}
+
+// structArgField is a struct field with a redis tag, as appendStructField writes it.
+type structArgField struct {
+	index     int
+	name      interface{} // the tag name, boxed once so appending it does not allocate
+	omitEmpty bool
+}
+
+// structArgFields caches the tagged fields of each struct type passed as a
+// command argument, so the tags are parsed once per type rather than on every call.
+var structArgFields sync.Map // map[reflect.Type][]structArgField
+
+func structArgFieldsOf(typ reflect.Type) []structArgField {
+	if fields, ok := structArgFields.Load(typ); ok {
+		return fields.([]structArgField)
+	}
+
+	var fields []structArgField
 	for i := 0; i < typ.NumField(); i++ {
 		tag := typ.Field(i).Tag.Get("redis")
 		if tag == "" || tag == "-" {
@@ -146,20 +183,11 @@ func appendStructField(dst []interface{}, v reflect.Value) []interface{} {
 		if name == "" {
 			continue
 		}
-
-		field := v.Field(i)
-
-		// miss field
-		if omitEmpty(opt) && isEmptyValue(field) {
-			continue
-		}
-
-		if field.CanInterface() {
-			dst = append(dst, name, field.Interface())
-		}
+		fields = append(fields, structArgField{index: i, name: name, omitEmpty: omitEmpty(opt)})
 	}
 
-	return dst
+	structArgFields.Store(typ, fields)
+	return fields
 }
 
 func omitEmpty(opt string) bool {

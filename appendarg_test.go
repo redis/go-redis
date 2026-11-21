@@ -2,7 +2,9 @@ package redis
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 )
 
 // pairsFromArgs turns flat HSET-style args after the key into a string→value map.
@@ -112,5 +114,74 @@ func TestAppendArgNonStringKeyMapUnchanged(t *testing.T) {
 	}
 	if args[2] == nil {
 		t.Fatal("expected map arg to be present")
+	}
+}
+
+type structArgsModel struct {
+	Name     string    `redis:"name"`
+	Age      int       `redis:"age,omitempty"`
+	Tags     []string  `redis:"tags,omitempty"`
+	Seen     time.Time `redis:"seen,omitempty"`
+	Untagged string
+	Skipped  string `redis:"-"`
+	NoName   string `redis:",omitempty"`
+	hidden   string `redis:"hidden"`
+}
+
+func TestAppendArgStructFields(t *testing.T) {
+	ctx := context.Background()
+	seen := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		arg  interface{}
+		want []interface{}
+	}{
+		{
+			name: "all_set",
+			arg:  structArgsModel{Name: "a", Age: 3, Tags: []string{"x"}, Seen: seen, Untagged: "u", Skipped: "s", NoName: "n", hidden: "h"},
+			want: []interface{}{"name", "a", "age", 3, "tags", []string{"x"}, "seen", seen},
+		},
+		{
+			name: "omitempty_skips_zero_values",
+			arg:  structArgsModel{Name: ""},
+			want: []interface{}{"name", ""},
+		},
+		{
+			name: "pointer",
+			arg:  &structArgsModel{Name: "b", Age: 7},
+			want: []interface{}{"name", "b", "age", 7},
+		},
+		{
+			name: "nil_pointer",
+			arg:  (*structArgsModel)(nil),
+			want: []interface{}{},
+		},
+	}
+
+	// Run the cases twice: the second pass reads the field list of the type
+	// from the cache filled by the first.
+	for pass := 0; pass < 2; pass++ {
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var captured Cmder
+				args := captureCmdable(&captured).HSet(ctx, "key", tt.arg).Args()
+				want := append([]interface{}{"hset", "key"}, tt.want...)
+				if !reflect.DeepEqual(args, want) {
+					t.Fatalf("pass %d: got %#v, want %#v", pass, args, want)
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkAppendArgStruct(b *testing.B) {
+	ctx := context.Background()
+	var captured Cmder
+	c := captureCmdable(&captured)
+	v := &structArgsModel{Name: "alice", Age: 30, Tags: []string{"admin"}, Seen: time.Unix(1700000000, 0)}
+	b.ReportAllocs()
+	for b.Loop() {
+		c.HSet(ctx, "user:1", v)
 	}
 }
