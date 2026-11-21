@@ -4319,15 +4319,16 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 // maintenance notifications won't work here for now
 func (c *ClusterClient) pubSub() *PubSub {
-	var node *clusterNode
+	// One node per PubSub connection: sharded channels may live on different
+	// shards, so the PubSub keeps one connection per shard address (connKey)
+	// instead of pinning everything to the shard of the first channel.
+	// See https://github.com/redis/go-redis/issues/3133.
+	nodes := make(map[*pool.Conn]*clusterNode)
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
 		rec: c.rec,
 		newConn: func(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
-			if node != nil {
-				panic("node != nil")
-			}
-
+			var node *clusterNode
 			var err error
 
 			if len(channels) > 0 {
@@ -4359,17 +4360,41 @@ func (c *ClusterClient) pubSub() *PubSub {
 			}
 			cn, err := node.Client.newPubSubConn(ctx, node.Client.opt.Addr, channels, onInit...)
 			if err != nil {
-				node = nil
 				return nil, err
 			}
+			nodes[cn] = node
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
-			node.Client.pubSubPool.UntrackConn(cn)
-			err := cn.Close()
-			node = nil
-			return err
+			node := nodes[cn]
+			delete(nodes, cn)
+			if node != nil {
+				node.Client.pubSubPool.UntrackConn(cn)
+			}
+			return cn.Close()
+		},
+		// connKey maps a sharded channel to the address of the shard owning
+		// its slot, so SSubscribe of channels from different shards opens one
+		// connection per shard and each SSUBSCRIBE reaches its slot owner.
+		connKey: func(ctx context.Context, channel string) (string, error) {
+			slot := clusterKeySlot(channel)
+			if c.opt.ReadOnly {
+				state, err := c.state.Get(ctx)
+				if err != nil {
+					return "", err
+				}
+				node, err := c.slotReadOnlyNode(state, slot)
+				if err != nil {
+					return "", err
+				}
+				return node.Client.opt.Addr, nil
+			}
+			node, err := c.slotMasterNode(ctx, slot)
+			if err != nil {
+				return "", err
+			}
+			return node.Client.opt.Addr, nil
 		},
 	}
 	pubsub.init()
