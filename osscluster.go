@@ -4343,7 +4343,16 @@ func (c *ClusterClient) pubSub() *PubSub {
 		if cached != nil {
 			if state, err := c.state.Get(ctx); err == nil {
 				if cur, _ := state.nodes.get(cached.Client.opt.Addr); cur != nil {
-					return cur, nil
+					// The cached node must still serve this slot: after a
+					// reshard or failover the old owner can remain in the
+					// client-wide node registry while no longer owning the
+					// slot, which would send SSUBSCRIBE to a node that
+					// replies MOVED and never update the cache.
+					for _, n := range state.slotNodes(slot) {
+						if n == cur {
+							return cur, nil
+						}
+					}
 				}
 			}
 		}
@@ -4416,6 +4425,7 @@ func (c *ClusterClient) pubSub() *PubSub {
 			}
 			return node.Client.opt.Addr, nil
 		},
+		slotOf: clusterKeySlot,
 	}
 	pubsub.init()
 

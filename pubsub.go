@@ -43,6 +43,12 @@ type PubSub struct {
 	// uses a single connection for everything.
 	connKey func(ctx context.Context, channel string) (string, error)
 
+	// slotOf, when set (cluster clients), computes the hash slot of a channel.
+	// Sharded subscribe/unsubscribe commands then group channels by slot so
+	// each command carries channels of a single slot, which Redis requires
+	// (cross-slot sharded commands are rejected with CROSSSLOT).
+	slotOf func(channel string) int
+
 	mu        sync.Mutex
 	cn        *pool.Conn
 	channels  map[string]struct{}
@@ -291,8 +297,10 @@ func (c *PubSub) resubscribe(ctx context.Context, cn *pool.Conn, key string) err
 		} else {
 			chans = slices.Collect(maps.Keys(c.schannels))
 		}
-		if len(chans) > 0 {
-			err := c._subscribe(ctx, cn, "ssubscribe", chans)
+		// One SSUBSCRIBE per hash slot: Redis rejects a sharded command whose
+		// channels hash to different slots with CROSSSLOT.
+		for _, group := range c.shardSlotGroups(chans) {
+			err := c._subscribe(ctx, cn, "ssubscribe", group)
 			if err != nil && firstErr == nil {
 				firstErr = err
 			}
@@ -300,6 +308,30 @@ func (c *PubSub) resubscribe(ctx context.Context, cn *pool.Conn, key string) err
 	}
 
 	return firstErr
+}
+
+// shardSlotGroups splits sharded channels into groups that each contain
+// channels of a single hash slot (when the client can compute slots, i.e.
+// cluster mux mode), so every SSUBSCRIBE/SUNSUBSCRIBE carries one slot's
+// channels only and is not rejected with CROSSSLOT. Without slot info the
+// channels are returned as a single group.
+func (c *PubSub) shardSlotGroups(chans []string) [][]string {
+	if len(chans) == 0 {
+		return nil
+	}
+	if c.slotOf == nil {
+		return [][]string{chans}
+	}
+	bySlot := make(map[int][]string)
+	for _, ch := range chans {
+		s := c.slotOf(ch)
+		bySlot[s] = append(bySlot[s], ch)
+	}
+	groups := make([][]string, 0, len(bySlot))
+	for _, g := range bySlot {
+		groups = append(groups, g)
+	}
+	return groups
 }
 
 func (c *PubSub) _subscribe(
@@ -751,6 +783,9 @@ func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels
 
 	var firstErr error
 	for key, chans := range groups {
+		c.mu.Lock()
+		_, existed := c.conns[key]
+		c.mu.Unlock()
 		cn, err := c.connForKey(ctx, key, chans)
 		if err != nil {
 			if firstErr == nil {
@@ -758,10 +793,21 @@ func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels
 			}
 			continue
 		}
-		err = c._subscribe(ctx, cn, redisCmd, chans)
-		c.releaseConn(ctx, cn, err, false)
-		if err != nil && firstErr == nil {
-			firstErr = err
+		if redisCmd == "ssubscribe" && !existed {
+			// The connection was just dialed: dialKeyLocked's resubscribe
+			// already replayed this key's sharded channels (one SSUBSCRIBE per
+			// slot), so writing them again would produce duplicate
+			// Subscription replies.
+			continue
+		}
+		// One command per hash slot: Redis rejects a sharded command whose
+		// channels hash to different slots with CROSSSLOT.
+		for _, group := range c.shardSlotGroups(chans) {
+			err = c._subscribe(ctx, cn, redisCmd, group)
+			c.releaseConn(ctx, cn, err, false)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	return firstErr
@@ -1032,14 +1078,26 @@ func (c *PubSub) receiveMux(ctx context.Context, timeout time.Duration) (interfa
 	}
 	// (Re-)dial any connection key that is missing, e.g. after a read error
 	// dropped it; this is the mux counterpart of conn() re-dialing lazily.
-	// A re-dial failure must NOT block the receive: messages from healthy
-	// connections may already be queued on recvCh, and the failed key's read
-	// error is delivered through recvCh by its reader. The key is re-dialed
-	// again on the next Receive/Ping.
-	if err := c.ensureConnsLocked(ctx); err != nil {
-		internal.Logger.Printf(ctx, "pubsub: failed to re-dial some connections: %v", err)
-	}
+	// A re-dial failure must NOT block the receive when healthy connections
+	// can still deliver: messages from them may already be queued on recvCh,
+	// and the failed key's read error is delivered through recvCh by its
+	// reader. But if no connection is alive and nothing is queued, blocking
+	// would hang forever — report the dial error instead. The key is
+	// re-dialed again on the next Receive/Ping.
+	dialErr := c.ensureConnsLocked(ctx)
+	liveConns := len(c.conns)
 	c.mu.Unlock()
+	if dialErr != nil {
+		select {
+		case res := <-c.recvCh:
+			return res.msg, res.err
+		default:
+		}
+		if liveConns == 0 {
+			return nil, dialErr
+		}
+		internal.Logger.Printf(ctx, "pubsub: failed to re-dial some connections: %v", dialErr)
+	}
 
 	var timeoutCh <-chan time.Time
 	if timeout > 0 {
@@ -1420,7 +1478,11 @@ func (c *channel) initHealthCheck() {
 				pingErr := c.pubSub.Ping(ctx)
 				cancel()
 
-				if pingErr != nil {
+				if pingErr != nil && !c.pubSub.mux() {
+					// In mux mode Ping's releaseConn already re-dialed each
+					// failed key individually (reconnectKey); a blanket
+					// reconnectAllLocked here would tear down healthy shards
+					// too and cause message gaps on them.
 					c.pubSub.mu.Lock()
 					reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), c.reconnectTimeout)
 					c.pubSub.reconnect(reconnectCtx, pingErr)
