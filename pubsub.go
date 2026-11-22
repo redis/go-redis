@@ -481,15 +481,21 @@ func (c *PubSub) refreshSubKeysLocked(ctx context.Context) error {
 		}
 		keys[k] = append(keys[k], ch)
 	}
+	if firstErr != nil {
+		// Do not install a partial mapping: leave the previous cache (or nil)
+		// in place so the next refresh retries every channel instead of
+		// treating failed lookups as "no channels for this key" — and so a
+		// failed refresh stays retryable on the next Receive/Ping.
+		return firstErr
+	}
 	c.subKeys = keys
-	return firstErr
+	return nil
 }
 
-// ensureConnsLocked makes sure every connection key the PubSub needs exists
-// (the default connection when there are regular subscriptions or no
-// connections at all, plus one connection per sharded channel key) and starts
-// a reader goroutine for each new one. Callers must hold c.mu.
-func (c *PubSub) ensureConnsLocked(ctx context.Context) error {
+// missingKeysLocked computes the set of connection keys that need (re-)dialing
+// and reaps connections whose key no longer routes any sharded channel.
+// Callers must hold c.mu.
+func (c *PubSub) missingKeysLocked(ctx context.Context) (map[string]struct{}, error) {
 	c.ensureMuxLocked()
 	need := make(map[string]struct{})
 	// The default ("") connection is only needed for regular channels and
@@ -507,12 +513,44 @@ func (c *PubSub) ensureConnsLocked(ctx context.Context) error {
 	// channel on every Receive: with many shard subscriptions the per-channel
 	// slot lookups made the receive hot path linear in the subscription count.
 	if c.subKeys == nil && len(c.schannels) > 0 {
-		_ = c.refreshSubKeysLocked(ctx)
+		if err := c.refreshSubKeysLocked(ctx); err != nil {
+			// Propagate the routing failure: a Receive with no live
+			// connection must report it instead of hanging, and the failed
+			// mapping stays retryable (refreshSubKeysLocked did not install
+			// a partial cache).
+			return nil, err
+		}
 	}
 	for key := range c.subKeys {
 		if _, ok := c.conns[key]; !ok {
 			need[key] = struct{}{}
 		}
+	}
+	// Reap connections whose key no longer routes any sharded channel, so
+	// removing the last channel of a key closes its connection instead of
+	// leaking it (and its reader) forever. Only reap when the mapping is
+	// known-good; on a failed refresh subKeys keeps its previous value.
+	if c.subKeys != nil {
+		for key, cn := range c.conns {
+			if key == "" {
+				continue
+			}
+			if _, ok := c.subKeys[key]; !ok {
+				_ = c.closeKeyLocked(key, cn)
+			}
+		}
+	}
+	return need, nil
+}
+
+// ensureConnsLocked makes sure every connection key the PubSub needs exists
+// (the default connection when there are regular subscriptions or no
+// connections at all, plus one connection per sharded channel key) and starts
+// a reader goroutine for each new one. Callers must hold c.mu.
+func (c *PubSub) ensureConnsLocked(ctx context.Context) error {
+	need, err := c.missingKeysLocked(ctx)
+	if err != nil {
+		return err
 	}
 	var firstErr error
 	for key := range need {
@@ -526,6 +564,73 @@ func (c *PubSub) ensureConnsLocked(ctx context.Context) error {
 		go c.readLoop(key, cn)
 	}
 	return firstErr
+}
+
+// dialKey is the locking variant of dialKeyLocked for callers that do NOT hold
+// c.mu (the Receive/Ping hot path): the network dial happens without the
+// mutex, so one unreachable shard cannot stall delivery from healthy shards
+// while their replies are already queued on recvCh. It returns the connection
+// and whether this call newly registered it (only the registrar starts the
+// reader goroutine).
+func (c *PubSub) dialKey(ctx context.Context, key string, newChannels []string) (*pool.Conn, bool, error) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, false, pool.ErrClosed
+	}
+	if c.stickyErr != nil {
+		err := c.stickyErr
+		c.mu.Unlock()
+		return nil, false, err
+	}
+	c.ensureMuxLocked()
+	if cn := c.conns[key]; cn != nil {
+		c.mu.Unlock()
+		return cn, false, nil
+	}
+	key, channels, err := c.dialPlanLocked(ctx, key, newChannels)
+	if err != nil {
+		c.mu.Unlock()
+		return nil, false, err
+	}
+	if cn := c.conns[key]; cn != nil {
+		c.mu.Unlock()
+		return cn, false, nil
+	}
+	// The mux connection key is the shard address: hand it to newConn as the
+	// dial target so the socket belongs to exactly the node the key names.
+	dialAddr := c.opt.Addr
+	if key != "" {
+		dialAddr = key
+	}
+	onInit := c.pubSubOnInit()
+	c.mu.Unlock()
+
+	cn, err := c.newConn(ctx, dialAddr, channels, onInit)
+	if err != nil {
+		return nil, false, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		_ = c.closeConn(cn)
+		return nil, false, pool.ErrClosed
+	}
+	if existing := c.conns[key]; existing != nil {
+		// Another goroutine dialed the same key meanwhile.
+		_ = c.closeConn(cn)
+		return existing, false, nil
+	}
+	if err := c.resubscribe(ctx, cn, key); err != nil {
+		_ = c.closeConn(cn)
+		return nil, false, err
+	}
+	c.conns[key] = cn
+	if key == "" {
+		c.cn = cn
+	}
+	return cn, true, nil
 }
 
 // closeKeyLocked closes and forgets the connection for key if it is still cn.
@@ -559,6 +664,41 @@ func (c *PubSub) dialKeyLocked(ctx context.Context, key string, newChannels []st
 		return cn, nil
 	}
 
+	key, channels, err := c.dialPlanLocked(ctx, key, newChannels)
+	if err != nil {
+		return nil, err
+	}
+	if cn := c.conns[key]; cn != nil {
+		return cn, nil
+	}
+
+	// The mux connection key is the shard address: hand it to newConn as the
+	// dial target so the socket belongs to exactly the node the key names.
+	dialAddr := c.opt.Addr
+	if key != "" {
+		dialAddr = key
+	}
+	cn, err := c.newConn(ctx, dialAddr, channels, c.pubSubOnInit())
+	if err != nil {
+		return nil, err
+	}
+	if err := c.resubscribe(ctx, cn, key); err != nil {
+		_ = c.closeConn(cn)
+		return nil, err
+	}
+	c.conns[key] = cn
+	if key == "" {
+		c.cn = cn
+	}
+	return cn, nil
+}
+
+// dialPlanLocked computes the effective connection key and the channel
+// routing hints for a dial of key. If the slot owning the key's channels moved
+// since the key was cached (reshard/failover), the key is re-keyed to the
+// current owner and the cached channel mapping moves with it, so the new
+// socket is never registered under a stale key. Callers must hold c.mu.
+func (c *PubSub) dialPlanLocked(ctx context.Context, key string, newChannels []string) (string, []string, error) {
 	if c.opt.Addr == "" {
 		c.opt.Addr = internal.RedisNull
 	}
@@ -574,25 +714,24 @@ func (c *PubSub) dialKeyLocked(ctx context.Context, key string, newChannels []st
 	}
 	if c.subKeys == nil && len(c.schannels) > 0 {
 		if err := c.refreshSubKeysLocked(ctx); err != nil {
-			return nil, err
+			return "", nil, err
 		}
 	}
 	channels = append(channels, c.subKeys[key]...)
 	channels = append(channels, newChannels...)
 
-	cn, err := c.newConn(ctx, c.opt.Addr, channels, c.pubSubOnInit())
-	if err != nil {
-		return nil, err
+	if key != "" && len(channels) > 0 {
+		if k, err := c.connKey(ctx, channels[0]); err == nil && k != key {
+			// The shard owning this key's channels moved: register under the
+			// current owner's key instead of the stale one.
+			if c.subKeys != nil {
+				c.subKeys[k] = append(c.subKeys[k], c.subKeys[key]...)
+				delete(c.subKeys, key)
+			}
+			key = k
+		}
 	}
-	if err := c.resubscribe(ctx, cn, key); err != nil {
-		_ = c.closeConn(cn)
-		return nil, err
-	}
-	c.conns[key] = cn
-	if key == "" {
-		c.cn = cn
-	}
-	return cn, nil
+	return key, channels, nil
 }
 
 func (c *PubSub) closeTheCn(reason error) error {
@@ -811,6 +950,14 @@ func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels
 		// it must already contain the channels recorded above.
 		_ = c.refreshSubKeysLocked(ctx)
 	}
+	if redisCmd == "sunsubscribe" {
+		// The channels were already removed from c.schannels by the caller.
+		// Refresh the cached mapping BEFORE any write: a fatal write error
+		// triggers releaseConn -> reconnectKey -> resubscribe, which replays
+		// from c.subKeys — with the stale cache that would resurrect the
+		// just-removed channel on the replacement connection.
+		_ = c.refreshSubKeysLocked(ctx)
+	}
 
 	var firstErr error
 	for key, chans := range groups {
@@ -859,13 +1006,34 @@ func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
 	defer c.mu.Unlock()
 
 	if c.mux() {
-		// Ping every connection: the health check must cover all shards the
-		// PubSub is subscribed on. Also re-dial any key dropped after a read
-		// error.
-		if err := c.ensureConnsLocked(ctx); err != nil {
-			return err
-		}
+		// Re-dial any key dropped after a read error. The dials happen
+		// WITHOUT holding c.mu so one down shard cannot stall the health
+		// check of the healthy ones.
+		c.mu.Lock()
+		need, refreshErr := c.missingKeysLocked(ctx)
+		c.mu.Unlock()
 		var firstErr error
+		if refreshErr != nil {
+			firstErr = refreshErr
+		}
+		for key := range need {
+			cn, isNew, err := c.dialKey(ctx, key, nil)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if isNew {
+				go c.readLoop(key, cn)
+			}
+		}
+		// Ping every connection: the health check must cover all shards the
+		// PubSub is subscribed on, even when re-dialing some other key just
+		// failed — a single down shard must not disable health checks on the
+		// shards that are still up.
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		// Snapshot: releaseConn may reconnect (and thus replace) a connection
 		// while we iterate.
 		for _, cn := range slices.Collect(maps.Values(c.conns)) {
@@ -1113,21 +1281,43 @@ func (c *PubSub) receiveMux(ctx context.Context, timeout time.Duration) (interfa
 	}
 	// (Re-)dial any connection key that is missing, e.g. after a read error
 	// dropped it; this is the mux counterpart of conn() re-dialing lazily.
-	// A re-dial failure must NOT block the receive when healthy connections
-	// can still deliver: messages from them may already be queued on recvCh,
-	// and the failed key's read error is delivered through recvCh by its
-	// reader. But if no connection is alive and nothing is queued, blocking
-	// would hang forever — report the dial error instead. The key is
-	// re-dialed again on the next Receive/Ping.
-	dialErr := c.ensureConnsLocked(ctx)
-	liveConns := len(c.conns)
+	// The dials happen WITHOUT holding c.mu: one unreachable shard must not
+	// block on DialTimeout and freeze delivery from healthy shards whose
+	// replies are already queued on recvCh.
+	need, refreshErr := c.missingKeysLocked(ctx)
 	c.mu.Unlock()
+
+	var dialErr error
+	if refreshErr != nil {
+		dialErr = refreshErr
+	}
+	for key := range need {
+		cn, isNew, err := c.dialKey(ctx, key, nil)
+		if err != nil {
+			if dialErr == nil {
+				dialErr = err
+			}
+			continue
+		}
+		if isNew {
+			go c.readLoop(key, cn)
+		}
+	}
 	if dialErr != nil {
+		// A re-dial failure must NOT block the receive when healthy
+		// connections can still deliver: messages from them may already be
+		// queued on recvCh, and the failed key's read error is delivered
+		// through recvCh by its reader. But if no connection is alive and
+		// nothing is queued, blocking would hang forever — report the dial
+		// error instead. The key is re-dialed again on the next Receive/Ping.
 		select {
 		case res := <-c.recvCh:
 			return res.msg, res.err
 		default:
 		}
+		c.mu.Lock()
+		liveConns := len(c.conns)
+		c.mu.Unlock()
 		if liveConns == 0 {
 			return nil, dialErr
 		}

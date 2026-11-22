@@ -4387,22 +4387,50 @@ func (c *ClusterClient) pubSub() *PubSub {
 			var node *clusterNode
 			var err error
 
-			if len(channels) > 0 {
-				// Route by the first channel's slot through the stable
-				// slot->node mapping, so the dialed node is exactly the one
-				// connKey reports for those channels.
-				node, err = slotNodeFor(ctx, clusterKeySlot(channels[0]))
-				if err != nil {
-					return nil, err
+			// The mux connection key IS the shard address (see connKey
+			// below): when (re)dialing an existing key, dial exactly that
+			// node instead of re-routing by channels[0]/Random, which can
+			// pick a different node after a reshard and leave c.conns
+			// claiming the socket belongs to another shard.
+			if addr != "" && addr != internal.RedisNull {
+				if state, serr := c.state.Get(ctx); serr == nil {
+					if n, gerr := state.nodes.get(addr); gerr == nil && n != nil && state.nodeOnline(n) {
+						node = n
+					}
 				}
-			} else {
-				node, err = c.nodes.Random()
-				if err != nil {
-					return nil, err
+			}
+			if node == nil {
+				if len(channels) > 0 {
+					// Route by the first channel's slot through the stable
+					// slot->node mapping, so the dialed node is exactly the one
+					// connKey reports for those channels.
+					node, err = slotNodeFor(ctx, clusterKeySlot(channels[0]))
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					node, err = c.nodes.Random()
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 			cn, err := node.Client.newPubSubConn(ctx, node.Client.opt.Addr, channels, onInit...)
 			if err != nil {
+				// A failed dial must not leave this node cached as the
+				// slots' stable choice: evict every slot->node entry
+				// pointing at it and mark it failing, so retries (also for
+				// ordinary Subscribe with RouteRandomly/ReadOnly) pick
+				// another eligible node instead of hammering the same
+				// unreachable address.
+				slotMu.Lock()
+				for slot, n := range slotNodes {
+					if n == node {
+						delete(slotNodes, slot)
+					}
+				}
+				slotMu.Unlock()
+				node.MarkAsFailing()
 				return nil, err
 			}
 			nodes[cn] = node
