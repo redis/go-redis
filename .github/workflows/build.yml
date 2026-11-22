@@ -67,7 +67,7 @@ jobs:
       fail-fast: false
       matrix:
         redis-version:
-          - "8.12.x" # Redis CE 8.12 (pre-release)
+          - "8.12.x" # Redis CE 8.12
           - "8.10.x" # Redis CE 8.10
           - "8.6.x" # Redis CE 8.6
           - "8.4.x" # Redis CE 8.4
@@ -94,7 +94,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.12.x"]="8.12-rc3"
+            ["8.12.x"]="8.12.0"
             ["8.10.x"]="8.10.3"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
@@ -128,7 +128,7 @@ jobs:
         fail-fast: false
         matrix:
           redis-version:
-            - "8.12.x" # Redis CE 8.12 (pre-release)
+            - "8.12.x" # Redis CE 8.12
             - "8.10.x" # Redis CE 8.10
             - "8.6.x" # Redis CE 8.6
             - "8.4.x" # Redis CE 8.4
@@ -159,7 +159,7 @@ jobs:
       fail-fast: false
       matrix:
         redis-version:
-          - "8.10.x" # Redis CE 8.10
+          - "8.12.x" # Redis CE 8.12
         go-version:
           - "stable"
         # One AutoPipeliner face per cell: the half-duplex blocking and async
