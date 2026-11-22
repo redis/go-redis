@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2713,6 +2714,20 @@ func pipelineConnStateReissueCmd(cmd Cmder) bool {
 	return false
 }
 
+// pipelineCmdReadOnly reports whether cmd is a read-only command according
+// to the shipped COMMAND metadata: its readonly flag means it cannot
+// advance the replication offset, so a WAIT measured before it still
+// covers the writes it follows. Unknown commands (a module command the
+// snapshot does not know, or a name the metadata cannot resolve) are not
+// read-only: treating them as writes reissues the barrier, which is
+// harmless, while treating a write as a read would leave the barrier
+// stale. The lookup is a map access on the shared snapshot view; it runs
+// only when an answered barrier has a pending predecessor to classify.
+func pipelineCmdReadOnly(cmd Cmder) bool {
+	meta, ok := routingLookupMeta(defaultCommandMetadataView(), cmd)
+	return ok && meta.readOnly
+}
+
 // pipelineWatchSafeFollowerCmd reports whether an answered command that
 // followed a WATCH can be left out of the retry without changing what a
 // reissued WATCH means. A reissued WATCH on a fresh connection is clean,
@@ -2839,8 +2854,10 @@ func pipelineCmdQueued(cmd Cmder) bool {
 // that settled its transaction (see pipelineExecSettled) closes the
 // frame even when it carries an error: a WATCH abort (redis.Nil) or an
 // EXECABORT means the transaction is dead, so the frame is not open.
-// Redis does not nest MULTI, so the first EXEC or DISCARD after it
-// closes this frame.
+// A successful RESET closes it the same way: RESET discards the
+// transaction, so the frame is dead and its queued commands never ran —
+// a failed RESET leaves it open. Redis does not nest MULTI, so the first
+// EXEC or DISCARD after it closes this frame.
 func pipelineMultiOpen(cmds []Cmder, multi int) bool {
 	for _, cmd := range cmds[multi+1:] {
 		switch cmd.Name() {
@@ -2848,6 +2865,10 @@ func pipelineMultiOpen(cmds []Cmder, multi int) bool {
 			return !pipelineExecSettled(cmd)
 		case "discard":
 			return pipelineCmdErr(cmd) != nil
+		case "reset":
+			if pipelineCmdErr(cmd) == nil {
+				return false
+			}
 		}
 	}
 	return true
@@ -2867,7 +2888,10 @@ func pipelineMultiOpen(cmds []Cmder, multi int) bool {
 // answered, as before: only a server in MULTI answers +QUEUED. A frame
 // closed by DISCARD never runs its body either way — DISCARD drops the
 // queued commands by design — so a body in a discarded frame needs no
-// retry. A body whose EXEC settled ran or was definitively aborted, so it
+// retry. A successful RESET discards the frame the same way: the queued
+// commands never ran and were discarded on purpose, so they must not be
+// re-queued either; a failed RESET leaves the frame open, so its body
+// still needs a retry when the EXEC never settles. A body whose EXEC settled ran or was definitively aborted, so it
 // must not run again. A frame still open at the end of the batch likewise
 // never ran its body — no EXEC follows it — so its body needs a retry
 // too, or the tail filter drops the queued commands as answered (+QUEUED
@@ -2901,6 +2925,16 @@ func pipelineTxBodyNeedsRetryMap(cmds []Cmder) []bool {
 				}
 				frameStart = -1
 			}
+		case "reset":
+			// A successful RESET discards the transaction: the
+			// queued commands never ran and were discarded on
+			// purpose, so the frame closes without marking its
+			// body — unlike an unsettled EXEC. A failed RESET
+			// leaves the frame open, so its body is still
+			// tracked for the EXEC that may follow it.
+			if frameStart >= 0 && pipelineCmdErr(cmd) == nil {
+				frameStart = -1
+			}
 		}
 	}
 	// A frame still open at the end of the batch never ran its body:
@@ -2916,13 +2950,15 @@ func pipelineTxBodyNeedsRetryMap(cmds []Cmder) []bool {
 
 // pipelineDiscardedTxCmds returns the commands of cmds that sit inside a
 // MULTI/EXEC transaction the server discarded: a MULTI frame closed by a
-// DISCARD that answered successfully. The queued commands in such a frame
+// DISCARD that answered successfully, or by a RESET that answered
+// successfully (RESET discards the transaction the same way). The queued commands in such a frame
 // never executed, so their effects never happened — a queued SELECT in
 // one must not be rebuilt as a session prerequisite, or the retry would
 // run the rest of the batch under a database the first attempt never
 // selected. Only an answered DISCARD counts: an unanswered one leaves
 // the frame open, and the frame scan in pipelineRetrySuffix then treats
-// its MULTI as still-open state.
+// its MULTI as still-open state. The same holds for RESET: only a
+// successful one discards the frame, a failed one leaves it open.
 func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 	discarded := make(map[*baseCmd]bool)
 	var frame []Cmder
@@ -2932,7 +2968,7 @@ func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 			frame = append(frame, cmd)
 		case "exec":
 			frame = nil
-		case "discard":
+		case "discard", "reset":
 			if len(frame) > 0 && pipelineCmdErr(cmd) == nil {
 				frame = append(frame, cmd)
 				for _, f := range frame {
@@ -2972,8 +3008,8 @@ func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 // EXEC around the dropped body would commit an empty transaction on the
 // retry and overwrite the abort with success (see pipelineRetrySuffix).
 // A WATCH counts as a guard only while it is still live when the frame's
-// MULTI opens: a settled EXEC, a successful DISCARD or a successful
-// UNWATCH clears every live watch.
+// MULTI opens: a settled EXEC, a successful DISCARD, a successful RESET
+// or a successful UNWATCH clears every live watch.
 func pipelineAbortedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 	aborted := make(map[*baseCmd]bool)
 	var frame []Cmder
@@ -3019,7 +3055,11 @@ func pipelineAbortedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 			if pipelineExecSettled(cmd) {
 				liveWatches = nil
 			}
-		case "discard":
+		case "discard", "reset":
+			// A successful RESET discards the frame the same way a
+			// successful DISCARD does: the queued commands never
+			// ran, so the frame tracking closes here instead of
+			// swallowing the commands that follow it.
 			if pipelineCmdErr(cmd) == nil {
 				liveWatches = nil
 			}
@@ -3115,7 +3155,10 @@ func pipelineExecSettled(cmd Cmder) bool {
 // the array. A null EXEC reply (a WATCH abort, see
 // pipelineExecNullReply) carries no result array at all, so it records
 // no elements either: the aborted frame's commands are covered by
-// pipelineAbortedTxCmds instead.
+// pipelineAbortedTxCmds instead. A successful RESET closes the frame
+// with no EXEC at all, so its queued commands hold no elements and a
+// later frame's EXEC array is not shifted by them; a failed RESET leaves
+// the frame open.
 func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 	errs := make(map[int]error)
 	frameStart := -1
@@ -3149,6 +3192,17 @@ func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 		case "discard":
 			frameStart = -1
 			bodies = bodies[:0]
+		case "reset":
+			// A successful RESET discards the transaction: the
+			// frame closes with no EXEC, so its queued commands
+			// hold no result elements and must not be counted
+			// against a later EXEC's array. A failed RESET leaves
+			// the frame open. Either way the RESET itself was
+			// never queued, so it contributes no element.
+			if frameStart >= 0 && pipelineCmdErr(cmd) == nil {
+				frameStart = -1
+				bodies = bodies[:0]
+			}
 		default:
 			if frameStart >= 0 {
 				bodies = append(bodies, idx)
@@ -3296,32 +3350,6 @@ func evalScriptCached(cmd Cmder) bool {
 	return !isScriptPreExecRejection(err)
 }
 
-// pipelineWatchClearedBefore reports whether the WATCH at watchIdx was
-// cleared before the retry boundary: a settled EXEC, a successful DISCARD
-// or a successful UNWATCH after it and before boundary closed it, so
-// reissuing it would resurrect state the first attempt already closed —
-// the retry's own writes after it would then dirty the resurrected watch
-// and abort a transaction the original ordering would have committed. A
-// clear the boundary has not reached yet does not count: an EXEC past it
-// has not run, so the watch is still live at the boundary. A later WATCH
-// after the clear re-establishes the watch on its own, so skipping the
-// earlier cleared one loses nothing.
-func pipelineWatchClearedBefore(cmds []Cmder, watchIdx, boundary int) bool {
-	for idx := watchIdx + 1; idx < boundary; idx++ {
-		switch cmds[idx].Name() {
-		case "exec":
-			if pipelineExecSettled(cmds[idx]) {
-				return true
-			}
-		case "discard", "unwatch":
-			if pipelineCmdErr(cmds[idx]) == nil {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
 // still need a result: the suffix starting at the first command that was not
 // definitively answered — a transport failure, or a retryable Redis reply
@@ -3358,9 +3386,10 @@ func pipelineWatchClearedBefore(cmds []Cmder, watchIdx, boundary int) bool {
 // DISCARD), and commands queued inside a MULTI/EXEC frame never execute
 // before the EXEC, so neither forces the whole batch. A WATCH the first
 // attempt already cleared before the boundary is not reissued at all
-// (see pipelineWatchClearedBefore): it is dead state, and reissuing it
-// would let the retry's own writes dirty it and abort a transaction the
-// original ordering would have committed. An answered
+// (the precomputed watchNextClear table below answers that in O(1)):
+// it is dead state, and reissuing it would let the retry's own writes
+// dirty it and abort a transaction the original ordering would have
+// committed. An answered
 // SCRIPT LOAD is reissued ahead of the suffix instead: it populates the
 // server's volatile script cache, which a restarted server does not have, so
 // an EVALSHA in the suffix would fail NOSCRIPT without it. SCRIPT LOAD is
@@ -3379,6 +3408,9 @@ func pipelineWatchClearedBefore(cmds []Cmder, watchIdx, boundary int) bool {
 // followed a reissued LOAD is reissued with it, in order: replaying the
 // LOAD without the FLUSH would execute a script the batch had already
 // removed, where the whole-batch retry would have returned NOSCRIPT. The
+// replayed FLUSH is required, not best-effort like the LOAD: if the
+// retry connection refuses it, the batch fails instead of executing the
+// flushed script under the original FLUSH's retained success. The
 // same holds for a LOAD or FLUSH the tail filter dropped after the
 // boundary: the reconstruction sees the answered tail too, not just the
 // prefix, so the effective load/flush ordering survives the trim.
@@ -3445,10 +3477,35 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// without re-running the answered writes before it.
 			completedTx := make(map[*baseCmd]bool)
 			var openMulti Cmder
+			// frameMultis holds every MULTI of the frame openMulti
+			// opened, including a rejected nested one: Redis
+			// rejects a nested MULTI without closing the outer
+			// transaction, so the nested command belongs to the
+			// outer frame and completes with it. Overwriting
+			// openMulti with the nested command would record only
+			// the nested one as completed and leave the outer
+			// MULTI looking like unreissuable state, forcing a
+			// whole-batch retry that re-runs the committed writes.
+			var frameMultis []Cmder
+			completeFrame := func(terminator Cmder) {
+				if openMulti == nil {
+					return
+				}
+				completedTx[openMulti.base()] = true
+				for _, multi := range frameMultis {
+					completedTx[multi.base()] = true
+				}
+				completedTx[terminator.base()] = true
+			}
 			for _, answered := range cmds[:i] {
 				switch answered.Name() {
 				case "multi":
-					openMulti = answered
+					if openMulti == nil {
+						openMulti = answered
+						frameMultis = frameMultis[:0]
+					} else {
+						frameMultis = append(frameMultis, answered)
+					}
 				case "exec", "discard":
 					if openMulti != nil {
 						// An EXEC settles its transaction even when
@@ -3464,11 +3521,25 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 							settled = pipelineExecSettled(answered)
 						}
 						if settled {
-							completedTx[openMulti.base()] = true
-							completedTx[answered.base()] = true
+							completeFrame(answered)
 						}
 					}
 					openMulti = nil
+					frameMultis = nil
+				case "reset":
+					// A successful RESET discards the transaction,
+					// so the frame is completed the same way a
+					// settled EXEC or a successful DISCARD
+					// completes it: its MULTI must not rewind
+					// the retry to the frame and re-run the
+					// commands the RESET already discarded, or
+					// the standalone commands that ran after it.
+					// A failed RESET leaves the frame open.
+					if openMulti != nil && pipelineCmdErr(answered) == nil {
+						completeFrame(answered)
+						openMulti = nil
+						frameMultis = nil
+					}
 				}
 			}
 			// openMultiAt records a MULTI in the answered prefix whose
@@ -3754,7 +3825,10 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// WAIT the tail keeps counts: one the filter already
 			// dropped as answered ran on the original connection, so
 			// it needs no barrier re-run and must not drag the
-			// answered writes before it back into the retry.
+			// answered writes before it back into the retry — unless
+			// a write before it is still pending, in which case the
+			// rebuild below reissues the barrier after that write
+			// instead of replaying the answered writes.
 			for _, pending := range tail {
 				if name := pending.Name(); name == "wait" || name == "waitaof" {
 					return cmds
@@ -3794,84 +3868,109 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			for _, answered := range answeredTail {
 				droppedTail[answered.base()] = true
 			}
-			for w, watch := range cmds {
-				if watch.Name() != "watch" {
+			// WATCH clear events, precomputed once: a settled EXEC, a
+			// successful DISCARD or a successful UNWATCH clears every
+			// live watch, but only when the walk can see it — before
+			// the boundary, or past it and dropped as answered. The
+			// safety check below and the rebuild's cleared-before
+			// check both read this table instead of rescanning per
+			// WATCH: with many individually queued WATCH commands
+			// followed by one lost reply, each walk rescanned the
+			// remaining batch and the rebuild rescanned it again per
+			// WATCH, which is quadratic in the batch size and stalls
+			// disconnect recovery past its deadline.
+			// watchNextClear[f] is the first clear event at or
+			// after f, or len(cmds) when there is none.
+			watchClearEvent := make([]bool, len(cmds))
+			for f, cmd := range cmds {
+				if f >= i && !droppedTail[cmd.base()] {
 					continue
 				}
-				dirty := false
-				cleared := false
-				inTx := false
-				for f := w + 1; f < len(cmds); f++ {
-					follower := cmds[f]
-					// Track frame structure over every follower,
-					// answered or not: a queued body is only
-					// recognisable as one by the MULTI that opened
-					// its frame, which may itself sit in the retry
-					// tail rather than the answered prefix.
-					switch follower.Name() {
-					case "multi":
-						inTx = true
-					case "exec":
-						// A settled EXEC clears the watch whether
-						// it committed or aborted; an unsettled
-						// one leaves the frame open, so its body
-						// never ran and dirties nothing. The frame
-						// closes for the walk below only when the
-						// EXEC settles: a rejected EXEC leaves the
-						// connection in MULTI, so later commands
-						// are still queued.
-						if f < i || droppedTail[follower.base()] {
-							if pipelineExecSettled(follower) {
-								cleared = true
-								inTx = false
-							}
-						}
-					case "discard":
-						// A successful DISCARD clears the watch and
-						// closes the frame; a failed one leaves
-						// both in place.
-						if f < i || droppedTail[follower.base()] {
-							if pipelineCmdErr(follower) == nil {
-								cleared = true
-								inTx = false
-							}
-						}
-					case "unwatch":
-						// A successful UNWATCH clears the watch; a
-						// failed one does not, but UNWATCH itself
-						// writes nothing.
-						if f < i || droppedTail[follower.base()] {
-							if pipelineCmdErr(follower) == nil {
-								cleared = true
-							}
-						}
-					}
-					// Stop at the clear: the clearing command
-					// itself (EXEC, DISCARD) is not a safe
-					// follower, so it must not be dirty-checked
-					// below once it has cleared the watch.
-					if cleared {
-						break
-					}
-					if f < i || droppedTail[follower.base()] {
-						if inTx {
-							// A queued body never executed, so it
-							// cannot dirty the watch; its EXEC
-							// settles it above.
-							continue
-						}
-						if !pipelineWatchSafeFollowerCmd(follower) {
-							dirty = true
-						}
-					}
+				switch cmd.Name() {
+				case "exec":
+					watchClearEvent[f] = pipelineExecSettled(cmd)
+				case "discard", "unwatch":
+					watchClearEvent[f] = pipelineCmdErr(cmd) == nil
 				}
-				// A dirty follower the walk already passed only
-				// forces the whole batch when the watch survived
-				// it: a clear later in the walk moots the dirt,
-				// because the watch it dirtied is gone.
-				if dirty && !cleared {
+			}
+			watchNextClear := make([]int, len(cmds)+1)
+			watchNextClear[len(cmds)] = len(cmds)
+			for f := len(cmds) - 1; f >= 0; f-- {
+				if watchClearEvent[f] {
+					watchNextClear[f] = f
+				} else {
+					watchNextClear[f] = watchNextClear[f+1]
+				}
+			}
+			// Decide the WATCH safety check in one forward pass
+			// instead of one walk per WATCH: every live watch is
+			// tracked together, so each follower is examined once.
+			// cleanWatches holds the live watches not yet dirtied,
+			// in order; dirtyActive reports whether any live watch
+			// already saw a dirty follower. A follower dirties the
+			// live watches it follows only while they are still
+			// live — a clear event ends every live watch at once,
+			// so dirt before it no longer matters — and only when
+			// the follower is answered and not a safe one (see
+			// pipelineWatchSafeFollowerCmd). A follower inside a
+			// MULTI/EXEC frame opened after the watch never
+			// executed, so it cannot dirty it: lastMulti is the
+			// latest MULTI since the last clear event, and a live
+			// watch at or after it is outside that frame. A MULTI
+			// before the watch is not in the watch's walk either,
+			// so it leaves lastMulti alone for it. A cancelled
+			// context falls back to the whole batch: the retry
+			// loop fails at its backoff sleep either way.
+			cleanWatches := make([]int, 0, 8)
+			dirtyActive := false
+			lastMulti := -1
+			for f, follower := range cmds {
+				if err := ctx.Err(); err != nil {
 					return cmds
 				}
+				if watchClearEvent[f] {
+					// The clearing command itself is not a
+					// follower: it ends every live watch, so
+					// dirt before it is moot.
+					cleanWatches = cleanWatches[:0]
+					dirtyActive = false
+					lastMulti = -1
+					continue
+				}
+				if follower.Name() == "multi" {
+					// A MULTI opens the frame for the watches
+					// before it; it is never itself a dirty
+					// follower.
+					lastMulti = f
+					continue
+				}
+				if f < i || droppedTail[follower.base()] {
+					if !pipelineWatchSafeFollowerCmd(follower) {
+						// Live watches at or after lastMulti
+						// are outside the frame it opened, so
+						// this follower dirties them; watches
+						// before it are inside the frame and
+						// stay clean. cleanWatches is ordered,
+						// so the split is a binary search, and
+						// each watch moves to dirty at most once.
+						split := sort.Search(len(cleanWatches), func(k int) bool {
+							return cleanWatches[k] >= lastMulti
+						})
+						if split < len(cleanWatches) {
+							dirtyActive = true
+							cleanWatches = cleanWatches[:split]
+						}
+					}
+				}
+				if follower.Name() == "watch" {
+					cleanWatches = append(cleanWatches, f)
+				}
+			}
+			// A dirty follower only forces the whole batch when
+			// its watch survived it: a clear later in the pass
+			// already discarded it above.
+			if dirtyActive {
+				return cmds
 			}
 			// Only rebuild cache entries the suffix actually needs: a
 			// retried EVALSHA fails NOSCRIPT without them, but any other
@@ -3974,14 +4073,30 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					return
 				}
 				switch {
-				case isScriptLoadCmd(answered) || isScriptFlushCmd(answered):
+				case isScriptLoadCmd(answered):
 					// Fresh command, not the original: a retry that
 					// fails while reading must not stamp its
 					// transport error over the digest / OK the
-					// first attempt already answered.
+					// first attempt already answered. A LOAD is
+					// best-effort: the suffix's own replies show
+					// whether the script is there.
 					fresh := NewStringCmd(ctx, answered.Args()...)
 					retry = append(retry, fresh)
 					markPipelineSynthetic(ctx, false, fresh)
+				case isScriptFlushCmd(answered):
+					// Fresh command, not the original: a retry that
+					// fails while reading must not stamp its
+					// transport error over the OK the first attempt
+					// already answered. Unlike a LOAD, a replayed
+					// FLUSH is required: it empties the cache the
+					// reissued LOAD just repopulated, so a failed
+					// replay must fail the batch — otherwise the
+					// retried EVALSHA executes a script the
+					// acknowledged FLUSH had removed while Exec
+					// still reports success.
+					fresh := NewStringCmd(ctx, answered.Args()...)
+					retry = append(retry, fresh)
+					markPipelineSynthetic(ctx, true, fresh)
 				case isEvalCmd(answered) && evalScriptCached(answered) && !rejectedQueuedEval[answered.base()]:
 					// Only an EVAL that actually ran populates the
 					// cache: a rejected one (a negative key count,
@@ -4024,9 +4139,9 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// prerequisite: reissuing it would resurrect a
 					// watch the retry's own writes then dirty,
 					// aborting a transaction the original ordering
-					// would have committed (see
-					// pipelineWatchClearedBefore).
-					if answered.Name() == "watch" && pipelineWatchClearedBefore(cmds, cmdIndex[answered.base()], i) {
+					// would have committed (see watchNextClear,
+					// precomputed once per retry above).
+					if answered.Name() == "watch" && watchNextClear[cmdIndex[answered.base()]+1] < i {
 						continue
 					}
 					// A queued session change the transaction's
@@ -4100,6 +4215,53 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				}
 				retry = append(retry, cmd)
 			}
+			// An answered WAIT/WAITAOF the tail filter dropped still
+			// guards the writes before it: the retry re-runs those
+			// writes on a fresh connection after the barrier was
+			// already measured, so Exec would return the retained
+			// barrier result while the write may still be
+			// unreplicated. Reissue the barrier after the pending
+			// writes instead — a fresh clone at the end of the
+			// retry, so it runs on the retry connection once the
+			// writes it follows have run there — without replaying
+			// the unrelated answered writes before it. It is
+			// required: a barrier that cannot be re-established
+			// must fail the batch rather than report the stale
+			// result as though the write were replicated. Only a
+			// barrier with a pending write before it is reissued:
+			// one whose writes all ran on the first attempt needs
+			// no new barrier, and a pending read (a GET or MGET
+			// the retry only re-runs) advances no replication
+			// offset, so it needs none either — a read is a pending
+			// predecessor only when the metadata says it is not
+			// read-only (see pipelineCmdReadOnly), and an unknown
+			// command counts as a write. Connection-state
+			// predecessors and synthetic prerequisites do not count
+			// either: re-running a SELECT or a script preload
+			// needs no replication barrier.
+			tailSet := make(map[*baseCmd]bool, len(tail))
+			for _, pending := range tail {
+				tailSet[pending.base()] = true
+			}
+			for _, barrier := range answeredTail {
+				if name := barrier.Name(); name != "wait" && name != "waitaof" {
+					continue
+				}
+				pendingBefore := false
+				for k := 0; k < cmdIndex[barrier.base()]; k++ {
+					if tailSet[cmds[k].base()] && !synthetic[cmds[k].base()] && !pipelineConnStateCmd(cmds[k]) && !pipelineCmdReadOnly(cmds[k]) {
+						pendingBefore = true
+						break
+					}
+				}
+				if !pendingBefore {
+					continue
+				}
+				fresh := barrier.Clone()
+				fresh.SetErr(nil)
+				retry = append(retry, fresh)
+				markPipelineSynthetic(ctx, true, fresh)
+			}
 			return retry
 		}
 	}
@@ -4116,7 +4278,14 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 // (e.g. the connection was never acquired), only the commands that still
 // need a result are returned. Commands in staleErrs or answered cannot
 // start the suffix: a stale error is not this invocation's progress, and an
-// answered command already holds a result from an earlier attempt.
+// answered command already holds a result from an earlier attempt. But the
+// fallback below excludes only answered commands, not stale ones: a stale
+// command this invocation never dispatched still needs a result — its
+// retained error is not this invocation's answer — so the terminal
+// failure must be stamped onto it instead of leaving it with Err() ==
+// nil and the previous invocation's reply (a reused RawCmd keeps its
+// retained error frame in Val() with a nil rawErr(), so only the
+// stamping records the acquisition failure on it).
 func pipelineUnansweredSuffix(cmds []Cmder, staleErrs map[*baseCmd]bool, answered map[*baseCmd]bool) []Cmder {
 	for i, cmd := range cmds {
 		if staleErrs[cmd.base()] || answered[cmd.base()] {
@@ -4128,7 +4297,12 @@ func pipelineUnansweredSuffix(cmds []Cmder, staleErrs map[*baseCmd]bool, answere
 	}
 	var unanswered []Cmder
 	for _, cmd := range cmds {
-		if staleErrs[cmd.base()] || answered[cmd.base()] {
+		// Only commands actually answered by this invocation are
+		// excluded: a stale command never dispatched here still
+		// needs a result, and setCmdsErr records the terminal
+		// failure on it (its rawErr() is nil for a RawCmd whose
+		// error frame is retained in Val()).
+		if answered[cmd.base()] {
 			continue
 		}
 		unanswered = append(unanswered, cmd)
@@ -4610,7 +4784,10 @@ func markPipelineSynthetic(ctx context.Context, required bool, cmds ...Cmder) {
 // best-effort script preload's failure is ignored (the suffix's own
 // replies show whether the script is there — a NOPERM LOAD with a
 // succeeding EVALSHA is a batch that succeeded), and otherwise the first
-// original command's error wins.
+// original command's error wins. A replayed SCRIPT FLUSH is required,
+// not best-effort: the suffix's replies do not show whether the flush
+// happened, so a succeeding EVALSHA after a failed FLUSH would execute
+// a script the batch had already removed — its failure must propagate.
 func pipelineRetryAttemptErr(ctx context.Context, cmds []Cmder) error {
 	synthetic := pipelineSyntheticFromCtx(ctx)
 	required := pipelineRequiredSyntheticFromCtx(ctx)

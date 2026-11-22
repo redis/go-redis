@@ -174,6 +174,7 @@ type connStateRetryServer struct {
 	selects          atomic.Int32
 	swapdbs          atomic.Int32
 	discards         atomic.Int32
+	resets           atomic.Int32
 	mgets            atomic.Int32
 	swapped          atomic.Bool // server-global SWAPDB state: DB 0 and DB 1 exchanged
 	askings          atomic.Int32
@@ -297,7 +298,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 		// the pipeline: always answer them and never drop on them.
 		isPipelineCmd := name == "select" || name == "set" || name == "get" ||
 			name == "multi" || name == "exec" || name == "watch" || name == "unwatch" ||
-			name == "incr" || name == "discard" || name == "swapdb" || name == "mget"
+			name == "incr" || name == "discard" || name == "reset" || name == "swapdb" || name == "mget"
 		if first && answered >= s.dropAfter && isPipelineCmd {
 			// Drop the connection mid-pipeline: this command and the
 			// ones after it get no reply on this connection.
@@ -310,7 +311,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 		// and a nested MULTI outright.
 		if inMulti {
 			switch name {
-			case "multi", "exec", "discard", "watch", "unwatch":
+			case "multi", "exec", "discard", "reset", "watch", "unwatch":
 			default:
 				queued = append(queued, queuedCmd{name: name, args: args})
 			}
@@ -414,6 +415,17 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			s.discards.Add(1)
 			inMulti = false
 			queued = queued[:0]
+		case "reset":
+			// RESET discards the transaction like DISCARD, and
+			// clears the watches too: the queued commands never
+			// ran and the connection leaves MULTI.
+			s.resets.Add(1)
+			inMulti = false
+			queued = queued[:0]
+			clear(watchedKeys)
+			watched = false
+			dirty = false
+			reply = "+RESET\r\n"
 		case "swapdb":
 			s.swapdbs.Add(1)
 			s.swapped.Store(!s.swapped.Load())
@@ -1857,16 +1869,17 @@ var queuedRuntimeErrScriptSHA = func() string {
 }()
 
 type scriptRetryServer struct {
-	ln            net.Listener
-	conns         atomic.Int32
-	loads         atomic.Int32
-	flushes       atomic.Int32
-	evals         atomic.Int32
-	evalshas      atomic.Int32
-	noscripts     atomic.Int32
-	dropBefore    string
-	denyLoad      bool
-	dropRetryConn bool
+	ln             net.Listener
+	conns          atomic.Int32
+	loads          atomic.Int32
+	flushes        atomic.Int32
+	evals          atomic.Int32
+	evalshas       atomic.Int32
+	noscripts      atomic.Int32
+	dropBefore     string
+	denyLoad       bool
+	denyFlushRetry bool // retry connections refuse SCRIPT FLUSH with NOPERM
+	dropRetryConn  bool
 	// tryagainMget, when set, makes the first connection answer its
 	// first MGET with TRYAGAIN (slot migration); later MGETs succeed.
 	tryagainMget bool
@@ -2002,6 +2015,15 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(digest), digest)
 			} else if len(args) >= 1 && strings.EqualFold(args[0], "flush") {
 				s.flushes.Add(1)
+				if !first && s.denyFlushRetry {
+					// The replayed FLUSH is refused: the cache
+					// keeps the script the reissued LOAD just
+					// repopulated, so the retried EVALSHA runs
+					// it — the failure must be visible, not
+					// ignored as a best-effort preload.
+					_, _ = conn.Write([]byte("-NOPERM this user has no permissions to run the 'script|flush' command\r\n"))
+					continue
+				}
 				if s.persistCache {
 					s.cacheClear()
 				} else {
@@ -6666,12 +6688,14 @@ func TestPipelineRetryDirtyWatchFollowerAfterBoundaryAbortsExec(t *testing.T) {
 // connection is dropped: the TRYAGAIN error alone drives the retry, so the
 // test can tell whether the retry re-ran the answered SET and WAIT.
 type answeredWaitRetryServer struct {
-	ln       net.Listener
-	conns    atomic.Int32
-	sets     atomic.Int32
-	waits    atomic.Int32
-	mgets    atomic.Int32
-	tryagain atomic.Bool // the first MGET gets TRYAGAIN
+	ln           net.Listener
+	conns        atomic.Int32
+	sets         atomic.Int32
+	waits        atomic.Int32
+	mgets        atomic.Int32
+	tryagain     atomic.Bool  // the first MGET gets TRYAGAIN
+	tryagainSet  atomic.Bool  // the first SET gets TRYAGAIN
+	waitAfterSet atomic.Int32 // WAITs that arrived after a SET succeeded on the same connection
 }
 
 func newAnsweredWaitRetryServer(t *testing.T) *answeredWaitRetryServer {
@@ -6698,6 +6722,7 @@ func newAnsweredWaitRetryServer(t *testing.T) *answeredWaitRetryServer {
 func (s *answeredWaitRetryServer) serve(conn net.Conn) {
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
+	seenSet := false
 	for {
 		name, _ := readConnStateRetryCommand(scanner)
 		if name == "" {
@@ -6708,7 +6733,12 @@ func (s *answeredWaitRetryServer) serve(conn net.Conn) {
 			_, _ = conn.Write([]byte("%0\r\n"))
 		case "set":
 			s.sets.Add(1)
-			_, _ = conn.Write([]byte("+OK\r\n"))
+			if s.tryagainSet.CompareAndSwap(true, false) {
+				_, _ = conn.Write([]byte("-TRYAGAIN Multiple keys request during slot migration\r\n"))
+			} else {
+				seenSet = true
+				_, _ = conn.Write([]byte("+OK\r\n"))
+			}
 		case "mget":
 			s.mgets.Add(1)
 			if s.tryagain.CompareAndSwap(false, true) {
@@ -6716,8 +6746,11 @@ func (s *answeredWaitRetryServer) serve(conn net.Conn) {
 			} else {
 				_, _ = conn.Write([]byte("*2\r\n$1\r\na\r\n$1\r\nb\r\n"))
 			}
-		case "wait":
+		case "wait", "waitaof":
 			s.waits.Add(1)
+			if seenSet {
+				s.waitAfterSet.Add(1)
+			}
 			_, _ = conn.Write([]byte(":1\r\n"))
 		default:
 			_, _ = conn.Write([]byte("+OK\r\n"))
@@ -7937,5 +7970,331 @@ func TestPipelineRetryStaleRedisErrIsReplacedOnWriteFailure(t *testing.T) {
 	}
 	if got := server.sets.Load(); got != int32(nsets) {
 		t.Fatalf("server received %d SET commands, want %d (the whole batch must run on the retry)", got, nsets)
+	}
+}
+
+// TestPipelineRetryNestedMultiCommittedTxIsNotReplayed: a settled outer
+// EXEC must record the outer MULTI as completed even when the frame holds
+// a rejected nested MULTI. Here MULTI, INCR, a rejected nested MULTI,
+// INCR and EXEC all answer, then the connection drops before MGET's
+// reply: without the fix the completed-transaction scan records only the
+// nested MULTI, the outer MULTI still counts as unreissuable state and
+// the retry re-runs the whole batch, re-running the committed writes.
+// With the fix the retry resends only the MGET. Regression test for the
+// Cursor Bugbot finding on #4351.
+func TestPipelineRetryNestedMultiCommittedTxIsNotReplayed(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	// Answer MULTI, INCR, the nested MULTI, INCR and EXEC, then drop
+	// before MGET's reply: the outer transaction already committed.
+	server.dropAfter = 5
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Incr(ctx, "k")
+	nested := pipe.Do(ctx, "multi")
+	incr2 := pipe.Incr(ctx, "k2")
+	exec := pipe.Do(ctx, "exec")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	_, err := pipe.Exec(ctx)
+	// The nested MULTI is a genuine error in the batch, so it surfaces
+	// as the batch's first error once the MGET succeeds on retry.
+	if err == nil || !strings.Contains(err.Error(), "MULTI calls can not be nested") {
+		t.Fatalf("Exec: %v, want the nested MULTI error (the retry must still report the erroneous command)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := nested.Err(); err == nil || !strings.Contains(err.Error(), "MULTI calls can not be nested") {
+		t.Fatalf("nested MULTI: %v, want the nesting error", err)
+	}
+	if got, err := incr2.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR2 = %d, %v; want 1, nil", got, err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got := server.multiCount.Load(); got != 2 {
+		t.Fatalf("server received %d MULTI commands, want 2 (the outer MULTI and the rejected nested one, once each on the first attempt; the retry must send neither again)", got)
+	}
+	if got := server.incrs.Load(); got != 2 {
+		t.Fatalf("server received %d INCR commands, want 2 (the committed INCRs must not be re-run)", got)
+	}
+	if got := server.execWithMulti.Load(); got != 1 {
+		t.Fatalf("EXEC committed %d time(s), want 1 (the retry must not commit the transaction again)", got)
+	}
+	if got := server.mgets.Load(); got != 1 {
+		t.Fatalf("server received %d MGET commands, want 1 (the dropped MGET is never answered, only its retry runs)", got)
+	}
+}
+
+// TestPipelineRetryResetDiscardsTransaction: a successful RESET discards
+// the MULTI/EXEC transaction, so the frame is closed and its queued body
+// is abandoned — the retry must not rewind to MULTI and re-run it, and
+// must not rebuild a queued SELECT as a session prerequisite. Here
+// MULTI queues a SELECT 2, RESET discards the frame, a standalone INCR
+// runs, and MGET answers TRYAGAIN: without the fix the retry rewinds to
+// MULTI and re-runs the whole batch; with it the retry resends only the
+// MGET (plus the harmless RESET reissue). Regression test for the Codex
+// P1 review finding on #4351.
+func TestPipelineRetryResetDiscardsTransaction(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 99
+	server.tryagainConn = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	sel := pipe.Select(ctx, 2)
+	reset := pipe.Do(ctx, "reset")
+	incr := pipe.Incr(ctx, "counter")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must resend only the rejected MGET)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v, want nil (the queued SELECT holds +QUEUED)", err)
+	}
+	if err := reset.Err(); err != nil {
+		t.Fatalf("RESET: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got := server.multiCount.Load(); got != 1 {
+		t.Fatalf("server received %d MULTI commands, want 1 (the RESET-discarded frame must not be re-run)", got)
+	}
+	if got := server.selects.Load(); got != 1 {
+		t.Fatalf("server received %d SELECT commands, want 1 (the queued SELECT must not be rebuilt as a prerequisite)", got)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the standalone INCR must not be re-run)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET plus its retry)", got)
+	}
+	if got := server.execWithMulti.Load(); got != 0 {
+		t.Fatalf("EXEC committed %d time(s), want 0 (no transaction ever ran)", got)
+	}
+}
+
+// TestPipelineRetryAnsweredWaitReissuedAfterPendingWrite: an answered
+// WAIT/WAITAOF dropped by the tail filter must be reissued when a write
+// before it is still pending. Here SET answers TRYAGAIN and WAIT answers
+// 1: without the fix the retry resends only the SET and Exec returns the
+// retained WAIT result even though the write executed after that barrier
+// and may still be unreplicated; with it the retry reissues the WAIT
+// after the SET on the retry connection. Regression test for the Codex
+// P1 review finding on #4351.
+func TestPipelineRetryAnsweredWaitReissuedAfterPendingWrite(t *testing.T) {
+	server := newAnsweredWaitRetryServer(t)
+	server.tryagainSet.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	wait := pipe.Do(ctx, "wait", 1, 100)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-run the SET with its WAIT)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(1) {
+		t.Fatalf("WAIT = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the rejected SET plus its retry)", got)
+	}
+	if got := server.waits.Load(); got != 2 {
+		t.Fatalf("server received %d WAIT commands, want 2 (the answered WAIT must be reissued after the retried SET)", got)
+	}
+	if got := server.waitAfterSet.Load(); got != 1 {
+		t.Fatalf("WAIT ran after a SET %d time(s), want 1 (the reissued barrier must follow its write on the retry connection)", got)
+	}
+}
+
+// TestPipelineRetryReplayedScriptFlushFailureIsVisible: a replayed SCRIPT
+// FLUSH is not an optional preload — it preserves the cache semantics the
+// batch established. Here SCRIPT LOAD, SCRIPT FLUSH and EVALSHA run, the
+// first connection drops before EVALSHA's reply, and the retry connection
+// refuses the replayed FLUSH with NOPERM: without the fix the failure is
+// ignored as a best-effort preload, the LOAD repopulates the cache and
+// EVALSHA executes the flushed script while Exec reports success; with
+// it the FLUSH failure propagates and Exec reports NOPERM. Regression
+// test for the Codex P1 review finding on #4351.
+func TestPipelineRetryReplayedScriptFlushFailureIsVisible(t *testing.T) {
+	server := newScriptRetryServer(t)
+	server.denyFlushRetry = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	load := pipe.ScriptLoad(ctx, src)
+	flush := pipe.ScriptFlush(ctx)
+	pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("Exec: %v, want NOPERM (the replayed FLUSH failure must propagate, not be ignored as a best-effort preload)", err)
+	}
+	if got := load.Val(); got != sha {
+		t.Fatalf("SCRIPT LOAD = %q, want %q", got, sha)
+	}
+	if err := flush.Err(); err != nil {
+		t.Fatalf("SCRIPT FLUSH: %v, want nil (the original FLUSH still holds its +OK)", err)
+	}
+	if got := server.loads.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 2 (the answered LOAD must be reissued on the retry connection)", got)
+	}
+	if got := server.flushes.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT FLUSH commands, want 2 (the answered FLUSH must be replayed, and its failure reported)", got)
+	}
+	if got := server.evalshas.Load(); got != 1 {
+		t.Fatalf("server received %d EVALSHA commands, want 1 (only the retry's EVALSHA runs; the first connection drops before its reply)", got)
+	}
+}
+
+// TestPipelineRetryStaleRawCmdIsStampedOnDialFailure: a reused RawCmd
+// retains its previous -LOADING frame in Val() with a nil rawErr(), and
+// that retained frame must not hide the next invocation's failure. Here
+// a raw SET first answers -LOADING, then the same command is reused
+// behind a fresh SET against an address nothing listens on: without the
+// fix the terminal fallback excludes the stale command from stamping and
+// it keeps Err() == nil while Exec reports the dial failure; with it the
+// dial error is recorded on the raw command. Regression test for the
+// Codex P2 review finding on #4351.
+func TestPipelineRetryStaleRawCmdIsStampedOnDialFailure(t *testing.T) {
+	// First pipeline: stamp -LOADING onto the shared raw command. A
+	// single attempt (MaxRetries -1 normalises to 0) answers it, so no
+	// retry heals it. The raw command keeps the error frame in Val()
+	// with a nil error by contract, so this Exec reports success.
+	server := newLoadingRetryServer(t)
+	first := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = first.Close() })
+
+	ctx := context.Background()
+	pipe := first.Pipeline()
+	shared := NewRawCmd(ctx, "set", "shared", "v")
+	if err := pipe.BatchProcess(ctx, shared); err != nil {
+		t.Fatalf("BatchProcess: %v", err)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("first Exec: %v, want nil (the raw command's error frame stays in Val() by contract)", err)
+	}
+	if got := string(shared.Val()); !strings.Contains(got, "LOADING") {
+		t.Fatalf("shared raw SET Val() = %q, want the retained -LOADING frame", got)
+	}
+	if err := shared.Err(); err != nil {
+		t.Fatalf("shared raw SET Err() = %v, want nil (a raw command's error frame stays in Val() by contract)", err)
+	}
+
+	// Second pipeline: the same shared command, behind a fresh SET, against
+	// an address nothing listens on — every dial is refused, so no command
+	// is ever dispatched.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	dead := NewClient(&Options{
+		Addr:            addr,
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = dead.Close() })
+
+	pipe2 := dead.Pipeline()
+	fresh := pipe2.Set(ctx, "fresh", "v", 0)
+	_ = pipe2.BatchProcess(ctx, shared)
+	_, err = pipe2.Exec(ctx)
+	if err == nil {
+		t.Fatalf("second Exec: nil, want the dial error (nothing listens on %s)", addr)
+	}
+	if err := fresh.Err(); err == nil {
+		t.Fatal("fresh SET: nil, want the dial error (it was never dispatched, so it must not look successful)")
+	}
+	if err := shared.Err(); err == nil {
+		t.Fatal("shared raw SET: nil, want the dial error (it was never dispatched in this invocation, so the retained -LOADING frame must not stand as its result)")
+	}
+}
+
+// TestPipelineRetrySuffixManyWatchesIsLinear: a large batch of individually
+// queued WATCH commands followed by one lost reply must not pay a rescan
+// per WATCH. Before the fix every WATCH walked the remaining batch in the
+// safety check and the rebuild rescanned it again per WATCH through the
+// cleared-before lookup, so 20,000 WATCH commands cost ~4e8 follower
+// checks; the precomputed clear-event table and the single-pass safety
+// check answer the same questions in one pass. Regression test for the
+// Codex P2 review finding on #4351.
+func TestPipelineRetrySuffixManyWatchesIsLinear(t *testing.T) {
+	const n = 20000
+	ctx := context.Background()
+	cmds := make([]Cmder, 0, n+1)
+	for i := 0; i < n; i++ {
+		cmds = append(cmds, NewStringCmd(ctx, "watch", "k"))
+	}
+	cmds = append(cmds, NewStringCmd(ctx, "get", "k"))
+	// Simulate a drop just after the last WATCH: every WATCH was
+	// answered, the GET carries the transport failure the drop stamped
+	// on it.
+	cmds[n].SetErr(io.ErrUnexpectedEOF)
+	start := time.Now()
+	suffix := pipelineRetrySuffix(ctx, cmds, io.ErrUnexpectedEOF, nil)
+	elapsed := time.Since(start)
+	// Every WATCH is reissued as a fresh clone ahead of the GET: the
+	// watches are still live at the boundary and nothing dirtied them.
+	if len(suffix) != n+1 {
+		t.Fatalf("suffix has %d commands, want %d (every reissued WATCH plus the unanswered GET, once each)", len(suffix), n+1)
+	}
+	// Machine-dependent by nature: the precomputed scan runs in
+	// milliseconds on this workload, while the per-command rescans it
+	// replaced took seconds. The bound only guards against the
+	// quadratic behaviour coming back, with ample headroom.
+	if elapsed > time.Second {
+		t.Fatalf("pipelineRetrySuffix took %v for %d WATCH commands, want < 1s (the per-WATCH rescans are quadratic)", elapsed, n)
 	}
 }
