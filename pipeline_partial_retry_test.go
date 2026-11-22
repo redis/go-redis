@@ -1869,6 +1869,19 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				continue
 			}
 			s.evals.Add(1)
+			// A malformed EVAL is refused before the script is
+			// cached, like a negative key count: a missing numkeys
+			// is an arity error, and a non-integer one fails
+			// argument validation. Both are pre-execution
+			// rejections, so the script cached nothing.
+			if len(args) < 2 {
+				_, _ = conn.Write([]byte("-ERR wrong number of arguments for 'eval' command\r\n"))
+				continue
+			}
+			if _, err := strconv.Atoi(args[1]); err != nil {
+				_, _ = conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+				continue
+			}
 			// A rejected EVAL never runs, so it populates nothing: a
 			// negative key count is refused before the script is
 			// cached. Only a successful EVAL counts as a cache entry.
@@ -4233,10 +4246,10 @@ func (s *oneShotRetryServer) sequence(n int32) []string {
 // applies only to the next command, so reissuing an answered one ahead
 // of a retry suffix attaches the flag to a later command instead of its
 // original follower. Here the first connection answers CLIENT CACHING
-// YES and GET k, then drops before INCR's reply: without the fix the
-// retry resends [CLIENT CACHING YES, INCR], so the flag lands on the
-// INCR instead of the GET. Regression test for the review finding on
-// #4351.
+// YES and GET k, then drops before INCR's reply: the flag was consumed
+// by the answered GET, so the retry is just the unanswered INCR — the
+// flag is not re-sent and the answered GET is not re-run. Regression
+// test for the review finding on #4351.
 func TestPipelineRetryDoesNotReissueOneShotClientCaching(t *testing.T) {
 	server := newOneShotRetryServer(t)
 	client := newPartialRetryClient(t, server.ln.Addr().String())
@@ -4262,25 +4275,32 @@ func TestPipelineRetryDoesNotReissueOneShotClientCaching(t *testing.T) {
 		t.Fatalf("server received %d INCR commands, want 1", got)
 	}
 	seq := server.sequence(2)
-	// The second connection must replay the whole batch, so the
-	// one-shot flag still lands on the GET it was issued for.
-	idx := -1
-	for i, name := range seq {
+	// The retry must not re-send the consumed flag, and must run the
+	// unanswered INCR once.
+	for _, name := range seq {
 		if name == "client" {
-			idx = i
+			t.Fatalf("second connection ran %v, want no CLIENT CACHING (the answered GET already consumed it)", seq)
 		}
 	}
-	if idx < 0 || idx+1 >= len(seq) || seq[idx+1] != "get" {
-		t.Fatalf("second connection ran %v, want CLIENT CACHING immediately before GET", seq)
+	found := false
+	for _, name := range seq {
+		if name == "incr" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("second connection ran %v, want the unanswered INCR", seq)
 	}
 }
 
 // TestPipelineRetryDoesNotReissueOneShotAsking: ASKING lasts for one
 // command only, so the same reissue fault applies: an answered ASKING
 // reissued ahead of a retry suffix would steer the first suffix
-// command instead of the GET it was issued for. Same shape as the
-// CLIENT CACHING test above. Regression test for the review finding on
-// #4351.
+// command instead of the GET it was issued for. Here the flag was
+// consumed by the answered GET, so the retry is just the unanswered
+// INCR — the flag is not re-sent and the answered GET is not re-run.
+// Same shape as the CLIENT CACHING test above. Regression test for
+// the review finding on #4351.
 func TestPipelineRetryDoesNotReissueOneShotAsking(t *testing.T) {
 	server := newOneShotRetryServer(t)
 	client := newPartialRetryClient(t, server.ln.Addr().String())
@@ -4306,14 +4326,151 @@ func TestPipelineRetryDoesNotReissueOneShotAsking(t *testing.T) {
 		t.Fatalf("server received %d INCR commands, want 1", got)
 	}
 	seq := server.sequence(2)
+	// The retry must not re-send the consumed flag, and must run the
+	// unanswered INCR once.
+	for _, name := range seq {
+		if name == "asking" {
+			t.Fatalf("second connection ran %v, want no ASKING (the answered GET already consumed it)", seq)
+		}
+	}
+	found := false
+	for _, name := range seq {
+		if name == "incr" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("second connection ran %v, want the unanswered INCR", seq)
+	}
+}
+
+// oneShotPrefixRetryServer is a scripted RESP server for a one-shot
+// flag answered in the prefix: the first connection answers INCR and
+// ASKING, then drops before SET's reply; later connections answer
+// everything. It records the command sequence per connection so tests
+// can assert the retry reissued the flag immediately before its
+// follower instead of replaying the whole batch.
+type oneShotPrefixRetryServer struct {
+	ln      net.Listener
+	conns   atomic.Int32
+	incrs   atomic.Int32
+	askings atomic.Int32
+	mu      sync.Mutex
+	seqs    map[int32][]string
+}
+
+func newOneShotPrefixRetryServer(t *testing.T) *oneShotPrefixRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &oneShotPrefixRetryServer{ln: ln, seqs: make(map[int32][]string)}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *oneShotPrefixRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	answered := 0
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		s.mu.Lock()
+		s.seqs[n] = append(s.seqs[n], name)
+		s.mu.Unlock()
+		isPipelineCmd := name == "asking" || name == "incr" || name == "set"
+		if n == 1 && answered >= 2 && isPipelineCmd {
+			// Drop the connection mid-pipeline: this command and the
+			// ones after it get no reply on this connection.
+			return
+		}
+		reply := "+OK\r\n"
+		switch name {
+		case "hello":
+			reply = "%0\r\n"
+		case "incr":
+			s.incrs.Add(1)
+			reply = ":1\r\n"
+		case "asking":
+			s.askings.Add(1)
+		}
+		if _, err := conn.Write([]byte(reply)); err != nil {
+			return
+		}
+		if isPipelineCmd {
+			answered++
+		}
+	}
+}
+
+func (s *oneShotPrefixRetryServer) sequence(n int32) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.seqs[n]...)
+}
+
+// TestPipelineRetryOneShotPrefixDoesNotRerunAnsweredWrite: an answered
+// ASKING in the prefix must not force the whole batch: its follower is
+// the boundary command, so the flag is reissued immediately before it
+// on the retry and the answered INCR before it is not re-run. Without
+// the fix the retry replays the whole batch and the INCR runs twice
+// while Exec reports success. Regression test for the Cursor Medium
+// review finding on #4351.
+func TestPipelineRetryOneShotPrefixDoesNotRerunAnsweredWrite(t *testing.T) {
+	server := newOneShotPrefixRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	incr := pipe.Incr(ctx, "counter")
+	asking := pipe.Do(ctx, "asking")
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must reissue ASKING before SET, not replay the answered INCR)", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := asking.Err(); err != nil {
+		t.Fatalf("ASKING: %v, want nil", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v, want nil", err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR before the one-shot flag must not be re-run)", got)
+	}
+	if got := server.askings.Load(); got != 2 {
+		t.Fatalf("server received %d ASKING commands, want 2 (one per attempt: the flag is reissued before its follower)", got)
+	}
+	seq := server.sequence(2)
+	// The retry connection must run ASKING immediately before SET,
+	// and no INCR: the whole batch was not replayed.
 	idx := -1
 	for i, name := range seq {
 		if name == "asking" {
 			idx = i
 		}
+		if name == "incr" {
+			t.Fatalf("second connection ran %v, want no INCR (the answered INCR must not be re-run)", seq)
+		}
 	}
-	if idx < 0 || idx+1 >= len(seq) || seq[idx+1] != "get" {
-		t.Fatalf("second connection ran %v, want ASKING immediately before GET", seq)
+	if idx < 0 || idx+1 >= len(seq) || seq[idx+1] != "set" {
+		t.Fatalf("second connection ran %v, want ASKING immediately before SET", seq)
 	}
 }
 
@@ -6177,6 +6334,53 @@ func TestPipelineRetryOpenMultiDoesNotRerunAnsweredPrefix(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryTrailingOpenMultiKeepsQueuedBody: a MULTI frame still
+// open at the end of the batch never ran its body — no EXEC follows it,
+// so the queued commands never executed and must be re-queued on retry.
+// Here the first connection answers MULTI and SET a's +QUEUED, then
+// drops: the retry must send MULTI, SET a, SET b and a later EXEC must
+// commit all of them (3 SETs on the server). Without the fix the tail
+// filter drops SET a as answered — its reply is +QUEUED with a nil
+// error — the retry sends only MULTI and SET b, and the later EXEC
+// commits a transaction missing SET a. Regression test for the Codex P2
+// review finding on #4351.
+func TestPipelineRetryTrailingOpenMultiKeepsQueuedBody(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 2
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	setA := pipe.Set(ctx, "a", "v", 0)
+	setB := pipe.Set(ctx, "b", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-queue the body of the still-open frame)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v, want nil", err)
+	}
+	if err := setA.Err(); err != nil {
+		t.Fatalf("SET a: %v, want nil", err)
+	}
+	if err := setB.Err(); err != nil {
+		t.Fatalf("SET b: %v, want nil", err)
+	}
+	if got := server.sets.Load(); got != 3 {
+		t.Fatalf("server received %d SET commands, want 3 (the answered SET a from the still-open frame must be re-queued, plus its retry and SET b)", got)
+	}
+	// A later EXEC on the same connection must commit the frame the
+	// retry left open, with SET a inside it.
+	pipe2 := client.Pipeline()
+	pipe2.Do(ctx, "exec")
+	if _, err := pipe2.Exec(ctx); err != nil {
+		t.Fatalf("later EXEC: %v, want nil", err)
+	}
+	if got := server.execWithMulti.Load(); got != 1 {
+		t.Fatalf("server EXEC'd %d transaction(s), want 1 (the retried frame must actually execute)", got)
+	}
+}
+
 // TestPipelineRetryQueuedEvalRuntimeErrIsPreloaded: a Lua runtime error
 // inside EXEC's result array means the queued EVAL ran (and cached its
 // script) before failing — unlike a pre-execution rejection, it must still
@@ -6221,6 +6425,136 @@ func TestPipelineRetryQueuedEvalRuntimeErrIsPreloaded(t *testing.T) {
 	}
 	if got := server.noscripts.Load(); got != 0 {
 		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryRawExecRejectionIsNotPreloaded: a queued EVAL rejected
+// inside a raw EXEC's result array never ran, so it cached nothing — the
+// same hole as TestPipelineRetryQueuedEvalRejectionIsNotPreloaded, but
+// the EXEC is a RawCmd queued through BatchProcess: its reply is the
+// verbatim RESP array, so the lookup must decode the array's error
+// element instead of treating the EXEC as an ordinary answered command.
+// Without that the retry synthesises a SCRIPT LOAD and the retried
+// EVALSHA executes a write script the original pipeline refused with
+// NOSCRIPT. Regression test for the Codex P1 review finding on #4351.
+func TestPipelineRetryRawExecRejectionIsNotPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	eval := pipe.Do(ctx, "eval", src, -1)
+	exec := NewRawCmd(ctx, "exec")
+	if err := pipe.BatchProcess(ctx, exec); err != nil {
+		t.Fatalf("BatchProcess: %v", err)
+	}
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("Exec: %v, want NOSCRIPT (the retried EVALSHA must not execute a script the raw EXEC's rejection shows never ran)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v, want nil", err)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("EVAL: %v, want nil (the queued EVAL itself holds +QUEUED; its rejection is in the raw EXEC's result array)", err)
+	}
+	if got := string(exec.Val()); !strings.Contains(got, "wrong number of keys") {
+		t.Fatalf("raw EXEC Val() = %q, want it to keep the wrong-number-of-keys error element", got)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("raw EXEC Err(): %v, want nil (a raw command's error frame stays in Val() by contract)", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a rejected EVAL establishes no cache entry to reissue)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the rejected script must not be executed again)", got)
+	}
+	if got := server.evalshas.Load(); got != 1 {
+		t.Fatalf("server received %d EVALSHA commands, want 1", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryMalformedEvalIsNotPreloaded: an EVAL refused for a
+// malformed request — a missing numkeys, or a non-integer one — never
+// runs, so it cached nothing and the retry must not synthesise a SCRIPT
+// LOAD for it: the retried EVALSHA would then execute a write script
+// the original pipeline refused with NOSCRIPT. Both subcases are the
+// same pre-execution rejection class as the negative key count, with
+// the argument-validation error wording Redis returns for them.
+// Regression test for the Codex P2 review finding on #4351.
+func TestPipelineRetryMalformedEvalIsNotPreloaded(t *testing.T) {
+	cases := []struct {
+		name string
+		do   func(ctx context.Context, pipe Pipeliner) Cmder
+		want string
+	}{
+		{
+			name: "missing numkeys",
+			do: func(ctx context.Context, pipe Pipeliner) Cmder {
+				return pipe.Do(ctx, "eval", "return 1")
+			},
+			want: "wrong number of arguments",
+		},
+		{
+			name: "non-integer numkeys",
+			do: func(ctx context.Context, pipe Pipeliner) Cmder {
+				return pipe.Do(ctx, "eval", "return 1", "one")
+			},
+			want: "value is not an integer or out of range",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newScriptRetryServer(t)
+			client := newPartialRetryClient(t, server.ln.Addr().String())
+
+			const src = "return 1"
+			sum := sha1.Sum([]byte(src))
+			sha := hex.EncodeToString(sum[:])
+
+			ctx := context.Background()
+			pipe := client.Pipeline()
+			eval := tc.do(ctx, pipe)
+			evalsha := pipe.EvalSha(ctx, sha, nil)
+			_, err := pipe.Exec(ctx)
+			// The EVAL is the first command and it failed, so it
+			// wins Exec's error; the proof of the fix is on the
+			// EVALSHA below (NOSCRIPT, no SCRIPT LOAD), not here.
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Exec: %v, want the %q rejection (the malformed EVAL is the first failed command)", err, tc.want)
+			}
+			if err := eval.Err(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("EVAL: %v, want the %q rejection", err, tc.want)
+			}
+			if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+				t.Fatalf("EVALSHA: %v, want NOSCRIPT (the malformed EVAL cached nothing)", err)
+			}
+			if got := server.loads.Load(); got != 0 {
+				t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a malformed EVAL establishes no cache entry to reissue)", got)
+			}
+			if got := server.evals.Load(); got != 1 {
+				t.Fatalf("server received %d EVAL commands, want 1 (the malformed script must not be executed again)", got)
+			}
+			if got := server.evalshas.Load(); got != 1 {
+				t.Fatalf("server received %d EVALSHA commands, want 1", got)
+			}
+			if got := server.noscripts.Load(); got != 1 {
+				t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+			}
+		})
 	}
 }
 
@@ -6303,6 +6637,63 @@ func BenchmarkPipelineRetrySuffixNoTx(b *testing.B) {
 	for i := 0; i < n; i++ {
 		cmds = append(cmds, NewStringCmd(ctx, "set", fmt.Sprintf("k%d", i), "v"))
 	}
+	for _, cmd := range cmds[1:] {
+		cmd.SetErr(io.ErrUnexpectedEOF)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = pipelineRetrySuffix(ctx, cmds, io.ErrUnexpectedEOF, nil)
+	}
+}
+
+// TestPipelineRetrySuffixNoTxEvalIsLinear: a large transaction-free batch
+// of EVALs that drops near its start must not pay a backward transaction
+// scan per EVAL. Before the fix the rejected-queued-EVAL lookup walked
+// back to the start of the batch for every EVAL — 20,000 of them, none
+// in a transaction — so the retry cost ~2e8 command-name comparisons
+// before it even started. The precomputed EXEC-error table answers the
+// same question in one pass, and is only built when the suffix needs
+// scripts at all. Regression test for the Codex P2 review finding on
+// #4351.
+func TestPipelineRetrySuffixNoTxEvalIsLinear(t *testing.T) {
+	const n = 20000
+	ctx := context.Background()
+	cmds := make([]Cmder, 0, n)
+	for i := 0; i < n; i++ {
+		cmds = append(cmds, NewStringCmd(ctx, "eval", "return 1", 0))
+	}
+	// Simulate a drop just after the first command: the first EVAL was
+	// answered, everything from the second on carries the transport
+	// failure the drop stamped on it.
+	for _, cmd := range cmds[1:] {
+		cmd.SetErr(io.ErrUnexpectedEOF)
+	}
+	start := time.Now()
+	suffix := pipelineRetrySuffix(ctx, cmds, io.ErrUnexpectedEOF, nil)
+	elapsed := time.Since(start)
+	if len(suffix) != n-1 {
+		t.Fatalf("suffix has %d commands, want %d (every unanswered EVAL, once)", len(suffix), n-1)
+	}
+	// Machine-dependent by nature: the precomputed scan runs in
+	// milliseconds on this workload, while the per-command backward
+	// scan it replaced took seconds. The bound only guards against
+	// the quadratic behaviour coming back, with ample headroom.
+	if elapsed > time.Second {
+		t.Fatalf("pipelineRetrySuffix took %v for %d transaction-free EVAL commands, want < 1s (the per-command backward scan is quadratic)", elapsed, n)
+	}
+}
+
+// BenchmarkPipelineRetrySuffixNoTxEval measures pipelineRetrySuffix on a
+// 20,000-EVAL transaction-free batch that drops near its start, with a
+// trailing EVALSHA so the rejected-queued-EVAL lookup actually runs.
+func BenchmarkPipelineRetrySuffixNoTxEval(b *testing.B) {
+	const n = 20000
+	ctx := context.Background()
+	cmds := make([]Cmder, 0, n+1)
+	for i := 0; i < n; i++ {
+		cmds = append(cmds, NewStringCmd(ctx, "eval", "return 1", 0))
+	}
+	cmds = append(cmds, NewStringCmd(ctx, "evalsha", "deadbeef", 0))
 	for _, cmd := range cmds[1:] {
 		cmd.SetErr(io.ErrUnexpectedEOF)
 	}

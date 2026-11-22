@@ -2853,7 +2853,10 @@ func pipelineMultiOpen(cmds []Cmder, multi int) bool {
 // frame closed by DISCARD never runs its body either way — DISCARD drops
 // the queued commands by design — so a body in a discarded frame needs no
 // retry. A body whose EXEC already answered successfully ran and must not
-// run again. Rescanning for the enclosing MULTI per command is O(n^2) on a
+// run again. A frame still open at the end of the batch likewise never ran
+// its body — no EXEC follows it — so its body needs a retry too, or the
+// tail filter drops the queued commands as answered (+QUEUED carries no
+// error) and the retry commits a transaction missing them. Rescanning for the enclosing MULTI per command is O(n^2) on a
 // large transaction-free batch (each scan walks back to the start looking
 // for a MULTI that does not exist), with no context check on the recovery
 // path; the table answers the same question in one pass. Redis does not
@@ -2875,6 +2878,14 @@ func pipelineTxBodyNeedsRetryMap(cmds []Cmder) []bool {
 				}
 				frameStart = -1
 			}
+		}
+	}
+	// A frame still open at the end of the batch never ran its body:
+	// no EXEC follows it, so the queued commands never executed and
+	// must be re-queued on retry.
+	if frameStart >= 0 {
+		for k := frameStart + 1; k < len(cmds); k++ {
+			needs[k] = true
 		}
 	}
 	return needs
@@ -2915,6 +2926,31 @@ func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 	return discarded
 }
 
+// pipelineExecElems returns the EXEC result elements when the EXEC
+// command's reply decoded as an array: the typed decoders store it in
+// Val, while a raw EXEC keeps the verbatim RESP array bytes (see
+// rawReplyErr) and is decoded here with the protocol reader, which
+// keeps error elements as error values. nil when the reply is not an
+// array or fails to parse — the caller then treats the element as
+// ran, as before.
+func pipelineExecElems(exec Cmder) []interface{} {
+	switch c := exec.(type) {
+	case *Cmd:
+		vals, _ := c.val.([]interface{})
+		return vals
+	case *SliceCmd:
+		return c.val
+	case *RawCmd:
+		v, err := proto.NewReader(bytes.NewReader(c.val)).ReadReply()
+		if err != nil {
+			return nil
+		}
+		vals, _ := v.([]interface{})
+		return vals
+	}
+	return nil
+}
+
 // pipelineExecElemErr returns the EXEC result element at elem when it is a
 // server error: a *Cmd or *SliceCmd EXEC decodes its array reply with the
 // error of a rejected queued command stored as the element itself, while
@@ -2922,19 +2958,7 @@ func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 // value, or nil for a command that returned nil — means the queued
 // command ran (or at least was not rejected), so nil is returned.
 func pipelineExecElemErr(exec Cmder, elem int) error {
-	var vals []interface{}
-	switch c := exec.(type) {
-	case *Cmd:
-		v, ok := c.val.([]interface{})
-		if !ok {
-			return nil
-		}
-		vals = v
-	case *SliceCmd:
-		vals = c.val
-	default:
-		return nil
-	}
+	vals := pipelineExecElems(exec)
 	if elem < 0 || elem >= len(vals) {
 		return nil
 	}
@@ -2944,44 +2968,56 @@ func pipelineExecElemErr(exec Cmder, elem int) error {
 	return nil
 }
 
-// pipelineQueuedExecErr returns the EXEC result element for cmds[queued],
-// a command queued inside a MULTI/EXEC transaction, when that EXEC
-// answered with its result array. ok is false when the command is not
-// queued in a transaction, its frame was discarded instead of executed,
-// or its EXEC never answered — in the last case the result is unknown,
-// so the caller must not treat the command as rejected. A queued EVAL's
-// own reply is +QUEUED with a nil error, so only this lookup can tell
-// whether the server rejected it inside EXEC (a negative key count, for
-// example) before it ever ran.
-func pipelineQueuedExecErr(cmds []Cmder, queued int) (error, bool) {
-	multi := -1
-	for k := queued - 1; k >= 0; k-- {
-		switch cmds[k].Name() {
-		case "multi":
-			multi = k
-		case "exec", "discard":
-			return nil, false
-		}
-		if multi >= 0 {
-			break
-		}
-	}
-	if multi < 0 {
-		return nil, false
-	}
-	elem := queued - multi - 1
-	for _, cmd := range cmds[queued+1:] {
+// pipelineQueuedExecErrMap precomputes, in one O(n) pass over cmds, the
+// EXEC result element for every command queued inside a MULTI/EXEC
+// transaction: the map holds the element's error (nil when the queued
+// command ran) for commands whose frame closed with an EXEC that
+// answered, and nothing for a command outside a transaction, in a frame
+// DISCARD dropped, or whose EXEC never answered — the result is unknown
+// there, so the caller must not treat the command as rejected. A queued
+// EVAL's own reply is +QUEUED with a nil error, so only this lookup can
+// tell whether the server rejected it inside EXEC (a negative key count,
+// for example) before it ever ran. It replaces the per-command backward
+// scan for the enclosing MULTI: that scan walked back to the start for
+// every EVAL, which is O(n^2) on a large transaction-free batch (see
+// pipelineTxBodyNeedsRetryMap for the same shape). Redis does not nest
+// MULTI, so a second MULTI opens a new frame and the first EXEC or
+// DISCARD after it closes that frame.
+func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
+	errs := make(map[int]error)
+	frameStart := -1
+	var bodies []int
+	for idx, cmd := range cmds {
 		switch cmd.Name() {
+		case "multi":
+			frameStart = idx
+			bodies = bodies[:0]
 		case "exec":
-			if pipelineCmdErr(cmd) != nil {
-				return nil, false
+			if frameStart >= 0 {
+				if pipelineCmdErr(cmd) == nil {
+					elems := pipelineExecElems(cmd)
+					for _, b := range bodies {
+						elem := b - frameStart - 1
+						var err error
+						if elem >= 0 && elem < len(elems) {
+							err, _ = elems[elem].(error)
+						}
+						errs[b] = err
+					}
+				}
+				frameStart = -1
+				bodies = bodies[:0]
 			}
-			return pipelineExecElemErr(cmd, elem), true
 		case "discard":
-			return nil, false
+			frameStart = -1
+			bodies = bodies[:0]
+		default:
+			if frameStart >= 0 {
+				bodies = append(bodies, idx)
+			}
 		}
 	}
-	return nil, false
+	return errs
 }
 
 // rawReplyErr decodes the Redis error a raw command's reply carries, if any.
@@ -3046,7 +3082,8 @@ func pipelineCmdErr(cmd Cmder) error {
 // isScriptPreExecRejection reports whether err is a Redis error raised
 // before a script executed, so the script never ran and never populated
 // the server's script cache: a script that failed to compile, a wrong key
-// count, a permission or memory refusal, a BUSY server, a MOVED/ASK
+// count, an argument-validation failure (wrong arity, a non-integer key
+// count), a permission or memory refusal, a BUSY server, a MOVED/ASK
 // redirect, or a CROSSSLOT pre-execution rejection (the keys hash to
 // different slots, so the script never ran and never loaded). Any other
 // Redis error — a Lua runtime error, for example — comes from an execution
@@ -3064,6 +3101,8 @@ func isScriptPreExecRejection(err error) bool {
 		HasErrorPrefix(err, "Number of keys can't be negative") ||
 		HasErrorPrefix(err, "Number of keys can't be greater than number of args") ||
 		HasErrorPrefix(err, "wrong number of keys") ||
+		HasErrorPrefix(err, "wrong number of arguments") ||
+		HasErrorPrefix(err, "value is not an integer or out of range") ||
 		HasErrorPrefix(err, "CROSSSLOT ") ||
 		HasErrorPrefix(err, "BUSY ") ||
 		proto.IsPermissionError(err) ||
@@ -3112,7 +3151,13 @@ func evalScriptCached(cmd Cmder) bool {
 // state cannot be re-established on its own: commands
 // pipelineConnStateReissueCmd accepts are reissued ahead of the suffix as
 // fresh copies instead, so the retry re-establishes the state without
-// re-running the answered writes that followed it. SWAPDB is the
+// re-running the answered writes that followed it. A one-shot flag
+// (ASKING, CLIENT CACHING) is the exception in the other direction too:
+// one whose follower was already answered was consumed by it and holds
+// no state, and one whose follower is the first command of the retry
+// suffix is reissued immediately before it — either way it does not
+// force the whole batch, so the answered writes before it are not
+// re-run. SWAPDB is the
 // exception in the other direction: it is server-global, not
 // per-connection, so an answered one already took effect and is neither
 // re-established nor re-run — running it again would swap the databases
@@ -3133,7 +3178,7 @@ func evalScriptCached(cmd Cmder) bool {
 // the answered script itself is never executed again. A queued EVAL's
 // rejection lives in its EXEC result array, not in its own +QUEUED reply,
 // so the rebuild checks that element before preloading it (see
-// pipelineQueuedExecErr). Commands inside a transaction DISCARD dropped
+// pipelineQueuedExecErrMap). Commands inside a transaction DISCARD dropped
 // never executed, so they contribute no session state or script
 // prerequisite at all (see pipelineDiscardedTxCmds). A SCRIPT FLUSH that
 // followed a reissued LOAD is reissued with it, in order: replaying the
@@ -3221,6 +3266,21 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// to that frame instead of returning the whole batch (see
 			// below). -1 when no such frame exists.
 			openMultiAt := -1
+			// oneShotCandidates records a one-shot state command
+			// (ASKING, CLIENT CACHING) in the answered prefix and
+			// the index of the command it was issued for: its
+			// follower. A flag whose follower was already answered
+			// was consumed by it, so it holds no state the retry
+			// must re-establish; a flag whose follower is the
+			// boundary command is reissued at the front of the
+			// retry below, immediately before that follower. Either
+			// way it must not force the whole batch the way other
+			// unreissuable state does — that re-runs the answered
+			// writes before it. A flag whose follower sits deeper
+			// in the suffix cannot be reissued from the front, so
+			// it still forces the whole batch (decided after the
+			// narrowing below, when the boundary is final).
+			oneShotCandidates := make(map[*baseCmd]int)
 			for idx, answered := range cmds[:i] {
 				if completedTx[answered.base()] {
 					continue
@@ -3233,6 +3293,34 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					continue
 				}
 				if pipelineConnStateCmd(answered) && !pipelineConnStateReissueCmd(answered) {
+					if pipelineOneShotStateCmd(answered) {
+						// The follower is the next original
+						// command, skipping any fresh synthetic a
+						// previous retry inserted ahead of it.
+						followerIdx := -1
+						for k := idx + 1; k < len(cmds); k++ {
+							if synthetic[cmds[k].base()] {
+								continue
+							}
+							followerIdx = k
+							break
+						}
+						if followerIdx < 0 || followerIdx < i {
+							// No follower, or a follower the
+							// first attempt already answered:
+							// the flag was consumed, so it
+							// holds no state.
+							continue
+						}
+						if followerIdx == i {
+							oneShotCandidates[answered.base()] = followerIdx
+							continue
+						}
+						// The follower sits past the boundary:
+						// the flag cannot be reissued ahead
+						// of it from the front.
+						return cmds
+					}
 					// An open MULTI frames only its own body: the
 					// frame re-runs as a unit on the retry, so
 					// narrowing to it re-establishes the transaction
@@ -3271,6 +3359,22 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// forces the whole batch.
 			if openMultiAt >= 0 {
 				i = openMultiAt
+			}
+			// Decide the one-shot candidates against the final
+			// boundary: the narrowing above may have moved it
+			// before a candidate's follower, in which case the
+			// flag cannot be reissued ahead of it from the front
+			// and the whole batch is kept instead. A follower
+			// the narrowing moved into the rebuilt prefix was
+			// already answered, so its flag was consumed.
+			oneShotReissue := make(map[*baseCmd]bool)
+			for base, followerIdx := range oneShotCandidates {
+				if followerIdx > i {
+					return cmds
+				}
+				if followerIdx == i {
+					oneShotReissue[base] = true
+				}
 			}
 			// The WATCH safety check runs after the tail filter below:
 			// it must see the answered commands past the boundary
@@ -3479,21 +3583,26 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// never ran, so it cached nothing — but its own reply
 			// is +QUEUED with a nil error, which evalScriptCached
 			// cannot see. The EXEC result array holds the rejection
-			// (see pipelineQueuedExecErr): record those EVALs here
+			// (see pipelineQueuedExecErrMap): record those EVALs here
 			// so the rebuild below never synthesises a SCRIPT LOAD
-			// for them.
+			// for them. The lookup runs only when the suffix needs
+			// scripts at all: without an EVALSHA in it, no preload
+			// is ever synthesised, so there is nothing to suppress.
 			rejectedQueuedEval := make(map[*baseCmd]bool)
-			for idx, cmd := range cmds {
-				if !isEvalCmd(cmd) {
-					continue
-				}
-				// Only a pre-execution rejection means the script
-				// never ran: a Lua runtime error in the EXEC element
-				// comes from an execution that already cached the
-				// script, so it still preloads (see
-				// isScriptPreExecRejection).
-				if err, ok := pipelineQueuedExecErr(cmds, idx); ok && err != nil && isScriptPreExecRejection(err) {
-					rejectedQueuedEval[cmd.base()] = true
+			if needsScripts {
+				execErrs := pipelineQueuedExecErrMap(cmds)
+				for idx, cmd := range cmds {
+					if !isEvalCmd(cmd) {
+						continue
+					}
+					// Only a pre-execution rejection means the script
+					// never ran: a Lua runtime error in the EXEC element
+					// comes from an execution that already cached the
+					// script, so it still preloads (see
+					// isScriptPreExecRejection).
+					if err, ok := execErrs[idx]; ok && err != nil && isScriptPreExecRejection(err) {
+						rejectedQueuedEval[cmd.base()] = true
+					}
 				}
 			}
 			// Commands inside a transaction DISCARD dropped never
@@ -3565,6 +3674,28 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					continue
 				}
 				emitScriptPrereq(answered)
+			}
+			// A one-shot flag whose follower is the first command
+			// of the retry suffix is reissued here, immediately
+			// before it: the flag applies only to the next command
+			// the connection runs, so emitting it with the other
+			// reissues above — ahead of a state re-establishment
+			// or a script preload — would attach it to that
+			// command instead of its follower. A flag whose
+			// follower was already answered was consumed by it
+			// and is not reissued at all. The clone keeps the
+			// original's reply decoder, as the session reissues
+			// above do; the stale error is cleared for the same
+			// reason. It is required: a failed flag must fail the
+			// batch, or the follower would run without the state
+			// it was issued under.
+			for _, answered := range cmds[:i] {
+				if oneShotReissue[answered.base()] {
+					fresh := answered.Clone()
+					fresh.SetErr(nil)
+					retry = append(retry, fresh)
+					markPipelineSynthetic(ctx, true, fresh)
+				}
 			}
 			for j, cmd := range cmds[i:] {
 				if j > 0 && !keep[j-1] {
