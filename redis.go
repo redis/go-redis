@@ -2964,24 +2964,67 @@ func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 // (see pipelineQueuedExecErrMap) cannot see these commands either: this
 // set is the only record of them. Only a settled EXEC counts: an
 // unanswered one leaves the frame open, and its fate is unknown, so its
-// body is rebuilt as before.
+// body is rebuilt as before. A null EXEC reply counts as an abort too
+// (see pipelineExecNullReply): a raw EXEC keeps the `*-1` / `_` frame
+// with a nil error, so the error check alone would miss it. The WATCH
+// commands guarding the frame are in the set too: a settled EXEC clears
+// them, so they are dead state — replaying the frame's WATCH / MULTI /
+// EXEC around the dropped body would commit an empty transaction on the
+// retry and overwrite the abort with success (see pipelineRetrySuffix).
+// A WATCH counts as a guard only while it is still live when the frame's
+// MULTI opens: a settled EXEC, a successful DISCARD or a successful
+// UNWATCH clears every live watch.
 func pipelineAbortedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 	aborted := make(map[*baseCmd]bool)
 	var frame []Cmder
+	// liveWatches holds the WATCH commands still in effect: a WATCH
+	// joins it when it answers, and a settled EXEC, a successful
+	// DISCARD or a successful UNWATCH clears it. frameGuards snapshots
+	// it when a frame opens, so an abort takes the frame's guards
+	// with it.
+	var liveWatches []Cmder
+	var frameGuards []Cmder
 	for _, cmd := range cmds {
 		switch cmd.Name() {
+		case "watch":
+			if len(frame) > 0 {
+				frame = append(frame, cmd)
+			} else if pipelineCmdErr(cmd) == nil {
+				liveWatches = append(liveWatches, cmd)
+			}
+		case "unwatch":
+			if pipelineCmdErr(cmd) == nil {
+				liveWatches = nil
+			}
+			if len(frame) > 0 {
+				frame = append(frame, cmd)
+			}
 		case "multi":
+			if len(frame) == 0 {
+				frameGuards = append([]Cmder(nil), liveWatches...)
+			}
 			frame = append(frame, cmd)
 		case "exec":
-			if len(frame) > 0 && pipelineExecSettled(cmd) && pipelineCmdErr(cmd) != nil {
+			if len(frame) > 0 && pipelineExecSettled(cmd) && (pipelineCmdErr(cmd) != nil || pipelineExecNullReply(cmd)) {
 				frame = append(frame, cmd)
 				for _, f := range frame {
 					aborted[f.base()] = true
 				}
+				for _, w := range frameGuards {
+					aborted[w.base()] = true
+				}
 			}
 			frame = nil
+			frameGuards = nil
+			if pipelineExecSettled(cmd) {
+				liveWatches = nil
+			}
 		case "discard":
+			if pipelineCmdErr(cmd) == nil {
+				liveWatches = nil
+			}
 			frame = nil
+			frameGuards = nil
 		default:
 			if len(frame) > 0 {
 				frame = append(frame, cmd)
@@ -3064,7 +3107,15 @@ func pipelineExecSettled(cmd Cmder) bool {
 // every EVAL, which is O(n^2) on a large transaction-free batch (see
 // pipelineTxBodyNeedsRetryMap for the same shape). Redis rejects a
 // nested MULTI without closing the outer transaction, so only the first
-// MULTI opens the frame (see cscPipelineFlags for the same rule).
+// MULTI opens the frame (see cscPipelineFlags for the same rule). The
+// element index is the command's ordinal among the commands actually
+// queued — not its distance from MULTI: a rejected nested MULTI is a
+// framing command, so it contributes no EXEC result element, and
+// counting it would read the next command's rejection past the end of
+// the array. A null EXEC reply (a WATCH abort, see
+// pipelineExecNullReply) carries no result array at all, so it records
+// no elements either: the aborted frame's commands are covered by
+// pipelineAbortedTxCmds instead.
 func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 	errs := make(map[int]error)
 	frameStart := -1
@@ -3082,13 +3133,12 @@ func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 			}
 		case "exec":
 			if frameStart >= 0 {
-				if pipelineCmdErr(cmd) == nil {
+				if pipelineCmdErr(cmd) == nil && !pipelineExecNullReply(cmd) {
 					elems := pipelineExecElems(cmd)
-					for _, b := range bodies {
-						elem := b - frameStart - 1
+					for ordinal, b := range bodies {
 						var err error
-						if elem >= 0 && elem < len(elems) {
-							err, _ = elems[elem].(error)
+						if ordinal < len(elems) {
+							err, _ = elems[ordinal].(error)
 						}
 						errs[b] = err
 					}
@@ -3149,6 +3199,27 @@ func rawReplyErr(cmd Cmder) error {
 		return proto.ParseErrorReply(append([]byte("-"), msg...))
 	}
 	return nil
+}
+
+// pipelineExecNullReply reports whether an EXEC command's reply is a null
+// reply — a WATCH abort: RESP2 `*-1` or RESP3 `_`. A typed EXEC decodes
+// that as redis.Nil, which pipelineCmdErr already sees; a raw EXEC keeps
+// the verbatim frame with a nil rawErr(), so only the bytes show the
+// abort. Any other reply — an array of results, or an error frame — is
+// not a null reply. An empty reply (nothing read) is not one either.
+func pipelineExecNullReply(cmd Cmder) bool {
+	raw, ok := cmd.(*RawCmd)
+	if !ok {
+		return false
+	}
+	val := raw.val
+	if len(val) == 0 {
+		return false
+	}
+	if val[0] == proto.RespNil {
+		return true
+	}
+	return bytes.HasPrefix(val, []byte("*-1\r\n"))
 }
 
 // pipelineCmdErr returns the error a command's reply carries, for the retry
@@ -3542,6 +3613,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// commands this attempt never dispatched (a stale error is
 			// not this attempt's record), and anything not definitively
 			// answered (a transport failure, or a retryable Redis reply).
+			// A transaction the server aborted is the exception to the
+			// connection-state keep: its framing is dropped with its
+			// body, so the retry does not commit an empty transaction
+			// around it and overwrite the EXEC's abort with success
+			// (see pipelineAbortedTxCmds).
 			// A +QUEUED reply is not a definitive answer either: the
 			// command runs only when its transaction's EXEC runs, so a
 			// queued command whose EXEC did not settle must be kept and
@@ -3569,13 +3645,37 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// enclosing MULTI per command is O(n^2) on a large
 			// transaction-free batch.
 			txBodyNeedsRetry := pipelineTxBodyNeedsRetryMap(cmds)
+			// Commands inside a transaction DISCARD dropped or the
+			// server aborted never executed (see
+			// pipelineDiscardedTxCmds and pipelineAbortedTxCmds):
+			// the filter below drops the aborted frame's framing
+			// with its body instead of replaying it, and the
+			// rebuild below must not re-establish either frame's
+			// commands as session state or script prerequisites.
+			// Computed once here and reused by both.
+			discardedTx := pipelineDiscardedTxCmds(cmds)
+			abortedTx := pipelineAbortedTxCmds(cmds)
 			for j, cmd := range cmds[i+1:] {
 				// An answered SWAPDB is server-global state that
 				// already took effect: re-sending it would swap the
 				// databases back. Unlike the other connection-local
 				// state kept here for re-establishment, it is dropped
 				// with the other answered commands below.
-				if synthetic[cmd.base()] || (pipelineConnStateCmd(cmd) && cmd.Name() != "swapdb") || staleErrs[cmd.base()] {
+				if synthetic[cmd.base()] || staleErrs[cmd.base()] {
+					keep[j] = true
+					continue
+				}
+				// A command in a transaction the server aborted is
+				// not kept as connection state: its frame's outcome
+				// — the EXEC's redis.Nil or EXECABORT — is the
+				// batch's outcome for it, and replaying the
+				// frame's WATCH / MULTI / EXEC around the dropped
+				// body would commit an empty transaction and
+				// overwrite that outcome with success (see
+				// pipelineAbortedTxCmds). It falls through to the
+				// answered check below, so the frame is dropped
+				// and the EXEC keeps its abort.
+				if !abortedTx[cmd.base()] && pipelineConnStateCmd(cmd) && cmd.Name() != "swapdb" {
 					keep[j] = true
 					continue
 				}
@@ -3862,9 +3962,8 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// script prerequisites (see pipelineDiscardedTxCmds).
 			// The same holds for a transaction the server aborted
 			// (see pipelineAbortedTxCmds): its queued commands
-			// never executed either.
-			discardedTx := pipelineDiscardedTxCmds(cmds)
-			abortedTx := pipelineAbortedTxCmds(cmds)
+			// never executed either. Both sets were computed above,
+			// ahead of the tail filter, and are reused here.
 			emitScriptPrereq := func(answered Cmder) {
 				// A command inside a discarded or aborted
 				// transaction never executed, so it populated
@@ -4102,8 +4201,12 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// error over those results (see setCmdsTransportErr), and the
 	// no-transport-error fallback of pipelineUnansweredSuffix must not
 	// return them for stamping. The set lives in ctx so the execution
-	// paths below can read it.
+	// paths below can read it. The stale-error set lives in ctx too, so
+	// a zero-reply failure can tell an entry error a reused command
+	// carried in from a genuine reply of this invocation (see
+	// setCmdsTransportErr).
 	answered := make(map[*baseCmd]bool, len(cmds))
+	ctx = context.WithValue(ctx, pipelineStaleErrKey{}, staleErrs)
 	ctx = context.WithValue(ctx, pipelineAnsweredKey{}, answered)
 	// synthetic records the fresh commands pipelineRetrySuffix creates
 	// for a retry (script preloads and reissued connection-state
@@ -4642,6 +4745,19 @@ func (c *baseClient) pipelineProcessCmds(
 		// read all replies
 		readErr = c.pipelineReadCmdsWithFlags(ctx, cn, rd, cmds, flags)
 		if readErr != nil && !isRedisError(readErr) {
+			// A transport failure partway through the replies must
+			// not lose the bookkeeping for the commands already
+			// acknowledged: an HIMPORT DISCARD whose reply was read
+			// removes its fieldset from the client-side registry,
+			// and the retry trims the DISCARD as answered — without
+			// this, a later HIMPORT SET would inject a PREPARE from
+			// the stale registry and resurrect the discarded
+			// fieldset. himportAfterBatch only applies to commands
+			// whose replies were actually read (a nil error for a
+			// DISCARD / DISCARDALL / PREPARE, a "no such fieldset"
+			// reply for a SET): the commands past the failure carry
+			// the stamped transport error, so they are skipped.
+			c.himportAfterBatch(cn, injected, cmds)
 			return readErr
 		}
 		c.himportAfterBatch(cn, injected, cmds)
