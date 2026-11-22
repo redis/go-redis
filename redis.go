@@ -2828,6 +2828,151 @@ func pipelineQueuedCmdNeedsRetry(cmds []Cmder, queued int) bool {
 	return false
 }
 
+// pipelineTxBodyNeedsRetry reports whether the command at idx, inside a
+// MULTI/EXEC transaction, still needs to run on retry: its EXEC follows
+// it in cmds and did not answer successfully, so the command never
+// executed. It generalises pipelineQueuedCmdNeedsRetry to commands whose
+// reply cannot carry +QUEUED: BoolCmd.readReply accepts +QUEUED as
+// (false, nil), so the detector never sees it queued, and the tail
+// filter would otherwise drop the unexecuted command and let the retry
+// commit an empty transaction. A frame closed by DISCARD never runs its
+// body either way — DISCARD drops the queued commands by design — so a
+// body in a discarded frame needs no retry. A body whose EXEC already
+// answered successfully ran and must not run again.
+func pipelineTxBodyNeedsRetry(cmds []Cmder, idx int) bool {
+	// The command must sit inside a MULTI frame: scan back for the
+	// MULTI that opened it, stopping at any EXEC or DISCARD that
+	// closed an earlier frame.
+	inFrame := false
+	for k := idx - 1; k >= 0; k-- {
+		switch cmds[k].Name() {
+		case "multi":
+			inFrame = true
+		case "exec", "discard":
+			return false
+		}
+		if inFrame {
+			break
+		}
+	}
+	if !inFrame {
+		return false
+	}
+	for _, cmd := range cmds[idx+1:] {
+		switch cmd.Name() {
+		case "exec":
+			return pipelineCmdErr(cmd) != nil
+		case "discard":
+			return false
+		}
+	}
+	return false
+}
+
+// pipelineDiscardedTxCmds returns the commands of cmds that sit inside a
+// MULTI/EXEC transaction the server discarded: a MULTI frame closed by a
+// DISCARD that answered successfully. The queued commands in such a frame
+// never executed, so their effects never happened — a queued SELECT in
+// one must not be rebuilt as a session prerequisite, or the retry would
+// run the rest of the batch under a database the first attempt never
+// selected. Only an answered DISCARD counts: an unanswered one leaves
+// the frame open, and the frame scan in pipelineRetrySuffix then treats
+// its MULTI as still-open state.
+func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
+	discarded := make(map[*baseCmd]bool)
+	var frame []Cmder
+	for _, cmd := range cmds {
+		switch cmd.Name() {
+		case "multi":
+			frame = append(frame, cmd)
+		case "exec":
+			frame = nil
+		case "discard":
+			if len(frame) > 0 && pipelineCmdErr(cmd) == nil {
+				frame = append(frame, cmd)
+				for _, f := range frame {
+					discarded[f.base()] = true
+				}
+			}
+			frame = nil
+		default:
+			if len(frame) > 0 {
+				frame = append(frame, cmd)
+			}
+		}
+	}
+	return discarded
+}
+
+// pipelineExecElemErr returns the EXEC result element at elem when it is a
+// server error: a *Cmd or *SliceCmd EXEC decodes its array reply with the
+// error of a rejected queued command stored as the element itself, while
+// the EXEC command carries no error of its own. Any other element — a
+// value, or nil for a command that returned nil — means the queued
+// command ran (or at least was not rejected), so nil is returned.
+func pipelineExecElemErr(exec Cmder, elem int) error {
+	var vals []interface{}
+	switch c := exec.(type) {
+	case *Cmd:
+		v, ok := c.val.([]interface{})
+		if !ok {
+			return nil
+		}
+		vals = v
+	case *SliceCmd:
+		vals = c.val
+	default:
+		return nil
+	}
+	if elem < 0 || elem >= len(vals) {
+		return nil
+	}
+	if err, ok := vals[elem].(error); ok {
+		return err
+	}
+	return nil
+}
+
+// pipelineQueuedExecErr returns the EXEC result element for cmds[queued],
+// a command queued inside a MULTI/EXEC transaction, when that EXEC
+// answered with its result array. ok is false when the command is not
+// queued in a transaction, its frame was discarded instead of executed,
+// or its EXEC never answered — in the last case the result is unknown,
+// so the caller must not treat the command as rejected. A queued EVAL's
+// own reply is +QUEUED with a nil error, so only this lookup can tell
+// whether the server rejected it inside EXEC (a negative key count, for
+// example) before it ever ran.
+func pipelineQueuedExecErr(cmds []Cmder, queued int) (error, bool) {
+	multi := -1
+	for k := queued - 1; k >= 0; k-- {
+		switch cmds[k].Name() {
+		case "multi":
+			multi = k
+		case "exec", "discard":
+			return nil, false
+		}
+		if multi >= 0 {
+			break
+		}
+	}
+	if multi < 0 {
+		return nil, false
+	}
+	elem := queued - multi - 1
+	for _, cmd := range cmds[queued+1:] {
+		switch cmd.Name() {
+		case "exec":
+			if pipelineCmdErr(cmd) != nil {
+				return nil, false
+			}
+			return pipelineExecElemErr(cmd, elem), true
+		case "discard":
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
 // rawReplyErr decodes the Redis error a raw command's reply carries, if any.
 // RawCmd.readReply preserves the RESP frame verbatim in Val() and returns nil
 // even for an error frame, so rawErr() alone cannot see it: the retry
@@ -2943,10 +3088,16 @@ func evalScriptCached(cmd Cmder) bool {
 // state cannot be re-established on its own: commands
 // pipelineConnStateReissueCmd accepts are reissued ahead of the suffix as
 // fresh copies instead, so the retry re-establishes the state without
-// re-running the answered writes that followed it. A reissued WATCH is
+// re-running the answered writes that followed it. SWAPDB is the
+// exception in the other direction: it is server-global, not
+// per-connection, so an answered one already took effect and is neither
+// re-established nor re-run — running it again would swap the databases
+// back. A reissued WATCH is
 // the exception: it is only reissued when nothing the first attempt
 // answered after it could have dirtied it (see
-// pipelineWatchSafeFollowerCmd); otherwise the whole batch is kept, so
+// pipelineWatchSafeFollowerCmd), counting answered followers past the
+// retry boundary the tail filter drops as well as ones before it;
+// otherwise the whole batch is kept, so
 // the retried watch is dirtied the same way and a later EXEC aborts
 // instead of silently committing. An answered
 // SCRIPT LOAD is reissued ahead of the suffix instead: it populates the
@@ -2955,7 +3106,12 @@ func evalScriptCached(cmd Cmder) bool {
 // idempotent, so reissuing it replays nothing else. An answered EVAL or
 // EVAL_RO counts the same way when it actually ran (see evalScriptCached):
 // its source is reissued as a SCRIPT LOAD —
-// the answered script itself is never executed again. A SCRIPT FLUSH that
+// the answered script itself is never executed again. A queued EVAL's
+// rejection lives in its EXEC result array, not in its own +QUEUED reply,
+// so the rebuild checks that element before preloading it (see
+// pipelineQueuedExecErr). Commands inside a transaction DISCARD dropped
+// never executed, so they contribute no session state or script
+// prerequisite at all (see pipelineDiscardedTxCmds). A SCRIPT FLUSH that
 // followed a reissued LOAD is reissued with it, in order: replaying the
 // LOAD without the FLUSH would execute a script the batch had already
 // removed, where the whole-batch retry would have returned NOSCRIPT. The
@@ -3040,6 +3196,13 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				if completedTx[answered.base()] {
 					continue
 				}
+				// SWAPDB is server-global, not per-connection state:
+				// an answered one already swapped the databases, so
+				// it needs no re-establishment on the retry
+				// connection, and re-running it would swap them back.
+				if answered.Name() == "swapdb" {
+					continue
+				}
 				if pipelineConnStateCmd(answered) && !pipelineConnStateReissueCmd(answered) {
 					return cmds
 				}
@@ -3059,28 +3222,10 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					}
 				}
 			}
-			// A reissued WATCH is only the same watch when nothing
-			// the first attempt answered after it could have dirtied
-			// it: the replacement connection's watch is clean, so
-			// dropping an answered write that followed the WATCH (an
-			// INCR on the watched key) would let a later EXEC commit
-			// a transaction the original ordering would have
-			// aborted. A follower the retry re-emits without
-			// replaying its writes (see
-			// pipelineWatchSafeFollowerCmd) is safe; any other
-			// answered follower keeps the whole batch, which
-			// re-runs the write and dirties the retried watch the
-			// same way.
-			for j, answered := range cmds[:i] {
-				if answered.Name() != "watch" {
-					continue
-				}
-				for _, after := range cmds[j+1 : i] {
-					if !pipelineWatchSafeFollowerCmd(after) {
-						return cmds
-					}
-				}
-			}
+			// The WATCH safety check runs after the tail filter below:
+			// it must see the answered commands past the boundary
+			// the filter drops, not just the prefix before it (see
+			// the dropped-tail check ahead of the retry build).
 			// A WAIT/WAITAOF in the suffix reads the replication offset
 			// of the connection that runs it (the server's per-connection
 			// woff), not the one that ran the answered writes: on a fresh
@@ -3128,11 +3273,27 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			answered := make([]bool, len(cmds)-i-1)
 			keep := make([]bool, len(cmds)-i-1)
 			for j, cmd := range cmds[i+1:] {
-				if synthetic[cmd.base()] || pipelineConnStateCmd(cmd) || staleErrs[cmd.base()] {
+				// An answered SWAPDB is server-global state that
+				// already took effect: re-sending it would swap the
+				// databases back. Unlike the other connection-local
+				// state kept here for re-establishment, it is dropped
+				// with the other answered commands below.
+				if synthetic[cmd.base()] || (pipelineConnStateCmd(cmd) && cmd.Name() != "swapdb") || staleErrs[cmd.base()] {
 					keep[j] = true
 					continue
 				}
 				if pipelineCmdQueued(cmd) && pipelineQueuedCmdNeedsRetry(cmds, i+1+j) {
+					keep[j] = true
+					continue
+				}
+				// A command inside a MULTI/EXEC transaction whose
+				// EXEC never answered must be kept even when its
+				// reply cannot carry +QUEUED (see
+				// pipelineTxBodyNeedsRetry): it never executed, and
+				// dropping it would let the retry commit an empty
+				// transaction. A body in a frame DISCARD closed, or
+				// whose EXEC already answered, needs no retry.
+				if pipelineTxBodyNeedsRetry(cmds, i+1+j) {
 					keep[j] = true
 					continue
 				}
@@ -3178,6 +3339,42 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				// Otherwise a consumed one-shot flag: dropped outright,
 				// it rebuilds nothing and must not be re-sent.
 			}
+			// A reissued WATCH is only the same watch when nothing
+			// the first attempt answered after it could have dirtied
+			// it: the replacement connection's watch is clean, so
+			// dropping an answered write that followed the WATCH (an
+			// INCR on the watched key) would let a later EXEC commit
+			// a transaction the original ordering would have
+			// aborted. A follower the retry re-emits without
+			// replaying its writes (see
+			// pipelineWatchSafeFollowerCmd) is safe; any other
+			// answered follower keeps the whole batch, which
+			// re-runs the write and dirties the retried watch the
+			// same way. The check covers followers before the
+			// boundary and followers past it that the tail filter
+			// dropped as answered: a write answered after a
+			// retryable error (a TRYAGAIN, for example) is dropped
+			// the same way, and the reissued WATCH would be just as
+			// clean. Followers the retry keeps are re-run on the new
+			// connection, so they dirty the retried watch themselves
+			// and need no whole batch.
+			droppedTail := make(map[*baseCmd]bool, len(answeredTail))
+			for _, answered := range answeredTail {
+				droppedTail[answered.base()] = true
+			}
+			for w, watch := range cmds {
+				if watch.Name() != "watch" {
+					continue
+				}
+				for f := w + 1; f < len(cmds); f++ {
+					follower := cmds[f]
+					if f < i || droppedTail[follower.base()] {
+						if !pipelineWatchSafeFollowerCmd(follower) {
+							return cmds
+						}
+					}
+				}
+			}
 			// Only rebuild cache entries the suffix actually needs: a
 			// retried EVALSHA fails NOSCRIPT without them, but any other
 			// suffix runs fine without a preload — and a preload is a new
@@ -3219,7 +3416,35 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			for _, answered := range answeredTail {
 				tailAnswered[answered.base()] = true
 			}
+			// A queued EVAL rejected inside its transaction's EXEC
+			// never ran, so it cached nothing — but its own reply
+			// is +QUEUED with a nil error, which evalScriptCached
+			// cannot see. The EXEC result array holds the rejection
+			// (see pipelineQueuedExecErr): record those EVALs here
+			// so the rebuild below never synthesises a SCRIPT LOAD
+			// for them.
+			rejectedQueuedEval := make(map[*baseCmd]bool)
+			for idx, cmd := range cmds {
+				if !isEvalCmd(cmd) {
+					continue
+				}
+				if err, ok := pipelineQueuedExecErr(cmds, idx); ok && err != nil {
+					rejectedQueuedEval[cmd.base()] = true
+				}
+			}
+			// Commands inside a transaction DISCARD dropped never
+			// executed, so their effects never happened: the rebuild
+			// below must not re-establish them as session state or
+			// script prerequisites (see pipelineDiscardedTxCmds).
+			discardedTx := pipelineDiscardedTxCmds(cmds)
 			emitScriptPrereq := func(answered Cmder) {
+				// A command inside a discarded transaction never
+				// executed, so it populated nothing: neither the
+				// rebuild pass above nor the suffix walk below may
+				// synthesise a prerequisite from it.
+				if discardedTx[answered.base()] {
+					return
+				}
 				switch {
 				case isScriptLoadCmd(answered) || isScriptFlushCmd(answered):
 					// Fresh command, not the original: a retry that
@@ -3229,7 +3454,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					fresh := NewStringCmd(ctx, answered.Args()...)
 					retry = append(retry, fresh)
 					markPipelineSynthetic(ctx, false, fresh)
-				case isEvalCmd(answered) && evalScriptCached(answered):
+				case isEvalCmd(answered) && evalScriptCached(answered) && !rejectedQueuedEval[answered.base()]:
 					// Only an EVAL that actually ran populates the
 					// cache: a rejected one (a negative key count,
 					// a compile error) never ran, so preloading its
@@ -3249,6 +3474,14 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			replay = append(replay, cmds[:i]...)
 			replay = append(replay, answeredTail...)
 			for _, answered := range replay {
+				if discardedTx[answered.base()] {
+					// A command inside a discarded transaction
+					// never executed: its session effect (a queued
+					// SELECT) or script effect never happened, so
+					// rebuilding it would run the retry under state
+					// the first attempt never established.
+					continue
+				}
 				if pipelineConnStateReissueCmd(answered) {
 					// Clone, not a fresh StringCmd: the reissued
 					// command must keep the original's reply

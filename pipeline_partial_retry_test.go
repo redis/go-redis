@@ -162,6 +162,10 @@ type connStateRetryServer struct {
 	execAborted      atomic.Int32 // EXECs that aborted because a watched key was modified
 	incrs            atomic.Int32
 	selects          atomic.Int32
+	swapdbs          atomic.Int32
+	discards         atomic.Int32
+	mgets            atomic.Int32
+	swapped          atomic.Bool // server-global SWAPDB state: DB 0 and DB 1 exchanged
 	// dropAfter is how many pipeline commands the first connection
 	// answers before dropping (1 = the historical behaviour).
 	dropAfter int
@@ -170,6 +174,12 @@ type connStateRetryServer struct {
 	// 0-15. Tests that need a reissued SELECT to fail on the retry
 	// connection set it below 15.
 	secondMaxDB int
+	// tryagainConn, when nonzero, is the connection whose first MGET
+	// is answered TRYAGAIN (slot migration); later MGETs succeed.
+	tryagainConn int32
+	// dropExecFirst, when set, makes the first connection close
+	// without replying to EXEC (the transaction never commits there).
+	dropExecFirst bool
 }
 
 func newConnStateRetryServer(t *testing.T) *connStateRetryServer {
@@ -188,7 +198,7 @@ func newConnStateRetryServer(t *testing.T) *connStateRetryServer {
 				return
 			}
 			n := s.conns.Add(1)
-			go s.serve(conn, n == 1)
+			go s.serve(conn, n)
 		}
 	}()
 	return s
@@ -221,8 +231,9 @@ func readConnStateRetryCommand(scanner *bufio.Scanner) (string, []string) {
 	return strings.ToLower(args[0]), args[1:]
 }
 
-func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
+func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 	defer conn.Close()
+	first := n == 1
 	scanner := bufio.NewScanner(conn)
 	db := 0
 	inMulti := false
@@ -233,6 +244,22 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 	watchedKeys := map[string]bool{}
 	dirty := false
 	answered := 0
+	mgetsThisConn := 0
+	// effDB is the database a SET lands in: SWAPDB is server-global,
+	// so one swap exchanges DB 0 and DB 1 for every connection.
+	effDB := func() int {
+		if !s.swapped.Load() {
+			return db
+		}
+		switch db {
+		case 0:
+			return 1
+		case 1:
+			return 0
+		default:
+			return db
+		}
+	}
 	for {
 		name, args := readConnStateRetryCommand(scanner)
 		if name == "" {
@@ -242,7 +269,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 		// the pipeline: always answer them and never drop on them.
 		isPipelineCmd := name == "select" || name == "set" || name == "get" ||
 			name == "multi" || name == "exec" || name == "watch" || name == "unwatch" ||
-			name == "incr"
+			name == "incr" || name == "discard" || name == "swapdb" || name == "mget"
 		if first && answered >= s.dropAfter && isPipelineCmd {
 			// Drop the connection mid-pipeline: this command and the
 			// ones after it get no reply on this connection.
@@ -254,6 +281,13 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 			reply = "%0\r\n"
 		case "select":
 			s.selects.Add(1)
+			if inMulti {
+				// A queued SELECT runs only at EXEC time; DISCARD
+				// drops it without effect, so it must not change
+				// this connection's database yet.
+				reply = "+QUEUED\r\n"
+				break
+			}
 			if len(args) > 0 {
 				if n, err := strconv.Atoi(args[0]); err == nil {
 					maxDB := 15
@@ -269,7 +303,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 			}
 		case "set":
 			s.sets.Add(1)
-			s.setDB.Store(int32(db))
+			s.setDB.Store(int32(effDB()))
 			if watched {
 				s.setWhileWatched.Add(1)
 			}
@@ -296,10 +330,29 @@ func (s *connStateRetryServer) serve(conn net.Conn, first bool) {
 			dirty = false
 		case "get":
 			reply = "$1\r\nv\r\n"
+		case "mget":
+			s.mgets.Add(1)
+			mgetsThisConn++
+			if s.tryagainConn == n && mgetsThisConn == 1 {
+				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+			} else {
+				reply = "*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+			}
 		case "multi":
 			s.multiCount.Add(1)
 			inMulti = true
+		case "discard":
+			s.discards.Add(1)
+			inMulti = false
+		case "swapdb":
+			s.swapdbs.Add(1)
+			s.swapped.Store(!s.swapped.Load())
 		case "exec":
+			if s.dropExecFirst && first {
+				// Drop before replying: the queued commands never
+				// execute on this connection.
+				return
+			}
 			if inMulti {
 				inMulti = false
 				clear(watchedKeys)
@@ -1634,6 +1687,13 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 	scanner := bufio.NewScanner(conn)
 	loaded := map[string]bool{}
 	user := "default"
+	// inMulti tracks a MULTI/EXEC transaction on this connection, and
+	// queued records, per queued command, whether it was rejected at
+	// EXEC time (a negative key count for EVAL): the rejection is not
+	// in the EVAL's own +QUEUED reply, it is an element of EXEC's
+	// result array.
+	inMulti := false
+	var queued []bool
 	for {
 		name, args := readConnStateRetryCommand(scanner)
 		if name == "" {
@@ -1699,7 +1759,51 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			} else {
 				_, _ = conn.Write([]byte("+OK\r\n"))
 			}
+		case "multi":
+			inMulti = true
+			queued = nil
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "discard":
+			inMulti = false
+			queued = nil
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "exec":
+			if !inMulti {
+				_, _ = conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
+				continue
+			}
+			inMulti = false
+			var b strings.Builder
+			fmt.Fprintf(&b, "*%d\r\n", len(queued))
+			for _, rejected := range queued {
+				if rejected {
+					b.WriteString("-ERR wrong number of keys for 'eval' command\r\n")
+				} else {
+					b.WriteString(":1\r\n")
+				}
+			}
+			queued = nil
+			_, _ = conn.Write([]byte(b.String()))
 		case "eval", "eval_ro":
+			if inMulti {
+				// A queued EVAL is accepted with +QUEUED; a
+				// negative key count is refused only when EXEC
+				// runs it, so the rejection is recorded for the
+				// EXEC result array instead of replied here.
+				s.evals.Add(1)
+				rejected := false
+				if len(args) >= 2 {
+					if n, err := strconv.Atoi(args[1]); err == nil && n < 0 {
+						rejected = true
+					}
+				}
+				if len(args) >= 1 && args[0] == "crossslot" {
+					rejected = true
+				}
+				queued = append(queued, rejected)
+				_, _ = conn.Write([]byte("+QUEUED\r\n"))
+				continue
+			}
 			s.evals.Add(1)
 			// A rejected EVAL never runs, so it populates nothing: a
 			// negative key count is refused before the script is
@@ -4660,6 +4764,7 @@ type queuedRetryServer struct {
 	conns        atomic.Int32
 	mgets        atomic.Int32
 	incrs        atomic.Int32
+	sets         atomic.Int32
 	execs        atomic.Int32
 	dropAfter    int
 	dropExecConn int32
@@ -4698,7 +4803,7 @@ func (s *queuedRetryServer) serve(conn net.Conn, n int32) {
 		if name == "" {
 			return
 		}
-		isPipelineCmd := name == "select" || name == "mget" || name == "multi" || name == "incr" || name == "exec"
+		isPipelineCmd := name == "select" || name == "mget" || name == "multi" || name == "incr" || name == "exec" || name == "set"
 		if n == 1 && answered >= s.dropAfter && isPipelineCmd {
 			// Drop mid-pipeline: this command and the ones after it
 			// get no reply on this connection.
@@ -4715,6 +4820,12 @@ func (s *queuedRetryServer) serve(conn net.Conn, n int32) {
 			reply = "%0\r\n"
 		case "ping":
 			reply = "+PONG\r\n"
+		case "set":
+			s.sets.Add(1)
+			if inMulti {
+				queued++
+				reply = "+QUEUED\r\n"
+			}
 		case "mget":
 			s.mgets.Add(1)
 			mgetsThisConn++
@@ -5563,5 +5674,272 @@ func TestPipelineRetryDoesNotRerunCommittedTransaction(t *testing.T) {
 	}
 	if got := server.mgets.Load(); got != 2 {
 		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+}
+
+// TestPipelineRetryDiscardsQueuedSelectOnDiscard: a SELECT queued inside a
+// MULTI/EXEC transaction that DISCARD drops never executed, so its session
+// effect never happened. The retry must not rebuild it as a prerequisite:
+// reissuing SELECT 2 ahead of the SET would write the key to DB 2 instead
+// of the original DB 0 while reporting success. Regression test for the
+// Codex P1 review finding on #4351.
+func TestPipelineRetryDiscardsQueuedSelectOnDiscard(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 3
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	sel := pipe.Do(ctx, "select", 2)
+	discard := pipe.Do(ctx, "discard")
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run only the SET, on the original DB 0)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if err := discard.Err(); err != nil {
+		t.Fatalf("DISCARD: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.selects.Load(); got != 1 {
+		t.Fatalf("server received %d SELECT commands, want 1 (the discarded queued SELECT must not be reissued as a session prerequisite)", got)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (DISCARD prevented the queued SELECT 2 from executing, so the key belongs in the original database)", got)
+	}
+}
+
+// TestPipelineRetryQueuedEvalRejectionIsNotPreloaded: an EVAL queued inside
+// a MULTI/EXEC transaction holds +QUEUED with a nil error, but its negative
+// key count rejection lives in EXEC's result array. The retry must inspect
+// that EXEC element before treating the EVAL as a cache prerequisite: a
+// SCRIPT LOAD synthesised from the rejected script would let the retried
+// EVALSHA execute writes where the original ordering returns NOSCRIPT.
+// Regression test for the Codex P1 review finding on #4351.
+func TestPipelineRetryQueuedEvalRejectionIsNotPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	eval := pipe.Do(ctx, "eval", src, -1)
+	exec := pipe.Do(ctx, "exec")
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("Exec: %v, want NOSCRIPT (the queued EVAL was rejected inside EXEC, so the retried EVALSHA must not execute the script)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("EVAL: %v, want nil (the queued EVAL itself holds +QUEUED; its rejection is in EXEC's result array)", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a queued EVAL rejected inside EXEC establishes no cache entry to reissue)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the rejected script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryKeepsQueuedBoolCmdAfterRedisRejection: a SET NX queued
+// inside a MULTI/EXEC transaction is a BoolCmd, and BoolCmd.readReply
+// accepts +QUEUED as (false, nil) — the QUEUED detector cannot see it.
+// When MGET answers TRYAGAIN and the connection drops before EXEC runs,
+// the tail filter must still keep the queued SET NX with its transaction
+// frame, or the retry commits an empty transaction and reports success
+// while the write never ran. Regression test for the Codex P1 review
+// finding on #4351.
+func TestPipelineRetryKeepsQueuedBoolCmdAfterRedisRejection(t *testing.T) {
+	server := newQueuedRetryServer(t)
+	server.dropAfter = 0
+	server.dropExecConn = 2
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mget := pipe.Do(ctx, "mget", "{m}a", "{m}b")
+	multi := pipe.Do(ctx, "multi")
+	setnx := pipe.SetNX(ctx, "k", "v", 0)
+	exec := pipe.Do(ctx, "exec")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-queue the QUEUED SET NX and commit it)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if got, err := mget.Result(); err != nil {
+		t.Fatalf("MGET: %v", err)
+	} else if vals, ok := got.([]interface{}); !ok || len(vals) != 2 || vals[0] != "a" || vals[1] != "b" {
+		t.Fatalf("MGET = %v, want [a b]", got)
+	}
+	if err := setnx.Err(); err != nil {
+		t.Fatalf("SET NX: %v", err)
+	}
+	if got, err := exec.Result(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	} else if vals, ok := got.([]interface{}); !ok || len(vals) != 1 {
+		t.Fatalf("EXEC = %v, want one result (the committed SET NX); an empty array means the retry committed an empty transaction", got)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the QUEUED SET NX must be re-queued on the retry)", got)
+	}
+	if got := server.execs.Load(); got != 1 {
+		t.Fatalf("server received %d EXEC commands, want 1 (only the retry's EXEC runs; the second connection drops before its EXEC)", got)
+	}
+}
+
+// TestPipelineRetryDoesNotRerunAnsweredSwapdb: SWAPDB is server-global, not
+// per-connection state. An answered SWAPDB already swapped the databases,
+// so a whole-batch retry that runs it again swaps them back and later
+// writes land in the original databases while Exec still reports success.
+// The retry must drop the answered SWAPDB instead of forcing the whole
+// batch. Regression test for the Cursor Bugbot finding on #4351.
+func TestPipelineRetryDoesNotRerunAnsweredSwapdb(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run only the SET, against the already-swapped databases)", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.swapdbs.Load(); got != 1 {
+		t.Fatalf("server received %d SWAPDB commands, want 1 (the answered SWAPDB must not run again and swap the databases back)", got)
+	}
+	if got := server.setDB.Load(); got != 1 {
+		t.Fatalf("SET ran on DB %d, want 1 (after one SWAPDB 0 1, a SET on DB 0 lands in DB 1)", got)
+	}
+}
+
+// TestPipelineRetryDoesNotRerunAnsweredSwapdbAfterBoundary: the same
+// server-global rule after a retry boundary — an answered SWAPDB past a
+// TRYAGAIN MGET is dropped by the tail filter's answered set, so it must
+// not be kept as connection-local state to re-establish. The retry runs
+// the MGET and the SET against the already-swapped databases.
+func TestPipelineRetryDoesNotRerunAnsweredSwapdbAfterBoundary(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 0
+	server.tryagainConn = 2
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must resend only the rejected MGET and the SET)", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.swapdbs.Load(); got != 1 {
+		t.Fatalf("server received %d SWAPDB commands, want 1 (the answered SWAPDB after the TRYAGAIN boundary must not run again)", got)
+	}
+	if got := server.setDB.Load(); got != 1 {
+		t.Fatalf("SET ran on DB %d, want 1 (after one SWAPDB 0 1, a SET on DB 0 lands in DB 1)", got)
+	}
+}
+
+// TestPipelineRetryDirtyWatchFollowerAfterBoundaryAbortsExec: the WATCH
+// safety check must look past the retry boundary too. Here the second
+// attempt receives TRYAGAIN for MGET, answers INCR on the watched key,
+// and drops before EXEC; the tail filter drops the answered INCR, but
+// the WATCH is still reissued on a clean connection. A suffix retry
+// would let the later EXEC commit a transaction the original ordering
+// would have aborted (the client's own INCR invalidates the watch), so
+// the whole batch must be kept and the retried EXEC must abort.
+// Regression test for the Cursor Bugbot finding on #4351.
+func TestPipelineRetryDirtyWatchFollowerAfterBoundaryAbortsExec(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 99
+	server.dropExecFirst = true
+	server.tryagainConn = 2
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	watch := pipe.Do(ctx, "watch", "k")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	incr := pipe.Incr(ctx, "k")
+	multi := pipe.Do(ctx, "multi")
+	set := pipe.Set(ctx, "other", "v", 0)
+	exec := pipe.Do(ctx, "exec")
+	// The aborted EXEC surfaces as redis.Nil, exactly as the same
+	// batch would without any disconnect: the transaction aborted
+	// because the client's own INCR invalidated the watch.
+	if _, err := pipe.Exec(ctx); !errors.Is(err, Nil) {
+		t.Fatalf("Exec: %v, want redis.Nil (the retried EXEC must abort, like the same batch without a disconnect)", err)
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("WATCH: %v", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := exec.Err(); !errors.Is(err, Nil) {
+		t.Fatalf("EXEC: %v, want redis.Nil (the aborted EXEC reply)", err)
+	}
+	// The retried transaction must abort: the answered INCR dirtied
+	// the watch, so a clean reissued WATCH would silently commit it.
+	if got := server.execAborted.Load(); got != 2 {
+		t.Fatalf("EXEC aborted %d time(s), want 2 (the second attempt's EXEC aborted, and the whole-batch retry's EXEC must abort again)", got)
+	}
+	if got := server.execWithMulti.Load(); got != 0 {
+		t.Fatalf("EXEC committed %d time(s), want 0 (a reissued clean WATCH must not let the transaction commit)", got)
+	}
+	// Whole-batch retries re-run the answered INCR, which is what
+	// dirties the retried watch.
+	if got := server.incrs.Load(); got != 3 {
+		t.Fatalf("server received %d INCR commands, want 3 (one per attempt: the first attempt, the whole-batch retry, and the final whole-batch retry)", got)
 	}
 }
