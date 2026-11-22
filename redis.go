@@ -3009,7 +3009,37 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// re-established (see pipelineConnStateReissueCmd) is
 			// reissued ahead of the suffix below instead, so the
 			// answered writes after it are not executed twice.
+			// A transaction the prefix already completed is not such
+			// state: a MULTI whose EXEC answered with its results (or
+			// whose DISCARD answered) framed commands that already
+			// ran or were discarded with it, so the frame is answered
+			// like any other prefix command. A transaction still
+			// open at the boundary is: its queued commands only run
+			// when their EXEC runs, so the frame forces the batch.
+			completedTx := make(map[*baseCmd]bool)
+			var frame []Cmder
 			for _, answered := range cmds[:i] {
+				switch answered.Name() {
+				case "multi":
+					frame = append(frame, answered)
+				case "exec", "discard":
+					if len(frame) > 0 && pipelineCmdErr(answered) == nil {
+						frame = append(frame, answered)
+						for _, f := range frame {
+							completedTx[f.base()] = true
+						}
+					}
+					frame = nil
+				default:
+					if len(frame) > 0 {
+						frame = append(frame, answered)
+					}
+				}
+			}
+			for _, answered := range cmds[:i] {
+				if completedTx[answered.base()] {
+					continue
+				}
 				if pipelineConnStateCmd(answered) && !pipelineConnStateReissueCmd(answered) {
 					return cmds
 				}
@@ -3093,21 +3123,60 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// retry's EVALSHA may rely on — a FLUSH answered after the
 			// boundary that the loop never sees would let the retry
 			// re-execute a script the batch had already removed.
-			var answeredTail []Cmder
+			// answered records which of them the filter dropped; keep
+			// which stay in the retry tail.
+			answered := make([]bool, len(cmds)-i-1)
+			keep := make([]bool, len(cmds)-i-1)
 			for j, cmd := range cmds[i+1:] {
 				if synthetic[cmd.base()] || pipelineConnStateCmd(cmd) || staleErrs[cmd.base()] {
-					tail = append(tail, cmd)
+					keep[j] = true
 					continue
 				}
 				if pipelineCmdQueued(cmd) && pipelineQueuedCmdNeedsRetry(cmds, i+1+j) {
-					tail = append(tail, cmd)
+					keep[j] = true
 					continue
 				}
 				if e := pipelineCmdErr(cmd); e == nil || (isRedisError(e) && !shouldRetry(e, true)) {
-					answeredTail = append(answeredTail, cmd)
+					answered[j] = true
 					continue
 				}
-				tail = append(tail, cmd)
+				keep[j] = true
+			}
+			// A one-shot state command (ASKING, CLIENT CACHING) applies
+			// only to the next command the connection runs, so it stays
+			// only while its original follower stays: when the follower
+			// was dropped as answered, the flag was consumed by it, and
+			// keeping the flag would attach it to the next command the
+			// retry runs instead of the one it was issued for. The
+			// follower is the next original command, skipping any fresh
+			// synthetic a previous retry inserted. Walk backwards so a
+			// run of one-shot commands collapses together when the
+			// follower they all guard is dropped.
+			for j := len(keep) - 1; j >= 0; j-- {
+				if !keep[j] || !pipelineOneShotStateCmd(cmds[i+1+j]) {
+					continue
+				}
+				follower := false
+				for k := j + 1; k < len(keep); k++ {
+					if synthetic[cmds[i+1+k].base()] {
+						continue
+					}
+					follower = keep[k]
+					break
+				}
+				if !follower {
+					keep[j] = false
+				}
+			}
+			var answeredTail []Cmder
+			for j, cmd := range cmds[i+1:] {
+				if keep[j] {
+					tail = append(tail, cmd)
+				} else if answered[j] {
+					answeredTail = append(answeredTail, cmd)
+				}
+				// Otherwise a consumed one-shot flag: dropped outright,
+				// it rebuilds nothing and must not be re-sent.
 			}
 			// Only rebuild cache entries the suffix actually needs: a
 			// retried EVALSHA fails NOSCRIPT without them, but any other
@@ -3126,9 +3195,8 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			var retry []Cmder
 			// Re-establish answered connection-local state and rebuild
 			// script cache entries in the order the original batch
-			// established them: the answered prefix, then the answered
-			// tail the filter dropped. The retry must run the suffix under
-			// the same state the first attempt established, and a fresh
+			// established them. The retry must run the suffix under the
+			// same state the first attempt established, and a fresh
 			// command's failure lands on it instead of overwriting the
 			// original's answer. A failed re-establishment fails the
 			// batch (see pipelineRetryAttemptErr): the suffix would
@@ -3137,28 +3205,21 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// that may load scripts must stay ahead of the SCRIPT LOAD
 			// it guards, so both are emitted in a single pass over the
 			// answered commands instead of two grouped passes.
-			replay := make([]Cmder, 0, i+len(answeredTail))
-			replay = append(replay, cmds[:i]...)
-			replay = append(replay, answeredTail...)
-			for _, answered := range replay {
-				if pipelineConnStateReissueCmd(answered) {
-					// Clone, not a fresh StringCmd: the reissued
-					// command must keep the original's reply
-					// decoder — HELLO returns a map (RESP3) or an
-					// array (RESP2), which StringCmd.readReply
-					// rejects, and aggregate-returning CLIENT
-					// subcommands have the same problem. The
-					// clone's stale error is cleared: it is the
-					// first attempt's answer, not this attempt's.
-					fresh := answered.Clone()
-					fresh.SetErr(nil)
-					retry = append(retry, fresh)
-					markPipelineSynthetic(ctx, true, fresh)
-					continue
-				}
-				if !needsScripts {
-					continue
-				}
+			// The answered prefix's effects go first, in their original
+			// order; the answered tail's connection-local state is
+			// re-established with them. But the answered tail's script
+			// effects stay at their original positions in the suffix
+			// walk below: moving them all ahead of the suffix would run
+			// them before the retained commands they originally
+			// followed — a FLUSH replayed before a retained EVAL lets
+			// the EVAL repopulate the cache the FLUSH had emptied, so a
+			// later EVALSHA executes a script the original order would
+			// have refused with NOSCRIPT.
+			tailAnswered := make(map[*baseCmd]bool, len(answeredTail))
+			for _, answered := range answeredTail {
+				tailAnswered[answered.base()] = true
+			}
+			emitScriptPrereq := func(answered Cmder) {
 				switch {
 				case isScriptLoadCmd(answered) || isScriptFlushCmd(answered):
 					// Fresh command, not the original: a retry that
@@ -3184,7 +3245,47 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					}
 				}
 			}
-			return append(retry, tail...)
+			replay := make([]Cmder, 0, i+len(answeredTail))
+			replay = append(replay, cmds[:i]...)
+			replay = append(replay, answeredTail...)
+			for _, answered := range replay {
+				if pipelineConnStateReissueCmd(answered) {
+					// Clone, not a fresh StringCmd: the reissued
+					// command must keep the original's reply
+					// decoder — HELLO returns a map (RESP3) or an
+					// array (RESP2), which StringCmd.readReply
+					// rejects, and aggregate-returning CLIENT
+					// subcommands have the same problem. The
+					// clone's stale error is cleared: it is the
+					// first attempt's answer, not this attempt's.
+					fresh := answered.Clone()
+					fresh.SetErr(nil)
+					retry = append(retry, fresh)
+					markPipelineSynthetic(ctx, true, fresh)
+					continue
+				}
+				if !needsScripts || tailAnswered[answered.base()] {
+					continue
+				}
+				emitScriptPrereq(answered)
+			}
+			for j, cmd := range cmds[i:] {
+				if j > 0 && !keep[j-1] {
+					// Dropped from the tail: an answered command
+					// contributes only its script prerequisite, at
+					// its original position; a consumed one-shot
+					// flag contributes nothing — re-sending it
+					// would attach it to the next command the
+					// retry runs instead of the answered follower
+					// that consumed it.
+					if answered[j-1] && needsScripts {
+						emitScriptPrereq(cmd)
+					}
+					continue
+				}
+				retry = append(retry, cmd)
+			}
+			return retry
 		}
 	}
 	return cmds
@@ -3269,7 +3370,13 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// TestPipelineRetryDialFailureKeepsAnsweredResults.
 	staleErrs := make(map[*baseCmd]bool, len(cmds))
 	for _, cmd := range cmds {
-		if cmd.rawErr() != nil {
+		// pipelineCmdErr, not rawErr(): a raw command's retained
+		// error frame is an error it carried into this invocation
+		// too (see rawReplyErr), and rawErr() alone misses it — the
+		// suffix scan would mistake the retained frame for this
+		// invocation's answered/unanswered boundary and drop fresh
+		// commands behind it that were never dispatched.
+		if pipelineCmdErr(cmd) != nil {
 			staleErrs[cmd.base()] = true
 		}
 	}
@@ -3889,6 +3996,17 @@ func (c *baseClient) pipelineProcessCmds(
 		readErr = err
 	} else if pipelineHasSyntheticCmd(ctx, cmds) {
 		readErr = pipelineRetryAttemptErr(ctx, cmds)
+	} else if e := pipelineRetryAttemptErr(ctx, cmds); e != nil && shouldRetry(e, true) {
+		// Every reply was read, so readErr is nil — but a command the
+		// server rejected without executing it (a TRYAGAIN MGET behind
+		// a transaction the same attempt committed) never ran, and
+		// reporting success here would end the operation with the
+		// rejection unretried and Exec returning it as the outcome.
+		// Surface the rejection as the attempt error so the outer
+		// loop narrows the retry to it (see pipelineRetrySuffix):
+		// the answered prefix — the committed transaction included —
+		// is dropped, not re-run.
+		readErr = e
 	}
 	return readErr != nil, readErr
 }

@@ -5021,3 +5021,547 @@ func TestPipelineRetryRebuildsScriptPrereqsFromAnsweredTail(t *testing.T) {
 		t.Fatalf("server returned NOSCRIPT %d time(s), want 1 (only the retried EVALSHA, after the replayed FLUSH)", got)
 	}
 }
+
+// scriptOrderRetryServer is a scripted RESP server for the answered-tail
+// script-order test. Each connection holds its own (initially empty)
+// script cache: EVAL runs the script and caches it, SCRIPT FLUSH empties
+// it, EVALSHA answers only when the digest was loaded on that same
+// connection. The first connection rejects the EVAL with READONLY,
+// acknowledges the FLUSH, and drops before EVALSHA's reply; later
+// connections answer everything.
+type scriptOrderRetryServer struct {
+	ln          net.Listener
+	conns       atomic.Int32
+	evals       atomic.Int32
+	evalRuns    atomic.Int32
+	evalshaRuns atomic.Int32
+	noscripts   atomic.Int32
+	flushes     atomic.Int32
+}
+
+func newScriptOrderRetryServer(t *testing.T) *scriptOrderRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &scriptOrderRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *scriptOrderRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	loaded := map[string]bool{}
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		if n == 1 && name == "eval" {
+			// READONLY: the script never ran, so it is not cached.
+			_, _ = conn.Write([]byte("-READONLY You can't write against a read only replica.\r\n"))
+			continue
+		}
+		if n == 1 && name == "evalsha" {
+			// Drop before replying: the FLUSH was acknowledged, the
+			// EVALSHA must be retried.
+			return
+		}
+		reply := "+OK\r\n"
+		switch name {
+		case "hello":
+			reply = "%0\r\n"
+		case "ping":
+			reply = "+PONG\r\n"
+		case "eval":
+			s.evals.Add(1)
+			if len(args) >= 1 {
+				sum := sha1.Sum([]byte(args[0]))
+				loaded[hex.EncodeToString(sum[:])] = true
+			}
+			s.evalRuns.Add(1)
+			reply = ":1\r\n"
+		case "script":
+			if len(args) >= 1 && strings.EqualFold(args[0], "flush") {
+				s.flushes.Add(1)
+				loaded = map[string]bool{}
+				reply = "+OK\r\n"
+			}
+		case "evalsha":
+			if len(args) >= 1 && loaded[args[0]] {
+				s.evalshaRuns.Add(1)
+				reply = ":1\r\n"
+			} else {
+				s.noscripts.Add(1)
+				reply = "-NOSCRIPT No matching script. Please use EVAL.\r\n"
+			}
+		}
+		if _, err := conn.Write([]byte(reply)); err != nil {
+			return
+		}
+	}
+}
+
+// TestPipelineRetryKeepsAnsweredTailScriptOrder: the script effects of the
+// answered tail must stay at their original positions relative to the
+// retained commands, not move ahead of them all into a prefix. Here the
+// first attempt rejects the EVAL with READONLY, acknowledges SCRIPT
+// FLUSH, and drops before EVALSHA's reply: without the fix the retry
+// replays the FLUSH ahead of the EVAL, so the EVAL repopulates the cache
+// and the EVALSHA executes the write a second time while Exec reports
+// success; in the original order the EVAL runs, the FLUSH empties the
+// cache, and the EVALSHA answers NOSCRIPT. Regression test for the review
+// finding on #4351.
+func TestPipelineRetryKeepsAnsweredTailScriptOrder(t *testing.T) {
+	server := newScriptOrderRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return redis.call('incr', 'counter')"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, src, []string{})
+	flush := pipe.Do(ctx, "script", "flush")
+	evalsha := pipe.EvalSha(ctx, sha, []string{})
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("Exec: %v, want NOSCRIPT (the FLUSH answered after the READONLY removed the script, so the retried EVALSHA must not execute it)", err)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("EVAL: %v, want nil", err)
+	}
+	if err := flush.Err(); err != nil {
+		t.Fatalf("SCRIPT FLUSH: %v", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT", err)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2", got)
+	}
+	if got := server.evalRuns.Load(); got != 1 {
+		t.Fatalf("server executed EVAL %d time(s), want 1 (only the retried EVAL, after the READONLY rejection)", got)
+	}
+	if got := server.evalshaRuns.Load(); got != 0 {
+		t.Fatalf("server executed EVALSHA %d time(s), want 0 (the retried EVALSHA must answer NOSCRIPT, not run the script)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1 (only the retried EVALSHA, after the FLUSH)", got)
+	}
+}
+
+// oneShotTailRetryServer is a scripted RESP server for the one-shot
+// command in the retry tail test. The first connection answers MGET with
+// TRYAGAIN, acknowledges ASKING, answers GET, and drops before SET's
+// reply; later connections answer everything. It counts each command so
+// a retry that re-sends a consumed one-shot flag shows up.
+type oneShotTailRetryServer struct {
+	ln      net.Listener
+	conns   atomic.Int32
+	mgets   atomic.Int32
+	askings atomic.Int32
+	gets    atomic.Int32
+	sets    atomic.Int32
+}
+
+func newOneShotTailRetryServer(t *testing.T) *oneShotTailRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &oneShotTailRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *oneShotTailRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "mget":
+			s.mgets.Add(1)
+			if n == 1 {
+				_, _ = conn.Write([]byte("-TRYAGAIN Multiple keys request during slot migration\r\n"))
+			} else {
+				_, _ = conn.Write([]byte("*2\r\n$1\r\na\r\n$1\r\nb\r\n"))
+			}
+		case "asking":
+			s.askings.Add(1)
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "get":
+			s.gets.Add(1)
+			_, _ = conn.Write([]byte("$1\r\n1\r\n"))
+		case "set":
+			s.sets.Add(1)
+			if n == 1 {
+				// Drop before replying: the SET must be retried,
+				// without the ASKING that the answered GET consumed.
+				return
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryDropsConsumedOneShotAfterAnsweredTail: a one-shot
+// connection-state command in the retry tail must go when the follower
+// that consumed it is dropped as answered. Here the first attempt
+// answers ASKING and GET and drops before SET's reply: without the fix
+// the retry resends [MGET, ASKING, SET], so the ASKING lands on the SET
+// instead of the GET it was issued for, and the SET could run under an
+// authorization its own ordering would not have given it. Regression
+// test for the review finding on #4351.
+func TestPipelineRetryDropsConsumedOneShotAfterAnsweredTail(t *testing.T) {
+	server := newOneShotTailRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	asking := pipe.Do(ctx, "asking")
+	get := pipe.Get(ctx, "a")
+	set := pipe.Set(ctx, "b", "v", 0)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if err := asking.Err(); err != nil {
+		t.Fatalf("ASKING: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "1" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "1")
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+	if got := server.askings.Load(); got != 1 {
+		t.Fatalf("server received %d ASKING commands, want 1 (the ASKING the answered GET consumed must not be re-sent ahead of the SET)", got)
+	}
+	if got := server.gets.Load(); got != 1 {
+		t.Fatalf("server received %d GET commands, want 1 (the answered GET must not run again)", got)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the unanswered SET must be retried once)", got)
+	}
+}
+
+// staleRawRetryServer is a scripted RESP server for the retained raw
+// reply test. It answers a raw GET with LOADING, and never answers GET
+// "block", so a command holding the pool's only connection blocks until
+// the test ends.
+type staleRawRetryServer struct {
+	ln     net.Listener
+	conns  atomic.Int32
+	gets   atomic.Int32
+	blocks atomic.Int32
+	sets   atomic.Int32
+	done   chan struct{}
+}
+
+func newStaleRawRetryServer(t *testing.T) *staleRawRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &staleRawRetryServer{ln: ln, done: make(chan struct{})}
+	t.Cleanup(func() {
+		close(s.done)
+		_ = ln.Close()
+	})
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *staleRawRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, args := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "get":
+			s.gets.Add(1)
+			if len(args) > 0 && args[0] == "block" {
+				s.blocks.Add(1)
+				<-s.done
+				return
+			}
+			_, _ = conn.Write([]byte("-LOADING Redis is loading the dataset in memory\r\n"))
+		case "set":
+			s.sets.Add(1)
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// seedStaleLoadingRaw runs a raw GET once against the server, so the
+// returned RawCmd keeps the -LOADING error frame in its reply bytes
+// while rawErr() stays nil — the retained reply a later operation must
+// not mistake for its own progress.
+func seedStaleLoadingRaw(t *testing.T, addr string) *RawCmd {
+	t.Helper()
+	seeder := NewClient(&Options{
+		Addr:            addr,
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = seeder.Close() })
+
+	ctx := context.Background()
+	raw := NewRawCmd(ctx, "get", "k")
+	pipe := seeder.Pipeline()
+	_ = pipe.BatchProcess(ctx, raw)
+	_, _ = pipe.Exec(ctx)
+	if len(raw.Val()) == 0 {
+		t.Fatalf("seeding RawCmd: no reply bytes retained, want the -LOADING frame")
+	}
+	return raw
+}
+
+// TestPipelineRetryStaleRawReplyIsNotProgress: a retained raw reply is
+// not this invocation's progress. Here a reused RawCmd still holds its
+// previous -LOADING frame while a fresh SET follows it, and every
+// connection acquisition hits a pool timeout: without the fix the retry
+// narrows at the retained LOADING as though it were this attempt's
+// boundary, drops the SET that was never dispatched, and the final
+// stamping leaves the SET with a nil error while Exec reports the pool
+// timeout. Regression test for the review finding on #4351.
+func TestPipelineRetryStaleRawReplyIsNotProgress(t *testing.T) {
+	server := newStaleRawRetryServer(t)
+	raw := seedStaleLoadingRaw(t, server.ln.Addr().String())
+
+	client := NewClient(&Options{
+		Addr:             server.ln.Addr().String(),
+		Protocol:         2,
+		PoolSize:         1,
+		PoolTimeout:      200 * time.Millisecond,
+		PipelinePoolSize: -1, // pipelines run on the main pool, so the blocked GET below holds their only connection too
+		MaxRetries:       3,
+		MinRetryBackoff:  time.Millisecond,
+		MaxRetryBackoff:  2 * time.Millisecond,
+		DialTimeout:      5 * time.Second,
+		ReadTimeout:      30 * time.Second,
+		WriteTimeout:     5 * time.Second,
+		DisableIdentity:  true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	// Hold the pool's only connection with a command that never
+	// answers, so every acquisition for the pipeline times out.
+	blockCtx, blockCancel := context.WithCancel(ctx)
+	defer blockCancel()
+	go func() { _ = client.Get(blockCtx, "block").Err() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for server.blocks.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if server.blocks.Load() == 0 {
+		t.Fatalf("blocking GET never reached the server")
+	}
+
+	pipe := client.Pipeline()
+	_ = pipe.BatchProcess(ctx, raw)
+	set := pipe.Set(ctx, "k", "v", 0)
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatalf("Exec: nil, want the pool timeout")
+	}
+	if err := set.Err(); err == nil {
+		t.Fatalf("SET: nil, want the pool timeout (it was never dispatched, so it must carry the failure, not report success)")
+	}
+	if got := server.sets.Load(); got != 0 {
+		t.Fatalf("server received %d SET commands, want 0 (no connection was ever acquired)", got)
+	}
+}
+
+// committedTxRetryServer is a scripted RESP server for the committed
+// transaction prefix test. The first MGET answers TRYAGAIN and later
+// ones answer the values; every other command answers as a healthy
+// server would, and MULTI/EXEC track a transaction so a re-run of the
+// committed INCR shows up in the counters.
+type committedTxRetryServer struct {
+	ln      net.Listener
+	conns   atomic.Int32
+	selects atomic.Int32
+	mults   atomic.Int32
+	incrs   atomic.Int32
+	execs   atomic.Int32
+	mgets   atomic.Int32
+}
+
+func newCommittedTxRetryServer(t *testing.T) *committedTxRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &committedTxRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := s.conns.Add(1)
+			go s.serve(conn, n)
+		}
+	}()
+	return s
+}
+
+func (s *committedTxRetryServer) serve(conn net.Conn, n int32) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		reply := "+OK\r\n"
+		switch name {
+		case "hello":
+			reply = "%0\r\n"
+		case "select":
+			s.selects.Add(1)
+		case "multi":
+			s.mults.Add(1)
+		case "incr":
+			s.incrs.Add(1)
+			reply = "+QUEUED\r\n"
+		case "exec":
+			s.execs.Add(1)
+			reply = "*1\r\n:1\r\n"
+		case "mget":
+			s.mgets.Add(1)
+			if s.mgets.Load() == 1 {
+				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+			} else {
+				reply = "*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+			}
+		}
+		if _, err := conn.Write([]byte(reply)); err != nil {
+			return
+		}
+	}
+}
+
+// TestPipelineRetryDoesNotRerunCommittedTransaction: an answered MULTI
+// or EXEC in the prefix must not force a whole-batch retry when the
+// transaction already committed. Here the first attempt commits the
+// transaction and then the MGET answers TRYAGAIN: without the fix the
+// prefix guard returns the whole batch, so the retry re-runs the queued
+// INCR and it applies twice while Exec reports success. Regression test
+// for the review finding on #4351.
+func TestPipelineRetryDoesNotRerunCommittedTransaction(t *testing.T) {
+	server := newCommittedTxRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Do(ctx, "select", 0)
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Do(ctx, "incr", "counter")
+	exec := pipe.Do(ctx, "exec")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run only the MGET, not the committed transaction)", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != "QUEUED" {
+		t.Fatalf("INCR = %v, %v; want QUEUED, nil", got, err)
+	}
+	if got, err := exec.Result(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	} else if vals, ok := got.([]interface{}); !ok || len(vals) != 1 {
+		t.Fatalf("EXEC = %v, want one result (the committed INCR)", got)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the committed INCR must not run again)", got)
+	}
+	if got := server.execs.Load(); got != 1 {
+		t.Fatalf("server received %d EXEC commands, want 1 (the committed transaction must not run again)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+}
