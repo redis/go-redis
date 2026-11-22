@@ -4342,12 +4342,16 @@ func (c *ClusterClient) pubSub() *PubSub {
 		slotMu.Unlock()
 		if cached != nil {
 			if state, err := c.state.Get(ctx); err == nil {
-				if cur, _ := state.nodes.get(cached.Client.opt.Addr); cur != nil {
+				if cur, _ := state.nodes.get(cached.Client.opt.Addr); cur != nil &&
+					state.nodeOnline(cur) && !cur.Failing() && !cur.Loading() {
 					// The cached node must still serve this slot: after a
 					// reshard or failover the old owner can remain in the
 					// client-wide node registry while no longer owning the
 					// slot, which would send SSUBSCRIBE to a node that
-					// replies MOVED and never update the cache.
+					// replies MOVED and never update the cache. It must also
+					// still be healthy: a replica that turned fail/loading
+					// would otherwise keep being dialed because the fresh
+					// selection paths (slotSlaveNode etc.) filter those out.
 					for _, n := range state.slotNodes(slot) {
 						if n == cur {
 							return cur, nil

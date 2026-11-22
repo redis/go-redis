@@ -61,6 +61,12 @@ type PubSub struct {
 	conns  map[string]*pool.Conn
 	recvCh chan pubSubRecv
 
+	// subKeys caches the connKey -> sharded channels mapping so the Receive
+	// hot path (ensureConnsLocked) does not recompute connKey (a slot lookup
+	// on cluster clients) for every subscription on every message. It is
+	// refreshed whenever subscriptions change and on full reconnects.
+	subKeys map[string][]string
+
 	closed bool
 	exit   chan struct{}
 
@@ -282,18 +288,12 @@ func (c *PubSub) resubscribe(ctx context.Context, cn *pool.Conn, key string) err
 	if len(c.schannels) > 0 {
 		var chans []string
 		if c.mux() {
-			for ch := range c.schannels {
-				k, err := c.connKey(ctx, ch)
-				if err != nil {
-					if firstErr == nil {
-						firstErr = err
-					}
-					continue
-				}
-				if k == key {
-					chans = append(chans, ch)
+			if c.subKeys == nil {
+				if err := c.refreshSubKeysLocked(ctx); err != nil && firstErr == nil {
+					firstErr = err
 				}
 			}
+			chans = append(chans, c.subKeys[key]...)
 		} else {
 			chans = slices.Collect(maps.Keys(c.schannels))
 		}
@@ -441,6 +441,9 @@ func (c *PubSub) reconnectAllLocked(ctx context.Context, reason error) {
 	}
 	c.cn = nil
 	c.cmd = nil
+	// Slot ownership may have moved with the reconnect: refresh the cached
+	// key mapping before re-dialing.
+	_ = c.refreshSubKeysLocked(ctx)
 	// Re-dial every key (errors are left to the next use, like conn()).
 	_ = c.ensureConnsLocked(ctx)
 }
@@ -460,6 +463,28 @@ func (c *PubSub) reconnectKey(ctx context.Context, key string, cn *pool.Conn, re
 	go c.readLoop(key, nc)
 }
 
+// refreshSubKeysLocked recomputes the cached connKey -> sharded channels
+// mapping (c.subKeys). Callers must hold c.mu.
+func (c *PubSub) refreshSubKeysLocked(ctx context.Context) error {
+	if !c.mux() {
+		return nil
+	}
+	keys := make(map[string][]string)
+	var firstErr error
+	for ch := range c.schannels {
+		k, err := c.connKey(ctx, ch)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		keys[k] = append(keys[k], ch)
+	}
+	c.subKeys = keys
+	return firstErr
+}
+
 // ensureConnsLocked makes sure every connection key the PubSub needs exists
 // (the default connection when there are regular subscriptions or no
 // connections at all, plus one connection per sharded channel key) and starts
@@ -477,11 +502,14 @@ func (c *PubSub) ensureConnsLocked(ctx context.Context) error {
 			need[""] = struct{}{}
 		}
 	}
-	for ch := range c.schannels {
-		key, err := c.connKey(ctx, ch)
-		if err != nil {
-			return err
-		}
+	// Use the cached connKey mapping (refreshed on subscribe/unsubscribe and
+	// full reconnects) instead of recomputing connKey for every subscribed
+	// channel on every Receive: with many shard subscriptions the per-channel
+	// slot lookups made the receive hot path linear in the subscription count.
+	if c.subKeys == nil && len(c.schannels) > 0 {
+		_ = c.refreshSubKeysLocked(ctx)
+	}
+	for key := range c.subKeys {
 		if _, ok := c.conns[key]; !ok {
 			need[key] = struct{}{}
 		}
@@ -544,15 +572,12 @@ func (c *PubSub) dialKeyLocked(ctx context.Context, key string, newChannels []st
 		// pattern string instead of a random node (same as conn()). Patterns
 		// are still replayed on this connection by resubscribe().
 	}
-	for ch := range c.schannels {
-		k, err := c.connKey(ctx, ch)
-		if err != nil {
+	if c.subKeys == nil && len(c.schannels) > 0 {
+		if err := c.refreshSubKeysLocked(ctx); err != nil {
 			return nil, err
 		}
-		if k == key {
-			channels = append(channels, ch)
-		}
 	}
+	channels = append(channels, c.subKeys[key]...)
 	channels = append(channels, newChannels...)
 
 	cn, err := c.newConn(ctx, c.opt.Addr, channels, c.pubSubOnInit())
@@ -757,6 +782,8 @@ func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels
 				firstErr = err
 			}
 		}
+		// All shard channels were removed by the caller: refresh the cache.
+		_ = c.refreshSubKeysLocked(ctx)
 		return firstErr
 	}
 
@@ -779,13 +806,18 @@ func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels
 		for _, ch := range channels {
 			c.schannels[ch] = struct{}{}
 		}
+		// Refresh the cached key mapping NOW (not only at the end): dialing a
+		// not-yet-existing key below routes and resubscribes via c.subKeys, so
+		// it must already contain the channels recorded above.
+		_ = c.refreshSubKeysLocked(ctx)
 	}
 
 	var firstErr error
 	for key, chans := range groups {
-		c.mu.Lock()
+		// Callers (SSubscribe/SUnsubscribe) already hold c.mu and sync.Mutex
+		// is not reentrant, so read c.conns directly instead of locking again
+		// (the extra Lock deadlocked the first sharded subscription).
 		_, existed := c.conns[key]
-		c.mu.Unlock()
 		cn, err := c.connForKey(ctx, key, chans)
 		if err != nil {
 			if firstErr == nil {
@@ -810,6 +842,9 @@ func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels
 			}
 		}
 	}
+	// Subscriptions changed (channels recorded above for ssubscribe, removed
+	// by the caller for sunsubscribe): refresh the cached key mapping.
+	_ = c.refreshSubKeysLocked(ctx)
 	return firstErr
 }
 
@@ -1634,6 +1669,14 @@ func (c *PubSub) reauth(target *pool.Conn, username, password string) error {
 		// When the negotiated protocol is RESP2 (either configured or negotiated
 		// as fallback), a subscribed pub/sub connection cannot execute in-place
 		// AUTH commands. Safely trigger reconnect rather than in-place AUTH.
+		if c.mux() {
+			// Re-dial only the re-authenticated connection's key: a blanket
+			// reconnect (reconnectAllLocked) would tear down every shard
+			// connection and drop messages on the healthy shards.
+			key, _ := c.keyOfLocked(cn)
+			c.reconnectKey(context.Background(), key, cn, nil)
+			return nil
+		}
 		c.reconnect(context.Background(), nil)
 		return nil
 	}
