@@ -435,7 +435,12 @@ func (c *PubSub) reconnectKey(ctx context.Context, key string, cn *pool.Conn, re
 func (c *PubSub) ensureConnsLocked(ctx context.Context) error {
 	c.ensureMuxLocked()
 	need := make(map[string]struct{})
-	if len(c.conns) == 0 || len(c.channels) > 0 || len(c.patterns) > 0 {
+	// The default ("") connection is only needed for regular channels and
+	// patterns, or when the PubSub has no subscriptions at all yet. Opening
+	// it for a sharded-only PubSub would dial a random node, include it in
+	// every Ping health check and risk failing that check for otherwise
+	// healthy shard subscriptions.
+	if len(c.channels) > 0 || len(c.patterns) > 0 || (len(c.conns) == 0 && len(c.schannels) == 0) {
 		if _, ok := c.conns[""]; !ok {
 			need[""] = struct{}{}
 		}
@@ -501,7 +506,11 @@ func (c *PubSub) dialKeyLocked(ctx context.Context, key string, newChannels []st
 	var channels []string
 	if key == "" {
 		channels = append(channels, slices.Collect(maps.Keys(c.channels))...)
-		channels = append(channels, slices.Collect(maps.Keys(c.patterns))...)
+		// c.patterns is intentionally NOT included in the routing hints:
+		// patterns are not slot-addressable, and adding them would make the
+		// cluster newConn pin the default connection to the slot owner of the
+		// pattern string instead of a random node (same as conn()). Patterns
+		// are still replayed on this connection by resubscribe().
 	}
 	for ch := range c.schannels {
 		k, err := c.connKey(ctx, ch)
@@ -727,6 +736,18 @@ func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels
 		}
 		groups[key] = append(groups[key], ch)
 	}
+	if redisCmd == "ssubscribe" {
+		// Record the channels before writing: if the write fails and
+		// releaseConn re-dials the key, the re-dial must route by these
+		// channels (their slot owner) instead of falling back to a random
+		// node that would then be pinned under this shard's key.
+		if c.schannels == nil {
+			c.schannels = make(map[string]struct{})
+		}
+		for _, ch := range channels {
+			c.schannels[ch] = struct{}{}
+		}
+	}
 
 	var firstErr error
 	for key, chans := range groups {
@@ -794,6 +815,24 @@ func (c *PubSub) ClientSetName(ctx context.Context, name string) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.mux() {
+		// In mux mode the subscription sockets are the keyed connections, not
+		// the default one: name every active connection instead of opening
+		// (and naming) a separate unsubscribed default connection.
+		if err := c.ensureConnsLocked(ctx); err != nil {
+			return err
+		}
+		var firstErr error
+		for _, cn := range slices.Collect(maps.Values(c.conns)) {
+			err := c.writeCmd(ctx, cn, cmd)
+			c.releaseConn(ctx, cn, err, false)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
 
 	cn, err := c.conn(ctx, nil)
 	if err != nil {
@@ -993,9 +1032,12 @@ func (c *PubSub) receiveMux(ctx context.Context, timeout time.Duration) (interfa
 	}
 	// (Re-)dial any connection key that is missing, e.g. after a read error
 	// dropped it; this is the mux counterpart of conn() re-dialing lazily.
+	// A re-dial failure must NOT block the receive: messages from healthy
+	// connections may already be queued on recvCh, and the failed key's read
+	// error is delivered through recvCh by its reader. The key is re-dialed
+	// again on the next Receive/Ping.
 	if err := c.ensureConnsLocked(ctx); err != nil {
-		c.mu.Unlock()
-		return nil, err
+		internal.Logger.Printf(ctx, "pubsub: failed to re-dial some connections: %v", err)
 	}
 	c.mu.Unlock()
 
@@ -1054,6 +1096,32 @@ func (c *PubSub) readLoop(key string, cn *pool.Conn) {
 			msg, err = c.newMessage(ctx, cn, cmd.Val())
 		}
 
+		// Read error: apply the same bad-conn policy as the direct read path.
+		fatal := false
+		replaced := false
+		if readErr != nil {
+			c.mu.Lock()
+			if c.closed || c.conns[key] != cn {
+				replaced = true
+			} else {
+				authReauth := isRedisError(readErr) && c.connAuthPending[cn] > 0
+				if authReauth {
+					c.connAuthPending[cn]--
+				}
+				fatal = authReauth || !cn.IsUsable() || cn.ShouldHandoff() || isBadConn(readErr, false, c.opt.Addr)
+				if fatal {
+					// Invalidate the failed connection under mu BEFORE
+					// publishing its error: otherwise a Receive that consumes
+					// the error first would see the dead connection still
+					// registered, skip the re-dial and block forever with no
+					// reader left. The next Receive/Ping re-dials this key (and
+					// resubscribes its channels) on a fresh connection.
+					_ = c.closeKeyLocked(key, cn)
+				}
+			}
+			c.mu.Unlock()
+		}
+
 		select {
 		case c.recvCh <- pubSubRecv{cn: cn, msg: msg, err: err}:
 		case <-c.exit:
@@ -1065,25 +1133,7 @@ func (c *PubSub) readLoop(key string, cn *pool.Conn) {
 			// but does not drop the connection.
 			continue
 		}
-
-		// Read error: apply the same bad-conn policy as the direct read path.
-		c.mu.Lock()
-		if c.closed || c.conns[key] != cn {
-			c.mu.Unlock()
-			return
-		}
-		authReauth := isRedisError(readErr) && c.connAuthPending[cn] > 0
-		if authReauth {
-			c.connAuthPending[cn]--
-		}
-		fatal := authReauth || !cn.IsUsable() || cn.ShouldHandoff() || isBadConn(readErr, false, c.opt.Addr)
-		if fatal {
-			// Drop the connection; the next Receive/Ping re-dials this key
-			// (and resubscribes its channels) on a fresh connection.
-			_ = c.closeKeyLocked(key, cn)
-		}
-		c.mu.Unlock()
-		if fatal {
+		if replaced || fatal {
 			return
 		}
 	}

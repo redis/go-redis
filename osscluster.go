@@ -4324,6 +4324,49 @@ func (c *ClusterClient) pubSub() *PubSub {
 	// instead of pinning everything to the shard of the first channel.
 	// See https://github.com/redis/go-redis/issues/3133.
 	nodes := make(map[*pool.Conn]*clusterNode)
+	// slotNodeFor returns a STABLE node per slot for the lifetime of this
+	// PubSub: the first selection is cached per slot and reused by both
+	// connKey (channel -> shard address) and newConn (dial target), so the
+	// two always agree even when ReadOnly replica selection is round-robin
+	// or random (RouteRandomly). Without the cache, repeated selection could
+	// hand back a different replica per call, creating duplicate
+	// subscriptions for the same channel on different connections or an
+	// unsubscribe targeted at a different connection than the subscription.
+	// If a cached node disappears from the topology, a fresh node is picked
+	// and cached instead.
+	var slotMu sync.Mutex
+	slotNodes := make(map[int]*clusterNode)
+	slotNodeFor := func(ctx context.Context, slot int) (*clusterNode, error) {
+		slotMu.Lock()
+		cached := slotNodes[slot]
+		slotMu.Unlock()
+		if cached != nil {
+			if state, err := c.state.Get(ctx); err == nil {
+				if cur, _ := state.nodes.get(cached.Client.opt.Addr); cur != nil {
+					return cur, nil
+				}
+			}
+		}
+		state, err := c.state.Get(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// newConn in PubSub is only used for subscription connections, so it is safe to
+		// assume that a slave node can always be used when client options specify ReadOnly.
+		var node *clusterNode
+		if c.opt.ReadOnly {
+			node, err = c.slotReadOnlyNode(state, slot)
+		} else {
+			node, err = c.slotMasterNode(ctx, slot)
+		}
+		if err != nil {
+			return nil, err
+		}
+		slotMu.Lock()
+		slotNodes[slot] = node
+		slotMu.Unlock()
+		return node, nil
+	}
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
 		rec: c.rec,
@@ -4332,25 +4375,12 @@ func (c *ClusterClient) pubSub() *PubSub {
 			var err error
 
 			if len(channels) > 0 {
-				slot := clusterKeySlot(channels[0])
-
-				// newConn in PubSub is only used for subscription connections, so it is safe to
-				// assume that a slave node can always be used when client options specify ReadOnly.
-				if c.opt.ReadOnly {
-					state, err := c.state.Get(ctx)
-					if err != nil {
-						return nil, err
-					}
-
-					node, err = c.slotReadOnlyNode(state, slot)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					node, err = c.slotMasterNode(ctx, slot)
-					if err != nil {
-						return nil, err
-					}
+				// Route by the first channel's slot through the stable
+				// slot->node mapping, so the dialed node is exactly the one
+				// connKey reports for those channels.
+				node, err = slotNodeFor(ctx, clusterKeySlot(channels[0]))
+				if err != nil {
+					return nil, err
 				}
 			} else {
 				node, err = c.nodes.Random()
@@ -4378,19 +4408,9 @@ func (c *ClusterClient) pubSub() *PubSub {
 		// its slot, so SSubscribe of channels from different shards opens one
 		// connection per shard and each SSUBSCRIBE reaches its slot owner.
 		connKey: func(ctx context.Context, channel string) (string, error) {
-			slot := clusterKeySlot(channel)
-			if c.opt.ReadOnly {
-				state, err := c.state.Get(ctx)
-				if err != nil {
-					return "", err
-				}
-				node, err := c.slotReadOnlyNode(state, slot)
-				if err != nil {
-					return "", err
-				}
-				return node.Client.opt.Addr, nil
-			}
-			node, err := c.slotMasterNode(ctx, slot)
+			// Use the stable per-slot mapping so every lookup for a channel
+			// returns the same shard address (see slotNodeFor above).
+			node, err := slotNodeFor(ctx, clusterKeySlot(channel))
 			if err != nil {
 				return "", err
 			}
