@@ -1092,6 +1092,12 @@ func (s *himportRetryServer) serve(conn net.Conn, n int32) {
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
 	prepared := map[string][]string{}
+	// inMulti tracks a MULTI/EXEC transaction on this connection, and
+	// pending the PREPAREs queued inside it: like a real server, a
+	// queued PREPARE takes effect only when EXEC runs it.
+	inMulti := false
+	var pending map[string][]string
+	queued := 0
 	for {
 		name, args := readConnStateRetryCommand(scanner)
 		if name == "" {
@@ -1100,6 +1106,33 @@ func (s *himportRetryServer) serve(conn net.Conn, n int32) {
 		switch name {
 		case "hello":
 			_, _ = conn.Write([]byte("%0\r\n"))
+		case "multi":
+			inMulti = true
+			pending = map[string][]string{}
+			queued = 0
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "exec":
+			if !inMulti {
+				_, _ = conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
+				continue
+			}
+			inMulti = false
+			for fs, fields := range pending {
+				prepared[fs] = append([]string(nil), fields...)
+			}
+			pending = nil
+			var b strings.Builder
+			fmt.Fprintf(&b, "*%d\r\n", queued)
+			for i := 0; i < queued; i++ {
+				b.WriteString("+OK\r\n")
+			}
+			queued = 0
+			_, _ = conn.Write([]byte(b.String()))
+		case "discard":
+			inMulti = false
+			pending = nil
+			queued = 0
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "himport":
 			// readConnStateRetryCommand strips the command name, so
 			// args[0] is the subcommand (prepare/set), args[1] the
@@ -1111,9 +1144,18 @@ func (s *himportRetryServer) serve(conn net.Conn, n int32) {
 			switch strings.ToLower(args[0]) {
 			case "prepare":
 				if len(args) >= 2 {
-					prepared[args[1]] = append([]string(nil), args[2:]...)
+					fields := append([]string(nil), args[2:]...)
+					if inMulti {
+						pending[args[1]] = fields
+						queued++
+						_, _ = conn.Write([]byte("+QUEUED\r\n"))
+					} else {
+						prepared[args[1]] = fields
+						_, _ = conn.Write([]byte("+OK\r\n"))
+					}
+				} else {
+					_, _ = conn.Write([]byte("+OK\r\n"))
 				}
-				_, _ = conn.Write([]byte("+OK\r\n"))
 			case "set":
 				var fields []string
 				if len(args) >= 3 {
@@ -1617,6 +1659,20 @@ func TestPipelineRetryReexecutesLoadingCommand(t *testing.T) {
 // modelling an ACL user without that permission; dropRetryConn closes a
 // retry connection once its last command arrived, without replying to any
 // of it, so the retry fails while re-reading its first command.
+// queuedRuntimeErrScript is the Lua source used by
+// TestPipelineRetryQueuedEvalRuntimeErrIsPreloaded: with a truthy ARGV[1]
+// it returns 42, otherwise it fails with a Lua runtime error. The runtime
+// error means the script ran (and cached) before failing, unlike a
+// pre-execution rejection.
+const queuedRuntimeErrScript = "if ARGV[1] then return 42 end; error('x')"
+
+// queuedRuntimeErrScriptSHA is the SHA1 of queuedRuntimeErrScript, the
+// digest EVALSHA carries for it.
+var queuedRuntimeErrScriptSHA = func() string {
+	sum := sha1.Sum([]byte(queuedRuntimeErrScript))
+	return hex.EncodeToString(sum[:])
+}()
+
 type scriptRetryServer struct {
 	ln            net.Listener
 	conns         atomic.Int32
@@ -1688,12 +1744,14 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 	loaded := map[string]bool{}
 	user := "default"
 	// inMulti tracks a MULTI/EXEC transaction on this connection, and
-	// queued records, per queued command, whether it was rejected at
-	// EXEC time (a negative key count for EVAL): the rejection is not
-	// in the EVAL's own +QUEUED reply, it is an element of EXEC's
+	// queued records, per queued command, the error EXEC reports for it
+	// ("" when it ran): a negative key count for EVAL is a
+	// pre-execution rejection, while a Lua runtime error means the
+	// script ran and cached before failing. The rejection is not in
+	// the EVAL's own +QUEUED reply, it is an element of EXEC's
 	// result array.
 	inMulti := false
-	var queued []bool
+	var queued []string
 	for {
 		name, args := readConnStateRetryCommand(scanner)
 		if name == "" {
@@ -1775,9 +1833,9 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			inMulti = false
 			var b strings.Builder
 			fmt.Fprintf(&b, "*%d\r\n", len(queued))
-			for _, rejected := range queued {
-				if rejected {
-					b.WriteString("-ERR wrong number of keys for 'eval' command\r\n")
+			for _, elemErr := range queued {
+				if elemErr != "" {
+					b.WriteString("-" + elemErr + "\r\n")
 				} else {
 					b.WriteString(":1\r\n")
 				}
@@ -1789,18 +1847,24 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				// A queued EVAL is accepted with +QUEUED; a
 				// negative key count is refused only when EXEC
 				// runs it, so the rejection is recorded for the
-				// EXEC result array instead of replied here.
+				// EXEC result array instead of replied here. A
+				// Lua runtime error is recorded the same way, but
+				// it means the script ran and cached before
+				// failing — it is not a pre-execution rejection.
 				s.evals.Add(1)
-				rejected := false
+				elemErr := ""
 				if len(args) >= 2 {
 					if n, err := strconv.Atoi(args[1]); err == nil && n < 0 {
-						rejected = true
+						elemErr = "ERR wrong number of keys for 'eval' command"
 					}
 				}
 				if len(args) >= 1 && args[0] == "crossslot" {
-					rejected = true
+					elemErr = "ERR wrong number of keys for 'eval' command"
 				}
-				queued = append(queued, rejected)
+				if len(args) >= 1 && args[0] == queuedRuntimeErrScript {
+					elemErr = "ERR Error running script (call to f_0123456789abcdef): @user_script:1: user_script:1: attempt to call error"
+				}
+				queued = append(queued, elemErr)
 				_, _ = conn.Write([]byte("+QUEUED\r\n"))
 				continue
 			}
@@ -1854,7 +1918,13 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				}
 			}
 			if cached {
-				_, _ = conn.Write([]byte(":1\r\n"))
+				if len(args) >= 1 && args[0] == queuedRuntimeErrScriptSHA {
+					// The runtime-error script returns 42 when
+					// ARGV[1] is truthy.
+					_, _ = conn.Write([]byte(":42\r\n"))
+				} else {
+					_, _ = conn.Write([]byte(":1\r\n"))
+				}
 			} else {
 				s.noscripts.Add(1)
 				_, _ = conn.Write([]byte("-NOSCRIPT No matching script. Please use EVAL.\r\n"))
@@ -5941,5 +6011,303 @@ func TestPipelineRetryDirtyWatchFollowerAfterBoundaryAbortsExec(t *testing.T) {
 	// dirties the retried watch.
 	if got := server.incrs.Load(); got != 3 {
 		t.Fatalf("server received %d INCR commands, want 3 (one per attempt: the first attempt, the whole-batch retry, and the final whole-batch retry)", got)
+	}
+}
+
+// answeredWaitRetryServer is a scripted RESP server for the answered-WAIT
+// pipeline retry test. It answers SET, answers the first MGET with TRYAGAIN
+// (slot migration) and later MGETs with values, and answers WAIT. No
+// connection is dropped: the TRYAGAIN error alone drives the retry, so the
+// test can tell whether the retry re-ran the answered SET and WAIT.
+type answeredWaitRetryServer struct {
+	ln       net.Listener
+	conns    atomic.Int32
+	sets     atomic.Int32
+	waits    atomic.Int32
+	mgets    atomic.Int32
+	tryagain atomic.Bool // the first MGET gets TRYAGAIN
+}
+
+func newAnsweredWaitRetryServer(t *testing.T) *answeredWaitRetryServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &answeredWaitRetryServer{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s.conns.Add(1)
+			go s.serve(conn)
+		}
+	}()
+	return s
+}
+
+func (s *answeredWaitRetryServer) serve(conn net.Conn) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for {
+		name, _ := readConnStateRetryCommand(scanner)
+		if name == "" {
+			return
+		}
+		switch name {
+		case "hello":
+			_, _ = conn.Write([]byte("%0\r\n"))
+		case "set":
+			s.sets.Add(1)
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "mget":
+			s.mgets.Add(1)
+			if s.tryagain.CompareAndSwap(false, true) {
+				_, _ = conn.Write([]byte("-TRYAGAIN Multiple keys request during slot migration\r\n"))
+			} else {
+				_, _ = conn.Write([]byte("*2\r\n$1\r\na\r\n$1\r\nb\r\n"))
+			}
+		case "wait":
+			s.waits.Add(1)
+			_, _ = conn.Write([]byte(":1\r\n"))
+		default:
+			_, _ = conn.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+// TestPipelineRetryTxHImportPrepareNotLost: an HIMPORT PREPARE queued inside
+// a MULTI/EXEC transaction that already committed must not be treated as
+// completed session state the retry can drop. The registry still holds the
+// old fields (himportAfterBatch never ran on the dropped connection), so a
+// trimmed retry would inject a PREPARE with the stale fields and the SET
+// would write under the wrong field names. Regression test for the Codex P1
+// review finding on #4351.
+func TestPipelineRetryTxHImportPrepareNotLost(t *testing.T) {
+	server := newHImportRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	// Seed the client-side registry as if fs had been registered with
+	// field "old" by an earlier HImportPrepare.
+	client.himport.register("fs", []string{"old"})
+
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	prep := pipe.HImportPrepare(ctx, "fs", "new")
+	exec := pipe.Do(ctx, "exec")
+	set := pipe.HImportSet(ctx, "k", "fs", "v")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := prep.Err(); err != nil {
+		t.Fatalf("PREPARE: %v", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	var retry []himportSetRecord
+	for _, rec := range server.sets {
+		if rec.conn == 2 {
+			retry = append(retry, rec)
+		}
+	}
+	if len(retry) != 1 {
+		t.Fatalf("server received %d SET commands on the retry connection, want 1", len(retry))
+	}
+	if got := retry[0].fields; len(got) != 1 || got[0] != "new" {
+		t.Fatalf("SET on the retry connection ran under PREPARE fields %v, want [new] (the committed transaction's PREPARE must be re-run, not replaced by the registry's stale fields)", got)
+	}
+}
+
+// TestPipelineRetryOpenMultiDoesNotRerunAnsweredPrefix: a MULTI still open
+// at the retry boundary frames only its own body. An answered write before
+// it (INCR) must not be re-run: the retry narrows to the MULTI, its
+// unanswered body and its EXEC, while the prefix's session state is
+// re-established ahead of it. Regression test for the Cursor High review
+// finding on #4351.
+func TestPipelineRetryOpenMultiDoesNotRerunAnsweredPrefix(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 2
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	incr := pipe.Incr(ctx, "k")
+	multi := pipe.Do(ctx, "multi")
+	set := pipe.Set(ctx, "a", "1", 0)
+	exec := pipe.Do(ctx, "exec")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-run only the open transaction, not the answered INCR before it)", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil (the answered INCR must not run twice)", got, err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got, err := exec.Result(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	} else if vals, ok := got.([]interface{}); !ok || len(vals) != 1 {
+		t.Fatalf("EXEC = %v, want one result (the committed SET)", got)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR before the open MULTI must not be re-run)", got)
+	}
+	if got := server.sets.Load(); got != 1 {
+		t.Fatalf("server received %d SET commands, want 1", got)
+	}
+	if got := server.execWithMulti.Load(); got != 1 {
+		t.Fatalf("EXEC committed %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryQueuedEvalRuntimeErrIsPreloaded: a Lua runtime error
+// inside EXEC's result array means the queued EVAL ran (and cached its
+// script) before failing — unlike a pre-execution rejection, it must still
+// be preloaded with a SCRIPT LOAD, or the retried EVALSHA returns NOSCRIPT
+// instead of the script's result. Regression test for the Codex P2 review
+// finding on #4351. The reverse case — a queued EVAL rejected before
+// execution (negative key count) preloads nothing — is already covered by
+// TestPipelineRetryQueuedEvalRejectionIsNotPreloaded.
+func TestPipelineRetryQueuedEvalRuntimeErrIsPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	sum := sha1.Sum([]byte(queuedRuntimeErrScript))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	eval := pipe.Do(ctx, "eval", queuedRuntimeErrScript, 0)
+	exec := pipe.Do(ctx, "exec")
+	evalsha := pipe.EvalSha(ctx, sha, nil, "arg")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retried EVALSHA must execute the preloaded script and return 42)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("EVAL: %v, want nil (the queued EVAL itself holds +QUEUED; its runtime error is in EXEC's result array)", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(42) {
+		t.Fatalf("EVALSHA = %v, %v; want 42, nil (the runtime error means the script ran and cached, so the retry must preload it)", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (the queued EVAL's runtime error must not be treated as a pre-execution rejection)", got)
+	}
+	if got := server.evalshas.Load(); got != 1 {
+		t.Fatalf("server received %d EVALSHA commands, want 1", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryAnsweredWaitDoesNotForceWholeBatch: an answered WAIT past
+// a retryable error must not force a whole-batch retry. The WAIT barrier
+// already ran on the original connection, so re-running the batch would
+// re-execute the answered write before it. Regression test for the Cursor
+// Medium review finding on #4351.
+func TestPipelineRetryAnsweredWaitDoesNotForceWholeBatch(t *testing.T) {
+	server := newAnsweredWaitRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	wait := pipe.Do(ctx, "wait", 1, 100)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must resend only the rejected MGET)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(1) {
+		t.Fatalf("WAIT = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.sets.Load(); got != 1 {
+		t.Fatalf("server received %d SET commands, want 1 (the answered SET must not be re-run with the retried MGET)", got)
+	}
+	if got := server.waits.Load(); got != 1 {
+		t.Fatalf("server received %d WAIT commands, want 1 (the answered WAIT must not be re-run)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET plus its retry)", got)
+	}
+}
+
+// TestPipelineRetrySuffixNoTxIsLinear: a large transaction-free batch that
+// drops near its start must not pay a rescan per command. Before the fix
+// every remaining command rescanned back to the enclosing MULTI (which does
+// not exist), so 20,000 SETs cost ~2e8 command-name comparisons; the
+// precomputed frame table answers the same question in one pass.
+func TestPipelineRetrySuffixNoTxIsLinear(t *testing.T) {
+	const n = 20000
+	ctx := context.Background()
+	cmds := make([]Cmder, 0, n)
+	for i := 0; i < n; i++ {
+		cmds = append(cmds, NewStringCmd(ctx, "set", fmt.Sprintf("k%d", i), "v"))
+	}
+	// Simulate a drop just after the first command: the first SET was
+	// answered, everything from the second on carries the transport
+	// failure the drop stamped on it.
+	for _, cmd := range cmds[1:] {
+		cmd.SetErr(io.ErrUnexpectedEOF)
+	}
+	start := time.Now()
+	suffix := pipelineRetrySuffix(ctx, cmds, io.ErrUnexpectedEOF, nil)
+	elapsed := time.Since(start)
+	if len(suffix) != n-1 {
+		t.Fatalf("suffix has %d commands, want %d (every unanswered SET, once)", len(suffix), n-1)
+	}
+	// Machine-dependent by nature: the precomputed scan runs in
+	// milliseconds on this workload, while the per-command rescan it
+	// replaced took seconds. The bound only guards against the
+	// quadratic behaviour coming back, with ample headroom.
+	if elapsed > time.Second {
+		t.Fatalf("pipelineRetrySuffix took %v for %d transaction-free commands, want < 1s (the per-command rescan is quadratic)", elapsed, n)
+	}
+}
+
+// BenchmarkPipelineRetrySuffixNoTx measures pipelineRetrySuffix on a
+// 20,000-SET transaction-free batch that drops near its start.
+func BenchmarkPipelineRetrySuffixNoTx(b *testing.B) {
+	const n = 20000
+	ctx := context.Background()
+	cmds := make([]Cmder, 0, n)
+	for i := 0; i < n; i++ {
+		cmds = append(cmds, NewStringCmd(ctx, "set", fmt.Sprintf("k%d", i), "v"))
+	}
+	for _, cmd := range cmds[1:] {
+		cmd.SetErr(io.ErrUnexpectedEOF)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = pipelineRetrySuffix(ctx, cmds, io.ErrUnexpectedEOF, nil)
 	}
 }

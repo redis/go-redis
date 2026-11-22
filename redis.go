@@ -2828,45 +2828,56 @@ func pipelineQueuedCmdNeedsRetry(cmds []Cmder, queued int) bool {
 	return false
 }
 
-// pipelineTxBodyNeedsRetry reports whether the command at idx, inside a
-// MULTI/EXEC transaction, still needs to run on retry: its EXEC follows
-// it in cmds and did not answer successfully, so the command never
-// executed. It generalises pipelineQueuedCmdNeedsRetry to commands whose
-// reply cannot carry +QUEUED: BoolCmd.readReply accepts +QUEUED as
-// (false, nil), so the detector never sees it queued, and the tail
-// filter would otherwise drop the unexecuted command and let the retry
-// commit an empty transaction. A frame closed by DISCARD never runs its
-// body either way — DISCARD drops the queued commands by design — so a
-// body in a discarded frame needs no retry. A body whose EXEC already
-// answered successfully ran and must not run again.
-func pipelineTxBodyNeedsRetry(cmds []Cmder, idx int) bool {
-	// The command must sit inside a MULTI frame: scan back for the
-	// MULTI that opened it, stopping at any EXEC or DISCARD that
-	// closed an earlier frame.
-	inFrame := false
-	for k := idx - 1; k >= 0; k-- {
-		switch cmds[k].Name() {
-		case "multi":
-			inFrame = true
-		case "exec", "discard":
-			return false
-		}
-		if inFrame {
-			break
-		}
-	}
-	if !inFrame {
-		return false
-	}
-	for _, cmd := range cmds[idx+1:] {
+// pipelineMultiOpen reports whether the MULTI at multi is still open: its
+// EXEC or DISCARD either never follows it in the batch or follows it
+// unanswered, so the transaction's queued commands never ran. Redis does
+// not nest MULTI, so the first EXEC or DISCARD after it closes this frame.
+func pipelineMultiOpen(cmds []Cmder, multi int) bool {
+	for _, cmd := range cmds[multi+1:] {
 		switch cmd.Name() {
-		case "exec":
+		case "exec", "discard":
 			return pipelineCmdErr(cmd) != nil
-		case "discard":
-			return false
 		}
 	}
-	return false
+	return true
+}
+
+// pipelineTxBodyNeedsRetryMap precomputes, in one O(n) pass over cmds,
+// whether each command sits inside a MULTI/EXEC transaction whose EXEC did
+// not answer successfully, so it still needs to run on retry: its EXEC
+// follows it in cmds and did not answer, so the command never executed.
+// It generalises pipelineQueuedCmdNeedsRetry to commands whose reply cannot
+// carry +QUEUED: BoolCmd.readReply accepts +QUEUED as (false, nil), so the
+// detector never sees it queued, and the tail filter would otherwise drop
+// the unexecuted command and let the retry commit an empty transaction. A
+// frame closed by DISCARD never runs its body either way — DISCARD drops
+// the queued commands by design — so a body in a discarded frame needs no
+// retry. A body whose EXEC already answered successfully ran and must not
+// run again. Rescanning for the enclosing MULTI per command is O(n^2) on a
+// large transaction-free batch (each scan walks back to the start looking
+// for a MULTI that does not exist), with no context check on the recovery
+// path; the table answers the same question in one pass. Redis does not
+// nest MULTI, so a second MULTI opens a new frame and the first EXEC or
+// DISCARD after it closes that frame.
+func pipelineTxBodyNeedsRetryMap(cmds []Cmder) []bool {
+	needs := make([]bool, len(cmds))
+	frameStart := -1
+	for idx, cmd := range cmds {
+		switch cmd.Name() {
+		case "multi":
+			frameStart = idx
+		case "exec", "discard":
+			if frameStart >= 0 {
+				if cmd.Name() == "exec" && pipelineCmdErr(cmd) != nil {
+					for k := frameStart + 1; k < idx; k++ {
+						needs[k] = true
+					}
+				}
+				frameStart = -1
+			}
+		}
+	}
+	return needs
 }
 
 // pipelineDiscardedTxCmds returns the commands of cmds that sit inside a
@@ -3032,29 +3043,20 @@ func pipelineCmdErr(cmd Cmder) error {
 	return rawReplyErr(cmd)
 }
 
-// evalScriptCached reports whether an answered EVAL or EVAL_RO populated
-// the server's script cache, so a retried EVALSHA may rely on it. A script
-// is cached when the server ran it: a nil reply (redis.Nil — the script
-// returned false) and a Lua runtime error both come from an execution that
-// already loaded the script. Only a rejection before execution leaves the
-// cache empty: a script that failed to compile, a wrong key count, a
-// permission or memory refusal, a BUSY server, a MOVED/ASK redirect, or a
-// CROSSSLOT pre-execution rejection (the keys hash to different slots, so
-// the script never ran and never loaded). A
-// transport error says nothing about whether the script ran, so it counts
-// as not cached. The wording is checked against Redis 8.2's eval.c
-// ("Error compiling script (new function)", "Number of keys can't be
-// negative / greater than number of args"); "wrong number of keys" is the
-// wording the script test server (and older Redis) uses for the same
-// rejection.
-func evalScriptCached(cmd Cmder) bool {
-	// A raw EVAL's rejection lives in its reply bytes, not rawErr()
-	// (see rawReplyErr): without the decode a rejected raw EVAL would
-	// count as cached and the retry would synthesise a SCRIPT LOAD for it.
-	err := pipelineCmdErr(cmd)
-	if err == nil || errors.Is(err, Nil) {
-		return true
-	}
+// isScriptPreExecRejection reports whether err is a Redis error raised
+// before a script executed, so the script never ran and never populated
+// the server's script cache: a script that failed to compile, a wrong key
+// count, a permission or memory refusal, a BUSY server, a MOVED/ASK
+// redirect, or a CROSSSLOT pre-execution rejection (the keys hash to
+// different slots, so the script never ran and never loaded). Any other
+// Redis error — a Lua runtime error, for example — comes from an execution
+// that already loaded the script. A non-Redis error says nothing about
+// whether the script ran, so it is not a pre-execution rejection. The
+// wording is checked against Redis 8.2's eval.c ("Error compiling script
+// (new function)", "Number of keys can't be negative / greater than number
+// of args"); "wrong number of keys" is the wording the script test server
+// (and older Redis) uses for the same rejection.
+func isScriptPreExecRejection(err error) bool {
 	if !isRedisError(err) {
 		return false
 	}
@@ -3066,12 +3068,34 @@ func evalScriptCached(cmd Cmder) bool {
 		HasErrorPrefix(err, "BUSY ") ||
 		proto.IsPermissionError(err) ||
 		proto.IsOOMError(err) {
-		return false
+		return true
 	}
 	if moved, ask, _ := isMovedError(err); moved || ask {
+		return true
+	}
+	return false
+}
+
+// evalScriptCached reports whether an answered EVAL or EVAL_RO populated
+// the server's script cache, so a retried EVALSHA may rely on it. A script
+// is cached when the server ran it: a nil reply (redis.Nil — the script
+// returned false) and a Lua runtime error both come from an execution that
+// already loaded the script. Only a rejection before execution leaves the
+// cache empty (see isScriptPreExecRejection). A
+// transport error says nothing about whether the script ran, so it counts
+// as not cached.
+func evalScriptCached(cmd Cmder) bool {
+	// A raw EVAL's rejection lives in its reply bytes, not rawErr()
+	// (see rawReplyErr): without the decode a rejected raw EVAL would
+	// count as cached and the retry would synthesise a SCRIPT LOAD for it.
+	err := pipelineCmdErr(cmd)
+	if err == nil || errors.Is(err, Nil) {
+		return true
+	}
+	if !isRedisError(err) {
 		return false
 	}
-	return true
+	return !isScriptPreExecRejection(err)
 }
 
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
@@ -3166,33 +3190,38 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// reissued ahead of the suffix below instead, so the
 			// answered writes after it are not executed twice.
 			// A transaction the prefix already completed is not such
-			// state: a MULTI whose EXEC answered with its results (or
-			// whose DISCARD answered) framed commands that already
-			// ran or were discarded with it, so the frame is answered
-			// like any other prefix command. A transaction still
-			// open at the boundary is: its queued commands only run
-			// when their EXEC runs, so the frame forces the batch.
+			// state — but only its framing commands are: a MULTI whose
+			// EXEC answered with its results (or whose DISCARD
+			// answered) framed commands that already ran or were
+			// discarded with it, so the frame itself is answered like
+			// any other prefix command. A body command inside it may
+			// still hold connection-local state (an HIMPORT PREPARE
+			// establishes a fieldset on the connection), so body
+			// commands stay subject to the scan below instead of
+			// being exempted with the frame. A transaction still
+			// open at the boundary narrows the retry to the frame
+			// itself (see below), so its queued commands re-run
+			// without re-running the answered writes before it.
 			completedTx := make(map[*baseCmd]bool)
-			var frame []Cmder
+			var openMulti Cmder
 			for _, answered := range cmds[:i] {
 				switch answered.Name() {
 				case "multi":
-					frame = append(frame, answered)
+					openMulti = answered
 				case "exec", "discard":
-					if len(frame) > 0 && pipelineCmdErr(answered) == nil {
-						frame = append(frame, answered)
-						for _, f := range frame {
-							completedTx[f.base()] = true
-						}
+					if openMulti != nil && pipelineCmdErr(answered) == nil {
+						completedTx[openMulti.base()] = true
+						completedTx[answered.base()] = true
 					}
-					frame = nil
-				default:
-					if len(frame) > 0 {
-						frame = append(frame, answered)
-					}
+					openMulti = nil
 				}
 			}
-			for _, answered := range cmds[:i] {
+			// openMultiAt records a MULTI in the answered prefix whose
+			// frame is still open at the boundary: the retry narrows
+			// to that frame instead of returning the whole batch (see
+			// below). -1 when no such frame exists.
+			openMultiAt := -1
+			for idx, answered := range cmds[:i] {
 				if completedTx[answered.base()] {
 					continue
 				}
@@ -3204,6 +3233,16 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					continue
 				}
 				if pipelineConnStateCmd(answered) && !pipelineConnStateReissueCmd(answered) {
+					// An open MULTI frames only its own body: the
+					// frame re-runs as a unit on the retry, so
+					// narrowing to it re-establishes the transaction
+					// without re-running the answered writes before
+					// it. Any other unreissuable state before the
+					// MULTI still forces the whole batch, as before.
+					if answered.Name() == "multi" && pipelineMultiOpen(cmds, idx) {
+						openMultiAt = idx
+						break
+					}
 					return cmds
 				}
 			}
@@ -3222,22 +3261,21 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					}
 				}
 			}
+			// Narrow the retry to an open MULTI frame: the boundary
+			// moves back to the MULTI, so the answered prefix before
+			// it is rebuilt (session state, script preloads) but not
+			// re-executed, and the tail filter below keeps the
+			// frame's unanswered body and EXEC. The required-state
+			// check above still ran against the original boundary,
+			// so a failed re-establishment before the frame still
+			// forces the whole batch.
+			if openMultiAt >= 0 {
+				i = openMultiAt
+			}
 			// The WATCH safety check runs after the tail filter below:
 			// it must see the answered commands past the boundary
 			// the filter drops, not just the prefix before it (see
 			// the dropped-tail check ahead of the retry build).
-			// A WAIT/WAITAOF in the suffix reads the replication offset
-			// of the connection that runs it (the server's per-connection
-			// woff), not the one that ran the answered writes: on a fresh
-			// pooled connection woff is 0, so WAIT would report success
-			// at once while the answered write is still unreplicated.
-			// Re-run the whole batch so the barrier follows its writes
-			// on one connection.
-			for _, pending := range cmds[i:] {
-				if name := pending.Name(); name == "wait" || name == "waitaof" {
-					return cmds
-				}
-			}
 			// The suffix after the boundary may hold commands an earlier
 			// attempt already answered: a retryable error on one command
 			// does not un-answer the commands after it (their replies
@@ -3272,6 +3310,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// which stay in the retry tail.
 			answered := make([]bool, len(cmds)-i-1)
 			keep := make([]bool, len(cmds)-i-1)
+			// Transaction-frame membership, precomputed once (see
+			// pipelineTxBodyNeedsRetryMap): rescanning for the
+			// enclosing MULTI per command is O(n^2) on a large
+			// transaction-free batch.
+			txBodyNeedsRetry := pipelineTxBodyNeedsRetryMap(cmds)
 			for j, cmd := range cmds[i+1:] {
 				// An answered SWAPDB is server-global state that
 				// already took effect: re-sending it would swap the
@@ -3289,11 +3332,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				// A command inside a MULTI/EXEC transaction whose
 				// EXEC never answered must be kept even when its
 				// reply cannot carry +QUEUED (see
-				// pipelineTxBodyNeedsRetry): it never executed, and
+				// pipelineTxBodyNeedsRetryMap): it never executed, and
 				// dropping it would let the retry commit an empty
 				// transaction. A body in a frame DISCARD closed, or
 				// whose EXEC already answered, needs no retry.
-				if pipelineTxBodyNeedsRetry(cmds, i+1+j) {
+				if txBodyNeedsRetry[i+1+j] {
 					keep[j] = true
 					continue
 				}
@@ -3338,6 +3381,22 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				}
 				// Otherwise a consumed one-shot flag: dropped outright,
 				// it rebuilds nothing and must not be re-sent.
+			}
+			// A WAIT/WAITAOF in the retry tail reads the replication
+			// offset of the connection that runs it (the server's
+			// per-connection woff), not the one that ran the answered
+			// writes: on a fresh pooled connection woff is 0, so WAIT
+			// would report success at once while the answered write
+			// is still unreplicated. Re-run the whole batch so the
+			// barrier follows its writes on one connection. Only a
+			// WAIT the tail keeps counts: one the filter already
+			// dropped as answered ran on the original connection, so
+			// it needs no barrier re-run and must not drag the
+			// answered writes before it back into the retry.
+			for _, pending := range tail {
+				if name := pending.Name(); name == "wait" || name == "waitaof" {
+					return cmds
+				}
 			}
 			// A reissued WATCH is only the same watch when nothing
 			// the first attempt answered after it could have dirtied
@@ -3428,7 +3487,12 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				if !isEvalCmd(cmd) {
 					continue
 				}
-				if err, ok := pipelineQueuedExecErr(cmds, idx); ok && err != nil {
+				// Only a pre-execution rejection means the script
+				// never ran: a Lua runtime error in the EXEC element
+				// comes from an execution that already cached the
+				// script, so it still preloads (see
+				// isScriptPreExecRejection).
+				if err, ok := pipelineQueuedExecErr(cmds, idx); ok && err != nil && isScriptPreExecRejection(err) {
 					rejectedQueuedEval[cmd.base()] = true
 				}
 			}
