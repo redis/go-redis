@@ -1134,3 +1134,74 @@ func TestPubSubShardedClusterAllShards(t *testing.T) {
 		t.Fatalf("received message on unsubscribed channel %s", unsub)
 	}
 }
+
+// TestPubSubShardedClusterPingDoesNotDeadlock is the regression test for the
+// mux Ping deadlock: Ping took c.mu and then locked it again in the mux
+// branch, so every cluster PubSub froze on the first health check (the
+// default Channel pings 3s after open), blocking Receive, SSubscribe and
+// Close on the same mutex.
+func TestPubSubShardedClusterPingDoesNotDeadlock(t *testing.T) {
+	ctx := context.Background()
+	cluster := startFakeShardCluster(t, 3)
+
+	client := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{cluster.nodes[0].addr},
+		ClusterSlots: func(context.Context) ([]redis.ClusterSlot, error) {
+			return cluster.clusterSlots(), nil
+		},
+		DisableIdentity:          true,
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer client.Close()
+
+	pubsub := client.SSubscribe(ctx)
+	defer pubsub.Close()
+
+	// One channel on each shard so the PubSub holds several mux connections.
+	perShard := make(map[string]bool)
+	var channels []string
+	for i := 1; i <= 200 && len(perShard) < len(cluster.nodes); i++ {
+		ch := fmt.Sprintf("pingch%d", i)
+		owner := cluster.ownerOfSlot(hashtag.Slot(ch))
+		if !perShard[owner.addr] {
+			perShard[owner.addr] = true
+			channels = append(channels, ch)
+		}
+	}
+	for _, ch := range channels {
+		if err := pubsub.SSubscribe(ctx, ch); err != nil {
+			t.Fatalf("SSubscribe(%s): %v", ch, err)
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- pubsub.Ping(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Ping: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ping deadlocked on c.mu in mux mode")
+	}
+
+	// Receive must still work after the Ping (no mutex left held).
+	for i, ch := range channels {
+		if err := client.SPublish(ctx, ch, fmt.Sprintf("ping-%d", i)).Err(); err != nil {
+			t.Fatalf("SPublish(%s): %v", ch, err)
+		}
+	}
+	got := make(map[string]string)
+	deadline := time.After(10 * time.Second)
+	for len(got) < len(channels) {
+		select {
+		case msg, ok := <-pubsub.Channel():
+			if !ok {
+				t.Fatalf("message channel closed after receiving %v", got)
+			}
+			got[msg.Channel] = msg.Payload
+		case <-deadline:
+			t.Fatalf("timed out waiting for messages after Ping: got %v, want %v", got, channels)
+		}
+	}
+}

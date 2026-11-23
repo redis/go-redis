@@ -4323,7 +4323,12 @@ func (c *ClusterClient) pubSub() *PubSub {
 	// shards, so the PubSub keeps one connection per shard address (connKey)
 	// instead of pinning everything to the shard of the first channel.
 	// See https://github.com/redis/go-redis/issues/3133.
+	// nodesMu guards nodes: dialKey dials via newConn WITHOUT holding
+	// PubSub.mu, so the registry write in newConn can race the delete in
+	// closeConn from a concurrent reader failure or Close (concurrent map
+	// access is a fatal error).
 	nodes := make(map[*pool.Conn]*clusterNode)
+	var nodesMu sync.Mutex
 	// slotNodeFor returns a STABLE node per slot for the lifetime of this
 	// PubSub: the first selection is cached per slot and reused by both
 	// connKey (channel -> shard address) and newConn (dial target), so the
@@ -4433,13 +4438,17 @@ func (c *ClusterClient) pubSub() *PubSub {
 				node.MarkAsFailing()
 				return nil, err
 			}
+			nodesMu.Lock()
 			nodes[cn] = node
+			nodesMu.Unlock()
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
+			nodesMu.Lock()
 			node := nodes[cn]
 			delete(nodes, cn)
+			nodesMu.Unlock()
 			if node != nil {
 				node.Client.pubSubPool.UntrackConn(cn)
 			}
