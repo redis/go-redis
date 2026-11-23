@@ -195,6 +195,10 @@ type connStateRetryServer struct {
 	// tryagainConn, when nonzero, is the connection whose first MGET
 	// is answered TRYAGAIN (slot migration); later MGETs succeed.
 	tryagainConn int32
+	// failWatch, when set, makes every WATCH answer NOPERM: the
+	// watch is rejected and establishes nothing.
+	failWatch atomic.Bool
+	watches   atomic.Int32
 	// dropExecFirst, when set, makes the first connection close
 	// without replying to EXEC (the transaction never commits there).
 	dropExecFirst bool
@@ -378,6 +382,11 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			}
 			reply = ":1\r\n"
 		case "watch":
+			s.watches.Add(1)
+			if s.failWatch.Load() {
+				reply = "-NOPERM this user has no permissions to run the 'watch' command\r\n"
+				break
+			}
 			watched = true
 			for _, key := range args {
 				watchedKeys[key] = true
@@ -418,8 +427,10 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 		case "reset":
 			// RESET discards the transaction like DISCARD, and
 			// clears the watches too: the queued commands never
-			// ran and the connection leaves MULTI.
+			// ran and the connection leaves MULTI. It also
+			// restores the default database, like a real server.
 			s.resets.Add(1)
+			db = 0
 			inMulti = false
 			queued = queued[:0]
 			clear(watchedKeys)
@@ -6688,14 +6699,15 @@ func TestPipelineRetryDirtyWatchFollowerAfterBoundaryAbortsExec(t *testing.T) {
 // connection is dropped: the TRYAGAIN error alone drives the retry, so the
 // test can tell whether the retry re-ran the answered SET and WAIT.
 type answeredWaitRetryServer struct {
-	ln           net.Listener
-	conns        atomic.Int32
-	sets         atomic.Int32
-	waits        atomic.Int32
-	mgets        atomic.Int32
-	tryagain     atomic.Bool  // the first MGET gets TRYAGAIN
-	tryagainSet  atomic.Bool  // the first SET gets TRYAGAIN
-	waitAfterSet atomic.Int32 // WAITs that arrived after a SET succeeded on the same connection
+	ln               net.Listener
+	conns            atomic.Int32
+	sets             atomic.Int32
+	waits            atomic.Int32
+	mgets            atomic.Int32
+	tryagain         atomic.Bool  // the first MGET gets TRYAGAIN
+	tryagainSet      atomic.Bool  // the first SET gets TRYAGAIN
+	waitAfterSet     atomic.Int32 // WAITs that arrived after a SET succeeded on the same connection
+	waitTimeoutRetry atomic.Bool  // WAITs after the first answer 0 (timeout), not 1
 }
 
 func newAnsweredWaitRetryServer(t *testing.T) *answeredWaitRetryServer {
@@ -6747,11 +6759,15 @@ func (s *answeredWaitRetryServer) serve(conn net.Conn) {
 				_, _ = conn.Write([]byte("*2\r\n$1\r\na\r\n$1\r\nb\r\n"))
 			}
 		case "wait", "waitaof":
-			s.waits.Add(1)
+			n := s.waits.Add(1)
 			if seenSet {
 				s.waitAfterSet.Add(1)
 			}
-			_, _ = conn.Write([]byte(":1\r\n"))
+			if s.waitTimeoutRetry.Load() && n > 1 {
+				_, _ = conn.Write([]byte(":0\r\n"))
+			} else {
+				_, _ = conn.Write([]byte(":1\r\n"))
+			}
 		default:
 			_, _ = conn.Write([]byte("+OK\r\n"))
 		}
@@ -7261,6 +7277,90 @@ func TestPipelineRetryUnwatchClearsWatchSafetyScan(t *testing.T) {
 	}
 	if got := server.incrs.Load(); got != 1 {
 		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR after the successful UNWATCH must not be re-run)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+}
+
+// TestPipelineRetryResetClearsWatchSafetyScan: a successful RESET clears
+// every live watch, like UNWATCH — Redis RESET includes UNWATCH. Here
+// WATCH, RESET, INCR and a TRYAGAIN MGET run: without the fix the safety
+// scan treats the INCR as a dirtying follower of the still-live watch
+// and returns the whole batch, so the answered INCR runs a second time
+// while Exec reports success; with it the RESET ends the safety interval
+// and the retry resends only the rejected MGET. Regression test for the
+// Codex P1 / Cursor High review findings on #4351.
+func TestPipelineRetryResetClearsWatchSafetyScan(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 99
+	server.tryagainConn = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	watch := pipe.Do(ctx, "watch", "k")
+	reset := pipe.Do(ctx, "reset")
+	incr := pipe.Incr(ctx, "counter")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must send only the rejected MGET)", err)
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("WATCH: %v", err)
+	}
+	if err := reset.Err(); err != nil {
+		t.Fatalf("RESET: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR after the successful RESET must not be re-run)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+}
+
+// TestPipelineRetryFailedWatchIsNotLive: a WATCH the server rejected
+// establishes no watch, so a write after it cannot dirty one. Here the
+// first MGET answers TRYAGAIN, the WATCH answers NOPERM and the INCR
+// answers: without the fix the safety scan still counts the failed
+// WATCH as live, treats the answered INCR as a dirtying follower and
+// returns the whole batch, so the INCR runs a second time; with it the
+// retry resends only the rejected MGET and the failed WATCH. Regression
+// test for the Cursor Medium review finding on #4351.
+func TestPipelineRetryFailedWatchIsNotLive(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 99
+	server.tryagainConn = 1
+	server.failWatch.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	watch := pipe.Do(ctx, "watch", "k")
+	incr := pipe.Incr(ctx, "counter")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("Exec: %v, want NOPERM (the rejected WATCH keeps its error)", err)
+	}
+	if err := watch.Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("WATCH: %v, want NOPERM", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR after the failed WATCH must not be re-run)", got)
 	}
 	if got := server.mgets.Load(); got != 2 {
 		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
@@ -8092,6 +8192,63 @@ func TestPipelineRetryResetDiscardsTransaction(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryResetRestoresDatabaseAfterDiscardedTx: a RESET that
+// discards a transaction restores the default database, so a SET after
+// it must land in DB 0 — not in the DB the answered SELECT before the
+// transaction chose. Here SELECT 2, MULTI, a queued SELECT 1, RESET and
+// SET run, and the first connection drops before SET's reply: without
+// the fix the rebuild drops the RESET with the discarded frame and
+// resends only SELECT 2 and SET, so the SET lands in DB 2 while Exec
+// reports success; with it the RESET is reissued as a prerequisite and
+// the SET lands in DB 0. Regression test for the Codex P1 review
+// finding on #4351.
+func TestPipelineRetryResetRestoresDatabaseAfterDiscardedTx(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 4
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 2)
+	multi := pipe.Do(ctx, "multi")
+	queuedSel := pipe.Select(ctx, 1)
+	reset := pipe.Do(ctx, "reset")
+	set := pipe.Set(ctx, "out", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must resend SELECT 2, RESET and SET)", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT 2: %v", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := queuedSel.Err(); err != nil {
+		t.Fatalf("queued SELECT 1: %v, want nil (it holds +QUEUED)", err)
+	}
+	if err := reset.Err(); err != nil {
+		t.Fatalf("RESET: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (the RESET that discarded the transaction restores the default database)", got)
+	}
+	if got := server.selects.Load(); got != 3 {
+		t.Fatalf("server received %d SELECT commands, want 3 (the first attempt's SELECT 2 and queued SELECT 1, plus the reissue of SELECT 2; the queued SELECT 1 must not be rebuilt)", got)
+	}
+	if got := server.resets.Load(); got != 2 {
+		t.Fatalf("server received %d RESET commands, want 2 (the answered RESET must be reissued as a prerequisite)", got)
+	}
+	if got := server.sets.Load(); got != 1 {
+		t.Fatalf("server received %d SET commands, want 1 (only the retried SET runs)", got)
+	}
+	if got := server.multiCount.Load(); got != 1 {
+		t.Fatalf("server received %d MULTI commands, want 1 (the RESET-discarded frame must not be re-run)", got)
+	}
+}
+
 // TestPipelineRetryAnsweredWaitReissuedAfterPendingWrite: an answered
 // WAIT/WAITAOF dropped by the tail filter must be reissued when a write
 // before it is still pending. Here SET answers TRYAGAIN and WAIT answers
@@ -8117,6 +8274,44 @@ func TestPipelineRetryAnsweredWaitReissuedAfterPendingWrite(t *testing.T) {
 	}
 	if got, err := wait.Result(); err != nil || got != int64(1) {
 		t.Fatalf("WAIT = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the rejected SET plus its retry)", got)
+	}
+	if got := server.waits.Load(); got != 2 {
+		t.Fatalf("server received %d WAIT commands, want 2 (the answered WAIT must be reissued after the retried SET)", got)
+	}
+	if got := server.waitAfterSet.Load(); got != 1 {
+		t.Fatalf("WAIT ran after a SET %d time(s), want 1 (the reissued barrier must follow its write on the retry connection)", got)
+	}
+}
+
+// TestPipelineRetryReissuedWaitResultReplacesOriginal: the reissued
+// barrier's acknowledgement count must land on the original WAIT, not
+// stay on the clone. Here SET answers TRYAGAIN and WAIT answers 1, and
+// the retry re-runs the SET with a fresh WAIT that times out (0): without
+// the fix Exec returns nil while the original WAIT still reads 1, so the
+// caller accepts the retried write as replicated without a replica
+// acknowledgement; with it the original reads 0. Regression test for
+// the Codex P1 review finding on #4351.
+func TestPipelineRetryReissuedWaitResultReplacesOriginal(t *testing.T) {
+	server := newAnsweredWaitRetryServer(t)
+	server.tryagainSet.Store(true)
+	server.waitTimeoutRetry.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	wait := pipe.Do(ctx, "wait", 1, 100)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-run the SET with its WAIT)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(0) {
+		t.Fatalf("WAIT = %v, %v; want 0, nil (the reissued barrier timed out, so the original must read 0, not its first attempt's 1)", got, err)
 	}
 	if got := server.sets.Load(); got != 2 {
 		t.Fatalf("server received %d SET commands, want 2 (the rejected SET plus its retry)", got)
@@ -8296,5 +8491,25 @@ func TestPipelineRetrySuffixManyWatchesIsLinear(t *testing.T) {
 	// quadratic behaviour coming back, with ample headroom.
 	if elapsed > time.Second {
 		t.Fatalf("pipelineRetrySuffix took %v for %d WATCH commands, want < 1s (the per-WATCH rescans are quadratic)", elapsed, n)
+	}
+}
+
+// TestPipelineRetryFailedWatchIsNotReissued: a WATCH the server rejected
+// established nothing, so the rebuild must not reissue it as a required
+// synthetic — the retry would otherwise resurrect a watch the original
+// ordering never had, and a later EXEC could abort a transaction the
+// original would have committed. Regression test for the Cursor Medium
+// review finding on #4351.
+func TestPipelineRetryFailedWatchIsNotReissued(t *testing.T) {
+	ctx := context.Background()
+	watch := NewStringCmd(ctx, "watch", "k")
+	watch.SetErr(proto.RedisError("NOPERM this user has no permissions to run the 'watch' command"))
+	incr := NewStringCmd(ctx, "incr", "counter")
+	get := NewStringCmd(ctx, "get", "k")
+	get.SetErr(io.ErrUnexpectedEOF)
+	cmds := []Cmder{watch, incr, get}
+	suffix := pipelineRetrySuffix(ctx, cmds, io.ErrUnexpectedEOF, nil)
+	if len(suffix) != 1 || suffix[0] != get {
+		t.Fatalf("suffix has %d commands, want 1 (only the unanswered GET; the rejected WATCH must not be reissued)", len(suffix))
 	}
 }

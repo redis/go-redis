@@ -2958,7 +2958,13 @@ func pipelineTxBodyNeedsRetryMap(cmds []Cmder) []bool {
 // selected. Only an answered DISCARD counts: an unanswered one leaves
 // the frame open, and the frame scan in pipelineRetrySuffix then treats
 // its MULTI as still-open state. The same holds for RESET: only a
-// successful one discards the frame, a failed one leaves it open.
+// successful one discards the frame, a failed one leaves it open. The
+// RESET itself is not in the set: unlike the queued commands it did
+// execute — it restored the default database and cleared the watches —
+// so the rebuild must reissue it as a prerequisite, or the retry would
+// run the rest of the batch under the database the frame's SELECT chose.
+// A DISCARD has no such executed effect to retain, so it stays in the
+// set with its frame.
 func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 	discarded := make(map[*baseCmd]bool)
 	var frame []Cmder
@@ -2970,7 +2976,15 @@ func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 			frame = nil
 		case "discard", "reset":
 			if len(frame) > 0 && pipelineCmdErr(cmd) == nil {
-				frame = append(frame, cmd)
+				// A RESET executed: it restored the default
+				// database, so it is not discarded with its
+				// frame — the rebuild reissues it as a
+				// prerequisite (see the doc comment above).
+				// A DISCARD executed nothing beyond dropping
+				// the frame, so it is discarded with it.
+				if cmd.Name() == "discard" {
+					frame = append(frame, cmd)
+				}
 				for _, f := range frame {
 					discarded[f.base()] = true
 				}
@@ -3855,7 +3869,8 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// and need no whole batch. The safety interval ends when
 			// the watch is cleared: a successful UNWATCH, an EXEC
 			// that settled its transaction (see pipelineExecSettled),
-			// or a successful DISCARD all clear it, so followers
+			// a successful DISCARD, or a successful RESET (RESET
+			// includes UNWATCH) all clear it, so followers
 			// after one cannot dirty it — and a dirty follower
 			// before one no longer matters, because the watch it
 			// dirtied is gone. Commands queued inside a MULTI/EXEC
@@ -3869,7 +3884,8 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				droppedTail[answered.base()] = true
 			}
 			// WATCH clear events, precomputed once: a settled EXEC, a
-			// successful DISCARD or a successful UNWATCH clears every
+			// successful DISCARD, a successful UNWATCH, or a
+			// successful RESET (RESET includes UNWATCH) clears every
 			// live watch, but only when the walk can see it — before
 			// the boundary, or past it and dropped as answered. The
 			// safety check below and the rebuild's cleared-before
@@ -3889,7 +3905,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				switch cmd.Name() {
 				case "exec":
 					watchClearEvent[f] = pipelineExecSettled(cmd)
-				case "discard", "unwatch":
+				case "discard", "unwatch", "reset":
 					watchClearEvent[f] = pipelineCmdErr(cmd) == nil
 				}
 			}
@@ -3907,7 +3923,15 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// tracked together, so each follower is examined once.
 			// cleanWatches holds the live watches not yet dirtied,
 			// in order; dirtyActive reports whether any live watch
-			// already saw a dirty follower. A follower dirties the
+			// already saw a dirty follower. Only a WATCH that
+			// answered successfully is live: one the server
+			// rejected (NOPERM, wrong arity, TRYAGAIN, LOADING)
+			// established no watch, so a write after it cannot
+			// dirty one — counting it would force a whole-batch
+			// retry that re-runs the answered write for nothing
+			// (see pipelineAbortedTxCmds, which records a watch
+			// only when it answered without an error, for the
+			// same reason). A follower dirties the
 			// live watches it follows only while they are still
 			// live — a clear event ends every live watch at once,
 			// so dirt before it no longer matters — and only when
@@ -3962,7 +3986,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 						}
 					}
 				}
-				if follower.Name() == "watch" {
+				if follower.Name() == "watch" && pipelineCmdErr(follower) == nil {
 					cleanWatches = append(cleanWatches, f)
 				}
 			}
@@ -4144,6 +4168,16 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					if answered.Name() == "watch" && watchNextClear[cmdIndex[answered.base()]+1] < i {
 						continue
 					}
+					// A WATCH the server rejected established
+					// nothing: there is no watch to re-establish
+					// on the retry connection, and reissuing it
+					// would resurrect a watch the original
+					// ordering never had — a later EXEC could
+					// then abort a transaction the original
+					// would have committed.
+					if answered.Name() == "watch" && pipelineCmdErr(answered) != nil {
+						continue
+					}
 					// A queued session change the transaction's
 					// EXEC rejected never ran, so it established
 					// nothing the retry must restore: reissuing it
@@ -4221,10 +4255,19 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// already measured, so Exec would return the retained
 			// barrier result while the write may still be
 			// unreplicated. Reissue the barrier after the pending
-			// writes instead — a fresh clone at the end of the
-			// retry, so it runs on the retry connection once the
-			// writes it follows have run there — without replaying
-			// the unrelated answered writes before it. It is
+			// writes instead — the original command itself, at the
+			// end of the retry, so it runs on the retry connection
+			// once the writes it follows have run there — without
+			// replaying the unrelated answered writes before it.
+			// It must be the original, not a clone: the reissued
+			// barrier's acknowledgement count is the only fresh
+			// measurement, and a clone would keep it while the
+			// original keeps its first attempt's count — Exec
+			// would then return nil with the stale count even
+			// when the reissued barrier timed out. Re-dispatching
+			// the original overwrites its value with the fresh
+			// count (and its error with a fresh failure), so
+			// callers read what the retry actually measured. It is
 			// required: a barrier that cannot be re-established
 			// must fail the batch rather than report the stale
 			// result as though the write were replicated. Only a
@@ -4257,10 +4300,14 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				if !pendingBefore {
 					continue
 				}
-				fresh := barrier.Clone()
-				fresh.SetErr(nil)
-				retry = append(retry, fresh)
-				markPipelineSynthetic(ctx, true, fresh)
+				// The original command, not a clone (see the
+				// comment above): its value must hold the fresh
+				// acknowledgement count, and its error a fresh
+				// failure. The stale first-attempt error is
+				// cleared, as for the clones above.
+				barrier.SetErr(nil)
+				retry = append(retry, barrier)
+				markPipelineSynthetic(ctx, true, barrier)
 			}
 			return retry
 		}
