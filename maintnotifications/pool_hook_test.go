@@ -1169,3 +1169,53 @@ func TestSuccessfulHandoffUntracksMovingOperation(t *testing.T) {
 		t.Fatal("IsHandoffInProgress is true after the handoff succeeded")
 	}
 }
+
+// A failed handoff is retried from a timer. When the retry cannot be queued the
+// connection is closed, and the MOVING operation has to be untracked with it.
+func TestFailedRetryQueueUntracksMovingOperation(t *testing.T) {
+	manager := createTestManager("127.0.0.1:6379")
+	processor := NewPoolHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return nil, errors.New("dial failed")
+	}, "tcp", &Config{
+		Mode:              ModeAuto,
+		EndpointType:      EndpointTypeAuto,
+		MaxWorkers:        1,
+		HandoffQueueSize:  10,
+		MaxHandoffRetries: 3,
+		HandoffTimeout:    100 * time.Millisecond, // the retry timer then fires after 500ms
+	}, manager)
+
+	conn := createMockPoolConnection()
+	conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error { return nil })
+
+	handler := &NotificationHandler{manager: manager, operationsManager: manager}
+	if err := handler.markConnForHandoff(conn, "new-endpoint:6379", 12345, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("markConnForHandoff: %v", err)
+	}
+	if _, _, err := processor.OnPut(context.Background(), conn); err != nil {
+		t.Fatalf("OnPut: %v", err)
+	}
+
+	// Wait for the first attempt to fail, then shut down so the retry cannot be queued.
+	deadline := time.Now().Add(2 * time.Second)
+	for conn.HandoffRetries() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if conn.HandoffRetries() == 0 {
+		t.Fatal("first handoff attempt did not run")
+	}
+	if got := manager.GetActiveOperationCount(); got != 1 {
+		t.Fatalf("active operations while the retry is scheduled: got %d, want 1", got)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for manager.GetActiveOperationCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := manager.GetActiveOperationCount(); got != 0 {
+		t.Fatalf("active operations after the retry could not be queued: got %d, want 0", got)
+	}
+}

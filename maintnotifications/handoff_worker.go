@@ -238,6 +238,10 @@ func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
 					// Failed to queue retry - remove from pending and close connection
 					hwm.pending.Delete(request.Conn.GetID())
 					hwm.closeConnFromRequest(context.Background(), request, err)
+					// No retry will run, so nothing else untracks the operation.
+					if hwm.poolHook.operationsManager != nil {
+						hwm.poolHook.operationsManager.UntrackOperationWithConnID(request.SeqID, request.ConnID)
+					}
 				} else {
 					// Successfully queued retry - remove from pending (will be re-added by queueHandoff)
 					hwm.pending.Delete(request.Conn.GetID())
