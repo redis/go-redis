@@ -529,7 +529,7 @@ type FTHybridVectorExpression struct {
 type FTHybridCombineOptions struct {
 	Method       FTHybridCombineMethod
 	Count        int
-	Window       int     // For RRF
+	Window       int     // For RRF and LINEAR
 	Constant     float64 // For RRF
 	Alpha        float64 // For LINEAR
 	Beta         float64 // For LINEAR
@@ -991,7 +991,7 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery
 				}
 			}
 		}
-		if options.Params != nil {
+		if len(options.Params) > 0 {
 			queryArgs = append(queryArgs, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
 				queryArgs = append(queryArgs, key, value)
@@ -1356,7 +1356,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 				}
 			}
 		}
-		if options.Params != nil {
+		if len(options.Params) > 0 {
 			args = append(args, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
 				args = append(args, key, value)
@@ -1513,7 +1513,8 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 			args = append(args, "PAYLOAD_FIELD", options.PayloadField)
 		}
 		if options.MaxTextFields > 0 {
-			args = append(args, "MAXTEXTFIELDS", options.MaxTextFields)
+			// MAXTEXTFIELDS is a flag: the server rejects a value after it.
+			args = append(args, "MAXTEXTFIELDS")
 		}
 		if options.NoOffsets {
 			args = append(args, "NOOFFSETS")
@@ -2089,6 +2090,11 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 						att.PhoneticMatcher = internal.ToString(attrSlice[i+1])
 						continue
 					}
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "separator" && i+1 < attrLen {
+						// Skip the value: the separator "m" is not the HNSW M key.
+						i++
+						continue
+					}
 					if internal.ToLower(internal.ToString(attrSlice[i])) == "casesensitive" {
 						att.CaseSensitive = true
 						continue
@@ -2252,11 +2258,17 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 
 	// Parse index_definition - handle both RESP2 (array) and RESP3 (map) formats
 	if indexDef, ok := data["index_definition"].([]interface{}); ok {
-		// RESP2 format
-		ftInfo.IndexDefinition = IndexDefinition{
-			KeyType:      internal.ToString(indexDef[1]),
-			Prefixes:     internal.ToStringSlice(indexDef[3]),
-			DefaultScore: internal.ToFloat(indexDef[5]),
+		// RESP2 format: optional entries (filter, default_language, ...) shift
+		// the positions, so read by key.
+		for i := 0; i+1 < len(indexDef); i += 2 {
+			switch internal.ToString(indexDef[i]) {
+			case "key_type":
+				ftInfo.IndexDefinition.KeyType = internal.ToString(indexDef[i+1])
+			case "prefixes":
+				ftInfo.IndexDefinition.Prefixes = internal.ToStringSlice(indexDef[i+1])
+			case "default_score":
+				ftInfo.IndexDefinition.DefaultScore = internal.ToFloat(indexDef[i+1])
+			}
 		}
 	} else if indexDef, ok := data["index_definition"].(map[interface{}]interface{}); ok {
 		// RESP3 format
@@ -2805,6 +2817,11 @@ func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, with
 				if !ok {
 					return FTSearchResult{}, fmt.Errorf("invalid field key format")
 				}
+				if fields[j+1] == nil {
+					// A JSON null has no string value. RESP3 leaves the
+					// field out too.
+					continue
+				}
 				value, ok := fields[j+1].(string)
 				if !ok {
 					return FTSearchResult{}, fmt.Errorf("invalid field value format")
@@ -3031,6 +3048,7 @@ func (cmd *FTSearchCmd) Clone() Cmder {
 				Score:   doc.Score,
 				Payload: doc.Payload,
 				SortKey: doc.SortKey,
+				Error:   doc.Error,
 			}
 			if doc.Fields != nil {
 				val.Docs[i].Fields = make(map[string]string, len(doc.Fields))
@@ -3578,7 +3596,7 @@ func FTSearchQuery(query string, options *FTSearchOptions) (SearchQuery, error) 
 			}
 		}
 		queryArgs = appendFTLimit(queryArgs, options.LimitOffset, options.Limit, options.CountOnly)
-		if options.Params != nil {
+		if len(options.Params) > 0 {
 			queryArgs = append(queryArgs, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
 				queryArgs = append(queryArgs, key, value)
@@ -3695,7 +3713,7 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 			}
 		}
 		args = appendFTLimit(args, options.LimitOffset, options.Limit, options.CountOnly)
-		if options.Params != nil {
+		if len(options.Params) > 0 {
 			args = append(args, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
 				args = append(args, key, value)
@@ -4062,21 +4080,11 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 				cmd.SetErr(fmt.Errorf("FT.HYBRID: RERANK requires a KNN or RANGE method"))
 				return cmd
 			}
-			if vectorExpr.Method != "" {
-				args = append(args, vectorExpr.Method)
-				methodParams := vectorExpr.MethodParams
-				if vectorExpr.Rerank != FTRerankDefault {
-					methodParams = append(append([]interface{}{}, methodParams...), "RERANK", vectorExpr.Rerank.arg())
-				}
-				if len(methodParams) > 0 {
-					// Method params are key-value pairs; the count is the number of tokens
-					args = append(args, len(methodParams))
-					args = append(args, methodParams...)
-				}
-			}
+			methodParams := vectorExpr.MethodParams
 
 			// SHARD_K_RATIO applies to the KNN method only (Redis 8.8+, cluster only).
 			// Zero means "unset" and falls back to the server default of 1.0.
+			// The server reads it as one of the counted KNN arguments.
 			if vectorExpr.ShardKRatio > 0 {
 				if vectorExpr.Method != "KNN" {
 					cmd := newFTHybridCmd(ctx, options, args...)
@@ -4088,7 +4096,19 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 					cmd.SetErr(fmt.Errorf("FT.HYBRID: SHARD_K_RATIO must be between 0.1 and 1.0"))
 					return cmd
 				}
-				args = append(args, "SHARD_K_RATIO", vectorExpr.ShardKRatio)
+				methodParams = append(append([]interface{}{}, methodParams...), "SHARD_K_RATIO", vectorExpr.ShardKRatio)
+			}
+
+			if vectorExpr.Method != "" {
+				args = append(args, vectorExpr.Method)
+				if vectorExpr.Rerank != FTRerankDefault {
+					methodParams = append(append([]interface{}{}, methodParams...), "RERANK", vectorExpr.Rerank.arg())
+				}
+				if len(methodParams) > 0 {
+					// Method params are key-value pairs; the count is the number of tokens
+					args = append(args, len(methodParams))
+					args = append(args, methodParams...)
+				}
 			}
 
 			if vectorExpr.Filter != "" {
@@ -4114,11 +4134,13 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 					combineParams = append(combineParams, "CONSTANT", options.Combine.Constant)
 				}
 			case FTHybridCombineLinear:
-				if options.Combine.Alpha > 0 {
-					combineParams = append(combineParams, "ALPHA", options.Combine.Alpha)
+				// The server requires ALPHA and BETA together, so a zero
+				// weight is sent when the other one is set.
+				if options.Combine.Alpha > 0 || options.Combine.Beta > 0 {
+					combineParams = append(combineParams, "ALPHA", options.Combine.Alpha, "BETA", options.Combine.Beta)
 				}
-				if options.Combine.Beta > 0 {
-					combineParams = append(combineParams, "BETA", options.Combine.Beta)
+				if options.Combine.Window > 0 {
+					combineParams = append(combineParams, "WINDOW", options.Combine.Window)
 				}
 			}
 

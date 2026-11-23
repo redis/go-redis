@@ -38,12 +38,13 @@ type clusterFanoutResponseHandlerKey struct {
 // These collection replies need command-specific aggregation.
 // Unsupported RespSpecial policies fail closed.
 var clusterFanoutResponseHandlers = map[clusterFanoutResponseHandlerKey]clusterFanoutResponseHandler{
-	{name: "keys", response: routing.RespDefaultKeyless}:         aggregateClusterKeys,
-	{name: "latency|reset", response: routing.RespAggSum}:        aggregateClusterLatencyReset,
-	{name: "randomkey", response: routing.RespSpecial}:           aggregateClusterRandomKey,
-	{name: "script|exists", response: routing.RespAggLogicalAnd}: aggregateClusterScriptExists,
-	{name: "slowlog|get", response: routing.RespDefaultKeyless}:  aggregateClusterSlowLog,
-	{name: "waitaof", response: routing.RespAggMin}:              aggregateClusterWaitAOF,
+	{name: "cluster|slot-stats", response: routing.RespDefaultKeyless}: aggregateClusterSlotStats,
+	{name: "keys", response: routing.RespDefaultKeyless}:               aggregateClusterKeys,
+	{name: "latency|reset", response: routing.RespAggSum}:              aggregateClusterLatencyReset,
+	{name: "randomkey", response: routing.RespSpecial}:                 aggregateClusterRandomKey,
+	{name: "script|exists", response: routing.RespAggLogicalAnd}:       aggregateClusterScriptExists,
+	{name: "slowlog|get", response: routing.RespDefaultKeyless}:        aggregateClusterSlowLog,
+	{name: "waitaof", response: routing.RespAggMin}:                    aggregateClusterWaitAOF,
 }
 
 // Pass a value across the callback boundary so ordinary routing decisions stay on the stack.
@@ -940,6 +941,72 @@ func aggregateClusterSlowLog(cmd Cmder, cmds []Cmder) (interface{}, error) {
 	return result, nil
 }
 
+// aggregateClusterSlotStats merges the slots of every shard. Each shard orders
+// and limits only its own slots, so ORDERBY and LIMIT are applied again here.
+func aggregateClusterSlotStats(cmd Cmder, cmds []Cmder) (interface{}, error) {
+	if cmd.GetCmdType() != CmdTypeClusterSlotStats {
+		// An untyped command keeps one reply per shard.
+		result := make([]interface{}, 0, len(cmds))
+		for _, shardCmd := range cmds {
+			value, err := ExtractCommandValue(shardCmd)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, value)
+		}
+		return result, nil
+	}
+
+	var result []ClusterSlotStat
+	for _, shardCmd := range cmds {
+		value, err := ExtractCommandValue(shardCmd)
+		if err != nil {
+			return nil, err
+		}
+		stats, ok := value.([]ClusterSlotStat)
+		if !ok {
+			return nil, fanoutTypeError(cmd, value, "[]redis.ClusterSlotStat")
+		}
+		result = append(result, stats...)
+	}
+
+	bySlot := func(a, b ClusterSlotStat) int { return cmp.Compare(a.Slot, b.Slot) }
+	if form, _ := routingArgText(cmd, 2); !strings.EqualFold(form, "orderby") {
+		slices.SortFunc(result, bySlot)
+		return result, nil
+	}
+
+	metric, _ := routingArgText(cmd, 3)
+	metric = strings.ToLower(metric)
+	if new(ClusterSlotStat).metric(metric) == nil {
+		return nil, fmt.Errorf("redis: unknown CLUSTER SLOT-STATS metric %q", metric)
+	}
+	limit, desc := len(result), true
+	for i := 4; i < len(cmd.Args()); i++ {
+		arg, _ := routingArgText(cmd, i)
+		switch strings.ToLower(arg) {
+		case "asc":
+			desc = false
+		case "limit":
+			i++
+			arg, _ = routingArgText(cmd, i)
+			n, err := strconv.Atoi(arg)
+			if err != nil || n < 1 {
+				return nil, fmt.Errorf("redis: invalid CLUSTER SLOT-STATS limit %q", arg)
+			}
+			limit = min(limit, n)
+		}
+	}
+	slices.SortFunc(result, func(a, b ClusterSlotStat) int {
+		order := cmp.Compare(*a.metric(metric), *b.metric(metric))
+		if desc {
+			order = -order
+		}
+		return cmp.Or(order, bySlot(a, b))
+	})
+	return result[:limit], nil
+}
+
 func aggregateClusterScriptExists(cmd Cmder, cmds []Cmder) (interface{}, error) {
 	var result []bool
 	for shardIndex, shardCmd := range cmds {
@@ -1480,6 +1547,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 				return nil
 			}
 		}
+	case CmdTypeClusterSlotStats:
+		if c, ok := cmd.(interface{ SetVal([]ClusterSlotStat) }); ok {
+			if v, ok := value.([]ClusterSlotStat); ok {
+				c.SetVal(v)
+				return nil
+			}
+		}
 	case CmdTypeClusterShards:
 		if c, ok := cmd.(interface{ SetVal([]ClusterShard) }); ok {
 			if v, ok := value.([]ClusterShard); ok {
@@ -1497,6 +1571,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 	case CmdTypeClientInfo:
 		if c, ok := cmd.(interface{ SetVal(*ClientInfo) }); ok {
 			if v, ok := value.(*ClientInfo); ok {
+				c.SetVal(v)
+				return nil
+			}
+		}
+	case CmdTypeACLUser:
+		if c, ok := cmd.(interface{ SetVal(*ACLUser) }); ok {
+			if v, ok := value.(*ACLUser); ok {
 				c.SetVal(v)
 				return nil
 			}

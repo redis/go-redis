@@ -304,6 +304,34 @@ func lastMemberAddr() string {
 	return e2eTopology.Endpoints[len(e2eTopology.Endpoints)-1]
 }
 
+// awaitReplicatedTo gives key up to max to show up as want on the Topology
+// member at index dst, read directly and not through the MultiDB client. It
+// is best effort and never fails the test: Active-Active links replicate
+// asynchronously, and the faults these scenarios inject cut the faulted
+// member off from them too, so a value written just before a fault can stay
+// on that member. The scenario's own assertion decides the outcome; this only
+// raises the chance that it holds. The mock shares one backend, so there it
+// returns on the first read.
+func awaitReplicatedTo(t *testing.T, dst int, key, want string, max time.Duration) {
+	t.Helper()
+	if dst >= len(e2eTopology.Endpoints) {
+		return
+	}
+	c := redis.NewClient(endpointOptions(e2eTopology.Endpoints[dst]))
+	defer func() { _ = c.Close() }()
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		v, err := c.Get(ctx, key).Result()
+		cancel()
+		if err == nil && v == want {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Logf("%q did not replicate to member %d within %s; continuing", key, dst, max)
+}
+
 func newE2EClient(t *testing.T, opts *redis.MultiDBOptions) *redis.MultiDBClient {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

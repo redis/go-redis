@@ -2,6 +2,7 @@ package hscan
 
 import (
 	"math"
+	"net"
 	"strconv"
 	"testing"
 	"time"
@@ -355,5 +356,28 @@ var _ = Describe("Scan", func() {
 		Expect(d.Binary.s).To(Equal("hello"))
 		Expect(d.Text.s).To(Equal("hello"))
 		Expect(val).To(Equal("HELLO"))
+	})
+
+	It("scans a net.IP stored as raw bytes or as text", func() {
+		type ipData struct {
+			IP net.IP `redis:"ip"`
+		}
+
+		// HSET stores a net.IP as its raw bytes.
+		for _, ip := range []net.IP{net.IPv4(10, 1, 2, 3).To4(), net.ParseIP("2001:db8::1")} {
+			var d ipData
+			Expect(Scan(&d, i{"ip"}, i{string(ip)})).NotTo(HaveOccurred())
+			Expect(d.IP.Equal(ip)).To(BeTrue(), "got %v, want %v", d.IP, ip)
+		}
+
+		var d ipData
+		Expect(Scan(&d, i{"ip"}, i{"10.1.2.3"})).NotTo(HaveOccurred())
+		Expect(d.IP.String()).To(Equal("10.1.2.3"))
+
+		// A 4-byte value that is also valid text is read as text.
+		Expect(Scan(&d, i{"ip"}, i{"1::1"})).NotTo(HaveOccurred())
+		Expect(d.IP.String()).To(Equal("1::1"))
+
+		Expect(Scan(&d, i{"ip"}, i{"not an ip"})).To(HaveOccurred())
 	})
 })

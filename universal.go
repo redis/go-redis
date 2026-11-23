@@ -128,13 +128,14 @@ type UniversalOptions struct {
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
-	PoolTimeout           time.Duration
-	MinIdleConns          int
-	MaxIdleConns          int
-	MaxActiveConns        int
-	ConnMaxIdleTime       time.Duration
-	ConnMaxLifetime       time.Duration
-	ConnMaxLifetimeJitter time.Duration
+	PoolTimeout                 time.Duration
+	MinIdleConns                int
+	MaxIdleConns                int
+	MaxActiveConns              int
+	ConnMaxIdleTime             time.Duration
+	ConnMaxLifetime             time.Duration
+	ConnMaxLifetimeJitter       time.Duration
+	ConnMaxLifetimeReapInterval time.Duration
 
 	TLSConfig *tls.Config
 
@@ -310,16 +311,17 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PipelinePoolSize:        o.PipelinePoolSize,
 		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
-		PoolFIFO:              o.PoolFIFO,
-		PoolSize:              o.PoolSize,
-		MaxConcurrentDials:    o.MaxConcurrentDials,
-		PoolTimeout:           o.PoolTimeout,
-		MinIdleConns:          o.MinIdleConns,
-		MaxIdleConns:          o.MaxIdleConns,
-		MaxActiveConns:        o.MaxActiveConns,
-		ConnMaxIdleTime:       o.ConnMaxIdleTime,
-		ConnMaxLifetime:       o.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
+		PoolFIFO:                    o.PoolFIFO,
+		PoolSize:                    o.PoolSize,
+		MaxConcurrentDials:          o.MaxConcurrentDials,
+		PoolTimeout:                 o.PoolTimeout,
+		MinIdleConns:                o.MinIdleConns,
+		MaxIdleConns:                o.MaxIdleConns,
+		MaxActiveConns:              o.MaxActiveConns,
+		ConnMaxIdleTime:             o.ConnMaxIdleTime,
+		ConnMaxLifetime:             o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       o.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: o.ConnMaxLifetimeReapInterval,
 
 		TLSConfig: o.TLSConfig,
 
@@ -395,16 +397,17 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PipelinePoolSize:        o.PipelinePoolSize,
 		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
-		PoolFIFO:              o.PoolFIFO,
-		PoolSize:              o.PoolSize,
-		MaxConcurrentDials:    o.MaxConcurrentDials,
-		PoolTimeout:           o.PoolTimeout,
-		MinIdleConns:          o.MinIdleConns,
-		MaxIdleConns:          o.MaxIdleConns,
-		MaxActiveConns:        o.MaxActiveConns,
-		ConnMaxIdleTime:       o.ConnMaxIdleTime,
-		ConnMaxLifetime:       o.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
+		PoolFIFO:                    o.PoolFIFO,
+		PoolSize:                    o.PoolSize,
+		MaxConcurrentDials:          o.MaxConcurrentDials,
+		PoolTimeout:                 o.PoolTimeout,
+		MinIdleConns:                o.MinIdleConns,
+		MaxIdleConns:                o.MaxIdleConns,
+		MaxActiveConns:              o.MaxActiveConns,
+		ConnMaxIdleTime:             o.ConnMaxIdleTime,
+		ConnMaxLifetime:             o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       o.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: o.ConnMaxLifetimeReapInterval,
 
 		TLSConfig: o.TLSConfig,
 
@@ -464,16 +467,17 @@ func (o *UniversalOptions) Simple() *Options {
 		PipelinePoolSize:        o.PipelinePoolSize,
 		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
-		PoolFIFO:              o.PoolFIFO,
-		PoolSize:              o.PoolSize,
-		MaxConcurrentDials:    o.MaxConcurrentDials,
-		PoolTimeout:           o.PoolTimeout,
-		MinIdleConns:          o.MinIdleConns,
-		MaxIdleConns:          o.MaxIdleConns,
-		MaxActiveConns:        o.MaxActiveConns,
-		ConnMaxIdleTime:       o.ConnMaxIdleTime,
-		ConnMaxLifetime:       o.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
+		PoolFIFO:                    o.PoolFIFO,
+		PoolSize:                    o.PoolSize,
+		MaxConcurrentDials:          o.MaxConcurrentDials,
+		PoolTimeout:                 o.PoolTimeout,
+		MinIdleConns:                o.MinIdleConns,
+		MaxIdleConns:                o.MaxIdleConns,
+		MaxActiveConns:              o.MaxActiveConns,
+		ConnMaxIdleTime:             o.ConnMaxIdleTime,
+		ConnMaxLifetime:             o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       o.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: o.ConnMaxLifetimeReapInterval,
 
 		TLSConfig: o.TLSConfig,
 

@@ -1370,6 +1370,55 @@ var _ = Describe("ClusterClient", func() {
 			}
 		})
 
+		It("should CLUSTER SLOT-STATS", func() {
+			SkipBeforeRedisVersion("8.2", "CLUSTER SLOT-STATS requires Redis 8.2+")
+
+			// "A" is in slot 6373 and "B" in slot 10374, on different shards.
+			Expect(client.MSet(ctx, "{A}1", "v", "{A}2", "v").Err()).NotTo(HaveOccurred())
+			Expect(client.Set(ctx, "B", "v", 0).Err()).NotTo(HaveOccurred())
+
+			// A node answers for its own slots only, so the client asks every
+			// master and merges the replies, with and without metadata routing.
+			check := func() {
+				stats, err := client.ClusterSlotStats(ctx, 0, 16383).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stats).To(HaveLen(16384))
+				for slot, stat := range stats {
+					Expect(stat.Slot).To(Equal(int64(slot)))
+				}
+				Expect(stats[6373].KeyCount).To(Equal(int64(2)))
+				Expect(stats[10374].KeyCount).To(Equal(int64(1)))
+
+				top, err := client.ClusterSlotStatsOrderBy(ctx, &redis.ClusterSlotStatsOrderByArgs{
+					Metric: "key-count",
+					Limit:  3,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(top).To(Equal([]redis.ClusterSlotStat{
+					{Slot: 6373, KeyCount: 2},
+					{Slot: 10374, KeyCount: 1},
+					{Slot: 0},
+				}))
+
+				bottom, err := client.ClusterSlotStatsOrderBy(ctx, &redis.ClusterSlotStatsOrderByArgs{
+					Metric: "key-count",
+					Limit:  2,
+					Asc:    true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(bottom).To(Equal([]redis.ClusterSlotStat{{Slot: 0}, {Slot: 1}}))
+
+				err = client.ClusterSlotStatsOrderBy(ctx, &redis.ClusterSlotStatsOrderByArgs{Metric: "nope"}).Err()
+				Expect(err).To(MatchError(ContainSubstring("Unrecognized sort metric")))
+			}
+			check()
+
+			resolver := client.GetResolver()
+			client.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+			defer client.SetCommandInfoResolver(resolver)
+			check()
+		})
+
 		It("should cluster client setname", func() {
 			err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
 				return c.Ping(ctx).Err()

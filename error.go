@@ -156,7 +156,7 @@ func shouldRetry(err error, retryTimeout bool) bool {
 
 	// Fallback to string checking for backward compatibility with plain errors
 	s := err.Error()
-	if strings.HasPrefix(s, "ERR max number of clients reached") {
+	if strings.HasPrefix(s, "ERR max number of clients") {
 		return true
 	}
 	if strings.HasPrefix(s, "LOADING ") {

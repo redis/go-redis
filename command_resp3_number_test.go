@@ -54,6 +54,10 @@ func TestCmdHelpersRESP3NumberReply(t *testing.T) {
 		},
 		{"*2\r\n(42\r\n(-1\r\n", "*2\r\n$2\r\n42\r\n$2\r\n-1\r\n", []string{"StringSlice", "Int64Slice", "Uint64Slice"}},
 		{"*2\r\n(1\r\n(0\r\n", "*2\r\n$1\r\n1\r\n$1\r\n0\r\n", []string{"BoolSlice"}},
+		// A negative integer reply has no uint64 value either.
+		{":-1\r\n", "$2\r\n-1\r\n", []string{"Int", "Int64", "Uint64"}},
+		{":42\r\n", "$2\r\n42\r\n", []string{"Uint64"}},
+		{"*2\r\n:42\r\n:-1\r\n", "*2\r\n$2\r\n42\r\n$2\r\n-1\r\n", []string{"Int64Slice", "Uint64Slice"}},
 	}
 
 	for _, tt := range tests {
