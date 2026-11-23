@@ -27,6 +27,7 @@ type ClusterCmdable interface {
 	ClusterDelSlots(ctx context.Context, slots ...int) *StatusCmd
 	ClusterDelSlotsRange(ctx context.Context, min, max int) *StatusCmd
 	ClusterSaveConfig(ctx context.Context) *StatusCmd
+	ClusterReplicas(ctx context.Context, nodeID string) *StringSliceCmd
 	ClusterSlaves(ctx context.Context, nodeID string) *StringSliceCmd
 	ClusterFailover(ctx context.Context) *StatusCmd
 	ClusterAddSlots(ctx context.Context, slots ...int) *StatusCmd
@@ -226,6 +227,15 @@ func (c cmdable) ClusterDelSlotsRange(ctx context.Context, min, max int) *Status
 
 func (c cmdable) ClusterSaveConfig(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "cluster", "saveconfig")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ClusterReplicas lists the replica nodes of a master node, one line per
+// replica in the CLUSTER NODES format. Redis 5.0+.
+// For more information - https://redis.io/commands/cluster-replicas/
+func (c cmdable) ClusterReplicas(ctx context.Context, nodeID string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "cluster", "replicas", nodeID)
 	_ = c(ctx, cmd)
 	return cmd
 }
