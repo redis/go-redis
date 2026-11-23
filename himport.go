@@ -457,6 +457,21 @@ func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, 
 	})
 }
 
+// himportSetNeedsRecovery reports whether cmd is an HIMPORT SET whose
+// "no such fieldset" reply means its write never happened and the managed
+// recovery (a re-PREPARE plus a re-issued SET, see
+// himportRetryFailedSets) has not run yet: that recovery runs only after
+// a fully read attempt, so a transport failure partway through the replies
+// returns before it. Such a SET must stay pending in a retry — trimming
+// it as settled would keep the fieldset error while the write never
+// happens. The registry is not consulted here: the retry re-prepares
+// only a registered fieldset, so an unregistered one simply fails the
+// same way again, with the same terminal error.
+func himportSetNeedsRecovery(cmd Cmder) bool {
+	_, ok := cmd.(*HImportSetCmd)
+	return ok && himportNoSuchFieldset(pipelineCmdErr(cmd))
+}
+
 // himportShouldRetrySet reports whether a retry of cmd may succeed after it
 // failed with "no such fieldset": true when the fieldset is registered
 // client-side — the executing connection lost its server session state (for

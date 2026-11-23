@@ -2895,7 +2895,9 @@ func pipelineMultiOpen(cmds []Cmder, multi int) bool {
 // retry. A successful RESET discards the frame the same way: the queued
 // commands never ran and were discarded on purpose, so they must not be
 // re-queued either; a failed RESET leaves the frame open, so its body
-// still needs a retry when the EXEC never settles. A body whose EXEC settled ran or was definitively aborted, so it
+// still needs a retry when the EXEC never settles. The same holds for a
+// failed DISCARD: only one the server executed discards the frame, a
+// failed one leaves it open (see below). A body whose EXEC settled ran or was definitively aborted, so it
 // must not run again. A frame still open at the end of the batch likewise
 // never ran its body — no EXEC follows it — so its body needs a retry
 // too, or the tail filter drops the queued commands as answered (+QUEUED
@@ -2920,13 +2922,26 @@ func pipelineTxBodyNeedsRetryMap(cmds []Cmder) []bool {
 			if frameStart < 0 {
 				frameStart = idx
 			}
-		case "exec", "discard":
+		case "exec":
 			if frameStart >= 0 {
-				if cmd.Name() == "exec" && !pipelineExecSettled(cmd) {
+				if !pipelineExecSettled(cmd) {
 					for k := frameStart + 1; k < idx; k++ {
 						needs[k] = true
 					}
 				}
+				frameStart = -1
+			}
+		case "discard":
+			// Only a DISCARD the server executed closes the frame:
+			// a failed one — a transport failure, or a Redis error
+			// such as NOPERM — leaves the transaction open, so the
+			// frame stays tracked and its queued body still needs a
+			// retry. Closing it here would drop the queued commands
+			// as answered (+QUEUED carries no error) and the retry
+			// would commit a transaction missing them (see
+			// pipelineDiscardedTxCmds and pipelineMultiOpen for the
+			// same rule).
+			if frameStart >= 0 && pipelineCmdErr(cmd) == nil {
 				frameStart = -1
 			}
 		case "reset":
@@ -3056,7 +3071,12 @@ func pipelineAbortedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 				liveWatches = append(liveWatches, cmd)
 			}
 		case "unwatch":
-			if pipelineCmdErr(cmd) == nil {
+			// Only an UNWATCH that actually executed clears the live
+			// watches: one queued inside MULTI (+QUEUED) runs only
+			// at its EXEC, so counting it here would drop a watch a
+			// later frame's guards still need (see
+			// pipelineWatchClearAnswered for the same rule).
+			if pipelineCmdErr(cmd) == nil && !pipelineCmdQueued(cmd) {
 				liveWatches = nil
 			}
 			if len(frame) > 0 {
@@ -3171,11 +3191,18 @@ func pipelineExecSettled(cmd Cmder) bool {
 // answered cleared nothing: a rejected DISCARD never ran, and an
 // UNWATCH whose reply was lost may never have run either — so neither
 // counts, and the safety walk keeps treating the watch as live past it.
+// A +QUEUED UNWATCH is not a clear either: Redis queues UNWATCH inside
+// MULTI, so it clears the watch only when its EXEC runs — counting the
+// acknowledgement would let a dirty watch look cleared and a later EXEC
+// commit a transaction the original ordering would have aborted.
 func pipelineWatchClearAnswered(cmd Cmder) bool {
 	switch cmd.Name() {
 	case "exec":
 		return pipelineExecSettled(cmd)
 	case "discard", "unwatch", "reset":
+		if cmd.Name() == "unwatch" && pipelineCmdQueued(cmd) {
+			return false
+		}
 		return pipelineCmdErr(cmd) == nil
 	}
 	return false
@@ -3200,12 +3227,16 @@ func pipelineWatchClearAnswered(cmd Cmder) bool {
 // queued — not its distance from MULTI: a rejected nested MULTI is a
 // framing command, so it contributes no EXEC result element, and
 // counting it would read the next command's rejection past the end of
-// the array. A WATCH or UNWATCH inside MULTI is rejected the same
-// way: the server never queues it (see txPipelineReadQueued), so it
-// contributes no EXEC result element either, and counting it would
-// shift every later command's ordinal by one — a queued EVAL's
-// rejection would land on the WATCH while the EVAL reads a nil element
-// as though it had run. A null EXEC reply (a WATCH abort, see
+// the array. A WATCH inside MULTI is rejected the same way: the
+// server never queues it (see txPipelineReadQueued), so it contributes
+// no EXEC result element either, and counting it would shift every later
+// command's ordinal by one — a queued EVAL's rejection would land on the
+// WATCH while the EVAL reads a nil element as though it had run. An
+// UNWATCH inside MULTI is different: Redis queues it (processCommand
+// excludes only MULTI, EXEC, DISCARD, WATCH and RESET from queueing), so
+// it holds the EXEC element at its ordinal and must be counted —
+// skipping it would shift the same rejection the other way, onto the
+// UNWATCH, while the EVAL reads a nil element. A null EXEC reply (a WATCH abort, see
 // pipelineExecNullReply) carries no result array at all, so it records
 // no elements either: the aborted frame's commands are covered by
 // pipelineAbortedTxCmds instead. A successful RESET closes the frame
@@ -3243,8 +3274,17 @@ func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 				bodies = bodies[:0]
 			}
 		case "discard":
-			frameStart = -1
-			bodies = bodies[:0]
+			// Only a DISCARD the server executed closes the frame: a
+			// failed one leaves the transaction open, so a later
+			// EXEC's result array still belongs to this frame's
+			// queued commands — closing it here would drop their EXEC
+			// elements and let a rejected queued EVAL look as though
+			// it had run (see pipelineTxBodyNeedsRetryMap for the
+			// same rule).
+			if pipelineCmdErr(cmd) == nil {
+				frameStart = -1
+				bodies = bodies[:0]
+			}
 		case "reset":
 			// A successful RESET discards the transaction: the
 			// frame closes with no EXEC, so its queued commands
@@ -3258,10 +3298,11 @@ func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 			}
 		default:
 			if frameStart >= 0 {
-				// A WATCH or UNWATCH inside MULTI contributes no
-				// EXEC result element (see the doc comment above),
-				// so it is not counted among the queued bodies.
-				if cmd.Name() != "watch" && cmd.Name() != "unwatch" {
+				// A WATCH inside MULTI contributes no EXEC result
+				// element (see the doc comment above), so it is not
+				// counted among the queued bodies. An UNWATCH inside
+				// MULTI is queued and holds one, so it is counted.
+				if cmd.Name() != "watch" {
 					bodies = append(bodies, idx)
 				}
 			}
@@ -3526,8 +3567,15 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 		// A raw command's retryable error lives in its reply bytes, not
 		// rawErr() (see rawReplyErr): without the decode a raw command
 		// rejected with e.g. LOADING would be dropped as answered and
-		// never re-run, while Exec still reports success.
-		if e := pipelineCmdErr(cmd); e != nil && (!isRedisError(e) || shouldRetry(e, true)) {
+		// never re-run, while Exec still reports success. A managed
+		// HIMPORT SET answered "no such fieldset" is unanswered the
+		// same way: its write never happened, and the recovery that
+		// would re-prepare and re-issue it runs only after a fully
+		// read attempt (see himportSetNeedsRecovery) — a transport
+		// failure partway through the replies returns before it, so
+		// the SET must start the retry suffix instead of being
+		// trimmed as settled.
+		if e := pipelineCmdErr(cmd); e != nil && (!isRedisError(e) || shouldRetry(e, true) || himportSetNeedsRecovery(cmd)) {
 			// Connection-local state the suffix cannot re-establish on
 			// its own forces the whole batch; state that can be
 			// re-established (see pipelineConnStateReissueCmd) is
@@ -3847,6 +3895,14 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					keep[j] = true
 					continue
 				}
+				// A managed HIMPORT SET answered "no such fieldset"
+				// never wrote (see the boundary scan above): keep it
+				// in the retry tail so the recovery re-issues it,
+				// instead of dropping it as answered.
+				if himportSetNeedsRecovery(cmd) {
+					keep[j] = true
+					continue
+				}
 				if e := pipelineCmdErr(cmd); e == nil || (isRedisError(e) && !shouldRetry(e, true)) {
 					answered[j] = true
 					continue
@@ -3984,7 +4040,10 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				case "exec":
 					watchClearEvent[f] = pipelineExecSettled(cmd)
 				case "discard", "unwatch", "reset":
-					watchClearEvent[f] = pipelineCmdErr(cmd) == nil
+					// Shared with the gate above: a +QUEUED UNWATCH
+					// has not cleared anything yet (see
+					// pipelineWatchClearAnswered).
+					watchClearEvent[f] = pipelineWatchClearAnswered(cmd)
 				}
 			}
 			watchNextClear := make([]int, len(cmds)+1)
