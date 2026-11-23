@@ -47,6 +47,11 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
+	failover      *sentinelFailover
+	cscCacheScope string
+	// failoverOwner keeps shared discovery alive when Options are copied to NewClient.
+	failoverOwner *baseClient
+
 	// cscDisabled preserves a construction-time rejection through node factories.
 	// It prevents a factory-supplied Cache from re-enabling rejected CSC options.
 	cscDisabled bool
@@ -1358,7 +1363,12 @@ func newConnPool(
 		return nil, err
 	}
 
+	var generation *atomic.Uint64
+	if opt.failover != nil {
+		generation = &opt.failover.epoch
+	}
 	return pool.NewConnPool(&pool.Options{
+		DialGeneration: generation,
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return dialer(ctx, opt.Network, opt.Addr)
 		},

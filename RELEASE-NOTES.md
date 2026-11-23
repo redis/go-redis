@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **Sentinel client-side caching (experimental):** `NewFailoverClient` now
+  honors CSC configuration for primary-only RESP3 clients, including when
+  selected by `NewUniversalClient`. Previously ignored CSC options now enable
+  caching and its connection-state command guards. `ReplicaOnly` disables CSC
+  with a warning. Custom caches are scoped to the failover client and its clones.
+  Failover connection admission rejects obsolete endpoints, including late dials
+  and custom transports. Configured command metadata is now initialized for
+  failover clients independently of CSC.
+  Active CSC verifies configuration continuity after a Sentinel subscription
+  reconnects; unverifiable continuity retires its data connections and cache
+  ownership. Grant the Sentinel user `SENTINEL MASTER` access to avoid this
+  conservative fallback. Clients without active CSC preserve healthy sockets.
+  The highest observed configuration epoch is retained across Sentinel state
+  resets; lower versions cause conservative retirement on every resubscribe
+  until version continuity can be verified again. A completed promotion event
+  refreshes the baseline even if discovery already selected its primary.
+  Independent clients created from a failover client's `Options()` through
+  `NewClient` execute uncached because their pools are outside failover cleanup.
+- **Sentinel connection verification:** Primary-only failover clients reject
+  a non-primary role reported by `HELLO`, in RESP2 and RESP3, including without
+  CSC. Re-discovery prefers another Sentinel. Acquisition failures can be
+  identified with `errors.Is(err, redis.ErrEndpointChanged)`; role failures
+  retain endpoint and role details. Internal Sentinel operations honor context
+  deadlines, including a data connection's per-attempt dial deadline.
+  Recovery queries Sentinels concurrently, prefers an observer other than the
+  one that reported the rejected endpoint, and closes losing discovery clients
+  before waiting for their queries to finish.
+  Once a fallback response is available, peer preference is limited to 500ms
+  or half the remaining context budget, whichever is shorter; an unavailable
+  peer cannot indefinitely exclude the only responding Sentinel.
+- **Client-side cache publication:** A reply whose tracking connection was
+  removed before its coverage generation was captured is no longer cached.
+  This also protects standalone clients.
+
 # 9.24.0-beta.1 (2026-11-16)
 
 This is a **beta** release. The release adds:

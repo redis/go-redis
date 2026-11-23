@@ -772,10 +772,20 @@ func (s *commandMetadataStore) ensureLive(ctx context.Context) error {
 
 // onServerHello retires live metadata when the server identity changes.
 func (s *commandMetadataStore) onServerHello(fp string) {
+	s.onServerHelloForSource(fp, nil, 0)
+}
+
+// onServerHelloForSource serializes a delayed connection initialization with
+// source invalidation. An obsolete socket must not restore the old identity.
+func (s *commandMetadataStore) onServerHelloForSource(fp string, source *atomic.Uint64, generation uint64) {
 	if !s.wantsServerHello() {
 		return
 	}
 	s.mu.Lock()
+	if source != nil && source.Load() != generation {
+		s.mu.Unlock()
+		return
+	}
 	changed := fp != s.serverFp
 	if changed {
 		s.serverFp = fp

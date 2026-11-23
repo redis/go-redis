@@ -84,6 +84,9 @@ type cscPolicyServer struct {
 	mu     sync.Mutex
 	events []cscPolicyEvent
 	addr   string
+	// Publishes sockets only after their SUBSCRIBE acknowledgement was written,
+	// so fault-injection tests can disconnect or send an ordered pubsub message.
+	subscribed chan net.Conn
 }
 
 func newCSCPolicyServer(t testing.TB, reply func([]string) string) *cscPolicyServer {
@@ -92,7 +95,7 @@ func newCSCPolicyServer(t testing.TB, reply func([]string) string) *cscPolicySer
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &cscPolicyServer{addr: ln.Addr().String()}
+	s := &cscPolicyServer{addr: ln.Addr().String(), subscribed: make(chan net.Conn, 8)}
 	var mu sync.Mutex
 	var conns []net.Conn
 	var wg sync.WaitGroup
@@ -137,6 +140,12 @@ func newCSCPolicyServer(t testing.TB, reply func([]string) string) *cscPolicySer
 					}
 					if _, e := cn.Write([]byte(response)); e != nil {
 						return
+					}
+					if args[0] == "subscribe" {
+						select {
+						case s.subscribed <- cn:
+						default:
+						}
 					}
 				}
 			}()

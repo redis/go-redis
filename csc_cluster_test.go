@@ -795,10 +795,16 @@ func TestClusterCSCFailoverConfiguration(t *testing.T) {
 		o.ClientSideCacheInvalidationBatchWindow != u.ClientSideCacheInvalidationBatchWindow {
 		t.Fatal("failover cluster dropped or aliased CSC configuration")
 	}
-	// Sentinel discovery connections and single-node failover clients do not
-	// participate in Cluster CSC.
-	if f.sentinelOptions(":26379").ClientSideCacheConfig != nil || f.clientOptions().ClientSideCacheConfig != nil {
-		t.Fatal("Cluster CSC configuration enabled caching on a non-cluster connection")
+	// Discovery remains uncached; the primary-only Client now accepts the
+	// same CSC settings as the Sentinel-backed ClusterClient.
+	if f.sentinelOptions(":26379").ClientSideCacheConfig != nil {
+		t.Fatal("Sentinel discovery enabled CSC")
+	}
+	direct := f.clientOptions()
+	if !reflect.DeepEqual(direct.ClientSideCacheConfig, cfg) ||
+		!direct.ClientSideCacheCoalesceMisses || !direct.ClientSideCacheRefreshOnInvalidate ||
+		direct.ClientSideCacheInvalidationBatchWindow != time.Millisecond {
+		t.Fatal("primary-only failover dropped CSC configuration")
 	}
 }
 

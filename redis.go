@@ -837,6 +837,9 @@ func (c *baseClient) initPooledConn(ctx context.Context, p pool.Pooler, cn *pool
 
 	if err := c.initConn(ctx, cn); err != nil {
 		p.Remove(ctx, cn, err)
+		if errors.Is(err, ErrEndpointChanged) {
+			return err
+		}
 		if unwrapped := errors.Unwrap(err); unwrapped != nil {
 			return unwrapped
 		}
@@ -1307,6 +1310,17 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			}
 		}
 	}
+	if helloOK && !cn.IsPubSub() && c.opt.failover != nil {
+		if role, ok := helloCmd.Val()["role"].(string); ok && role != "master" {
+			addr := c.opt.Addr
+			if remote := cn.RemoteAddr(); remote != nil {
+				addr = remote.String()
+			}
+			c.opt.failover.rejectRole(ctx, cn.DialGeneration(), role, addr)
+			cn.GetStateMachine().Transition(pool.StateClosed)
+			return fmt.Errorf("%w: expected primary at %s, got %s", ErrEndpointChanged, addr, role)
+		}
+	}
 	if helloFallbackToRESP2 {
 		c.disableCSCServing(ctx, "HELLO 3 was rejected and the connection negotiated RESP2")
 	}
@@ -1523,6 +1537,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
+	if source := c.opt.failover; source != nil && !cn.IsPubSub() && cn.DialGeneration() != source.epoch.Load() {
+		cn.GetStateMachine().Transition(pool.StateClosed)
+		return pool.ErrDialGenerationChanged
+	}
 	// Call OnConnect hook if configured
 	// The connection is in IDLE state but still owned by this goroutine
 	// If OnConnect needs to send commands, it can use the connection safely
@@ -1538,7 +1556,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// Without HELLO, a reconnect must verify the old identity in the
 		// background.
 		if helloOK {
-			c.cmdMeta.onServerHello(helloServerFingerprint(helloCmd.Val()))
+			var generation *atomic.Uint64
+			if c.opt.failover != nil {
+				generation = &c.opt.failover.epoch
+			}
+			c.cmdMeta.onServerHelloForSource(helloServerFingerprint(helloCmd.Val()), generation, cn.DialGeneration())
 		} else {
 			c.cmdMeta.requestVerification()
 		}
@@ -3111,6 +3133,11 @@ func NewClient(opt *Options) *Client {
 	}
 	// clone to not share options with the caller
 	opt = opt.clone()
+	if opt.failover != nil {
+		// These independent pools do not belong to the borrowed failover's
+		// cleanup callback. Only NewFailoverClient can attach its cache safely.
+		opt.ClientSideCacheConfig, opt.ClientSideCache = nil, nil
+	}
 	fixedDialEndpoint := opt.Dialer == nil
 	opt.init()
 
@@ -3190,47 +3217,7 @@ func NewClient(opt *Options) *Client {
 
 	c.initStreamingCredentials()
 
-	// Create metadata independently of CSC. The zero config reuses the package
-	// default without allocating a store.
-	c.baseClient.metadataSource = opt.cscMetadataSource
-	if c.baseClient.metadataSource == nil {
-		c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
-	}
-
-	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
-	// background drainer. attachCSC is the strategy dispatch entry.
-	if opt.Protocol == 3 {
-		var cache Cache
-		if explicit := opt.ClientSideCache; explicit != nil {
-			cache = explicit
-		} else if cfg := opt.ClientSideCacheConfig; cfg != nil {
-			cache = NewLocalCache(*cfg)
-			// We constructed it, so we own it (may flush on drainer stop).
-			c.baseClient.cscOwnsCache = true
-		}
-		// CSC is only supported with the built-in push processor: it depends on the
-		// built-in draining kernel-only readability and treating a boundary read timeout
-		// as benign. Warn (do not fail) when a custom processor is paired with CSC — the
-		// contract is that behavior is otherwise undefined. See .claude/specs/push.md.
-		if cache != nil {
-			if _, builtin := c.pushProcessor.(*push.Processor); !builtin {
-				internal.Logger.Printf(context.Background(),
-					"redis: client-side caching enabled with a custom PushNotificationProcessor; "+
-						"CSC is only supported with the built-in processor, behavior is otherwise undefined "+
-						"(invalidation freshness and idle-connection health not guaranteed)")
-			}
-			// Publish the weak back-reference to the canonical *Client BEFORE attachCSC
-			// starts the drainer. The push-handler adapter's canonical close reads
-			// cscClientWeak on the drainer goroutine; setting it afterwards (it used to be
-			// set only later, in cscRegisterCleanups) raced that read and could miss the
-			// close for a push that arrived in the window. Weak so a dropped *Client stays
-			// collectible and its GC cleanup still fires.
-			c.baseClient.cscClientWeak = weak.Make(&c)
-		}
-		c.baseClient.attachCSC(context.Background(), cache)
-	}
-	// Stop metadata and CSC workers if the client is collected without Close.
-	cscRegisterCleanups(&c)
+	c.initCacheAndMetadata()
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
@@ -4206,4 +4193,50 @@ func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.Notifica
 		ConnPool: connPool,
 		Conn:     cn, // Wrap in adapter for easier interface access
 	}
+}
+
+// initCacheAndMetadata shares storage, metadata and worker ownership setup.
+func (c *Client) initCacheAndMetadata() {
+	opt := c.opt
+	// Create metadata independently of CSC. The zero config reuses the package
+	// default without allocating a store.
+	c.baseClient.metadataSource = opt.cscMetadataSource
+	if c.baseClient.metadataSource == nil {
+		c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
+	}
+
+	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
+	// background drainer. attachCSC is the strategy dispatch entry.
+	if opt.Protocol == 3 {
+		var cache Cache
+		if explicit := opt.ClientSideCache; explicit != nil {
+			cache = explicit
+		} else if cfg := opt.ClientSideCacheConfig; cfg != nil {
+			cache = NewLocalCache(*cfg)
+			// We constructed it, so we own it (may flush on drainer stop).
+			c.baseClient.cscOwnsCache = true
+		}
+		// CSC is only supported with the built-in push processor: it depends on the
+		// built-in draining kernel-only readability and treating a boundary read timeout
+		// as benign. Warn (do not fail) when a custom processor is paired with CSC — the
+		// contract is that behavior is otherwise undefined. See .claude/specs/push.md.
+		if cache != nil {
+			if _, builtin := c.pushProcessor.(*push.Processor); !builtin {
+				internal.Logger.Printf(context.Background(),
+					"redis: client-side caching enabled with a custom PushNotificationProcessor; "+
+						"CSC is only supported with the built-in processor, behavior is otherwise undefined "+
+						"(invalidation freshness and idle-connection health not guaranteed)")
+			}
+			// Publish the weak back-reference to the canonical *Client BEFORE attachCSC
+			// starts the drainer. The push-handler adapter's canonical close reads
+			// cscClientWeak on the drainer goroutine; setting it afterwards (it used to be
+			// set only later, in cscRegisterCleanups) raced that read and could miss the
+			// close for a push that arrived in the window. Weak so a dropped *Client stays
+			// collectible and its GC cleanup still fires.
+			c.baseClient.cscClientWeak = weak.Make(c)
+		}
+		c.baseClient.attachCSC(context.Background(), cache)
+	}
+	// Stop metadata and CSC workers if the client is collected without Close.
+	cscRegisterCleanups(c)
 }

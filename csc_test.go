@@ -5682,3 +5682,51 @@ func diffSortedStrings(a, b []string) (onlyA, onlyB []string) {
 	}
 	return append(onlyA, a[i:]...), append(onlyB, b[j:]...)
 }
+
+func TestCSCCloseBeforeReplyGenerationCapture(t *testing.T) {
+	for _, failover := range []bool{false, true} {
+		t.Run(fmt.Sprint("sentinel=", failover), func(t *testing.T) {
+			data := sentinelCSCData(t, "value")
+			var c *Client
+			if failover {
+				sentinel := newCSCPolicyServer(t, (&sentinelCSCDiscovery{addr: data.addr}).reply)
+				c = NewFailoverClient(&FailoverOptions{MasterName: "test", SentinelAddrs: []string{sentinel.addr}, Protocol: 3, MaxRetries: -1, ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16}})
+			} else {
+				c = NewClient(&Options{Addr: data.addr, Protocol: 3, MaxRetries: -1, ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16}})
+			}
+			defer c.Close()
+			entered, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(release) })
+			ctx := WithCache(context.Background())
+			cmd := &sentinelCSCPausedReply{StringCmd: NewStringCmd(ctx, "get", "key"), entered: entered, release: release}
+			done := make(chan error, 1)
+			go func() { done <- c.Process(ctx, cmd) }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("reply was not read")
+			}
+			// The complete data reply is already available, but the physical owner is
+			// removed before the foreground path captures its tracking generation.
+			if err := c.connPool.(*pool.ConnPool).Filter(func(*pool.Conn) bool { return true }); err != nil {
+				t.Fatal(err)
+			}
+			releaseOnce.Do(func() { close(release) })
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("read did not complete")
+			}
+			if cmd.Val() != "value" {
+				t.Fatal("valid in-flight reply was lost")
+			}
+			if c.CSCStats().Entries != 0 {
+				t.Fatal("reply from an already closed owner was published")
+			}
+		})
+	}
+}

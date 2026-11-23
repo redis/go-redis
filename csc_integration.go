@@ -732,7 +732,7 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 			username += " cert " + id
 		}
 	}
-	c.cscKeyPrefix = cscNamespacePrefix(c.opt.DB, username)
+	c.cscKeyPrefix = cscNamespacePrefix(c.opt.DB, username) + c.opt.cscCacheScope
 	switch c.opt.ClientSideCacheStrategy {
 	case CSCStrategySharedTracking:
 		c.attachSharedTrackingCSC(ctx, cache)
@@ -918,7 +918,9 @@ func (h *cscEvictOnRemoveHook) fulfillOwnedIfCovered(
 ) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.initGen[ownerConnID] != capturedGen {
+	// Zero means coverage was already removed before the reply capture.
+	// Comparing two absent generations must not authorize publication.
+	if capturedGen == 0 || h.initGen[ownerConnID] != capturedGen {
 		return false
 	}
 	return h.evictor.FulfillOwned(cacheKey, token, ownerConnID, value)

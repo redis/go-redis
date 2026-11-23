@@ -198,8 +198,8 @@ type UniversalOptions struct {
 
 	// ClientSideCacheConfig enables client-side caching when NewUniversalClient
 	// selects a standalone Client or ClusterClient. Cluster limits apply per node.
-	// Sentinel-backed ClusterClients are supported; single-node failover clients
-	// do not support CSC.
+	// Sentinel-backed primary-only Clients and ClusterClients are supported.
+	// ReadOnly disables CSC when a single-node failover Client is selected.
 	// See Options.ClientSideCacheConfig.
 	//
 	// Experimental: this API may change in a minor release.
@@ -217,7 +217,7 @@ type UniversalOptions struct {
 	ClientSideCacheable CacheablePredicate
 
 	// ClientSideCache supplies an explicit cache when NewUniversalClient selects
-	// a standalone Client. See Options.ClientSideCache.
+	// a standalone Client or a primary-only failover Client. See Options.ClientSideCache.
 	// It is not distributed to Cluster nodes; use ClusterOptions.NewClient for
 	// independent custom node caches.
 	//
@@ -342,6 +342,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 	}
 
 	return &FailoverOptions{
+		ClientSideCache:                        o.ClientSideCache,
 		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
 		OTelRecorder:                           o.OTelRecorder,
 		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,

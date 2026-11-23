@@ -99,6 +99,8 @@ type relaxedState struct {
 }
 
 type Conn struct {
+	dialGeneration uint64
+
 	// Connection identifier for unique tracking
 	id uint64
 
