@@ -346,6 +346,11 @@ type ConnPool struct {
 	stats          Stats
 	waitDurationNs atomic.Int64
 
+	// pending packs the Gets waiting for a connection (low 32 bits) and the
+	// Gets started so far (high 32 bits, wraps), so a Get pays one atomic add
+	// for both. Recorders read it at collection time (PendingRequests).
+	pending atomic.Uint64
+
 	_closed atomic.Uint32
 
 	// Pool hooks manager. atomic.Pointer keeps hot-path reads (Get/Put)
@@ -1118,7 +1123,7 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	}
 
 	// Track pending requests in pool stats
-	atomic.AddUint32(&p.stats.PendingRequests, 1)
+	p.pending.Add(pendingStart)
 	// Record pending request increment (UpDownCounter)
 	// Pass pool name explicitly since we don't have a connection yet
 	poolName := p.cfg.Name
@@ -1130,7 +1135,7 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	defer func() {
 		if err != nil {
 			// Failed to get connection, decrement pending requests
-			atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
+			p.pending.Add(pendingDone)
 			// Record pending request decrement on failure
 			if pendingCb != nil {
 				pendingCb(ctx, -1, nil, poolName)
@@ -1237,7 +1242,7 @@ retryIdle:
 		}
 
 		// Decrement pending requests (connection acquired successfully)
-		atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
+		p.pending.Add(pendingDone)
 		// Record pending request decrement (UpDownCounter)
 		if pendingCb != nil {
 			pendingCb(ctx, -1, cn, poolName)
@@ -1373,7 +1378,7 @@ retryIdle:
 	}
 
 	// Decrement pending requests (connection acquired successfully)
-	atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
+	p.pending.Add(pendingDone)
 	// Record pending request decrement (UpDownCounter)
 	if pendingCb != nil {
 		pendingCb(ctx, -1, newcn, poolName)
@@ -2102,12 +2107,24 @@ func (p *ConnPool) Stats() *Stats {
 		WaitCount:       atomic.LoadUint32(&p.stats.WaitCount),
 		Unusable:        atomic.LoadUint32(&p.stats.Unusable),
 		WaitDurationNs:  p.waitDurationNs.Load(),
-		PendingRequests: atomic.LoadUint32(&p.stats.PendingRequests),
+		PendingRequests: uint32(p.pending.Load()),
 
 		TotalConns: uint32(totalConns),
 		IdleConns:  uint32(idleConns),
 		StaleConns: atomic.LoadUint32(&p.stats.StaleConns),
 	}
+}
+
+const (
+	pendingStart = 1<<32 | 1  // a Get started and is waiting
+	pendingDone  = ^uint64(0) // a Get stopped waiting: -1 on the low half
+)
+
+// PendingRequests returns the Gets waiting for a connection now and the Gets
+// started since the pool was created (wraps at 2^32), from one atomic load.
+func (p *ConnPool) PendingRequests() (pending, started uint32) {
+	v := p.pending.Load()
+	return uint32(v), uint32(v >> 32)
 }
 
 func (p *ConnPool) closed() bool {

@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-func newTestOpQueue(t *testing.T, opts ...metric.Option) (*opQueue, *metric.ManualReader) {
+func newTestOpQueue(t *testing.T, opts ...metric.Option) (*opQueue, otelmetric.Float64Histogram, *metric.ManualReader) {
 	t.Helper()
 	reader := metric.NewManualReader()
 	mp := metric.NewMeterProvider(append([]metric.Option{metric.WithReader(reader)}, opts...)...)
@@ -26,12 +26,12 @@ func newTestOpQueue(t *testing.T, opts ...metric.Option) (*opQueue, *metric.Manu
 	if err != nil {
 		t.Fatal(err)
 	}
-	q, err := newOpQueue(meter, h)
+	q, err := newOpQueue(meter)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(q.stop)
-	return q, reader
+	return q, h, reader
 }
 
 // collect returns the operation-duration sample count and every metric name.
@@ -59,12 +59,12 @@ func collect(t *testing.T, reader *metric.ManualReader) (uint64, []string) {
 // TestOpQueueCollectSeesQueuedSamples: a Collect right after recording counts
 // every sample, though the worker records them on its own goroutine.
 func TestOpQueueCollectSeesQueuedSamples(t *testing.T) {
-	q, reader := newTestOpQueue(t)
+	q, h, reader := newTestOpQueue(t)
 	set := attribute.NewSet(attribute.String(AttrDBOperationName, "get"))
 	var want uint64
 	for round := 0; round < 200; round++ {
 		for i := 0; i < 500; i++ {
-			q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
+			q.record(context.Background(), h, 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 		}
 		want += 500
 		got, names := collect(t, reader)
@@ -82,7 +82,7 @@ func TestOpQueueCollectSeesQueuedSamples(t *testing.T) {
 // TestOpQueueConcurrentRecordAndCollect: producers and collects at once lose
 // no sample, and the queue never exports its own gauge.
 func TestOpQueueConcurrentRecordAndCollect(t *testing.T) {
-	q, reader := newTestOpQueue(t)
+	q, h, reader := newTestOpQueue(t)
 	set := attribute.NewSet(attribute.String(AttrDBOperationName, "get"))
 	const producers, each = 8, 20000
 	var wg sync.WaitGroup
@@ -104,7 +104,7 @@ func TestOpQueueConcurrentRecordAndCollect(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < each; i++ {
-				q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
+				q.record(context.Background(), h, 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 			}
 		}()
 	}
@@ -119,14 +119,14 @@ func TestOpQueueConcurrentRecordAndCollect(t *testing.T) {
 // TestOpQueueStopRecordsQueued: stop records what is queued, and a sample
 // after stop is recorded on the caller's goroutine.
 func TestOpQueueStopRecordsQueued(t *testing.T) {
-	q, reader := newTestOpQueue(t)
+	q, h, reader := newTestOpQueue(t)
 	collect(t, reader) // the first Collect turns the queue on
 	set := attribute.NewSet(attribute.String(AttrDBOperationName, "get"))
 	for i := 0; i < 1000; i++ {
-		q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
+		q.record(context.Background(), h, 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 	}
 	q.stop()
-	q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
+	q.record(context.Background(), h, 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 	if got, _ := collect(t, reader); got != 1001 {
 		t.Fatalf("collected %d samples, want 1001", got)
 	}
@@ -166,7 +166,7 @@ func TestOpQueueWorkerEndsOnShutdown(t *testing.T) {
 // TestOpQueueStartsAfterFirstCollect: samples are recorded inline until a
 // Collect has run the drain callback, then they are queued.
 func TestOpQueueStartsAfterFirstCollect(t *testing.T) {
-	q, reader := newTestOpQueue(t)
+	q, _, reader := newTestOpQueue(t)
 	if q.active.Load() {
 		t.Fatal("queue on before any Collect")
 	}
@@ -184,12 +184,12 @@ func TestOpQueueDroppedGaugeRecordsInline(t *testing.T) {
 		metric.Instrument{Name: "redis.client.internal.*"},
 		metric.Stream{Aggregation: metric.AggregationDrop{}},
 	)
-	q, reader := newTestOpQueue(t, metric.WithView(drop))
+	q, h, reader := newTestOpQueue(t, metric.WithView(drop))
 	set := attribute.NewSet(attribute.String(AttrDBOperationName, "get"))
 	var want uint64
 	for round := 0; round < 20; round++ {
 		for i := 0; i < 500; i++ {
-			q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
+			q.record(context.Background(), h, 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 		}
 		want += 500
 		if got, _ := collect(t, reader); got != want {
@@ -223,7 +223,7 @@ func TestOpQueueRecoversRecordPanic(t *testing.T) {
 	mp := metric.NewMeterProvider(metric.WithReader(reader))
 	defer func() { _ = mp.Shutdown(context.Background()) }()
 	h := &panicHistogram{}
-	q, err := newOpQueue(mp.Meter("test"), h)
+	q, err := newOpQueue(mp.Meter("test"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestOpQueueRecoversRecordPanic(t *testing.T) {
 			// a sample recorded inline (queue busy) panics to the caller, as
 			// before the queue; the caller's own guard recovers it
 			defer func() { _ = recover() }()
-			q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
+			q.record(context.Background(), h, 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 		}()
 	}
 	collect(t, reader) // drains on this goroutine: must not panic

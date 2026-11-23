@@ -43,23 +43,13 @@ func (c *attrCache[K, V]) store(k K, build func() V) V {
 	return v
 }
 
-// poolOpts are the measurement options of the per-pool metrics recorded on
-// every Get: pending requests and wait time.
-type poolOpts struct {
-	pending []metric.AddOption
-	wait    []metric.RecordOption
-}
-
-// poolOptsFor returns the cached options for poolName.
-func (r *metricsRecorder) poolOptsFor(poolName string) *poolOpts {
-	if o, ok := r.poolOpts.load(poolName); ok {
+// waitOptsFor returns the cached wait-time options for poolName.
+func (r *metricsRecorder) waitOptsFor(poolName string) []metric.RecordOption {
+	if o, ok := r.waitOpts.load(poolName); ok {
 		return o
 	}
-	return r.poolOpts.store(poolName, func() *poolOpts {
-		return &poolOpts{
-			pending: []metric.AddOption{r.attrSet(pendingRequestsAttrs(poolName))},
-			wait:    []metric.RecordOption{r.attrSet(waitTimeAttrs(poolName))},
-		}
+	return r.waitOpts.store(poolName, func() []metric.RecordOption {
+		return []metric.RecordOption{r.attrSet(waitTimeAttrs(poolName))}
 	})
 }
 
