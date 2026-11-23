@@ -143,7 +143,9 @@ type OTelMultiDBRecorder interface {
 // the one RegisterPool did, so they can be used as map keys. They do not keep
 // a client that is dropped without Close alive. Register may be called more
 // than once for the same pool (a recorder installed by SetOTelRecorder is
-// handed every live pool).
+// handed every live pool). A Pooler for a go-redis connection pool also has
+// PendingRequests() (pending, started uint32), which reads the waiting Gets
+// without the pool lock.
 type OTelPoolRegistrar interface {
 	// RegisterPool is called when a new client is created with its main (or
 	// pipeline) connection pool, and for every live pool when the recorder is
@@ -188,6 +190,14 @@ func clientRecorder(r OTelRecorder) (otel.Recorder, *pool.MetricCallbacks) {
 func scopedRecorder(r OTelRecorder) otel.Recorder {
 	rec, _ := clientRecorder(r)
 	return rec
+}
+
+// WantsPendingDeltas implements otel.PendingDeltaFilter: only a recorder that
+// implements OTelConnectionCounter receives pending request deltas, so pools
+// skip the per-Get call for any other.
+func (a *otelRecorderAdapter) WantsPendingDeltas() bool {
+	_, ok := a.recorder.(OTelConnectionCounter)
+	return ok
 }
 
 // Enabled forwards to the public recorder's optional Enabled method (see
@@ -337,6 +347,16 @@ func (r connPoolRef) PoolStats() *pool.Stats {
 }
 
 func (r connPoolRef) Collected() bool { return r.p.Value() == nil }
+
+// PendingRequests returns the pool's waiting Gets and the Gets started since
+// it was created (wraps at 2^32), without taking the pool lock; zeros after
+// the pool is collected.
+func (r connPoolRef) PendingRequests() (pending, started uint32) {
+	if p := r.p.Value(); p != nil {
+		return p.PendingRequests()
+	}
+	return 0, 0
+}
 
 type pubSubPoolRef struct{ p weak.Pointer[pool.PubSubPool] }
 

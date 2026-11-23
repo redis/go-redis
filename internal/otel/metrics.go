@@ -102,8 +102,8 @@ type Recorder interface {
 }
 
 // PoolRegistrar is implemented by recorders that read pool state at collection
-// time (db.client.connection.count). Register may be called more than once for
-// the same pool and must be idempotent.
+// time (connection count, pending requests). Register may be called more than
+// once for the same pool and must be idempotent.
 type PoolRegistrar interface {
 	// RegisterPool is called when a new client is created with its connection pools,
 	// and for every live pool when the recorder becomes the global one.
@@ -195,10 +195,17 @@ func Scoped(r Recorder) Recorder {
 	return scopedGlobal{}
 }
 
+// PendingDeltaFilter is implemented by recorders that may not use the pending
+// request +1/-1 events, e.g. one that reads the pools at collection time. When
+// WantsPendingDeltas returns false, the pool skips RecordPendingRequests.
+type PendingDeltaFilter interface {
+	WantsPendingDeltas() bool
+}
+
 // PoolCallbacks returns the pool metric callback table that records to r.
 // Every callback captures r, so a -1 reaches the recorder that saw the +1.
 func PoolCallbacks(r Recorder) *pool.MetricCallbacks {
-	return &pool.MetricCallbacks{
+	cb := &pool.MetricCallbacks{
 		ConnectionCreateTime:     r.RecordConnectionCreateTime,
 		ConnectionRelaxedTimeout: r.RecordConnectionRelaxedTimeout,
 		ConnectionHandoff:        r.RecordConnectionHandoff,
@@ -206,8 +213,11 @@ func PoolCallbacks(r Recorder) *pool.MetricCallbacks {
 		MaintenanceNotification:  r.RecordMaintenanceNotification,
 		ConnectionWaitTime:       r.RecordConnectionWaitTime,
 		ConnectionClosed:         r.RecordConnectionClosed,
-		PendingRequests:          r.RecordPendingRequests,
 	}
+	if f, ok := r.(PendingDeltaFilter); !ok || f.WantsPendingDeltas() {
+		cb.PendingRequests = r.RecordPendingRequests
+	}
+	return cb
 }
 
 // resolve returns the recorder behind r: the current global one for a Scoped(nil) view.

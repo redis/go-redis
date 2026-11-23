@@ -46,16 +46,15 @@ func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
 	operationDuration        metric.Float64Histogram
-	connCount                *connCounter // db.client.connection.count, observed at collection time
+	poolObs                  *poolObserver // connection count and pending requests, observed at collection time
 	connectionCreateTime     metric.Float64Histogram
 	connectionRelaxedTimeout metric.Int64UpDownCounter
 	connectionHandoff        metric.Int64Counter
 	clientErrors             metric.Int64Counter
 	maintenanceNotifications metric.Int64Counter
 
-	connectionWaitTime    metric.Float64Histogram
-	connectionClosed      metric.Int64Counter
-	connectionPendingReqs metric.Int64UpDownCounter // OTel semconv: UpDownCounter for pending_requests
+	connectionWaitTime metric.Float64Histogram
+	connectionClosed   metric.Int64Counter
 
 	pubsubMessages metric.Int64Counter
 
@@ -75,11 +74,11 @@ type metricsRecorder struct {
 	// opAttrs caches the success-path operation duration options per opAttrKey.
 	opAttrs attrCache[opAttrKey, []metric.RecordOption]
 
-	// poolOpts caches the pending-requests and wait-time options per pool name.
-	poolOpts attrCache[string, *poolOpts]
+	// waitOpts caches the wait-time options per pool name.
+	waitOpts attrCache[string, []metric.RecordOption]
 
-	// opq records success-path operation durations off the caller's goroutine
-	// (op_queue.go); nil records them inline.
+	// opq records success-path operation durations and wait times off the
+	// caller's goroutine (op_queue.go); nil records them inline.
 	opq *opQueue
 
 	// stopped is set by ObservabilityInstance.Shutdown (shared with every
@@ -92,8 +91,7 @@ type metricsRecorder struct {
 func (r *metricsRecorder) Enabled() bool { return !r.off() }
 
 // off reports whether Shutdown has stopped this recorder. Every Record method
-// except pending_requests returns early when it is set; pending_requests keeps
-// flowing so a client closed after Shutdown still brings it back to zero.
+// returns early when it is set; the pool observer is stopped by Shutdown.
 func (r *metricsRecorder) off() bool { return r.stopped != nil && r.stopped.Load() }
 
 // withAttrs returns the measurement option for attrs followed by the
@@ -165,7 +163,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 			})
 		}
 		if r.opq != nil {
-			r.opq.record(ctx, durationSeconds, opts)
+			r.opq.record(ctx, r.operationDuration, durationSeconds, opts)
 			return
 		}
 		r.operationDuration.Record(ctx, durationSeconds, opts...)
@@ -853,7 +851,11 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 	if cn != nil {
 		poolName = cn.PoolName()
 	}
-	r.connectionWaitTime.Record(ctx, duration.Seconds(), r.poolOptsFor(poolName).wait...)
+	if r.opq != nil {
+		r.opq.record(ctx, r.connectionWaitTime, duration.Seconds(), r.waitOptsFor(poolName))
+		return
+	}
+	r.connectionWaitTime.Record(ctx, duration.Seconds(), r.waitOptsFor(poolName)...)
 }
 
 // waitTimeAttrs are db.client.connection.wait_time's built-in attributes.
@@ -1011,32 +1013,6 @@ func (r *metricsRecorder) RecordStreamLag(
 
 	// Record the histogram (lag in seconds)
 	r.streamLag.Record(ctx, lag.Seconds(), r.withAttrs(attrs))
-}
-
-// RecordConnectionCount is a no-op: db.client.connection.count is observed
-// from the registered pools at collection time (metrics_conn_count.go). It
-// stays so the recorder still implements redis.OTelConnectionCounter, which
-// gates RecordPendingRequests.
-func (r *metricsRecorder) RecordConnectionCount(context.Context, int, redis.ConnInfo, string, bool) {}
-
-// RecordPendingRequests records a change in pending requests (UpDownCounter).
-// Per OTel semantic conventions, db.client.connection.pending_requests is an UpDownCounter.
-// delta: +1 when request starts waiting, -1 when request stops waiting
-// poolName is passed explicitly because we may not have a connection yet when request starts
-func (r *metricsRecorder) RecordPendingRequests(
-	ctx context.Context,
-	delta int,
-	cn redis.ConnInfo,
-	poolName string,
-) {
-	if r.connectionPendingReqs == nil {
-		return
-	}
-	// Use explicit pool name (preferred) or fall back to connection's pool name
-	if poolName == "" && cn != nil {
-		poolName = cn.PoolName()
-	}
-	r.connectionPendingReqs.Add(ctx, int64(delta), r.poolOptsFor(poolName).pending...)
 }
 
 // pendingRequestsAttrs are db.client.connection.pending_requests' built-in
