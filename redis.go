@@ -3883,9 +3883,10 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// the batch's outcome. Keep the whole batch so the retry
 			// re-establishes the state and re-runs those writes under
 			// it, instead of retaining them and letting a later retry
-			// erase the restoration failure.
+			// erase the restoration failure. The boundary itself may
+			// be the failed required synthetic, so it is included.
 			if required := pipelineRequiredSyntheticFromCtx(ctx); required != nil {
-				for _, answered := range cmds[:i] {
+				for _, answered := range cmds[:i+1] {
 					if required[answered.base()] && pipelineCmdErr(answered) != nil {
 						return cmds
 					}
