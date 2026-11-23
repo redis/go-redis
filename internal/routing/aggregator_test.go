@@ -375,6 +375,37 @@ func TestNumericAggregatorsNonNumericReply(t *testing.T) {
 	}
 }
 
+func TestSuccessAggregatorsMixedResultTypes(t *testing.T) {
+	for _, policy := range []ResponsePolicy{RespAllSucceeded, RespOneSucceeded} {
+		agg := NewResponseAggregator(policy, "")
+		if err := agg.Add("OK", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := agg.Add(int64(1), nil); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := agg.Aggregate(); got != "OK" || err != nil {
+			t.Fatalf("%s aggregate=%v, %v; want the first reply", policy, got, err)
+		}
+	}
+}
+
+func TestLogicalAggregatorsMixedErrors(t *testing.T) {
+	first := proto.RedisError("ERR first")
+	for _, policy := range []ResponsePolicy{RespAggLogicalAnd, RespAggLogicalOr} {
+		agg := NewResponseAggregator(policy, "")
+		if err := agg.Add(nil, first); err != nil {
+			t.Fatal(err)
+		}
+		if err := agg.Add(nil, &net.OpError{Op: "read"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := agg.Aggregate(); err != first {
+			t.Fatalf("%s aggregate error=%v, want the first error", policy, err)
+		}
+	}
+}
+
 func TestNumericAggregatorsUnsignedReplies(t *testing.T) {
 	for policy, want := range map[ResponsePolicy]int64{RespAggSum: 5, RespAggMin: 2, RespAggMax: 3} {
 		agg := NewResponseAggregator(policy, "")
