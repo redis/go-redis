@@ -2,22 +2,11 @@ package otel
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
 )
-
-// generateUniqueID generates a short unique identifier for pool names.
-func generateUniqueID() string {
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b)
-}
 
 // Cmder is a minimal interface for command information needed for metrics.
 // This avoids circular dependencies with the main redis package.
@@ -105,32 +94,26 @@ type Recorder interface {
 	// for the database identified by dbFQDN. duration is the wall time of the check.
 	RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, duration time.Duration)
 
-	// RecordConnectionCount records a change in connection count (UpDownCounter)
-	// delta: +1 when connection added, -1 when connection removed
-	// state: connection state (e.g., "idle", "used")
-	// isPubSub: true if this is a PubSub connection
-	RecordConnectionCount(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool)
-
 	// RecordPendingRequests records a change in pending requests (UpDownCounter)
 	// delta: +1 when request starts waiting, -1 when request stops waiting
 	// poolName is passed explicitly because we may not have a connection yet when request starts
 	RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn, poolName string)
 }
 
-type PubSubPooler interface {
-	Stats() *pool.PubSubStats
-}
-
+// PoolRegistrar is implemented by recorders that read pool state at collection
+// time (db.client.connection.count). Register may be called more than once for
+// the same pool and must be idempotent.
 type PoolRegistrar interface {
-	// RegisterPool is called when a new client is created with its connection pools.
-	// poolName: identifier for the pool (e.g., "main_abc123")
+	// RegisterPool is called when a new client is created with its connection pools,
+	// and for every live pool when the recorder becomes the global one.
+	// poolName: the pool's own name, the one its connections carry (Conn.PoolName)
 	// pool: the connection pool
 	RegisterPool(poolName string, pool pool.Pooler)
 	// UnregisterPool is called when a client is closed to remove its pool from the registry.
 	// pool: the connection pool to unregister
 	UnregisterPool(pool pool.Pooler)
 	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
-	// poolName: identifier for the pool (e.g., "main_abc123_pubsub")
+	// poolName: the pool's own name (e.g., "localhost:6379_1_pubsub")
 	// pool: the PubSub connection pool
 	RegisterPubSubPool(poolName string, pool PubSubPooler)
 	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
@@ -139,7 +122,9 @@ type PoolRegistrar interface {
 }
 
 var (
-	// setRecorderMu serializes SetGlobalRecorder, so the recorder swap and the pool callbacks change together.
+	// setRecorderMu serializes SetGlobalRecorder with RegisterPools and
+	// UnregisterPools for global clients, so a new recorder is handed every
+	// open pool and never a pool whose client already unregistered it.
 	setRecorderMu sync.Mutex
 
 	// recorderMu protects globalRecorder.
@@ -158,12 +143,12 @@ func getRecorder() Recorder {
 }
 
 // SetGlobalRecorder installs r as the global recorder and binds the global
-// pool metric callbacks to it. nil uninstalls both.
+// pool metric callbacks to it. nil uninstalls both. Pools created before r was
+// installed are registered with r, so they are observed too.
 func SetGlobalRecorder(r Recorder) {
 	setRecorderMu.Lock()
 	defer setRecorderMu.Unlock()
 	if r == nil {
-		// Unregister pool callbacks first so their final deltas reach the current recorder.
 		pool.SetAllMetricCallbacks(nil)
 		recorderMu.Lock()
 		globalRecorder = noopRecorder{}
@@ -174,6 +159,15 @@ func SetGlobalRecorder(r Recorder) {
 	globalRecorder = r
 	recorderMu.Unlock()
 	pool.SetAllMetricCallbacks(PoolCallbacks(r))
+	if registrar, ok := r.(PoolRegistrar); ok {
+		connPools, pubSubPools := pool.GlobalPools()
+		for _, p := range connPools {
+			registrar.RegisterPool(p.Name(), p)
+		}
+		for _, p := range pubSubPools {
+			registrar.RegisterPubSubPool(p.Name(), p)
+		}
+	}
 }
 
 // Enabled reports whether r records anything: false for the noop recorder (or
@@ -213,7 +207,6 @@ func PoolCallbacks(r Recorder) *pool.MetricCallbacks {
 		MaintenanceNotification:  r.RecordMaintenanceNotification,
 		ConnectionWaitTime:       r.RecordConnectionWaitTime,
 		ConnectionClosed:         r.RecordConnectionClosed,
-		ConnectionCount:          r.RecordConnectionCount,
 		PendingRequests:          r.RecordPendingRequests,
 	}
 }
@@ -289,10 +282,6 @@ func (scopedGlobal) RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string,
 	getRecorder().RecordMultiDBHealthCheck(ctx, dbFQDN, success, duration)
 }
 
-func (scopedGlobal) RecordConnectionCount(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
-	getRecorder().RecordConnectionCount(ctx, delta, cn, state, isPubSub)
-}
-
 func (scopedGlobal) RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
 	getRecorder().RecordPendingRequests(ctx, delta, cn, poolName)
 }
@@ -329,47 +318,66 @@ func (noopRecorder) RecordMultiDBActiveDatabaseChange(context.Context, string, s
 func (noopRecorder) RecordMultiDBCircuitStateChange(context.Context, string, string, string)      {}
 func (noopRecorder) RecordMultiDBHealthCheck(context.Context, string, bool, time.Duration)        {}
 
-func (noopRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
-func (noopRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
+func (noopRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string) {}
+
+// PubSubPooler is a PubSub pool as RegisterPools sees it.
+type PubSubPooler interface {
+	Stats() *pool.PubSubStats
+	Name() string
+}
 
 // RegisterPools registers a client's connection pools with r when it is a
-// PoolRegistrar. pipelinePool is the optional dedicated pipeline connection
-// pool (nil when not configured); it is registered as a regular pool under a
-// "_pipeline" name suffix.
-func RegisterPools(r Recorder, connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool pool.Pooler, addr string) {
+// PoolRegistrar, under each pool's own name. pipelinePool is the optional
+// dedicated pipeline connection pool (nil when not configured).
+func RegisterPools(r Recorder, connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool pool.Pooler) {
+	if _, global := r.(scopedGlobal); global {
+		// Hold setRecorderMu so a concurrent SetGlobalRecorder cannot miss
+		// these pools or register them after UnregisterPools.
+		setRecorderMu.Lock()
+		defer setRecorderMu.Unlock()
+	}
 	// A Scoped(nil) view resolves to the global recorder under its lock:
 	// SetGlobalRecorder writes it while clients are created and closed, and
 	// an unlocked read here is a data race -race reports.
-	if registrar, ok := resolve(r).(PoolRegistrar); ok {
-		// Generate a unique ID for this client's pools
-		uniqueID := generateUniqueID()
-
-		if connPool != nil {
-			poolName := addr + "_" + uniqueID
-			registrar.RegisterPool(poolName, connPool)
+	registrar, ok := resolve(r).(PoolRegistrar)
+	if !ok {
+		return
+	}
+	for _, p := range []pool.Pooler{connPool, pipelinePool} {
+		if p != nil {
+			registrar.RegisterPool(poolName(p), p)
 		}
-		if pubSubPool != nil {
-			poolName := addr + "_" + uniqueID + "_pubsub"
-			registrar.RegisterPubSubPool(poolName, pubSubPool)
-		}
-		if pipelinePool != nil {
-			poolName := addr + "_" + uniqueID + "_pipeline"
-			registrar.RegisterPool(poolName, pipelinePool)
-		}
+	}
+	if pubSubPool != nil {
+		registrar.RegisterPubSubPool(pubSubPool.Name(), pubSubPool)
 	}
 }
 
-// UnregisterPools removes a client's connection pools from r (see RegisterPools).
+// UnregisterPools removes a client's connection pools from r (see
+// RegisterPools). Call it after the pools are closed: a closed pool is no
+// longer handed to a recorder installed later.
 func UnregisterPools(r Recorder, connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool pool.Pooler) {
-	if registrar, ok := resolve(r).(PoolRegistrar); ok {
-		if connPool != nil {
-			registrar.UnregisterPool(connPool)
-		}
-		if pubSubPool != nil {
-			registrar.UnregisterPubSubPool(pubSubPool)
-		}
-		if pipelinePool != nil {
-			registrar.UnregisterPool(pipelinePool)
+	if _, global := r.(scopedGlobal); global {
+		setRecorderMu.Lock()
+		defer setRecorderMu.Unlock()
+	}
+	registrar, ok := resolve(r).(PoolRegistrar)
+	if !ok {
+		return
+	}
+	for _, p := range []pool.Pooler{connPool, pipelinePool} {
+		if p != nil {
+			registrar.UnregisterPool(p)
 		}
 	}
+	if pubSubPool != nil {
+		registrar.UnregisterPubSubPool(pubSubPool)
+	}
+}
+
+func poolName(p pool.Pooler) string {
+	if n, ok := p.(interface{ Name() string }); ok {
+		return n.Name()
+	}
+	return ""
 }

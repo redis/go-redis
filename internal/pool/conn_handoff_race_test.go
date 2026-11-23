@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -261,8 +260,8 @@ func TestPutDoesNotReleaseConnHandedToHandoffWorker(t *testing.T) {
 
 // A MOVING handoff claims an idle connection (IDLE -> UNUSABLE) straight from
 // the idle list. If queueing the handoff then fails, the connection is removed
-// with RemoveWithoutTurn. It was never acquired, so the removal must decrement
-// the idle count, not the used count.
+// with RemoveWithoutTurn. It was never acquired, so the removal must take it out
+// of the idle list as well as the pool.
 func TestRemoveClaimedIdleConnRecordsIdleState(t *testing.T) {
 	p := NewConnPool(&Options{
 		Dialer:             func(context.Context) (net.Conn, error) { return &net.TCPConn{}, nil },
@@ -286,32 +285,19 @@ func TestRemoveClaimedIdleConnRecordsIdleState(t *testing.T) {
 	}
 	used.GetStateMachine().Transition(StateInUse)
 
-	var mu sync.Mutex
-	got := map[*Conn][]string{}
-	SetAllMetricCallbacks(&MetricCallbacks{
-		ConnectionCount: func(_ context.Context, delta int, cn *Conn, state string, _ bool) {
-			if delta < 0 {
-				mu.Lock()
-				got[cn] = append(got[cn], state)
-				mu.Unlock()
-			}
-		},
-	})
-	defer SetAllMetricCallbacks(nil)
-
+	if s := p.Stats(); s.TotalConns != 2 || s.IdleConns != 1 {
+		t.Fatalf("before removal: total=%d idle=%d, want 2 and 1", s.TotalConns, s.IdleConns)
+	}
 	if _, ok := idle.ClaimIdleForHandoff(); !ok {
 		t.Fatal("ClaimIdleForHandoff failed on an idle connection")
 	}
 	p.RemoveWithoutTurn(ctx, idle, errors.New("handoff queue full"))
-	p.RemoveWithoutTurn(ctx, used, errors.New("handoff failed"))
-
-	mu.Lock()
-	defer mu.Unlock()
-	if want := []string{MetricStateIdle}; !slices.Equal(got[idle], want) {
-		t.Fatalf("claimed idle conn removal decremented %v, want %v", got[idle], want)
+	if s := p.Stats(); s.TotalConns != 1 || s.IdleConns != 0 {
+		t.Fatalf("after idle removal: total=%d idle=%d, want 1 and 0", s.TotalConns, s.IdleConns)
 	}
-	if want := []string{MetricStateUsed}; !slices.Equal(got[used], want) {
-		t.Fatalf("used conn removal decremented %v, want %v", got[used], want)
+	p.RemoveWithoutTurn(ctx, used, errors.New("handoff failed"))
+	if s := p.Stats(); s.TotalConns != 0 || s.IdleConns != 0 {
+		t.Fatalf("after used removal: total=%d idle=%d, want 0 and 0", s.TotalConns, s.IdleConns)
 	}
 	if n := p.IdleLen(); n != 0 {
 		t.Fatalf("IdleLen = %d, want 0", n)

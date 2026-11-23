@@ -225,13 +225,8 @@ func TestReaperDoesNotKeepDroppedPoolAlive(t *testing.T) {
 }
 
 func TestReaperRunsHooksAndMetricsOnce(t *testing.T) {
-	var idleDown, closedStale atomic.Int32
+	var closedStale atomic.Int32
 	metrics := &MetricCallbacks{
-		ConnectionCount: func(_ context.Context, delta int, _ *Conn, state string, _ bool) {
-			if delta == -1 && state == MetricStateIdle {
-				idleDown.Add(1)
-			}
-		},
 		ConnectionClosed: func(_ context.Context, _ *Conn, reason string, _ error) {
 			if reason == CloseReasonStale {
 				closedStale.Add(1)
@@ -256,8 +251,8 @@ func TestReaperRunsHooksAndMetricsOnce(t *testing.T) {
 	if got := hook.removes.Load(); got != 3 {
 		t.Fatalf("OnRemove calls = %d, want 3", got)
 	}
-	if got := idleDown.Load(); got != 3 {
-		t.Fatalf("idle -1 count callbacks = %d, want 3", got)
+	if s := p.Stats(); s.TotalConns != 0 || s.IdleConns != 0 {
+		t.Fatalf("after reap: total=%d idle=%d, want 0 and 0", s.TotalConns, s.IdleConns)
 	}
 	if got := closedStale.Load(); got != 3 {
 		t.Fatalf("ConnectionClosed(stale) = %d, want 3", got)

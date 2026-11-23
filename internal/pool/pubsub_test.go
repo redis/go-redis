@@ -12,7 +12,7 @@ import (
 )
 
 func TestPubSubPoolTrackConnClose(t *testing.T) {
-	for _, order := range []string{"track-before-close", "close-before-track", "close-during-track", "concurrent"} {
+	for _, order := range []string{"track-before-close", "close-before-track", "concurrent"} {
 		t.Run(order, func(t *testing.T) {
 			client, server := net.Pipe()
 			defer client.Close()
@@ -63,21 +63,6 @@ func TestPubSubPoolTrackConnClose(t *testing.T) {
 				}()
 				close(start)
 				wg.Wait()
-			case "close-during-track":
-				// Close after registration, before TrackConn returns.
-				// The assertions below verify that Close drained the connection.
-				SetAllMetricCallbacks(&MetricCallbacks{
-					ConnectionCount: func(_ context.Context, delta int, conn *Conn, _ string, _ bool) {
-						if conn == cn && delta == 1 {
-							_ = p.Close()
-						}
-					},
-				})
-				defer SetAllMetricCallbacks(nil)
-				trackErr = p.TrackConn(cn)
-				if trackErr != nil {
-					t.Fatalf("TrackConn error = %v, want nil after registration", trackErr)
-				}
 			}
 			if trackErr != nil && !errors.Is(trackErr, ErrClosed) {
 				t.Fatal(trackErr)

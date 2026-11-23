@@ -26,7 +26,8 @@ type PubSubPool struct {
 
 	// Map to track active PubSub connections
 	activeConns sync.Map // map[uint64]*Conn (connID -> conn)
-	// trackMu pairs activeConns changes with the connection count callback they use.
+	// trackMu orders TrackConn's closed check with Close, so a connection
+	// tracked during Close is either closed by Close or rejected.
 	trackMu sync.Mutex
 	closed  atomic.Bool
 	stats   PubSubStats
@@ -40,7 +41,7 @@ func NewPubSubPool(opt *Options, netDialer func(ctx context.Context, network, ad
 		netDialer: netDialer,
 	}
 	if opt.Metrics == nil {
-		// Only pools on the global table are recounted by SetAllMetricCallbacks.
+		// Only pools on the global table are listed by GlobalPools.
 		wp := weak.Make(p)
 		livePoolsMu.Lock()
 		livePubSubPools[wp] = struct{}{}
@@ -86,40 +87,26 @@ func (p *PubSubPool) TrackConn(cn *Conn) error {
 
 	atomic.AddUint32(&p.stats.Active, 1)
 	p.activeConns.Store(cn.GetID(), cn)
-	cb := p.metrics().ConnectionCount
 	p.trackMu.Unlock()
-	// Emit +1 used for PubSub connection
-	if cb != nil {
-		cb(context.Background(), 1, cn, "used", true)
-	}
 	return nil
 }
 
 func (p *PubSubPool) UntrackConn(cn *Conn) {
 	// LoadAndDelete ensures each connection is only decremented once,
 	// guarding against double-decrement if Close() already untracked it.
-	p.trackMu.Lock()
 	if _, loaded := p.activeConns.LoadAndDelete(cn.GetID()); !loaded {
-		p.trackMu.Unlock()
 		return
 	}
-	cb := p.metrics().ConnectionCount
-	p.trackMu.Unlock()
 	atomic.AddUint32(&p.stats.Active, ^uint32(0))
 	atomic.AddUint32(&p.stats.Untracked, 1)
-	// Emit -1 used for PubSub connection
-	if cb != nil {
-		cb(context.Background(), -1, cn, "used", true)
-	}
 }
 
 func (p *PubSubPool) Close() error {
 	p.closed.Store(true)
 	livePoolsMu.Lock()
 	delete(livePubSubPools, weak.Make(p))
-	p.trackMu.Lock()
-	cb := p.metrics().ConnectionCount
 	livePoolsMu.Unlock()
+	p.trackMu.Lock()
 	var conns []*Conn
 	p.activeConns.Range(func(key, value interface{}) bool {
 		cn := value.(*Conn)
@@ -130,10 +117,6 @@ func (p *PubSubPool) Close() error {
 		}
 		atomic.AddUint32(&p.stats.Active, ^uint32(0))
 		atomic.AddUint32(&p.stats.Untracked, 1)
-		// Emit -1 used for each PubSub connection being closed
-		if cb != nil {
-			cb(context.Background(), -1, cn, "used", true)
-		}
 		conns = append(conns, cn)
 		return true
 	})
@@ -145,6 +128,9 @@ func (p *PubSubPool) Close() error {
 	}
 	return nil
 }
+
+// Name returns the pool's configured name, the one its connections carry (Conn.PoolName).
+func (p *PubSubPool) Name() string { return p.opt.Name }
 
 func (p *PubSubPool) Stats() *PubSubStats {
 	// load stats atomically
