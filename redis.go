@@ -4457,6 +4457,16 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					if rejectedQueuedFlush[answered.base()] {
 						return
 					}
+					// The same holds for a top-level FLUSH the server
+					// rejected: its error lives in its own reply, not
+					// in an EXEC result array, so the queued check
+					// above never sees it. pipelineCmdErr decodes a
+					// raw command's error frame too, so a rejected
+					// FLUSH is skipped whether it was built typed or
+					// raw; a FLUSH that answered OK is still replayed.
+					if pipelineCmdErr(answered) != nil {
+						return
+					}
 					// Fresh command, not the original: a retry that
 					// fails while reading must not stamp its
 					// transport error over the OK the first attempt

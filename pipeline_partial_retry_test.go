@@ -3474,6 +3474,60 @@ func TestPipelineRetryReissuesScriptFlushRawArgs(t *testing.T) {
 	}
 }
 
+// TestPipelineRetrySkipsRejectedTopLevelRawScriptFlush: a top-level raw
+// SCRIPT FLUSH the server rejects never emptied the cache, so the retry
+// must not replay it as a required prerequisite. Here the first
+// connection answers the LOAD, refuses the bogus FLUSH with a syntax
+// error, and drops before EVALSHA's reply: without the fix the rebuild
+// reissues the FLUSH with the same bogus argument, its repeated syntax
+// error fails the batch even though the retried EVALSHA succeeds; with
+// it the FLUSH is skipped, the LOAD repopulates the cache, and the
+// EVALSHA runs. Regression test for the Codex P2 finding on #4351.
+func TestPipelineRetrySkipsRejectedTopLevelRawScriptFlush(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	pipe.ScriptLoad(ctx, src)
+	// A raw FLUSH: its error frame stays in Val() with a nil Err(), so
+	// the batch can still succeed once the retry stops replaying it —
+	// a typed command would keep the syntax error as the batch's first
+	// error through finalErr no matter what the retry does.
+	flush := NewRawCmd(ctx, "SCRIPT", "FLUSH", "bogus")
+	if err := pipe.BatchProcess(ctx, flush); err != nil {
+		t.Fatalf("BatchProcess: %v", err)
+	}
+	eval := pipe.EvalSha(ctx, sha, nil)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the rejected FLUSH must not be replayed, and the retried EVALSHA succeeds)", err)
+	}
+	// The original FLUSH keeps its syntax error in Val(): the server
+	// refused it, so it emptied nothing.
+	if err := flush.Err(); err != nil {
+		t.Fatalf("FLUSH Err(): %v, want nil (a raw command's error frame stays in Val() by contract)", err)
+	}
+	if got := string(flush.Val()); !strings.Contains(got, "syntax error") {
+		t.Fatalf("FLUSH Val() = %q, want it to keep the syntax error frame", got)
+	}
+	if got, err := eval.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.loads.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 2 (the answered LOAD must be reissued on the retry connection)", got)
+	}
+	if got := server.flushes.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT FLUSH commands, want 1 (the rejected FLUSH must not be replayed on the retry connection)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0 (the retried EVALSHA must find the reloaded script)", got)
+	}
+}
+
 // TestPipelineRetryStaleReusedCommandIsStampedOnDialFailure: a Cmder reused
 // from an earlier pipeline keeps its old io.EOF, and that stale error must
 // not act as the answered/unanswered boundary when the next pipeline never
