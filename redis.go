@@ -2536,9 +2536,6 @@ func (c *baseClient) closeResources() error {
 		firstErr = err
 	}
 
-	// Unregister pools from OTel before closing them
-	otel.UnregisterPools(c.recorder(), c.connPool, c.pubSubPool, c.getPipelinePool())
-
 	if c.connPool != nil {
 		if err := c.connPool.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -2549,11 +2546,15 @@ func (c *baseClient) closeResources() error {
 			firstErr = err
 		}
 	}
+	var pubSubPool otel.PubSubPooler
 	if c.pubSubPool != nil {
 		if err := c.pubSubPool.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		pubSubPool = c.pubSubPool
 	}
+	// After closing, so a recorder installed meanwhile is not handed a closing pool.
+	otel.UnregisterPools(c.recorder(), c.connPool, pubSubPool, c.getPipelinePool())
 	return firstErr
 }
 
@@ -3255,7 +3256,7 @@ func NewClient(opt *Options) *Client {
 
 	// Register pools with OTel recorder if it supports pool registration
 	// This allows async gauge metrics to pull stats from pools periodically
-	otel.RegisterPools(c.recorder(), c.connPool, c.pubSubPool, c.getPipelinePool(), opt.Addr)
+	otel.RegisterPools(c.recorder(), c.connPool, c.pubSubPool, c.getPipelinePool())
 
 	built = true
 	return &c

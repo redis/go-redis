@@ -99,7 +99,6 @@ func (p *ConnPool) reapExpiredIdle(ctx context.Context) int {
 		return 0
 	}
 	removedConns := p.takeExpiredIdleLocked(nowNs)
-	countCb := p.metrics().ConnectionCount
 	p.connsMu.Unlock()
 
 	hookManager := p.hookManager.Load()
@@ -112,7 +111,7 @@ func (p *ConnPool) reapExpiredIdle(ctx context.Context) int {
 		if hookManager != nil {
 			hookManager.ProcessOnRemove(ctx, cn, errors.New(CloseReasonStale))
 		}
-		p.recordConnectionMetrics(ctx, cn, CloseReasonStale, MetricStateIdle, countCb)
+		p.recordConnectionClosed(ctx, cn, CloseReasonStale)
 		_ = p.closeConn(cn)
 	}
 	// Also on a pass that closed nothing: replacement dials from an earlier

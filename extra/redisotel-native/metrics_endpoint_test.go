@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -38,45 +39,45 @@ func TestConnectionMetricEndpoints(t *testing.T) {
 			provider := metric.NewMeterProvider(metric.WithReader(reader))
 			t.Cleanup(func() { _ = provider.Shutdown(ctx) })
 			meter := provider.Meter("test")
-			count, err := meter.Int64UpDownCounter(MetricConnectionCount)
-			if err != nil {
-				t.Fatal(err)
-			}
 			pending, err := meter.Int64UpDownCounter(MetricConnectionPendingReqs)
 			if err != nil {
 				t.Fatal(err)
 			}
-			recorder := &metricsRecorder{connectionCount: count, connectionPendingReqs: pending}
-			recorder.RecordConnectionCount(ctx, 1, endpointConnInfo{tc.poolName}, "idle", false)
+			recorder := &metricsRecorder{connectionPendingReqs: pending}
 			recorder.RecordPendingRequests(ctx, 1, nil, tc.poolName)
 			var rm metricdata.ResourceMetrics
 			if err := reader.Collect(ctx, &rm); err != nil {
 				t.Fatal(err)
+			}
+			check := func(metricName string, attrs attribute.Set) {
+				for key, want := range map[string]string{
+					AttrServerAddress:              tc.address,
+					AttrDBClientConnectionPoolName: tc.poolName,
+				} {
+					value, ok := attrs.Value(attribute.Key(key))
+					if !ok || value.AsString() != want {
+						t.Errorf("%s: %s = %v, want %q", metricName, key, value, want)
+					}
+				}
+				port, hasPort := attrs.Value(attribute.Key(AttrServerPort))
+				if hasPort != (tc.port != "") || (hasPort && port.AsString() != tc.port) {
+					t.Errorf("%s: server.port = %v (present %v), want %q", metricName, port, hasPort, tc.port)
+				}
 			}
 			points := 0
 			for _, scope := range rm.ScopeMetrics {
 				for _, m := range scope.Metrics {
 					for _, point := range m.Data.(metricdata.Sum[int64]).DataPoints {
 						points++
-						for key, want := range map[string]string{
-							AttrServerAddress:              tc.address,
-							AttrDBClientConnectionPoolName: tc.poolName,
-						} {
-							value, ok := point.Attributes.Value(attribute.Key(key))
-							if !ok || value.AsString() != want {
-								t.Errorf("%s: %s = %v, want %q", m.Name, key, value, want)
-							}
-						}
-						port, hasPort := point.Attributes.Value(attribute.Key(AttrServerPort))
-						if hasPort != (tc.port != "") || (hasPort && port.AsString() != tc.port) {
-							t.Errorf("%s: server.port = %v (present %v), want %q", m.Name, port, hasPort, tc.port)
-						}
+						check(m.Name, point.Attributes)
 					}
 				}
 			}
-			if points != 2 {
-				t.Fatalf("got %d data points, want 2", points)
+			if points != 1 {
+				t.Fatalf("got %d data points, want 1", points)
 			}
+			opt := recorder.connCountAttrs(tc.poolName, "idle", false)
+			check(MetricConnectionCount, otelmetric.NewObserveConfig([]otelmetric.ObserveOption{opt}).Attributes())
 		})
 	}
 }

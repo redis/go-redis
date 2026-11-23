@@ -72,8 +72,13 @@ type ObservabilityInstance struct {
 	stopped *atomic.Bool
 	// ownQueues are the operation-duration queues of recorders NewRecorder
 	// built on another provider; Shutdown stops them with the global one.
-	ownQueues   []*opQueue
-	initialized bool
+	ownQueues []*opQueue
+	// counters are the connection-count callbacks of every recorder issued
+	// since Init. Shutdown stops them and moves them to stoppedCounters,
+	// which keep reporting 0 until the next Init releases them.
+	counters        []*connCounter
+	stoppedCounters []*connCounter
+	initialized     bool
 }
 
 // GetObservabilityInstance returns the global observability singleton.
@@ -99,6 +104,10 @@ func (o *ObservabilityInstance) Init(cfg *Config) error {
 	}
 
 	o.config = cfg
+	// Release the callbacks the last Shutdown stopped only once the new one is
+	// registered: a collection in between would see no value for live pools,
+	// and a delta reader would then count them twice.
+	defer o.releaseStopped()
 
 	if !cfg.Enabled {
 		return nil
@@ -119,9 +128,22 @@ func (o *ObservabilityInstance) Init(cfg *Config) error {
 	o.recorder = recorder
 	o.provider = meterProvider
 	o.initialized = true
+	o.trackCounter(recorder)
 	redis.SetOTelRecorder(recorder)
 
 	return nil
+}
+
+// releaseStopped unregisters the callbacks the last Shutdown stopped, after
+// the new global recorder took over what they had exported.
+func (o *ObservabilityInstance) releaseStopped() {
+	for _, c := range o.stoppedCounters {
+		if o.recorder != nil && o.recorder.connCount != nil {
+			o.recorder.connCount.inheritSeen(c)
+		}
+		c.release()
+	}
+	o.stoppedCounters = nil
 }
 
 // NewRecorder returns a recorder for one client, built from cfg the way Init
@@ -169,7 +191,14 @@ func (o *ObservabilityInstance) NewRecorder(cfg *Config) (redis.OTelRecorder, er
 	if shared == nil && rec.opq != nil {
 		o.ownQueues = append(o.ownQueues, rec.opq)
 	}
+	o.trackCounter(rec)
 	return rec, nil
+}
+
+func (o *ObservabilityInstance) trackCounter(r *metricsRecorder) {
+	if r.connCount != nil {
+		o.counters = append(o.counters, r.connCount)
+	}
 }
 
 // sameProvider reports whether a and b are the same provider. Interface
@@ -231,6 +260,11 @@ func (o *ObservabilityInstance) shutdownLocked() error {
 		q.stop()
 	}
 	o.ownQueues = nil
+	for _, c := range o.counters {
+		c.stop()
+	}
+	o.stoppedCounters = o.counters
+	o.counters = nil
 
 	// Note: We don't shutdown the MeterProvider since it's owned by the application
 	// The application should call provider.Shutdown() when appropriate
@@ -293,7 +327,8 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 	if cfg.isMetricGroupEnabled(MetricGroupCommand) {
 		var operationDurationOpts []metric.Float64HistogramOption
 		if cfg.histAggregation == HistogramAggregationExplicitBucket {
-			operationDurationOpts = append(operationDurationOpts,
+			operationDurationOpts = append(
+				operationDurationOpts,
 				metric.WithExplicitBucketBoundaries(cfg.bucketsOperationDuration...),
 			)
 		}
@@ -305,13 +340,13 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 		operationDuration = operationDurationConv.Inst()
 	}
 
-	var connectionCount metric.Int64UpDownCounter // OTel semconv: UpDownCounter
+	var connectionCount metric.Int64ObservableUpDownCounter // OTel semconv: UpDownCounter
 	var connectionCreateTime metric.Float64Histogram
 	var connectionRelaxedTimeout metric.Int64UpDownCounter
 	var connectionHandoff metric.Int64Counter
 
 	if cfg.isMetricGroupEnabled(MetricGroupConnectionBasic) {
-		connectionCount, err = meter.Int64UpDownCounter(
+		connectionCount, err = meter.Int64ObservableUpDownCounter(
 			dbconv.ClientConnectionCount{}.Name(),
 			metric.WithDescription(dbconv.ClientConnectionCount{}.Description()),
 			metric.WithUnit(dbconv.ClientConnectionCount{}.Unit()),
@@ -322,7 +357,8 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 
 		var connectionCreateTimeOpts []metric.Float64HistogramOption
 		if cfg.histAggregation == HistogramAggregationExplicitBucket {
-			connectionCreateTimeOpts = append(connectionCreateTimeOpts,
+			connectionCreateTimeOpts = append(
+				connectionCreateTimeOpts,
 				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionCreateTime...),
 			)
 		}
@@ -381,7 +417,8 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 	if cfg.isMetricGroupEnabled(MetricGroupConnectionAdvanced) {
 		var connectionWaitTimeOpts []metric.Float64HistogramOption
 		if cfg.histAggregation == HistogramAggregationExplicitBucket {
-			connectionWaitTimeOpts = append(connectionWaitTimeOpts,
+			connectionWaitTimeOpts = append(
+				connectionWaitTimeOpts,
 				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionWaitTime...),
 			)
 		}
@@ -428,12 +465,14 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 
 	if cfg.isMetricGroupEnabled(MetricGroupStream) {
 		var streamLagOpts []metric.Float64HistogramOption
-		streamLagOpts = append(streamLagOpts,
+		streamLagOpts = append(
+			streamLagOpts,
 			metric.WithDescription("The lag between message creation and consumption in a stream consumer group"),
 			metric.WithUnit("s"),
 		)
 		if cfg.histAggregation == HistogramAggregationExplicitBucket {
-			streamLagOpts = append(streamLagOpts,
+			streamLagOpts = append(
+				streamLagOpts,
 				metric.WithExplicitBucketBoundaries(cfg.bucketsStreamProcessingDuration...),
 			)
 		}
@@ -454,7 +493,8 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 	if cfg.isMetricGroupEnabled(MetricGroupMultiDB) {
 		var durationOpts []metric.Float64HistogramOption
 		if cfg.histAggregation == HistogramAggregationExplicitBucket {
-			durationOpts = append(durationOpts,
+			durationOpts = append(
+				durationOpts,
 				metric.WithExplicitBucketBoundaries(cfg.bucketsOperationDuration...),
 			)
 		}
@@ -468,7 +508,8 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 		}
 		multiDBFailoverDuration, err = meter.Float64Histogram(
 			MetricMultiDBFailoverDuration,
-			append(durationOpts,
+			append(
+				durationOpts,
 				metric.WithDescription("Wall time of a MultiDB failover"),
 				metric.WithUnit("s"),
 			)...,
@@ -502,7 +543,8 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 		}
 		multiDBHealthCheckDuration, err = meter.Float64Histogram(
 			MetricMultiDBHealthCheckDuration,
-			append(durationOpts,
+			append(
+				durationOpts,
 				metric.WithDescription("Wall time of a MultiDB member health check"),
 				metric.WithUnit("s"),
 			)...,
@@ -529,7 +571,6 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 	recorder := &metricsRecorder{
 		opq:                      opq,
 		operationDuration:        operationDuration,
-		connectionCount:          connectionCount,
 		connectionCreateTime:     connectionCreateTime,
 		connectionRelaxedTimeout: connectionRelaxedTimeout,
 		connectionHandoff:        connectionHandoff,
@@ -549,6 +590,15 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 		multiDBHealthCheckDuration:   multiDBHealthCheckDuration,
 
 		cfg: &cfg,
+	}
+	if connectionCount != nil {
+		recorder.connCount, err = newConnCounter(meter, connectionCount)
+		if err != nil {
+			if opq != nil && opq != shared {
+				opq.stop()
+			}
+			return nil, fmt.Errorf("failed to register connection count callback: %w", err)
+		}
 	}
 
 	return recorder, nil

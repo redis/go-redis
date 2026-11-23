@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -90,17 +91,17 @@ type OTelRecorder interface {
 }
 
 // OTelConnectionCounter is an optional capability interface for recording
-// connection count and pending request changes via UpDownCounters.
+// pending request changes via an UpDownCounter.
 // Implementations of OTelRecorder can optionally implement this interface
-// to receive connection count and pending request delta notifications.
+// to receive pending request delta notifications.
 // This is kept separate from OTelRecorder to avoid breaking existing
 // third-party implementations when new methods are added.
 type OTelConnectionCounter interface {
-	// RecordConnectionCount records a change in connection count (UpDownCounter)
-	// delta: +1 when connection added, -1 when connection removed
-	// state: connection state (e.g., "idle", "used")
-	// isPubSub: true if this is a PubSub connection
-	// It may be called with pool locks held, so it must not call back into go-redis.
+	// RecordConnectionCount is no longer called. A recorder that reports
+	// connection counts implements OTelPoolRegistrar and reads PoolStats
+	// (TotalConns, IdleConns) and PubSubStats.Active when it collects.
+	//
+	// Deprecated: kept so existing implementations still compile.
 	RecordConnectionCount(ctx context.Context, delta int, cn ConnInfo, state string, isPubSub bool)
 
 	// RecordPendingRequests records a change in pending requests (UpDownCounter)
@@ -135,15 +136,24 @@ type OTelMultiDBRecorder interface {
 	RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, duration time.Duration)
 }
 
-// This is used for async gauge metrics that need to pull stats from pools periodically.
+// OTelPoolRegistrar is an optional capability interface for recorders that
+// read pool state when they collect, e.g. db.client.connection.count.
+//
+// The pools passed in are comparable: UnregisterPool receives a value equal to
+// the one RegisterPool did, so they can be used as map keys. They do not keep
+// a client that is dropped without Close alive. Register may be called more
+// than once for the same pool (a recorder installed by SetOTelRecorder is
+// handed every live pool).
 type OTelPoolRegistrar interface {
-	// RegisterPool is called when a new client is created with its main connection pool.
-	// poolName: unique identifier for the pool (e.g., "main_abc123")
+	// RegisterPool is called when a new client is created with its main (or
+	// pipeline) connection pool, and for every live pool when the recorder is
+	// installed with SetOTelRecorder.
+	// poolName: the pool's name, as carried by its connections (ConnInfo.PoolName)
 	RegisterPool(poolName string, pool Pooler)
 	// UnregisterPool is called when a client is closed to remove its pool from the registry.
 	UnregisterPool(pool Pooler)
 	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
-	// poolName: unique identifier for the pool (e.g., "main_abc123_pubsub")
+	// poolName: the pool's name, as carried by its connections (e.g., "localhost:6379_1_pubsub")
 	RegisterPubSubPool(poolName string, pool PubSubPooler)
 	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
 	UnregisterPubSubPool(pool PubSubPooler)
@@ -270,12 +280,6 @@ func (a *otelRecorderAdapter) RecordMultiDBHealthCheck(ctx context.Context, dbFQ
 	}
 }
 
-func (a *otelRecorderAdapter) RecordConnectionCount(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
-	if counter, ok := a.recorder.(OTelConnectionCounter); ok {
-		counter.RecordConnectionCount(ctx, delta, toConnInfo(cn), state, isPubSub)
-	}
-}
-
 func (a *otelRecorderAdapter) RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
 	if counter, ok := a.recorder.(OTelConnectionCounter); ok {
 		counter.RecordPendingRequests(ctx, delta, toConnInfo(cn), poolName)
@@ -284,33 +288,72 @@ func (a *otelRecorderAdapter) RecordPendingRequests(ctx context.Context, delta i
 
 func (a *otelRecorderAdapter) RegisterPool(poolName string, p pool.Pooler) {
 	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
-		registrar.RegisterPool(poolName, &poolerAdapter{p})
+		registrar.RegisterPool(poolName, poolerOf(p))
 	}
 }
 
 func (a *otelRecorderAdapter) UnregisterPool(p pool.Pooler) {
 	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
-		registrar.UnregisterPool(&poolerAdapter{p})
+		registrar.UnregisterPool(poolerOf(p))
 	}
 }
 
 func (a *otelRecorderAdapter) RegisterPubSubPool(poolName string, p otel.PubSubPooler) {
 	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
-		registrar.RegisterPubSubPool(poolName, &pubSubPoolerAdapter{p})
+		registrar.RegisterPubSubPool(poolName, pubSubPoolerOf(p))
 	}
 }
 
 func (a *otelRecorderAdapter) UnregisterPubSubPool(p otel.PubSubPooler) {
 	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
-		registrar.UnregisterPubSubPool(&pubSubPoolerAdapter{p})
+		registrar.UnregisterPubSubPool(pubSubPoolerOf(p))
 	}
 }
+
+// poolerOf returns the Pooler a registrar sees for p (see OTelPoolRegistrar).
+func poolerOf(p pool.Pooler) Pooler {
+	if cp, ok := p.(*pool.ConnPool); ok {
+		return connPoolRef{weak.Make(cp)}
+	}
+	return poolerAdapter{p}
+}
+
+func pubSubPoolerOf(p otel.PubSubPooler) PubSubPooler {
+	if pp, ok := p.(*pool.PubSubPool); ok {
+		return pubSubPoolRef{weak.Make(pp)}
+	}
+	return pubSubPoolerAdapter{p}
+}
+
+// connPoolRef holds a pool weakly. Collected reports that the pool was
+// garbage collected; PoolStats then returns zero stats.
+type connPoolRef struct{ p weak.Pointer[pool.ConnPool] }
+
+func (r connPoolRef) PoolStats() *pool.Stats {
+	if p := r.p.Value(); p != nil {
+		return p.Stats()
+	}
+	return &pool.Stats{}
+}
+
+func (r connPoolRef) Collected() bool { return r.p.Value() == nil }
+
+type pubSubPoolRef struct{ p weak.Pointer[pool.PubSubPool] }
+
+func (r pubSubPoolRef) Stats() *pool.PubSubStats {
+	if p := r.p.Value(); p != nil {
+		return p.Stats()
+	}
+	return &pool.PubSubStats{}
+}
+
+func (r pubSubPoolRef) Collected() bool { return r.p.Value() == nil }
 
 type poolerAdapter struct {
 	p pool.Pooler
 }
 
-func (a *poolerAdapter) PoolStats() *pool.Stats {
+func (a poolerAdapter) PoolStats() *pool.Stats {
 	return a.p.Stats()
 }
 
@@ -318,6 +361,6 @@ type pubSubPoolerAdapter struct {
 	p otel.PubSubPooler
 }
 
-func (a *pubSubPoolerAdapter) Stats() *pool.PubSubStats {
+func (a pubSubPoolerAdapter) Stats() *pool.PubSubStats {
 	return a.p.Stats()
 }

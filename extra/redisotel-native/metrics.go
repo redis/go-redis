@@ -12,9 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // timeoutError is an interface for errors that have a Timeout() method
@@ -46,7 +47,7 @@ func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
 	operationDuration        metric.Float64Histogram
-	connectionCount          metric.Int64UpDownCounter // OTel semconv: UpDownCounter for connection.count
+	connCount                *connCounter // db.client.connection.count, observed at collection time
 	connectionCreateTime     metric.Float64Histogram
 	connectionRelaxedTimeout metric.Int64UpDownCounter
 	connectionHandoff        metric.Int64Counter
@@ -93,9 +94,8 @@ type metricsRecorder struct {
 func (r *metricsRecorder) Enabled() bool { return !r.off() }
 
 // off reports whether Shutdown has stopped this recorder. Every Record method
-// except the UpDown counters (connection.count, pending_requests) returns early
-// when it is set; those two keep flowing so a client closed after Shutdown
-// still brings its counts back to zero.
+// except pending_requests returns early when it is set; pending_requests keeps
+// flowing so a client closed after Shutdown still brings it back to zero.
 func (r *metricsRecorder) off() bool { return r.stopped != nil && r.stopped.Load() }
 
 // withAttrs returns the measurement option for attrs followed by the
@@ -584,8 +584,10 @@ func getErrorCategoryFromString(errStr string) string {
 
 	// Check for Redis server errors (including cluster errors)
 	// Common Redis error prefixes: ERR, WRONGTYPE, CLUSTERDOWN, MOVED, ASK, READONLY, etc.
-	serverErrors := []string{"err", "wrongtype", "clusterdown", "moved", "ask", "readonly",
-		"crossslot", "tryagain", "loading", "busy", "noscript", "oom", "execabort", "noquorum", "redis:"}
+	serverErrors := []string{
+		"err", "wrongtype", "clusterdown", "moved", "ask", "readonly",
+		"crossslot", "tryagain", "loading", "busy", "noscript", "oom", "execabort", "noquorum", "redis:",
+	}
 	for _, prefix := range serverErrors {
 		if strings.Contains(errLower, prefix) {
 			return "server"
@@ -1028,48 +1030,11 @@ func (r *metricsRecorder) RecordStreamLag(
 	r.streamLag.Record(ctx, lag.Seconds(), r.withAttrs(attrs))
 }
 
-// RecordConnectionCount records a change in connection count (UpDownCounter).
-// Per OTel semantic conventions, db.client.connection.count is an UpDownCounter.
-// delta: +1 when connection added, -1 when connection removed
-// state: connection state (e.g., "idle", "used")
-// isPubSub: true if this is a PubSub connection
-func (r *metricsRecorder) RecordConnectionCount(
-	ctx context.Context,
-	delta int,
-	cn redis.ConnInfo,
-	state string,
-	isPubSub bool,
-) {
-	if r.connectionCount == nil {
-		return
-	}
-
-	// Build attributes
-	attrs := []attribute.KeyValue{
-		attribute.String(AttrDBSystemName, DBSystemRedis),
-		getLibraryVersionAttr(),
-		attribute.String(AttrDBClientConnectionState, state),
-		attribute.Bool(AttrRedisClientConnectionPubSub, isPubSub),
-	}
-
-	// Use pool name from connection (set when connection was created)
-	if cn != nil {
-		poolName := cn.PoolName()
-		if poolName != "" {
-			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
-
-			// Extract server info from pool name
-			serverAddr, serverPort, _ := parsePoolName(poolName)
-			if serverAddr != "" {
-				attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
-			}
-			attrs = addServerPortIfNonDefault(attrs, serverPort)
-		}
-	}
-
-	// Record the counter (delta can be +1 or -1)
-	r.connectionCount.Add(ctx, int64(delta), r.withAttrs(attrs))
-}
+// RecordConnectionCount is a no-op: db.client.connection.count is observed
+// from the registered pools at collection time (metrics_conn_count.go). It
+// stays so the recorder still implements redis.OTelConnectionCounter, which
+// gates RecordPendingRequests.
+func (r *metricsRecorder) RecordConnectionCount(context.Context, int, redis.ConnInfo, string, bool) {}
 
 // RecordPendingRequests records a change in pending requests (UpDownCounter).
 // Per OTel semantic conventions, db.client.connection.pending_requests is an UpDownCounter.

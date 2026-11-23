@@ -768,7 +768,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// failover client previously registered none, so pool gauges were silent
 	// for the identical standalone setup). The pipeline pool is nil when not
 	// configured.
-	otel.RegisterPools(rdb.recorder(), rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
+	otel.RegisterPools(rdb.recorder(), rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool())
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
@@ -883,7 +883,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	}
 
 	// Close unregisters them, so register here as NewClient does.
-	otel.RegisterPools(c.recorder(), c.connPool, c.pubSubPool, nil, opt.Addr)
+	otel.RegisterPools(c.recorder(), c.connPool, c.pubSubPool, nil)
 
 	return c
 }
