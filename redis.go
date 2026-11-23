@@ -2852,6 +2852,19 @@ func pipelineCmdQueued(cmd Cmder) bool {
 	return false
 }
 
+// pipelineMultiAccepted reports whether the MULTI at cmd opened (or may
+// have opened) a transaction: it answered without an error, or its
+// outcome is unknown — a transport failure, or a reply that was never
+// read — so the frame may still be open. A MULTI the server rejected
+// with a Redis error (NOPERM under an ACL, a wrong-arity refusal, a
+// nested MULTI) opened nothing: the commands after it ran standalone,
+// so no frame scan may treat them as transaction body — or the retry
+// would re-run a write that already applied.
+func pipelineMultiAccepted(cmd Cmder) bool {
+	err := pipelineCmdErr(cmd)
+	return err == nil || !isRedisError(err)
+}
+
 // pipelineMultiOpen reports whether the MULTI at multi is still open: its
 // EXEC or DISCARD either never follows it in the batch or follows it
 // unanswered, so the transaction's queued commands never ran. An EXEC
@@ -2861,8 +2874,13 @@ func pipelineCmdQueued(cmd Cmder) bool {
 // A successful RESET closes it the same way: RESET discards the
 // transaction, so the frame is dead and its queued commands never ran —
 // a failed RESET leaves it open. Redis does not nest MULTI, so the first
-// EXEC or DISCARD after it closes this frame.
+// EXEC or DISCARD after it closes this frame. A MULTI the server
+// rejected opened no frame at all (see pipelineMultiAccepted), so it is
+// never open, whatever follows it.
 func pipelineMultiOpen(cmds []Cmder, multi int) bool {
+	if !pipelineMultiAccepted(cmds[multi]) {
+		return false
+	}
 	for _, cmd := range cmds[multi+1:] {
 		switch cmd.Name() {
 		case "exec":
@@ -2918,8 +2936,12 @@ func pipelineTxBodyNeedsRetryMap(cmds []Cmder) []bool {
 			// A rejected nested MULTI does not end the outer
 			// transaction: keep the existing frame, or its queued
 			// body would be dropped as answered and the retry
-			// would commit a transaction missing it.
-			if frameStart < 0 {
+			// would commit a transaction missing it. A rejected
+			// MULTI opens no frame at all (see
+			// pipelineMultiAccepted): the commands after it ran
+			// standalone, so only an accepted MULTI — or one
+			// whose outcome is unknown — opens one.
+			if frameStart < 0 && pipelineMultiAccepted(cmd) {
 				frameStart = idx
 			}
 		case "exec":
@@ -2990,7 +3012,14 @@ func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 	for _, cmd := range cmds {
 		switch cmd.Name() {
 		case "multi":
-			frame = append(frame, cmd)
+			// A rejected MULTI opens no frame (see
+			// pipelineMultiAccepted): the commands after it ran
+			// standalone, so they are not discarded with it. A
+			// nested MULTI inside an already-open frame belongs
+			// to that frame and is tracked with it.
+			if len(frame) > 0 || pipelineMultiAccepted(cmd) {
+				frame = append(frame, cmd)
+			}
 		case "exec":
 			frame = nil
 		case "discard", "reset":
@@ -3083,10 +3112,15 @@ func pipelineAbortedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 				frame = append(frame, cmd)
 			}
 		case "multi":
-			if len(frame) == 0 {
-				frameGuards = append([]Cmder(nil), liveWatches...)
+			// A rejected MULTI opens no frame (see
+			// pipelineMultiAccepted): a nested MULTI inside an
+			// already-open frame still belongs to it.
+			if len(frame) > 0 || pipelineMultiAccepted(cmd) {
+				if len(frame) == 0 {
+					frameGuards = append([]Cmder(nil), liveWatches...)
+				}
+				frame = append(frame, cmd)
 			}
-			frame = append(frame, cmd)
 		case "exec":
 			if len(frame) > 0 && pipelineExecSettled(cmd) && (pipelineCmdErr(cmd) != nil || pipelineExecNullReply(cmd)) {
 				frame = append(frame, cmd)
@@ -3253,8 +3287,10 @@ func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 			// A rejected nested MULTI does not end the outer
 			// transaction: keep the existing frame and its bodies,
 			// or the outer frame's commands lose their EXEC
-			// result elements.
-			if frameStart < 0 {
+			// result elements. A rejected MULTI opens no frame
+			// at all (see pipelineMultiAccepted): the commands
+			// after it ran standalone and hold no EXEC elements.
+			if frameStart < 0 && pipelineMultiAccepted(cmd) {
 				frameStart = idx
 				bodies = bodies[:0]
 			}
@@ -3621,8 +3657,15 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				switch answered.Name() {
 				case "multi":
 					if openMulti == nil {
-						openMulti = answered
-						frameMultis = frameMultis[:0]
+						// A rejected MULTI opens no frame (see
+						// pipelineMultiAccepted): only an
+						// accepted one — or one whose outcome is
+						// unknown — starts the frame the
+						// boundary may rewind to.
+						if pipelineMultiAccepted(answered) {
+							openMulti = answered
+							frameMultis = frameMultis[:0]
+						}
 					} else {
 						frameMultis = append(frameMultis, answered)
 					}
@@ -3701,6 +3744,20 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				// it needs no re-establishment on the retry
 				// connection, and re-running it would swap them back.
 				if answered.Name() == "swapdb" {
+					continue
+				}
+				// A MULTI the server rejected opened no transaction,
+				// and an EXEC or DISCARD it rejected closed none:
+				// none of them established state the retry must
+				// preserve (see pipelineMultiAccepted — a settled
+				// EXEC is already completedTx above, so one
+				// reaching here was refused without running).
+				// Forcing the whole batch over one would re-run
+				// the answered writes after it.
+				if answered.Name() == "multi" && !pipelineMultiAccepted(answered) {
+					continue
+				}
+				if (answered.Name() == "exec" || answered.Name() == "discard") && pipelineCmdErr(answered) != nil {
 					continue
 				}
 				if pipelineConnStateCmd(answered) && !pipelineConnStateReissueCmd(answered) {
@@ -4101,8 +4158,13 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				if follower.Name() == "multi" {
 					// A MULTI opens the frame for the watches
 					// before it; it is never itself a dirty
-					// follower.
-					lastMulti = f
+					// follower. A rejected MULTI opens no frame
+					// (see pipelineMultiAccepted), so the
+					// commands after it ran standalone and can
+					// still dirty a watch.
+					if pipelineMultiAccepted(follower) {
+						lastMulti = f
+					}
 					continue
 				}
 				if f < i || droppedTail[follower.base()] {
@@ -4418,7 +4480,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// command counts as a write. Connection-state
 			// predecessors and synthetic prerequisites do not count
 			// either: re-running a SELECT or a script preload
-			// needs no replication barrier.
+			// needs no replication barrier. SWAPDB is the
+			// exception: it is connection state in name only — a
+			// server-global write (see command_info_snapshot.go)
+			// that advances the replication offset, so a pending
+			// one counts like any other write.
 			tailSet := make(map[*baseCmd]bool, len(tail))
 			for _, pending := range tail {
 				tailSet[pending.base()] = true
@@ -4432,11 +4498,13 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// the retry past its deadline. The classification is
 			// the same one the scan used: in the retry tail, not a
 			// synthetic prerequisite, not connection state, and not
-			// read-only (see pipelineCmdReadOnly).
+			// read-only (see pipelineCmdReadOnly) — except a
+			// pending SWAPDB, which is a server-global write and
+			// counts (see above).
 			pendingWritesBefore := make([]int, len(cmds)+1)
 			for k, cmd := range cmds {
 				pendingWritesBefore[k+1] = pendingWritesBefore[k]
-				if tailSet[cmd.base()] && !synthetic[cmd.base()] && !pipelineConnStateCmd(cmd) && !pipelineCmdReadOnly(cmd) {
+				if tailSet[cmd.base()] && !synthetic[cmd.base()] && (!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") && !pipelineCmdReadOnly(cmd) {
 					pendingWritesBefore[k+1]++
 				}
 			}
@@ -4448,11 +4516,19 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					continue
 				}
 				// The original command, not a clone (see the
-				// comment above): its value must hold the fresh
-				// acknowledgement count, and its error a fresh
-				// failure. The stale first-attempt error is
-				// cleared, as for the clones above.
-				barrier.SetErr(nil)
+				// comment above): re-dispatching it overwrites
+				// its value with the fresh acknowledgement count,
+				// and its error with a fresh failure. But the
+				// builder must not clear the first attempt's
+				// error while merely constructing a possible
+				// retry: when no retry runs (retries disabled,
+				// or the final permitted attempt), or the retry
+				// fails before reaching the barrier, the original
+				// keeps its error instead of showing nil for a
+				// rejected command. The read path overwrites the
+				// error of every command it dispatches, so a
+				// barrier that actually runs still replaces it
+				// with the fresh result.
 				retry = append(retry, barrier)
 				markPipelineSynthetic(ctx, true, barrier)
 			}

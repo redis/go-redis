@@ -200,6 +200,19 @@ type connStateRetryServer struct {
 	// watch is rejected and establishes nothing.
 	failWatch atomic.Bool
 	watches   atomic.Int32
+	// failMulti, when set, makes every MULTI answer NOPERM (an ACL
+	// denying MULTI): the transaction never opens and the commands
+	// after it run standalone.
+	failMulti atomic.Bool
+	waits     atomic.Int32
+	// failWait, when set, makes every WAIT answer NOPERM: the
+	// barrier is rejected and measures nothing.
+	failWait atomic.Bool
+	// failSwapdbOnce, when set, makes the next SWAPDB answer
+	// NOREPLICAS without swapping; later SWAPDBs succeed.
+	failSwapdbOnce atomic.Bool
+	// msetTryagain, when set, makes every MSET answer TRYAGAIN.
+	msetTryagain atomic.Bool
 	// dropExecFirst, when set, makes the first connection close
 	// without replying to EXEC (the transaction never commits there).
 	dropExecFirst bool
@@ -424,6 +437,17 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			} else {
 				reply = "*2\r\n$1\r\na\r\n$1\r\nb\r\n"
 			}
+		case "mset":
+			if s.msetTryagain.Load() {
+				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+			}
+		case "wait":
+			s.waits.Add(1)
+			if s.failWait.Load() {
+				reply = "-NOPERM this user has no permissions to run the 'wait' command\r\n"
+			} else {
+				reply = ":1\r\n"
+			}
 		case "asking":
 			s.askings.Add(1)
 		case "himport":
@@ -434,6 +458,13 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			}
 		case "multi":
 			s.multiCount.Add(1)
+			if s.failMulti.Load() {
+				// An ACL denying MULTI: the transaction never
+				// opens and the commands after it run standalone,
+				// exactly like a real server.
+				reply = "-NOPERM this user has no permissions to run the 'multi' command\r\n"
+				break
+			}
 			if inMulti {
 				// A nested MULTI is rejected, but it does not
 				// close the outer transaction: the frame and its
@@ -464,6 +495,13 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			reply = "+RESET\r\n"
 		case "swapdb":
 			s.swapdbs.Add(1)
+			if s.failSwapdbOnce.CompareAndSwap(true, false) {
+				// The first SWAPDB fails NOREPLICAS: the swap
+				// never applied, so the retry must run it again
+				// (and reissue any barrier that follows it).
+				reply = "-NOREPLICAS Not enough replicas to apply the swap\r\n"
+				break
+			}
 			s.swapped.Store(!s.swapped.Load())
 		case "exec":
 			if s.dropExecFirst && first {
@@ -586,6 +624,103 @@ func TestPipelineRetryKeepsMultiTransaction(t *testing.T) {
 	}
 	if got := server.execWithMulti.Load(); got != 1 {
 		t.Fatalf("EXEC ran %d time(s) inside MULTI, want 1", got)
+	}
+}
+
+// TestPipelineRetryRejectedMultiDoesNotRetryTxBody: a MULTI the server
+// rejected (an ACL denying MULTI) opens no transaction: the INCR after
+// it ran standalone, so the retry must not re-run it as transaction
+// body. Before the fix pipelineTxBodyNeedsRetryMap opened a frame on
+// the rejected MULTI and the tail filter retained the already-executed
+// INCR, so the counter incremented twice. Regression test for the Codex
+// P1 finding on #4351 (review 6019219493).
+func TestPipelineRetryRejectedMultiDoesNotRetryTxBody(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.tryagainConn = 1
+	server.failMulti.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	ping := pipe.Ping(ctx)
+	mget := pipe.MGet(ctx, "a", "b")
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Incr(ctx, "counter")
+	execCmd := pipe.Do(ctx, "exec")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("Exec: %v, want NOPERM (the rejected MULTI is the batch's first error)", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("PING: %v", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if err := multi.Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("MULTI: %v, want NOPERM", err)
+	}
+	if got, err := incr.Result(); err != nil || got != int64(1) {
+		t.Fatalf("INCR = %v, %v; want 1, nil", got, err)
+	}
+	if err := execCmd.Err(); err == nil || !strings.Contains(err.Error(), "EXEC without MULTI") {
+		t.Fatalf("EXEC: %v, want ERR EXEC without MULTI", err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the INCR after a rejected MULTI ran standalone and must not run again)", got)
+	}
+}
+
+// TestPipelineRetryRejectedMultiDoesNotForceWholeBatch: the same rejected
+// opener, with the retry boundary after the frame — MULTI (NOPERM),
+// INCR (1), EXEC (ERR EXEC without MULTI), then GET, whose reply is
+// lost when the connection drops. The prefix scan must not treat the
+// rejected MULTI (or its rejected EXEC) as connection state that forces
+// the whole batch: the retry runs only the GET, and the answered INCR
+// is not executed twice. A TRYAGAIN boundary would not reach this scan
+// — the batch error would be the MULTI's NOPERM, which is not
+// retryable — so the boundary here is the transport failure.
+// Regression test for the Codex P1 finding on #4351 (review 6019219493).
+func TestPipelineRetryRejectedMultiDoesNotForceWholeBatch(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 3
+	server.failMulti.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Incr(ctx, "counter")
+	execCmd := pipe.Do(ctx, "exec")
+	get := pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("Exec: %v, want NOPERM (the rejected MULTI is the batch's first error)", err)
+	}
+	if err := multi.Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("MULTI: %v, want NOPERM", err)
+	}
+	if got, err := incr.Result(); err != nil || got != int64(1) {
+		t.Fatalf("INCR = %v, %v; want 1, nil", got, err)
+	}
+	if err := execCmd.Err(); err == nil || !strings.Contains(err.Error(), "EXEC without MULTI") {
+		t.Fatalf("EXEC: %v, want ERR EXEC without MULTI", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %v, %v; want v, nil", got, err)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the first connection must drop before GET's reply)", got)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR must not run again on a whole-batch retry)", got)
+	}
+	if got := server.multiCount.Load(); got != 1 {
+		t.Fatalf("server received %d MULTI commands, want 1 (the rejected MULTI must not force the batch back to it)", got)
+	}
+	if got := server.execWithoutMulti.Load(); got != 1 {
+		t.Fatalf("server received %d EXEC-without-MULTI commands, want 1", got)
 	}
 }
 
@@ -1192,6 +1327,51 @@ func TestPipelineRetryKeepsWaitWithWrite(t *testing.T) {
 	}
 	if got := server.sets.Load(); got != 2 {
 		t.Fatalf("server received %d SET commands, want 2 (the answered SET must be re-run with its WAIT)", got)
+	}
+}
+
+// TestPipelineRetryKeepsBarrierErrorWhenNoRetryRuns: with retries
+// disabled, MSET answers TRYAGAIN and WAIT answers NOPERM. The retry
+// builder still runs after that last attempt, and it must not clear the
+// barrier's error while merely constructing a retry that will never be
+// dispatched: WAIT keeps its NOPERM instead of showing nil for a
+// rejected command, while Exec still returns the MSET error (the
+// batch's first error). Regression test for the Codex P2 finding on
+// #4351 (review 6019219493).
+func TestPipelineRetryKeepsBarrierErrorWhenNoRetryRuns(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.msetTryagain.Store(true)
+	server.failWait.Store(true)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1, // truly disabled: 0 would be normalised to 3
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mset := pipe.Do(ctx, "mset", "a", 1, "b", 2)
+	wait := pipe.Do(ctx, "wait", 1, 1000)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "TRYAGAIN") {
+		t.Fatalf("Exec: %v, want TRYAGAIN (the MSET error is the batch's first error)", err)
+	}
+	if err := mset.Err(); err == nil || !strings.Contains(err.Error(), "TRYAGAIN") {
+		t.Fatalf("MSET: %v, want TRYAGAIN", err)
+	}
+	if err := wait.Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("WAIT: %v, want NOPERM (the rejected barrier keeps its error when no retry runs)", err)
 	}
 }
 
@@ -6722,6 +6902,41 @@ func TestPipelineRetryDoesNotRerunAnsweredSwapdbAfterBoundary(t *testing.T) {
 	}
 	if got := server.setDB.Load(); got != 1 {
 		t.Fatalf("SET ran on DB %d, want 1 (after one SWAPDB 0 1, a SET on DB 0 lands in DB 1)", got)
+	}
+}
+
+// TestPipelineRetrySwapdbCountsAsPendingWriteForBarrier: a SWAPDB the
+// server rejected with NOREPLICAS is a pending server-global write, so
+// a WAIT answered after it must be reissued with the retried SWAPDB:
+// the retained acknowledgement count measured nothing about the swap.
+// Before the fix the barrier's pending-write count excluded SWAPDB as
+// connection state, so the retry ran only the SWAPDB and Exec returned
+// nil with the stale count. Regression test for the Codex P1 finding
+// on #4351 (review 6019219493).
+func TestPipelineRetrySwapdbCountsAsPendingWriteForBarrier(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.failSwapdbOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	wait := pipe.Do(ctx, "wait", 1, 1000)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(1) {
+		t.Fatalf("WAIT = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.swapdbs.Load(); got != 2 {
+		t.Fatalf("server received %d SWAPDB commands, want 2 (the NOREPLICAS SWAPDB must run again)", got)
+	}
+	if got := server.waits.Load(); got != 2 {
+		t.Fatalf("server received %d WAIT commands, want 2 (the barrier must be reissued after the pending SWAPDB)", got)
 	}
 }
 
