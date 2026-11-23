@@ -67,10 +67,13 @@ type TSReadOptions struct {
 }
 
 type TSOptions struct {
-	Retention         int
-	ChunkSize         int
-	Encoding          string
-	DuplicatePolicy   string
+	Retention       int
+	ChunkSize       int
+	Encoding        string
+	DuplicatePolicy string
+	// OnDuplicate overrides the key's duplicate policy for the sample being
+	// added. Used by TS.ADD only.
+	OnDuplicate       string
 	Labels            map[string]string
 	IgnoreMaxTimeDiff int64
 	IgnoreMaxValDiff  float64
@@ -325,7 +328,7 @@ func (c cmdable) TSAdd(ctx context.Context, key string, timestamp interface{}, v
 
 // TSAddWithArgs - Adds a sample to a time-series key.
 // This function also allows for specifying additional options such as:
-// Retention, ChunkSize, Encoding, DuplicatePolicy and Labels.
+// Retention, ChunkSize, Encoding, DuplicatePolicy, OnDuplicate and Labels.
 // For more information - https://redis.io/commands/ts.add/
 func (c cmdable) TSAddWithArgs(ctx context.Context, key string, timestamp interface{}, value float64, options *TSOptions) *IntCmd {
 	args := []interface{}{"TS.ADD", key, timestamp, value}
@@ -342,6 +345,9 @@ func (c cmdable) TSAddWithArgs(ctx context.Context, key string, timestamp interf
 
 		if options.DuplicatePolicy != "" {
 			args = append(args, "DUPLICATE_POLICY", options.DuplicatePolicy)
+		}
+		if options.OnDuplicate != "" {
+			args = append(args, "ON_DUPLICATE", options.OnDuplicate)
 		}
 		if options.IgnoreMaxTimeDiff != 0 || options.IgnoreMaxValDiff != 0 {
 			args = append(args, "IGNORE", options.IgnoreMaxTimeDiff, options.IgnoreMaxValDiff)

@@ -229,6 +229,19 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				resultGet, err = client.TSGet(ctx, "tsami-1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resultGet.Value).To(BeEquivalentTo(5))
+				// ON_DUPLICATE overrides the policy of an existing key
+				opt = &redis.TSOptions{DuplicatePolicy: "BLOCK"}
+				result, err = client.TSAddWithArgs(ctx, "tsaod-1", 1, 5, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeEquivalentTo(1))
+				Expect(client.TSAddWithArgs(ctx, "tsaod-1", 1, 10, opt).Err()).To(HaveOccurred())
+				opt = &redis.TSOptions{OnDuplicate: "LAST"}
+				result, err = client.TSAddWithArgs(ctx, "tsaod-1", 1, 10, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeEquivalentTo(1))
+				resultGet, err = client.TSGet(ctx, "tsaod-1").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resultGet.Value).To(BeEquivalentTo(10))
 				// Insertion filters
 				opt = &redis.TSOptions{IgnoreMaxTimeDiff: 5, IgnoreMaxValDiff: 10.0, DuplicatePolicy: "LAST"}
 				result, err = client.TSAddWithArgs(ctx, "ts-if-1", 1000, 1.0, opt).Result()

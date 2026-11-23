@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+// ON_DUPLICATE is a TS.ADD option; TS.CREATE has none and must not send it.
+func TestTSAddOnDuplicate(t *testing.T) {
+	ctx := context.Background()
+	options := &TSOptions{DuplicatePolicy: "BLOCK", OnDuplicate: "LAST"}
+
+	var captured Cmder
+	c := captureCmdable(&captured)
+
+	want := []interface{}{"TS.ADD", "series", 1000, float64(1), "DUPLICATE_POLICY", "BLOCK", "ON_DUPLICATE", "LAST"}
+	if got := c.TSAddWithArgs(ctx, "series", 1000, 1, options).Args(); !reflect.DeepEqual(got, want) {
+		t.Errorf("TSAddWithArgs args\n got: %#v\nwant: %#v", got, want)
+	}
+
+	want = []interface{}{"TS.CREATE", "series", "DUPLICATE_POLICY", "BLOCK"}
+	if got := c.TSCreateWithArgs(ctx, "series", options).Args(); !reflect.DeepEqual(got, want) {
+		t.Errorf("TSCreateWithArgs args\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
 func TestTSIgnoreBeforeLabels(t *testing.T) {
 	ctx := context.Background()
 	labels := map[string]string{"sensor": "temperature"}
