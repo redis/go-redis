@@ -721,10 +721,17 @@ func (c *Ring) PoolStats() *PoolStats {
 		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
 		acc.WaitCount += s.WaitCount
+		acc.Unusable += s.Unusable
 		acc.WaitDurationNs += s.WaitDurationNs
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
 		acc.StaleConns += s.StaleConns
+		acc.PendingRequests += s.PendingRequests
+
+		pub := shard.Client.pubSubPool.Stats()
+		acc.PubSubStats.Created += pub.Created
+		acc.PubSubStats.Untracked += pub.Untracked
+		acc.PubSubStats.Active += pub.Active
 
 		// Each shard now creates the dedicated pipeline pool by default; fold its
 		// stats into acc.PipelineStats so ring monitoring reflects it too.
@@ -734,10 +741,12 @@ func (c *Ring) PoolStats() *PoolStats {
 			pipe.Misses += ps.Misses
 			pipe.Timeouts += ps.Timeouts
 			pipe.WaitCount += ps.WaitCount
+			pipe.Unusable += ps.Unusable
 			pipe.WaitDurationNs += ps.WaitDurationNs
 			pipe.TotalConns += ps.TotalConns
 			pipe.IdleConns += ps.IdleConns
 			pipe.StaleConns += ps.StaleConns
+			pipe.PendingRequests += ps.PendingRequests
 			havePipe = true
 		}
 	}
