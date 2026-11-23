@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -504,6 +505,11 @@ func TestParseURLErrorRedactsPassword(t *testing.T) {
 		"redis://user:?pool_fifo=s3cr3t@localhost/0",
 		"redis://user:?db=s3cr3t@localhost/0",
 		"redis://user:?addr=s3cr3t@localhost/0",
+		"redis://localhost?password=s3&db=cr3t",
+		"redis://localhost?password=s3&max_retries=cr3t",
+		"redis://localhost?password=s3&read_timeout=cr3t",
+		"redis://localhost?password=s3&pool_fifo=cr3t",
+		"redis://localhost?password=s3&addr=cr3t",
 	}
 	parsers := map[string]func(string) error{
 		"ParseURL":         func(u string) error { _, err := ParseURL(u); return err },
@@ -523,6 +529,17 @@ func TestParseURLErrorRedactsPassword(t *testing.T) {
 				t.Errorf("%s(%q): error leaks the password: %s", name, u, msg)
 			}
 		}
+	}
+}
+
+func TestParseURLHiddenValueKeepsNumError(t *testing.T) {
+	_, err := ParseURL("redis://localhost?db=oops&client_name=a@b")
+	var numErr *strconv.NumError
+	if !errors.As(err, &numErr) || !errors.Is(err, strconv.ErrSyntax) {
+		t.Fatalf("expected a *strconv.NumError, got %v", err)
+	}
+	if strings.Contains(err.Error(), "a@b") {
+		t.Fatalf("error quotes the query: %v", err)
 	}
 }
 

@@ -643,7 +643,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
-		return nil, unexpectedOptionError(u, r)
+		return nil, fmt.Errorf("redis: unexpected option: %s", quoteURLPart(u.RawQuery, strings.Join(r, ", ")))
 	}
 
 	return o, nil

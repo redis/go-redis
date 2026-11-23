@@ -1115,36 +1115,45 @@ func redactRawURL(s string) (string, string) {
 	}
 }
 
-// quoteURLPart returns the last of parts for an error message. When any part
-// has an '@', url.Parse likely split the password at an unescaped '/', '?' or
-// '#', so the text may hold the password and is not returned.
-func quoteURLPart(parts ...string) string {
+// hiddenURLPart returns why parts can't be quoted in an error message, or ""
+// when the last of them is safe to show. A part with an '@' likely holds a
+// password that url.Parse split at an unescaped '/', '?' or '#'. A query with
+// a password= value may hold the rest of that password after an unescaped '&'.
+func hiddenURLPart(parts ...string) string {
 	for _, p := range parts {
 		if strings.Contains(p, "@") {
-			return hiddenURLPart
+			return "(not shown: it contains '@'; escape '/', '?' and '#' in the password)"
 		}
+	}
+	for _, p := range parts {
+		if strings.Contains(p, "password=") {
+			return "(not shown: the query has a password; escape '&' in it)"
+		}
+	}
+	return ""
+}
+
+// quoteURLPart returns the last of parts for an error message, or the reason
+// it is left out.
+func quoteURLPart(parts ...string) string {
+	if hidden := hiddenURLPart(parts...); hidden != "" {
+		return hidden
 	}
 	return parts[len(parts)-1]
 }
 
-const hiddenURLPart = "(not shown: it contains '@'; escape '/', '?' and '#' in the password)"
-
-// quoteURLError is quoteURLPart for an error that quotes the last of parts.
+// quoteURLError is quoteURLPart for an error that quotes the last of parts. A
+// *strconv.NumError keeps its type, so errors.As and errors.Is still work.
 func quoteURLError(err error, parts ...string) error {
-	if quoteURLPart(parts...) == hiddenURLPart {
-		return errors.New(hiddenURLPart)
+	hidden := hiddenURLPart(parts...)
+	if hidden == "" {
+		return err
 	}
-	return err
-}
-
-// unexpectedOptionError reports the query keys no option read. An unescaped
-// '&' in a password= value makes the rest of the password a key, so the names
-// are left out when the query has a password.
-func unexpectedOptionError(u *url.URL, keys []string) error {
-	if strings.Contains(u.RawQuery, "password=") {
-		return errors.New("redis: unexpected option: (not shown: the query has a password; escape '&' in it)")
+	var numErr *strconv.NumError
+	if errors.As(err, &numErr) {
+		return &strconv.NumError{Func: numErr.Func, Num: hidden, Err: numErr.Err}
 	}
-	return fmt.Errorf("redis: unexpected option: %s", quoteURLPart(u.RawQuery, strings.Join(keys, ", ")))
+	return errors.New(hidden)
 }
 
 func setupTCPConn(u *url.URL) (*Options, error) {
@@ -1425,7 +1434,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
-		return nil, unexpectedOptionError(u, r)
+		return nil, fmt.Errorf("redis: unexpected option: %s", quoteURLPart(u.RawQuery, strings.Join(r, ", ")))
 	}
 
 	return o, nil
