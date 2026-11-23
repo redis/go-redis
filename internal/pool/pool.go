@@ -203,8 +203,6 @@ func resolveMetrics(own *MetricCallbacks) *MetricCallbacks {
 
 func (p *ConnPool) metrics() *MetricCallbacks { return resolveMetrics(p.cfg.Metrics) }
 
-func (p *PubSubPool) metrics() *MetricCallbacks { return resolveMetrics(p.opt.Metrics) }
-
 // MetricsOf returns the metric callbacks of the pool cn was dialed by: the
 // pool's own Options.Metrics, or the global table. Never nil.
 func MetricsOf(cn *Conn) *MetricCallbacks { return resolveMetrics(cn.metrics) }
