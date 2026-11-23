@@ -407,6 +407,12 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			}
 		case "asking":
 			s.askings.Add(1)
+		case "himport":
+			if inMulti {
+				// A queued HIMPORT PREPARE runs only at EXEC
+				// time, like any other queued command.
+				reply = "+QUEUED\r\n"
+			}
 		case "multi":
 			s.multiCount.Add(1)
 			if inMulti {
@@ -1898,6 +1904,10 @@ type scriptRetryServer struct {
 	// other users get NOPERM. Tests that need a LOAD to run under a
 	// specific AUTH use it.
 	loadUser string
+	// failReset, when set, makes every RESET answer NOPERM: the
+	// transaction stays open, exactly like a real server refusing
+	// RESET for an ACL user.
+	failReset atomic.Bool
 	// persistCache makes the script cache survive across connections
 	// (a still-running server), instead of a fresh cache per
 	// connection (a restarted server).
@@ -2064,11 +2074,25 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			}
 			_, _ = conn.Write([]byte("*2\r\n$1\r\na\r\n$1\r\nb\r\n"))
 		case "watch":
+			if inMulti {
+				// A WATCH inside MULTI is rejected without being
+				// queued, exactly like a real server, so it holds
+				// no EXEC result element (see
+				// pipelineQueuedExecErrMap).
+				_, _ = conn.Write([]byte("-ERR WATCH inside MULTI is not allowed\r\n"))
+				continue
+			}
 			for _, key := range args {
 				watched[key] = true
 			}
 			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "unwatch":
+			if inMulti {
+				// An UNWATCH inside MULTI is rejected the same
+				// way as a WATCH: never queued, no EXEC element.
+				_, _ = conn.Write([]byte("-ERR UNWATCH inside MULTI is not allowed\r\n"))
+				continue
+			}
 			watched = map[string]bool{}
 			dirty = false
 			_, _ = conn.Write([]byte("+OK\r\n"))
@@ -2083,6 +2107,22 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			watched = map[string]bool{}
 			dirty = false
 			_, _ = conn.Write([]byte("+OK\r\n"))
+		case "reset":
+			if s.failReset.Load() {
+				// A rejected RESET leaves the transaction open:
+				// the frame and its queued body stay, exactly
+				// like a real server refusing RESET for an ACL
+				// user (see pipelineDiscardedTxCmds).
+				_, _ = conn.Write([]byte("-NOPERM this user has no permissions to run the 'reset' command\r\n"))
+				continue
+			}
+			// A successful RESET discards the transaction like
+			// DISCARD and restores the default database.
+			inMulti = false
+			queued = nil
+			watched = map[string]bool{}
+			dirty = false
+			_, _ = conn.Write([]byte("+RESET\r\n"))
 		case "exec":
 			if !inMulti {
 				_, _ = conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
@@ -8511,5 +8551,299 @@ func TestPipelineRetryFailedWatchIsNotReissued(t *testing.T) {
 	suffix := pipelineRetrySuffix(ctx, cmds, io.ErrUnexpectedEOF, nil)
 	if len(suffix) != 1 || suffix[0] != get {
 		t.Fatalf("suffix has %d commands, want 1 (only the unanswered GET; the rejected WATCH must not be reissued)", len(suffix))
+	}
+}
+
+// TestPipelineRetryDiscardedTxHImportPrepareDoesNotForceWholeBatch: an
+// HIMPORT PREPARE inside a transaction DISCARD dropped never executed,
+// so it registered no fieldset and holds no connection state the retry
+// must re-establish. Here MULTI, HIMPORT PREPARE and DISCARD run, then
+// an INCR and a TRYAGAIN MGET: without the fix the prefix scan treats
+// the PREPARE as unreissuable state and returns the whole batch, so the
+// answered INCR runs a second time while Exec reports success; with it
+// the retry resends only the rejected MGET. Regression test for the
+// Cursor High review finding on #4351.
+func TestPipelineRetryDiscardedTxHImportPrepareDoesNotForceWholeBatch(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 99
+	server.tryagainConn = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	prepare := pipe.Do(ctx, "himport", "prepare", "fs")
+	discard := pipe.Do(ctx, "discard")
+	incr := pipe.Incr(ctx, "counter")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must send only the rejected MGET)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := prepare.Err(); err != nil {
+		t.Fatalf("HIMPORT PREPARE: %v", err)
+	}
+	if err := discard.Err(); err != nil {
+		t.Fatalf("DISCARD: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR after the discarded frame must not be re-run)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+}
+
+// TestPipelineRetryReadAfterWatchIsSafeFollower: an answered read after a
+// WATCH cannot dirty it — a GET modifies no key — so it is a safe
+// follower like a session reissue. Here an INCR runs before the WATCH, a
+// GET runs after it, and a TRYAGAIN MGET follows: without the fix the
+// safety scan treats the GET as a dirtying follower and returns the
+// whole batch, so the answered INCR before the watch runs a second time
+// while Exec reports success; with it the retry resends only the
+// rejected MGET. Regression test for the Cursor High review finding on
+// #4351.
+func TestPipelineRetryReadAfterWatchIsSafeFollower(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 99
+	server.tryagainConn = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	incr := pipe.Incr(ctx, "counter")
+	watch := pipe.Do(ctx, "watch", "k")
+	get := pipe.Get(ctx, "k")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must send only the rejected MGET)", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("WATCH: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR before the watch must not be re-run)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+}
+
+// TestPipelineRetryUnwatchAfterBoundaryClearsWatchSafetyScan: a successful
+// UNWATCH the first attempt answered past the boundary still cleared the
+// watch before the followers after it ran, even though the tail filter
+// keeps it for re-run (an UNWATCH is connection state). Here WATCH, a
+// TRYAGAIN MGET, UNWATCH and an INCR run: without the fix the safety scan
+// cannot see the UNWATCH clear event, treats the answered INCR as a
+// dirtying follower of the still-live watch and returns the whole batch,
+// so the INCR runs a second time while Exec reports success; with it the
+// retry resends only the rejected MGET (with the reissued WATCH and the
+// kept UNWATCH). Regression test for the Codex P1 review finding on #4351.
+func TestPipelineRetryUnwatchAfterBoundaryClearsWatchSafetyScan(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 99
+	server.tryagainConn = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	watch := pipe.Do(ctx, "watch", "k")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	unwatch := pipe.Do(ctx, "unwatch")
+	incr := pipe.Incr(ctx, "counter")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must send only the rejected MGET)", err)
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("WATCH: %v", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if err := unwatch.Err(); err != nil {
+		t.Fatalf("UNWATCH: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if got := server.watches.Load(); got != 2 {
+		t.Fatalf("server received %d WATCH commands, want 2 (the original plus its reissue ahead of the retried MGET)", got)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR after the successful UNWATCH must not be re-run)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+}
+
+// TestPipelineRetryRejectedResetKeepsDiscardedTx: a RESET the server
+// rejected leaves the MULTI frame open, so a DISCARD after it still
+// discards the frame's queued commands. Here MULTI, EVAL, a NOPERM RESET
+// and DISCARD run, then an EVALSHA the first connection drops before
+// answering: without the fix the frame tracking is cleared by the
+// rejected RESET, the DISCARD marks nothing discarded, and the rebuild
+// synthesises a SCRIPT LOAD for the EVAL that never ran — the retried
+// EVALSHA then executes a script the original ordering would have
+// refused with NOSCRIPT; with it the EVAL is recognised as discarded
+// and the EVALSHA fails NOSCRIPT as it should. Regression test for the
+// Codex P2 review finding on #4351.
+func TestPipelineRetryRejectedResetKeepsDiscardedTx(t *testing.T) {
+	server := newScriptRetryServer(t)
+	server.failReset.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	eval := pipe.Do(ctx, "eval", src, 0)
+	reset := pipe.Do(ctx, "reset")
+	discard := pipe.Do(ctx, "discard")
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("Exec: %v, want NOPERM (the rejected RESET is reissued as a required prerequisite and fails again)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("EVAL: %v, want nil (the queued EVAL itself holds +QUEUED; it never ran because DISCARD dropped it)", err)
+	}
+	if err := reset.Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("RESET: %v, want NOPERM", err)
+	}
+	if err := discard.Err(); err != nil {
+		t.Fatalf("DISCARD: %v", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the discarded EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a discarded EVAL establishes no cache entry to preload)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the discarded script must not be executed again)", got)
+	}
+	if got := server.evalshas.Load(); got != 1 {
+		t.Fatalf("server received %d EVALSHA commands, want 1", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryWatchInMultiDoesNotShiftExecOrdinals: a WATCH inside
+// MULTI is rejected without being queued, so it contributes no EXEC
+// result element. Here a TRYAGAIN MGET, MULTI, WATCH, a queued EVAL with
+// a negative key count, EXEC and EVALSHA run: without the fix the ordinal
+// map counts the WATCH as a queued body, so the EVAL's EXEC rejection
+// lands on the WATCH and the EVAL reads a nil element as though it had
+// run — the rebuild synthesises a SCRIPT LOAD and the retried EVALSHA
+// executes the rejected script; with it the EVAL is recognised as
+// rejected and the EVALSHA fails NOSCRIPT. Regression test for the Codex
+// P2 review finding on #4351.
+func TestPipelineRetryWatchInMultiDoesNotShiftExecOrdinals(t *testing.T) {
+	server := newScriptRetryServer(t)
+	server.tryagainMget = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	multi := pipe.Do(ctx, "multi")
+	watch := pipe.Do(ctx, "watch", "k")
+	eval := pipe.Do(ctx, "eval", src, -1)
+	exec := pipe.Do(ctx, "exec")
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "WATCH inside MULTI") {
+		t.Fatalf("Exec: %v, want the WATCH rejection", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := watch.Err(); err == nil || !strings.Contains(err.Error(), "WATCH inside MULTI is not allowed") {
+		t.Fatalf("WATCH: %v, want the inside-MULTI rejection", err)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("EVAL: %v, want nil (the queued EVAL itself holds +QUEUED; its rejection is in the EXEC result array)", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a rejected EVAL establishes no cache entry to preload)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the rejected script must not be executed again)", got)
+	}
+	if got := server.evalshas.Load(); got != 1 {
+		t.Fatalf("server received %d EVALSHA commands, want 1", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetrySuffixManyAnsweredWaitsIsLinear: many answered WAITs
+// after a single pending read must not pay a rescan per barrier. Before
+// the fix every barrier scanned its whole preceding batch looking for a
+// pending write that does not exist, so 20,000 barriers cost ~2e8
+// iterations; the precomputed pending-write prefix answers the same
+// question in one pass.
+func TestPipelineRetrySuffixManyAnsweredWaitsIsLinear(t *testing.T) {
+	const n = 20000
+	ctx := context.Background()
+	cmds := make([]Cmder, 0, n+1)
+	mget := NewStringCmd(ctx, "mget", "{m}a", "{m}b")
+	mget.SetErr(proto.RedisError("TRYAGAIN Multiple keys request during slot migration"))
+	cmds = append(cmds, mget)
+	for i := 0; i < n; i++ {
+		cmds = append(cmds, NewStringCmd(ctx, "wait", 1, 100))
+	}
+	start := time.Now()
+	suffix := pipelineRetrySuffix(ctx, cmds, proto.RedisError("TRYAGAIN Multiple keys request during slot migration"), nil)
+	elapsed := time.Since(start)
+	if len(suffix) != 1 || suffix[0] != mget {
+		t.Fatalf("suffix has %d commands, want 1 (only the unanswered MGET; the answered WAITs need no barrier re-run without a pending write)", len(suffix))
+	}
+	// Machine-dependent by nature: the precomputed scan runs in
+	// milliseconds on this workload, while the per-barrier rescans it
+	// replaced took seconds. The bound only guards against the
+	// quadratic behaviour coming back, with ample headroom.
+	if elapsed > time.Second {
+		t.Fatalf("pipelineRetrySuffix took %v for %d answered WAITs, want < 1s (the per-barrier prefix rescans are quadratic)", elapsed, n)
 	}
 }
