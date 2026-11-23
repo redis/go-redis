@@ -22,6 +22,11 @@ var ErrPoolExhausted = pool.ErrPoolExhausted
 // ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 var ErrPoolTimeout = pool.ErrPoolTimeout
 
+// ErrEndpointChanged indicates that a Sentinel endpoint changed or failed
+// primary-role verification before a connection could serve the command.
+// Use errors.Is to match it; the error may include the endpoint and role.
+var ErrEndpointChanged = pool.ErrDialGenerationChanged
+
 // ErrClusterTopologyUnhealthy indicates that a node required by an operation
 // is reported as unavailable by the cluster topology. Use errors.Is to match
 // this error, which may include details about the node or slot.
@@ -87,6 +92,9 @@ func isTimeoutError(err error) (isTimeout bool, hasTimeoutFlag bool) {
 }
 
 func shouldRetry(err error, retryTimeout bool) bool {
+	if errors.Is(err, pool.ErrDialGenerationChanged) {
+		return true
+	}
 	if err == nil {
 		return false
 	}

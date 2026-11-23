@@ -324,6 +324,10 @@ type Pooler interface {
 }
 
 type Options struct {
+	// DialGeneration fences connections selected before an endpoint change.
+	// Nil preserves ordinary pool behavior. Loads must not acquire client locks.
+	DialGeneration *atomic.Uint64
+
 	Dialer          func(context.Context) (net.Conn, error)
 	ReadBufferSize  int
 	WriteBufferSize int
@@ -718,6 +722,11 @@ func (p *ConnPool) addIdleConn() error {
 		return ErrClosed
 	}
 
+	if !p.currentGeneration(cn) {
+		_ = cn.Close()
+		return ErrDialGenerationChanged
+	}
+
 	p.conns[cn.GetID()] = cn
 	p.pendingConns--
 	reserved = false
@@ -836,47 +845,42 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	// Do not apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
 	// We still propagate ctx so callers can cancel explicitly.
-	cn, err := p.dialConn(ctx, pooled)
-	if err != nil {
-		return nil, err
-	}
-
-	// NOTE: Connection is in CREATED state and will be initialized by redis.go:initConn()
-	// when first used. Do NOT transition to IDLE here - that happens after initialization completes.
-	// The state machine flow is: CREATED → INITIALIZING (in initConn) → IDLE (after init success)
-
-	p.connsMu.Lock()
-	defer p.connsMu.Unlock()
-	if p.closed() {
-		_ = cn.Close()
-		return nil, ErrClosed
-	}
-	// Check if pool was closed while we were waiting for the lock
-	if p.conns == nil {
-		p.conns = make(map[uint64]*Conn)
-	}
-	p.conns[cn.GetID()] = cn
-	p.pendingConns--
-	reserved = false
-
-	if pooled {
-		// If pool is full remove the cn on next Put.
-		currentPoolSize := p.poolSize.Load()
-		if currentPoolSize >= p.cfg.PoolSize {
-			cn.pooled = false
-		} else {
-			p.poolSize.Add(1)
+	return p.dialConnAdmit(ctx, pooled, func(cn *Conn) bool {
+		p.connsMu.Lock()
+		defer p.connsMu.Unlock()
+		if p.closed() {
+			return false
 		}
-	}
+		if !p.currentGeneration(cn) {
+			return false
+		}
+		// Check if pool was closed while we were waiting for the lock
+		if p.conns == nil {
+			p.conns = make(map[uint64]*Conn)
+		}
+		p.conns[cn.GetID()] = cn
+		p.pendingConns--
+		reserved = false
 
-	// All new connections start as "used" metrically. For the miss path in getConn,
-	// this is the final state. For putIdleConn (undelivered conn), a used→idle
-	// transition is emitted when it's added to idleConns.
-	if cb := p.metrics().ConnectionCount; cb != nil {
-		cb(ctx, 1, cn, "used", false)
-	}
+		if pooled {
+			// If pool is full remove the cn on next Put.
+			currentPoolSize := p.poolSize.Load()
+			if currentPoolSize >= p.cfg.PoolSize {
+				cn.pooled = false
+			} else {
+				p.poolSize.Add(1)
+			}
+		}
 
-	return cn, nil
+		// All new connections start as "used" metrically. For the miss path in getConn,
+		// this is the final state. For putIdleConn (undelivered conn), a used→idle
+		// transition is emitted when it's added to idleConns.
+		if cb := p.metrics().ConnectionCount; cb != nil {
+			cb(ctx, 1, cn, "used", false)
+		}
+
+		return true
+	})
 }
 
 type dialExhaustedKey struct{ pool *ConnPool }
@@ -900,6 +904,10 @@ func (p *ConnPool) markDialExhaustion(ctx context.Context) {
 }
 
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
+	return p.dialConnAdmit(ctx, pooled, nil)
+}
+
+func (p *ConnPool) dialConnAdmit(ctx context.Context, pooled bool, admit func(*Conn) bool) (*Conn, error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
@@ -943,6 +951,13 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 			}
 		}
 
+		var stamp *dialGeneration
+		var before uint64
+		if p.cfg.DialGeneration != nil {
+			before = p.cfg.DialGeneration.Load()
+			stamp = &dialGeneration{}
+			attemptCtx = context.WithValue(attemptCtx, dialGenerationKey{}, stamp)
+		}
 		netConn, err := p.cfg.Dialer(attemptCtx)
 		if cancel != nil {
 			cancel()
@@ -966,6 +981,14 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 		cn := NewConnWithBufferSize(netConn, p.cfg.ReadBufferSize, p.cfg.WriteBufferSize)
 		cn.pooled = pooled
+		if stamp != nil {
+			cn.dialGeneration = stamp.value
+			if cn.dialGeneration == 0 {
+				// A DialHook may replace the context. Accept its result only if
+				// the source stayed unchanged throughout the dial.
+				cn.dialGeneration = before
+			}
+		}
 		// Store dial start time only if we recorded it
 		if dialStartNs > 0 {
 			cn.dialStartNs.Store(dialStartNs)
@@ -975,9 +998,23 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		cn.SetPoolName(p.cfg.Name)
 		cn.metrics = p.cfg.Metrics
 
+		if !p.currentGeneration(cn) || admit != nil && !admit(cn) {
+			_ = cn.Close()
+			if p.closed() {
+				return nil, ErrClosed
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			lastErr = ErrDialGenerationChanged
+			continue
+		}
 		return cn, nil
 	}
 
+	if errors.Is(lastErr, ErrDialGenerationChanged) {
+		return nil, lastErr
+	}
 	internal.Logger.Printf(ctx, "redis: connection pool: failed to dial after %d attempts: %v", attempt, lastErr)
 	// All retries failed - handle error tracking
 	p.setLastDialError(lastErr)
@@ -1286,7 +1323,11 @@ retryIdle:
 
 		if !p.isHealthyConn(cn, nowNs) {
 			// Connection was already transitioned to MetricStateUsed under the lock above.
-			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateUsed)
+			reason := CloseReasonStale
+			if !p.currentGeneration(cn) {
+				reason = CloseReasonFailover
+			}
+			_ = p.CloseConn(ctx, cn, reason, MetricStateUsed)
 			continue
 		}
 
@@ -1419,6 +1460,23 @@ retryIdle:
 	newcn, err = p.queuedNewConn(ctx, wait)
 	if err != nil {
 		return nil, err
+	}
+
+	if !p.currentGeneration(newcn) {
+		_ = p.CloseConn(ctx, newcn, CloseReasonFailover, MetricStateUsed)
+		if err := ctx.Err(); err != nil {
+			p.freeTurn()
+			return nil, err
+		}
+		if !time.Now().Before(poolDeadline) {
+			p.freeTurn()
+			if !wait {
+				return nil, ErrPoolTryFull
+			}
+			return nil, ErrPoolTimeout
+		}
+		nowNs = time.Now().UnixNano()
+		goto retryIdle
 	}
 
 	// Process connection using the hooks system
@@ -2314,6 +2372,7 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 
 	var firstErr error
 	var toClose []*Conn
+	var usedToClose []*Conn
 	for _, cn := range p.conns {
 		if fn(cn) {
 			if _, isIdle := idleConnSet[cn]; isIdle {
@@ -2325,14 +2384,19 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 				// The connection remains in p.conns. When putConn() is called later,
 				// it will close the connection instead of pooling it.
 				cn.closeReason.Store(CloseReasonFailover)
-				if err := cn.Close(); err != nil && firstErr == nil {
-					firstErr = err
-				}
+				cn.MarkCloseOnPut(CloseReasonFailover)
+				usedToClose = append(usedToClose, cn)
 			}
 		}
 	}
 	countCb := p.metrics().ConnectionCount
 	p.connsMu.Unlock()
+
+	for _, cn := range usedToClose {
+		if err := cn.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 
 	// Run OnRemove so hooks drop per-connection state (e.g. streaming
 	// credentials listeners) for the idle conns removed here.
@@ -2550,6 +2614,9 @@ func (p *ConnPool) Close() error {
 }
 
 func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
+	if !p.currentGeneration(cn) {
+		return false
+	}
 	// Performance optimization: check conditions from cheapest to most expensive,
 	// and from most likely to fail to least likely to fail.
 

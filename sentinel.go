@@ -8,12 +8,14 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
@@ -99,38 +101,44 @@ type FailoverOptions struct {
 	DB                           int
 
 	// ClientSideCacheConfig enables an independent cache per node when using
-	// NewFailoverClusterClient. Limits apply per node. Single-node failover
-	// clients and Sentinel discovery connections do not support CSC.
+	// NewFailoverClusterClient. NewFailoverClient supports primary-only CSC;
+	// ReplicaOnly disables it with a warning. Sentinel discovery stays uncached.
 	// As with standalone CSC, caching is disabled when DB is not zero.
 	// See ClusterOptions.ClientSideCacheConfig.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
+	// ClientSideCache supplies an explicit cache for NewFailoverClient. Storage
+	// is scoped to this client and its clones. It is not distributed to nodes
+	// of NewFailoverClusterClient, which creates independent local caches.
+	// Experimental: this API may change in a minor release.
+	ClientSideCache Cache
+
 	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
 	// The zero value is TrackingModePlain. An invalid value logs a warning and
-	// disables CSC at construction. Only supported by NewFailoverClusterClient.
+	// disables CSC at construction. Supported by primary-only NewFailoverClient and NewFailoverClusterClient.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheTrackingMode TrackingMode
 
 	// ClientSideCacheable selects eligible unmarked calls for caching. It also
-	// applies with a custom Cache. Only supported by NewFailoverClusterClient.
+	// applies with a custom Cache. Supported by primary-only NewFailoverClient and NewFailoverClusterClient.
 	// See CacheablePredicate for its callback contract.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheable CacheablePredicate
 	// ClientSideCacheStrategy selects the node clients' tracking strategy.
-	// Only supported by NewFailoverClusterClient.
+	// Supported by primary-only NewFailoverClient and NewFailoverClusterClient.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
 	// ClientSideCacheRefreshOnInvalidate enables node-local background refresh.
-	// Only supported by NewFailoverClusterClient.
+	// Supported by primary-only NewFailoverClient and NewFailoverClusterClient.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheRefreshOnInvalidate bool
 	// ClientSideCacheCoalesceMisses coalesces concurrent node-local cache misses.
-	// Only supported by NewFailoverClusterClient.
+	// Supported by primary-only NewFailoverClient and NewFailoverClusterClient.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheCoalesceMisses bool
 	// ClientSideCacheInvalidationBatchWindow batches node-local invalidations.
-	// Only supported by NewFailoverClusterClient.
+	// Supported by primary-only NewFailoverClient and NewFailoverClusterClient.
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheInvalidationBatchWindow time.Duration
 
@@ -258,8 +266,16 @@ type FailoverOptions struct {
 
 func (opt *FailoverOptions) clientOptions() *Options {
 	return &Options{
-		Addr:       "FailoverClient",
-		ClientName: opt.ClientName,
+		ClientSideCacheConfig:                  opt.ClientSideCacheConfig,
+		ClientSideCache:                        opt.ClientSideCache,
+		ClientSideCacheTrackingMode:            opt.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    opt.ClientSideCacheable,
+		ClientSideCacheStrategy:                opt.ClientSideCacheStrategy,
+		ClientSideCacheRefreshOnInvalidate:     opt.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          opt.ClientSideCacheCoalesceMisses,
+		ClientSideCacheInvalidationBatchWindow: opt.ClientSideCacheInvalidationBatchWindow,
+		Addr:                                   "FailoverClient",
+		ClientName:                             opt.ClientName,
 
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
@@ -326,6 +342,15 @@ func (opt *FailoverOptions) clientOptions() *Options {
 }
 
 func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
+	readTimeout, writeTimeout := opt.ReadTimeout, opt.WriteTimeout
+	// Data sockets may skip deadlines entirely. Internal discovery must still
+	// apply its context deadline, including the reconciliation task's bound.
+	if readTimeout == -2 {
+		readTimeout = -1
+	}
+	if writeTimeout == -2 {
+		writeTimeout = -1
+	}
 	return &Options{
 		Addr:       addr,
 		ClientName: opt.ClientName,
@@ -350,10 +375,12 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
 		DialerRetryBackoff: opt.DialerRetryBackoff,
-		ReadTimeout:        opt.ReadTimeout,
-		WriteTimeout:       opt.WriteTimeout,
+		ReadTimeout:        readTimeout,
+		WriteTimeout:       writeTimeout,
 
-		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
+		// Internal discovery must honor its bounded contexts even when data
+		// commands intentionally ignore context deadlines.
+		ContextTimeoutEnabled: true,
 
 		PoolFIFO:                    opt.PoolFIFO,
 		PoolSize:                    opt.PoolSize,
@@ -677,8 +704,17 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		sentinelAddrs: sentinelAddrs,
 	}
 
-	opt := failoverOpt.clientOptions()
+	opt := failoverOpt.clientOptions().clone()
 	opt.Dialer = masterReplicaDialer(failover, opt)
+	if !failoverOpt.ReplicaOnly {
+		opt.failover = failover
+	} else if opt.ClientSideCacheConfig != nil || opt.ClientSideCache != nil {
+		internal.Logger.Printf(context.Background(), "redis: client-side caching is disabled with ReplicaOnly")
+		opt.ClientSideCacheConfig, opt.ClientSideCache = nil, nil
+	}
+	if opt.ClientSideCache != nil {
+		opt.cscCacheScope = generateUniqueID() + cscNamespaceSep
+	}
 	opt.init()
 
 	rdb := &Client{
@@ -690,6 +726,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			himport:   newHImportRegistry(),
 		},
 	}
+	opt.failoverOwner = rdb.baseClient
 	rdb.rec, rdb.poolMetrics = clientRecorder(opt.OTelRecorder)
 	rdb.init()
 
@@ -706,6 +743,24 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// must already include this one — otherwise those discovery resources outlive
 	// the client nobody will ever hold (Copilot on #4002).
 	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
+	// The listener owns failover, so it cannot be its own GC cleanup target.
+	// The shared base stays alive through Conn/EphemeralConn pools as well as
+	// Client clones. Keep cleanup non-blocking; Close joins reconciliation.
+	runtime.AddCleanup(rdb.baseClient, func(f *sentinelFailover) { go func() { _ = f.Close() }() }, failover)
+	owner := weak.Make(rdb.baseClient)
+	failover.onFailover = func(ctx context.Context, _ string) {
+		if client := owner.Value(); client != nil {
+			if client.cmdMeta != nil {
+				client.cmdMeta.invalidateLiveAndRequestRefresh()
+			}
+			if p, ok := client.connPool.(*pool.ConnPool); ok {
+				_ = p.Filter(func(cn *pool.Conn) bool { return cn.DialGeneration() < failover.epoch.Load() })
+			}
+			if ref := client.loadPipelinePool(); ref != nil {
+				_ = ref.pool.Filter(func(cn *pool.Conn) bool { return cn.DialGeneration() < failover.epoch.Load() })
+			}
+		}
+	}
 
 	// Close a partially-built client if any construction step below panics before
 	// this constructor returns. Mirrors NewClient: the pools (and their MinIdleConns
@@ -726,6 +781,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Initialize push notification processor using shared helper
 	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
+	opt.PushNotificationProcessor = rdb.pushProcessor
 
 	// Generate unique pool names for metrics
 	uniqueID := generateUniqueID()
@@ -770,24 +826,18 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// configured.
 	otel.RegisterPools(rdb.recorder(), rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
 
+	rdb.initCacheAndMetadata()
 	failover.mu.Lock()
-	failover.onFailover = func(ctx context.Context, addr string) {
-		if connPool, ok := rdb.connPool.(*pool.ConnPool); ok {
-			_ = connPool.Filter(func(cn *pool.Conn) bool {
-				return cn.RemoteAddr().String() != addr
-			})
-		}
-		// Drop stale pipeline-pool connections dialed to the demoted master too;
-		// otherwise pipelined traffic keeps using the old address after failover.
-		// The pipeline pool is created at construction (before this callback can
-		// fire), so the ref is simply read here.
-		if ref := rdb.loadPipelinePool(); ref != nil {
-			_ = ref.pool.Filter(func(cn *pool.Conn) bool {
-				return cn.RemoteAddr().String() != addr
-			})
-		}
-	}
+	failover.cscActive = rdb.cscActive
+	failover.ready = true
+	hasSource := failover.masterAddr != ""
 	failover.mu.Unlock()
+	failover.cleanOldConnections(context.Background())
+	// Prewarming may have selected an endpoint before CSC was attached. Only
+	// that case needs a baseline here; otherwise preserve lazy discovery.
+	if hasSource && rdb.cscTrackingRequested() {
+		failover.enqueueReconcile(false)
+	}
 
 	built = true
 	return rdb
@@ -800,17 +850,25 @@ func masterReplicaDialer(
 	return func(ctx context.Context, network, _ string) (net.Conn, error) {
 		var addr string
 		var err error
+		observedEpoch := failover.epoch.Load()
 
 		if failover.opt.ReplicaOnly {
 			addr, err = failover.RandomReplicaAddr(ctx)
 		} else {
 			addr, err = failover.MasterAddr(ctx)
 			if err == nil {
-				failover.trySwitchMaster(ctx, addr)
+				failover.switchMasterIfCurrent(ctx, addr, observedEpoch)
 			}
 		}
 		if err != nil {
 			return nil, err
+		}
+		if !failover.opt.ReplicaOnly {
+			failover.mu.RLock()
+			addr = failover.masterAddr
+			epoch := failover.epoch.Load()
+			failover.mu.RUnlock()
+			pool.SetDialGeneration(ctx, epoch)
 		}
 		if failover.opt.Dialer != nil {
 			return failover.opt.Dialer(ctx, network, addr)
@@ -1057,6 +1115,23 @@ type sentinelFailover struct {
 
 	onFailover func(ctx context.Context, addr string)
 	onUpdate   func(ctx context.Context)
+	// epoch is published with masterAddr under mu; pool admission only loads it.
+	epoch atomic.Uint64
+	// Fields below are protected by mu. ready publishes fully built pools.
+	ready              bool
+	configEpoch        uint64
+	primaryRunID       string
+	configKnown        bool
+	cscActive          *atomic.Bool
+	rediscover         string // Discredited Sentinel address; empty for ordinary discovery.
+	roleWarned         bool
+	reconcileWarned    bool
+	reconcileRunning   bool
+	reconcileAgain     bool
+	reconcileUncertain bool
+	subscribed         bool
+	reconcileCancel    context.CancelFunc
+	reconcileDone      chan struct{}
 
 	mu         sync.RWMutex
 	masterAddr string
@@ -1074,12 +1149,20 @@ type sentinelFailover struct {
 
 func (c *sentinelFailover) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.closed = true
-	if c.sentinel != nil {
-		return c.closeSentinel()
+	cancel, done := c.reconcileCancel, c.reconcileDone
+	if cancel != nil {
+		cancel()
 	}
-	return nil
+	var err error
+	if c.sentinel != nil {
+		err = c.closeSentinel()
+	}
+	c.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+	return err
 }
 
 func (c *sentinelFailover) closeSentinel() error {
@@ -1121,9 +1204,10 @@ func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error
 func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	c.mu.RLock()
 	sentinel := c.sentinel
+	rediscover := c.rediscover
 	c.mu.RUnlock()
 
-	if sentinel != nil {
+	if sentinel != nil && rediscover == "" {
 		addr, err := c.getMasterAddr(ctx, sentinel)
 		if err != nil {
 			if isContextError(ctx.Err()) {
@@ -1140,6 +1224,10 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	rediscover = c.rediscover
+	if rediscover != "" && c.sentinel != nil {
+		_ = c.closeSentinel()
+	}
 	if c.sentinel != nil {
 		addr, err := c.getMasterAddr(ctx, c.sentinel)
 		if err != nil {
@@ -1165,53 +1253,87 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		return "", errors.New("redis: no sentinels configured")
 	}
 
-	var (
-		masterAddr string
-		wg         sync.WaitGroup
-		once       sync.Once
-		errCh      = make(chan error, len(c.sentinelAddrs))
-	)
-
-	ctx, cancel := context.WithCancel(ctx)
+	type result struct {
+		index int
+		addr  string
+		err   error
+	}
+	clients := make([]*SentinelClient, len(c.sentinelAddrs))
+	results := make(chan result, len(clients))
+	var wg sync.WaitGroup
+	queryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
 	for i, sentinelAddr := range c.sentinelAddrs {
+		clients[i] = NewSentinelClient(c.opt.sentinelOptions(sentinelAddr))
 		wg.Add(1)
-		go func(i int, addr string) {
+		go func() {
 			defer wg.Done()
-			sentinelCli := NewSentinelClient(c.opt.sentinelOptions(addr))
-			addrVal, err := sentinelCli.GetMasterAddrByName(ctx, c.opt.MasterName).Result()
-			if err != nil {
-				internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName addr=%s, master=%q failed: %s",
-					addr, c.opt.MasterName, err)
-				_ = sentinelCli.Close()
-				errCh <- err
-				return
+			addr, err := c.getMasterAddr(queryCtx, clients[i])
+			if err != nil && queryCtx.Err() == nil {
+				internal.Logger.Printf(queryCtx, "sentinel: GetMasterAddrByName addr=%s, master=%q failed: %s", sentinelAddr, c.opt.MasterName, err)
 			}
-
-			once.Do(func() {
-				masterAddr = net.JoinHostPort(addrVal[0], addrVal[1])
-				// Push working sentinel to the top
-				c.sentinelAddrs[0], c.sentinelAddrs[i] = c.sentinelAddrs[i], c.sentinelAddrs[0]
-				c.setSentinel(ctx, sentinelCli)
-				internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
-				cancel()
-			})
-
-			if sentinelCli != c.sentinel {
-				_ = sentinelCli.Close()
-			}
-		}(i, sentinelAddr)
+			results <- result{index: i, addr: addr, err: err}
+		}()
 	}
 
+	selected, fallback := -1, result{index: -1}
+	var masterAddr string
+	var preferOther <-chan time.Time
+	errs := make([]error, 0, len(clients))
+collect:
+	for received := range clients {
+		var r result
+		select {
+		case r = <-results:
+		case <-ctx.Done():
+			break collect
+		case <-preferOther:
+			break collect
+		}
+		if r.err != nil {
+			errs = append(errs, r.err)
+			continue
+		}
+		if c.sentinelAddrs[r.index] == rediscover {
+			// Give peers a bounded preference once a usable fallback exists.
+			// Reserve time for selection and subscription within this budget.
+			fallback = r
+			if preferOther == nil && received+1 < len(clients) {
+				wait := 500 * time.Millisecond
+				if deadline, ok := ctx.Deadline(); ok {
+					wait = min(wait, time.Until(deadline)/2)
+				}
+				timer := time.NewTimer(wait)
+				defer timer.Stop()
+				preferOther = timer.C
+			}
+			continue
+		}
+		selected, masterAddr = r.index, r.addr
+		break
+	}
+	if selected == -1 {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+		} else if fallback.index != -1 {
+			selected, masterAddr = fallback.index, fallback.addr
+		}
+	}
+	cancel()
+	for i, client := range clients {
+		if i != selected {
+			// Cancellation alone does not interrupt an established socket read.
+			// Close losing clients before joining their discovery goroutines.
+			_ = client.Close()
+		}
+	}
 	wg.Wait()
-	close(errCh)
-	if masterAddr != "" {
+	if selected != -1 {
+		c.rediscover = ""
+		c.sentinelAddrs[0], c.sentinelAddrs[selected] = c.sentinelAddrs[selected], c.sentinelAddrs[0]
+		c.setSentinel(ctx, clients[selected])
+		internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", c.sentinelAddrs[0], masterAddr)
 		return masterAddr, nil
-	}
-	errs := make([]error, 0, len(errCh))
-	for err := range errCh {
-		errs = append(errs, err)
 	}
 	return "", fmt.Errorf("redis: all sentinels specified in configuration are unreachable: %w", errors.Join(errs...))
 }
@@ -1345,27 +1467,81 @@ func parseReplicaAddrs(addrs []map[string]string, keepDisconnected bool) []strin
 	return nodes
 }
 
-func (c *sentinelFailover) trySwitchMaster(ctx context.Context, addr string) {
+func (c *sentinelFailover) trySwitchMaster(ctx context.Context, addr string) bool {
+	return c.switchMasterIfCurrent(ctx, addr, c.epoch.Load())
+}
+
+func (c *sentinelFailover) switchMasterIfCurrent(ctx context.Context, addr string, observed uint64) bool {
 	c.mu.RLock()
-	currentAddr := c.masterAddr //nolint:ifshort
+	unchanged := c.closed || c.epoch.Load() != observed || addr == c.masterAddr
 	c.mu.RUnlock()
-
-	if addr == currentAddr {
-		return
+	if unchanged {
+		return false
 	}
-
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if addr == c.masterAddr {
-		return
+	if c.closed || c.epoch.Load() != observed || addr == c.masterAddr {
+		c.mu.Unlock()
+		return false
 	}
 	c.masterAddr = addr
+	c.primaryRunID = ""
+	// The version still fences older observers, but it describes the previous
+	// endpoint. Establish the new baseline without retiring its fresh sockets.
+	c.configKnown = false
+	c.roleWarned = false
+	c.epoch.Add(1)
+	c.mu.Unlock()
+	internal.Logger.Printf(ctx, "sentinel: new master=%q addr=%q", c.opt.MasterName, addr)
+	c.cleanOldConnections(ctx)
+	if c.trackingActive() {
+		c.enqueueReconcile(false)
+	}
+	return true
+}
 
-	internal.Logger.Printf(ctx, "sentinel: new master=%q addr=%q",
-		c.opt.MasterName, addr)
-	if c.onFailover != nil {
-		c.onFailover(ctx, addr)
+// trackingActive borrows the successful CSC-attachment signal published after
+// construction. Configured-but-disabled caches must not retire data sockets.
+func (c *sentinelFailover) trackingActive() bool {
+	c.mu.RLock()
+	active := c.cscActive
+	c.mu.RUnlock()
+	return active != nil && active.Load()
+}
+
+// rejectRole makes the next discovery prefer a different observer. Repeated
+// replies from an already retired source cannot disturb its replacement.
+func (c *sentinelFailover) rejectRole(ctx context.Context, generation uint64, role, addr string) {
+	c.mu.Lock()
+	if c.closed || c.epoch.Load() != generation {
+		c.mu.Unlock()
+		return
+	}
+	if c.sentinel != nil {
+		selected := c.sentinel.opt.Addr
+		c.rediscover = selected
+		if i := slices.Index(c.sentinelAddrs, selected); i >= 0 {
+			copy(c.sentinelAddrs[i:], c.sentinelAddrs[i+1:])
+			c.sentinelAddrs[len(c.sentinelAddrs)-1] = selected
+		}
+	}
+	warn := !c.roleWarned
+	c.roleWarned = true
+	c.configKnown = false
+	c.epoch.Add(1)
+	c.mu.Unlock()
+	if warn {
+		internal.Logger.Printf(ctx, "sentinel: expected primary at %s, got role %q; rediscovering through Sentinels", addr, role)
+	}
+	c.cleanOldConnections(ctx)
+	c.enqueueReconcile(false)
+}
+
+func (c *sentinelFailover) cleanOldConnections(ctx context.Context) {
+	c.mu.RLock()
+	callback, ready, addr := c.onFailover, c.ready, c.masterAddr
+	c.mu.RUnlock()
+	if ready && callback != nil {
+		callback(ctx, addr)
 	}
 }
 
@@ -1407,27 +1583,162 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 }
 
 func (c *sentinelFailover) listen(pubsub *PubSub) {
-	ctx := context.TODO()
-
+	ctx := context.Background()
 	if c.onUpdate != nil {
 		c.onUpdate(ctx)
 	}
-
-	ch := pubsub.Channel()
-	for msg := range ch {
-		if msg.Channel == "+switch-master" {
-			parts := strings.Split(msg.Payload, " ")
-			if parts[0] != c.opt.MasterName {
-				internal.Logger.Printf(pubsub.getContext(), "sentinel: ignore addr for master=%q", parts[0])
-				continue
+	for event := range pubsub.ChannelWithSubscriptions() {
+		ctx = pubsub.getContext()
+		switch msg := event.(type) {
+		case *Subscription:
+			// Exactly one channel's ACK schedules reconciliation, including on
+			// resubscribe. The other channel's ACK must not duplicate the work.
+			if msg.Kind == "subscribe" && msg.Channel == "+switch-master" && !c.opt.ReplicaOnly && c.onFailover != nil {
+				c.mu.Lock()
+				uncertain := c.subscribed
+				c.subscribed = true
+				c.mu.Unlock()
+				if c.trackingActive() {
+					c.enqueueReconcile(uncertain)
+				}
 			}
-			addr := net.JoinHostPort(parts[3], parts[4])
-			c.trySwitchMaster(pubsub.getContext(), addr)
+			continue
+		case *Message:
+			if msg.Channel == "+switch-master" {
+				parts := strings.Fields(msg.Payload)
+				if len(parts) != 5 || parts[0] != c.opt.MasterName {
+					continue
+				}
+				// Discovery can select the promoted primary before MASTER has
+				// caught up. Even an already-processed switch needs a new baseline.
+				if !c.trySwitchMaster(ctx, net.JoinHostPort(parts[3], parts[4])) && c.trackingActive() {
+					c.enqueueReconcile(false)
+				}
+			}
 		}
-
 		if c.onUpdate != nil {
 			c.onUpdate(ctx)
 		}
+	}
+}
+
+func (c *sentinelFailover) enqueueReconcile(uncertain bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.reconcileUncertain = c.reconcileUncertain || uncertain
+	if c.reconcileRunning {
+		c.reconcileAgain = true
+		return
+	}
+	c.reconcileRunning = true
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	c.reconcileCancel, c.reconcileDone = cancel, done
+	go func() {
+		defer close(done)
+		defer cancel()
+		for {
+			// Internal discovery is bounded even when application socket
+			// timeouts are disabled. Every reconnect shares this one task.
+			c.mu.Lock()
+			uncertain := c.reconcileUncertain
+			c.reconcileUncertain = false
+			c.mu.Unlock()
+			attemptCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+			c.reconcilePrimary(attemptCtx, uncertain)
+			stop()
+			c.mu.Lock()
+			if c.closed || !c.reconcileAgain {
+				c.reconcileRunning = false
+				c.mu.Unlock()
+				return
+			}
+			c.reconcileAgain = false
+			c.mu.Unlock()
+		}
+	}()
+}
+
+func (c *sentinelFailover) reconcilePrimary(ctx context.Context, uncertain bool) {
+	observed := c.epoch.Load()
+	addr, err := c.MasterAddr(ctx)
+	if err != nil {
+		// A failed reconnect verification cannot establish that old tracking
+		// still covers the current primary. Retire it only while tracking is active.
+		if uncertain && c.trackingActive() {
+			c.mu.Lock()
+			changed := !c.closed && c.epoch.Load() == observed
+			if changed {
+				c.epoch.Add(1)
+			}
+			c.mu.Unlock()
+			if changed {
+				c.cleanOldConnections(ctx)
+			}
+		}
+		return
+	}
+	c.mu.RLock()
+	sentinel := c.sentinel
+	c.mu.RUnlock()
+	if sentinel == nil {
+		return
+	}
+	// Unlike GET-MASTER-ADDR-BY-NAME, MASTER may still describe the old
+	// address during promotion. Its runid is usable only for the same target.
+	info, infoErr := sentinel.Master(ctx, c.opt.MasterName).Result()
+	config, parseErr := strconv.ParseUint(info["config-epoch"], 10, 64)
+	runID := ""
+	if net.JoinHostPort(info["ip"], info["port"]) == addr {
+		runID = info["runid"]
+	}
+	known := infoErr == nil && parseErr == nil && net.JoinHostPort(info["ip"], info["port"]) == addr
+	active := c.trackingActive()
+	c.mu.Lock()
+	// A reconnect accepted during this baseline's I/O must be evaluated against
+	// the previous baseline, not hidden by this task's newer observation.
+	if c.closed || c.epoch.Load() != observed || !uncertain && c.reconcileUncertain {
+		c.mu.Unlock()
+		return
+	}
+	// Keep the high-water version when an observer is behind or its monitor
+	// was reset. Such an observer cannot roll back the selected endpoint or
+	// prove coverage across a subscription gap. A baseline refresh without a
+	// gap does not, by itself, justify retiring any connection.
+	older := known && config < c.configEpoch
+	coverageChanged := uncertain && (!known || older || !c.configKnown) ||
+		known && !older && c.configKnown && config != c.configEpoch ||
+		!older && addr == c.masterAddr && runID != "" && c.primaryRunID != "" && runID != c.primaryRunID
+	addressChanged := addr != c.masterAddr && !older
+	changed := addressChanged || active && coverageChanged
+	if addressChanged {
+		c.masterAddr = addr
+		c.primaryRunID = ""
+		c.configKnown = false
+		c.roleWarned = false
+	}
+	if known && !older {
+		c.configEpoch, c.configKnown = config, true
+		if runID != "" {
+			c.primaryRunID = runID
+		}
+	}
+	warn := active && uncertain && (!known || older) && !c.reconcileWarned
+	if warn {
+		c.reconcileWarned = true
+	}
+	if changed {
+		c.epoch.Add(1)
+	}
+	c.mu.Unlock()
+	if warn {
+		internal.Logger.Printf(ctx, "sentinel: cannot verify configuration epoch; retiring existing data connections after resubscribe")
+	}
+	if changed {
+		c.cleanOldConnections(ctx)
 	}
 }
 

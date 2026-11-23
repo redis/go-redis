@@ -497,8 +497,58 @@ removed nodes are not retained.
 
 `NewFailoverClusterClient` also accepts CSC configuration, including when selected
 by `NewUniversalClient`. Sentinel discovery connections remain uncached, and
-`NewFailoverClient` does not support CSC. The existing DB-0-only CSC
-restriction applies; nonzero databases execute normally without caching.
+`NewFailoverClient` supports primary-only CSC with the same options.
+`ReplicaOnly` (including Universal `ReadOnly` on this path) disables CSC with
+a warning. The existing DB-0-only restriction applies. Failover retires old
+connections and their cached entries; calls overlapping the transition may
+observe the previous primary. Consider `MaxStaleness` to limit cache residence
+time; it cannot make reads from a partitioned primary globally current.
+
+After a Sentinel subscription reconnects, active CSC verifies continuity with
+`SENTINEL MASTER`. Allow that command for the Sentinel user to preserve warm
+connections when the primary has not changed. If verification is unavailable
+or the observer reports an older configuration, CSC conservatively retires its
+data connections and their cached entries. Clients without active CSC retain
+healthy data connections across subscription reconnects.
+The highest observed configuration epoch is retained. If Sentinel loses its
+configuration state and reports a lower epoch, each subscription reconnect
+conservatively retires CSC connections until the observed version catches up.
+A lower version alone cannot distinguish a reset from an outdated observer.
+If a promotion is discovered before its switch event, that event refreshes the
+baseline; without an event or a verified baseline, a later reconnect can also
+require conservative retirement.
+
+Use `NewFailoverClient` for each independent failover client with CSC. Passing a
+failover client's `Options()` to `NewClient` creates separate pools that are not
+owned by failover cleanup, so CSC is disabled on that constructor path.
+
+Primary-only failover clients also verify the role when `HELLO` reports one,
+for both RESP2 and RESP3, even without CSC. A non-primary data connection is
+rejected before application commands are sent, and discovery prefers another
+Sentinel. Once the previously selected Sentinel supplies a fallback response,
+peers are preferred for at most 500ms or half the remaining context budget,
+whichever is shorter. If no peer succeeds in that window, discovery uses the
+fallback and still verifies the data connection's role.
+Exhausted acquisition retries return an error matching
+`ErrEndpointChanged`, with endpoint and role details when available.
+Internal Sentinel discovery honors context deadlines, including the current
+data-dial attempt's `DialTimeout`, even when data commands use
+`ContextTimeoutEnabled: false`.
+
+```go
+rdb := redis.NewFailoverClient(&redis.FailoverOptions{
+    MasterName:    "mymaster",
+    SentinelAddrs: []string{"localhost:26379"},
+    Protocol:      3,
+    ClientSideCacheConfig: &redis.ClientSideCacheConfig{
+        MaxEntries: 10_000,
+    },
+    ClientSideCacheTrackingMode: redis.TrackingModeOptIn,
+})
+defer rdb.Close()
+
+value, err := rdb.Get(redis.WithCache(ctx), "key").Result()
+```
 
 Cache lifecycle belongs to each standalone node client. There is no Cluster CSC
 manager or transfer of cached values between nodes. Nodes entering routing have
