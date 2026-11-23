@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -705,6 +707,67 @@ func TestInstrumentTracingRing(t *testing.T) {
 		assertEqual(t, 1, len(spans))
 		assertAttributeContains(t, spans[0].Attributes, attribute.Int("server.port", port))
 	}
+}
+
+// startAttrsSampler records the attributes every span is started with. Unlike
+// an exported span, they are not deduplicated by the SDK.
+type startAttrsSampler struct {
+	mu    sync.Mutex
+	attrs [][]attribute.KeyValue
+}
+
+func (s *startAttrsSampler) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingResult {
+	s.mu.Lock()
+	s.attrs = append(s.attrs, slices.Clone(p.Attributes))
+	s.mu.Unlock()
+	return sdktrace.SamplingResult{Decision: sdktrace.RecordAndSample}
+}
+
+func (s *startAttrsSampler) Description() string { return "startAttrsSampler" }
+
+func TestInstrumentTracingClusterNodeAttributes(t *testing.T) {
+	sampler := &startAttrsSampler{}
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSampler(sampler))
+
+	rdb := redis.NewClusterClient(&redis.ClusterOptions{
+		ClusterSlots: func(context.Context) ([]redis.ClusterSlot, error) {
+			return []redis.ClusterSlot{
+				{Start: 0, End: 8191, Nodes: []redis.ClusterNode{{Addr: "10.0.0.1:7000"}}},
+				{Start: 8192, End: 16383, Nodes: []redis.ClusterNode{{Addr: "10.0.0.2:7000"}}},
+			}, nil
+		},
+		MaxRedirects:  -1,
+		DialerRetries: 1,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("no server")
+		},
+	})
+	defer rdb.Close()
+	if err := InstrumentTracing(rdb, WithTracerProvider(provider)); err != nil {
+		t.Fatal(err)
+	}
+
+	// "b" hashes to slot 3300 and "a" to slot 15495: one key per node.
+	_ = rdb.Get(context.Background(), "b").Err()
+	_ = rdb.Get(context.Background(), "a").Err()
+
+	sampler.mu.Lock()
+	defer sampler.mu.Unlock()
+
+	hosts := map[string]bool{}
+	for _, attrs := range sampler.attrs {
+		var addrs int
+		for _, a := range attrs {
+			if a.Key == "server.address" {
+				addrs++
+				hosts[a.Value.AsString()] = true
+			}
+		}
+		if addrs != 1 {
+			t.Fatalf("span started with %d server.address attributes, want 1: %v", addrs, attrs)
+		}
+	}
+	assertEqual(t, 2, len(hosts))
 }
 
 func assertEqual(t *testing.T, expected, actual interface{}) {
