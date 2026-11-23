@@ -4319,58 +4319,154 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 // maintenance notifications won't work here for now
 func (c *ClusterClient) pubSub() *PubSub {
-	var node *clusterNode
+	// One node per PubSub connection: sharded channels may live on different
+	// shards, so the PubSub keeps one connection per shard address (connKey)
+	// instead of pinning everything to the shard of the first channel.
+	// See https://github.com/redis/go-redis/issues/3133.
+	// nodesMu guards nodes: dialKey dials via newConn WITHOUT holding
+	// PubSub.mu, so the registry write in newConn can race the delete in
+	// closeConn from a concurrent reader failure or Close (concurrent map
+	// access is a fatal error).
+	nodes := make(map[*pool.Conn]*clusterNode)
+	var nodesMu sync.Mutex
+	// slotNodeFor returns a STABLE node per slot for the lifetime of this
+	// PubSub: the first selection is cached per slot and reused by both
+	// connKey (channel -> shard address) and newConn (dial target), so the
+	// two always agree even when ReadOnly replica selection is round-robin
+	// or random (RouteRandomly). Without the cache, repeated selection could
+	// hand back a different replica per call, creating duplicate
+	// subscriptions for the same channel on different connections or an
+	// unsubscribe targeted at a different connection than the subscription.
+	// If a cached node disappears from the topology, a fresh node is picked
+	// and cached instead.
+	var slotMu sync.Mutex
+	slotNodes := make(map[int]*clusterNode)
+	slotNodeFor := func(ctx context.Context, slot int) (*clusterNode, error) {
+		slotMu.Lock()
+		cached := slotNodes[slot]
+		slotMu.Unlock()
+		if cached != nil {
+			if state, err := c.state.Get(ctx); err == nil {
+				if cur, _ := state.nodes.get(cached.Client.opt.Addr); cur != nil &&
+					state.nodeOnline(cur) && !cur.Failing() && !cur.Loading() {
+					// The cached node must still serve this slot: after a
+					// reshard or failover the old owner can remain in the
+					// client-wide node registry while no longer owning the
+					// slot, which would send SSUBSCRIBE to a node that
+					// replies MOVED and never update the cache. It must also
+					// still be healthy: a replica that turned fail/loading
+					// would otherwise keep being dialed because the fresh
+					// selection paths (slotSlaveNode etc.) filter those out.
+					for _, n := range state.slotNodes(slot) {
+						if n == cur {
+							return cur, nil
+						}
+					}
+				}
+			}
+		}
+		state, err := c.state.Get(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// newConn in PubSub is only used for subscription connections, so it is safe to
+		// assume that a slave node can always be used when client options specify ReadOnly.
+		var node *clusterNode
+		if c.opt.ReadOnly {
+			node, err = c.slotReadOnlyNode(state, slot)
+		} else {
+			node, err = c.slotMasterNode(ctx, slot)
+		}
+		if err != nil {
+			return nil, err
+		}
+		slotMu.Lock()
+		slotNodes[slot] = node
+		slotMu.Unlock()
+		return node, nil
+	}
 	pubsub := &PubSub{
 		opt: c.opt.clientOptions(),
 		rec: c.rec,
 		newConn: func(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
-			if node != nil {
-				panic("node != nil")
-			}
-
+			var node *clusterNode
 			var err error
 
-			if len(channels) > 0 {
-				slot := clusterKeySlot(channels[0])
-
-				// newConn in PubSub is only used for subscription connections, so it is safe to
-				// assume that a slave node can always be used when client options specify ReadOnly.
-				if c.opt.ReadOnly {
-					state, err := c.state.Get(ctx)
-					if err != nil {
-						return nil, err
+			// The mux connection key IS the shard address (see connKey
+			// below): when (re)dialing an existing key, dial exactly that
+			// node instead of re-routing by channels[0]/Random, which can
+			// pick a different node after a reshard and leave c.conns
+			// claiming the socket belongs to another shard.
+			if addr != "" && addr != internal.RedisNull {
+				if state, serr := c.state.Get(ctx); serr == nil {
+					if n, gerr := state.nodes.get(addr); gerr == nil && n != nil && state.nodeOnline(n) {
+						node = n
 					}
-
-					node, err = c.slotReadOnlyNode(state, slot)
+				}
+			}
+			if node == nil {
+				if len(channels) > 0 {
+					// Route by the first channel's slot through the stable
+					// slot->node mapping, so the dialed node is exactly the one
+					// connKey reports for those channels.
+					node, err = slotNodeFor(ctx, clusterKeySlot(channels[0]))
 					if err != nil {
 						return nil, err
 					}
 				} else {
-					node, err = c.slotMasterNode(ctx, slot)
+					node, err = c.nodes.Random()
 					if err != nil {
 						return nil, err
 					}
 				}
-			} else {
-				node, err = c.nodes.Random()
-				if err != nil {
-					return nil, err
-				}
 			}
 			cn, err := node.Client.newPubSubConn(ctx, node.Client.opt.Addr, channels, onInit...)
 			if err != nil {
-				node = nil
+				// A failed dial must not leave this node cached as the
+				// slots' stable choice: evict every slot->node entry
+				// pointing at it and mark it failing, so retries (also for
+				// ordinary Subscribe with RouteRandomly/ReadOnly) pick
+				// another eligible node instead of hammering the same
+				// unreachable address.
+				slotMu.Lock()
+				for slot, n := range slotNodes {
+					if n == node {
+						delete(slotNodes, slot)
+					}
+				}
+				slotMu.Unlock()
+				node.MarkAsFailing()
 				return nil, err
 			}
+			nodesMu.Lock()
+			nodes[cn] = node
+			nodesMu.Unlock()
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
 			// Untrack connection from PubSubPool
-			node.Client.pubSubPool.UntrackConn(cn)
-			err := cn.Close()
-			node = nil
-			return err
+			nodesMu.Lock()
+			node := nodes[cn]
+			delete(nodes, cn)
+			nodesMu.Unlock()
+			if node != nil {
+				node.Client.pubSubPool.UntrackConn(cn)
+			}
+			return cn.Close()
 		},
+		// connKey maps a sharded channel to the address of the shard owning
+		// its slot, so SSubscribe of channels from different shards opens one
+		// connection per shard and each SSUBSCRIBE reaches its slot owner.
+		connKey: func(ctx context.Context, channel string) (string, error) {
+			// Use the stable per-slot mapping so every lookup for a channel
+			// returns the same shard address (see slotNodeFor above).
+			node, err := slotNodeFor(ctx, clusterKeySlot(channel))
+			if err != nil {
+				return "", err
+			}
+			return node.Client.opt.Addr, nil
+		},
+		slotOf: clusterKeySlot,
 	}
 	pubsub.init()
 

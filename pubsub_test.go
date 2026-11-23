@@ -1,15 +1,23 @@
 package redis_test
 
 import (
+	"bufio"
+	"context"
+	"fmt"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 var _ = Describe("PubSub", func() {
@@ -721,3 +729,479 @@ var _ = Describe("PubSub", func() {
 		Eventually(ch2, 5*time.Second).Should(BeClosed())
 	})
 })
+
+//------------------------------------------------------------------------------
+// Regression test for https://github.com/redis/go-redis/issues/3133
+//
+// Sharded pub/sub (SSUBSCRIBE) on a cluster client must receive messages from
+// ALL subscribed channels, including channels whose hash slots are owned by
+// different shards than the first subscribed channel. The test runs against
+// a fake 3-shard RESP "cluster" (no real Redis needed): each shard owns a
+// slot range, answers CLUSTER SLOTS, rejects SSUBSCRIBE/SPUBLISH for slots it
+// does not own with MOVED (like a real cluster node), and pushes smessage to
+// local subscriber connections on SPUBLISH.
+//------------------------------------------------------------------------------
+
+type fakeShardConn struct {
+	conn      net.Conn
+	wrMu      sync.Mutex
+	channels  map[string]struct{}
+	schannels map[string]struct{}
+}
+
+type fakeShardNode struct {
+	cluster   *fakeShardCluster
+	ln        net.Listener
+	addr      string
+	slotStart int
+	slotEnd   int
+
+	mu    sync.Mutex
+	conns map[*fakeShardConn]struct{}
+}
+
+type fakeShardCluster struct {
+	nodes []*fakeShardNode
+}
+
+func startFakeShardCluster(t *testing.T, shards int) *fakeShardCluster {
+	t.Helper()
+	c := &fakeShardCluster{}
+	per := 16384 / shards
+	for i := 0; i < shards; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		n := &fakeShardNode{
+			cluster:   c,
+			ln:        ln,
+			addr:      ln.Addr().String(),
+			slotStart: i * per,
+			slotEnd:   (i+1)*per - 1,
+			conns:     make(map[*fakeShardConn]struct{}),
+		}
+		c.nodes = append(c.nodes, n)
+		go n.acceptLoop()
+	}
+	t.Cleanup(func() {
+		for _, n := range c.nodes {
+			_ = n.ln.Close()
+			n.mu.Lock()
+			for fc := range n.conns {
+				_ = fc.conn.Close()
+			}
+			n.mu.Unlock()
+		}
+	})
+	return c
+}
+
+func (c *fakeShardCluster) clusterSlots() []redis.ClusterSlot {
+	slots := make([]redis.ClusterSlot, 0, len(c.nodes))
+	for _, n := range c.nodes {
+		slots = append(slots, redis.ClusterSlot{
+			Start: n.slotStart,
+			End:   n.slotEnd,
+			Nodes: []redis.ClusterNode{{ID: n.addr, Addr: n.addr}},
+		})
+	}
+	return slots
+}
+
+func (c *fakeShardCluster) ownerOfSlot(slot int) *fakeShardNode {
+	for _, n := range c.nodes {
+		if slot >= n.slotStart && slot <= n.slotEnd {
+			return n
+		}
+	}
+	return nil
+}
+
+func (n *fakeShardNode) ownsSlot(slot int) bool {
+	return slot >= n.slotStart && slot <= n.slotEnd
+}
+
+// subscribedCount reports on how many connections of this node the channel
+// is currently shard-subscribed.
+func (n *fakeShardNode) subscribedCount(ch string) int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	count := 0
+	for fc := range n.conns {
+		if _, ok := fc.schannels[ch]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+func (n *fakeShardNode) acceptLoop() {
+	for {
+		conn, err := n.ln.Accept()
+		if err != nil {
+			return
+		}
+		fc := &fakeShardConn{
+			conn:      conn,
+			channels:  make(map[string]struct{}),
+			schannels: make(map[string]struct{}),
+		}
+		n.mu.Lock()
+		n.conns[fc] = struct{}{}
+		n.mu.Unlock()
+		go n.serve(fc)
+	}
+}
+
+func readRESPArgs(br *bufio.Reader) ([]string, error) {
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	line = strings.TrimRight(line, "\r\n")
+	if len(line) == 0 || line[0] != '*' {
+		return nil, fmt.Errorf("bad command line: %q", line)
+	}
+	count, err := strconv.Atoi(line[1:])
+	if err != nil {
+		return nil, err
+	}
+	args := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		hdr, err := br.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		hdr = strings.TrimRight(hdr, "\r\n")
+		if len(hdr) == 0 || hdr[0] != '$' {
+			return nil, fmt.Errorf("bad bulk header: %q", hdr)
+		}
+		size, err := strconv.Atoi(hdr[1:])
+		if err != nil {
+			return nil, err
+		}
+		buf := make([]byte, size+2)
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return nil, err
+		}
+		args = append(args, string(buf[:size]))
+	}
+	return args, nil
+}
+
+func respBulk(s string) string { return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s) }
+
+func (fc *fakeShardConn) write(s string) {
+	fc.wrMu.Lock()
+	_, _ = fc.conn.Write([]byte(s))
+	fc.wrMu.Unlock()
+}
+
+func (n *fakeShardNode) serve(fc *fakeShardConn) {
+	defer func() {
+		n.mu.Lock()
+		delete(n.conns, fc)
+		n.mu.Unlock()
+		_ = fc.conn.Close()
+	}()
+	br := bufio.NewReader(fc.conn)
+	for {
+		args, err := readRESPArgs(br)
+		if err != nil {
+			return
+		}
+		if len(args) == 0 {
+			continue
+		}
+		n.handle(fc, args)
+	}
+}
+
+// movedReply mimics a real cluster node rejecting a command for a slot it
+// does not serve.
+func (c *fakeShardCluster) movedReply(slot int) string {
+	owner := c.ownerOfSlot(slot)
+	addr := "127.0.0.1:0"
+	if owner != nil {
+		addr = owner.addr
+	}
+	return fmt.Sprintf("-MOVED %d %s\r\n", slot, addr)
+}
+
+func (n *fakeShardNode) handle(fc *fakeShardConn, args []string) {
+	cmd := strings.ToLower(args[0])
+	switch cmd {
+	case "hello":
+		fc.write("%0\r\n")
+	case "ping":
+		fc.write("+PONG\r\n")
+	case "command":
+		fc.write("*0\r\n")
+	case "client", "auth", "select", "readonly", "reset":
+		fc.write("+OK\r\n")
+	case "cluster":
+		sub := strings.ToLower(args[1])
+		switch sub {
+		case "shards":
+			fc.write("-ERR unknown subcommand\r\n")
+		case "slots":
+			var b strings.Builder
+			fmt.Fprintf(&b, "*%d\r\n", len(n.cluster.nodes))
+			for _, nd := range n.cluster.nodes {
+				host, port, _ := net.SplitHostPort(nd.addr)
+				fmt.Fprintf(&b, "*3\r\n:%d\r\n:%d\r\n*3\r\n%s%s%s\r\n",
+					nd.slotStart, nd.slotEnd,
+					respBulk(host), respBulk(port), respBulk(nd.addr))
+			}
+			fc.write(b.String())
+		default:
+			fc.write("+OK\r\n")
+		}
+	case "ssubscribe", "sunsubscribe":
+		channels := args[1:]
+		if len(channels) == 0 {
+			// unsubscribe from all shard channels on this connection
+			n.mu.Lock()
+			channels = make([]string, 0, len(fc.schannels))
+			for ch := range fc.schannels {
+				channels = append(channels, ch)
+			}
+			n.mu.Unlock()
+		}
+		for _, ch := range channels {
+			slot := hashtag.Slot(ch)
+			if !n.ownsSlot(slot) {
+				fc.write(n.cluster.movedReply(slot))
+				continue
+			}
+			n.mu.Lock()
+			if cmd == "ssubscribe" {
+				fc.schannels[ch] = struct{}{}
+			} else {
+				delete(fc.schannels, ch)
+			}
+			count := len(fc.schannels)
+			n.mu.Unlock()
+			fc.write(fmt.Sprintf("*3\r\n%s%s:%d\r\n", respBulk(cmd), respBulk(ch), count))
+		}
+		if len(channels) == 0 {
+			n.mu.Lock()
+			count := len(fc.schannels)
+			n.mu.Unlock()
+			fc.write(fmt.Sprintf("*3\r\n%s%s:%d\r\n", respBulk(cmd), respBulk(""), count))
+		}
+	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+		// regular pubsub is not used by this test; acknowledge only
+		fc.write("+OK\r\n")
+	case "spublish":
+		ch, payload := args[1], args[2]
+		slot := hashtag.Slot(ch)
+		if !n.ownsSlot(slot) {
+			fc.write(n.cluster.movedReply(slot))
+			return
+		}
+		push := fmt.Sprintf("*3\r\n%s%s%s", respBulk("smessage"), respBulk(ch), respBulk(payload))
+		n.mu.Lock()
+		var targets []*fakeShardConn
+		for sub := range n.conns {
+			if _, ok := sub.schannels[ch]; ok {
+				targets = append(targets, sub)
+			}
+		}
+		n.mu.Unlock()
+		for _, sub := range targets {
+			sub.write(push)
+		}
+		fc.write(fmt.Sprintf(":%d\r\n", len(targets)))
+	case "publish":
+		fc.write(":0\r\n")
+	default:
+		fc.write("+OK\r\n")
+	}
+}
+
+// TestPubSubShardedClusterAllShards is the regression test for issue #3133:
+// a single cluster PubSub subscribed via SSubscribe to channels living on
+// different shards must receive messages published to every one of them.
+func TestPubSubShardedClusterAllShards(t *testing.T) {
+	ctx := context.Background()
+	cluster := startFakeShardCluster(t, 3)
+
+	client := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{cluster.nodes[0].addr},
+		ClusterSlots: func(context.Context) ([]redis.ClusterSlot, error) {
+			return cluster.clusterSlots(), nil
+		},
+		DisableIdentity:          true,
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer client.Close()
+
+	// Pick at least one channel per shard so the subscription spans all
+	// three slots owners.
+	perShard := make(map[string][]string)
+	var channels []string
+	for i := 1; i <= 200 && len(perShard) < len(cluster.nodes); i++ {
+		ch := fmt.Sprintf("ch%d", i)
+		owner := cluster.ownerOfSlot(hashtag.Slot(ch))
+		if _, ok := perShard[owner.addr]; !ok {
+			perShard[owner.addr] = []string{ch}
+			channels = append(channels, ch)
+		}
+	}
+	if len(perShard) != len(cluster.nodes) {
+		t.Fatalf("could not find channels on all %d shards", len(cluster.nodes))
+	}
+
+	pubsub := client.SSubscribe(ctx)
+	defer pubsub.Close()
+	for _, ch := range channels {
+		if err := pubsub.SSubscribe(ctx, ch); err != nil {
+			t.Fatalf("SSubscribe(%s): %v", ch, err)
+		}
+	}
+
+	msgCh := pubsub.Channel()
+
+	// Publish to every subscribed channel; SPUBLISH is routed by the client
+	// to the shard owning the channel's slot.
+	for i, ch := range channels {
+		payload := fmt.Sprintf("hello-%d", i)
+		if err := client.SPublish(ctx, ch, payload).Err(); err != nil {
+			t.Fatalf("SPublish(%s): %v", ch, err)
+		}
+	}
+
+	got := make(map[string]string)
+	deadline := time.After(10 * time.Second)
+	for len(got) < len(channels) {
+		select {
+		case msg, ok := <-msgCh:
+			if !ok {
+				t.Fatalf("message channel closed after receiving %v", got)
+			}
+			got[msg.Channel] = msg.Payload
+		case <-deadline:
+			t.Fatalf("timed out waiting for messages: got %v, want one message on each of %v", got, channels)
+		}
+	}
+	for i, ch := range channels {
+		want := fmt.Sprintf("hello-%d", i)
+		if got[ch] != want {
+			t.Fatalf("channel %s: got payload %q, want %q", ch, got[ch], want)
+		}
+	}
+
+	// SUnsubscribe must also reach the shard owning the channel's slot:
+	// after unsubscribing from one channel, publishing to all channels again
+	// must deliver to the remaining ones only.
+	unsub := channels[0]
+	if err := pubsub.SUnsubscribe(ctx, unsub); err != nil {
+		t.Fatalf("SUnsubscribe(%s): %v", unsub, err)
+	}
+	// Wait until the owning shard has processed the SUNSUBSCRIBE so the
+	// re-publish below cannot race it on a different connection.
+	owner := cluster.ownerOfSlot(hashtag.Slot(unsub))
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if owner.subscribedCount(unsub) == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := owner.subscribedCount(unsub); n != 0 {
+		t.Fatalf("shard %s still has %d subscriptions for %s after SUnsubscribe", owner.addr, n, unsub)
+	}
+	for i, ch := range channels {
+		if err := client.SPublish(ctx, ch, fmt.Sprintf("again-%d", i)).Err(); err != nil {
+			t.Fatalf("SPublish(%s): %v", ch, err)
+		}
+	}
+	gotAgain := make(map[string]string)
+	deadline = time.After(10 * time.Second)
+	for len(gotAgain) < len(channels)-1 {
+		select {
+		case msg, ok := <-msgCh:
+			if !ok {
+				t.Fatalf("message channel closed after receiving %v", gotAgain)
+			}
+			gotAgain[msg.Channel] = msg.Payload
+		case <-deadline:
+			t.Fatalf("timed out waiting for messages after SUnsubscribe: got %v, want %v", gotAgain, channels[1:])
+		}
+	}
+	if _, ok := gotAgain[unsub]; ok {
+		t.Fatalf("received message on unsubscribed channel %s", unsub)
+	}
+}
+
+// TestPubSubShardedClusterPingDoesNotDeadlock is the regression test for the
+// mux Ping deadlock: Ping took c.mu and then locked it again in the mux
+// branch, so every cluster PubSub froze on the first health check (the
+// default Channel pings 3s after open), blocking Receive, SSubscribe and
+// Close on the same mutex.
+func TestPubSubShardedClusterPingDoesNotDeadlock(t *testing.T) {
+	ctx := context.Background()
+	cluster := startFakeShardCluster(t, 3)
+
+	client := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{cluster.nodes[0].addr},
+		ClusterSlots: func(context.Context) ([]redis.ClusterSlot, error) {
+			return cluster.clusterSlots(), nil
+		},
+		DisableIdentity:          true,
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer client.Close()
+
+	pubsub := client.SSubscribe(ctx)
+	defer pubsub.Close()
+
+	// One channel on each shard so the PubSub holds several mux connections.
+	perShard := make(map[string]bool)
+	var channels []string
+	for i := 1; i <= 200 && len(perShard) < len(cluster.nodes); i++ {
+		ch := fmt.Sprintf("pingch%d", i)
+		owner := cluster.ownerOfSlot(hashtag.Slot(ch))
+		if !perShard[owner.addr] {
+			perShard[owner.addr] = true
+			channels = append(channels, ch)
+		}
+	}
+	for _, ch := range channels {
+		if err := pubsub.SSubscribe(ctx, ch); err != nil {
+			t.Fatalf("SSubscribe(%s): %v", ch, err)
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- pubsub.Ping(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Ping: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ping deadlocked on c.mu in mux mode")
+	}
+
+	// Receive must still work after the Ping (no mutex left held).
+	for i, ch := range channels {
+		if err := client.SPublish(ctx, ch, fmt.Sprintf("ping-%d", i)).Err(); err != nil {
+			t.Fatalf("SPublish(%s): %v", ch, err)
+		}
+	}
+	got := make(map[string]string)
+	deadline := time.After(10 * time.Second)
+	for len(got) < len(channels) {
+		select {
+		case msg, ok := <-pubsub.Channel():
+			if !ok {
+				t.Fatalf("message channel closed after receiving %v", got)
+			}
+			got[msg.Channel] = msg.Payload
+		case <-deadline:
+			t.Fatalf("timed out waiting for messages after Ping: got %v, want %v", got, channels)
+		}
+	}
+}
