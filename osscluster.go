@@ -1387,6 +1387,10 @@ func clusterShardNodeAddr(node Node, origin string, tlsEnabled bool) (string, er
 }
 
 func replaceLoopbackHost(nodeAddr, originHost string) string {
+	// No origin (ClusterOptions.ClusterSlots): there is no host to substitute.
+	if originHost == "" {
+		return nodeAddr
+	}
 	nodeHost, nodePort, err := net.SplitHostPort(nodeAddr)
 	if err != nil {
 		return nodeAddr
