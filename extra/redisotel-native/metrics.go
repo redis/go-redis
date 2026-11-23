@@ -449,7 +449,12 @@ func extractRedisErrorPrefix(err error) string {
 		return redis.ErrorTypeNil
 	}
 
-	errStr := err.Error()
+	// Only a server reply has a prefix: io.EOF ("EOF") is not one.
+	var redisErr redis.Error
+	if !errors.As(err, &redisErr) {
+		return ""
+	}
+	errStr := redisErr.Error()
 
 	// Redis errors typically start with an uppercase prefix
 	// Examples: "ERR ...", "WRONGTYPE ...", "CLUSTERDOWN ..."
