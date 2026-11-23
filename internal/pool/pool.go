@@ -1145,15 +1145,12 @@ func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error)
 	}()
 
 	// PoolTimeout is one budget for the pool turn and temporary maintenance waits.
-	poolDeadline := time.Now().Add(p.cfg.PoolTimeout)
+	waitStart := time.Now()
+	poolDeadline := waitStart.Add(p.cfg.PoolTimeout)
 
 	// Connection wait time measures only semaphore acquisition.
-	var waitStart time.Time
 	var waitDuration time.Duration
 	waitTimeCallback := p.metrics().ConnectionWaitTime
-	if waitTimeCallback != nil {
-		waitStart = time.Now()
-	}
 	if err = p.waitTurn(ctx, wait); err != nil {
 		return nil, err
 	}

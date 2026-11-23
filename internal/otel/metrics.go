@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -127,19 +128,21 @@ var (
 	// open pool and never a pool whose client already unregistered it.
 	setRecorderMu sync.Mutex
 
-	// recorderMu protects globalRecorder.
-	recorderMu sync.RWMutex
-
-	// Global recorder instance (installed by redis.SetOTelRecorder).
-	globalRecorder Recorder = noopRecorder{}
+	// globalRecorder is the recorder installed by redis.SetOTelRecorder. Every
+	// command of a client without its own recorder reads it, so it is an atomic
+	// pointer: a shared RWMutex read lock costs a contended cache line per read.
+	globalRecorder atomic.Pointer[recorderRef]
 )
 
-// getRecorder returns the current global recorder under a read lock.
+type recorderRef struct{ r Recorder }
+
+var noopRef = &recorderRef{noopRecorder{}}
+
+func init() { globalRecorder.Store(noopRef) }
+
+// getRecorder returns the current global recorder.
 func getRecorder() Recorder {
-	recorderMu.RLock()
-	r := globalRecorder
-	recorderMu.RUnlock()
-	return r
+	return globalRecorder.Load().r
 }
 
 // SetGlobalRecorder installs r as the global recorder and binds the global
@@ -150,14 +153,10 @@ func SetGlobalRecorder(r Recorder) {
 	defer setRecorderMu.Unlock()
 	if r == nil {
 		pool.SetAllMetricCallbacks(nil)
-		recorderMu.Lock()
-		globalRecorder = noopRecorder{}
-		recorderMu.Unlock()
+		globalRecorder.Store(noopRef)
 		return
 	}
-	recorderMu.Lock()
-	globalRecorder = r
-	recorderMu.Unlock()
+	globalRecorder.Store(&recorderRef{r})
 	pool.SetAllMetricCallbacks(PoolCallbacks(r))
 	if registrar, ok := r.(PoolRegistrar); ok {
 		connPools, pubSubPools := pool.GlobalPools()

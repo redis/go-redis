@@ -64,7 +64,7 @@ func TestOpQueueCollectSeesQueuedSamples(t *testing.T) {
 	var want uint64
 	for round := 0; round < 200; round++ {
 		for i := 0; i < 500; i++ {
-			q.record(context.Background(), 0.001, set)
+			q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 		}
 		want += 500
 		got, names := collect(t, reader)
@@ -104,7 +104,7 @@ func TestOpQueueConcurrentRecordAndCollect(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < each; i++ {
-				q.record(context.Background(), 0.001, set)
+				q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 			}
 		}()
 	}
@@ -123,10 +123,10 @@ func TestOpQueueStopRecordsQueued(t *testing.T) {
 	collect(t, reader) // the first Collect turns the queue on
 	set := attribute.NewSet(attribute.String(AttrDBOperationName, "get"))
 	for i := 0; i < 1000; i++ {
-		q.record(context.Background(), 0.001, set)
+		q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 	}
 	q.stop()
-	q.record(context.Background(), 0.001, set)
+	q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 	if got, _ := collect(t, reader); got != 1001 {
 		t.Fatalf("collected %d samples, want 1001", got)
 	}
@@ -189,7 +189,7 @@ func TestOpQueueDroppedGaugeRecordsInline(t *testing.T) {
 	var want uint64
 	for round := 0; round < 20; round++ {
 		for i := 0; i < 500; i++ {
-			q.record(context.Background(), 0.001, set)
+			q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 		}
 		want += 500
 		if got, _ := collect(t, reader); got != want {
@@ -235,7 +235,7 @@ func TestOpQueueRecoversRecordPanic(t *testing.T) {
 			// a sample recorded inline (queue busy) panics to the caller, as
 			// before the queue; the caller's own guard recovers it
 			defer func() { _ = recover() }()
-			q.record(context.Background(), 0.001, set)
+			q.record(context.Background(), 0.001, []otelmetric.RecordOption{otelmetric.WithAttributeSet(set)})
 		}()
 	}
 	collect(t, reader) // drains on this goroutine: must not panic

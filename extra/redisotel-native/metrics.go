@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -73,12 +72,11 @@ type metricsRecorder struct {
 	// Configuration
 	cfg *config
 
-	// opAttrs caches success-path operation attribute sets (opAttrKey ->
-	// attribute.Set). Hits only Load; misses go through storeOpAttrs, which
-	// holds opAttrsMu, so opAttrsLen is exactly the number of entries.
-	opAttrs    sync.Map
-	opAttrsMu  sync.Mutex
-	opAttrsLen int
+	// opAttrs caches the success-path operation duration options per opAttrKey.
+	opAttrs attrCache[opAttrKey, []metric.RecordOption]
+
+	// poolOpts caches the pending-requests and wait-time options per pool name.
+	poolOpts attrCache[string, *poolOpts]
 
 	// opq records success-path operation durations off the caller's goroutine
 	// (op_queue.go); nil records them inline.
@@ -160,15 +158,17 @@ func (r *metricsRecorder) RecordOperationDuration(
 		default:
 			key.remote = addr.String() // may not be comparable: key by its text
 		}
-		set, ok := r.opAttrs.Load(key)
+		opts, ok := r.opAttrs.load(key)
 		if !ok {
-			set = r.storeOpAttrs(key, addr)
+			opts = r.opAttrs.store(key, func() []metric.RecordOption {
+				return []metric.RecordOption{r.attrSet(operationAttrs(key.op, key.attempts, addrString(addr), key.db))}
+			})
 		}
 		if r.opq != nil {
-			r.opq.record(ctx, durationSeconds, set.(attribute.Set))
+			r.opq.record(ctx, durationSeconds, opts)
 			return
 		}
-		r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributeSet(set.(attribute.Set)))
+		r.operationDuration.Record(ctx, durationSeconds, opts...)
 		return
 	}
 
@@ -183,8 +183,9 @@ func (r *metricsRecorder) RecordOperationDuration(
 	r.operationDuration.Record(ctx, durationSeconds, r.withAttrs(attrs))
 }
 
-// maxOpAttrSets bounds the success-path attribute-set cache: past it the
-// cache is cleared, so many commands x endpoints x attempts x dbs cannot grow it without limit.
+// maxOpAttrSets bounds each attribute cache (attrCache): past it the cache is
+// cleared, so many commands x endpoints x attempts x dbs, or many pools, cannot
+// grow it without limit.
 const maxOpAttrSets = 4096
 
 // opAttrKey is everything the success-path operation attributes are built from.
@@ -197,24 +198,6 @@ type opAttrKey struct {
 	remote   string
 	attempts int
 	db       int
-}
-
-// storeOpAttrs builds and caches the set for key, clearing the cache first
-// when it is full.
-func (r *metricsRecorder) storeOpAttrs(key opAttrKey, addr net.Addr) any {
-	r.opAttrsMu.Lock()
-	defer r.opAttrsMu.Unlock()
-	if set, ok := r.opAttrs.Load(key); ok {
-		return set
-	}
-	if r.opAttrsLen >= maxOpAttrSets {
-		r.opAttrs.Clear()
-		r.opAttrsLen = 0
-	}
-	set := attribute.NewSet(r.customAttrs(operationAttrs(key.op, key.attempts, addrString(addr), key.db))...)
-	r.opAttrs.Store(key, set)
-	r.opAttrsLen++
-	return set
 }
 
 func addrString(a net.Addr) string {
@@ -866,23 +849,23 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 	if r.connectionWaitTime == nil {
 		return
 	}
+	var poolName string
+	if cn != nil {
+		poolName = cn.PoolName()
+	}
+	r.connectionWaitTime.Record(ctx, duration.Seconds(), r.poolOptsFor(poolName).wait...)
+}
 
-	// Build attributes
+// waitTimeAttrs are db.client.connection.wait_time's built-in attributes.
+func waitTimeAttrs(poolName string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
-
-	// Use pool name from connection (set when connection was created)
-	if cn != nil {
-		poolName := cn.PoolName()
-		if poolName != "" {
-			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
-		}
+	if poolName != "" {
+		attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
 	}
-
-	// Record the histogram (duration in seconds)
-	r.connectionWaitTime.Record(ctx, duration.Seconds(), r.withAttrs(attrs))
+	return attrs
 }
 
 // RecordConnectionClosed records redis.client.connection.closed metric
@@ -1049,30 +1032,27 @@ func (r *metricsRecorder) RecordPendingRequests(
 	if r.connectionPendingReqs == nil {
 		return
 	}
+	// Use explicit pool name (preferred) or fall back to connection's pool name
+	if poolName == "" && cn != nil {
+		poolName = cn.PoolName()
+	}
+	r.connectionPendingReqs.Add(ctx, int64(delta), r.poolOptsFor(poolName).pending...)
+}
 
-	// Build attributes
+// pendingRequestsAttrs are db.client.connection.pending_requests' built-in
+// attributes; server address and port come from the pool name.
+func pendingRequestsAttrs(poolName string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
-
-	// Use explicit pool name (preferred) or fall back to connection's pool name
-	effectivePoolName := poolName
-	if effectivePoolName == "" && cn != nil {
-		effectivePoolName = cn.PoolName()
-	}
-
-	if effectivePoolName != "" {
-		attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, effectivePoolName))
-
-		// Extract server info from pool name
-		serverAddr, serverPort, _ := parsePoolName(effectivePoolName)
+	if poolName != "" {
+		attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
+		serverAddr, serverPort, _ := parsePoolName(poolName)
 		if serverAddr != "" {
 			attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
 		}
 		attrs = addServerPortIfNonDefault(attrs, serverPort)
 	}
-
-	// Record the counter (delta can be +1 or -1)
-	r.connectionPendingReqs.Add(ctx, int64(delta), r.withAttrs(attrs))
+	return attrs
 }

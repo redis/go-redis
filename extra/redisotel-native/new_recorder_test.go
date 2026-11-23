@@ -83,7 +83,7 @@ func TestNewRecorderAttributePrecedence(t *testing.T) {
 	if mr.opq != inst.recorder.opq || mr.opq == nil {
 		t.Fatal("per-client recorder on the Init provider did not share the operation-duration queue")
 	}
-	if mr.opAttrsLen != 0 || &mr.opAttrs == &inst.recorder.opAttrs {
+	if mr.opAttrs.n != 0 || &mr.opAttrs == &inst.recorder.opAttrs {
 		t.Fatal("per-client recorder shares the attribute cache")
 	}
 

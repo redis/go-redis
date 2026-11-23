@@ -5,7 +5,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -14,9 +13,9 @@ import (
 const opQueueMax = 1 << 16
 
 type opSample struct {
-	ctx context.Context
-	v   float64
-	set attribute.Set
+	ctx  context.Context
+	v    float64
+	opts []metric.RecordOption // cached per attribute set; shared, never modified
 }
 
 // opQueue records success-path db.client.operation.duration samples on its own
@@ -80,18 +79,18 @@ func newOpQueue(meter metric.Meter, hist metric.Float64Histogram) (*opQueue, err
 // record queues a sample, or records it here when no Collect has drained the
 // queue yet, the queue is busy (another goroutine holds it: concurrent callers
 // record in parallel, as before), full, or stopped.
-func (q *opQueue) record(ctx context.Context, v float64, set attribute.Set) {
+func (q *opQueue) record(ctx context.Context, v float64, opts []metric.RecordOption) {
 	if !q.active.Load() || !q.qmu.TryLock() {
-		q.hist.Record(ctx, v, metric.WithAttributeSet(set))
+		q.hist.Record(ctx, v, opts...)
 		return
 	}
 	if q.stopped || len(q.buf) >= opQueueMax {
 		q.qmu.Unlock()
-		q.hist.Record(ctx, v, metric.WithAttributeSet(set))
+		q.hist.Record(ctx, v, opts...)
 		return
 	}
 	wasEmpty := len(q.buf) == 0
-	q.buf = append(q.buf, opSample{ctx: ctx, v: v, set: set})
+	q.buf = append(q.buf, opSample{ctx: ctx, v: v, opts: opts})
 	q.qmu.Unlock()
 	if wasEmpty {
 		select {
@@ -121,7 +120,7 @@ func (q *opQueue) flush() {
 // or the collecting goroutine, and with it the process.
 func (q *opQueue) recordOne(s opSample) {
 	defer func() { _ = recover() }()
-	q.hist.Record(s.ctx, s.v, metric.WithAttributeSet(s.set))
+	q.hist.Record(s.ctx, s.v, s.opts...)
 }
 
 func (q *opQueue) run() {
