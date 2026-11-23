@@ -2886,7 +2886,15 @@ func pipelineMultiOpen(cmds []Cmder, multi int) bool {
 		case "exec":
 			return !pipelineExecSettled(cmd)
 		case "discard":
-			return pipelineCmdErr(cmd) != nil
+			// Only a DISCARD the server executed closes the frame: a
+			// failed one leaves it open, so a later EXEC may still
+			// settle it — returning here would hide that EXEC and
+			// report the frame open when it already completed (see
+			// the completed-frame scan in pipelineRetrySuffix for
+			// the same rule).
+			if pipelineCmdErr(cmd) == nil {
+				return false
+			}
 		case "reset":
 			if pipelineCmdErr(cmd) == nil {
 				return false
@@ -3678,17 +3686,23 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 						// commit, so the frame counts as completed.
 						// A DISCARD only closes it when it
 						// succeeded: a failed DISCARD leaves the
-						// frame (and the watch) in place.
+						// frame (and the watch) in place, so the
+						// frame stays tracked — a later EXEC may
+						// still settle it, and dropping the frame
+						// here would hide that EXEC from the scan
+						// and let the retry rewind to the MULTI
+						// and run an empty transaction over the
+						// settled results.
 						settled := pipelineCmdErr(answered) == nil
 						if answered.Name() == "exec" {
 							settled = pipelineExecSettled(answered)
 						}
 						if settled {
 							completeFrame(answered)
+							openMulti = nil
+							frameMultis = nil
 						}
 					}
-					openMulti = nil
-					frameMultis = nil
 				case "reset":
 					// A successful RESET discards the transaction,
 					// so the frame is completed the same way a
@@ -3965,6 +3979,59 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					continue
 				}
 				keep[j] = true
+			}
+			// An answered write the filter drops after a pending write
+			// the retry re-runs is not just an optimisation miss: the
+			// retried write runs after the dropped one in the original
+			// order, so it overwrites the acknowledged final value
+			// while Exec still reports success (an MSET answering
+			// TRYAGAIN followed by an answered SET — the retry runs
+			// only the MSET and leaves the key at the MSET's value).
+			// Keep every answered write dropped past a kept pending
+			// write, in original order, so the retry preserves the
+			// batch's ordering instead of silently executing the
+			// pending write after them. A pending write is a kept
+			// command that still needs a result and mutates data:
+			// connection state is re-established, not re-executed,
+			// and a read-only command writes nothing, so neither
+			// counts — but a pending SWAPDB does, it is a
+			// server-global write (see the barrier's pending-write
+			// classification below). An answered write dropped
+			// before the first pending write needs no such keep:
+			// the pending write is later in the original order, so
+			// running it is the batch's own ordering, not an
+			// overwrite of the dropped write's final value. Script
+			// cache commands are not data writes: a LOAD or FLUSH
+			// the filter drops is rebuilt by the reconstruction
+			// below, while an EVAL that ran is a data write, so it
+			// is kept like any other. Commands inside a transaction
+			// DISCARD dropped or the server aborted never executed,
+			// so they hold no final value to preserve. The boundary
+			// command itself is pending by definition, so it starts
+			// the scan; the one-shot collapse below then sees the
+			// updated keeps, so a flag whose follower is now kept
+			// stays with it.
+			isPendingWrite := func(cmd Cmder) bool {
+				return (!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") &&
+					!pipelineCmdReadOnly(cmd) &&
+					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
+			}
+			isDroppedWrite := func(cmd Cmder) bool {
+				return !discardedTx[cmd.base()] && !abortedTx[cmd.base()] &&
+					!pipelineConnStateCmd(cmd) &&
+					!pipelineCmdReadOnly(cmd) &&
+					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
+			}
+			pendingWriteSeen := isPendingWrite(cmds[i])
+			for j, cmd := range cmds[i+1:] {
+				if keep[j] && isPendingWrite(cmd) {
+					pendingWriteSeen = true
+					continue
+				}
+				if pendingWriteSeen && answered[j] && isDroppedWrite(cmd) {
+					keep[j] = true
+					answered[j] = false
+				}
 			}
 			// A one-shot state command (ASKING, CLIENT CACHING) applies
 			// only to the next command the connection runs, so it stays
@@ -4261,11 +4328,23 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// for them. The lookup runs only when the suffix needs
 			// scripts at all: without an EVALSHA in it, no preload
 			// is ever synthesised, so there is nothing to suppress.
+			// A queued SCRIPT FLUSH the EXEC rejected never ran
+			// either, so it emptied nothing — and the rebuild must
+			// not replay it as a required prerequisite, or its
+			// repeated error fails the batch even though the retried
+			// EVALSHA succeeds. Any error counts, not just a
+			// pre-execution rejection: a FLUSH either ran and emptied
+			// the cache or was refused and emptied nothing — there is
+			// no execution that both fails and flushes, unlike an
+			// EVAL, whose Lua runtime error still means it ran and
+			// cached.
 			rejectedQueuedEval := make(map[*baseCmd]bool)
+			rejectedQueuedFlush := make(map[*baseCmd]bool)
 			if needsScripts {
 				execErrs := getExecErrs()
 				for idx, cmd := range cmds {
-					if !isEvalCmd(cmd) {
+					err, ok := execErrs[idx]
+					if !ok || err == nil {
 						continue
 					}
 					// Only a pre-execution rejection means the script
@@ -4273,8 +4352,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// comes from an execution that already cached the
 					// script, so it still preloads (see
 					// isScriptPreExecRejection).
-					if err, ok := execErrs[idx]; ok && err != nil && isScriptPreExecRejection(err) {
+					if isEvalCmd(cmd) && isScriptPreExecRejection(err) {
 						rejectedQueuedEval[cmd.base()] = true
+					}
+					if isScriptFlushCmd(cmd) {
+						rejectedQueuedFlush[cmd.base()] = true
 					}
 				}
 			}
@@ -4307,6 +4389,15 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					retry = append(retry, fresh)
 					markPipelineSynthetic(ctx, false, fresh)
 				case isScriptFlushCmd(answered):
+					// A FLUSH the transaction's EXEC rejected never
+					// ran, so it emptied nothing: replaying it would
+					// fail the batch with the same error even though
+					// the retried EVALSHA succeeds (see
+					// rejectedQueuedFlush above). Only a FLUSH that
+					// actually ran is replayed as required.
+					if rejectedQueuedFlush[answered.base()] {
+						return
+					}
 					// Fresh command, not the original: a retry that
 					// fails while reading must not stamp its
 					// transport error over the OK the first attempt
@@ -4375,6 +4466,26 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// then abort a transaction the original
 					// would have committed.
 					if answered.Name() == "watch" && pipelineCmdErr(answered) != nil {
+						continue
+					}
+					// A raw session command the server rejected
+					// established no state, so it is not rebuilt
+					// either: reissuing it would fail the batch
+					// with the same rejection even though the suffix
+					// succeeds. Only a raw command qualifies: its
+					// error frame lives in Val() with a nil error
+					// (see rawReplyErr), so the rejection is
+					// invisible to the caller and to finalErr — the
+					// reissue's failure would manufacture a batch
+					// failure the original never reported. A typed
+					// session command the server rejected keeps its
+					// error on the original, so the batch already
+					// fails through it and its reissue still runs
+					// as before (see
+					// TestPipelineRetryFailedConnStateReissueFailsBatch).
+					// A transport failure leaves the outcome unknown,
+					// so the command is still reissued as before.
+					if err := rawReplyErr(answered); err != nil && isRedisError(err) {
 						continue
 					}
 					// A queued session change the transaction's

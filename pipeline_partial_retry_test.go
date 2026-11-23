@@ -199,7 +199,23 @@ type connStateRetryServer struct {
 	// failWatch, when set, makes every WATCH answer NOPERM: the
 	// watch is rejected and establishes nothing.
 	failWatch atomic.Bool
-	watches   atomic.Int32
+	// failDiscard, when set, makes every DISCARD answer NOPERM: the
+	// transaction stays open, exactly like a real server refusing
+	// DISCARD for an ACL user (see the script server for the same
+	// rule).
+	failDiscard atomic.Bool
+	// msetTryagainOnce, when set, makes the next MSET answer TRYAGAIN
+	// once; later MSETs succeed. Unlike msetTryagain it lets a retry
+	// complete, so a test can assert what the retry re-ran.
+	msetTryagainOnce atomic.Bool
+	// trackValues, when set, makes SET/MSET record values and GET
+	// return the recorded value for a key instead of the fixed "v":
+	// tests that assert a retry preserved the batch's ordering need
+	// to read the final value back.
+	trackValues bool
+	valuesMu    sync.Mutex
+	values      map[string]string
+	watches     atomic.Int32
 	// failMulti, when set, makes every MULTI answer NOPERM (an ACL
 	// denying MULTI): the transaction never opens and the commands
 	// after it run standalone.
@@ -373,6 +389,16 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 		case "set":
 			s.sets.Add(1)
 			s.setDB.Store(int32(effDB()))
+			if s.trackValues && !inMulti && len(args) >= 2 {
+				// Only a SET that actually ran records its value: a
+				// queued one runs only at EXEC time.
+				s.valuesMu.Lock()
+				if s.values == nil {
+					s.values = map[string]string{}
+				}
+				s.values[args[0]] = args[1]
+				s.valuesMu.Unlock()
+			}
 			if watched {
 				s.setWhileWatched.Add(1)
 			}
@@ -429,6 +455,14 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			}
 		case "get":
 			reply = "$1\r\nv\r\n"
+			if s.trackValues && len(args) >= 1 {
+				s.valuesMu.Lock()
+				v, ok := s.values[args[0]]
+				s.valuesMu.Unlock()
+				if ok {
+					reply = "$" + strconv.Itoa(len(v)) + "\r\n" + v + "\r\n"
+				}
+			}
 		case "mget":
 			s.mgets.Add(1)
 			mgetsThisConn++
@@ -438,8 +472,17 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				reply = "*2\r\n$1\r\na\r\n$1\r\nb\r\n"
 			}
 		case "mset":
-			if s.msetTryagain.Load() {
+			if s.msetTryagain.Load() || s.msetTryagainOnce.CompareAndSwap(true, false) {
 				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+			} else if s.trackValues && !inMulti {
+				s.valuesMu.Lock()
+				if s.values == nil {
+					s.values = map[string]string{}
+				}
+				for i := 0; i+1 < len(args); i += 2 {
+					s.values[args[i]] = args[i+1]
+				}
+				s.valuesMu.Unlock()
 			}
 		case "wait":
 			s.waits.Add(1)
@@ -478,6 +521,14 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			}
 		case "discard":
 			s.discards.Add(1)
+			if s.failDiscard.Load() {
+				// A rejected DISCARD leaves the transaction open:
+				// the frame and its queued body stay, exactly
+				// like a real server refusing DISCARD for an ACL
+				// user, so a later EXEC still runs the body.
+				reply = "-NOPERM this user has no permissions to run the 'discard' command\r\n"
+				break
+			}
 			inMulti = false
 			queued = queued[:0]
 		case "reset":
@@ -2267,6 +2318,30 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(digest), digest)
 			} else if len(args) >= 1 && strings.EqualFold(args[0], "flush") {
 				s.flushes.Add(1)
+				if inMulti {
+					// A FLUSH inside MULTI is queued: it runs only
+					// when EXEC runs it, so a bogus mode is refused
+					// in the EXEC result array, not in its own
+					// reply — exactly like a queued EVAL's
+					// rejection. A FLUSH with no mode, or ASYNC /
+					// SYNC, holds a nil element; any other mode
+					// holds the syntax error EXEC reports for it.
+					elemErr := ""
+					if len(args) >= 2 && !strings.EqualFold(args[1], "async") && !strings.EqualFold(args[1], "sync") {
+						elemErr = "ERR syntax error"
+					}
+					queued = append(queued, elemErr)
+					_, _ = conn.Write([]byte("+QUEUED\r\n"))
+					continue
+				}
+				if len(args) >= 2 && !strings.EqualFold(args[1], "async") && !strings.EqualFold(args[1], "sync") {
+					// A FLUSH takes only an optional ASYNC / SYNC
+					// mode: any other argument is a syntax error,
+					// like a real server — including a replayed
+					// FLUSH the retry reissues.
+					_, _ = conn.Write([]byte("-ERR syntax error\r\n"))
+					continue
+				}
 				if !first && s.denyFlushRetry {
 					// The replayed FLUSH is refused: the cache
 					// keeps the script the reissued LOAD just
@@ -9424,5 +9499,196 @@ func TestPipelineRetryFailedDiscardKeepsExecOrdinals(t *testing.T) {
 	}
 	if got := server.noscripts.Load(); got != 1 {
 		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryFailedDiscardHidesSettledExec: a DISCARD that fails
+// with a Redis error leaves its transaction open, so a later EXEC still
+// settles it — the frame is completed, not open. Here MULTI, a queued
+// SET, a NOPERM DISCARD and EXEC run, and the connection drops before
+// GET's reply: without the fix the completed-frame scan drops the frame
+// on the failed DISCARD and pipelineMultiOpen returns on it without
+// looking at the settled EXEC, so the retry rewinds to MULTI and runs an
+// empty transaction that overwrites the original EXEC results; with it
+// the retry runs only the GET. Regression test for the Cursor Bugbot
+// Medium review finding on #4351 (review 6019281722).
+func TestPipelineRetryFailedDiscardHidesSettledExec(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.failDiscard.Store(true)
+	server.dropAfter = 4
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	set := pipe.Set(ctx, "k", "v", 0)
+	discard := pipe.Do(ctx, "discard")
+	exec := pipe.Do(ctx, "exec")
+	get := pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	// The DISCARD's NOPERM is the batch's first error, so Exec reports
+	// it — exactly as the same batch would without any disconnect. The
+	// regression signal is the EXEC below: its results must survive.
+	if err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("Exec: %v, want NOPERM (the rejected DISCARD is the batch's first error)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := discard.Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("DISCARD: %v, want NOPERM (the rejected DISCARD leaves the transaction open)", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	vals, _ := exec.Val().([]interface{})
+	if len(vals) != 1 {
+		t.Fatalf("EXEC returned %d result(s), want 1 (a settled EXEC's results must not be overwritten by an empty retried transaction)", len(vals))
+	}
+	if got := server.execWithMulti.Load(); got != 1 {
+		t.Fatalf("EXEC ran %d time(s) inside MULTI, want 1 (the retried batch must not rewind to the settled frame)", got)
+	}
+	if got := server.multiCount.Load(); got != 1 {
+		t.Fatalf("server received %d MULTI commands, want 1 (the settled frame must not be re-opened)", got)
+	}
+	if got := server.discards.Load(); got != 1 {
+		t.Fatalf("server received %d DISCARD commands, want 1 (the failed DISCARD must not be re-sent)", got)
+	}
+}
+
+// TestPipelineRetryKeepsAnsweredWriteAfterPendingWrite: trimming answered
+// successors is unsafe when a pending predecessor mutates data they
+// depend on. Here MSET answers TRYAGAIN and the following SET answers
+// OK: without the fix the retry runs only the MSET and leaves the key at
+// the MSET's value while Exec reports success; with it the retry re-runs
+// the SET after the MSET, in order, so the acknowledged final value
+// stands. Regression test for the Codex P1 review finding on #4351
+// (review 6019793639).
+func TestPipelineRetryKeepsAnsweredWriteAfterPendingWrite(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.msetTryagainOnce.Store(true)
+	server.trackValues = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mset := pipe.Do(ctx, "mset", "{m}a", 1, "{m}b", 2)
+	set := pipe.Set(ctx, "{m}a", "3", 0)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-run the answered SET after the retried MSET)", err)
+	}
+	if err := mset.Err(); err != nil {
+		t.Fatalf("MSET: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the answered SET must be re-run after the retried MSET, in order)", got)
+	}
+	// The final value proves the order: the retried MSET must not
+	// overwrite the acknowledged SET.
+	got, err := client.Get(ctx, "{m}a").Result()
+	if err != nil || got != "3" {
+		t.Fatalf("GET {m}a = %q, %v; want %q, nil (the retried MSET ran before the re-run SET, so the SET's value is final)", got, err, "3")
+	}
+}
+
+// TestPipelineRetrySkipsRejectedQueuedScriptFlush: a SCRIPT FLUSH queued
+// inside MULTI with a bogus mode is refused in the EXEC result array, so
+// it never emptied the cache. Here a top-level SCRIPT LOAD, MULTI, a
+// queued FLUSH bogus, EXEC and EVALSHA run, and the connection drops
+// before EVALSHA's reply: without the fix the rebuild reconstructs the
+// rejected FLUSH as a required prerequisite and its repeated syntax error
+// fails the batch even though the EVALSHA succeeds; with it the FLUSH is
+// skipped and the EVALSHA runs on the reissued LOAD. Regression test for
+// the Codex P2 review finding on #4351 (review 6019793639).
+func TestPipelineRetrySkipsRejectedQueuedScriptFlush(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	load := pipe.ScriptLoad(ctx, src)
+	multi := pipe.Do(ctx, "multi")
+	flush := pipe.Do(ctx, "script", "flush", "bogus")
+	exec := pipe.Do(ctx, "exec")
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (a FLUSH the EXEC rejected must not be replayed as a required prerequisite)", err)
+	}
+	if got := load.Val(); got != sha {
+		t.Fatalf("SCRIPT LOAD = %q, want %q", got, sha)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := flush.Err(); err != nil {
+		t.Fatalf("FLUSH: %v, want nil (the queued FLUSH itself holds +QUEUED; its rejection is in the EXEC result array)", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if err := evalsha.Err(); err != nil {
+		t.Fatalf("EVALSHA: %v, want nil (the script stayed cached: the rejected FLUSH never emptied it)", err)
+	}
+	if got := server.flushes.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT FLUSH commands, want 1 (a FLUSH the EXEC rejected must not be replayed)", got)
+	}
+	if got := server.loads.Load(); got != 2 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 2 (the answered LOAD must still be reissued before the EVALSHA)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetrySkipsRejectedRawSessionCommand: a raw session command
+// the server rejected established no state, so it must not be rebuilt as
+// a required restoration. Here a raw SELECT 99 is rejected as out of
+// range and the connection drops before GET's reply: without the fix the
+// rebuild clones the SELECT and pipelineRequiredSyntheticErr promotes its
+// repeated rejection into the batch error even though GET succeeds; with
+// it the SELECT is skipped and the retry runs only the GET. Regression
+// test for the Codex P2 review finding on #4351 (review 6019793639).
+func TestPipelineRetrySkipsRejectedRawSessionCommand(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := NewRawCmd(ctx, "SELECT", 99)
+	if err := pipe.BatchProcess(ctx, sel); err != nil {
+		t.Fatalf("BatchProcess: %v", err)
+	}
+	get := pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (a rejected SELECT establishes no state to restore)", err)
+	}
+	if got := string(sel.Val()); !strings.Contains(got, "DB index is out of range") {
+		t.Fatalf("raw SELECT Val() = %q, want it to keep the out-of-range error frame", got)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("raw SELECT Err(): %v, want nil (a raw command's error frame stays in Val() by contract)", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	if got := server.selects.Load(); got != 1 {
+		t.Fatalf("server received %d SELECT commands, want 1 (a rejected SELECT must not be reissued on the retry connection)", got)
 	}
 }
