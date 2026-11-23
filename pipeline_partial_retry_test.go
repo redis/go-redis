@@ -169,6 +169,7 @@ type connStateRetryServer struct {
 	multiCount       atomic.Int32
 	execWithMulti    atomic.Int32
 	execWithoutMulti atomic.Int32
+	execs            atomic.Int32 // EXECs received, including rejected ones
 	execAborted      atomic.Int32 // EXECs that aborted because a watched key was modified
 	incrs            atomic.Int32
 	exists           atomic.Int32
@@ -204,6 +205,10 @@ type connStateRetryServer struct {
 	// DISCARD for an ACL user (see the script server for the same
 	// rule).
 	failDiscard atomic.Bool
+	// failExec, when set, makes every EXEC answer NOPERM: the
+	// transaction stays open, exactly like a real server refusing
+	// EXEC for an ACL user (see failDiscard for the same rule).
+	failExec atomic.Bool
 	// msetTryagainOnce, when set, makes the next MSET answer TRYAGAIN
 	// once; later MSETs succeed. Unlike msetTryagain it lets a retry
 	// complete, so a test can assert what the retry re-ran.
@@ -555,6 +560,15 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			}
 			s.swapped.Store(!s.swapped.Load())
 		case "exec":
+			s.execs.Add(1)
+			if s.failExec.Load() {
+				// A rejected EXEC leaves the transaction open:
+				// the queued commands stay queued, exactly like
+				// a real server refusing EXEC for an ACL user, so
+				// a later DISCARD still drops them.
+				reply = "-NOPERM this user has no permissions to run the 'exec' command\r\n"
+				break
+			}
 			if s.dropExecFirst && first {
 				// Drop before replying: the queued commands never
 				// execute on this connection.
@@ -9690,5 +9704,133 @@ func TestPipelineRetrySkipsRejectedRawSessionCommand(t *testing.T) {
 	}
 	if got := server.selects.Load(); got != 1 {
 		t.Fatalf("server received %d SELECT commands, want 1 (a rejected SELECT must not be reissued on the retry connection)", got)
+	}
+}
+
+// TestPipelineRetryAnsweredWaitNotKeptAfterPendingWrite: a barrier is
+// not a data write, so the ordered-retry pass must not keep an answered
+// WAIT in the retry tail. Here INCR answers 1, MSET answers TRYAGAIN
+// and WAIT answers 1, all replies read: without the fix the pass keeps
+// the WAIT (it carries no readonly flag in the COMMAND metadata), the
+// WAIT-in-tail check returns the whole batch, and the acknowledged INCR
+// runs twice while Exec reports success; with it the WAIT stays dropped
+// as answered, the retry runs only the MSET, and the barrier reissue
+// path re-runs the WAIT after it. Regression test for the Cursor
+// Bugbot finding and the Codex P1 finding on #4351 (reviews 6020480547
+// and 6020502814).
+func TestPipelineRetryAnsweredWaitNotKeptAfterPendingWrite(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.msetTryagainOnce.Store(true)
+	server.trackValues = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	incr := pipe.Incr(ctx, "counter")
+	mset := pipe.Do(ctx, "mset", "{m}a", 1, "{m}b", 2)
+	wait := pipe.Do(ctx, "wait", 1, 1000)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run only the MSET, with its WAIT reissued after it)", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := mset.Err(); err != nil {
+		t.Fatalf("MSET: %v", err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(1) {
+		t.Fatalf("WAIT = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the acknowledged INCR must not run again)", got)
+	}
+	if got := server.waits.Load(); got != 2 {
+		t.Fatalf("server received %d WAIT commands, want 2 (the answered WAIT must be reissued after the retried MSET)", got)
+	}
+	// The retried MSET must have run: its values are the only record.
+	got, err := client.Get(ctx, "{m}a").Result()
+	if err != nil || got != "1" {
+		t.Fatalf("GET {m}a = %q, %v; want %q, nil (the retried MSET must have applied)", got, err, "1")
+	}
+}
+
+// TestPipelineRetryRejectedExecPreservesFrameForDiscard: an EXEC the
+// server rejects leaves the transaction open, so a DISCARD after it
+// still drops the queued commands. Here SELECT 2, MULTI, a queued
+// SELECT 1, a raw EXEC refused with NOPERM, DISCARD and SET run, and
+// the connection drops before SET's reply: without the fix every frame
+// scan treats the rejected EXEC as a terminator, so the rebuild
+// reissues the discarded SELECT 1 as a session prerequisite and the
+// retried SET lands in DB 1; with it the frame survives the rejected
+// EXEC, the DISCARD marks the queued SELECT discarded, and the retry
+// runs only the reissued SELECT 2 and the SET. Regression test for the
+// Codex P1 finding on #4351 (review 6020502814).
+func TestPipelineRetryRejectedExecPreservesFrameForDiscard(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	// Answer SELECT 2, MULTI, the queued SELECT, the rejected EXEC
+	// and the DISCARD, then drop before SET's reply.
+	server.dropAfter = 5
+	server.failExec.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	sel := pipe.Select(ctx, 2)
+	multi := pipe.Do(ctx, "multi")
+	selInTx := pipe.Select(ctx, 1)
+	exec := NewRawCmd(ctx, "EXEC")
+	if err := pipe.BatchProcess(ctx, exec); err != nil {
+		t.Fatalf("BatchProcess: %v", err)
+	}
+	discard := pipe.Do(ctx, "discard")
+	set := pipe.Set(ctx, "out", "v", 0)
+	// The rejected EXEC is a raw command, so its NOPERM carries no
+	// error: Exec reports success either way, and the proof of the
+	// fix is where SET landed, not the error.
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := selInTx.Err(); err != nil {
+		t.Fatalf("SELECT in tx: %v, want nil (the queued SELECT itself holds +QUEUED; it never ran)", err)
+	}
+	if got := string(exec.Val()); !strings.Contains(got, "NOPERM") {
+		t.Fatalf("raw EXEC Val() = %q, want it to keep the NOPERM error frame", got)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("raw EXEC Err(): %v, want nil (a raw command's error frame stays in Val() by contract)", err)
+	}
+	if err := discard.Err(); err != nil {
+		t.Fatalf("DISCARD: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.selects.Load(); got != 3 {
+		t.Fatalf("server received %d SELECT commands, want 3 (the answered SELECT 2, the queued SELECT 1, and the reissued SELECT 2 — the discarded SELECT 1 must not be reissued)", got)
+	}
+	if got := server.sets.Load(); got != 1 {
+		t.Fatalf("server received %d SET commands, want 1 (only the retried SET: the first attempt's SET got no reply)", got)
+	}
+	if got := server.setDB.Load(); got != 2 {
+		t.Fatalf("SET landed in DB %d, want 2 (the retried SET must run under the reissued SELECT 2, not the discarded SELECT 1)", got)
+	}
+	if got := server.multiCount.Load(); got != 1 {
+		t.Fatalf("server received %d MULTI commands, want 1 (the discarded frame must not be re-opened)", got)
+	}
+	if got := server.execs.Load(); got != 1 {
+		t.Fatalf("server received %d EXEC commands, want 1 (the rejected EXEC must not be re-run)", got)
+	}
+	if got := server.execWithMulti.Load(); got != 0 {
+		t.Fatalf("EXEC ran %d time(s) inside MULTI, want 0 (the rejected EXEC never executed the transaction)", got)
+	}
+	if got := server.discards.Load(); got != 1 {
+		t.Fatalf("server received %d DISCARD commands, want 1 (the DISCARD that dropped the frame must not be re-sent)", got)
 	}
 }

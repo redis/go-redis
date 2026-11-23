@@ -2728,6 +2728,21 @@ func pipelineCmdReadOnly(cmd Cmder) bool {
 	return ok && meta.readOnly
 }
 
+// pipelineIsBarrierCmd reports whether cmd is a replication barrier
+// (WAIT/WAITAOF): it measures the replication offset, it writes no
+// data, so it holds no final value the ordered-retry pass must
+// preserve — and the barrier reissue path re-runs it after a pending
+// write when one precedes it. It must not count as a data write:
+// WAIT and WAITAOF carry no readonly flag in the COMMAND metadata,
+// so the read-only check alone would treat them as writes, keep an
+// answered barrier in the retry tail, and the WAIT-in-tail check
+// would then return the whole batch and replay the answered writes
+// before it.
+func pipelineIsBarrierCmd(cmd Cmder) bool {
+	name := cmd.Name()
+	return name == "wait" || name == "waitaof"
+}
+
 // pipelineWatchSafeFollowerCmd reports whether an answered command that
 // followed a WATCH can be left out of the retry without changing what a
 // reissued WATCH means. A reissued WATCH on a fresh connection is clean,
@@ -2924,7 +2939,11 @@ func pipelineMultiOpen(cmds []Cmder, multi int) bool {
 // still needs a retry when the EXEC never settles. The same holds for a
 // failed DISCARD: only one the server executed discards the frame, a
 // failed one leaves it open (see below). A body whose EXEC settled ran or was definitively aborted, so it
-// must not run again. A frame still open at the end of the batch likewise
+// must not run again. An EXEC the server rejected (NOPERM, TRYAGAIN,
+// ...) settles nothing: the transaction stays open, so the body is
+// decided by what follows the EXEC — a DISCARD drops it, a later
+// settled EXEC runs or aborts it — and only a frame still open at the
+// end of the batch needs a retry. A frame still open at the end of the batch likewise
 // never ran its body — no EXEC follows it — so its body needs a retry
 // too, or the tail filter drops the queued commands as answered (+QUEUED
 // carries no error) and the retry commits a transaction missing them.
@@ -2954,12 +2973,19 @@ func pipelineTxBodyNeedsRetryMap(cmds []Cmder) []bool {
 			}
 		case "exec":
 			if frameStart >= 0 {
-				if !pipelineExecSettled(cmd) {
-					for k := frameStart + 1; k < idx; k++ {
-						needs[k] = true
-					}
+				// Only a settled EXEC closes the frame: one the
+				// server rejected (NOPERM, TRYAGAIN, ...) leaves
+				// the transaction open, so a later DISCARD still
+				// drops its body and a later EXEC still settles
+				// it — closing the frame here would mark the body
+				// as needing a retry it never needs, and the
+				// DISCARD after it would not unmark it. A settled
+				// EXEC's body ran or was definitively aborted, so
+				// it needs no retry; a frame still open at the end
+				// of the batch is marked by the rule below.
+				if pipelineExecSettled(cmd) {
+					frameStart = -1
 				}
-				frameStart = -1
 			}
 		case "discard":
 			// Only a DISCARD the server executed closes the frame:
@@ -3029,7 +3055,16 @@ func pipelineDiscardedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 				frame = append(frame, cmd)
 			}
 		case "exec":
-			frame = nil
+			// Only a settled EXEC closes the frame: one the server
+			// rejected (NOPERM, TRYAGAIN, ...) leaves the
+			// transaction open, so a later DISCARD still drops its
+			// body — clearing the frame here would lose the queued
+			// commands, and the DISCARD would not mark them
+			// discarded (see pipelineTxBodyNeedsRetryMap and
+			// pipelineQueuedExecErrMap for the same rule).
+			if pipelineExecSettled(cmd) {
+				frame = nil
+			}
 		case "discard", "reset":
 			// Only a DISCARD or RESET the server executed closes
 			// the frame: a rejected RESET (NOPERM, for example)
@@ -3139,9 +3174,14 @@ func pipelineAbortedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 					aborted[w.base()] = true
 				}
 			}
-			frame = nil
-			frameGuards = nil
+			// Only a settled EXEC closes the frame: one the server
+			// rejected leaves the transaction open, so a later EXEC
+			// that aborts still records this frame's body — clearing
+			// it here would lose the queued commands (see
+			// pipelineDiscardedTxCmds for the same rule).
 			if pipelineExecSettled(cmd) {
+				frame = nil
+				frameGuards = nil
 				liveWatches = nil
 			}
 		case "discard", "reset":
@@ -3314,8 +3354,17 @@ func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 						errs[b] = err
 					}
 				}
-				frameStart = -1
-				bodies = bodies[:0]
+				// Only a settled EXEC closes the frame: one the
+				// server rejected leaves the transaction open, so
+				// a later DISCARD still drops its body and a later
+				// EXEC's result array still belongs to it —
+				// closing it here would drop the queued commands'
+				// EXEC elements (see pipelineTxBodyNeedsRetryMap
+				// for the same rule).
+				if pipelineExecSettled(cmd) {
+					frameStart = -1
+					bodies = bodies[:0]
+				}
 			}
 		case "discard":
 			// Only a DISCARD the server executed closes the frame: a
@@ -3996,7 +4045,14 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// and a read-only command writes nothing, so neither
 			// counts — but a pending SWAPDB does, it is a
 			// server-global write (see the barrier's pending-write
-			// classification below). An answered write dropped
+			// classification below). A barrier (WAIT/WAITAOF) counts
+			// neither: it measures the replication offset and holds
+			// no final value to preserve, and the barrier reissue
+			// below re-runs it after a pending write when one
+			// precedes it. Counting it would keep an answered
+			// barrier in the tail, and the WAIT-in-tail check would
+			// then return the whole batch and replay the answered
+			// writes before it (see pipelineIsBarrierCmd). An answered write dropped
 			// before the first pending write needs no such keep:
 			// the pending write is later in the original order, so
 			// running it is the batch's own ordering, not an
@@ -4012,12 +4068,14 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// updated keeps, so a flag whose follower is now kept
 			// stays with it.
 			isPendingWrite := func(cmd Cmder) bool {
-				return (!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") &&
+				return !pipelineIsBarrierCmd(cmd) &&
+					(!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") &&
 					!pipelineCmdReadOnly(cmd) &&
 					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
 			}
 			isDroppedWrite := func(cmd Cmder) bool {
 				return !discardedTx[cmd.base()] && !abortedTx[cmd.base()] &&
+					!pipelineIsBarrierCmd(cmd) &&
 					!pipelineConnStateCmd(cmd) &&
 					!pipelineCmdReadOnly(cmd) &&
 					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
