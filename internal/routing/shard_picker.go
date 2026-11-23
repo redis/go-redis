@@ -40,7 +40,8 @@ func (p *RoundRobinPicker) Next(total int) int {
 		return 0
 	}
 	i := p.cnt.Add(1)
-	return int(i-1) % total
+	// Reduce as uint32: where int is 32 bits, int(i-1) is negative past 1<<31.
+	return int((i - 1) % uint32(total))
 }
 
 /*───────────────────────────────
