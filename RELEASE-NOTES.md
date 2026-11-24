@@ -6,16 +6,25 @@
 
 This is a minor release. It contains everything from 9.24.0-beta.1 and 9.24.0-beta.2, so these notes cover the full 9.23.0 → 9.24.0 upgrade. The release adds:
 
+- **Redis 8.12 support**: set member expiration, `ZMOVE`, `BITRANGEINTARRAY`, `CF.COMPACT`, scalar-quantized HNSW, `BLESS` and more, tested against Redis 8.12.0.
 - The experimental **MultiDB client** for Active-Active (Redis Enterprise) failover.
 - **Metadata-driven cluster routing** and client-side caching (CSC) eligibility that come from the `COMMAND` metadata.
 - CSC **OPT-IN / OPT-OUT** tracking modes, CSC on `ClusterClient`, and CSC with `EphemeralConn`.
 - A **per-client `OTelRecorder`**, MultiDB metrics in `redisotel-native`, and much less OpenTelemetry cost on the hot path.
 - New full-duplex options (`FullDuplexPipes`, `PipelineMinIdleConns`) and a cluster recovery fix for full-duplex sessions.
-- An opt-in **idle connection reaper**, `ACLGetUser` and `ClusterSlotStats`.
-- Commands for Redis 8.10 and 8.12 (`BACKUP`, set member expiration, `BITRANGEINTARRAY`, `ZMOVE`, `CF.COMPACT`, `BLESS`, scalar-quantized HNSW).
+- An opt-in **idle connection reaper**, `ACLGetUser`, `ClusterSlotStats` and the Redis 8.10 `BACKUP` commands.
 - Many fixes for connections, cluster routing, authentication, reply parsing, and the search, JSON and probabilistic commands.
 
 ## 🚀 Highlights
+
+### Redis 8.12 support
+
+This release adds the new commands and options of Redis 8.12 and runs its tests against Redis 8.12.0 ([#4404](https://github.com/redis/go-redis/pull/4404)).
+
+- **Set member expiration:** `SExpire`, `SPExpire`, `SExpireAt`, `SPExpireAt` (each with `WithArgs`), `STTL`, `SPTTL`, `SExpireTime`, `SPExpireTime`, `SPersist`, `SAddEX` and `SAddEXWithArgs` ([#4165](https://github.com/redis/go-redis/pull/4165)) by [@ndyakov](https://github.com/ndyakov).
+- **Sorted sets and bitmaps:** `ZMOVE`, `BZMOVE` and `ZMOVEMEMBER` ([#4289](https://github.com/redis/go-redis/pull/4289)), and `BITRANGEINTARRAY` ([#4242](https://github.com/redis/go-redis/pull/4242)) by [@ndyakov](https://github.com/ndyakov).
+- **Probabilistic and search:** `CF.COMPACT` as `CFCompact` ([#4243](https://github.com/redis/go-redis/pull/4243)) by [@ndyakov](https://github.com/ndyakov). `CELL_SIZE` for `CMS.INITBYDIM` and `CMS.INITBYPROB` (`CMSInitByDimCellSize`, `CMSInitByProbCellSize`) ([#4023](https://github.com/redis/go-redis/pull/4023)), and scalar-quantized HNSW indexes in `FT.CREATE` with the two new `FT.INFO` fields ([#4077](https://github.com/redis/go-redis/pull/4077)) by [@vlady-kotsev](https://github.com/vlady-kotsev). `RERANK` for `FT.HYBRID`, the `BITRANGEINTARRAY` options and the new command metadata ([#4277](https://github.com/redis/go-redis/pull/4277)) by [@ndyakov](https://github.com/ndyakov).
+- **`BLESS`:** `BLESS GET`, `BLESS SET`, `BLESS CLEAR` and `BLESS SCAN` for the `NO-EVICT` flag ([#4041](https://github.com/redis/go-redis/pull/4041)) by [@vlady-kotsev](https://github.com/vlady-kotsev). `BlessScan` is node-local: scan each master of a cluster or ring.
 
 ### MultiDB client (experimental)
 
@@ -84,13 +93,8 @@ acme := redis.NewClient(&redis.Options{Addr: "acme:6379", OTelRecorder: acmeRec}
 
 `ConnMaxLifetimeReapInterval` (on `Options`, `ClusterOptions`, `FailoverOptions`, `RingOptions` and `UniversalOptions`, and `conn_max_lifetime_reap_interval` in URLs) starts a background goroutine that closes idle connections past `ConnMaxLifetime` or `ConnMaxIdleTime` and refills the pool toward `MinIdleConns`, so expired connections are closed off the request path. It is off by default. When it is on, it also closes connections that were idle longer than `ConnMaxIdleTime`, 30 minutes by default. Connections in use, and connections that a re-auth or handoff worker owns, are skipped, and a refill toward `MinIdleConns` adds dials at low concurrency ([#4334](https://github.com/redis/go-redis/pull/4334), [#4340](https://github.com/redis/go-redis/pull/4340)) by [@ndyakov](https://github.com/ndyakov).
 
-### New commands
+### More new commands
 
-The Redis 8.12 commands are tested against Redis 8.12.0 ([#4404](https://github.com/redis/go-redis/pull/4404)).
-
-- Set member expiration: `SExpire`, `SPExpire`, `SExpireAt`, `SPExpireAt` (each with `WithArgs`), `STTL`, `SPTTL`, `SExpireTime`, `SPExpireTime`, `SPersist`, `SAddEX` and `SAddEXWithArgs` ([#4165](https://github.com/redis/go-redis/pull/4165)) by [@ndyakov](https://github.com/ndyakov).
-- `BITRANGEINTARRAY` ([#4242](https://github.com/redis/go-redis/pull/4242)), `ZMOVE`, `BZMOVE` and `ZMOVEMEMBER` ([#4289](https://github.com/redis/go-redis/pull/4289)), `CF.COMPACT` as `CFCompact` ([#4243](https://github.com/redis/go-redis/pull/4243)), and the alignment with 8.12-rc2: `RERANK` for `FT.HYBRID`, the `BITRANGEINTARRAY` options and new command metadata ([#4277](https://github.com/redis/go-redis/pull/4277)) by [@ndyakov](https://github.com/ndyakov).
-- `CELL_SIZE` for `CMS.INITBYDIM` and `CMS.INITBYPROB` (`CMSInitByDimCellSize`, `CMSInitByProbCellSize`) ([#4023](https://github.com/redis/go-redis/pull/4023)), scalar-quantized HNSW indexes in `FT.CREATE` with the two new `FT.INFO` fields ([#4077](https://github.com/redis/go-redis/pull/4077)), and `BLESS GET`, `BLESS SET`, `BLESS CLEAR` and `BLESS SCAN` for the `NO-EVICT` flag ([#4041](https://github.com/redis/go-redis/pull/4041)) by [@vlady-kotsev](https://github.com/vlady-kotsev). `BlessScan` is node-local: scan each master of a cluster or ring.
 - `BACKUP START`, `SEAL`, `ABORT`, `CLEANUP` and `STATUS` for Redis 8.10 ([#4286](https://github.com/redis/go-redis/pull/4286)) by [@Purv-Kabaria](https://github.com/Purv-Kabaria).
 - `ACLGetUser` returns an `ACLUser` with the flags, passwords, command, key and channel rules and the selectors of a user, for Redis 7.0 and later. A missing user returns `redis.Nil` ([#4357](https://github.com/redis/go-redis/pull/4357)) by [@ruziba3vich](https://github.com/ruziba3vich).
 - `ClusterSlotStats` and `ClusterSlotStatsOrderBy` run `CLUSTER SLOT-STATS` with a slot range or `ORDERBY`, for Redis 8.2 and later. On a `ClusterClient`, `MultiDBClient` and `AutoPipeliner` the call asks every master and merges the replies, so the result covers the whole cluster and the top slots are global, as with `DBSize`. A pipeline still sends the command to one node. The slot metrics beyond the key count need `cluster-slot-stats-enabled yes` on the servers ([#4358](https://github.com/redis/go-redis/pull/4358)) by [@ruziba3vich](https://github.com/ruziba3vich).
