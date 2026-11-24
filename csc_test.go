@@ -5661,4 +5661,28 @@ func TestCSCPerformanceCompatibility(t *testing.T) {
 	if view.cscFingerprint != "4624cdeaed3bcbe281696bfcd11a4522" {
 		t.Fatalf("default CSC fingerprint changed: %s", view.cscFingerprint)
 	}
-	if path := os.Getenv("CSC_[Truncated]
+	if path := os.Getenv("CSC_COMPATIBILITY_DUMP"); path != "" {
+		if err := os.WriteFile(path, []byte(view.cscFingerprint+"\n"+dump), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// diffSortedStrings reports the entries only in a and the entries only in b.
+func diffSortedStrings(a, b []string) (onlyA, onlyB []string) {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] < b[j]:
+			onlyA = append(onlyA, a[i])
+			i++
+		case b[j] < a[i]:
+			onlyB = append(onlyB, b[j])
+			j++
+		default:
+			i++
+			j++
+		}
+	}
+	return append(onlyA, a[i:]...), append(onlyB, b[j:]...)
+}
