@@ -35,6 +35,10 @@ func TestIsClusterUnsupportedError(t *testing.T) {
 		{proto.RedisError("ERR unknown command `READONLY`, with args beginning with: "), true},
 		{proto.RedisError("ERR unknown subcommand 'SLOTS'. Try CLUSTER HELP."), true},
 		{fmt.Errorf("wrapped: %w", proto.RedisError("ERR This instance has cluster support disabled")), true},
+		// A hook that wraps the error must not hide the server's message.
+		{fmt.Errorf("operation failed: %w", proto.RedisError("ERR unknown command 'CLUSTER'")), true},
+		{fmt.Errorf("operation failed: %w", proto.RedisError("ERR unknown subcommand 'SLOTS'")), true},
+		{fmt.Errorf("hook: %w", proto.RedisError("ERR unknown command 'READONLY', with args beginning with: ")), true},
 		{proto.RedisError("NOPERM this user has no permissions to run the 'cluster|slots' command"), false},
 		{proto.RedisError("CLUSTERDOWN The cluster is down"), false},
 		{errors.New("ERR This instance has cluster support disabled"), false}, // not a server reply
@@ -335,6 +339,48 @@ func TestClusterStandaloneFallbackTransitions(t *testing.T) {
 	if val, err := client.Get(ctx, keyB).Result(); err != nil || val != "a" {
 		t.Fatalf("standalone Get() after downgrade = %q, %v; want %q, nil", val, err, "a")
 	}
+}
+
+// errWrapHook wraps every command error and keeps it on the command, as the
+// hook contract asks.
+type errWrapHook struct{}
+
+func (errWrapHook) DialHook(next DialHook) DialHook { return next }
+
+func (errWrapHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		if err := next(ctx, cmd); err != nil {
+			wrapped := fmt.Errorf("operation failed: %w", err)
+			cmd.SetErr(wrapped)
+			return wrapped
+		}
+		return nil
+	}
+}
+
+func (errWrapHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook { return next }
+
+// A node hook that wraps errors must not hide an unknown CLUSTER command.
+func TestClusterStandaloneFallbackWrappedError(t *testing.T) {
+	ctx := context.Background()
+	addr := newFallbackTestServer(t, func(args []string) string {
+		switch args[0] {
+		case "hello":
+			return "%0\r\n"
+		case "cluster":
+			return "-ERR unknown command 'CLUSTER', with args beginning with: '" + args[1] + "'\r\n"
+		case "get":
+			return "$1\r\na\r\n"
+		}
+		return "+OK\r\n"
+	})
+	client := newFallbackTestClient(t, &ClusterOptions{Addrs: []string{addr}, StandaloneFallback: true})
+	client.OnNewNode(func(node *Client) { node.AddHook(errWrapHook{}) })
+
+	if val, err := client.Get(ctx, "key").Result(); err != nil || val != "a" {
+		t.Fatalf("Get() = %q, %v; want %q, nil", val, err, "a")
+	}
+	assertStandaloneState(t, client, addr)
 }
 
 func TestPickStandaloneAddr(t *testing.T) {
