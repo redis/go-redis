@@ -3698,11 +3698,23 @@ func isScriptPreExecRejection(cmd Cmder, err error) bool {
 	if HasErrorPrefix(err, "value is not an integer or out of range") {
 		return !evalNumKeysValid(cmd)
 	}
+	if HasErrorPrefix(err, "wrong number of arguments") {
+		// A Lua runtime error reports the same prefix for the inner
+		// command (a pcall MSET with an odd argument count fails
+		// with "wrong number of arguments for 'mset' command"
+		// after the script ran and cached). Only an EVAL whose own
+		// arity is wrong — a missing numkeys, or a count past the
+		// argument list — is refused before execution, so only
+		// then does the prefix suppress the preload.
+		if isEvalCmd(cmd) {
+			return !evalNumKeysValid(cmd)
+		}
+		return true
+	}
 	if HasErrorPrefix(err, "Error compiling script") ||
 		HasErrorPrefix(err, "Number of keys can't be negative") ||
 		HasErrorPrefix(err, "Number of keys can't be greater than number of args") ||
 		HasErrorPrefix(err, "wrong number of keys") ||
-		HasErrorPrefix(err, "wrong number of arguments") ||
 		HasErrorPrefix(err, "CROSSSLOT ") ||
 		HasErrorPrefix(err, "BUSY ") ||
 		proto.IsPermissionError(err) ||
@@ -3718,11 +3730,14 @@ func isScriptPreExecRejection(cmd Cmder, err error) bool {
 // evalNumKeysValid reports whether cmd's EVAL numkeys argument is a
 // well-formed key count: an integer from 0 to the number of arguments
 // that follow it. A raw command built with Do may carry numkeys as a
-// string or an integer; anything else — a missing numkeys, a non-integer
-// string, a negative count, or a count past the argument list — is not
-// a valid count, so a "value is not an integer" error for such a command
-// comes from argument validation before execution. Args are laid out
-// as [eval, script, numkeys, keys..., args...], so numkeys is args[2].
+// string, an integer, a byte slice or a string pointer — WriteArg sends
+// all of them the same way — so the validator accepts every form
+// evalScriptSource already does; anything else — a missing numkeys, a
+// non-integer value, a negative count, or a count past the argument
+// list — is not a valid count, so a "value is not an integer" error for
+// such a command comes from argument validation before execution. Args
+// are laid out as [eval, script, numkeys, keys..., args...], so numkeys
+// is args[2].
 func evalNumKeysValid(cmd Cmder) bool {
 	args := cmd.Args()
 	if len(args) < 3 {
@@ -3733,6 +3748,24 @@ func evalNumKeysValid(cmd Cmder) bool {
 	case string:
 		var err error
 		n, err = strconv.Atoi(v)
+		if err != nil {
+			return false
+		}
+	case *string:
+		if v == nil {
+			return false
+		}
+		var err error
+		n, err = strconv.Atoi(*v)
+		if err != nil {
+			return false
+		}
+	case []byte:
+		if v == nil {
+			return false
+		}
+		var err error
+		n, err = strconv.Atoi(string(v))
 		if err != nil {
 			return false
 		}
@@ -4219,7 +4252,31 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				// databases back. Unlike the other connection-local
 				// state kept here for re-establishment, it is dropped
 				// with the other answered commands below.
-				if synthetic[cmd.base()] || staleErrs[cmd.base()] {
+				//
+				// A reissued barrier is marked synthetic so the
+				// retry re-measures it (see the barrier reissue
+				// below), but the mark must not keep an answered
+				// barrier in the tail across attempts: the
+				// unconditional keep would hold the answered WAIT
+				// in the tail, and the WAIT-in-tail check would
+				// then return the whole batch and replay the
+				// answered writes before it. An answered barrier
+				// falls through to the answered check below
+				// instead, so it is dropped like any other
+				// answered command — and reissued from the
+				// answered tail when a pending write still
+				// precedes it. A barrier that still needs a
+				// result (a retryable error, or a reply never
+				// read) is kept by that check, as before. The
+				// stale-error keep below is untouched: a reused
+				// barrier that carried an error into this
+				// invocation must still be re-dispatched so the
+				// fresh reply overwrites it.
+				if synthetic[cmd.base()] && !pipelineIsBarrierCmd(cmd) {
+					keep[j] = true
+					continue
+				}
+				if staleErrs[cmd.base()] {
 					keep[j] = true
 					continue
 				}
@@ -4406,7 +4463,16 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// answered: one whose reply was never read was not
 			// consumed by any follower — its follower is outside this
 			// batch — so it stays and the retry completes it, instead
-			// of reporting its transport failure as terminal.
+			// of reporting its transport failure as terminal. A flag
+			// with no follower in the batch at all is the exception
+			// to the drop: it was never consumed, so it is still
+			// armed on the connection, and dropping it lets the
+			// retried commands consume it instead — the command
+			// after the retry then runs without the flag it was
+			// issued for. Keeping it re-sends it at the end of the
+			// retry, so it is armed again for that next command.
+			// A flag that answered with an error never armed
+			// anything, so it still drops.
 			for j := len(keep) - 1; j >= 0; j-- {
 				if !keep[j] || !pipelineOneShotStateCmd(cmds[i+1+j]) {
 					continue
@@ -4420,6 +4486,18 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					break
 				}
 				if !follower {
+					if pipelineCmdErr(cmds[i+1+j]) == nil {
+						hasFollower := false
+						for k := j + 1; k < len(keep); k++ {
+							if !synthetic[cmds[i+1+k].base()] {
+								hasFollower = true
+								break
+							}
+						}
+						if !hasFollower {
+							continue
+						}
+					}
 					if e := pipelineCmdErr(cmds[i+1+j]); e == nil || (isRedisError(e) && !shouldRetry(e, true)) {
 						keep[j] = false
 					}

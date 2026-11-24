@@ -290,6 +290,29 @@ type connStateRetryServer struct {
 	// dropExecFirst, when set, makes the first connection close
 	// without replying to EXEC (the transaction never commits there).
 	dropExecFirst bool
+	// evalTryagainOnce, when set, makes the next EVAL answer TRYAGAIN
+	// without executing: the script never ran, so a retry that runs
+	// it increments the counter once.
+	evalTryagainOnce atomic.Bool
+	// evals counts EVALs that actually executed (a TRYAGAIN EVAL
+	// counts in neither evals nor any other counter).
+	evals atomic.Int32
+	// mgetTryagainCount, when positive, makes that many MGETs answer
+	// TRYAGAIN without executing; later MGETs succeed. Unlike
+	// tryagainConn it counts across connections, so a test can fail
+	// the MGET on every attempt until the count runs out.
+	mgetTryagainCount atomic.Int32
+	// setNoreplicasOnce, when set, makes the next SET answer
+	// NOREPLICAS without executing: the key is not recorded, exactly
+	// like a real server refusing the write while replicas lag.
+	setNoreplicasOnce atomic.Bool
+	// cachingCmds counts CLIENT CACHING YES commands received, and
+	// optinGets counts GETs that arrived while a one-shot CLIENT
+	// CACHING YES flag was armed on their connection: the next
+	// command after the flag runs opt-in, and the flag is then
+	// consumed.
+	cachingCmds atomic.Int32
+	optinGets   atomic.Int32
 }
 
 func newConnStateRetryServer(t retryTestHelper) *connStateRetryServer {
@@ -388,6 +411,10 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 	dirty := false
 	answered := 0
 	mgetsThisConn := 0
+	// cachingArmed tracks a one-shot CLIENT CACHING YES flag on this
+	// connection: the next command after it runs opt-in, and the flag
+	// is then consumed (see the modelling below).
+	cachingArmed := false
 	// queued holds the commands accepted into the open MULTI frame,
 	// in order, so EXEC can answer one result element per queued
 	// command (see the exec case below).
@@ -410,6 +437,19 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 		name, args := readConnStateRetryCommand(scanner)
 		if name == "" {
 			return
+		}
+		// CLIENT CACHING YES arms a one-shot opt-in flag for the
+		// next command on this connection: that command runs
+		// opt-in, and the flag is then consumed. A later CACHING
+		// YES re-arms it.
+		if name == "client" && len(args) >= 2 && strings.EqualFold(args[0], "caching") && strings.EqualFold(args[1], "yes") {
+			s.cachingCmds.Add(1)
+			cachingArmed = true
+		} else if cachingArmed {
+			if name == "get" {
+				s.optinGets.Add(1)
+			}
+			cachingArmed = false
 		}
 		// Connection setup commands (HELLO and friends) are not part of
 		// the pipeline: always answer them and never drop on them.
@@ -483,6 +523,14 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				// value, changes no database and counts in
 				// neither per-DB counter.
 				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+				break
+			}
+			if s.setNoreplicasOnce.CompareAndSwap(true, false) {
+				// A NOREPLICAS SET never executed: it records no
+				// value and counts in no per-DB counter, exactly
+				// like a real server refusing the write while
+				// replicas lag.
+				reply = "-NOREPLICAS Not enough replicas to apply the write\r\n"
 				break
 			}
 			s.setDB.Store(int32(effDB()))
@@ -578,7 +626,17 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 		case "mget":
 			s.mgets.Add(1)
 			mgetsThisConn++
-			if s.tryagainConn == n && mgetsThisConn == 1 {
+			tryagainMget := false
+			if s.mgetTryagainCount.Add(-1) >= 0 {
+				// A TRYAGAIN MGET never executed: the count is
+				// spent across connections, so a test can fail
+				// the MGET on every attempt until it runs out.
+				tryagainMget = true
+			} else {
+				s.mgetTryagainCount.Add(1)
+				tryagainMget = s.tryagainConn == n && mgetsThisConn == 1
+			}
+			if tryagainMget {
 				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
 			} else {
 				reply = "*2\r\n$1\r\na\r\n$1\r\nb\r\n"
@@ -596,6 +654,16 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				}
 				s.valuesMu.Unlock()
 			}
+		case "eval":
+			if s.evalTryagainOnce.CompareAndSwap(true, false) {
+				// A TRYAGAIN EVAL never executed: the script
+				// never ran, so a retry that runs it increments
+				// the counter once.
+				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+				break
+			}
+			s.evals.Add(1)
+			reply = ":1\r\n"
 		case "wait":
 			s.waits.Add(1)
 			if s.failWait.Load() {
@@ -2599,6 +2667,15 @@ var queuedRuntimeErrScriptSHA = func() string {
 // before execution, so the two cases differ only in the numkeys argument.
 const runtimeIntErrScript = "return redis.pcall('INCR', KEYS[1])"
 
+// runtimeMsetArityErrScript is the Lua source used by
+// TestPipelineRetryEvalMsetArityRuntimeErrorIsPreloaded: it pcall()s MSET
+// with KEYS[1], one value, and ARGV unpacked, so with a single ARGV value
+// the call has an odd argument count and fails at runtime with "wrong
+// number of arguments for 'mset' command" — after the script ran and
+// cached. The same prefix is what a refusal of EVAL itself reports
+// before execution, so the two cases differ only in EVAL's own arity.
+const runtimeMsetArityErrScript = "return redis.pcall('MSET', KEYS[1], 'v', unpack(ARGV))"
+
 // emptyScriptSHA is the SHA1 of the empty Lua source, the digest EVALSHA
 // carries for an EVAL "".
 var emptyScriptSHA = func() string {
@@ -3009,6 +3086,12 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				// the script ran and cached before producing this
 				// error, so it is not a pre-execution rejection.
 				_, _ = conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+			case len(args) >= 1 && args[0] == runtimeMsetArityErrScript:
+				// The pcall fails at runtime on MSET's arity: the
+				// script ran and cached before producing this
+				// error, so it is not a pre-execution rejection
+				// of EVAL itself.
+				_, _ = conn.Write([]byte("-ERR wrong number of arguments for 'mset' command\r\n"))
 			case len(args) >= 1 && args[0] == "return redis.call('BADCMD')":
 				_, _ = conn.Write([]byte("-ERR Error running script (call to f_0123456789abcdef): @user_script:1: Unknown Redis command called from Lua script\r\n"))
 			default:
@@ -10870,5 +10953,225 @@ func BenchmarkPipelineRetrySuccessBookkeeping(b *testing.B) {
 		if _, err := pipe.Exec(ctx); err != nil {
 			b.Fatalf("Exec: %v", err)
 		}
+	}
+}
+
+// TestPipelineRetryRetrimsAnsweredReissuedBarrier: a direct Client
+// retrying twice during slot migration must not replay an answered
+// WAIT the first retry reissued. The first attempt answers
+// [TRYAGAIN, TRYAGAIN, 1] to EVAL, MGET and WAIT; the first retry
+// reissues the WAIT (marked synthetic) so it is re-measured after the
+// re-run EVAL. On the second attempt the EVAL succeeds while the MGET
+// still answers TRYAGAIN: the answered WAIT must be trimmed like any
+// other answered command, so the third attempt retries only the MGET.
+// Without the fix the synthetic mark keeps the answered WAIT in the
+// tail, the WAIT-in-tail check returns the whole batch, and the third
+// attempt runs the EVAL a second time — the counter increments twice
+// while Exec still reports success. Regression test for the Codex P1
+// finding on #4351 (review 6042465465).
+func TestPipelineRetryRetrimsAnsweredReissuedBarrier(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.evalTryagainOnce.Store(true)
+	server.mgetTryagainCount.Store(2)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Do(ctx, "eval", "return redis.call('INCR', KEYS[1]) + redis.call('INCR', KEYS[2])", 2, "k1", "k2")
+	mget := pipe.MGet(ctx, "k1", "k2")
+	wait := pipe.Do(ctx, "wait", 1, 1000)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil", err)
+	}
+	if got, err := eval.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVAL = %v, %v; want 1, nil", got, err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(1) {
+		t.Fatalf("WAIT = %v, %v; want 1, nil", got, err)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server executed %d EVAL commands, want 1 (the answered EVAL must not run again on the third attempt)", got)
+	}
+	if got := server.mgets.Load(); got != 3 {
+		t.Fatalf("server received %d MGET commands, want 3 (one per attempt until it succeeds)", got)
+	}
+	if got := server.waits.Load(); got != 2 {
+		t.Fatalf("server received %d WAIT commands, want 2 (the first attempt's and the first retry's — the answered WAIT must not be re-measured again)", got)
+	}
+}
+
+// TestPipelineRetryEvalMsetArityRuntimeErrorIsPreloaded: a Lua runtime
+// error reports the same "wrong number of arguments" prefix EVAL itself
+// reports when refused before execution — but the script ran and cached
+// before the pcall failed, so the retry must preload its source before
+// the retried EVALSHA. Only an EVAL whose own arity is wrong is refused
+// before execution. Regression test for the Codex P2 finding on #4351
+// (review 6042465465).
+func TestPipelineRetryEvalMsetArityRuntimeErrorIsPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	sum := sha1.Sum([]byte(runtimeMsetArityErrScript))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, runtimeMsetArityErrScript, []string{"k1"}, "x")
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "wrong number of arguments for 'mset' command") {
+		t.Fatalf("Exec: %v, want the EVAL's MSET arity runtime error (it is the first command error)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "wrong number of arguments for 'mset' command") {
+		t.Fatalf("EVAL: %v, want the MSET arity runtime error", err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil (the EVAL ran and cached the script before failing, so the retry must preload it)", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (a runtime-failing EVAL populated the cache)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryEvalByteNumkeysIsPreloaded: evalNumKeysValid must
+// accept the byte-string and pointer forms evalScriptSource already
+// does, or an EVAL sent with a []byte numkeys looks invalid and its
+// runtime error is classified as a pre-execution rejection: the script
+// actually ran and cached, but the retry never preloads it and the
+// retried EVALSHA fails NOSCRIPT. Regression test for the Cursor
+// Bugbot Medium finding on #4351 (review 6042537704).
+func TestPipelineRetryEvalByteNumkeysIsPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	sum := sha1.Sum([]byte(runtimeIntErrScript))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Do(ctx, "eval", runtimeIntErrScript, []byte("1"), "bad")
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("Exec: %v, want the EVAL's runtime integer error (it is the first command error)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("EVAL: %v, want the runtime integer error", err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil (the EVAL ran and cached the script before failing, so the retry must preload it)", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (a runtime-failing EVAL populated the cache)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestEvalNumKeysValid: the numkeys argument of an EVAL may arrive as a
+// string, an integer, a byte slice or a string pointer — WriteArg sends
+// all of them the same way — so the validator must accept every form
+// evalScriptSource already treats as a script argument.
+func TestEvalNumKeysValid(t *testing.T) {
+	ctx := context.Background()
+	strNumkeys := "1"
+	strBad := "bad"
+	emptyStr := ""
+	var nilStr *string
+	var nilBytes []byte
+	cases := []struct {
+		name string
+		args []any
+		want bool
+	}{
+		{"string", []any{"eval", "return 1", "1", "k1"}, true},
+		{"int", []any{"eval", "return 1", 1, "k1"}, true},
+		{"int64", []any{"eval", "return 1", int64(1), "k1"}, true},
+		{"byte slice", []any{"eval", "return 1", []byte("1"), "k1"}, true},
+		{"string pointer", []any{"eval", "return 1", &strNumkeys, "k1"}, true},
+		{"zero keys", []any{"eval", "return 1", 0}, true},
+		{"missing numkeys", []any{"eval", "return 1"}, false},
+		{"non-integer string", []any{"eval", "return 1", "bad", "k1"}, false},
+		{"non-integer byte slice", []any{"eval", "return 1", []byte("x"), "k1"}, false},
+		{"non-integer string pointer", []any{"eval", "return 1", &strBad, "k1"}, false},
+		{"negative count", []any{"eval", "return 1", -1, "k1"}, false},
+		{"count past the arguments", []any{"eval", "return 1", 2, "k1"}, false},
+		{"nil string pointer", []any{"eval", "return 1", nilStr, "k1"}, false},
+		{"nil byte slice", []any{"eval", "return 1", nilBytes, "k1"}, false},
+		{"empty string", []any{"eval", "return 1", emptyStr, "k1"}, false},
+		{"float", []any{"eval", "return 1", 1.0, "k1"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewCmd(ctx, tc.args...)
+			if got := evalNumKeysValid(cmd); got != tc.want {
+				t.Fatalf("evalNumKeysValid(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPipelineRetryRestoresUnconsumedTrailingOneShotFlag: on a dedicated
+// connection with CLIENT TRACKING ON OPTIN, a trailing CLIENT CACHING
+// YES that answered successfully is still armed when the batch ends —
+// it has no follower in the batch to consume it. If the SET before it
+// is retried, the retried SET consumes the armed flag on the same
+// connection, so the next GET after the retry is no longer opt-in and
+// produces no tracking invalidation. The retry must re-send the flag
+// at the end, so it is armed again for the command after the retry.
+// A flag whose follower was already answered stays dropped: it was
+// consumed by that follower (see
+// TestPipelineRetryDoesNotReissueOneShotClientCaching). Regression test
+// for the Codex P2 finding on #4351 (review 6042465465).
+func TestPipelineRetryRestoresUnconsumedTrailingOneShotFlag(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.setNoreplicasOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+	conn := client.Conn()
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx := context.Background()
+	if err := conn.Do(ctx, "client", "tracking", "on", "optin").Err(); err != nil {
+		t.Fatalf("CLIENT TRACKING: %v", err)
+	}
+	pipe := conn.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	caching := pipe.Do(ctx, "client", "caching", "yes")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := caching.Err(); err != nil {
+		t.Fatalf("CLIENT CACHING: %v", err)
+	}
+	get := conn.Get(ctx, "k")
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the NOREPLICAS SET must be retried once)", got)
+	}
+	if got := server.cachingCmds.Load(); got != 2 {
+		t.Fatalf("server received %d CLIENT CACHING commands, want 2 (the answered trailing flag must be re-sent at the end of the retry)", got)
+	}
+	if got := server.optinGets.Load(); got != 1 {
+		t.Fatalf("server saw %d opt-in GETs, want 1 (the GET after the retry must still run opt-in)", got)
 	}
 }
