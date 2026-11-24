@@ -3191,12 +3191,8 @@ func NewClient(opt *Options) *Client {
 
 	c.initStreamingCredentials()
 
-	// Create metadata independently of CSC. The zero config reuses the package
-	// default without allocating a store.
+	// Cluster node clients share their parent's metadata without owning a store.
 	c.baseClient.metadataSource = opt.cscMetadataSource
-	if c.baseClient.metadataSource == nil {
-		c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
-	}
 
 	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
 	// background drainer. attachCSC is the strategy dispatch entry.
