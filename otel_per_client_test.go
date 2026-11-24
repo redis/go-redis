@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,13 +13,17 @@ import (
 )
 
 // countingRecorder is an OTelRecorder that counts what reaches it, per method.
+// It is also an OTelPoolRegistrar: connCount sums the registered pools.
 type countingRecorder struct {
 	mu     sync.Mutex
 	counts map[string]int
-	conns  int // connection.count balance
+	pools  map[Pooler]string
+	pubSub map[PubSubPooler]string
 }
 
-func newCountingRecorder() *countingRecorder { return &countingRecorder{counts: map[string]int{}} }
+func newCountingRecorder() *countingRecorder {
+	return &countingRecorder{counts: map[string]int{}, pools: map[Pooler]string{}, pubSub: map[PubSubPooler]string{}}
+}
 
 func (r *countingRecorder) bump(k string) {
 	r.mu.Lock()
@@ -38,10 +43,49 @@ func (r *countingRecorder) reset() {
 	r.mu.Unlock()
 }
 
+// connCount returns the connections of the registered pools named after
+// perClientAddr, the way an async counter observes them.
 func (r *countingRecorder) connCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.conns
+	n := 0
+	for p, name := range r.pools {
+		if strings.HasPrefix(name, perClientAddr+"_") {
+			n += int(p.PoolStats().TotalConns)
+		}
+	}
+	for p, name := range r.pubSub {
+		if strings.HasPrefix(name, perClientAddr+"_") {
+			n += int(p.Stats().Active)
+		}
+	}
+	return n
+}
+
+const perClientAddr = "per-client:6379"
+
+func (r *countingRecorder) RegisterPool(name string, p Pooler) {
+	r.mu.Lock()
+	r.pools[p] = name
+	r.mu.Unlock()
+}
+
+func (r *countingRecorder) UnregisterPool(p Pooler) {
+	r.mu.Lock()
+	delete(r.pools, p)
+	r.mu.Unlock()
+}
+
+func (r *countingRecorder) RegisterPubSubPool(name string, p PubSubPooler) {
+	r.mu.Lock()
+	r.pubSub[p] = name
+	r.mu.Unlock()
+}
+
+func (r *countingRecorder) UnregisterPubSubPool(p PubSubPooler) {
+	r.mu.Lock()
+	delete(r.pubSub, p)
+	r.mu.Unlock()
 }
 
 // Operations are counted by command name ("op:ping"): the handshake commands
@@ -53,44 +97,55 @@ func (r *countingRecorder) RecordOperationDuration(_ context.Context, _ time.Dur
 func (r *countingRecorder) RecordPipelineOperationDuration(context.Context, time.Duration, string, int, int, error, ConnInfo, int) {
 	r.bump("pipeline")
 }
+
 func (r *countingRecorder) RecordConnectionCreateTime(context.Context, time.Duration, ConnInfo) {
 	r.bump("create")
 }
+
 func (r *countingRecorder) RecordConnectionRelaxedTimeout(context.Context, int, ConnInfo, string, string) {
 	r.bump("relaxed")
 }
+
 func (r *countingRecorder) RecordConnectionHandoff(context.Context, ConnInfo, string) {
 	r.bump("handoff")
 }
+
 func (r *countingRecorder) RecordError(context.Context, string, ConnInfo, string, bool, int) {
 	r.bump("error")
 }
+
 func (r *countingRecorder) RecordMaintenanceNotification(context.Context, ConnInfo, string) {
 	r.bump("maint")
 }
+
 func (r *countingRecorder) RecordConnectionWaitTime(context.Context, time.Duration, ConnInfo) {
 	r.bump("wait")
 }
+
 func (r *countingRecorder) RecordConnectionClosed(context.Context, ConnInfo, string, error) {
 	r.bump("closed")
 }
+
 func (r *countingRecorder) RecordPubSubMessage(context.Context, ConnInfo, string, string, bool) {
 	r.bump("pubsub")
 }
+
 func (r *countingRecorder) RecordStreamLag(context.Context, time.Duration, ConnInfo, string, string, string) {
 	r.bump("lag")
 }
 
-func (r *countingRecorder) RecordConnectionCount(_ context.Context, delta int, _ ConnInfo, _ string, _ bool) {
-	r.mu.Lock()
-	r.conns += delta
-	r.mu.Unlock()
+func (r *countingRecorder) RecordConnectionCount(context.Context, int, ConnInfo, string, bool) {
+	r.bump("count")
 }
+
 func (r *countingRecorder) RecordPendingRequests(context.Context, int, ConnInfo, string) {
 	r.bump("pending")
 }
 
-var _ OTelConnectionCounter = (*countingRecorder)(nil)
+var (
+	_ OTelConnectionCounter = (*countingRecorder)(nil)
+	_ OTelPoolRegistrar     = (*countingRecorder)(nil)
+)
 
 // TestOTelRecorderOptionPropagates pins that every options conversion carries
 // the per-client recorder, so nodes, shards, sentinels and MultiDB members
@@ -146,16 +201,16 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 // TestOTelRecorderPerClientPoolEvents pins that a client's pool events reach
 // its own recorder and nothing else: not the global recorder, not another
-// client's; that a client without a recorder still reaches the global one; and
-// that installing or removing the global recorder neither recounts nor
-// disturbs a per-client pool, whose count returns to zero on Close.
+// client's; that a client without a recorder still reaches the global one,
+// including when the global recorder is installed after the client; and that
+// a closed client's pools leave its recorder.
 func TestOTelRecorderPerClientPoolEvents(t *testing.T) {
 	global := newCountingRecorder()
 	a, b := newCountingRecorder(), newCountingRecorder()
 
 	newClient := func(rec OTelRecorder) *Client {
 		return NewClient(&Options{
-			Addr:            "per-client:6379",
+			Addr:            perClientAddr,
 			Dialer:          pipeDialer,
 			PoolSize:        2,
 			MinIdleConns:    2,
@@ -203,9 +258,6 @@ func TestOTelRecorderPerClientPoolEvents(t *testing.T) {
 	}
 
 	SetOTelRecorder(nil)
-	if got := global.connCount(); got != 0 {
-		t.Fatalf("global recorder after uninstall: %d conns, want 0", got)
-	}
 	if a.connCount() != 2 || b.connCount() != 2 {
 		t.Fatalf("per-client counts changed by the global uninstall: a=%d b=%d", a.connCount(), b.connCount())
 	}
@@ -216,6 +268,9 @@ func TestOTelRecorderPerClientPoolEvents(t *testing.T) {
 	}
 	if got := b.connCount(); got != 2 {
 		t.Fatalf("b after a's Close: %d conns, want 2", got)
+	}
+	if got := a.get("count") + b.get("count") + global.get("count"); got != 0 {
+		t.Fatalf("RecordConnectionCount called %d times, want 0", got)
 	}
 }
 

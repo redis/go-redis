@@ -687,6 +687,11 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 // NewFailoverClient returns a Redis client that uses Redis Sentinel
 // for automatic failover. It's safe for concurrent use by multiple
 // goroutines.
+//
+// Unlike NewFailoverClusterClient, it does not support RouteByLatency or
+// RouteRandomly (setting either panics); prefer it when replica routing
+// is not needed, as it avoids the extra overhead of the ClusterClient's
+// hash-slot calculation.
 // Passing nil FailoverOptions will cause a panic.
 func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	if failoverOpt == nil {
@@ -815,7 +820,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// failover client previously registered none, so pool gauges were silent
 	// for the identical standalone setup). The pipeline pool is nil when not
 	// configured.
-	otel.RegisterPools(rdb.recorder(), rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
+	otel.RegisterPools(rdb.recorder(), rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool())
 
 	installOnFailover(failover, rdb.baseClient, pubSubHooks)
 
@@ -1033,7 +1038,7 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	c.pubSubManager = newPubSubManager(c.baseClient, c.cloneOpt())
 
 	// Close unregisters them, so register here as NewClient does.
-	otel.RegisterPools(c.recorder(), c.connPool, c.pubSubPool, nil, opt.Addr)
+	otel.RegisterPools(c.recorder(), c.connPool, c.pubSubPool, nil)
 
 	return c
 }
@@ -1570,6 +1575,14 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 
 // NewFailoverClusterClient returns a client that supports routing read-only commands
 // to a replica node.
+//
+// It is safe to use with a non-cluster Sentinel setup: the client handles
+// master/replica role changes on Sentinel-triggered failover (via the
+// +switch-master event), and the internal hash-slot calculation does not
+// interfere with routing, as all nodes are configured to handle all
+// slots. Prefer it over NewFailoverClient when RouteByLatency or
+// RouteRandomly is needed; otherwise prefer NewFailoverClient to avoid the
+// ClusterClient's extra overhead.
 // Passing nil FailoverOptions will cause a panic.
 func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 	if failoverOpt == nil {

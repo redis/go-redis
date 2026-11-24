@@ -5,7 +5,7 @@ go 1.26.0
 replace github.com/redis/go-redis/v9 => ../..
 
 require (
-	github.com/redis/go-redis/v9 v9.24.0-beta.2
+	github.com/redis/go-redis/v9 v9.24.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/metric v1.47.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0

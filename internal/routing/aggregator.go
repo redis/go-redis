@@ -80,7 +80,8 @@ func NewDefaultAggregator(isKeyed bool) ResponseAggregator {
 // propagates the first error otherwise.
 type AllSucceededAggregator struct {
 	err atomic.Pointer[error]
-	res atomic.Value
+	// A pointer, not atomic.Value: Value panics on values of different types.
+	res atomic.Pointer[interface{}]
 }
 
 func (a *AllSucceededAggregator) Add(result interface{}, err error) error {
@@ -90,7 +91,7 @@ func (a *AllSucceededAggregator) Add(result interface{}, err error) error {
 	}
 
 	if result != nil {
-		a.res.CompareAndSwap(nil, result)
+		a.res.CompareAndSwap(nil, &result)
 	}
 
 	return nil
@@ -127,8 +128,12 @@ func (a *AllSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
 }
 
 func (a *AllSucceededAggregator) Aggregate() (interface{}, error) {
+	var res interface{}
 	var err error
-	res, e := a.res.Load(), a.err.Load()
+	r, e := a.res.Load(), a.err.Load()
+	if r != nil {
+		res = *r
+	}
 	if e != nil {
 		err = *e
 	}
@@ -144,7 +149,8 @@ func (a *AllSucceededAggregator) AddWithKey(key string, result interface{}, err 
 // if all shards errored, returns any one of those errors.
 type OneSucceededAggregator struct {
 	err atomic.Pointer[error]
-	res atomic.Value
+	// A pointer, not atomic.Value: Value panics on values of different types.
+	res atomic.Pointer[interface{}]
 }
 
 func (a *OneSucceededAggregator) Add(result interface{}, err error) error {
@@ -154,7 +160,7 @@ func (a *OneSucceededAggregator) Add(result interface{}, err error) error {
 	}
 
 	if result != nil {
-		a.res.CompareAndSwap(nil, result)
+		a.res.CompareAndSwap(nil, &result)
 	}
 
 	return nil
@@ -195,12 +201,15 @@ func (a *OneSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
 }
 
 func (a *OneSucceededAggregator) Aggregate() (interface{}, error) {
-	res, e := a.res.Load(), a.err.Load()
-	if res == nil && e != nil {
+	r, e := a.res.Load(), a.err.Load()
+	if r != nil {
+		return *r, nil
+	}
+	if e != nil {
 		return nil, *e
 	}
 
-	return res, nil
+	return nil, nil
 }
 
 type numericAggregation uint8
@@ -421,20 +430,20 @@ func (a *AggMaxAggregator) Aggregate() (interface{}, error) {
 
 // AggLogicalAndAggregator performs logical AND on boolean values.
 type AggLogicalAndAggregator struct {
-	err       atomic.Value
+	err       atomic.Pointer[error]
 	res       atomic.Bool
 	hasResult atomic.Bool
 }
 
 func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 	if err != nil {
-		a.err.CompareAndSwap(nil, err)
+		a.err.CompareAndSwap(nil, &err)
 		return nil
 	}
 
 	val, e := toBool(result)
 	if e != nil {
-		a.err.CompareAndSwap(nil, e)
+		a.err.CompareAndSwap(nil, &e)
 		return e
 	}
 
@@ -493,7 +502,7 @@ func (a *AggLogicalAndAggregator) BatchSlice(results []AggregatorResErr) error {
 func (a *AggLogicalAndAggregator) Aggregate() (interface{}, error) {
 	err := a.err.Load()
 	if err != nil {
-		return nil, err.(error)
+		return nil, *err
 	}
 
 	if !a.hasResult.Load() {
@@ -504,20 +513,20 @@ func (a *AggLogicalAndAggregator) Aggregate() (interface{}, error) {
 
 // AggLogicalOrAggregator performs logical OR on boolean values.
 type AggLogicalOrAggregator struct {
-	err       atomic.Value
+	err       atomic.Pointer[error]
 	res       atomic.Bool
 	hasResult atomic.Bool
 }
 
 func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 	if err != nil {
-		a.err.CompareAndSwap(nil, err)
+		a.err.CompareAndSwap(nil, &err)
 		return nil
 	}
 
 	val, e := toBool(result)
 	if e != nil {
-		a.err.CompareAndSwap(nil, e)
+		a.err.CompareAndSwap(nil, &e)
 		return e
 	}
 
@@ -576,7 +585,7 @@ func (a *AggLogicalOrAggregator) BatchSlice(results []AggregatorResErr) error {
 func (a *AggLogicalOrAggregator) Aggregate() (interface{}, error) {
 	err := a.err.Load()
 	if err != nil {
-		return nil, err.(error)
+		return nil, *err
 	}
 
 	if !a.hasResult.Load() {

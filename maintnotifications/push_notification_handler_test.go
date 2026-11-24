@@ -374,3 +374,41 @@ func TestHandleMoving_NullEndpointPubSubConn(t *testing.T) {
 			cn.IsUsable(), cn.ShouldHandoff(), cn.GetStateMachine().GetState())
 	}
 }
+
+// TestRelaxingNotificationsRecordRelaxedTimeoutMetric tests that every
+// notification that relaxes the connection timeout records the metric.
+func TestRelaxingNotificationsRecordRelaxedTimeoutMetric(t *testing.T) {
+	var recorded []string
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		ConnectionRelaxedTimeout: func(_ context.Context, delta int, _ *pool.Conn, _, notificationType string) {
+			if delta == 1 {
+				recorded = append(recorded, notificationType)
+			}
+		},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	handler := &NotificationHandler{manager: createTestManager("127.0.0.1:6379")}
+
+	notifications := [][]interface{}{
+		{"MIGRATING", int64(1), int64(5)},
+		{"FAILING_OVER", int64(2), int64(5)},
+		{"SMIGRATING", int64(3), "1000-2000"},
+	}
+	for _, notification := range notifications {
+		name := notification[0].(string)
+		recorded = nil
+		conn := pool.NewConn(&mockNetConn{addr: "test:6379"})
+		handlerCtx := push.NotificationHandlerContext{Conn: conn}
+
+		if err := handler.HandlePushNotification(context.Background(), handlerCtx, notification); err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if !conn.HasRelaxedTimeout() {
+			t.Fatalf("%s: expected relaxed timeout to be applied", name)
+		}
+		if len(recorded) != 1 || recorded[0] != name {
+			t.Errorf("%s: expected one relaxed timeout metric for %q, got %v", name, name, recorded)
+		}
+	}
+}

@@ -212,6 +212,7 @@ func TestConnectionFailureMatrix(t *testing.T) {
 				if e.realOnly != "" {
 					skipIfMockMode(t, e.realOnly)
 				}
+				requireHealthyTopology(t)
 				settleAfterFault(t)
 				c := newFailureClient(t)
 				var restore func()
@@ -265,28 +266,49 @@ func awaitReachable(t *testing.T, endpoint string) {
 func settleAfterFault(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
-		if len(e2eTopology.Endpoints) < 2 {
-			return
+		if !awaitReplication(90 * time.Second) {
+			t.Errorf("topology did not resume replicating within 90s of the fault ending")
 		}
-		src := redis.NewClient(endpointOptions(e2eTopology.Endpoints[0]))
-		dst := redis.NewClient(endpointOptions(lastMemberAddr()))
-		defer func() { _ = src.Close(); _ = dst.Close() }()
-
-		canary := fmt.Sprintf("e2e:cf:canary:%d", time.Now().UnixNano())
-		deadline := time.Now().Add(90 * time.Second)
-		for time.Now().Before(deadline) {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			if src.Set(ctx, canary, "1", time.Minute).Err() == nil {
-				if v, err := dst.Get(ctx, canary).Result(); err == nil && v == "1" {
-					cancel()
-					return
-				}
-			}
-			cancel()
-			time.Sleep(500 * time.Millisecond)
-		}
-		t.Errorf("topology did not resume replicating within 90s of the fault ending")
 	})
+}
+
+// requireHealthyTopology runs before a fault scenario: member 0 must accept
+// connections and the Topology must be replicating. The previous scenario's
+// fault can still be recovering when the next one starts, and a first write
+// that hits that recovery would fail the scenario for a reason it is not about.
+func requireHealthyTopology(t *testing.T) {
+	t.Helper()
+	awaitReachable(t, e2eTopology.Endpoints[0])
+	if !awaitReplication(90 * time.Second) {
+		t.Fatalf("topology was not replicating within 90s before the fault: the previous scenario may not have recovered")
+	}
+}
+
+// awaitReplication reports whether a canary written through member 0 shows up
+// on the last member within timeout. A Topology with one member has nothing to
+// replicate, so it is always ready.
+func awaitReplication(timeout time.Duration) bool {
+	if len(e2eTopology.Endpoints) < 2 {
+		return true
+	}
+	src := redis.NewClient(endpointOptions(e2eTopology.Endpoints[0]))
+	dst := redis.NewClient(endpointOptions(lastMemberAddr()))
+	defer func() { _ = src.Close(); _ = dst.Close() }()
+
+	canary := fmt.Sprintf("e2e:cf:canary:%d", time.Now().UnixNano())
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if src.Set(ctx, canary, "1", time.Minute).Err() == nil {
+			if v, err := dst.Get(ctx, canary).Result(); err == nil && v == "1" {
+				cancel()
+				return true
+			}
+		}
+		cancel()
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
 }
 
 // requireRecovered retries op until it succeeds on the SAME client: the pool

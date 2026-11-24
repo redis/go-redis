@@ -66,7 +66,8 @@ func TestNewRecorderWhenMetricsDisabled(t *testing.T) {
 // histogram, a counter and a MultiDB instrument, and that the two recorders
 // on one provider produce separate series with separate caches.
 func TestNewRecorderAttributePrecedence(t *testing.T) {
-	inst, reader := initForTest(t,
+	inst, reader := initForTest(
+		t,
 		attribute.String("deployment.environment", "prod"),
 		attribute.String("tenant", "global"),
 		attribute.String(AttrDBSystemName, "overridden-global"), // built-in key: Init wins over built-in
@@ -82,7 +83,7 @@ func TestNewRecorderAttributePrecedence(t *testing.T) {
 	if mr.opq != inst.recorder.opq || mr.opq == nil {
 		t.Fatal("per-client recorder on the Init provider did not share the operation-duration queue")
 	}
-	if mr.opAttrsLen != 0 || &mr.opAttrs == &inst.recorder.opAttrs {
+	if mr.opAttrs.n != 0 || &mr.opAttrs == &inst.recorder.opAttrs {
 		t.Fatal("per-client recorder shares the attribute cache")
 	}
 
@@ -92,7 +93,9 @@ func TestNewRecorderAttributePrecedence(t *testing.T) {
 	inst.recorder.RecordOperationDuration(ctx, time.Millisecond, cmd, 1, nil, nil, 0)
 	mr.RecordError(ctx, "ERR", nil, "ERR", false, 0)
 	mr.RecordMultiDBFailover(ctx, "a", "b", "manual", time.Second)
-	mr.RecordConnectionCount(ctx, 1, nil, "idle", false)
+	c := redis.NewClient(memClientOptions("precedence:6379", rec))
+	t.Cleanup(func() { _ = c.Close() })
+	waitConns(t, c, 3)
 
 	sets := collectAttrs(t, reader, MetricOperationDuration)
 	if len(sets) != 2 {
@@ -113,13 +116,15 @@ func TestNewRecorderAttributePrecedence(t *testing.T) {
 	if perClient != 1 || global != 1 {
 		t.Fatalf("tenant split: per-client=%d global=%d", perClient, global)
 	}
-	for _, name := range []string{MetricClientErrors, MetricMultiDBFailovers, MetricConnectionCount} {
+	for name, n := range map[string]int{MetricClientErrors: 1, MetricMultiDBFailovers: 1, MetricConnectionCount: 1} {
 		sets := collectAttrs(t, reader, name)
-		if len(sets) != 1 {
-			t.Fatalf("%s series = %d, want 1", name, len(sets))
+		if len(sets) != n {
+			t.Fatalf("%s series = %d, want %d", name, len(sets), n)
 		}
-		requireAttr(t, sets[0], "tenant", "acme")
-		requireAttr(t, sets[0], "deployment.environment", "prod")
+		for _, set := range sets {
+			requireAttr(t, set, "tenant", "acme")
+			requireAttr(t, set, "deployment.environment", "prod")
+		}
 	}
 	requireAttr(t, collectAttrs(t, reader, MetricClientErrors)[0], AttrRedisClientErrorsCategory, "per-client")
 }
@@ -162,7 +167,8 @@ func TestNewRecorderOwnProviderOwnQueue(t *testing.T) {
 }
 
 // TestNewRecorderStopsOnShutdown pins that Shutdown turns issued recorders off
-// but keeps their UpDown counters flowing so a later client Close balances them.
+// and stops reading their clients' pools: the connection count series stay at
+// 0.
 func TestNewRecorderStopsOnShutdown(t *testing.T) {
 	inst, reader := initForTest(t)
 	rec, err := inst.NewRecorder(NewConfig())
@@ -171,7 +177,12 @@ func TestNewRecorderStopsOnShutdown(t *testing.T) {
 	}
 	ctx := context.Background()
 	mr := rec.(*metricsRecorder)
-	mr.RecordConnectionCount(ctx, 1, nil, "idle", false)
+	c := redis.NewClient(memClientOptions("stops:6379", rec))
+	t.Cleanup(func() { _ = c.Close() })
+	waitConns(t, c, 3)
+	if got := len(collectAttrs(t, reader, MetricConnectionCount)); got != 1 {
+		t.Fatalf("connection count series before Shutdown = %d, want 1", got)
+	}
 	if err := inst.Shutdown(); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -182,10 +193,14 @@ func TestNewRecorderStopsOnShutdown(t *testing.T) {
 	if got := len(collectAttrs(t, reader, MetricClientErrors)); got != 0 {
 		t.Fatalf("error recorded after Shutdown: %d series", got)
 	}
-	mr.RecordConnectionCount(ctx, -1, nil, "idle", false)
-	sets := collectAttrs(t, reader, MetricConnectionCount)
-	if len(sets) != 1 {
-		t.Fatalf("connection count series = %d, want 1", len(sets))
+	held := c.Conn()
+	t.Cleanup(func() { _ = held.Close() })
+	if err := held.Ping(ctx).Err(); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	got := collectCounts(t, reader, "stops:6379_")
+	if idle, used, _ := byState(got); len(got) != 1 || idle != 0 || used != 0 {
+		t.Fatalf("connection count after Shutdown = %v, want the idle series at 0", got)
 	}
 }
 

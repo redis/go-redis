@@ -399,6 +399,12 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 		internal.Logger.Printf(ctx, "%s", logs.RelaxedTimeoutDueToNotification(conn.GetID(), "SMIGRATING", snh.manager.config.RelaxedTimeout))
 	}
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
+
+	// Record relaxed timeout metric
+	if relaxedTimeoutCallback := pool.MetricsOf(conn).ConnectionRelaxedTimeout; relaxedTimeoutCallback != nil {
+		relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "SMIGRATING")
+	}
+
 	return nil
 }
 
