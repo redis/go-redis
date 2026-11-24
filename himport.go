@@ -366,7 +366,26 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 			}
 		}
 	}
-	for _, cmd := range cmds {
+	// A queued HIMPORT command only executed when its transaction's
+	// EXEC committed it: +QUEUED merely acknowledges the queueing, so
+	// the frame outcomes are precomputed once for the guard below —
+	// but only when the batch actually holds a queued HIMPORT command,
+	// so batches without one pay no extra scans.
+	var discardedTx, abortedTx map[*baseCmd]bool
+	var txBodyNeedsRetry []bool
+	var queuedExecErrs map[int]error
+	queuedGuardReady := false
+	queuedGuard := func() {
+		if queuedGuardReady {
+			return
+		}
+		discardedTx = pipelineDiscardedTxCmds(cmds)
+		abortedTx = pipelineAbortedTxCmds(cmds)
+		txBodyNeedsRetry = pipelineTxBodyNeedsRetryMap(cmds)
+		queuedExecErrs = pipelineQueuedExecErrMap(cmds)
+		queuedGuardReady = true
+	}
+	for idx, cmd := range cmds {
 		hc, ok := cmd.(himportCmder)
 		if !ok {
 			continue
@@ -396,6 +415,24 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 			continue
 		}
 		if hc.rawErr() == nil {
+			// A queued HIMPORT command never executed on its own:
+			// it runs only when its transaction's EXEC commits it.
+			// A PREPARE in a frame DISCARD dropped, the server
+			// aborted, or still open registered nothing — applying
+			// its bookkeeping would mark a fieldset prepared that
+			// the server never saw, and a later SET would write
+			// values under the wrong field names. Only a queued
+			// command whose EXEC element answered without error
+			// counts as executed.
+			if pipelineCmdQueued(cmd) {
+				queuedGuard()
+				if discardedTx[cmd.base()] || abortedTx[cmd.base()] || txBodyNeedsRetry[idx] {
+					continue
+				}
+				if elemErr, ok := queuedExecErrs[idx]; !ok || elemErr != nil {
+					continue
+				}
+			}
 			c.himportAfterCmd(cn, hc)
 		}
 	}

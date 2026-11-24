@@ -232,6 +232,30 @@ type connStateRetryServer struct {
 	// failSwapdbOnce, when set, makes the next SWAPDB answer
 	// NOREPLICAS without swapping; later SWAPDBs succeed.
 	failSwapdbOnce atomic.Bool
+	// failSwapdbTryagainOnce, when set, makes the next SWAPDB answer
+	// TRYAGAIN without swapping; later SWAPDBs succeed. Unlike
+	// failSwapdbOnce it models a migration rejection, so the
+	// boundary is the SWAPDB itself.
+	failSwapdbTryagainOnce atomic.Bool
+	// setTryagainOnce, when set, makes the next SET answer TRYAGAIN
+	// without executing: the key is not recorded and the database
+	// is not changed, so a retry that runs it lands in the
+	// database the swap state leaves it in.
+	setTryagainOnce atomic.Bool
+	// setsDB0 and setsDB1 count SETs that actually executed in DB 0
+	// and DB 1 (a TRYAGAIN SET counts in neither): tests that assert
+	// a retry preserved the batch's database ordering read them
+	// instead of the last-DB snapshot.
+	setsDB0 atomic.Int32
+	setsDB1 atomic.Int32
+	// failIncrReadonlyOnce, when set, makes the next INCR answer
+	// READONLY without executing: it counts in neither incrs nor
+	// any watch dirtiness, so the counter records executions only.
+	failIncrReadonlyOnce atomic.Bool
+	// failExecAbortOnce, when set, makes the next EXEC answer
+	// EXECABORT without executing the queued body: the frame was
+	// aborted by the server, so its body never ran.
+	failExecAbortOnce atomic.Bool
 	// msetTryagain, when set, makes every MSET answer TRYAGAIN.
 	msetTryagain atomic.Bool
 	// dropExecFirst, when set, makes the first connection close
@@ -393,7 +417,20 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			}
 		case "set":
 			s.sets.Add(1)
+			if s.setTryagainOnce.CompareAndSwap(true, false) {
+				// A TRYAGAIN SET never executed: it records no
+				// value, changes no database and counts in
+				// neither per-DB counter.
+				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+				break
+			}
 			s.setDB.Store(int32(effDB()))
+			switch effDB() {
+			case 0:
+				s.setsDB0.Add(1)
+			case 1:
+				s.setsDB1.Add(1)
+			}
 			if s.trackValues && !inMulti && len(args) >= 2 {
 				// Only a SET that actually ran records its value: a
 				// queued one runs only at EXEC time.
@@ -425,6 +462,13 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				}
 			}
 		case "incr":
+			if s.failIncrReadonlyOnce.CompareAndSwap(true, false) {
+				// A READONLY INCR never executed: it counts as no
+				// INCR and dirties no watch, exactly like a real
+				// read-only replica refusing the write.
+				reply = "-READONLY You can't write against a read only replica\r\n"
+				break
+			}
 			s.incrs.Add(1)
 			if len(args) > 0 && watchedKeys[args[0]] {
 				dirty = true
@@ -551,6 +595,15 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			reply = "+RESET\r\n"
 		case "swapdb":
 			s.swapdbs.Add(1)
+			if s.failSwapdbTryagainOnce.CompareAndSwap(true, false) {
+				// The first SWAPDB is rejected TRYAGAIN: the swap
+				// never applied, so the retry must run it again —
+				// and the answered writes after it already ran in
+				// the pre-swap database, so they must not be
+				// re-sent once the swap takes effect.
+				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+				break
+			}
 			if s.failSwapdbOnce.CompareAndSwap(true, false) {
 				// The first SWAPDB fails NOREPLICAS: the swap
 				// never applied, so the retry must run it again
@@ -567,6 +620,16 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				// a real server refusing EXEC for an ACL user, so
 				// a later DISCARD still drops them.
 				reply = "-NOPERM this user has no permissions to run the 'exec' command\r\n"
+				break
+			}
+			if s.failExecAbortOnce.CompareAndSwap(true, false) {
+				// The server aborted the transaction: the queued
+				// body never executed, so the frame is closed
+				// without running it, exactly like a real server
+				// answering EXECABORT for a failed queued command.
+				inMulti = false
+				queued = queued[:0]
+				reply = "-EXECABORT Transaction discarded because of previous errors\r\n"
 				break
 			}
 			if s.dropExecFirst && first {
@@ -786,6 +849,50 @@ func TestPipelineRetryRejectedMultiDoesNotForceWholeBatch(t *testing.T) {
 	}
 	if got := server.execWithoutMulti.Load(); got != 1 {
 		t.Fatalf("server received %d EXEC-without-MULTI commands, want 1", got)
+	}
+}
+
+// TestPipelineRetryAbortedTxBodyDoesNotSeedRetry: a transaction the server
+// aborted never executed its body, so a retryable refusal on a queued
+// write (READONLY on a read-only replica) is the frame's outcome, not a
+// boundary the retry may rewind to: retrying just the INCR standalone
+// would apply a write from a definitively aborted transaction, and the
+// EXEC would keep its EXECABORT. The scan skips the aborted body, falls
+// through to the whole batch, and the transaction re-runs as a unit on
+// the promoted node — so the INCR executes exactly once. Regression test
+// for the Codex P1 finding on #4351.
+func TestPipelineRetryAbortedTxBodyDoesNotSeedRetry(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.failIncrReadonlyOnce.Store(true)
+	server.failExecAbortOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Incr(ctx, "counter")
+	execCmd := pipe.Do(ctx, "exec")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the aborted transaction must re-run as a unit on the promoted node)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != int64(1) {
+		t.Fatalf("INCR = %v, %v; want 1, nil", got, err)
+	}
+	if err := execCmd.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server executed %d INCR commands, want 1 (the READONLY INCR never executed; the retried transaction runs it once)", got)
+	}
+	if got := server.execs.Load(); got != 2 {
+		t.Fatalf("server received %d EXEC commands, want 2 (the aborted EXEC must not settle the batch; the retried EXEC runs the transaction)", got)
+	}
+	if got := server.multiCount.Load(); got != 2 {
+		t.Fatalf("server received %d MULTI commands, want 2 (the transaction re-runs as a unit)", got)
 	}
 }
 
@@ -1621,6 +1728,11 @@ type himportRetryServer struct {
 	// so the command after the DISCARD is the retry boundary instead
 	// of the DISCARD itself.
 	dropNextAfterDiscard bool
+	// dropNextAfterPrepare, when set, answers the first connection's
+	// HIMPORT PREPARE and then drops before the next command's reply,
+	// so the command after the PREPARE is the retry boundary instead
+	// of the PREPARE itself.
+	dropNextAfterPrepare bool
 	discards             atomic.Int32 // HIMPORT DISCARD commands seen, all connections
 }
 
@@ -1670,6 +1782,10 @@ func (s *himportRetryServer) serve(conn net.Conn, n int32) {
 	// HIMPORT DISCARD: with dropNextAfterDiscard, the next command
 	// after it on the first connection gets no reply.
 	seenDiscard := false
+	// seenPrepare records whether this connection already answered an
+	// HIMPORT PREPARE: with dropNextAfterPrepare, the next command
+	// after it on the first connection gets no reply.
+	seenPrepare := false
 	for {
 		name, args := readConnStateRetryCommand(scanner)
 		if name == "" {
@@ -1683,6 +1799,11 @@ func (s *himportRetryServer) serve(conn net.Conn, n int32) {
 		if n == 1 && s.dropNextAfterDiscard && seenDiscard {
 			// Drop before replying: the command after the answered
 			// DISCARD gets no reply, so it is the retry boundary.
+			return
+		}
+		if n == 1 && s.dropNextAfterPrepare && seenPrepare {
+			// Drop before replying: the command after the answered
+			// PREPARE gets no reply, so it is the retry boundary.
 			return
 		}
 		switch name {
@@ -1740,6 +1861,7 @@ func (s *himportRetryServer) serve(conn net.Conn, n int32) {
 			}
 			switch strings.ToLower(args[0]) {
 			case "prepare":
+				seenPrepare = true
 				if len(args) >= 2 {
 					fields := append([]string(nil), args[2:]...)
 					if inMulti {
@@ -1879,6 +2001,65 @@ func TestPipelineRetryHImportSetIsOrdinaryCommand(t *testing.T) {
 	defer server.mu.Unlock()
 	if got := len(server.sets); got != 1 {
 		t.Fatalf("server received %d HIMPORT SET commands, want 1 (the answered SET must not be re-sent)", got)
+	}
+}
+
+// TestPipelineRetryQueuedHImportPrepareDoesNotRegister: a PREPARE queued
+// inside a MULTI frame executes only when the frame's EXEC commits it, so
+// a +QUEUED reply is not an execution: when the frame is DISCARD dropped
+// after the PREPARE queued, the fieldset was never prepared server-side
+// and the client's registry must not record the new fields. Without the
+// guard, a later HImportSet injects a PREPARE with the wrong fields and
+// writes values under the wrong field names. Regression test for the
+// Codex P2 finding on #4351.
+func TestPipelineRetryQueuedHImportPrepareDoesNotRegister(t *testing.T) {
+	server := newHImportRetryServer(t)
+	// Answer the PREPARE's +QUEUED on the first connection, then drop
+	// before the DISCARD after it: the DISCARD is the boundary.
+	server.dropNextAfterPrepare = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	// Seed the client-side registry as if fs had been registered with
+	// field "old" by an earlier HImportPrepare.
+	client.himport.register("fs", []string{"old"})
+
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	prep := pipe.HImportPrepare(ctx, "fs", "new")
+	discard := pipe.Do(ctx, "discard")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the DISCARD drops the queued PREPARE; the retry runs it on a fresh connection)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := prep.Err(); err != nil {
+		t.Fatalf("PREPARE: %v", err)
+	}
+	if err := discard.Err(); err != nil {
+		t.Fatalf("DISCARD: %v", err)
+	}
+
+	// A later SET for the same fieldset must inject a PREPARE with the
+	// old fields: the queued PREPARE registered nothing, so the
+	// registry still holds "old".
+	pipe2 := client.Pipeline()
+	set := pipe2.HImportSet(ctx, "k2", "fs", "v2")
+	if _, err := pipe2.Exec(ctx); err != nil {
+		t.Fatalf("second Exec: %v, want nil", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("HIMPORT SET: %v", err)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if got := len(server.sets); got != 1 {
+		t.Fatalf("server received %d HIMPORT SET commands, want 1", got)
+	}
+	if got := server.sets[0].fields; len(got) != 1 || got[0] != "old" {
+		t.Fatalf("SET ran under PREPARE fields %v, want [old] (the queued PREPARE in the discarded frame must not register the new fields)", got)
 	}
 }
 
@@ -2332,6 +2513,21 @@ var queuedRuntimeErrScriptSHA = func() string {
 	return hex.EncodeToString(sum[:])
 }()
 
+// runtimeIntErrScript is the Lua source used by
+// TestPipelineRetryEvalRuntimeErrorStillCachesScript: it pcall()s INCR on
+// KEYS[1], so with a non-integer key the script fails at runtime with
+// "value is not an integer or out of range" — after it ran and cached.
+// The same text is what argument validation of a bad numkeys reports
+// before execution, so the two cases differ only in the numkeys argument.
+const runtimeIntErrScript = "return redis.pcall('INCR', KEYS[1])"
+
+// emptyScriptSHA is the SHA1 of the empty Lua source, the digest EVALSHA
+// carries for an EVAL "".
+var emptyScriptSHA = func() string {
+	sum := sha1.Sum([]byte(""))
+	return hex.EncodeToString(sum[:])
+}()
+
 type scriptRetryServer struct {
 	ln             net.Listener
 	conns          atomic.Int32
@@ -2355,6 +2551,12 @@ type scriptRetryServer struct {
 	// transaction stays open, exactly like a real server refusing
 	// RESET for an ACL user.
 	failReset atomic.Bool
+	// attrEvalRejectionOnce, when set, decorates the next rejected
+	// EVAL's error reply with a RESP3 attribute block, modelling an
+	// endpoint that wraps raw replies in attributes: a classifier
+	// that reads val[0] without skipping the block sees '|' instead
+	// of the error.
+	attrEvalRejectionOnce atomic.Bool
 	// failDiscard, when set, makes every DISCARD answer NOPERM: the
 	// transaction stays open, exactly like a real server refusing
 	// DISCARD for an ACL user.
@@ -2676,6 +2878,14 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 				continue
 			}
 			if _, err := strconv.Atoi(args[1]); err != nil {
+				if s.attrEvalRejectionOnce.CompareAndSwap(true, false) {
+					// A RESP3 attribute block in front of the
+					// error: a raw client keeps it in the reply
+					// bytes, so the classifier must skip it to
+					// see the rejection behind it.
+					_, _ = conn.Write([]byte("|1\r\n+key\r\n+val\r\n-ERR value is not an integer or out of range\r\n"))
+					continue
+				}
 				_, _ = conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 				continue
 			}
@@ -2712,6 +2922,15 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			switch {
 			case len(args) >= 1 && args[0] == "if ARGV[1] then return 42 end":
 				_, _ = conn.Write([]byte("$-1\r\n"))
+			case len(args) >= 1 && args[0] == "":
+				// An empty script runs and returns nil, like a
+				// real server: it still populated the cache above.
+				_, _ = conn.Write([]byte("$-1\r\n"))
+			case len(args) >= 1 && args[0] == runtimeIntErrScript:
+				// The pcall fails at runtime on a non-integer key:
+				// the script ran and cached before producing this
+				// error, so it is not a pre-execution rejection.
+				_, _ = conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 			case len(args) >= 1 && args[0] == "return redis.call('BADCMD')":
 				_, _ = conn.Write([]byte("-ERR Error running script (call to f_0123456789abcdef): @user_script:1: Unknown Redis command called from Lua script\r\n"))
 			default:
@@ -2732,6 +2951,9 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 					// The runtime-error script returns 42 when
 					// ARGV[1] is truthy.
 					_, _ = conn.Write([]byte(":42\r\n"))
+				} else if len(args) >= 1 && args[0] == emptyScriptSHA {
+					// An empty script runs and returns nil.
+					_, _ = conn.Write([]byte("$-1\r\n"))
 				} else {
 					_, _ = conn.Write([]byte(":1\r\n"))
 				}
@@ -4634,6 +4856,172 @@ func TestPipelineRetryRuntimeErrorEvalIsPreloaded(t *testing.T) {
 	}
 	if got := server.loads.Load(); got != 1 {
 		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (a runtime-failing EVAL populated the cache)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryEvalRuntimeErrorStillCachesScript: a script that fails
+// at runtime with "value is not an integer or out of range" ran and cached
+// before failing — the error comes from redis.pcall('INCR') on a
+// non-integer key, not from argument validation — so the retry must preload
+// its source before the retried EVALSHA. Classifying the shared error
+// prefix by text alone treats it as a pre-execution rejection and the
+// EVALSHA fails NOSCRIPT on the restarted node. Regression test for the
+// Codex P2 finding on #4351.
+func TestPipelineRetryEvalRuntimeErrorStillCachesScript(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	sum := sha1.Sum([]byte(runtimeIntErrScript))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, runtimeIntErrScript, []string{"bad"})
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("Exec: %v, want the EVAL's runtime integer error (it is the first command error)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("EVAL: %v, want the runtime integer error", err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil (the EVAL ran and cached the script before failing, so the retry must preload it)", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (a runtime-failing EVAL populated the cache)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
+// TestPipelineRetryEvalBadNumKeysIsNotPreloaded: the mirror of
+// TestPipelineRetryEvalRuntimeErrorStillCachesScript. The same "value is
+// not an integer" text from argument validation of a non-integer numkeys
+// is a pre-execution rejection — the script never ran, so it cached
+// nothing — and the retry must not preload it: the retried EVALSHA
+// returns NOSCRIPT. The two cases differ only in the numkeys argument.
+func TestPipelineRetryEvalBadNumKeysIsNotPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Do(ctx, "eval", src, "bad", 0)
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("Exec: %v, want the rejected EVAL's error (the first failed command wins; the retry must not turn the rejection into a successful SCRIPT LOAD)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("EVAL: %v, want the non-integer numkeys rejection", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a rejected EVAL establishes no cache entry to reissue)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the rejected script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryResp3AttributesDoNotHideEvalRejection: a raw EVAL the
+// server rejected before execution must not count as cached just because
+// a RESP3 attribute block decorates its error reply: ReadRawReply keeps
+// the block in the raw reply bytes, so a classifier that reads val[0]
+// sees '|' instead of the error and preloads a script that never ran —
+// the retried EVALSHA then executes a write the original batch refused.
+// A raw command's error frame stays in Val() by contract, so the
+// rejection is visible only through the raw-bytes decode. Regression
+// test for the Codex P2 finding on #4351.
+func TestPipelineRetryResp3AttributesDoNotHideEvalRejection(t *testing.T) {
+	server := newScriptRetryServer(t)
+	server.attrEvalRejectionOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := NewRawCmd(ctx, "eval", src, "bad", 0)
+	if err := pipe.BatchProcess(ctx, eval); err != nil {
+		t.Fatalf("BatchProcess: %v", err)
+	}
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("Exec: %v, want NOSCRIPT (the retried EVALSHA must not execute a script the rejected raw EVAL never cached)", err)
+	}
+	if got := string(eval.Val()); !strings.Contains(got, "|1\r\n") || !strings.Contains(got, "value is not an integer") {
+		t.Fatalf("raw EVAL Val() = %q, want it to keep the attribute-decorated rejection", got)
+	}
+	if err := eval.Err(); err != nil {
+		t.Fatalf("raw EVAL Err(): %v, want nil (a raw command's error frame stays in Val() by contract)", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a rejected EVAL establishes no cache entry to reissue)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the rejected script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
+// TestPipelineRetryEmptyEvalSourceIsPreloaded: an empty Lua source is still
+// a script the server ran and cached, so a retried EVALSHA must find it
+// after the retry preloads it — judging presence by the source's contents
+// instead of its representation drops the preload and the EVALSHA fails
+// NOSCRIPT instead of returning the script's nil. Regression test for the
+// Codex P2 finding on #4351.
+func TestPipelineRetryEmptyEvalSourceIsPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Eval(ctx, "", nil)
+	evalsha := pipe.EvalSha(ctx, emptyScriptSHA, nil)
+	_, err := pipe.Exec(ctx)
+	// The EVAL's own nil reply is the first command error, so Exec
+	// reports redis.Nil; what must hold is that the retried EVALSHA
+	// executed instead of returning NOSCRIPT.
+	if err == nil || !errors.Is(err, Nil) {
+		t.Fatalf("Exec: %v, want redis.Nil (the empty EVAL's own nil reply is the first command error)", err)
+	}
+	if err := eval.Err(); !errors.Is(err, Nil) {
+		t.Fatalf("EVAL: %v, want redis.Nil (the empty script ran and returned nil)", err)
+	}
+	if err := evalsha.Err(); !errors.Is(err, Nil) {
+		t.Fatalf("EVALSHA: %v, want redis.Nil (the empty script is cached, so the retry must preload it)", err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (the empty EVAL populated the cache)", got)
 	}
 	if got := server.evals.Load(); got != 1 {
 		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
@@ -7235,6 +7623,96 @@ func TestPipelineRetrySwapdbCountsAsPendingWriteForBarrier(t *testing.T) {
 	}
 	if got := server.waits.Load(); got != 2 {
 		t.Fatalf("server received %d WAIT commands, want 2 (the barrier must be reissued after the pending SWAPDB)", got)
+	}
+}
+
+// TestPipelineRetryAnsweredSwapdbDoesNotMisorderPendingWrite: a pending
+// write issued before an answered SWAPDB must run in the database it was
+// issued for. The answered SWAPDB already swapped the databases on the
+// first attempt, so the retry first reissues a fresh clone of the kept
+// SWAPDB to swap them back, runs the pending write, and the kept original
+// SWAPDB then swaps them back at its own position. Regression test for
+// the Cursor Bugbot finding on #4351.
+func TestPipelineRetryAnsweredSwapdbDoesNotMisorderPendingWrite(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 2
+	server.trackValues = true
+	server.setTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	get := pipe.Get(ctx, "k")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run the SET in the original database, ahead of the kept SWAPDB)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %v, %v; want v, nil", got, err)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the TRYAGAIN SET plus its retry)", got)
+	}
+	if got := server.setsDB0.Load(); got != 1 {
+		t.Fatalf("server executed %d SET commands in DB 0, want 1 (the pending write must land in the database it was issued for)", got)
+	}
+	if got := server.setsDB1.Load(); got != 0 {
+		t.Fatalf("server executed %d SET commands in DB 1, want 0 (the swap-back clone must undo the answered swap before the pending write)", got)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (the pending write runs before the kept SWAPDB swaps back)", got)
+	}
+	if got := server.swapdbs.Load(); got != 3 {
+		t.Fatalf("server received %d SWAPDB commands, want 3 (the answered SWAPDB, its swap-back clone, and the kept original)", got)
+	}
+}
+
+// TestPipelineRetryPendingSwapdbDoesNotResendAnsweredWrite: an answered
+// write after a pending SWAPDB already ran in the pre-swap database, so
+// the retry must run only the SWAPDB itself: re-sending the write once
+// the swap takes effect would land it in the wrong database while Exec
+// still reports success. Regression test for the Cursor Bugbot finding
+// on #4351.
+func TestPipelineRetryPendingSwapdbDoesNotResendAnsweredWrite(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.failSwapdbTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run only the pending SWAPDB, not the answered SET)", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.swapdbs.Load(); got != 2 {
+		t.Fatalf("server received %d SWAPDB commands, want 2 (the TRYAGAIN SWAPDB plus its retry)", got)
+	}
+	if got := server.sets.Load(); got != 1 {
+		t.Fatalf("server received %d SET commands, want 1 (the answered SET must not be re-sent after the swap)", got)
+	}
+	if got := server.setsDB0.Load(); got != 1 {
+		t.Fatalf("server executed %d SET commands in DB 0, want 1 (the SET ran in the pre-swap database)", got)
+	}
+	if got := server.setsDB1.Load(); got != 0 {
+		t.Fatalf("server executed %d SET commands in DB 1, want 0 (a re-sent SET would land in the swapped database)", got)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (the SET ran before the swap took effect)", got)
 	}
 }
 

@@ -2817,7 +2817,10 @@ func isEvalShaCmd(cmd Cmder) bool {
 // evalScriptSource returns the script an EVAL or EVAL_RO command runs: its
 // second argument. A raw command built with Do may carry the script as
 // []byte or *string; anything else is not a script this code can reissue as
-// a SCRIPT LOAD.
+// a SCRIPT LOAD. An empty script still counts: Redis caches an empty Lua
+// chunk, so presence is judged by the argument's representation, not its
+// contents — a nil *string or nil []byte carries no script, but an empty
+// string or empty slice is a script that ran.
 func evalScriptSource(cmd Cmder) (string, bool) {
 	args := cmd.Args()
 	if len(args) < 2 {
@@ -2825,14 +2828,17 @@ func evalScriptSource(cmd Cmder) (string, bool) {
 	}
 	switch v := args[1].(type) {
 	case string:
-		return v, v != ""
+		return v, true
 	case *string:
 		if v == nil {
 			return "", false
 		}
-		return *v, *v != ""
+		return *v, true
 	case []byte:
-		return string(v), len(v) > 0
+		if v == nil {
+			return "", false
+		}
+		return string(v), true
 	}
 	return "", false
 }
@@ -2857,8 +2863,15 @@ func pipelineCmdQueued(cmd Cmder) bool {
 		return c.val == "QUEUED"
 	case *StatusCmd:
 		return c.val == "QUEUED"
+	case *HImportPrepareCmd:
+		return c.val == "QUEUED"
+	case *HImportSetCmd:
+		return c.val == "QUEUED"
 	case *RawCmd:
-		line := c.val
+		// A RESP3 attribute block in front of the reply decorates
+		// it: skip it first, or a decorated +QUEUED reads as an
+		// attribute header instead.
+		line := skipRespAttributes(c.val)
 		if i := bytes.Index(line, []byte("\r\n")); i >= 0 {
 			line = line[:i]
 		}
@@ -3404,6 +3417,140 @@ func pipelineQueuedExecErrMap(cmds []Cmder) map[int]error {
 	return errs
 }
 
+// respLineLen returns the byte length of the first CRLF-terminated line
+// in b, or -1 when b holds no complete line.
+func respLineLen(b []byte) int {
+	i := bytes.Index(b, []byte("\r\n"))
+	if i < 0 {
+		return -1
+	}
+	return i + 2
+}
+
+// respValueLen returns the byte length of the single RESP value at the
+// start of b, including any RESP3 attribute block decorating it, or -1
+// when b is truncated or malformed.
+func respValueLen(b []byte) int {
+	total := 0
+	// Attribute blocks decorate the value that follows them: each is a
+	// header plus its key-value pairs, and the decorated value follows.
+	for len(b) > 0 && b[0] == proto.RespAttr {
+		hdrLen := respLineLen(b)
+		if hdrLen < 0 {
+			return -1
+		}
+		n, err := strconv.Atoi(string(b[1 : hdrLen-2]))
+		if err != nil || n < 0 {
+			return -1
+		}
+		b = b[hdrLen:]
+		total += hdrLen
+		for i := 0; i < 2*n; i++ {
+			l := respValueLen(b)
+			if l < 0 {
+				return -1
+			}
+			b = b[l:]
+			total += l
+		}
+	}
+	l, ok := respBareValueLen(b)
+	if !ok {
+		return -1
+	}
+	return total + l
+}
+
+// respBareValueLen returns the byte length of the single RESP value at
+// the start of b, with no leading attribute block. Aggregates count their
+// elements (2n values for maps), each parsed with respValueLen so a
+// nested attribute-decorated element is measured whole.
+func respBareValueLen(b []byte) (int, bool) {
+	if len(b) == 0 {
+		return 0, false
+	}
+	hdrLen := respLineLen(b)
+	if hdrLen < 0 {
+		return 0, false
+	}
+	switch b[0] {
+	case proto.RespStatus, proto.RespError, proto.RespInt, proto.RespNil,
+		proto.RespFloat, proto.RespBool, proto.RespBigInt:
+		return hdrLen, true
+	case proto.RespString, proto.RespVerbatim, proto.RespBlobError:
+		n, err := strconv.Atoi(string(b[1 : hdrLen-2]))
+		if err != nil || n < -1 {
+			return 0, false
+		}
+		if n == -1 {
+			return hdrLen, true
+		}
+		if len(b) < hdrLen+n+2 {
+			return 0, false
+		}
+		return hdrLen + n + 2, true
+	case proto.RespArray, proto.RespSet, proto.RespPush, proto.RespMap:
+		n, err := strconv.Atoi(string(b[1 : hdrLen-2]))
+		if err != nil || n < -1 {
+			return 0, false
+		}
+		if n == -1 {
+			return hdrLen, true
+		}
+		elems := n
+		if b[0] == proto.RespMap {
+			elems = 2 * n
+		}
+		total := hdrLen
+		rest := b[hdrLen:]
+		for i := 0; i < elems; i++ {
+			l := respValueLen(rest)
+			if l < 0 {
+				return 0, false
+			}
+			rest = rest[l:]
+			total += l
+		}
+		return total, true
+	}
+	return 0, false
+}
+
+// skipRespAttributes returns val with any leading RESP3 attribute blocks
+// removed, so a classifier sees the reply itself. ReadRawReply keeps the
+// attribute block in a RawCmd's verbatim Val() — the attribute header and
+// its key-value pairs precede the actual reply — so a switch on val[0]
+// would see '|' instead of the reply's type byte. A truncated or
+// malformed block is left in place: the classifiers then see a leading
+// '|' they do not recognise and report no error, as before.
+func skipRespAttributes(val []byte) []byte {
+	for len(val) > 0 && val[0] == proto.RespAttr {
+		hdrLen := respLineLen(val)
+		if hdrLen < 0 {
+			return val
+		}
+		n, err := strconv.Atoi(string(val[1 : hdrLen-2]))
+		if err != nil || n < 0 {
+			return val
+		}
+		rest := val[hdrLen:]
+		ok := true
+		for i := 0; i < 2*n; i++ {
+			l := respValueLen(rest)
+			if l < 0 {
+				ok = false
+				break
+			}
+			rest = rest[l:]
+		}
+		if !ok {
+			return val
+		}
+		val = rest
+	}
+	return val
+}
+
 // rawReplyErr decodes the Redis error a raw command's reply carries, if any.
 // RawCmd.readReply preserves the RESP frame verbatim in Val() and returns nil
 // even for an error frame, so rawErr() alone cannot see it: the retry
@@ -3419,7 +3566,9 @@ func rawReplyErr(cmd Cmder) error {
 	if !ok {
 		return nil
 	}
-	val := raw.val
+	// A RESP3 attribute block in front of the reply decorates it: skip
+	// it first, or a decorated error frame reads as a value.
+	val := skipRespAttributes(raw.val)
 	if len(val) == 0 {
 		return nil
 	}
@@ -3458,7 +3607,9 @@ func pipelineExecNullReply(cmd Cmder) bool {
 	if !ok {
 		return false
 	}
-	val := raw.val
+	// A RESP3 attribute block in front of the reply decorates it: skip
+	// it first, or a decorated null reply reads as a value.
+	val := skipRespAttributes(raw.val)
 	if len(val) == 0 {
 		return false
 	}
@@ -3485,7 +3636,7 @@ func pipelineCmdErr(cmd Cmder) error {
 }
 
 // isScriptPreExecRejection reports whether err is a Redis error raised
-// before a script executed, so the script never ran and never populated
+// before cmd's script executed, so the script never ran and never populated
 // the server's script cache: a script that failed to compile, a wrong key
 // count, an argument-validation failure (wrong arity, a non-integer key
 // count), a permission or memory refusal, a BUSY server, a MOVED/ASK
@@ -3497,17 +3648,26 @@ func pipelineCmdErr(cmd Cmder) error {
 // wording is checked against Redis 8.2's eval.c ("Error compiling script
 // (new function)", "Number of keys can't be negative / greater than number
 // of args"); "wrong number of keys" is the wording the script test server
-// (and older Redis) uses for the same rejection.
-func isScriptPreExecRejection(err error) bool {
+// (and older Redis) uses for the same rejection. "value is not an integer
+// or out of range" is ambiguous on its own: argument validation of EVAL's
+// numkeys reports it before execution, but a Lua runtime error inside the
+// script (for example redis.pcall('INCR') on a non-integer key) reports
+// the same text after the script ran and cached. Only the former is a
+// pre-execution rejection, so that prefix is classified against the
+// command's numkeys argument (see evalNumKeysValid) instead of by text
+// alone.
+func isScriptPreExecRejection(cmd Cmder, err error) bool {
 	if !isRedisError(err) {
 		return false
+	}
+	if HasErrorPrefix(err, "value is not an integer or out of range") {
+		return !evalNumKeysValid(cmd)
 	}
 	if HasErrorPrefix(err, "Error compiling script") ||
 		HasErrorPrefix(err, "Number of keys can't be negative") ||
 		HasErrorPrefix(err, "Number of keys can't be greater than number of args") ||
 		HasErrorPrefix(err, "wrong number of keys") ||
 		HasErrorPrefix(err, "wrong number of arguments") ||
-		HasErrorPrefix(err, "value is not an integer or out of range") ||
 		HasErrorPrefix(err, "CROSSSLOT ") ||
 		HasErrorPrefix(err, "BUSY ") ||
 		proto.IsPermissionError(err) ||
@@ -3518,6 +3678,37 @@ func isScriptPreExecRejection(err error) bool {
 		return true
 	}
 	return false
+}
+
+// evalNumKeysValid reports whether cmd's EVAL numkeys argument is a
+// well-formed key count: an integer from 0 to the number of arguments
+// that follow it. A raw command built with Do may carry numkeys as a
+// string or an integer; anything else — a missing numkeys, a non-integer
+// string, a negative count, or a count past the argument list — is not
+// a valid count, so a "value is not an integer" error for such a command
+// comes from argument validation before execution. Args are laid out
+// as [eval, script, numkeys, keys..., args...], so numkeys is args[2].
+func evalNumKeysValid(cmd Cmder) bool {
+	args := cmd.Args()
+	if len(args) < 3 {
+		return false
+	}
+	var n int
+	switch v := args[2].(type) {
+	case string:
+		var err error
+		n, err = strconv.Atoi(v)
+		if err != nil {
+			return false
+		}
+	case int:
+		n = v
+	case int64:
+		n = int(v)
+	default:
+		return false
+	}
+	return n >= 0 && n <= len(args)-3
 }
 
 // evalScriptCached reports whether an answered EVAL or EVAL_RO populated
@@ -3539,7 +3730,7 @@ func evalScriptCached(cmd Cmder) bool {
 	if !isRedisError(err) {
 		return false
 	}
-	return !isScriptPreExecRejection(err)
+	return !isScriptPreExecRejection(cmd, err)
 }
 
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
@@ -3655,6 +3846,17 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 		// suffix: the suffix would otherwise run on a misconfigured
 		// connection.
 		if synthetic[cmd.base()] && !required[cmd.base()] {
+			continue
+		}
+		// A command inside a transaction the server aborted or
+		// DISCARD dropped never executed: its retryable refusal (a
+		// READONLY on a queued write, for example) is the frame's
+		// outcome, not a boundary the retry may rewind to — the
+		// rebuild would retry just the body command standalone and
+		// apply a write from a definitively aborted transaction.
+		// Skipping it lets the scan fall through to the whole
+		// batch, so the transaction re-runs as a unit on retry.
+		if abortedTx[cmd.base()] || discardedTx[cmd.base()] {
 			continue
 		}
 		// A raw command's retryable error lives in its reply bytes, not
@@ -4044,16 +4246,20 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// command that still needs a result and mutates data:
 			// connection state is re-established, not re-executed,
 			// and a read-only command writes nothing, so neither
-			// counts — but a pending SWAPDB does, it is a
-			// server-global write (see the barrier's pending-write
-			// classification below). A barrier (WAIT/WAITAOF) counts
-			// neither: it measures the replication offset and holds
-			// no final value to preserve, and the barrier reissue
-			// below re-runs it after a pending write when one
-			// precedes it. Counting it would keep an answered
-			// barrier in the tail, and the WAIT-in-tail check would
-			// then return the whole batch and replay the answered
-			// writes before it (see pipelineIsBarrierCmd). An answered write dropped
+			// counts — and a pending SWAPDB does not count either:
+			// it is a server-global write, but the answered writes
+			// after it already ran in the pre-swap database, so
+			// re-sending them once the swap takes effect would land
+			// them in the wrong database (the retry re-runs the
+			// SWAPDB itself, which moves their values with it).
+			// A barrier (WAIT/WAITAOF) counts neither: it measures
+			// the replication offset and holds no final value to
+			// preserve, and the barrier reissue below re-runs it
+			// after a pending write when one precedes it. Counting
+			// it would keep an answered barrier in the tail, and
+			// the WAIT-in-tail check would then return the whole
+			// batch and replay the answered writes before it (see
+			// pipelineIsBarrierCmd). An answered write dropped
 			// before the first pending write needs no such keep:
 			// the pending write is later in the original order, so
 			// running it is the batch's own ordering, not an
@@ -4061,23 +4267,29 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// cache commands are not data writes: a LOAD or FLUSH
 			// the filter drops is rebuilt by the reconstruction
 			// below, while an EVAL that ran is a data write, so it
-			// is kept like any other. Commands inside a transaction
-			// DISCARD dropped or the server aborted never executed,
-			// so they hold no final value to preserve. The boundary
-			// command itself is pending by definition, so it starts
-			// the scan; the one-shot collapse below then sees the
-			// updated keeps, so a flag whose follower is now kept
-			// stays with it.
+			// is kept like any other. An answered SWAPDB counts as
+			// a dropped write, not just a pending one: a pending
+			// write before it must run in the pre-swap database,
+			// so the swap is kept in the tail at its original
+			// position — and the swap-back clone below undoes it
+			// ahead of the pending write, so the write lands in
+			// the database it was issued for. Commands inside a
+			// transaction DISCARD dropped or the server aborted
+			// never executed, so they hold no final value to
+			// preserve. The boundary command itself is pending by
+			// definition, so it starts the scan; the one-shot
+			// collapse below then sees the updated keeps, so a flag
+			// whose follower is now kept stays with it.
 			isPendingWrite := func(cmd Cmder) bool {
 				return !pipelineIsBarrierCmd(cmd) &&
-					(!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") &&
+					!pipelineConnStateCmd(cmd) &&
 					!pipelineCmdReadOnly(cmd) &&
 					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
 			}
 			isDroppedWrite := func(cmd Cmder) bool {
 				return !discardedTx[cmd.base()] && !abortedTx[cmd.base()] &&
 					!pipelineIsBarrierCmd(cmd) &&
-					!pipelineConnStateCmd(cmd) &&
+					(!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") &&
 					!pipelineCmdReadOnly(cmd) &&
 					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
 			}
@@ -4411,7 +4623,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// comes from an execution that already cached the
 					// script, so it still preloads (see
 					// isScriptPreExecRejection).
-					if isEvalCmd(cmd) && isScriptPreExecRejection(err) {
+					if isEvalCmd(cmd) && isScriptPreExecRejection(cmd, err) {
 						rejectedQueuedEval[cmd.base()] = true
 					}
 					if isScriptFlushCmd(cmd) {
@@ -4590,6 +4802,43 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				}
 				emitScriptPrereq(answered)
 			}
+			// An answered SWAPDB the tail keeps already swapped the
+			// databases on the first attempt, so a pending write
+			// before it in the retry would run in the swapped
+			// database instead of the one it was issued for. Undo
+			// the swap ahead of the tail with a fresh clone of the
+			// kept SWAPDB — the kept original then swaps them back
+			// at its own position, so the writes after it still land
+			// in the post-swap database. One clone undoes an odd
+			// number of kept swaps; an even number already cancels
+			// out, so no clone is emitted then. The clone is a fresh
+			// command, not the original: the original keeps its OK
+			// result. It is required: a failed swap-back must fail
+			// the batch rather than let the pending write run in the
+			// wrong database. A SWAPDB queued inside a still-open
+			// transaction never swapped anything, so it is not
+			// counted; a pending (unanswered) SWAPDB never swapped
+			// either, so only a definitively answered one counts.
+			keptAnsweredSwapdbs := 0
+			var keptSwapdb Cmder
+			for j, cmd := range cmds[i+1:] {
+				if !keep[j] || txBodyNeedsRetry[i+1+j] || cmd.Name() != "swapdb" {
+					continue
+				}
+				if e := pipelineCmdErr(cmd); e != nil {
+					// A SWAPDB the server rejected never swapped:
+					// only one that answered without error counts.
+					continue
+				}
+				keptAnsweredSwapdbs++
+				keptSwapdb = cmd
+			}
+			if keptAnsweredSwapdbs%2 == 1 {
+				fresh := keptSwapdb.Clone()
+				fresh.SetErr(nil)
+				retry = append(retry, fresh)
+				markPipelineSynthetic(ctx, true, fresh)
+			}
 			// A one-shot flag whose follower is the first command
 			// of the retry suffix is reissued here, immediately
 			// before it: the flag applies only to the next command
@@ -4676,11 +4925,15 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// answered barriers follow a single pending read — no
 			// pending write ever terminates that scan — and stalls
 			// the retry past its deadline. The classification is
-			// the same one the scan used: in the retry tail, not a
-			// synthetic prerequisite, not connection state, and not
-			// read-only (see pipelineCmdReadOnly) — except a
-			// pending SWAPDB, which is a server-global write and
-			// counts (see above).
+			// the same shape as the scan's, except a pending SWAPDB
+			// counts here: a barrier after it must be re-measured
+			// once the swap runs, while the scan above must not
+			// keep the answered writes after a pending swap (they
+			// already ran in the pre-swap database). In the retry
+			// tail, not a synthetic prerequisite, not connection
+			// state, and not read-only (see pipelineCmdReadOnly) —
+			// except a pending SWAPDB, which is a server-global
+			// write and counts (see above).
 			pendingWritesBefore := make([]int, len(cmds)+1)
 			for k, cmd := range cmds {
 				pendingWritesBefore[k+1] = pendingWritesBefore[k]
