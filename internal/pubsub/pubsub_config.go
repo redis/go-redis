@@ -67,8 +67,8 @@ type Config struct {
 
 	// SendTimeout bounds each consumer-view send (see pump); <= 0
 	// blocks instead. The root package defaults it to one minute, as the
-	// per-connection PubSub did. Mutable manager-wide via
-	// WithChannelSendTimeout; pumps snapshot it at start.
+	// per-connection PubSub did. It is the default:
+	// WithChannelSendTimeout overrides it for one consumer channel.
 	SendTimeout time.Duration
 
 	// BacklogLimit caps, in bytes, the messages a handle queues behind
@@ -85,7 +85,7 @@ type Config struct {
 	LogInterval time.Duration
 
 	// ChanSize is the buffer size of a handle's events stream and of the
-	// consumer channels. Mutable manager-wide via WithChannelSize; it
-	// applies to handles and views created after the update.
+	// consumer channels. It is the default: WithChannelSize overrides it
+	// for one consumer channel (the events stream keeps this size).
 	ChanSize int
 }

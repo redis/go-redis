@@ -590,10 +590,10 @@ func TestClusterPingOnePong(t *testing.T) {
 	}
 }
 
-// TestClusterChannelOptionsReachEveryNode pins that a ChannelOption on
-// a composite handle updates the seed config (handles created after it)
-// and every owned node manager.
-func TestClusterChannelOptionsReachEveryNode(t *testing.T) {
+// TestClusterChannelOptionScope pins that on a composite handle the
+// size option shapes its own channel only, while a connection option
+// reaches the seed config and every owned node manager.
+func TestClusterChannelOptionScope(t *testing.T) {
 	ctx := context.Background()
 	c := newFakeCluster("n1:6379")
 	c.own("a", "n1:6379")
@@ -604,20 +604,32 @@ func TestClusterChannelOptionsReachEveryNode(t *testing.T) {
 		t.Fatalf("SSubscribe: %v", err)
 	}
 	c.nodes["n1:6379"].waitDial(t)
+	seedSize, _ := m.consumerSettings()
 
-	h.Channel(func(cfg PubSubConfiger) { cfg.UpdateChannelSize(7) })
-	if size, _ := m.consumerSettings(); size != 7 {
-		t.Fatalf("seed ChanSize = %d, want 7", size)
+	ch := h.Channel(func(cfg PubSubConfiger) {
+		cfg.UpdateChannelSize(7)
+		cfg.UpdatePingTimeout(3 * time.Second)
+	})
+	if cap(ch) != 7 {
+		t.Fatalf("channel cap = %d, want 7", cap(ch))
 	}
-	nm := m.nodeManager("n1:6379")
-	if size, _ := nm.consumerSettings(); size != 7 {
-		t.Fatalf("node manager ChanSize = %d, want 7", size)
+	if size, _ := m.consumerSettings(); size != seedSize {
+		t.Fatalf("seed ChanSize = %d, want unchanged %d", size, seedSize)
 	}
-	if size, _ := m.broadcast.consumerSettings(); size != 7 {
-		t.Fatalf("broadcast ChanSize = %d, want 7", size)
+	if next := m.NewHandle().(*clusterShardHandle); cap(next.events) != seedSize {
+		t.Fatalf("next handle's events cap = %d, want %d", cap(next.events), seedSize)
 	}
-	if next := m.NewHandle().(*clusterShardHandle); cap(next.events) != 7 {
-		t.Fatalf("next handle's events cap = %d, want 7", cap(next.events))
+
+	pingTimeout := func(nm *Manager) time.Duration {
+		nm.mu.RLock()
+		defer nm.mu.RUnlock()
+		return nm.cfg.PingTimeout
+	}
+	if got := pingTimeout(m.nodeManager("n1:6379")); got != 3*time.Second {
+		t.Fatalf("node manager PingTimeout = %s, want 3s", got)
+	}
+	if got := pingTimeout(m.broadcast); got != 3*time.Second {
+		t.Fatalf("broadcast PingTimeout = %s, want 3s", got)
 	}
 }
 

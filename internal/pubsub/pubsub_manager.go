@@ -2455,24 +2455,6 @@ func (m *Manager) updatePingTimeout(newTimeout time.Duration) {
 	}
 }
 
-func (m *Manager) updateChannelSize(newSize int) {
-	// A non-positive size is meaningless for a buffer: zero would make
-	// every later delivery stream unbuffered (and dropped), a negative
-	// one would panic in make. Ignore it.
-	if newSize <= 0 {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cfg.ChanSize = newSize
-}
-
-func (m *Manager) updateSendTimeout(newTimeout time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cfg.SendTimeout = newTimeout
-}
-
 func (m *Manager) updateHealthCheckInterval(newInterval time.Duration) {
 	m.mu.Lock()
 	m.cfg.HealthCheckInterval = newInterval

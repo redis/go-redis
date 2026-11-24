@@ -396,17 +396,17 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 
 //------------------------------------------------------------------------------
 
-// The WithChannel* options tune the client's shared pub/sub manager:
-// the connection — and hence the configuration — is shared by every
-// subscriber of the client, so an option applied through one PubSub's
-// Channel call is client-wide. Updates affect subscribers and channels
-// created after them; a channel that already exists keeps the settings
-// it was created with.
+// The WithChannel* options are passed to Channel /
+// ChannelWithSubscriptions. WithChannelSize and WithChannelSendTimeout
+// apply to the channel being created only. The other options tune the
+// connection every subscriber of the client shares, so they are
+// client-wide; prefer the Options.PubSub* fields for those. The channel
+// options only act on a PubSub's first Channel call: later calls return
+// the existing channel.
 
-// WithChannelSize sets the buffer size used for pub/sub delivery
-// streams and the Go channels returned by Channel /
-// ChannelWithSubscriptions (client-wide, see above). Defaults to
-// Options.PubSubChanSize.
+// WithChannelSize sets the buffer size of the Go channel returned by
+// Channel / ChannelWithSubscriptions, for this PubSub only. Defaults to
+// Options.PubSubChanSize; non-positive values are ignored.
 func WithChannelSize(size int) ChannelOption {
 	return func(c pubsub.PubSubConfiger) {
 		c.UpdateChannelSize(size)
@@ -430,7 +430,7 @@ func WithChannelHealthCheckInterval(d time.Duration) ChannelOption {
 // within d is dropped with throttled logging. Defaults to 1 minute.
 // Zero or negative blocks instead, letting backpressure land in the
 // subscriber's bounded backlog (see Options.PubSubChanSize).
-// Client-wide (see above) and captured when a channel's pump starts.
+// Applies to this PubSub's channel only.
 func WithChannelSendTimeout(d time.Duration) ChannelOption {
 	return func(c pubsub.PubSubConfiger) {
 		c.UpdateSendTimeout(d)

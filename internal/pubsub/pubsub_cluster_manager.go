@@ -176,23 +176,6 @@ func (m *ClusterManager) updateAll(mutate func(*Config), apply func(*Manager)) {
 	}
 }
 
-func (m *ClusterManager) updateChannelSize(newSize int) {
-	if newSize <= 0 {
-		return // see Manager.updateChannelSize
-	}
-	m.updateAll(
-		func(c *Config) { c.ChanSize = newSize },
-		func(nm *Manager) { nm.updateChannelSize(newSize) },
-	)
-}
-
-func (m *ClusterManager) updateSendTimeout(newTimeout time.Duration) {
-	m.updateAll(
-		func(c *Config) { c.SendTimeout = newTimeout },
-		func(nm *Manager) { nm.updateSendTimeout(newTimeout) },
-	)
-}
-
 func (m *ClusterManager) updatePingTimeout(newTimeout time.Duration) {
 	m.updateAll(
 		func(c *Config) { c.PingTimeout = newTimeout },

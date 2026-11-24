@@ -189,8 +189,8 @@ type clusterShardHandle struct {
 }
 
 var (
-	_ PubSuber       = (*clusterShardHandle)(nil)
-	_ PubSubConfiger = (*clusterShardHandle)(nil)
+	_ PubSuber     = (*clusterShardHandle)(nil)
+	_ connConfiger = (*clusterShardHandle)(nil)
 )
 
 func newClusterShardHandle(m *ClusterManager) *clusterShardHandle {
@@ -229,14 +229,14 @@ func (h *clusterShardHandle) Events() <-chan any {
 }
 
 // Channel returns a Go channel carrying the messages of every part,
-// created on the first call. Options run before h.mu is taken (they
-// reach for the cluster manager's lock, never acquired after a
-// handle's). It cannot be combined with ChannelWithSubscriptions.
+// created on the first call. The buffer size and send timeout options
+// apply to this channel only; the connection options apply to every
+// owned manager. Options run before h.mu is taken (they reach for the
+// cluster manager's lock, never acquired after a handle's). It cannot be
+// combined with ChannelWithSubscriptions.
 func (h *clusterShardHandle) Channel(opt ...ChannelOption) <-chan *Message {
-	for _, o := range opt {
-		o(h)
-	}
 	size, sendTimeout := h.m.consumerSettings()
+	cc := newChannelConfig(h, size, sendTimeout, opt)
 	logInterval := h.m.logInterval()
 
 	h.mu.Lock()
@@ -253,8 +253,8 @@ func (h *clusterShardHandle) Channel(opt ...ChannelOption) <-chan *Message {
 		return ch
 	case pumpNone:
 		h.pump = pumpMessages
-		h.msgCh = make(chan *Message, size)
-		go pump(h.events, h.done, h.msgCh, sendTimeout, logInterval, messageFilter)
+		h.msgCh = make(chan *Message, cc.size)
+		go pump(h.events, h.done, h.msgCh, cc.sendTimeout, logInterval, messageFilter)
 	}
 	return h.msgCh
 }
@@ -265,10 +265,8 @@ func (h *clusterShardHandle) Channel(opt ...ChannelOption) <-chan *Message {
 // filtered out), so its element type is any. It cannot be used together
 // with Channel.
 func (h *clusterShardHandle) ChannelWithSubscriptions(opt ...ChannelOption) <-chan any {
-	for _, o := range opt {
-		o(h)
-	}
 	size, sendTimeout := h.m.consumerSettings()
+	cc := newChannelConfig(h, size, sendTimeout, opt)
 	logInterval := h.m.logInterval()
 
 	h.mu.Lock()
@@ -284,32 +282,14 @@ func (h *clusterShardHandle) ChannelWithSubscriptions(opt ...ChannelOption) <-ch
 		return ch
 	case pumpNone:
 		h.pump = pumpAll
-		h.allCh = make(chan any, size)
-		go pump(h.events, h.done, h.allCh, sendTimeout, logInterval, allEventsFilter)
+		h.allCh = make(chan any, cc.size)
+		go pump(h.events, h.done, h.allCh, cc.sendTimeout, logInterval, allEventsFilter)
 	}
 	return h.allCh
 }
 
 // The PubSubConfiger methods update the cluster-wide config: the seed
 // plus every owned node manager (see ClusterManager.updateAll).
-
-// UpdateChannelSize sets the cluster-wide delivery buffer size, skipped
-// once this handle's own view started.
-func (h *clusterShardHandle) UpdateChannelSize(newSize int) {
-	if h.pumpStarted() {
-		return
-	}
-	h.m.updateChannelSize(newSize)
-}
-
-// UpdateSendTimeout sets the cluster-wide consumer send timeout,
-// skipped once this handle's own view started.
-func (h *clusterShardHandle) UpdateSendTimeout(newTimeout time.Duration) {
-	if h.pumpStarted() {
-		return
-	}
-	h.m.updateSendTimeout(newTimeout)
-}
 
 // UpdatePingTimeout sets the health-check ping timeout of every owned
 // manager.
@@ -326,13 +306,6 @@ func (h *clusterShardHandle) UpdateHealthCheckInterval(newInterval time.Duration
 // UpdateReconnectTimeout sets the dial timeout of every owned manager.
 func (h *clusterShardHandle) UpdateReconnectTimeout(newTimeout time.Duration) {
 	h.m.updateReconnectTimeout(newTimeout)
-}
-
-// pumpStarted reports whether a consumer view is already running.
-func (h *clusterShardHandle) pumpStarted() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.pump != pumpNone
 }
 
 // deliver puts an event of part p (nil for a DeliverError) on the
