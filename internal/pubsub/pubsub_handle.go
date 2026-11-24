@@ -87,13 +87,13 @@ func (h *handle) Events() <-chan any {
 
 // Channel returns a Go channel for concurrently receiving messages,
 // created on the first call and closed together with the handle.
-// Options run before h.mu is taken (h.mu and the manager's mu never
-// nest). It cannot be combined with ChannelWithSubscriptions.
+// The buffer size and send timeout options apply to this channel
+// only; the connection options apply client-wide. Options run before
+// h.mu is taken (h.mu and the manager's mu never nest). It cannot be
+// combined with ChannelWithSubscriptions.
 func (h *handle) Channel(opt ...ChannelOption) <-chan *Message {
-	for _, o := range opt {
-		o(h)
-	}
 	size, sendTimeout := h.m.consumerSettings()
+	cc := newChannelConfig(h, size, sendTimeout, opt)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -109,8 +109,8 @@ func (h *handle) Channel(opt ...ChannelOption) <-chan *Message {
 		return ch
 	case pumpNone:
 		h.pump = pumpMessages
-		h.msgCh = make(chan *Message, size)
-		go h.pumpMessages(sendTimeout)
+		h.msgCh = make(chan *Message, cc.size)
+		go h.pumpMessages(cc.sendTimeout)
 	}
 	return h.msgCh
 }
@@ -119,12 +119,10 @@ func (h *handle) Channel(opt ...ChannelOption) <-chan *Message {
 // also carries *Subscription confirmations (useful to observe
 // resubscriptions after a reconnect; pongs and error replies are
 // filtered out), so its element type is any. It cannot be used together
-// with Channel.
+// with Channel. Options apply as for Channel.
 func (h *handle) ChannelWithSubscriptions(opt ...ChannelOption) <-chan any {
-	for _, o := range opt {
-		o(h)
-	}
 	size, sendTimeout := h.m.consumerSettings()
+	cc := newChannelConfig(h, size, sendTimeout, opt)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -139,8 +137,8 @@ func (h *handle) ChannelWithSubscriptions(opt ...ChannelOption) <-chan any {
 		return ch
 	case pumpNone:
 		h.pump = pumpAll
-		h.allCh = make(chan any, size)
-		go h.pumpAll(sendTimeout)
+		h.allCh = make(chan any, cc.size)
+		go h.pumpAll(cc.sendTimeout)
 	}
 	return h.allCh
 }
@@ -153,27 +151,8 @@ func (h *handle) pumpAll(sendTimeout time.Duration) {
 	pump(h.events, h.done, h.allCh, sendTimeout, h.m.cfg.LogInterval, allEventsFilter)
 }
 
-// The PubSubConfiger methods update the manager-wide config, which
-// every subscriber of the client shares; updates affect handles and
-// consumer views created after them.
-
-// UpdateChannelSize sets the manager-wide delivery buffer size, skipped
-// once this handle's own view started.
-func (h *handle) UpdateChannelSize(newSize int) {
-	if h.pumpStarted() {
-		return
-	}
-	h.m.updateChannelSize(newSize)
-}
-
-// UpdateSendTimeout sets the manager-wide consumer send timeout,
-// skipped once this handle's own view started.
-func (h *handle) UpdateSendTimeout(newTimeout time.Duration) {
-	if h.pumpStarted() {
-		return
-	}
-	h.m.updateSendTimeout(newTimeout)
-}
+// The connConfiger methods update the shared connection's settings,
+// which every subscriber of the client uses.
 
 // UpdatePingTimeout sets the manager-wide health-check ping timeout.
 func (h *handle) UpdatePingTimeout(newTimeout time.Duration) {
@@ -191,13 +170,6 @@ func (h *handle) UpdateHealthCheckInterval(newInterval time.Duration) {
 // checker's re-dial after a failed ping.
 func (h *handle) UpdateReconnectTimeout(newTimeout time.Duration) {
 	h.m.updateReconnectTimeout(newTimeout)
-}
-
-// pumpStarted reports whether a consumer view is already running.
-func (h *handle) pumpStarted() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.pump != pumpNone
 }
 
 // deliverLocked sends an event into the handle's stream without

@@ -51,9 +51,9 @@ type PubSuber interface {
 }
 
 // PubSubConfiger is the configuration surface a ChannelOption acts on.
-// Updates are manager-wide — they apply to every subscriber of the
-// client — and take effect for handles and consumer views created
-// after them, never for already-created channels.
+// UpdateChannelSize and UpdateSendTimeout apply to the channel being
+// created only. The other updates change the shared connection's
+// settings, so they apply to every subscriber of the client.
 type PubSubConfiger interface {
 	UpdateChannelSize(newSize int)
 	UpdatePingTimeout(newTimeout time.Duration)
@@ -63,8 +63,8 @@ type PubSubConfiger interface {
 }
 
 var (
-	_ PubSuber       = (*handle)(nil)
-	_ PubSubConfiger = (*handle)(nil)
+	_ PubSuber     = (*handle)(nil)
+	_ connConfiger = (*handle)(nil)
 )
 
 // PubSubManagerer is what the clients expect from a pub/sub manager:

@@ -315,17 +315,16 @@ func TestHandleLocking(t *testing.T) {
 	})
 }
 
-// TestChannelOptionConfigUpdates pins the ChannelOption write path into
-// the manager config: on the first Channel call every update applies
-// (the pump hasn't started when options run); on later calls the
-// size/send-timeout updates are gated — their Channel call can no
-// longer be affected — while the health-check settings still go
-// through.
-func TestChannelOptionConfigUpdates(t *testing.T) {
+// TestChannelOptionScope pins where each ChannelOption lands: the size
+// and send timeout belong to the channel being created and leave the
+// manager config alone; the connection options update the manager. A
+// later Channel call returns the existing channel, and only its
+// connection options still apply.
+func TestChannelOptionScope(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	srv.autoConfirm = true
-	m := newTestManager(t, srv, testConfig("node:6379"))
+	m := newTestManager(t, srv, testConfig("node:6379")) // ChanSize 16
 
 	h, err := m.Subscribe(ctx, "cfg")
 	if err != nil {
@@ -337,93 +336,130 @@ func TestChannelOptionConfigUpdates(t *testing.T) {
 		defer m.mu.RUnlock()
 		return m.cfg
 	}
+	before := snapshot()
 
-	h.Channel(func(c PubSubConfiger) {
+	ch := h.Channel(func(c PubSubConfiger) {
 		c.UpdateChannelSize(5)
 		c.UpdateSendTimeout(time.Second)
 		c.UpdatePingTimeout(2 * time.Second)
 		c.UpdateReconnectTimeout(3 * time.Second)
 	})
+	if cap(ch) != 5 {
+		t.Fatalf("channel cap = %d, want 5", cap(ch))
+	}
 	cfg := snapshot()
-	if cfg.ChanSize != 5 || cfg.SendTimeout != time.Second ||
-		cfg.PingTimeout != 2*time.Second || cfg.ReconnectTimeout != 3*time.Second {
-		t.Fatalf("first-call updates: cfg = %+v", cfg)
+	if cfg.ChanSize != before.ChanSize || cfg.SendTimeout != before.SendTimeout {
+		t.Fatalf("channel options leaked into the manager: cfg = %+v", cfg)
+	}
+	if cfg.PingTimeout != 2*time.Second || cfg.ReconnectTimeout != 3*time.Second {
+		t.Fatalf("connection options not applied: cfg = %+v", cfg)
 	}
 
-	h.Channel(func(c PubSubConfiger) {
+	again := h.Channel(func(c PubSubConfiger) {
 		c.UpdateChannelSize(999)
-		c.UpdateSendTimeout(999 * time.Second)
 		c.UpdatePingTimeout(4 * time.Second)
 		c.UpdateReconnectTimeout(5 * time.Second)
 	})
-	cfg = snapshot()
-	if cfg.ChanSize != 5 || cfg.SendTimeout != time.Second {
-		t.Fatalf("size/send-timeout not gated after the pump started: cfg = %+v", cfg)
+	if again != ch || cap(again) != 5 {
+		t.Fatalf("second Channel call: got a different channel (cap %d)", cap(again))
 	}
+	cfg = snapshot()
 	if cfg.PingTimeout != 4*time.Second || cfg.ReconnectTimeout != 5*time.Second {
-		t.Fatalf("ungated updates skipped on a later call: cfg = %+v", cfg)
+		t.Fatalf("connection options skipped on a later call: cfg = %+v", cfg)
 	}
 }
 
-// TestChannelSizeAppliesManagerWide pins the documented WithChannelSize
-// scope: the size belongs to the shared manager, so handles and
-// consumer views created after the update use it, while existing
-// streams keep the size they were created with.
-func TestChannelSizeAppliesManagerWide(t *testing.T) {
+// TestChannelSizePerSubscriber pins that WithChannelSize is per
+// subscriber: concurrent Channel calls with different sizes each get
+// their own, a call without the option gets the manager default, and
+// the events streams keep the default.
+func TestChannelSizePerSubscriber(t *testing.T) {
+	srv := newFakeServer()
+	m := newTestManager(t, srv, testConfig("node:6379")) // ChanSize 16
+
+	const n = 32
+	handles := make([]PubSuber, n)
+	chans := make([]<-chan *Message, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		handles[i] = m.NewHandle()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			size := i + 1
+			chans[i] = handles[i].Channel(func(c PubSubConfiger) { c.UpdateChannelSize(size) })
+		}()
+	}
+	wg.Wait()
+	for i := range n {
+		if got := cap(chans[i]); got != i+1 {
+			t.Fatalf("subscriber %d: channel cap = %d, want %d", i, got, i+1)
+		}
+		if got := cap(handles[i].Events()); got != 16 {
+			t.Fatalf("subscriber %d: events cap = %d, want 16", i, got)
+		}
+	}
+	if got := cap(m.NewHandle().Channel()); got != 16 {
+		t.Fatalf("default channel cap = %d, want 16", got)
+	}
+}
+
+// TestChannelSendTimeoutPerSubscriber pins that WithChannelSendTimeout
+// is per subscriber: on one channel name, the subscriber with a short
+// timeout drops a message its full channel cannot take, while the one
+// without a timeout (testConfig: blocking) keeps every message.
+func TestChannelSendTimeoutPerSubscriber(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	srv.autoConfirm = true
-	m := newTestManager(t, srv, testConfig("node:6379")) // ChanSize 16
+	m := newTestManager(t, srv, testConfig("node:6379"))
 
-	h1, err := m.Subscribe(ctx, "wide")
+	fast, err := m.Subscribe(ctx, "st")
 	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
+		t.Fatalf("Subscribe fast: %v", err)
 	}
-	ch1 := h1.Channel(func(c PubSubConfiger) { c.UpdateChannelSize(5) })
-
-	// h1's consumer channel snapshotted the updated size; its events
-	// stream predates the update and keeps the original.
-	if cap(ch1) != 5 {
-		t.Fatalf("updater's channel cap = %d, want 5", cap(ch1))
-	}
-	if cap(h1.Events()) != 16 {
-		t.Fatalf("pre-update events cap = %d, want 16", cap(h1.Events()))
-	}
-
-	// A handle created after the update — and its view — use the new
-	// size, whether it comes from NewHandle or Subscribe.
-	h2 := m.NewHandle()
-	if cap(h2.Events()) != 5 {
-		t.Fatalf("new handle events cap = %d, want 5", cap(h2.Events()))
-	}
-	if got := cap(h2.Channel()); got != 5 {
-		t.Fatalf("new handle channel cap = %d, want 5", got)
-	}
-
-	h3, err := m.Subscribe(ctx, "wide2")
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "st")
+	slow, err := m.Subscribe(ctx, "st")
 	if err != nil {
-		t.Fatalf("Subscribe h3: %v", err)
+		t.Fatalf("Subscribe slow: %v", err)
 	}
-	if cap(h3.Events()) != 5 {
-		t.Fatalf("subscribed handle events cap = %d, want 5", cap(h3.Events()))
+
+	dropping := fast.Channel(func(c PubSubConfiger) {
+		c.UpdateChannelSize(1)
+		c.UpdateSendTimeout(25 * time.Millisecond)
+	})
+	blocking := slow.Channel(func(c PubSubConfiger) { c.UpdateChannelSize(1) })
+
+	fsc.sendMessage(t, "message", "st", "kept")
+	fsc.sendMessage(t, "message", "st", "parked")
+	time.Sleep(500 * time.Millisecond)
+
+	if msg := recvMsg(t, dropping); msg.Payload != "kept" {
+		t.Fatalf("dropping: got %q, want \"kept\"", msg.Payload)
+	}
+	fsc.sendMessage(t, "message", "st", "after")
+	if msg := recvMsg(t, dropping); msg.Payload != "after" {
+		t.Fatalf("dropping: got %q, want \"after\" (\"parked\" must be dropped)", msg.Payload)
+	}
+	for _, want := range []string{"kept", "parked", "after"} {
+		if msg := recvMsg(t, blocking); msg.Payload != want {
+			t.Fatalf("blocking: got %q, want %q", msg.Payload, want)
+		}
 	}
 }
 
 // TestChannelSizeIgnoresNonPositive pins that WithChannelSize with a
-// non-positive size leaves the configured buffer alone: zero would make
-// every later delivery stream unbuffered, a negative size would panic.
+// non-positive size keeps the default: zero would make the channel
+// unbuffered, a negative size would panic.
 func TestChannelSizeIgnoresNonPositive(t *testing.T) {
 	srv := newFakeServer()
 	m := newTestManager(t, srv, testConfig("node:6379"))
 
 	for _, size := range []int{0, -1} {
-		m.NewHandle().Channel(func(c PubSubConfiger) { c.UpdateChannelSize(size) })
-		if got, _ := m.consumerSettings(); got != 16 {
-			t.Fatalf("ChanSize after UpdateChannelSize(%d) = %d, want the configured 16", size, got)
+		ch := m.NewHandle().Channel(func(c PubSubConfiger) { c.UpdateChannelSize(size) })
+		if got := cap(ch); got != 16 {
+			t.Fatalf("channel cap after UpdateChannelSize(%d) = %d, want the default 16", size, got)
 		}
-	}
-	m.NewHandle().Channel(func(c PubSubConfiger) { c.UpdateChannelSize(7) })
-	if got, _ := m.consumerSettings(); got != 7 {
-		t.Fatalf("ChanSize after UpdateChannelSize(7) = %d, want 7", got)
 	}
 }
