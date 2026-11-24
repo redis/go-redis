@@ -186,8 +186,14 @@ type connStateRetryServer struct {
 	discards         atomic.Int32
 	resets           atomic.Int32
 	mgets            atomic.Int32
-	swapped          atomic.Bool // server-global SWAPDB state: DB 0 and DB 1 exchanged
-	askings          atomic.Int32
+	// dbPerm is the server-global SWAPDB permutation: dbPerm[d] is
+	// the physical database logical database d currently maps to.
+	// SWAPDB exchanges two entries for every connection, so tests
+	// with mixed pairs (SWAPDB 0 1 then SWAPDB 0 2) need the full
+	// permutation — a single swapped flag cannot tell them apart.
+	swapMu  sync.Mutex
+	dbPerm  [16]int
+	askings atomic.Int32
 	// requireAskingBeforeMulti, when set, makes this server refuse
 	// (MOVED) a write queued into a MULTI frame that was not opened
 	// directly after ASKING, modelling a cluster node importing the
@@ -224,7 +230,10 @@ type connStateRetryServer struct {
 	// trackValues, when set, makes SET/MSET record values and GET
 	// return the recorded value for a key instead of the fixed "v":
 	// tests that assert a retry preserved the batch's ordering need
-	// to read the final value back.
+	// to read the final value back. Values are keyed by the
+	// effective database they were written in: SWAPDB moves values
+	// with the databases, so a GET after a swap reads the database
+	// the swap moved in (see dbValueKey).
 	trackValues bool
 	valuesMu    sync.Mutex
 	values      map[string]string
@@ -257,9 +266,11 @@ type connStateRetryServer struct {
 	// setsDB0 and setsDB1 count SETs that actually executed in DB 0
 	// and DB 1 (a TRYAGAIN SET counts in neither): tests that assert
 	// a retry preserved the batch's database ordering read them
-	// instead of the last-DB snapshot.
+	// instead of the last-DB snapshot. setsDB2 is the same counter
+	// for DB 2, for mixed SWAPDB pairs that move writes there.
 	setsDB0 atomic.Int32
 	setsDB1 atomic.Int32
+	setsDB2 atomic.Int32
 	// failIncrReadonlyOnce, when set, makes the next INCR answer
 	// READONLY without executing: it counts in neither incrs nor
 	// any watch dirtiness, so the counter records executions only.
@@ -268,6 +279,12 @@ type connStateRetryServer struct {
 	// EXECABORT without executing the queued body: the frame was
 	// aborted by the server, so its body never ran.
 	failExecAbortOnce atomic.Bool
+	// failExecNoreplicasOnce, when set, makes the next EXEC answer
+	// NOREPLICAS without closing the transaction: the frame stays
+	// open, exactly like a real server refusing EXEC while MULTI
+	// is still live, so a retry that reuses the connection sends
+	// MULTI into the open transaction.
+	failExecNoreplicasOnce atomic.Bool
 	// msetTryagain, when set, makes every MSET answer TRYAGAIN.
 	msetTryagain atomic.Bool
 	// dropExecFirst, when set, makes the first connection close
@@ -283,6 +300,9 @@ func newConnStateRetryServer(t retryTestHelper) *connStateRetryServer {
 	}
 	s := &connStateRetryServer{ln: ln, dropAfter: 1, secondMaxDB: 15}
 	s.setDB.Store(-1)
+	for i := range s.dbPerm {
+		s.dbPerm[i] = i
+	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
@@ -295,6 +315,36 @@ func newConnStateRetryServer(t retryTestHelper) *connStateRetryServer {
 		}
 	}()
 	return s
+}
+
+// dbValueKey keys a tracked value by the effective database it was
+// written in: SWAPDB moves values with the databases, so a GET after
+// a swap must read the database the swap moved in, not the key's last
+// write in any database.
+func dbValueKey(db int, key string) string {
+	return strconv.Itoa(db) + "\x00" + key
+}
+
+// effectiveDB maps a connection's selected database through the
+// server-global SWAPDB permutation.
+func (s *connStateRetryServer) effectiveDB(db int) int {
+	s.swapMu.Lock()
+	defer s.swapMu.Unlock()
+	if db < 0 || db >= len(s.dbPerm) {
+		return db
+	}
+	return s.dbPerm[db]
+}
+
+// applySwapdb exchanges two databases in the server-global
+// permutation, exactly like a real server's SWAPDB.
+func (s *connStateRetryServer) applySwapdb(a, b int) {
+	s.swapMu.Lock()
+	defer s.swapMu.Unlock()
+	if a < 0 || a >= len(s.dbPerm) || b < 0 || b >= len(s.dbPerm) {
+		return
+	}
+	s.dbPerm[a], s.dbPerm[b] = s.dbPerm[b], s.dbPerm[a]
 }
 
 // readConnStateRetryCommand reads one RESP array command and returns its
@@ -350,19 +400,11 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 	askingTx := false
 	lastWasAsking := false
 	// effDB is the database a SET lands in: SWAPDB is server-global,
-	// so one swap exchanges DB 0 and DB 1 for every connection.
+	// so a swap exchanges two databases for every connection — the
+	// effective database is the permutation's image of the
+	// connection's selected database.
 	effDB := func() int {
-		if !s.swapped.Load() {
-			return db
-		}
-		switch db {
-		case 0:
-			return 1
-		case 1:
-			return 0
-		default:
-			return db
-		}
+		return s.effectiveDB(db)
 	}
 	for {
 		name, args := readConnStateRetryCommand(scanner)
@@ -449,6 +491,8 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				s.setsDB0.Add(1)
 			case 1:
 				s.setsDB1.Add(1)
+			case 2:
+				s.setsDB2.Add(1)
 			}
 			if s.trackValues && !inMulti && len(args) >= 2 {
 				// Only a SET that actually ran records its value: a
@@ -457,7 +501,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				if s.values == nil {
 					s.values = map[string]string{}
 				}
-				s.values[args[0]] = args[1]
+				s.values[dbValueKey(effDB(), args[0])] = args[1]
 				s.valuesMu.Unlock()
 			}
 			if watched {
@@ -525,7 +569,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			reply = "$1\r\nv\r\n"
 			if s.trackValues && len(args) >= 1 {
 				s.valuesMu.Lock()
-				v, ok := s.values[args[0]]
+				v, ok := s.values[dbValueKey(effDB(), args[0])]
 				s.valuesMu.Unlock()
 				if ok {
 					reply = "$" + strconv.Itoa(len(v)) + "\r\n" + v + "\r\n"
@@ -548,7 +592,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 					s.values = map[string]string{}
 				}
 				for i := 0; i+1 < len(args); i += 2 {
-					s.values[args[i]] = args[i+1]
+					s.values[dbValueKey(effDB(), args[i])] = args[i+1]
 				}
 				s.valuesMu.Unlock()
 			}
@@ -630,7 +674,13 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				reply = "-NOREPLICAS Not enough replicas to apply the swap\r\n"
 				break
 			}
-			s.swapped.Store(!s.swapped.Load())
+			if len(args) >= 2 {
+				if a, err := strconv.Atoi(args[0]); err == nil {
+					if b, err := strconv.Atoi(args[1]); err == nil {
+						s.applySwapdb(a, b)
+					}
+				}
+			}
 		case "exec":
 			s.execs.Add(1)
 			if s.failExec.Load() {
@@ -639,6 +689,15 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				// a real server refusing EXEC for an ACL user, so
 				// a later DISCARD still drops them.
 				reply = "-NOPERM this user has no permissions to run the 'exec' command\r\n"
+				break
+			}
+			if s.failExecNoreplicasOnce.CompareAndSwap(true, false) {
+				// The first EXEC is refused NOREPLICAS: the
+				// transaction stays open, exactly like a real
+				// server refusing EXEC while MULTI is still live,
+				// so the frame and its queued body survive for a
+				// later retry — on a fresh connection.
+				reply = "-NOREPLICAS Not enough replicas to apply the transaction\r\n"
 				break
 			}
 			if s.failExecAbortOnce.CompareAndSwap(true, false) {
@@ -7732,6 +7791,213 @@ func TestPipelineRetryPendingSwapdbDoesNotResendAnsweredWrite(t *testing.T) {
 	}
 	if got := server.setDB.Load(); got != 0 {
 		t.Fatalf("SET ran on DB %d, want 0 (the SET ran before the swap took effect)", got)
+	}
+}
+
+// TestPipelineRetryMixedSwapdbPairsUndoInReverseOrder: undoing answered
+// SWAPDBs ahead of a pending write must undo each swap individually,
+// in reverse original order — not by parity, and not by cloning only
+// the last one. Here SET is refused TRYAGAIN once and two answered
+// SWAPDBs touch different pairs (0 1, then 0 2): they do not cancel
+// out, and cloning only the last pair does not restore the pre-swap
+// databases, so without the fix the retried SET lands in DB 2 while
+// Exec reports success; with it the retry undoes both swaps in
+// reverse, runs the SET in DB 0, and the kept originals swap back.
+// Regression test for the Codex P1 and Cursor Medium findings on
+// #4351 (review comments 4680803399 and 4680855831).
+func TestPipelineRetryMixedSwapdbPairsUndoInReverseOrder(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 3
+	server.trackValues = true
+	server.setTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	swapdb1 := pipe.Do(ctx, "swapdb", 0, 1)
+	swapdb2 := pipe.Do(ctx, "swapdb", 0, 2)
+	get := pipe.Get(ctx, "k")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must undo both swaps, run the SET in DB 0, and swap back)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := swapdb1.Err(); err != nil {
+		t.Fatalf("SWAPDB 0 1: %v", err)
+	}
+	if err := swapdb2.Err(); err != nil {
+		t.Fatalf("SWAPDB 0 2: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %v, %v; want v, nil", got, err)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the TRYAGAIN SET plus its retry)", got)
+	}
+	if got := server.setsDB0.Load(); got != 1 {
+		t.Fatalf("server executed %d SET commands in DB 0, want 1 (the pending write must land in the database it was issued for)", got)
+	}
+	if got := server.setsDB1.Load(); got != 0 {
+		t.Fatalf("server executed %d SET commands in DB 1, want 0 (a forward-order undo would leave the write in DB 1)", got)
+	}
+	if got := server.setsDB2.Load(); got != 0 {
+		t.Fatalf("server executed %d SET commands in DB 2, want 0 (no undo at all would leave the write in DB 2)", got)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (the pending write runs after both swaps are undone)", got)
+	}
+	if got := server.swapdbs.Load(); got != 6 {
+		t.Fatalf("server received %d SWAPDB commands, want 6 (the two answered SWAPDBs, one undo clone each, and the two kept originals)", got)
+	}
+}
+
+// TestPipelineRetryChainedSwapdbPairsUndoInReverseOrder: the same
+// per-swap reverse-order undo for a chained pair (SWAPDB 0 1, then
+// SWAPDB 1 2, the Codex example): the composition moves DB 0's data
+// to DB 1, so no undo at all would land the pending write there,
+// and undoing in forward order would land it in DB 2. Regression
+// test for the Codex P1 finding on #4351 (review comment 4680803399).
+func TestPipelineRetryChainedSwapdbPairsUndoInReverseOrder(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 3
+	server.trackValues = true
+	server.setTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	swapdb1 := pipe.Do(ctx, "swapdb", 0, 1)
+	swapdb2 := pipe.Do(ctx, "swapdb", 1, 2)
+	get := pipe.Get(ctx, "k")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must undo both swaps, run the SET in DB 0, and swap back)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := swapdb1.Err(); err != nil {
+		t.Fatalf("SWAPDB 0 1: %v", err)
+	}
+	if err := swapdb2.Err(); err != nil {
+		t.Fatalf("SWAPDB 1 2: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %v, %v; want v, nil", got, err)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the TRYAGAIN SET plus its retry)", got)
+	}
+	if got := server.setsDB0.Load(); got != 1 {
+		t.Fatalf("server executed %d SET commands in DB 0, want 1 (the pending write must land in the database it was issued for)", got)
+	}
+	if got := server.setsDB1.Load(); got != 0 {
+		t.Fatalf("server executed %d SET commands in DB 1, want 0 (no undo at all would leave the write in DB 1)", got)
+	}
+	if got := server.setsDB2.Load(); got != 0 {
+		t.Fatalf("server executed %d SET commands in DB 2, want 0 (a forward-order undo would leave the write in DB 2)", got)
+	}
+	if got := server.setDB.Load(); got != 0 {
+		t.Fatalf("SET ran on DB %d, want 0 (the pending write runs after both swaps are undone)", got)
+	}
+	if got := server.swapdbs.Load(); got != 6 {
+		t.Fatalf("server received %d SWAPDB commands, want 6 (the two answered SWAPDBs, one undo clone each, and the two kept originals)", got)
+	}
+}
+
+// TestPipelineRetryRetiresConnAfterUnsettledExec: an EXEC the server
+// refuses with NOREPLICAS leaves MULTI open, so the connection must
+// not return to the pool: NOREPLICAS is not a bad-conn error, so
+// without the fix the retry reuses the same connection and sends
+// MULTI into the still-open transaction, failing with a nested-MULTI
+// error; with it the connection is retired and the retry opens the
+// transaction on a fresh connection. Regression test for the Codex P2
+// finding on #4351 (review comment 4680803417).
+func TestPipelineRetryRetiresConnAfterUnsettledExec(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.failExecNoreplicasOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Incr(ctx, "counter")
+	exec := pipe.Do(ctx, "exec")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must open the transaction on a fresh connection, not nest MULTI into the still-open one)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != int64(1) {
+		t.Fatalf("INCR = %v, %v; want 1, nil", got, err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the connection with the still-open MULTI must be retired, not reused for the retry)", got)
+	}
+	if got := server.multiCount.Load(); got != 2 {
+		t.Fatalf("server received %d MULTI commands, want 2 (one per attempt)", got)
+	}
+	if got := server.execs.Load(); got != 2 {
+		t.Fatalf("server received %d EXEC commands, want 2 (the refused EXEC plus the retried one)", got)
+	}
+	if got := server.execWithMulti.Load(); got != 1 {
+		t.Fatalf("EXEC ran %d time(s) inside MULTI, want 1 (only the retried EXEC commits)", got)
+	}
+}
+
+// TestPipelineRetryRefreshesReadAfterRetriedSwapdb: a read answered
+// after a pending SWAPDB holds a pre-swap value, so the retry must
+// re-run it after the swap instead of keeping it. Here SWAPDB 0 1
+// answers NOREPLICAS once and the following GET answers the old
+// value from DB 0: without the fix the retry runs only the SWAPDB
+// and the GET keeps the old value while Exec reports success; with
+// it the retry re-runs the GET after the swap, so the read is
+// refreshed to the value in DB 1. Regression test for the Codex P2
+// finding on #4351 (review comment 4680803438).
+func TestPipelineRetryRefreshesReadAfterRetriedSwapdb(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.trackValues = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	// Pre-seed each database with its own value: DB 0 holds "old",
+	// DB 1 holds "new", so the GET's answer proves which database
+	// it read from.
+	seed := client.Pipeline()
+	seed.Select(ctx, 1)
+	seed.Set(ctx, "k", "new", 0)
+	seed.Select(ctx, 0)
+	seed.Set(ctx, "k", "old", 0)
+	if _, err := seed.Exec(ctx); err != nil {
+		t.Fatalf("seed Exec: %v", err)
+	}
+	// The pipeline's SWAPDB is refused NOREPLICAS once; the GET
+	// after it must be re-run on the retry, not keep its pre-swap
+	// value.
+	server.failSwapdbOnce.Store(true)
+	pipe := client.Pipeline()
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	get := pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-run the refused SWAPDB and refresh the GET after it)", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "new" {
+		t.Fatalf("GET = %q, %v; want %q, nil (the GET after the retried SWAPDB must be re-run, not keep its pre-swap value)", got, err, "new")
+	}
+	if got := server.swapdbs.Load(); got != 2 {
+		t.Fatalf("server received %d SWAPDB commands, want 2 (the NOREPLICAS SWAPDB plus its retry)", got)
 	}
 }
 

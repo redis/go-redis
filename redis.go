@@ -2932,6 +2932,41 @@ func pipelineMultiOpen(cmds []Cmder, multi int) bool {
 	return true
 }
 
+// pipelineHasOpenMulti reports whether any MULTI in cmds still holds an
+// open transaction on the connection that ran the batch: the MULTI was
+// accepted and no settled EXEC, successful DISCARD or successful RESET
+// follows it. Unlike pipelineMultiOpen it keeps walking past an EXEC
+// the server refused: the refusal settles nothing, so a DISCARD after
+// it still closes the frame — stopping at the refused EXEC would
+// retire a connection whose transaction the DISCARD already dropped.
+func pipelineHasOpenMulti(cmds []Cmder) bool {
+	for i, cmd := range cmds {
+		if cmd.Name() != "multi" || !pipelineMultiAccepted(cmd) {
+			continue
+		}
+		open := true
+		for _, follow := range cmds[i+1:] {
+			switch follow.Name() {
+			case "exec":
+				if pipelineExecSettled(follow) {
+					open = false
+				}
+			case "discard", "reset":
+				if pipelineCmdErr(follow) == nil {
+					open = false
+				}
+			}
+			if !open {
+				break
+			}
+		}
+		if open {
+			return true
+		}
+	}
+	return false
+}
+
 // pipelineTxBodyNeedsRetryMap precomputes, in one O(n) pass over cmds,
 // whether each command sits inside a MULTI/EXEC transaction whose EXEC did
 // not settle, so it still needs to run on retry: its EXEC follows it in
@@ -4252,6 +4287,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// re-sending them once the swap takes effect would land
 			// them in the wrong database (the retry re-runs the
 			// SWAPDB itself, which moves their values with it).
+			// That exclusion is write-side only: a read after a
+			// pending SWAPDB holds a pre-swap value while the retry
+			// re-runs the swap, so the read side counts a pending
+			// SWAPDB as an invalidating predecessor (see
+			// pendingSwapdbSeen below).
 			// A read dropped past a kept pending write is stale the
 			// same way: it was answered before the write succeeded,
 			// so keeping it returns a pre-write value (a GET after
@@ -4318,12 +4358,36 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					pipelineCmdReadOnly(cmd)
 			}
 			pendingWriteSeen := isPendingWrite(cmds[i])
+			// A pending SWAPDB invalidates answered reads after it
+			// the same way a pending write does — the retry re-runs
+			// the swap, so a read answered before it holds a
+			// pre-swap value — but it must not count for writes:
+			// a write after a pending swap already ran in the
+			// pre-swap database, and the retry re-runs the SWAPDB
+			// itself, which moves its value with it. The read side
+			// therefore tracks the pending swap separately from the
+			// write side (see isPendingWrite above, which excludes
+			// connection state). The boundary command itself is a
+			// pending SWAPDB when it is one; later in the scan, a
+			// kept SWAPDB that was never answered is still pending,
+			// while an answered one the scan above already kept
+			// already ran, so it does not invalidate reads — its
+			// re-run in the tail restores the same post-swap state.
+			pendingSwapdbSeen := cmds[i].Name() == "swapdb"
 			for j, cmd := range cmds[i+1:] {
 				if keep[j] && isPendingWrite(cmd) {
 					pendingWriteSeen = true
 					continue
 				}
+				if keep[j] && cmd.Name() == "swapdb" && !answered[j] {
+					pendingSwapdbSeen = true
+					continue
+				}
 				if pendingWriteSeen && answered[j] && (isDroppedWrite(cmd) || isDroppedRead(cmd)) {
+					keep[j] = true
+					answered[j] = false
+				}
+				if pendingSwapdbSeen && answered[j] && isDroppedRead(cmd) {
 					keep[j] = true
 					answered[j] = false
 				}
@@ -4830,21 +4894,27 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// databases on the first attempt, so a pending write
 			// before it in the retry would run in the swapped
 			// database instead of the one it was issued for. Undo
-			// the swap ahead of the tail with a fresh clone of the
-			// kept SWAPDB — the kept original then swaps them back
-			// at its own position, so the writes after it still land
-			// in the post-swap database. One clone undoes an odd
-			// number of kept swaps; an even number already cancels
-			// out, so no clone is emitted then. The clone is a fresh
-			// command, not the original: the original keeps its OK
-			// result. It is required: a failed swap-back must fail
-			// the batch rather than let the pending write run in the
-			// wrong database. A SWAPDB queued inside a still-open
-			// transaction never swapped anything, so it is not
-			// counted; a pending (unanswered) SWAPDB never swapped
-			// either, so only a definitively answered one counts.
-			keptAnsweredSwapdbs := 0
-			var keptSwapdb Cmder
+			// the swaps ahead of the tail with a fresh clone of
+			// each kept SWAPDB — the kept originals then swap them
+			// back at their own positions, so the writes after them
+			// still land in the post-swap database. The clones are
+			// emitted in reverse original order, one per kept swap:
+			// SWAPDB is its own inverse, so undoing the composition
+			// means undoing each swap in reverse — counting parities
+			// only works when every swap touches the same pair, and
+			// cloning only the last one only undoes that pair. A
+			// SWAPDB 0 1 followed by a SWAPDB 0 2 (or 1 2) does not
+			// cancel out, and the last clone alone does not restore
+			// the pre-swap databases. The clones are fresh commands,
+			// not the originals: the originals keep their OK
+			// results. They are required: a failed swap-back must
+			// fail the batch rather than let the pending write run
+			// in the wrong database. A SWAPDB queued inside a
+			// still-open transaction never swapped anything, so it
+			// is not counted; a pending (unanswered) SWAPDB never
+			// swapped either, so only a definitively answered one
+			// counts.
+			var keptAnsweredSwapdbs []Cmder
 			for j, cmd := range cmds[i+1:] {
 				if !keep[j] || txBodyNeedsRetry[i+1+j] || cmd.Name() != "swapdb" {
 					continue
@@ -4854,11 +4924,10 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// only one that answered without error counts.
 					continue
 				}
-				keptAnsweredSwapdbs++
-				keptSwapdb = cmd
+				keptAnsweredSwapdbs = append(keptAnsweredSwapdbs, cmd)
 			}
-			if keptAnsweredSwapdbs%2 == 1 {
-				fresh := keptSwapdb.Clone()
+			for k := len(keptAnsweredSwapdbs) - 1; k >= 0; k-- {
+				fresh := keptAnsweredSwapdbs[k].Clone()
 				fresh.SetErr(nil)
 				retry = append(retry, fresh)
 				markPipelineSynthetic(ctx, true, fresh)
@@ -5843,6 +5912,22 @@ func (c *baseClient) pipelineProcessCmds(
 		// the answered prefix — the committed transaction included —
 		// is dropped, not re-run.
 		readErr = e
+	}
+	// A refused EXEC can leave MULTI active even though its error is a
+	// complete Redis reply (see txPipelineReadQueued): NOREPLICAS is not
+	// a bad-conn error, so releaseConnToPool would return the connection
+	// to the pool and the retry would send MULTI into the still-open
+	// transaction, failing with a nested-MULTI error. Retire the
+	// connection instead, so the retry starts a fresh transaction on a
+	// fresh connection. Only when this attempt failed with a retryable
+	// error: a successful attempt that leaves a trailing open MULTI
+	// keeps its connection on purpose, so a later EXEC can still
+	// commit the frame the retry left open (see
+	// TestPipelineRetryTrailingOpenMultiKeepsQueuedBody) — and a
+	// refused EXEC the batch exits on (NOPERM) leaves the same
+	// contract in place.
+	if readErr != nil && shouldRetry(readErr, true) && pipelineHasOpenMulti(cmds) {
+		cn.MarkCloseOnPut("pipeline: EXEC did not clear transaction state")
 	}
 	return readErr != nil, readErr
 }
