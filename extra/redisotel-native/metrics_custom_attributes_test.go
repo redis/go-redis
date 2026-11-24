@@ -5,10 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // collectAttrs returns the attribute sets of every data point recorded under
@@ -66,10 +68,6 @@ func TestCustomAttributesOnEveryMetric(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	connCount, err := meter.Int64UpDownCounter(MetricConnectionCount)
-	if err != nil {
-		t.Fatal(err)
-	}
 	failovers, err := meter.Int64Counter(MetricMultiDBFailovers)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +75,6 @@ func TestCustomAttributesOnEveryMetric(t *testing.T) {
 
 	recorder := &metricsRecorder{
 		operationDuration: opDuration,
-		connectionCount:   connCount,
 		multiDBFailovers:  failovers,
 		cfg: &config{customAttributes: []attribute.KeyValue{
 			attribute.String("team", "platform"),
@@ -86,10 +83,9 @@ func TestCustomAttributesOnEveryMetric(t *testing.T) {
 	}
 
 	recorder.RecordOperationDuration(ctx, time.Millisecond, redis.NewStringCmd(ctx, "get", "k"), 1, nil, nil, 0)
-	recorder.RecordConnectionCount(ctx, 1, nil, ConnectionStateIdle, false)
 	recorder.RecordMultiDBFailover(ctx, "a.example", "b.example", "automatic", time.Millisecond)
 
-	for _, name := range []string{MetricOperationDuration, MetricConnectionCount, MetricMultiDBFailovers} {
+	for _, name := range []string{MetricOperationDuration, MetricMultiDBFailovers} {
 		sets := collectAttrs(t, reader, name)
 		if len(sets) != 1 {
 			t.Fatalf("%s: recorded %d data points, want 1", name, len(sets))
@@ -98,6 +94,11 @@ func TestCustomAttributesOnEveryMetric(t *testing.T) {
 		requireAttr(t, sets[0], "deployment", "test")
 		requireAttr(t, sets[0], AttrDBSystemName, DBSystemRedis)
 	}
+	opt := recorder.connCountAttrs("localhost:6379_1", ConnectionStateIdle, false)
+	set := otelmetric.NewObserveConfig([]otelmetric.ObserveOption{opt}).Attributes()
+	requireAttr(t, set, "team", "platform")
+	requireAttr(t, set, "deployment", "test")
+	requireAttr(t, set, AttrDBSystemName, DBSystemRedis)
 }
 
 // TestCustomAttributesOverrideBuiltIns verifies a custom attribute with a

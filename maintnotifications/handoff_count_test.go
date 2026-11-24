@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"reflect"
-	"sync"
 	"testing"
 	"time"
 
@@ -41,20 +39,6 @@ func TestFailedHandoffUncountsParkedConnAsIdle(t *testing.T) {
 	connPool.AddPoolHook(processor)
 	t.Cleanup(func() { _ = processor.Shutdown(context.Background()) })
 
-	var mu sync.Mutex
-	counts := map[string]int{}
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		ConnectionCount: func(_ context.Context, delta int, cn *pool.Conn, state string, _ bool) {
-			if cn.PoolName() != "handoff-count" {
-				return
-			}
-			mu.Lock()
-			counts[state] += delta
-			mu.Unlock()
-		},
-	})
-	t.Cleanup(func() { pool.SetAllMetricCallbacks(nil) })
-
 	ctx := context.Background()
 	cn, err := connPool.Get(ctx)
 	if err != nil {
@@ -66,21 +50,15 @@ func TestFailedHandoffUncountsParkedConnAsIdle(t *testing.T) {
 	// The handoff is queued and the connection is parked in idleConns until it fails.
 	connPool.Put(ctx, cn)
 
-	want := map[string]int{pool.MetricStateIdle: 0, pool.MetricStateUsed: 0}
-	snapshot := func() map[string]int {
-		mu.Lock()
-		defer mu.Unlock()
-		return map[string]int{pool.MetricStateIdle: counts[pool.MetricStateIdle], pool.MetricStateUsed: counts[pool.MetricStateUsed]}
-	}
-	// The -1 is emitted after the conn leaves the pool, so wait for the counts too.
 	deadline := time.Now().Add(3 * time.Second)
-	for (connPool.Len() != 0 || !reflect.DeepEqual(snapshot(), want)) && time.Now().Before(deadline) {
+	for connPool.Len() != 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if got := connPool.Len(); got != 0 {
 		t.Fatalf("pool length after failed handoff: got %d, want 0", got)
 	}
-	if got := snapshot(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("connection count per state after failed handoff: got %v, want %v", got, want)
+	// The parked conn must leave idleConns too, or the idle count stays at 1.
+	if s := connPool.Stats(); s.TotalConns != 0 || s.IdleConns != 0 {
+		t.Fatalf("stats after failed handoff: total=%d idle=%d, want 0 and 0", s.TotalConns, s.IdleConns)
 	}
 }

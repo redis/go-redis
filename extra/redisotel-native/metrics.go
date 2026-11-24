@@ -8,13 +8,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // timeoutError is an interface for errors that have a Timeout() method
@@ -46,16 +46,15 @@ func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
 	operationDuration        metric.Float64Histogram
-	connectionCount          metric.Int64UpDownCounter // OTel semconv: UpDownCounter for connection.count
+	poolObs                  *poolObserver // connection count and pending requests, observed at collection time
 	connectionCreateTime     metric.Float64Histogram
 	connectionRelaxedTimeout metric.Int64UpDownCounter
 	connectionHandoff        metric.Int64Counter
 	clientErrors             metric.Int64Counter
 	maintenanceNotifications metric.Int64Counter
 
-	connectionWaitTime    metric.Float64Histogram
-	connectionClosed      metric.Int64Counter
-	connectionPendingReqs metric.Int64UpDownCounter // OTel semconv: UpDownCounter for pending_requests
+	connectionWaitTime metric.Float64Histogram
+	connectionClosed   metric.Int64Counter
 
 	pubsubMessages metric.Int64Counter
 
@@ -72,15 +71,14 @@ type metricsRecorder struct {
 	// Configuration
 	cfg *config
 
-	// opAttrs caches success-path operation attribute sets (opAttrKey ->
-	// attribute.Set). Hits only Load; misses go through storeOpAttrs, which
-	// holds opAttrsMu, so opAttrsLen is exactly the number of entries.
-	opAttrs    sync.Map
-	opAttrsMu  sync.Mutex
-	opAttrsLen int
+	// opAttrs caches the success-path operation duration options per opAttrKey.
+	opAttrs attrCache[opAttrKey, []metric.RecordOption]
 
-	// opq records success-path operation durations off the caller's goroutine
-	// (op_queue.go); nil records them inline.
+	// waitOpts caches the wait-time options per pool name.
+	waitOpts attrCache[string, []metric.RecordOption]
+
+	// opq records success-path operation durations and wait times off the
+	// caller's goroutine (op_queue.go); nil records them inline.
 	opq *opQueue
 
 	// stopped is set by ObservabilityInstance.Shutdown (shared with every
@@ -93,9 +91,7 @@ type metricsRecorder struct {
 func (r *metricsRecorder) Enabled() bool { return !r.off() }
 
 // off reports whether Shutdown has stopped this recorder. Every Record method
-// except the UpDown counters (connection.count, pending_requests) returns early
-// when it is set; those two keep flowing so a client closed after Shutdown
-// still brings its counts back to zero.
+// returns early when it is set; the pool observer is stopped by Shutdown.
 func (r *metricsRecorder) off() bool { return r.stopped != nil && r.stopped.Load() }
 
 // withAttrs returns the measurement option for attrs followed by the
@@ -160,15 +156,17 @@ func (r *metricsRecorder) RecordOperationDuration(
 		default:
 			key.remote = addr.String() // may not be comparable: key by its text
 		}
-		set, ok := r.opAttrs.Load(key)
+		opts, ok := r.opAttrs.load(key)
 		if !ok {
-			set = r.storeOpAttrs(key, addr)
+			opts = r.opAttrs.store(key, func() []metric.RecordOption {
+				return []metric.RecordOption{r.attrSet(operationAttrs(key.op, key.attempts, addrString(addr), key.db))}
+			})
 		}
 		if r.opq != nil {
-			r.opq.record(ctx, durationSeconds, set.(attribute.Set))
+			r.opq.record(ctx, r.operationDuration, durationSeconds, opts)
 			return
 		}
-		r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributeSet(set.(attribute.Set)))
+		r.operationDuration.Record(ctx, durationSeconds, opts...)
 		return
 	}
 
@@ -183,8 +181,9 @@ func (r *metricsRecorder) RecordOperationDuration(
 	r.operationDuration.Record(ctx, durationSeconds, r.withAttrs(attrs))
 }
 
-// maxOpAttrSets bounds the success-path attribute-set cache: past it the
-// cache is cleared, so many commands x endpoints x attempts x dbs cannot grow it without limit.
+// maxOpAttrSets bounds each attribute cache (attrCache): past it the cache is
+// cleared, so many commands x endpoints x attempts x dbs, or many pools, cannot
+// grow it without limit.
 const maxOpAttrSets = 4096
 
 // opAttrKey is everything the success-path operation attributes are built from.
@@ -197,24 +196,6 @@ type opAttrKey struct {
 	remote   string
 	attempts int
 	db       int
-}
-
-// storeOpAttrs builds and caches the set for key, clearing the cache first
-// when it is full.
-func (r *metricsRecorder) storeOpAttrs(key opAttrKey, addr net.Addr) any {
-	r.opAttrsMu.Lock()
-	defer r.opAttrsMu.Unlock()
-	if set, ok := r.opAttrs.Load(key); ok {
-		return set
-	}
-	if r.opAttrsLen >= maxOpAttrSets {
-		r.opAttrs.Clear()
-		r.opAttrsLen = 0
-	}
-	set := attribute.NewSet(r.customAttrs(operationAttrs(key.op, key.attempts, addrString(addr), key.db))...)
-	r.opAttrs.Store(key, set)
-	r.opAttrsLen++
-	return set
 }
 
 func addrString(a net.Addr) string {
@@ -468,7 +449,12 @@ func extractRedisErrorPrefix(err error) string {
 		return redis.ErrorTypeNil
 	}
 
-	errStr := err.Error()
+	// Only a server reply has a prefix: io.EOF ("EOF") is not one.
+	var redisErr redis.Error
+	if !errors.As(err, &redisErr) {
+		return ""
+	}
+	errStr := redisErr.Error()
 
 	// Redis errors typically start with an uppercase prefix
 	// Examples: "ERR ...", "WRONGTYPE ...", "CLUSTERDOWN ..."
@@ -584,8 +570,10 @@ func getErrorCategoryFromString(errStr string) string {
 
 	// Check for Redis server errors (including cluster errors)
 	// Common Redis error prefixes: ERR, WRONGTYPE, CLUSTERDOWN, MOVED, ASK, READONLY, etc.
-	serverErrors := []string{"err", "wrongtype", "clusterdown", "moved", "ask", "readonly",
-		"crossslot", "tryagain", "loading", "busy", "noscript", "oom", "execabort", "noquorum", "redis:"}
+	serverErrors := []string{
+		"err", "wrongtype", "clusterdown", "moved", "ask", "readonly",
+		"crossslot", "tryagain", "loading", "busy", "noscript", "oom", "execabort", "noquorum", "redis:",
+	}
 	for _, prefix := range serverErrors {
 		if strings.Contains(errLower, prefix) {
 			return "server"
@@ -864,23 +852,27 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 	if r.connectionWaitTime == nil {
 		return
 	}
+	var poolName string
+	if cn != nil {
+		poolName = cn.PoolName()
+	}
+	if r.opq != nil {
+		r.opq.record(ctx, r.connectionWaitTime, duration.Seconds(), r.waitOptsFor(poolName))
+		return
+	}
+	r.connectionWaitTime.Record(ctx, duration.Seconds(), r.waitOptsFor(poolName)...)
+}
 
-	// Build attributes
+// waitTimeAttrs are db.client.connection.wait_time's built-in attributes.
+func waitTimeAttrs(poolName string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
-
-	// Use pool name from connection (set when connection was created)
-	if cn != nil {
-		poolName := cn.PoolName()
-		if poolName != "" {
-			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
-		}
+	if poolName != "" {
+		attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
 	}
-
-	// Record the histogram (duration in seconds)
-	r.connectionWaitTime.Record(ctx, duration.Seconds(), r.withAttrs(attrs))
+	return attrs
 }
 
 // RecordConnectionClosed records redis.client.connection.closed metric
@@ -1028,86 +1020,20 @@ func (r *metricsRecorder) RecordStreamLag(
 	r.streamLag.Record(ctx, lag.Seconds(), r.withAttrs(attrs))
 }
 
-// RecordConnectionCount records a change in connection count (UpDownCounter).
-// Per OTel semantic conventions, db.client.connection.count is an UpDownCounter.
-// delta: +1 when connection added, -1 when connection removed
-// state: connection state (e.g., "idle", "used")
-// isPubSub: true if this is a PubSub connection
-func (r *metricsRecorder) RecordConnectionCount(
-	ctx context.Context,
-	delta int,
-	cn redis.ConnInfo,
-	state string,
-	isPubSub bool,
-) {
-	if r.connectionCount == nil {
-		return
-	}
-
-	// Build attributes
-	attrs := []attribute.KeyValue{
-		attribute.String(AttrDBSystemName, DBSystemRedis),
-		getLibraryVersionAttr(),
-		attribute.String(AttrDBClientConnectionState, state),
-		attribute.Bool(AttrRedisClientConnectionPubSub, isPubSub),
-	}
-
-	// Use pool name from connection (set when connection was created)
-	if cn != nil {
-		poolName := cn.PoolName()
-		if poolName != "" {
-			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
-
-			// Extract server info from pool name
-			serverAddr, serverPort, _ := parsePoolName(poolName)
-			if serverAddr != "" {
-				attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
-			}
-			attrs = addServerPortIfNonDefault(attrs, serverPort)
-		}
-	}
-
-	// Record the counter (delta can be +1 or -1)
-	r.connectionCount.Add(ctx, int64(delta), r.withAttrs(attrs))
-}
-
-// RecordPendingRequests records a change in pending requests (UpDownCounter).
-// Per OTel semantic conventions, db.client.connection.pending_requests is an UpDownCounter.
-// delta: +1 when request starts waiting, -1 when request stops waiting
-// poolName is passed explicitly because we may not have a connection yet when request starts
-func (r *metricsRecorder) RecordPendingRequests(
-	ctx context.Context,
-	delta int,
-	cn redis.ConnInfo,
-	poolName string,
-) {
-	if r.connectionPendingReqs == nil {
-		return
-	}
-
-	// Build attributes
+// pendingRequestsAttrs are db.client.connection.pending_requests' built-in
+// attributes; server address and port come from the pool name.
+func pendingRequestsAttrs(poolName string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
-
-	// Use explicit pool name (preferred) or fall back to connection's pool name
-	effectivePoolName := poolName
-	if effectivePoolName == "" && cn != nil {
-		effectivePoolName = cn.PoolName()
-	}
-
-	if effectivePoolName != "" {
-		attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, effectivePoolName))
-
-		// Extract server info from pool name
-		serverAddr, serverPort, _ := parsePoolName(effectivePoolName)
+	if poolName != "" {
+		attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
+		serverAddr, serverPort, _ := parsePoolName(poolName)
 		if serverAddr != "" {
 			attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
 		}
 		attrs = addServerPortIfNonDefault(attrs, serverPort)
 	}
-
-	// Record the counter (delta can be +1 or -1)
-	r.connectionPendingReqs.Add(ctx, int64(delta), r.withAttrs(attrs))
+	return attrs
 }

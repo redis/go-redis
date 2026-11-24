@@ -90,7 +90,7 @@ func (h *retireAndCloseOnPutHook) OnRemove(context.Context, *pool.Conn, error) {
 
 // A connection a hook moves to StateClosed is removed once: the late
 // close-on-put recheck must not remove it a second time (OnRemove twice,
-// removal metrics skipped, used gauge left at +1).
+// removal metrics skipped).
 func TestPutClosedByHookWithRetireMarkRemovesOnce(t *testing.T) {
 	ctx := context.Background()
 	p := pool.NewConnPool(&pool.Options{
@@ -111,16 +111,8 @@ func TestPutClosedByHookWithRetireMarkRemovesOnce(t *testing.T) {
 	}
 
 	var mu sync.Mutex
-	used, closed := 0, 0
+	closed := 0
 	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		ConnectionCount: func(_ context.Context, delta int, c *pool.Conn, state string, _ bool) {
-			if c != cn || state != pool.MetricStateUsed {
-				return
-			}
-			mu.Lock()
-			used += delta
-			mu.Unlock()
-		},
 		ConnectionClosed: func(_ context.Context, c *pool.Conn, _ string, _ error) {
 			if c != cn {
 				return
@@ -139,10 +131,8 @@ func TestPutClosedByHookWithRetireMarkRemovesOnce(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	// SetAllMetricCallbacks reports the live in-use conn as +1; the removal
-	// must bring it back to 0.
-	if used != 0 {
-		t.Errorf("used gauge = %d, want 0 (the removal decrements it once)", used)
+	if s := p.Stats(); s.TotalConns != 0 || s.IdleConns != 0 {
+		t.Errorf("stats after removal: total=%d idle=%d, want 0 and 0", s.TotalConns, s.IdleConns)
 	}
 	if closed != 1 {
 		t.Errorf("ConnectionClosed emitted %d times, want 1", closed)

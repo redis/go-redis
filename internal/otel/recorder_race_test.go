@@ -15,10 +15,10 @@ func (raceRecorder) RegisterPubSubPool(string, PubSubPooler) {}
 func (raceRecorder) UnregisterPubSubPool(PubSubPooler)       {}
 
 // TestRegisterPoolsRaceWithSetGlobalRecorder pins that the pool registration
-// helpers read the global recorder under its lock. Installing telemetry while
-// another goroutine creates or closes clients is ordinary usage, and reading
-// globalRecorder without recorderMu while SetGlobalRecorder writes it under the
-// lock is a data race that -race reports (Copilot review on #3942).
+// helpers read the global recorder safely. Installing telemetry while
+// another goroutine creates or closes clients is ordinary usage, and an
+// unsynchronized read of globalRecorder while SetGlobalRecorder writes it is a
+// data race that -race reports (Copilot review on #3942).
 func TestRegisterPoolsRaceWithSetGlobalRecorder(t *testing.T) {
 	t.Cleanup(func() { SetGlobalRecorder(noopRecorder{}) })
 
@@ -46,7 +46,7 @@ func TestRegisterPoolsRaceWithSetGlobalRecorder(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			for j := 0; j < 2000; j++ {
-				RegisterPools(Scoped(nil), nil, nil, nil, "127.0.0.1:6379")
+				RegisterPools(Scoped(nil), nil, nil, nil)
 				UnregisterPools(Scoped(nil), nil, nil, nil)
 			}
 		}()

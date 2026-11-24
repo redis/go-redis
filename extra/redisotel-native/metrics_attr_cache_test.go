@@ -118,7 +118,7 @@ func TestOperationDurationAttrCacheIsBounded(t *testing.T) {
 
 func cachedSets(r *metricsRecorder) int {
 	n := 0
-	r.opAttrs.Range(func(any, any) bool { n++; return true })
+	r.opAttrs.m.Range(func(any, any) bool { n++; return true })
 	return n
 }
 
@@ -142,9 +142,9 @@ func TestOperationDurationAttrCacheBoundedUnderConcurrentMisses(t *testing.T) {
 	if got := cachedSets(r); got > maxOpAttrSets {
 		t.Fatalf("cache holds %d sets, want at most %d", got, maxOpAttrSets)
 	}
-	r.opAttrsMu.Lock()
-	defer r.opAttrsMu.Unlock()
-	if got := cachedSets(r); got != r.opAttrsLen {
-		t.Fatalf("counter %d, cache holds %d sets", r.opAttrsLen, got)
+	r.opAttrs.mu.Lock()
+	defer r.opAttrs.mu.Unlock()
+	if got := cachedSets(r); got != r.opAttrs.n {
+		t.Fatalf("counter %d, cache holds %d sets", r.opAttrs.n, got)
 	}
 }

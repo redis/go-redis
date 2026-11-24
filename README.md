@@ -23,6 +23,7 @@ In `go-redis` we are aiming to support the last three releases of Redis. Current
 - [Redis 8.6](https://raw.githubusercontent.com/redis/redis/8.6/00-RELEASENOTES) - using Redis CE 8.6
 - [Redis 8.8](https://raw.githubusercontent.com/redis/redis/8.8/00-RELEASENOTES) - using Redis CE 8.8
 - [Redis 8.10](https://raw.githubusercontent.com/redis/redis/8.10/00-RELEASENOTES) - using Redis CE 8.10
+- [Redis 8.12](https://raw.githubusercontent.com/redis/redis/8.12/00-RELEASENOTES) - using Redis CE 8.12
 
 Although the `go.mod` states it requires at minimum `go 1.26`, our CI is configured to run the tests against all supported
 versions of Redis and multiple versions of Go ([1.26](https://go.dev/doc/devel/release#go1.26.0), oldstable, and stable). We observe that some modules related test may not pass with
@@ -363,6 +364,17 @@ not atomic across them, whether fan-out is performed by go-redis or by a Redis
 server/coordinator. If one shard fails, earlier shards may already have applied
 the command. There is no automatic rollback of those successful operations;
 inspect the error and be prepared for manual intervention or cleanup.
+
+### Redis Sentinel
+
+`NewFailoverClient` and `NewFailoverClusterClient` both use Redis Sentinel for
+automatic failover. `NewFailoverClient` does not support `RouteByLatency` or
+`RouteRandomly`; prefer it when replica routing is not needed, as it avoids the
+extra overhead of the `ClusterClient`'s hash-slot calculation.
+`NewFailoverClusterClient` is also safe with a non-cluster Sentinel setup: it
+handles master/replica role changes on Sentinel-triggered failover, and its
+internal hash-slot calculation does not interfere with routing. Prefer it when
+`RouteByLatency` or `RouteRandomly` is needed.
 
 ### Client-side caching
 
