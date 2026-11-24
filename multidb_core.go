@@ -1324,6 +1324,9 @@ func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 		// must not count as proof of a healthy server. Defensive — the
 		// rejection paths all skip outcome recording anyway.
 		return outcomeNeutral
+	case isReplyLevelStreamingError(err):
+		// The database replied in full; the failure came from user code.
+		return outcomeSuccess
 	case shouldRetry(err, retryTimeout):
 		// Includes broken transport of every flavor: shouldRetry matches
 		// any error carrying a Timeout() method (all net.OpErrors — resets,

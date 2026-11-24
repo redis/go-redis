@@ -117,7 +117,9 @@ func BenchmarkClientListVsStreamPeakMem(b *testing.B) {
 					}
 					benchClientInfoSink = info
 				}
-				peak = max(peak, inflight-base)
+				if inflight > base {
+					peak = max(peak, inflight-base)
+				}
 			}
 			b.ReportMetric(float64(peak), "peak-B")
 		})

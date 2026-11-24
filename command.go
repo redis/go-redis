@@ -9293,8 +9293,25 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 const maxStreamingSegment = 1 << 20
 
 // ErrStreamingSegmentTooLong is returned when a StreamingCmd segment grows past
-// the segment limit without reaching a delimiter.
-var ErrStreamingSegmentTooLong = errors.New("redis: streaming segment too long")
+// the segment limit without reaching a delimiter. The rest of the reply is
+// discarded, so the connection stays usable.
+var ErrStreamingSegmentTooLong error = streamingSegmentTooLongError{}
+
+type streamingSegmentTooLongError struct{}
+
+func (streamingSegmentTooLongError) Error() string { return "redis: streaming segment too long" }
+
+// RedisError marks the error as reply-level: the reply was drained.
+func (streamingSegmentTooLongError) RedisError() {}
+
+// isReplyLevelStreamingError reports whether err is a StreamingCmd failure
+// that happened after the server replied (callback error or oversized
+// segment). The reply was drained, so the connection is fine, and the error
+// says nothing about server health or routing.
+func isReplyLevelStreamingError(err error) bool {
+	var cbErr *StreamingCallbackError
+	return errors.As(err, &cbErr) || errors.Is(err, ErrStreamingSegmentTooLong)
+}
 
 // StreamingCallbackError wraps an error returned by a StreamingCmd callback.
 // It tells a callback failure apart from a server or network error. The
@@ -9304,6 +9321,9 @@ type StreamingCallbackError struct {
 }
 
 func (e *StreamingCallbackError) Error() string {
+	if e.Err == nil {
+		return "redis: streaming callback error"
+	}
 	return "redis: streaming callback: " + e.Err.Error()
 }
 
@@ -9328,6 +9348,8 @@ func (e *StreamingCallbackError) RedisError() {}
 //     can fail the read with an i/o timeout;
 //   - stops further calls after its first error. The rest of the reply is
 //     discarded, and the error is returned wrapped in *StreamingCallbackError.
+//     The client never retries, redirects or fails over on such an error,
+//     whatever it wraps.
 //
 // StreamingCmd is not retried and cannot be fanned out across cluster shards.
 type StreamingCmd struct {
@@ -9346,7 +9368,8 @@ func newStreamingCmd(
 	ctx context.Context,
 	delimiter string,
 	fn func(segment []byte) error,
-	args ...any) *StreamingCmd {
+	args ...any,
+) *StreamingCmd {
 	return &StreamingCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
@@ -9411,29 +9434,37 @@ func (cmd *StreamingCmd) readReply(rd *proto.Reader) error {
 	delim := cmd.delimiter
 	err := rd.ReadChunked(func(chunk []byte) error {
 		data := chunk
-		if len(pending) > 0 {
+		fromPending := len(pending) > 0
+		if fromPending {
 			pending = append(pending, chunk...)
 			data = pending
 		} else {
 			scanned = 0
 		}
+		off := 0 // start of the current segment in data
 		for {
-			i := bytes.Index(data[scanned:], delim)
+			i := bytes.Index(data[off+scanned:], delim)
 			if i < 0 {
 				break
 			}
-			if err := emit(data[:scanned+i]); err != nil {
+			end := off + scanned + i
+			if err := emit(data[off:end]); err != nil {
 				return err
 			}
-			data = data[scanned+i+len(delim):]
+			off = end + len(delim)
 			scanned = 0
 		}
-		if len(data) > maxStreamingSegment {
+		rest := data[off:]
+		if len(rest) > maxStreamingSegment {
 			return ErrStreamingSegmentTooLong
 		}
 		// A delimiter may start in the last len(delim)-1 bytes.
-		scanned = max(0, len(data)-len(delim)+1)
-		pending = append(pending[:0], data...)
+		scanned = max(0, len(rest)-len(delim)+1)
+		// Keep the tail. When pending already holds it, skip the copy: copying
+		// a growing segment on every chunk is quadratic.
+		if !fromPending || off > 0 {
+			pending = append(pending[:0], rest...)
+		}
 		return nil
 	})
 	if err != nil {

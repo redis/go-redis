@@ -1,13 +1,14 @@
 package redis
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -261,33 +262,29 @@ func TestStreamingCmdRequiresCallbackAndDelimiter(t *testing.T) {
 	}
 }
 
-// With no delimiter match, each byte must be searched once. The old scan
-// restarted from offset 0 on every chunk (quadratic).
-func TestStreamingCmdLinearScan(t *testing.T) {
-	const size = 512 << 10
-	payload := bytes.Repeat([]byte("x"), size) // below the segment cap, no delimiter
-	wire := fmt.Sprintf("$%d\r\n%s\r\n", size, payload)
-	got, _, _, err := collectSegments("\n", wire, oneByteReaderSized)
-	if err != nil || len(got) != 1 || len(got[0]) != size {
-		t.Fatalf("got %d segments, err=%v, want one %d-byte segment", len(got), err, size)
+// A long segment read in tiny chunks must cost O(n). Rescanning or recopying
+// the whole pending segment on each chunk is O(n^2): about 3e11 bytes moved
+// here, which takes far longer than the budget.
+func TestStreamingCmdLongSegmentIsLinear(t *testing.T) {
+	const size = 768 << 10 // below the segment cap
+	payload := strings.Repeat("x", size) + "\n" + "tail"
+	wire := fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
+
+	done := make(chan error, 1)
+	var got []string
+	go func() {
+		var err error
+		got, _, _, err = collectSegments("\n", wire, oneByteReader)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil || len(got) != 2 || len(got[0]) != size || got[1] != "tail" {
+			t.Fatalf("got %d segments, err=%v", len(got), err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("long segment took over 20s: scan or copy is not linear")
 	}
-}
-
-func oneByteReaderSized(r *strings.Reader) *proto.Reader {
-	// 256-byte reads: many chunks, still quick to run.
-	return proto.NewReader(iotest.DataErrReader(&smallReads{r: r, n: 256}))
-}
-
-type smallReads struct {
-	r *strings.Reader
-	n int
-}
-
-func (s *smallReads) Read(p []byte) (int, error) {
-	if len(p) > s.n {
-		p = p[:s.n]
-	}
-	return s.r.Read(p)
 }
 
 func TestClientListStreamingNilCallback(t *testing.T) {
@@ -303,11 +300,44 @@ func TestClientListStreamingNilCallback(t *testing.T) {
 }
 
 func TestStreamingCmdRejectsClusterFanout(t *testing.T) {
-	c := &ClusterClient{}
 	cmd := newStreamingCmd(context.Background(), "\n", func([]byte) error { return nil }, "client", "list")
-	err := c.executeParallel(context.Background(), cmd, []*clusterNode{nil, nil}, nil, nil, nil)
-	if !errors.Is(err, errStreamingFanout) {
-		t.Fatalf("err = %v, want errStreamingFanout", err)
+	if clusterFanoutCommandError(cmd) == nil {
+		t.Fatal("clusterFanoutCommandError = nil, want a fan-out rejection")
+	}
+}
+
+// Errors that happen after the reply was read in full must not drive retries,
+// redirects or failover, whatever they wrap.
+func TestStreamingReplyLevelErrorsAreTerminal(t *testing.T) {
+	moved := proto.RedisError("MOVED 3999 127.0.0.1:6381")
+	for name, err := range map[string]error{
+		"callback wraps EOF":      &StreamingCallbackError{Err: io.EOF},
+		"callback wraps MOVED":    &StreamingCallbackError{Err: moved},
+		"callback wraps READONLY": &StreamingCallbackError{Err: proto.RedisError("READONLY You can't write against a read only replica.")},
+		"callback wraps timeout":  &StreamingCallbackError{Err: context.DeadlineExceeded},
+		"segment too long":        ErrStreamingSegmentTooLong,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if shouldRetry(err, true) {
+				t.Error("shouldRetry = true")
+			}
+			if isBadConn(err, true, "127.0.0.1:6379") {
+				t.Error("isBadConn = true")
+			}
+			if !isRedisError(err) {
+				t.Error("isRedisError = false (pipelines would drop the conn)")
+			}
+			if got := classifyOutcome(err, true); got != outcomeSuccess {
+				t.Errorf("classifyOutcome = %v, want outcomeSuccess", got)
+			}
+			c := &ClusterClient{}
+			if r := c.checkMovedErr(context.Background(), nil, nil, err, ""); r.node != nil || r.cmds != nil {
+				t.Errorf("checkMovedErr redirected: %+v", r)
+			}
+		})
+	}
+	if (&StreamingCallbackError{}).Error() == "" {
+		t.Error("zero StreamingCallbackError has an empty message")
 	}
 }
 
