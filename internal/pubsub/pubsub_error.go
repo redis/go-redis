@@ -20,6 +20,10 @@ const (
 	// handoff).
 	errConnUnusable pubSubError = "redis: pubsub: connection is not usable"
 
+	// errDialPanic wraps a panic raised while dialing the shared
+	// connection (e.g. in an OnConnect hook).
+	errDialPanic pubSubError = "redis: pubsub: dial panicked"
+
 	// errReAuthRESP2 is the reconnect reason when new credentials arrive
 	// for a RESP2 connection: it cannot run AUTH while subscribed, so the
 	// replacement authenticates when it is dialed.

@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -169,8 +170,15 @@ func (d *dialer) run(call *dialCall, plan dialPlan) {
 
 // attempt makes one dial to addr with values' context values (nil:
 // none), bounded by timeout (when positive) and by the dialer's
-// cancellation.
-func (d *dialer) attempt(values context.Context, addr string, timeout time.Duration) (*pool.Conn, error) {
+// cancellation. A panic in the dial (e.g. a user OnConnect hook) fails
+// the attempt instead of the process: dials run on their own goroutine,
+// where nothing else could recover it.
+func (d *dialer) attempt(values context.Context, addr string, timeout time.Duration) (cn *pool.Conn, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cn, err = nil, fmt.Errorf("%w: %v", errDialPanic, r)
+		}
+	}()
 	ctx := d.ctx
 	if values != nil {
 		var cancel context.CancelFunc

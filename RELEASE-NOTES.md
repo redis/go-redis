@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Pub/Sub engine
+
+Pub/sub runs on a new engine: all `PubSub` values of a client share one connection per node, and a reconnect resubscribes while the old connection keeps serving. On `ClusterClient`, sharded subscriptions get one connection per owning node and follow slot moves.
+
+### ⚠️ Behavior changes
+
+- **One connection per client**: every `PubSub` of a client shares one connection (per node for `ClusterClient` sharded channels), instead of one connection per `PubSub`. `ClientSetName` names the shared connection.
+- **`Subscription.Count` is per `PubSub`**: subscribing to `a`, `b`, `c` in one call reports 3, 3, 3, not the server's connection-wide 1, 2, 3.
+- **Connection options are client-wide**: `WithChannelHealthCheckInterval`, `WithChannelPingTimeout` and `WithChannelReconnectTimeout` configure the shared connection, so they apply to every subscriber of the client. Prefer the `Options.PubSub*` fields. `WithChannelSize` and `WithChannelSendTimeout` still apply to one `PubSub`.
+- **Dial retries**: the shared connection dials with the client's retry policy (`DialerRetries`), like the pool, so a failing `Subscribe` can take up to `DialerRetries × DialTimeout`.
+- **No panics on misuse**: `Channel` after `ChannelWithSubscriptions` (or the reverse) logs and returns a closed channel; `Ring.Subscribe` with no channels or no shards returns a `PubSub` that reports the error.
+- **`OnConnect` panics**: a panic in `OnConnect` while the shared connection is dialed fails that dial (`Subscribe` / `Receive` report it) instead of crashing the process.
+- **MultiDB**: all `PubSub` values of a `MultiDBClient` share one connection that follows the active database. On failover the old connection keeps delivering until the new one is subscribed. `Close` ends the `Channel` loops.
+
+### New options
+
+- `Options.PubSubChanSize`, `PubSubHealthCheckInterval`, `PubSubSubscribeRetryInterval`, `PubSubPingTimeout`, `PubSubReconnectTimeout`, `PubSubReconnectMaxBackoff`, `PubSubLogInterval` (also on `ClusterOptions`, `FailoverOptions` and `UniversalOptions`).
+
 # 9.24.0 (2026-11-24)
 
 This is a minor release. It contains everything from 9.24.0-beta.1 and 9.24.0-beta.2, so these notes cover the full 9.23.0 → 9.24.0 upgrade. The release adds:
