@@ -365,6 +365,17 @@ server/coordinator. If one shard fails, earlier shards may already have applied
 the command. There is no automatic rollback of those successful operations;
 inspect the error and be prepared for manual intervention or cleanup.
 
+### Redis Sentinel
+
+`NewFailoverClient` and `NewFailoverClusterClient` both use Redis Sentinel for
+automatic failover. `NewFailoverClient` does not support `RouteByLatency` or
+`RouteRandomly`; prefer it when replica routing is not needed, as it avoids the
+extra overhead of the `ClusterClient`'s hash-slot calculation.
+`NewFailoverClusterClient` is also safe with a non-cluster Sentinel setup: it
+handles master/replica role changes on Sentinel-triggered failover, and its
+internal hash-slot calculation does not interfere with routing. Prefer it when
+`RouteByLatency` or `RouteRandomly` is needed.
+
 ### Client-side caching
 
 go-redis supports server-assisted client-side caching for standalone and Cluster clients.
