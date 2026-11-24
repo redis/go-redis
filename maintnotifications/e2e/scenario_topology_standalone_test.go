@@ -11,20 +11,28 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 // Matrix rows: topology_change_standalone / data_movement_conn_drop,
 // data_movement_no_conn_drop, conn_drop, dns_resolution_change, crossed with
-// the SCH client and the regular, pub/sub and blocking workloads.
+// the regular, pub/sub and blocking workloads, once with SCH and once without.
 //
 // The fault injector owns the database: SetupTopologyChangeStandalone creates
 // one shaped for the effect and trigger, and teardown deletes it and restores
-// node state. A plain client with maintenance notifications left at their
-// default (Auto, RESP3) is the SCH client under test.
+// node state. Each effect runs in two modes (see schModes): with SCH, a plain
+// client with maintenance notifications left at their default (Auto, RESP3);
+// without SCH, the same client with maintenance notifications disabled, which
+// has to recover from the drop or the data movement by reconnecting alone.
 //
-// Assertions are deliberately modest: no hang, and every workload works again
-// on the SAME client once the action finished. Notification counts are not
-// asserted; they are what differs most between Redis Enterprise versions.
+// Assertions are deliberately modest: no hang, every workload works again on
+// the SAME client once the action finished, and no data is lost. Data is
+// checked with many commands (see data_verify_test.go): a data set seeded
+// before the change (GET/SET, HSET/HGET/HGETALL, MSET/MGET, counters, TTL and
+// PERSIST, sets, lists, sorted sets, DEL) must read back exactly, and every
+// write acknowledged while the change ran must still be there. Notification
+// counts are not asserted; they are what differs most between Redis
+// Enterprise versions.
 //
 // Real fault injector only: the proxy mock has no /topology-change-standalone.
 
@@ -45,6 +53,39 @@ func TestStandaloneTopologyChange(t *testing.T) {
 			runStandaloneEffect(t, faultInjector, effect)
 		})
 	}
+}
+
+// schMode is how the client under test treats maintenance notifications (SCH).
+type schMode struct {
+	name string
+	// cfg is the client's MaintNotificationsConfig. nil keeps the library
+	// default (Mode Auto), which is the "with SCH" client.
+	cfg *maintnotifications.Config
+	// off is true when the client must have no maintenance-notification manager.
+	off bool
+}
+
+var (
+	schWith    = schMode{name: "with_sch"}
+	schWithout = schMode{name: "without_sch", cfg: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}, off: true}
+
+	// schModes is the order the scenarios run in.
+	schModes = []schMode{schWith, schWithout}
+)
+
+// requireSCHState fails when the client does not match the mode and returns
+// whether the client has a maintenance-notification manager. A without-SCH run
+// must have none, otherwise its label would not be true. A with-SCH run only
+// logs: the manager exists whenever the mode is not disabled, even if the
+// server turns out not to support the feature.
+func requireSCHState(t *testing.T, mode schMode, c *redis.Client) bool {
+	t.Helper()
+	active := c.GetMaintNotificationsManager() != nil
+	if mode.off && active {
+		t.Fatalf("%s: client has a maintenance-notification manager, SCH is not off", mode.name)
+	}
+	t.Logf("%s: maintenance notifications active=%v", mode.name, active)
+	return active
 }
 
 func runStandaloneEffect(t *testing.T, fic *FaultInjectorClient, effect StandaloneEffect) {
@@ -68,13 +109,17 @@ func runStandaloneEffect(t *testing.T, fic *FaultInjectorClient, effect Standalo
 	if os.Getenv(envAllStandaloneTriggers) != "true" {
 		triggers = triggers[:1]
 	}
-	for _, tr := range triggers {
-		t.Run(tr.Name, func(t *testing.T) {
-			variant := plainVariant(tr)
-			if variant < 0 {
-				t.Skipf("%s has only TLS/mTLS database configs", tr.Name)
+	for _, mode := range schModes {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, tr := range triggers {
+				t.Run(tr.Name, func(t *testing.T) {
+					variant := plainVariant(tr)
+					if variant < 0 {
+						t.Skipf("%s has only TLS/mTLS database configs", tr.Name)
+					}
+					runStandaloneScenario(t, fic, effect, tr.Name, variant, mode)
+				})
 			}
-			runStandaloneScenario(t, fic, effect, tr.Name, variant)
 		})
 	}
 }
@@ -90,8 +135,9 @@ func plainVariant(tr StandaloneTrigger) int {
 	return -1
 }
 
-// standaloneClient dials the endpoint the fault injector returned for setup.
-func standaloneClient(t *testing.T, s *StandaloneSetup) *redis.Client {
+// standaloneClient dials the endpoint the fault injector returned for setup,
+// configured for the given SCH mode.
+func standaloneClient(t *testing.T, s *StandaloneSetup, mode schMode) *redis.Client {
 	t.Helper()
 	if len(s.Endpoints) == 0 {
 		t.Fatalf("setup returned no endpoints: %+v", s)
@@ -103,9 +149,11 @@ func standaloneClient(t *testing.T, s *StandaloneSetup) *redis.Client {
 	if s.Password != "" {
 		opts.Password = s.Password
 	}
-	// RESP3 with the default maintenance-notification config (Auto) is the SCH
-	// client: it handshakes the notifications and degrades if unsupported.
+	// RESP3 in both modes, so the only difference is the maintenance-notification
+	// config. With the default (Auto) the client handshakes the notifications and
+	// degrades if unsupported; without SCH it is disabled outright.
 	opts.Protocol = 3
+	opts.MaintNotificationsConfig = mode.cfg
 	c := redis.NewClient(opts)
 	t.Cleanup(func() { _ = c.Close() })
 	return c
@@ -125,6 +173,10 @@ func standaloneEventually(t *testing.T, timeout time.Duration, what string, cond
 
 // standaloneResult is what a scenario run observed, beyond pass or fail.
 type standaloneResult struct {
+	// Mode is the SCH mode the run used.
+	Mode string
+	// SCHActive: the client had a maintenance-notification manager.
+	SCHActive bool
 	// Reconnected: the server-side connection id of the client changed across
 	// the action. go-redis retries through most drops, so command failures alone
 	// do not show whether the connection was really dropped.
@@ -136,7 +188,7 @@ var standaloneObserve func(effect StandaloneEffect, trigger string, r standalone
 
 // runStandaloneScenario provisions a database, runs workloads across the
 // topology change and checks they recover on the same client.
-func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect StandaloneEffect, trigger string, variant int) {
+func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect StandaloneEffect, trigger string, variant int, mode schMode) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -157,17 +209,29 @@ func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect Standa
 	}
 	t.Logf("setup %s: bdb %s, config %q, endpoint %v", setup.SetupID, setup.BDBID, setup.Config, setup.Endpoints)
 
-	c := standaloneClient(t, setup)
-	pub := standaloneClient(t, setup)
+	c := standaloneClient(t, setup, mode)
+	pub := standaloneClient(t, setup, mode)
+	schActive := requireSCHState(t, mode, c)
 
 	key := fmt.Sprintf("e2e:tcs:%s:%d", setup.SetupID, time.Now().UnixNano())
 	channel := key + ":chan"
 	list := key + ":list"
 
-	// Baseline: all three workloads work before the fault.
+	// Baseline: all three workloads work before the fault, and a data set written
+	// with many commands (see data_verify_test.go) is in place to check afterwards.
 	if err := c.Set(ctx, key, "before", 0).Err(); err != nil {
 		t.Fatalf("baseline SET: %v", err)
 	}
+	// Own prefixes: the scenario's own keys (<key>, :chan, :list) must not overlap
+	// the data set, or the blocking workload would consume its list.
+	data := newDataVerifier(key + ":data")
+	if err := data.seed(ctx, c); err != nil {
+		t.Fatalf("seed data set: %v", err)
+	}
+	if err := data.verify(ctx, c); err != nil {
+		t.Fatalf("data set is wrong before the fault: %v", err)
+	}
+	live := newLiveLoad(key + ":lv")
 	sub := c.Subscribe(ctx, channel)
 	t.Cleanup(func() { _ = sub.Close() })
 	rctx, rcancel := context.WithTimeout(ctx, 15*time.Second)
@@ -211,9 +275,9 @@ func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect Standa
 	load.Add(1)
 	go func() {
 		defer load.Done()
-		for !stop.Load() {
+		for i := 0; !stop.Load(); i++ {
 			lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := c.Set(lctx, key, "load", 0).Err()
+			err := live.step(lctx, c, i)
 			cancel()
 			mu.Lock()
 			if err != nil {
@@ -293,13 +357,23 @@ func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect Standa
 	case <-time.After(30 * time.Second):
 		t.Fatal("background load never stopped: a command is stuck")
 	}
-	var res standaloneResult
+
+	// No lost or corrupted data, whatever command wrote it: the seeded data set
+	// reads back exactly, and every write acknowledged during the change is there.
+	if err := data.verifyEventually(ctx, c, 60*time.Second); err != nil {
+		t.Errorf("seeded data set after the change: %v", err)
+	}
+	if err := live.verify(ctx, c); err != nil {
+		t.Errorf("acknowledged writes after the change: %v", err)
+	}
+
+	res := standaloneResult{Mode: mode.name, SCHActive: schActive}
 	if idAfter, err := c.ClientID(ctx).Result(); err == nil {
 		res.Reconnected = idAfter != idBefore
 	}
 	mu.Lock()
-	t.Logf("%s/%s: %d ok, %d failed ops, longest failure window %v, reconnected=%v",
-		effect, trigger, okOps.Load(), failOps.Load(), longestFail, res.Reconnected)
+	t.Logf("%s/%s/%s: %d ok, %d failed ops, longest failure window %v, reconnected=%v",
+		mode.name, effect, trigger, okOps.Load(), failOps.Load(), longestFail, res.Reconnected)
 	mu.Unlock()
 	if standaloneObserve != nil {
 		standaloneObserve(effect, trigger, res)

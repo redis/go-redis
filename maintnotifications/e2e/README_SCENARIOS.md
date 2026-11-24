@@ -143,6 +143,34 @@ See [DATABASE_MANAGEMENT.md](DATABASE_MANAGEMENT.md) for detailed documentation 
   - Concurrent fault injection handling
 
 
+### 7. Topology Changes, With and Without SCH
+(`scenario_topology_standalone_test.go`, `scenario_cluster_without_sch_test.go`)
+- **Purpose**: Check that clients recover from topology changes and data movement
+  both with Smart Client Handoff (SCH, maintenance notifications) and without it.
+- **Standalone**: `TestStandaloneTopologyChange` runs each effect of the fault
+  injector's `/topology-change-standalone` route (`data_movement_conn_drop`,
+  `data_movement_no_conn_drop`, `conn_drop`, `dns_resolution_change`) in two modes.
+  `with_sch` keeps the default client (Mode Auto); `without_sch` disables
+  maintenance notifications. A regular write loop, a subscription and a blocking
+  `BLPOP` run across the change and must work again on the same client. Set
+  `E2E_STANDALONE_ALL_TRIGGERS=true` to run every trigger instead of the first.
+- **Cluster**: `TestClusterSlotMigrate_AllEffects` is the with-SCH test.
+  `TestClusterSlotMigrate_WithoutSCH` runs one trigger per slot-migrate effect with
+  notifications disabled: the client only has MOVED/ASK handling and its own
+  topology reloads to follow the move, and no seeded key may be lost.
+- **Data checks** (`data_verify_test.go`): the standalone test, the cluster
+  without-SCH test and `TestClusterSlotMigrate_AllEffects` seed a data set with many
+  commands before the fault (GET/SET with and without expiry, HSET/HGET/HGETALL,
+  MSET/MGET, INCRBY/DECRBY, TTL/PERSIST, sets, lists, sorted sets, DEL) and read
+  it back exactly afterwards. Mixed traffic that runs through the fault records
+  which writes were acknowledged, and none of them may be lost.
+  `TestDataVerifierAgainstRedis` shows each check fails on the matching corruption.
+- **Both modes check the label**: a without-SCH client must have no
+  maintenance-notification manager, so "without SCH" cannot be true by accident.
+- **Real fault injector only**: the proxy mock injects notifications and moves no
+  data. `TestStandaloneScenarioHarnessAgainstFakeFI` checks the standalone harness
+  against a fake fault injector (see the test for the two environment variables).
+
 ## Running the Scenarios
 
 ### Prerequisites

@@ -1245,6 +1245,36 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 				// Give the background traffic and pubsub time to establish connections on all shards
 				time.Sleep(500 * time.Millisecond)
 
+				// Data seeded with many commands before the trigger must read back after
+				// the migration, and mixed traffic that runs through it must not lose an
+				// acknowledged write (see data_verify_test.go). SCH changes how the client
+				// follows the move, not what the data has to look like afterwards. The
+				// same checks run without SCH in TestClusterSlotMigrate_WithoutSCH.
+				dataPrefix := fmt.Sprintf("e2e:wsch:%d:%s:%d", bdbID, tc.name, time.Now().UnixNano())
+				data := newDataVerifier(dataPrefix)
+				if err := data.seed(ctx, redisClient); err != nil {
+					t.Fatalf("[ERROR] Failed to seed the data set: %v", err)
+				}
+				if err := data.verify(ctx, redisClient); err != nil {
+					t.Fatalf("[ERROR] Data set is wrong before the migration: %v", err)
+				}
+				live := newLiveLoad(dataPrefix)
+				stopLive := live.run(ctx, redisClient)
+				var liveStats liveLoadStats
+				liveStopped := false
+				stopLiveLoad := func() {
+					if liveStopped {
+						return
+					}
+					liveStopped = true
+					var finished bool
+					liveStats, finished = stopLive()
+					if !finished {
+						t.Error("[ERROR] Live load never stopped: a command is stuck")
+					}
+				}
+				defer stopLiveLoad()
+
 				// Clear all trackers before triggering the fault injector
 				// This ensures we only count notifications from the actual test action
 				clearAllTrackers(localLogCollector, tracker, shards)
@@ -1299,6 +1329,17 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 
 				// Wait for logs to settle
 				waitForLogsToSettle(t, 2*time.Second)
+
+				// The migration is over: no lost data, whatever command wrote it.
+				stopLiveLoad()
+				if err := data.verifyEventually(ctx, redisClient, 60*time.Second); err != nil {
+					t.Errorf("[ERROR] Seeded data set after the migration: %v", err)
+				}
+				if err := live.verify(ctx, redisClient); err != nil {
+					t.Errorf("[ERROR] Acknowledged writes after the migration: %v", err)
+				}
+				t.Logf("✓ Data intact after the migration; live load: %d ok, %d failed steps, longest failure window %v",
+					liveStats.OK, liveStats.Failed, liveStats.LongestFailure)
 
 				// Print per-shard notification summary
 				printPerShardNotificationSummary(t, shards)

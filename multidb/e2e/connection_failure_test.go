@@ -166,6 +166,7 @@ func newFailureClient(t *testing.T) *redis.Client {
 	t.Helper()
 	c := redis.NewClient(endpointOptions(e2eTopology.Endpoints[0]))
 	t.Cleanup(func() { _ = c.Close() })
+	requireSCHOff(t, c)
 	return c
 }
 
