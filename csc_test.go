@@ -612,9 +612,13 @@ func TestCommandMetadataViewLivePrecedence(t *testing.T) {
 }
 
 func TestCSCMetadataStoreSurvivesClone(t *testing.T) {
-	client := NewClient(&Options{CommandMetadata: &CommandMetadataConfig{
-		Mode: CommandMetadataPreferLive, Overrides: map[string]*CommandInfo{"get": nil},
-	}})
+	client := NewClient(&Options{
+		Protocol:        3,
+		ClientSideCache: NewLocalCache(CacheConfig{MaxEntries: 8}),
+		CommandMetadata: &CommandMetadataConfig{
+			Mode: CommandMetadataPreferLive, Overrides: map[string]*CommandInfo{"get": nil},
+		},
+	})
 	t.Cleanup(func() { _ = client.Close() })
 	clone := client.WithTimeout(time.Second)
 	if isCacheableInView(clone.metadataView(), makeCmd("get", "k")) {
@@ -5657,28 +5661,4 @@ func TestCSCPerformanceCompatibility(t *testing.T) {
 	if view.cscFingerprint != "4624cdeaed3bcbe281696bfcd11a4522" {
 		t.Fatalf("default CSC fingerprint changed: %s", view.cscFingerprint)
 	}
-	if path := os.Getenv("CSC_COMPATIBILITY_DUMP"); path != "" {
-		if err := os.WriteFile(path, []byte(view.cscFingerprint+"\n"+dump), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-// diffSortedStrings reports the entries only in a and the entries only in b.
-func diffSortedStrings(a, b []string) (onlyA, onlyB []string) {
-	i, j := 0, 0
-	for i < len(a) && j < len(b) {
-		switch {
-		case a[i] < b[j]:
-			onlyA = append(onlyA, a[i])
-			i++
-		case b[j] < a[i]:
-			onlyB = append(onlyB, b[j])
-			j++
-		default:
-			i++
-			j++
-		}
-	}
-	return append(onlyA, a[i:]...), append(onlyB, b[j:]...)
-}
+	if path := os.Getenv("CSC_[Truncated]
