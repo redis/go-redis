@@ -319,17 +319,23 @@ func awaitReplicatedTo(t *testing.T, dst int, key, want string, max time.Duratio
 	}
 	c := redis.NewClient(endpointOptions(e2eTopology.Endpoints[dst]))
 	defer func() { _ = c.Close() }()
-	deadline := time.Now().Add(max)
+	start := time.Now()
+	deadline := start.Add(max)
+	var lastVal string
+	var lastErr error
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		v, err := c.Get(ctx, key).Result()
+		lastVal, lastErr = c.Get(ctx, key).Result()
 		cancel()
-		if err == nil && v == want {
+		if lastErr == nil && lastVal == want {
+			if d := time.Since(start); d > 2*time.Second {
+				t.Logf("%q reached member %d after %s", key, dst, d.Round(100*time.Millisecond))
+			}
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Logf("%q did not replicate to member %d within %s; continuing", key, dst, max)
+	t.Logf("%q did not replicate to member %d within %s (last read %q, %v); continuing", key, dst, max, lastVal, lastErr)
 }
 
 func newE2EClient(t *testing.T, opts *redis.MultiDBOptions) *redis.MultiDBClient {
