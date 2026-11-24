@@ -4252,7 +4252,19 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// re-sending them once the swap takes effect would land
 			// them in the wrong database (the retry re-runs the
 			// SWAPDB itself, which moves their values with it).
-			// A barrier (WAIT/WAITAOF) counts neither: it measures
+			// A read dropped past a kept pending write is stale the
+			// same way: it was answered before the write succeeded,
+			// so keeping it returns a pre-write value (a GET after
+			// a SET the server refused READONLY keeps the old
+			// value) or a pre-write redis.Nil while the retried
+			// write succeeds. Keep every answered read past a kept
+			// pending write too, in original order, so the retry
+			// re-runs it after the write and refreshes it — a read
+			// is idempotent, so re-running it replays nothing. The
+			// same exclusions apply: a barrier holds no value, and
+			// a read inside a transaction DISCARD dropped or the
+			// server aborted never executed, so it holds no value
+			// to refresh. A barrier (WAIT/WAITAOF) counts neither: it measures
 			// the replication offset and holds no final value to
 			// preserve, and the barrier reissue below re-runs it
 			// after a pending write when one precedes it. Counting
@@ -4293,13 +4305,25 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					!pipelineCmdReadOnly(cmd) &&
 					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
 			}
+			// isDroppedRead is the read half of isDroppedWrite: an
+			// answered read dropped past a kept pending write (see
+			// above). A read-only command is never connection state
+			// that must be re-established, and script cache
+			// commands are not read-only, so neither exclusion is
+			// needed here; the barrier and discarded/aborted frame
+			// exclusions match isDroppedWrite.
+			isDroppedRead := func(cmd Cmder) bool {
+				return !discardedTx[cmd.base()] && !abortedTx[cmd.base()] &&
+					!pipelineIsBarrierCmd(cmd) &&
+					pipelineCmdReadOnly(cmd)
+			}
 			pendingWriteSeen := isPendingWrite(cmds[i])
 			for j, cmd := range cmds[i+1:] {
 				if keep[j] && isPendingWrite(cmd) {
 					pendingWriteSeen = true
 					continue
 				}
-				if pendingWriteSeen && answered[j] && isDroppedWrite(cmd) {
+				if pendingWriteSeen && answered[j] && (isDroppedWrite(cmd) || isDroppedRead(cmd)) {
 					keep[j] = true
 					answered[j] = false
 				}
@@ -5059,8 +5083,13 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// commands before it. The errors are deliberately not cleared instead:
 	// a prior round did clear them before an attempt, and it wiped the tail
 	// transport errors that mark the boundary after a real drop — see
-	// TestPipelineRetryDialFailureKeepsAnsweredResults.
-	staleErrs := make(map[*baseCmd]bool, len(cmds))
+	// TestPipelineRetryDialFailureKeepsAnsweredResults. The set stays nil
+	// when no command carries a stale error — the common case for fresh
+	// commands — so a successful pipeline allocates no set for it at all.
+	// Reads and deletes on a nil map are safe, and the set is only ever
+	// written here, so laziness changes nothing the suffix scans or the
+	// exit stamping can observe.
+	var staleErrs map[*baseCmd]bool
 	for _, cmd := range cmds {
 		// pipelineCmdErr, not rawErr(): a raw command's retained
 		// error frame is an error it carried into this invocation
@@ -5069,6 +5098,9 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// invocation's answered/unanswered boundary and drop fresh
 		// commands behind it that were never dispatched.
 		if pipelineCmdErr(cmd) != nil {
+			if staleErrs == nil {
+				staleErrs = make(map[*baseCmd]bool)
+			}
 			staleErrs[cmd.base()] = true
 		}
 	}
@@ -5081,8 +5113,14 @@ func (c *baseClient) generalProcessPipelineFrom(
 	// paths below can read it. The stale-error set lives in ctx too, so
 	// a zero-reply failure can tell an entry error a reused command
 	// carried in from a genuine reply of this invocation (see
-	// setCmdsTransportErr).
-	answered := make(map[*baseCmd]bool, len(cmds))
+	// setCmdsTransportErr). The set is allocated without a capacity
+	// hint: it grows only when an attempt actually fails and records
+	// progress (see below), so a successful batch keeps it empty
+	// instead of pre-sizing it for the whole batch. It must still be
+	// the same map the ctx below holds: the execution paths read it
+	// from ctx while an attempt runs (see setCmdsTransportErr), so it
+	// cannot be swapped for a fresh map after the first attempt.
+	answered := make(map[*baseCmd]bool)
 	ctx = context.WithValue(ctx, pipelineStaleErrKey{}, staleErrs)
 	ctx = context.WithValue(ctx, pipelineAnsweredKey{}, answered)
 	// synthetic records the fresh commands pipelineRetrySuffix creates
@@ -5211,8 +5249,13 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// dispatched tracks the commands this attempt recorded progress
 		// for (see pipelineAttemptKey); it is fresh per attempt so a
 		// command dispatched by an earlier attempt is not mistaken for
-		// progress by this one.
-		dispatched := &pipelineAttemptProgress{dispatched: make(map[*baseCmd]bool, len(pending))}
+		// progress by this one. It holds no per-command set: the read
+		// loop records only the slice it reads and how many of its
+		// leading commands it answered (see
+		// markPipelineAttemptDispatchedOne), and a set is rebuilt
+		// from that record only when the attempt failed — a
+		// successful batch never materialises one.
+		dispatched := &pipelineAttemptProgress{}
 		attemptCtx, dialExhausted := c.captureFixedPipelineDialExhaustion(ctx)
 		attemptCtx = context.WithValue(attemptCtx, pipelineAttemptKey{}, dispatched)
 		lastErr = c.withPipelineConn(attemptCtx, func(ctx context.Context, cn *pool.Conn) error {
@@ -5243,11 +5286,38 @@ func (c *baseClient) generalProcessPipelineFrom(
 		// answered, so later write/drain failures cannot stamp over
 		// its result. Commands the attempt never reached keep both
 		// their stale marker and their absence from answered.
-		for _, cmd := range pending {
-			if dispatched.dispatched[cmd.base()] {
-				delete(staleErrs, cmd.base())
-				if e := cmd.rawErr(); e == nil || isRedisError(e) {
-					answered[cmd.base()] = true
+		// The scan runs only when the attempt failed. On success
+		// there is nothing to record: every command was dispatched,
+		// and neither staleErrs nor answered is read again — the
+		// exit branch below stamps nothing when lastErr is nil, and
+		// there is no retry. Running the scan on success would
+		// rebuild the per-command sets for a batch that never needs
+		// them, and the answered set alone would grow to the batch
+		// size (see pipelineAttemptProgress). The dispatched set is
+		// rebuilt here, on the failure path only, from the
+		// attempt's progress record: the leading commands of the
+		// read slice whose replies were read, plus the commands
+		// marked in bulk on failure paths.
+		if lastErr != nil {
+			dispatchedSet := make(map[*baseCmd]bool, dispatched.marked+len(dispatched.bulk))
+			marked := dispatched.marked
+			if marked > len(dispatched.read) {
+				marked = len(dispatched.read)
+			}
+			for _, cmd := range dispatched.read[:marked] {
+				if cmd != nil {
+					dispatchedSet[cmd.base()] = true
+				}
+			}
+			for base := range dispatched.bulk {
+				dispatchedSet[base] = true
+			}
+			for _, cmd := range pending {
+				if dispatchedSet[cmd.base()] {
+					delete(staleErrs, cmd.base())
+					if e := cmd.rawErr(); e == nil || isRedisError(e) {
+						answered[cmd.base()] = true
+					}
 				}
 			}
 		}
@@ -5270,7 +5340,15 @@ func (c *baseClient) generalProcessPipelineFrom(
 			// transport error. pipelineRetrySuffix cannot be used here:
 			// its whole-batch returns exist to force re-execution on
 			// retry, which does not apply on an exit path.
-			if !connAcquired || pipelineErrShouldStamp(lastErr) {
+			// A nil attempt error stamps nothing, so skip the call:
+			// setCmdsErr only touches commands with a nil error, and
+			// setting nil over nil is a no-op (commands holding a
+			// Redis reply error are skipped), while the
+			// unanswered-suffix scan behind it would otherwise append
+			// the whole batch to a fresh slice on every successful
+			// pipeline. A failed acquisition always carries a
+			// non-nil error, so the !connAcquired case is unaffected.
+			if lastErr != nil && (!connAcquired || pipelineErrShouldStamp(lastErr)) {
 				setCmdsErr(pipelineUnansweredSuffix(pending, staleErrs, answered), lastErr)
 			}
 			err := finalErr()
@@ -5403,20 +5481,59 @@ func markPipelineExecuted(ctx context.Context, cmds []Cmder) {
 	}
 }
 
-// pipelineAttemptKey carries the per-attempt set of pipeline commands this
+// pipelineAttemptKey carries the per-attempt record of pipeline commands this
 // attempt recorded progress for: a command whose reply the read loop read
 // (with a value, a Redis reply error, or a transport error), or whose
 // transport error the read loop stamped after an earlier command's read
-// failed. generalProcessPipelineFrom creates a fresh set per attempt and
-// stores it in the attempt ctx; pipelineReadCmdsWithFlags marks into it.
-// After the attempt, the retry loop retires the staleErrs marker of every
-// marked command and records the marked commands answered with a value or
-// a Redis reply in the invocation's answered set. Commands the attempt never
-// reached are never marked, so their stale markers survive.
+// failed. generalProcessPipelineFrom creates a fresh progress record per
+// attempt and stores it in the attempt ctx; pipelineReadCmdsWithFlags
+// marks into it. After the attempt, the retry loop retires the staleErrs
+// marker of every marked command and records the marked commands answered
+// with a value or a Redis reply in the invocation's answered set. Commands
+// the attempt never reached are never marked, so their stale markers
+// survive.
 type pipelineAttemptKey struct{}
 
 type pipelineAttemptProgress struct {
-	dispatched map[*baseCmd]bool
+	// read is the slice the read loop is reading, in order; only the
+	// slice header is kept, so recording it allocates nothing.
+	// marked counts the leading commands of read whose replies the
+	// read loop read (see markPipelineAttemptDispatchedOne): the
+	// dispatched prefix is read[:marked]. bulk holds the commands
+	// marked in bulk on failure paths (a write or drain failure, a
+	// transport error stamping the unread suffix); it is allocated
+	// only when such a mark happens. Together they are exactly the
+	// set the code used to keep as one map — but a successful
+	// attempt never materialises a set at all: the post-attempt scan
+	// that consults it runs only when the attempt failed, and it
+	// rebuilds the set from read[:marked] plus bulk there. Growing
+	// a map to the batch size on the success path would allocate
+	// hundreds of kilobytes of bookkeeping for a 10,000-command
+	// batch that no later step consults.
+	read   []Cmder
+	marked int
+	bulk   map[*baseCmd]bool
+}
+
+// markPipelineAttemptDispatchedOne records that the read loop read the
+// reply of cmds[i] — a value, a Redis reply error, or a transport
+// error. The read loop calls it in order, so the dispatched commands
+// are the leading cmds[:i+1]; only the slice header and a count are
+// recorded, never a per-command entry. The first call wins the slice:
+// the only other single-mark source in an attempt is the HIMPORT SET
+// re-issue, which runs only after the main loop read every reply, so
+// marked already covers the batch and its re-marks change nothing.
+func markPipelineAttemptDispatchedOne(ctx context.Context, cmds []Cmder, i int) {
+	p, ok := ctx.Value(pipelineAttemptKey{}).(*pipelineAttemptProgress)
+	if !ok || p == nil {
+		return
+	}
+	if p.read == nil {
+		p.read = cmds
+	}
+	if i+1 > p.marked {
+		p.marked = i + 1
+	}
 }
 
 func markPipelineAttemptDispatched(ctx context.Context, cmds ...Cmder) {
@@ -5424,9 +5541,16 @@ func markPipelineAttemptDispatched(ctx context.Context, cmds ...Cmder) {
 	if !ok || p == nil {
 		return
 	}
+	// Bulk marks happen only on failure paths, so the set is
+	// allocated here, on the first such mark — never on the
+	// successful path, which marks one reply at a time (see
+	// markPipelineAttemptDispatchedOne).
+	if p.bulk == nil {
+		p.bulk = make(map[*baseCmd]bool)
+	}
 	for _, cmd := range cmds {
 		if cmd != nil {
-			p.dispatched[cmd.base()] = true
+			p.bulk[cmd.base()] = true
 		}
 	}
 }
@@ -5747,7 +5871,7 @@ func (c *baseClient) pipelineReadCmdsWithFlags(ctx context.Context, cn *pool.Con
 		// progress for the command, whatever the error is — a value, a
 		// Redis reply, or a fresh transport failure — so a stale error
 		// it carried at entry no longer describes it.
-		markPipelineAttemptDispatched(ctx, cmd)
+		markPipelineAttemptDispatchedOne(ctx, cmds, i)
 		if err == nil && samples {
 			c.recordCommandSamplesGuarded(ctx, cmd, cn)
 		}

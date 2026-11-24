@@ -121,7 +121,15 @@ func (s *partialRetryServer) serve(conn net.Conn, first bool) {
 	}
 }
 
-func newPartialRetryClient(t *testing.T, addr string) *Client {
+// retryTestHelper is the subset of *testing.T / *testing.B the scripted
+// retry servers need, so benchmarks can reuse the same harness.
+type retryTestHelper interface {
+	Helper()
+	Cleanup(func())
+	Fatalf(format string, args ...any)
+}
+
+func newPartialRetryClient(t retryTestHelper, addr string) *Client {
 	t.Helper()
 	client := NewClient(&Options{
 		Addr:            addr,
@@ -242,6 +250,10 @@ type connStateRetryServer struct {
 	// is not changed, so a retry that runs it lands in the
 	// database the swap state leaves it in.
 	setTryagainOnce atomic.Bool
+	// setReadonlyOnce, when set, makes the next SET answer READONLY
+	// without executing: the key is not recorded, exactly like a
+	// read-only replica refusing the write during promotion.
+	setReadonlyOnce atomic.Bool
 	// setsDB0 and setsDB1 count SETs that actually executed in DB 0
 	// and DB 1 (a TRYAGAIN SET counts in neither): tests that assert
 	// a retry preserved the batch's database ordering read them
@@ -263,7 +275,7 @@ type connStateRetryServer struct {
 	dropExecFirst bool
 }
 
-func newConnStateRetryServer(t *testing.T) *connStateRetryServer {
+func newConnStateRetryServer(t retryTestHelper) *connStateRetryServer {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -417,6 +429,13 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			}
 		case "set":
 			s.sets.Add(1)
+			if s.setReadonlyOnce.CompareAndSwap(true, false) {
+				// A READONLY SET never executed: it records no
+				// value and changes no database, exactly like a
+				// real read-only replica refusing the write.
+				reply = "-READONLY You can't write against a read only replica\r\n"
+				break
+			}
 			if s.setTryagainOnce.CompareAndSwap(true, false) {
 				// A TRYAGAIN SET never executed: it records no
 				// value, changes no database and counts in
@@ -10302,6 +10321,46 @@ func TestPipelineRetryKeepsAnsweredWriteAfterPendingWrite(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryRefreshesReadAfterRetriedWrite: a read answered after
+// a retried write holds a pre-write value, so the retry must re-run it
+// instead of keeping it. Here SET answers READONLY once (a read-only
+// replica during promotion) and the following GET answers the old value:
+// without the fix the retry runs only the SET and the GET keeps the old
+// value while Exec reports success; with it the retry re-runs the GET
+// after the SET, so the read is refreshed. Regression test for the Codex
+// P1 review finding on #4351 (review 6038562056).
+func TestPipelineRetryRefreshesReadAfterRetriedWrite(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.trackValues = true
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	// Pre-seed the key so the first attempt's GET answers the old value.
+	if err := client.Set(ctx, "k", "old", 0).Err(); err != nil {
+		t.Fatalf("seed SET: %v", err)
+	}
+	// The pipeline's SET is refused READONLY once; the GET after it must
+	// be re-run on the retry, not keep its pre-write value.
+	server.setReadonlyOnce.Store(true)
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "k", "new", 0)
+	get := pipe.Get(ctx, "k")
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-run the refused SET and refresh the GET after it)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "new" {
+		t.Fatalf("GET = %q, %v; want %q, nil (the GET after the retried SET must be re-run, not keep its pre-write value)", got, err, "new")
+	}
+	if got := server.sets.Load(); got != 3 {
+		t.Fatalf("server received %d SET commands, want 3 (seed + refused SET + retried SET)", got)
+	}
+}
+
 // TestPipelineRetrySkipsRejectedQueuedScriptFlush: a SCRIPT FLUSH queued
 // inside MULTI with a bogus mode is refused in the EXEC result array, so
 // it never emptied the cache. Here a top-level SCRIPT LOAD, MULTI, a
@@ -10519,5 +10578,31 @@ func TestPipelineRetryRejectedExecPreservesFrameForDiscard(t *testing.T) {
 	}
 	if got := server.discards.Load(); got != 1 {
 		t.Fatalf("server received %d DISCARD commands, want 1 (the DISCARD that dropped the frame must not be re-sent)", got)
+	}
+}
+
+// BenchmarkPipelineRetrySuccessBookkeeping measures the retry bookkeeping
+// a successful pipeline allocates: a 10,000-command batch that answers
+// everything first try. Fresh commands carry no stale errors, and a
+// success records nothing for a later attempt, so the stale-error set,
+// the answered set and the per-attempt dispatched set must stay off this
+// path. Regression benchmark for the Codex P2 review finding on #4351
+// (review 6038562056).
+func BenchmarkPipelineRetrySuccessBookkeeping(b *testing.B) {
+	server := newConnStateRetryServer(b)
+	server.dropAfter = 1 << 30
+	client := newPartialRetryClient(b, server.ln.Addr().String())
+
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pipe := client.Pipeline()
+		for j := 0; j < 10000; j++ {
+			pipe.Get(ctx, "k")
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			b.Fatalf("Exec: %v", err)
+		}
 	}
 }
