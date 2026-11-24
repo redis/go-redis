@@ -299,6 +299,15 @@ func TestClientListStreamingNilCallback(t *testing.T) {
 	}
 }
 
+func TestStreamingCmdExtractCommandValue(t *testing.T) {
+	cmd := newStreamingCmd(context.Background(), "\n", func([]byte) error { return nil }, "client", "list")
+	cmd.SetVal(7)
+	v, err := ExtractCommandValue(cmd)
+	if err != nil || v != 7 {
+		t.Fatalf("ExtractCommandValue = %v, %v; want 7, nil", v, err)
+	}
+}
+
 func TestStreamingCmdRejectsClusterFanout(t *testing.T) {
 	cmd := newStreamingCmd(context.Background(), "\n", func([]byte) error { return nil }, "client", "list")
 	if clusterFanoutCommandError(cmd) == nil {

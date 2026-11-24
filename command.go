@@ -10991,6 +10991,10 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return mapCmd.Val(), mapCmd.Err()
 			}
+		case CmdTypeStreaming:
+			if streamingCmd, ok := cmd.(*StreamingCmd); ok {
+				return streamingCmd.Val(), streamingCmd.Err()
+			}
 		default:
 			// For unknown command types, return nil
 			return nil, nil
