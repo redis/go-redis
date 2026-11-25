@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -266,38 +264,24 @@ func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect Standa
 
 	// Regular traffic keeps running across the whole action; record how long
 	// it failed for, which is information, not an assertion.
-	var stop atomic.Bool
-	var okOps, failOps atomic.Int64
-	var mu sync.Mutex
-	var failStart time.Time
-	var longestFail time.Duration
-	var load sync.WaitGroup
-	load.Add(1)
-	go func() {
-		defer load.Done()
-		for i := 0; !stop.Load(); i++ {
-			lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := live.step(lctx, c, i)
-			cancel()
-			mu.Lock()
-			if err != nil {
-				failOps.Add(1)
-				if failStart.IsZero() {
-					failStart = time.Now()
-				}
-			} else {
-				okOps.Add(1)
-				if !failStart.IsZero() {
-					if d := time.Since(failStart); d > longestFail {
-						longestFail = d
-					}
-					failStart = time.Time{}
-				}
-			}
-			mu.Unlock()
-			time.Sleep(50 * time.Millisecond)
+	stopLive := live.run(ctx, c)
+	var loadStats liveLoadStats
+	loadStopped := false
+	stopLoad := func() {
+		if loadStopped {
+			return
 		}
-	}()
+		loadStopped = true
+		var finished bool
+		loadStats, finished = stopLive()
+		if !finished {
+			t.Error("background load never stopped: a command is stuck")
+		}
+	}
+	// Deferred so a t.Fatalf on any later line (a recovery timeout, a failed
+	// trigger) still stops the goroutine before the clients close and the
+	// database is torn down.
+	defer stopLoad()
 
 	// A blocked BLPOP across the fault must come back, with a value or an error.
 	blocked := make(chan error, 1)
@@ -310,19 +294,13 @@ func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect Standa
 		Effect: effect, Trigger: trigger, SetupID: setup.SetupID, BDBID: setup.BDBID, ClusterIndex: setup.ClusterIndex,
 	})
 	if err != nil {
-		stop.Store(true)
-		load.Wait()
 		t.Fatalf("trigger %s/%s: %v", effect, trigger, err)
 	}
 	st, err := fic.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Minute))
 	if err != nil {
-		stop.Store(true)
-		load.Wait()
 		t.Fatalf("waiting for action %s: %v", resp.ActionID, err)
 	}
 	if st.Status != StatusSuccess && st.Status != StatusFinished {
-		stop.Store(true)
-		load.Wait()
 		t.Fatalf("action %s ended %s: %v", resp.ActionID, st.Status, st.Error)
 	}
 
@@ -349,14 +327,7 @@ func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect Standa
 		return err == nil && len(vals) == 2 && vals[1] == "v"
 	})
 
-	stop.Store(true)
-	done := make(chan struct{})
-	go func() { load.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("background load never stopped: a command is stuck")
-	}
+	stopLoad()
 
 	// No lost or corrupted data, whatever command wrote it: the seeded data set
 	// reads back exactly, and every write acknowledged during the change is there.
@@ -371,10 +342,8 @@ func runStandaloneScenario(t *testing.T, fic *FaultInjectorClient, effect Standa
 	if idAfter, err := c.ClientID(ctx).Result(); err == nil {
 		res.Reconnected = idAfter != idBefore
 	}
-	mu.Lock()
-	t.Logf("%s/%s/%s: %d ok, %d failed ops, longest failure window %v, reconnected=%v",
-		mode.name, effect, trigger, okOps.Load(), failOps.Load(), longestFail, res.Reconnected)
-	mu.Unlock()
+	t.Logf("%s/%s/%s: %d ok, %d failed steps, longest failure window %v, reconnected=%v",
+		mode.name, effect, trigger, loadStats.OK, loadStats.Failed, loadStats.LongestFailure, res.Reconnected)
 	if standaloneObserve != nil {
 		standaloneObserve(effect, trigger, res)
 	}

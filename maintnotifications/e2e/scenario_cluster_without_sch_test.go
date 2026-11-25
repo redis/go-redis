@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,9 +66,11 @@ func requireClusterSCHOff(t *testing.T, c *redis.ClusterClient) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	shards := 0
+	// ForEachShard runs the callback on every node at the same time, so the
+	// counter must be atomic. t.Errorf is safe to call concurrently.
+	var shards atomic.Int32
 	err := c.ForEachShard(ctx, func(ctx context.Context, node *redis.Client) error {
-		shards++
+		shards.Add(1)
 		if node.GetMaintNotificationsManager() != nil {
 			t.Errorf("shard %s has a maintenance-notification manager, SCH is not off", node.Options().Addr)
 		}
@@ -76,7 +79,7 @@ func requireClusterSCHOff(t *testing.T, c *redis.ClusterClient) {
 	if err != nil {
 		t.Fatalf("visiting shards: %v", err)
 	}
-	if shards == 0 {
+	if shards.Load() == 0 {
 		t.Fatal("no shards visited")
 	}
 }
@@ -133,13 +136,22 @@ func runClusterSlotMigrateWithoutSCH(t *testing.T, effect SlotMigrateEffect, tri
 	live := newLiveLoad(prefix)
 	stopLive := live.run(ctx, c)
 	var stats liveLoadStats
+	stopped := false
 	stopLoad := func() {
+		if stopped {
+			return
+		}
+		stopped = true
 		var finished bool
 		stats, finished = stopLive()
 		if !finished {
 			t.Error("background load never stopped: a command is stuck")
 		}
 	}
+	// Deferred so a t.Fatalf on any later line (a recovery timeout, a failed
+	// trigger) still stops the goroutine before the client is closed and the
+	// database torn down.
+	defer stopLoad()
 
 	resp, err := fiClient.TriggerSlotMigrate(ctx, SlotMigrateRequest{
 		Effect:  effect,
