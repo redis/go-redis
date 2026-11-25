@@ -293,7 +293,8 @@ type ClusterOptions struct {
 	// ClusterStateReloadInterval is the interval for reloading the cluster state.
 	// MOVED/ASK redirects still trigger an immediate reactive reload, so this
 	// only bounds how stale a topology can get without traffic errors.
-	// Default is 60 seconds, or 10 seconds with StandaloneFallback.
+	// Default is 60 seconds, or 10 seconds with StandaloneFallback (unless
+	// ClusterSlots is set).
 	ClusterStateReloadInterval time.Duration
 
 	// StandaloneFallback lets the client work against a non-cluster endpoint.
@@ -406,9 +407,9 @@ func (opt *ClusterOptions) init() {
 
 	if opt.ClusterStateReloadInterval == 0 {
 		opt.ClusterStateReloadInterval = 60 * time.Second
-		if opt.StandaloneFallback {
+		if opt.StandaloneFallback && opt.ClusterSlots == nil {
 			// A standalone server sends no MOVED; reload sooner to see a
-			// cluster -> standalone switch.
+			// cluster -> standalone switch. ClusterSlots disables the fallback.
 			opt.ClusterStateReloadInterval = 10 * time.Second
 		}
 	}

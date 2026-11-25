@@ -71,6 +71,8 @@ func TestStandaloneFallbackReloadIntervalDefault(t *testing.T) {
 		{ClusterOptions{}, 60 * time.Second},
 		{ClusterOptions{StandaloneFallback: true}, 10 * time.Second},
 		{ClusterOptions{StandaloneFallback: true, ClusterStateReloadInterval: time.Minute}, time.Minute},
+		// ClusterSlots disables the fallback, so the default stays 60s.
+		{ClusterOptions{StandaloneFallback: true, ClusterSlots: func(context.Context) ([]ClusterSlot, error) { return nil, nil }}, 60 * time.Second},
 	} {
 		opt := tc.opt
 		opt.init()
