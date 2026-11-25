@@ -6361,8 +6361,18 @@ func (c *baseClient) pipelineProcessCmds(
 	// commit the frame the retry left open (see
 	// TestPipelineRetryTrailingOpenMultiKeepsQueuedBody) — and a
 	// refused EXEC the batch exits on (NOPERM) leaves the same
-	// contract in place.
-	if readErr != nil && shouldRetry(readErr, true) && pipelineHasOpenMulti(cmds) {
+	// contract in place. And only on a replaceable connection: on
+	// a dedicated Conn there is no fresh connection to start on —
+	// StickyConnPool records the mark as a persistent BadConnError,
+	// so the Conn stays unusable although the transaction is still
+	// open and a later DISCARD could clear it (see
+	// TestPipelineRetryOpenMultiRetireSkippedOnDedicatedConnWithoutRetry).
+	// The retire is not gated on a retry being scheduled: with no
+	// retry to run, a pooled connection still must not return to
+	// the pool with MULTI open, or its next borrower inherits the
+	// frame (see
+	// TestPipelineRetryOpenMultiRetireKeepsPooledConnOutOfPoolWithoutRetry).
+	if readErr != nil && shouldRetry(readErr, true) && pipelineHasOpenMulti(cmds) && !c.pipelineClientHasStickyConn() {
 		cn.MarkCloseOnPut("pipeline: EXEC did not clear transaction state")
 	}
 	// The same holds when the retry suffix re-runs answered

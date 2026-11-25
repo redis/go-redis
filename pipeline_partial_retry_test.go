@@ -11945,3 +11945,121 @@ func TestPipelineRetryQueuedSwapdbExecErrorNeedsNoSuffixInverse(t *testing.T) {
 		t.Fatalf("server saw %d connections, want 1 (nothing in this batch forces a fresh connection)", got)
 	}
 }
+
+// TestPipelineRetryOpenMultiRetireSkippedOnDedicatedConnWithoutRetry: on a
+// dedicated Conn with retries disabled, a MULTI; INCR; EXEC batch whose
+// EXEC the server refuses with NOREPLICAS must not retire the
+// connection: no retry can run, and StickyConnPool records the mark as
+// a persistent BadConnError, so the dedicated Conn stays unusable
+// although the transaction is still open and a later DISCARD could
+// clear it. Regression test for the Codex P2 finding on #4351 (review
+// comment 4694618888).
+func TestPipelineRetryOpenMultiRetireSkippedOnDedicatedConnWithoutRetry(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.failExecNoreplicasOnce.Store(true)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1, // truly disabled: 0 would be normalised to 3
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	conn := client.Conn()
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx := context.Background()
+	pipe := conn.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Incr(ctx, "counter")
+	exec := pipe.Do(ctx, "exec")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOREPLICAS") {
+		t.Fatalf("Exec: %v, want NOREPLICAS (no retry runs with MaxRetries -1)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := incr.Err(); err != nil {
+		t.Fatalf("INCR: %v, want nil (+QUEUED)", err)
+	}
+	if err := exec.Err(); err == nil || !strings.Contains(err.Error(), "NOREPLICAS") {
+		t.Fatalf("EXEC: %v, want NOREPLICAS", err)
+	}
+	if got := server.execWithMulti.Load(); got != 0 {
+		t.Fatalf("EXEC ran %d time(s) inside MULTI, want 0 (the refused EXEC committed nothing)", got)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCRs, want 1 (the queued INCR was sent once and never re-run)", got)
+	}
+	// The dedicated Conn must stay usable: DISCARD clears the
+	// still-open frame, and a follow-up write runs on it.
+	if err := conn.Do(ctx, "discard").Err(); err != nil {
+		t.Fatalf("DISCARD: %v, want nil (the dedicated Conn must stay usable after the refused EXEC)", err)
+	}
+	after := conn.Set(ctx, "after", "v", 0)
+	if err := after.Err(); err != nil {
+		t.Fatalf("follow-up SET: %v, want nil (the dedicated Conn must stay usable after the refused EXEC)", err)
+	}
+	if got := server.conns.Load(); got != 1 {
+		t.Fatalf("server saw %d connections, want 1 (the dedicated connection must not be retired)", got)
+	}
+}
+
+// TestPipelineRetryOpenMultiRetireKeepsPooledConnOutOfPoolWithoutRetry: the
+// same refused EXEC with retries disabled on a pooled client must still
+// retire the connection: the frame stays open, and returning the
+// connection to the pool would hand the next borrower a connection
+// inside MULTI, where its commands answer +QUEUED instead of running.
+// Regression test for the Codex P2 finding on #4351 (review comment
+// 4694618888): the retire is skipped only on a dedicated connection,
+// never on a replaceable pooled one.
+func TestPipelineRetryOpenMultiRetireKeepsPooledConnOutOfPoolWithoutRetry(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.failExecNoreplicasOnce.Store(true)
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1, // truly disabled: 0 would be normalised to 3
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	pipe.Do(ctx, "multi")
+	pipe.Incr(ctx, "counter")
+	pipe.Do(ctx, "exec")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOREPLICAS") {
+		t.Fatalf("Exec: %v, want NOREPLICAS (no retry runs with MaxRetries -1)", err)
+	}
+	// The follow-up SET must run on a fresh connection: on the retired
+	// one it would answer +QUEUED inside the still-open frame.
+	after := client.Set(ctx, "after", "v", 0)
+	if got, err := after.Result(); err != nil || got != "OK" {
+		t.Fatalf("follow-up SET = %q, %v; want \"OK\", nil (the pooled connection with the open frame must be retired)", got, err)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the connection with the still-open MULTI must be retired, not reused)", got)
+	}
+}
