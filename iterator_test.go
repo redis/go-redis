@@ -90,6 +90,51 @@ var _ = Describe("ScanIterator", func() {
 		Expect(vals).To(ConsistOf([]string{"K01", "K02", "K03", "K04", "K05", "K06", "K07"}))
 	})
 
+	It("should resume Vals after Next", func() {
+		Expect(seed(3)).NotTo(HaveOccurred())
+
+		cmd := client.Scan(ctx, 0, "", 0)
+		page, cursor, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cursor).To(BeZero())
+		Expect(page).To(HaveLen(3))
+
+		iter := cmd.Iterator()
+		Expect(iter.Next(ctx)).To(BeTrue())
+		Expect(iter.Val()).To(Equal(page[0]))
+		Expect(slices.Collect(iter.Vals(ctx))).To(Equal(page[1:]))
+		Expect(iter.Err()).NotTo(HaveOccurred())
+	})
+
+	It("should resume Vals after an early break", func() {
+		Expect(seed(4)).NotTo(HaveOccurred())
+
+		cmd := client.Scan(ctx, 0, "", 0)
+		page, cursor, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cursor).To(BeZero())
+		Expect(page).To(HaveLen(4))
+
+		iter := cmd.Iterator()
+		for val := range iter.Vals(ctx) {
+			Expect(val).To(Equal(page[0]))
+			break
+		}
+		var resumed []string
+		for val := range iter.Vals(ctx) {
+			resumed = append(resumed, val)
+			break
+		}
+		Expect(resumed).To(Equal(page[1:2]))
+		Expect(iter.Val()).To(Equal(page[1]))
+		Expect(iter.Next(ctx)).To(BeTrue())
+		Expect(iter.Val()).To(Equal(page[2]))
+		Expect(slices.Collect(iter.Vals(ctx))).To(Equal(page[3:]))
+		Expect(slices.Collect(iter.Vals(ctx))).To(BeEmpty())
+		Expect(iter.Next(ctx)).To(BeFalse())
+		Expect(iter.Err()).NotTo(HaveOccurred())
+	})
+
 	It("should scan across multiple pages using Next", func() {
 		Expect(seed(71)).NotTo(HaveOccurred())
 
