@@ -10,9 +10,10 @@ import (
 )
 
 // newReAuthTestManager is a manager over srv whose connections report
-// RESP3 when resp3 is set, and that retires the live connection when
-// replace is set (see RecheckConn).
-func newReAuthTestManager(t *testing.T, srv *fakeServer, resp3 bool, replace *atomic.Bool) *Manager {
+// RESP3 when resp3 is set, and that retires the connection stored in
+// retire (see RecheckConn). Naming the connection, not "whatever is
+// live", keeps a frame on its replacement from retiring that one too.
+func newReAuthTestManager(t *testing.T, srv *fakeServer, resp3 bool, retire *atomic.Pointer[pool.Conn]) *Manager {
 	t.Helper()
 	hooks := testHooks(srv)
 	hooks.newConn = func(ctx context.Context, addr string) (*pool.Conn, error) {
@@ -22,7 +23,7 @@ func newReAuthTestManager(t *testing.T, srv *fakeServer, resp3 bool, replace *at
 		}
 		return cn, err
 	}
-	hooks.shouldReplaceConn = func(cn *pool.Conn) bool { return replace.Load() || cn.ShouldHandoff() }
+	hooks.shouldReplaceConn = func(cn *pool.Conn) bool { return cn == retire.Load() || cn.ShouldHandoff() }
 	cfg := testConfig("node-a:6379")
 	cfg.RESP2 = !resp3
 	m := NewManager(cfg, hooks)
@@ -39,8 +40,8 @@ func TestReAuthSkipsReplacedConnection(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	srv.autoConfirm = true
-	var replace atomic.Bool
-	m := newReAuthTestManager(t, srv, true, &replace)
+	var retire atomic.Pointer[pool.Conn]
+	m := newReAuthTestManager(t, srv, true, &retire)
 
 	h, err := m.Subscribe(ctx, "ch")
 	if err != nil {
@@ -55,10 +56,9 @@ func TestReAuthSkipsReplacedConnection(t *testing.T) {
 		t.Fatal("first connection has no re-auth callback")
 	}
 
-	replace.Store(true)
+	retire.Store(fsc1.poolConn)
 	m.RecheckConn()
 	fsc2 := srv.waitDial(t)
-	replace.Store(false)
 	fsc2.expectCmd(t, "subscribe", "ch")
 	fsc1.expectClosed(t)
 
@@ -96,8 +96,8 @@ func TestReAuthPasswordOnly(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	srv.autoConfirm = true
-	var replace atomic.Bool
-	m := newReAuthTestManager(t, srv, true, &replace)
+	var retire atomic.Pointer[pool.Conn]
+	m := newReAuthTestManager(t, srv, true, &retire)
 
 	if _, err := m.Subscribe(ctx, "ch"); err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -117,8 +117,8 @@ func TestReAuthRESP2ReplacesConnection(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	srv.autoConfirm = true
-	var replace atomic.Bool
-	m := newReAuthTestManager(t, srv, false, &replace)
+	var retire atomic.Pointer[pool.Conn]
+	m := newReAuthTestManager(t, srv, false, &retire)
 
 	if _, err := m.Subscribe(ctx, "ch"); err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -139,8 +139,8 @@ func TestReAuthClosedManager(t *testing.T) {
 	ctx := context.Background()
 	srv := newFakeServer()
 	srv.autoConfirm = true
-	var replace atomic.Bool
-	m := newReAuthTestManager(t, srv, true, &replace)
+	var retire atomic.Pointer[pool.Conn]
+	m := newReAuthTestManager(t, srv, true, &retire)
 
 	if _, err := m.Subscribe(ctx, "ch"); err != nil {
 		t.Fatalf("Subscribe: %v", err)

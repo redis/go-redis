@@ -41,7 +41,20 @@ func TestPubSubOnConnectPanicFailsSubscribe(t *testing.T) {
 	if active := client.pubSubPool.Stats().Active; active != 0 {
 		t.Fatalf("pub/sub connections tracked after the panic = %d, want 0", active)
 	}
-	if allows, reports := br.allows.Load(), br.reports.Load(); allows == 0 || allows != reports {
-		t.Fatalf("Limiter: %d Allow vs %d ReportResult, want equal and > 0", allows, reports)
+
+	// The manager keeps re-dialing in the background: stop it, then every
+	// admission, including one in flight, must settle.
+	_ = ps.Close()
+	_ = client.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		allows, reports := br.allows.Load(), br.reports.Load()
+		if allows > 0 && allows == reports {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Limiter: %d Allow vs %d ReportResult, want equal and > 0", allows, reports)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

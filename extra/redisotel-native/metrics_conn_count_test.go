@@ -400,9 +400,21 @@ func TestConnectionCountNoWorkOnGetPut(t *testing.T) {
 	if on != off {
 		t.Fatalf("Ping allocs with connection.count on = %v, off = %v; want equal", on, off)
 	}
-	want := int64(c.PoolStats().IdleConns)
-	if idle, used, _ := byState(collectCounts(t, reader, "allocs-on:6379_")); idle != want || used != 0 {
-		t.Fatalf("after Pings: idle=%d used=%d, want %d and 0", idle, used, want)
+	// The pool may still grow or settle after the Pings (PoolSize 4 over
+	// MinIdleConns 3): compare against a pool that held still across the
+	// collection.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		before := int64(c.PoolStats().IdleConns)
+		idle, used, _ := byState(collectCounts(t, reader, "allocs-on:6379_"))
+		after := int64(c.PoolStats().IdleConns)
+		if before == after && idle == after && used == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after Pings: idle=%d used=%d, want %d and 0", idle, used, after)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

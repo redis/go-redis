@@ -2184,6 +2184,12 @@ func (m *Manager) failReplyWaitersLocked(err error) {
 // ledger. Callers must hold m.mu.
 func (m *Manager) dropConnLocked(err error) {
 	m.failReplyWaitersLocked(err)
+	if m.closing.Load() {
+		// Close already closed the live connection, before taking the
+		// lock, and closeNowLocked tears down the rest: closing it here
+		// too would run CloseConn twice for it.
+		return
+	}
 	if cn := m.conn.Load(); cn != nil {
 		_ = m.hooks.CloseConn(cn)
 		m.dropped, m.dropErr = cn, err
