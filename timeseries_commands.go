@@ -1080,7 +1080,7 @@ func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTime
 		if options.WithLabels {
 			args = append(args, "WITHLABELS")
 		}
-		if options.SelectedLabels != nil {
+		if len(options.SelectedLabels) > 0 {
 			args = append(args, "SELECTED_LABELS")
 			args = append(args, options.SelectedLabels...)
 		}
@@ -1177,7 +1177,7 @@ func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toT
 		if options.WithLabels {
 			args = append(args, "WITHLABELS")
 		}
-		if options.SelectedLabels != nil {
+		if len(options.SelectedLabels) > 0 {
 			args = append(args, "SELECTED_LABELS")
 			args = append(args, options.SelectedLabels...)
 		}
@@ -1262,7 +1262,7 @@ func (c cmdable) TSMGetWithArgs(ctx context.Context, filters []string, options *
 		if options.WithLabels {
 			args = append(args, "WITHLABELS")
 		}
-		if options.SelectedLabels != nil {
+		if len(options.SelectedLabels) > 0 {
 			args = append(args, "SELECTED_LABELS")
 			args = append(args, options.SelectedLabels...)
 		}
