@@ -729,6 +729,18 @@ func admitted(limiter Limiter, denied func(error), fn func() error) error {
 func (c *baseClient) newPubSubConn(ctx context.Context, addr string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
 	var cn *pool.Conn
 	err := admitted(c.limiter(), nil, func() error {
+		// A panic in the handshake (e.g. OnConnect) must not leak the
+		// half-initialized connection; it is re-raised for the caller.
+		defer func() {
+			if r := recover(); r != nil {
+				if cn != nil {
+					_ = cn.Close()
+					c.removeStreamingCredentialsState(cn)
+					cn = nil
+				}
+				panic(r)
+			}
+		}()
 		var err error
 		cn, err = c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
 		if err == nil {

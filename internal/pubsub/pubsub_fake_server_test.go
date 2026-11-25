@@ -200,13 +200,16 @@ func (c *fakeServerConn) readLoop() {
 		if c.autoConfirm.Load() {
 			c.confirm(cmd)
 		}
+		// Count the frame against pauseAfterNext before the test sees it:
+		// a test that calls pauseAfterNext after expectCmd returned must
+		// not have this (already consumed) frame count as "the next one".
+		if c.pauseAfterFrames.Load() > 0 && c.pauseAfterFrames.Add(-1) == 0 {
+			c.paused.Store(true)
+		}
 		c.cmds <- cmd
 
 		if c.autoPong.Load() && len(cmd) > 0 && cmd[0] == "ping" {
 			c.pong(cmd)
-		}
-		if c.pauseAfterFrames.Load() > 0 && c.pauseAfterFrames.Add(-1) == 0 {
-			c.paused.Store(true)
 		}
 	}
 }

@@ -708,17 +708,18 @@ func TestManagerHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	ch := h.Channel()
+	events := h.ChannelWithSubscriptions()
 
 	fsc1 := srv.waitDial(t)
 	fsc1.expectCmd(t, "subscribe", "ch1")
+	fsc1.sendConfirm(t, "subscribe", "ch1", 1)
+	expectSubscription(t, events, "subscribe", "ch1", 1)
 
-	// The MOVING push handler marks the conn; the manager reacts after
-	// the next successful read (here: an unrelated confirmation frame).
+	// The MOVING push handler marks the conn; the mark itself wakes the
+	// manager (no frame needs to follow it).
 	if err := fsc1.poolConn.MarkForHandoff("new:6379", 1); err != nil {
 		t.Fatalf("MarkForHandoff: %v", err)
 	}
-	fsc1.sendConfirm(t, "subscribe", "ch1", 1)
 
 	fsc2 := srv.waitDial(t)
 	if fsc2.addr != "new:6379" {
@@ -737,8 +738,13 @@ func TestManagerHandoff(t *testing.T) {
 	fsc3.expectCmd(t, "subscribe", "ch1")
 
 	fsc3.sendMessage(t, "message", "ch1", "moved")
-	if msg := recvMsg(t, ch); msg.Payload != "moved" {
-		t.Fatalf("got %q, want \"moved\"", msg.Payload)
+	select {
+	case ev := <-events:
+		if msg, ok := ev.(*Message); !ok || msg.Payload != "moved" {
+			t.Fatalf("got %#v, want message \"moved\"", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for a message")
 	}
 }
 
@@ -1942,6 +1948,45 @@ func TestCloseInterruptsListenBackoff(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	waitUntil(t, "listen to exit after Close", func() bool { return !listening() })
+}
+
+// TestCloseWithListenFirstClosesConnOnce pins that Close tears the
+// connection down once even when the listen goroutine wins the lock:
+// Close closes the connection before taking the lock, the pending read
+// fails, and listen must leave the teardown to Close instead of
+// dropping (and closing) the connection again.
+func TestCloseWithListenFirstClosesConnOnce(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	srv.autoConfirm = true
+	var closes atomic.Int32
+	m := NewManager(testConfig("node:6379"), funcHooks{
+		newConn: srv.dial,
+		closeConn: func(cn *pool.Conn) error {
+			_ = cn.Close()
+			if closes.Add(1) == 1 {
+				// Let listen see the read error and take the lock first.
+				time.Sleep(50 * time.Millisecond)
+			}
+			return nil
+		},
+	})
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	fsc := srv.waitDial(t)
+	fsc.expectCmd(t, "subscribe", "ch")
+	waitForConfirmation(t, h.Events(), "subscribe", "ch")
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := closes.Load(); n != 1 {
+		t.Fatalf("connection closed %d times, want once", n)
+	}
 }
 
 // TestCloseReportsConnCloseError pins that Close reports the error of

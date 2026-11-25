@@ -219,12 +219,15 @@ func ConnInitFrom(ctx context.Context) func(*pool.Conn) {
 	return fn
 }
 
-// installReAuth installs the re-authentication callback on cn (see
-// ReAuth).
-func (m *Manager) installReAuth(cn *pool.Conn) {
+// installConnHooks installs cn's callbacks: re-authentication (see
+// ReAuth), and a re-check once cn is marked for handoff, so a mark set
+// with no frame to follow (a timer, or the health check disabled)
+// still retires the connection (see RecheckConn).
+func (m *Manager) installConnHooks(cn *pool.Conn) {
 	cn.SetPubSubReAuth(func(username, password string) error {
 		return m.ReAuth(cn, username, password)
 	})
+	cn.SetOnHandoffMarked(m.RecheckConn)
 }
 
 // replyKindPong marks a ledger entry whose reply is pong-shaped (PING,
@@ -293,7 +296,7 @@ func NewManager(cfg Config, hooks Hooks) *Manager {
 		done:       make(chan struct{}),
 	}
 	newConn := func(ctx context.Context, addr string) (*pool.Conn, error) {
-		return hooks.NewConn(context.WithValue(ctx, connInitKey{}, m.installReAuth), addr)
+		return hooks.NewConn(context.WithValue(ctx, connInitKey{}, m.installConnHooks), addr)
 	}
 	m.dialer = newDialer(&m.mu, newConn, cfg.DialRetries, cfg.DialRetryBackoff, cfg.MinRetryBackoff, cfg.ReconnectMaxBackoff)
 	return m
@@ -1665,7 +1668,7 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 	// The streaming credentials listener re-authenticates through this
 	// callback (see ReAuth); the dial installed it already when the
 	// owner ran ConnInitFrom, this covers owners that do not.
-	m.installReAuth(cn)
+	m.installConnHooks(cn)
 	oldConn := m.conn.Swap(cn)
 	m.dropped = nil
 	if oldConn != nil {
@@ -2181,6 +2184,12 @@ func (m *Manager) failReplyWaitersLocked(err error) {
 // ledger. Callers must hold m.mu.
 func (m *Manager) dropConnLocked(err error) {
 	m.failReplyWaitersLocked(err)
+	if m.closing.Load() {
+		// Close already closed the live connection, before taking the
+		// lock, and closeNowLocked tears down the rest: closing it here
+		// too would run CloseConn twice for it.
+		return
+	}
 	if cn := m.conn.Load(); cn != nil {
 		_ = m.hooks.CloseConn(cn)
 		m.dropped, m.dropErr = cn, err

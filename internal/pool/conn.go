@@ -213,6 +213,12 @@ type Conn struct {
 	// re-authenticate in-place with new credentials from a streaming credentials provider.
 	pubSubReAuth atomic.Pointer[func(username, password string) error]
 
+	// onHandoffMarked is called after MarkForHandoff marks the connection.
+	// The pub/sub manager sets it to re-check its connection at once: a
+	// mark set from a timer (same-endpoint MOVING) arrives with no frame
+	// for the manager to react to.
+	onHandoffMarked atomic.Pointer[func()]
+
 	// isResp3 indicates whether the connection successfully negotiated RESP3.
 	isResp3 atomic.Bool
 
@@ -1061,7 +1067,20 @@ func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) error {
 		Endpoint:      newEndpoint,
 		SeqID:         seqID,
 	})
+	if fn := cn.onHandoffMarked.Load(); fn != nil {
+		(*fn)()
+	}
 	return nil
+}
+
+// SetOnHandoffMarked installs fn, called after every MarkForHandoff that
+// marks the connection. fn must not block. nil removes it.
+func (cn *Conn) SetOnHandoffMarked(fn func()) {
+	if fn == nil {
+		cn.onHandoffMarked.Store(nil)
+		return
+	}
+	cn.onHandoffMarked.Store(&fn)
 }
 
 // MarkQueuedForHandoff marks the connection as queued for handoff processing.
@@ -1585,6 +1604,9 @@ func (cn *Conn) MarkPubSub() {
 	cn.pubsub = true
 }
 
+// ResolveAddress returns the address a replacement for cn should dial:
+// the endpoint of a pending handoff, or current when there is none or
+// the endpoint is null (reconnect to the same place).
 func (cn *Conn) ResolveAddress(current string) string {
 	if !cn.ShouldHandoff() {
 		return current
