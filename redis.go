@@ -2728,6 +2728,26 @@ func pipelineCmdReadOnly(cmd Cmder) bool {
 	return ok && meta.readOnly
 }
 
+// pipelineCmdNonMutating reports whether cmd can never mutate data:
+// either the COMMAND metadata marks it read-only, or it is one of the
+// small set of introspection commands the metadata leaves unflagged —
+// PING, ECHO, TIME and INFO carry no readonly flag, yet none of them
+// writes anything, so a refused one cannot invalidate the data results
+// after it. Unknown commands are not non-mutating: treating them as
+// writes only keeps an answered command or reissues a barrier, while
+// treating a write as a read would drop a result the retry must
+// preserve.
+func pipelineCmdNonMutating(cmd Cmder) bool {
+	if pipelineCmdReadOnly(cmd) {
+		return true
+	}
+	switch cmd.Name() {
+	case "ping", "echo", "time", "info":
+		return true
+	}
+	return false
+}
+
 // pipelineIsBarrierCmd reports whether cmd is a replication barrier
 // (WAIT/WAITAOF): it measures the replication offset, it writes no
 // data, so it holds no final value the ordered-retry pass must
@@ -3958,14 +3978,18 @@ func evalScriptCached(cmd Cmder) bool {
 // actually swapped counts: one the server rejected never swapped, one
 // queued inside a still-open transaction swaps only when its EXEC
 // runs, and one in a frame DISCARD dropped or the server aborted never
-// swapped either. The clones are fresh commands, not the originals:
-// the originals keep their OK results. They are required: a failed
+// swapped either. A queued SWAPDB's rejection lives in its EXEC
+// result element, not in its own +QUEUED reply (see
+// pipelineQueuedExecErrMap), so the element decides there. The clones
+// are fresh commands, not the originals: the originals keep their OK
+// results. They are required: a failed
 // swap-back must fail the batch rather than let the batch run in the
 // wrong database.
 func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
 	abortedTx := pipelineAbortedTxCmds(cmds)
 	discardedTx := pipelineDiscardedTxCmds(cmds)
 	txBodyNeedsRetry := pipelineTxBodyNeedsRetryMap(cmds)
+	execErrs := pipelineQueuedExecErrMap(cmds)
 	var swaps []Cmder
 	for idx, cmd := range cmds {
 		if cmd.Name() != "swapdb" {
@@ -3975,6 +3999,13 @@ func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
 			continue
 		}
 		if pipelineCmdErr(cmd) != nil {
+			continue
+		}
+		// A SWAPDB queued inside MULTI/EXEC answers +QUEUED with a
+		// nil error, so its own reply cannot tell whether it
+		// swapped: only the EXEC result element can — an error
+		// there means the swap never ran, so no inverse is owed.
+		if err, ok := execErrs[idx]; ok && err != nil {
 			continue
 		}
 		swaps = append(swaps, cmd)
@@ -4546,7 +4577,12 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// command that still needs a result and mutates data:
 			// connection state is re-established, not re-executed,
 			// and a read-only command writes nothing, so neither
-			// counts — and a pending SWAPDB does not count either:
+			// counts — and neither does a known non-mutating
+			// command the metadata leaves unflagged (see
+			// pipelineCmdNonMutating): a refused PING cannot
+			// invalidate the data results after it, so an answered
+			// INCR after it stays dropped instead of being re-run
+			// and applied twice. A pending SWAPDB does not count either:
 			// it is a server-global write, but the answered writes
 			// after it already ran in the pre-swap database, so
 			// re-sending them once the swap takes effect would land
@@ -4600,7 +4636,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			isPendingWrite := func(cmd Cmder) bool {
 				return !pipelineIsBarrierCmd(cmd) &&
 					!pipelineConnStateCmd(cmd) &&
-					!pipelineCmdReadOnly(cmd) &&
+					!pipelineCmdNonMutating(cmd) &&
 					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
 			}
 			isDroppedWrite := func(cmd Cmder) bool {
@@ -5218,7 +5254,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// still-open transaction never swapped anything, so it
 			// is not counted; a pending (unanswered) SWAPDB never
 			// swapped either, so only a definitively answered one
-			// counts.
+			// counts — and one queued inside MULTI/EXEC answers
+			// +QUEUED with a nil error, so its EXEC result element
+			// decides whether it swapped (see
+			// pipelineQueuedExecErrMap): an error there means it
+			// never ran.
 			var keptAnsweredSwapdbs []Cmder
 			for j, cmd := range cmds[i+1:] {
 				if !keep[j] || txBodyNeedsRetry[i+1+j] || cmd.Name() != "swapdb" {
@@ -5227,6 +5267,12 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				if e := pipelineCmdErr(cmd); e != nil {
 					// A SWAPDB the server rejected never swapped:
 					// only one that answered without error counts.
+					continue
+				}
+				if err, ok := getExecErrs()[cmdIndex[cmd.base()]]; ok && err != nil {
+					// A queued SWAPDB the EXEC rejected never
+					// swapped: its +QUEUED reply carries no
+					// error, so only the element can tell.
 					continue
 				}
 				keptAnsweredSwapdbs = append(keptAnsweredSwapdbs, cmd)
@@ -5328,9 +5374,9 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// no new barrier, and a pending read (a GET or MGET
 			// the retry only re-runs) advances no replication
 			// offset, so it needs none either — a read is a pending
-			// predecessor only when the metadata says it is not
-			// read-only (see pipelineCmdReadOnly), and an unknown
-			// command counts as a write. Connection-state
+			// predecessor only when it can mutate data (see
+			// pipelineCmdNonMutating), and an unknown command
+			// counts as a write. Connection-state
 			// predecessors and synthetic prerequisites do not count
 			// either: re-running a SELECT or a script preload
 			// needs no replication barrier. SWAPDB is the
@@ -5355,13 +5401,13 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// keep the answered writes after a pending swap (they
 			// already ran in the pre-swap database). In the retry
 			// tail, not a synthetic prerequisite, not connection
-			// state, and not read-only (see pipelineCmdReadOnly) —
-			// except a pending SWAPDB, which is a server-global
-			// write and counts (see above).
+			// state, and not non-mutating (see
+			// pipelineCmdNonMutating) — except a pending SWAPDB,
+			// which is a server-global write and counts (see above).
 			pendingWritesBefore := make([]int, len(cmds)+1)
 			for k, cmd := range cmds {
 				pendingWritesBefore[k+1] = pendingWritesBefore[k]
-				if tailSet[cmd.base()] && !synthetic[cmd.base()] && (!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") && !pipelineCmdReadOnly(cmd) {
+				if tailSet[cmd.base()] && !synthetic[cmd.base()] && (!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") && !pipelineCmdNonMutating(cmd) {
 					pendingWritesBefore[k+1]++
 				}
 			}
@@ -6345,9 +6391,20 @@ func (c *baseClient) pipelineProcessCmds(
 	// on a fresh one instead — but never on a dedicated connection,
 	// where retiring would fail the retry itself and the builder's
 	// end-of-retry re-send already restores the flag for the command
-	// after the batch.
+	// after the batch. The session-state branch takes the same
+	// exemption: on a dedicated connection there is no fresh
+	// connection to start on — StickyConnPool records the mark as a
+	// persistent BadConnError, so the scheduled retry cannot run at
+	// all and the dedicated Conn stays unusable — and the retry
+	// re-runs the suffix on the same connection instead, the way the
+	// unretried parent does. A session change that cannot affect the
+	// pending commands (a CLIENT SETNAME after a refused SET) then
+	// recovers exactly; one that can (a SELECT after a refused SET)
+	// still runs under the state the first attempt left, as the
+	// parent does — restoring the batch-start session on the same
+	// connection is a larger change, not this exemption.
 	if readErr != nil && shouldRetry(readErr, true) && pipelineRetryScheduled(ctx) && !cmdsContainNoRetry(cmds) {
-		if pipelineRetryTailKeepsSessionState(cmds) {
+		if pipelineRetryTailKeepsSessionState(cmds) && !c.pipelineClientHasStickyConn() {
 			cn.MarkCloseOnPut("pipeline: retry tail re-runs answered session state")
 		} else if pipelineRetryTailHasArmedOneShot(cmds) && !c.pipelineClientHasStickyConn() {
 			cn.MarkCloseOnPut("pipeline: retry tail leaves a one-shot flag armed")

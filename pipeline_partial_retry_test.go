@@ -317,6 +317,15 @@ type connStateRetryServer struct {
 	// NOREPLICAS without executing: the key is not recorded, exactly
 	// like a real server refusing the write while replicas lag.
 	setNoreplicasOnce atomic.Bool
+	// pingLoadingOnce, when set, makes the next PING answer LOADING
+	// without executing: a refused PING cannot invalidate the data
+	// results after it, exactly like a real server refusing
+	// commands while loading.
+	pingLoadingOnce atomic.Bool
+	// dropAfterExecReplyOnce, when set, makes the connection close
+	// right after writing the EXEC reply: the queued commands ran,
+	// but the commands after EXEC get no reply on this connection.
+	dropAfterExecReplyOnce atomic.Bool
 	// cachingCmds counts CLIENT CACHING YES commands received, and
 	// optinGets counts GETs that arrived while a one-shot CLIENT
 	// CACHING YES flag was armed on their connection: the next
@@ -777,10 +786,26 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				reply = "-NOREPLICAS Not enough replicas to apply the swap\r\n"
 				break
 			}
+			if inMulti {
+				// A queued SWAPDB runs only at EXEC time: it
+				// answers +QUEUED here and swaps (or fails) as
+				// its EXEC result element, exactly like a real
+				// server.
+				reply = "+QUEUED\r\n"
+				break
+			}
 			if len(args) >= 2 {
 				if a, err := strconv.Atoi(args[0]); err == nil {
 					if b, err := strconv.Atoi(args[1]); err == nil {
-						s.applySwapdb(a, b)
+						maxDB := 15
+						if !first {
+							maxDB = s.secondMaxDB
+						}
+						if a < 0 || a > maxDB || b < 0 || b > maxDB {
+							reply = "-ERR DB index is out of range\r\n"
+						} else {
+							s.applySwapdb(a, b)
+						}
 					}
 				}
 			}
@@ -851,6 +876,26 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 							} else {
 								b.WriteString("+OK\r\n")
 							}
+						} else if q.name == "swapdb" {
+							// A queued SWAPDB swaps only at EXEC
+							// time: an out-of-range index answers
+							// its error as the element, while a
+							// valid one swaps and answers +OK.
+							idxA, idxB := -1, -1
+							if len(q.args) >= 2 {
+								idxA, _ = strconv.Atoi(q.args[0])
+								idxB, _ = strconv.Atoi(q.args[1])
+							}
+							maxDB := 15
+							if !first {
+								maxDB = s.secondMaxDB
+							}
+							if idxA < 0 || idxA > maxDB || idxB < 0 || idxB > maxDB {
+								b.WriteString("-ERR DB index is out of range\r\n")
+							} else {
+								s.applySwapdb(idxA, idxB)
+								b.WriteString("+OK\r\n")
+							}
 						} else {
 							b.WriteString("+OK\r\n")
 						}
@@ -863,9 +908,22 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				reply = "-ERR EXEC without MULTI\r\n"
 			}
 		case "ping":
+			if s.pingLoadingOnce.CompareAndSwap(true, false) {
+				// A LOADING PING never executed: it reads
+				// nothing, exactly like a real server refusing
+				// commands while loading.
+				reply = "-LOADING Redis is loading the dataset in memory\r\n"
+				break
+			}
 			reply = "+PONG\r\n"
 		}
 		if _, err := conn.Write([]byte(reply)); err != nil {
+			return
+		}
+		if name == "exec" && s.dropAfterExecReplyOnce.CompareAndSwap(true, false) {
+			// The EXEC reply was written: the queued commands
+			// ran, but the connection drops before the commands
+			// after it are answered.
 			return
 		}
 		if isPipelineCmd {
@@ -11717,5 +11775,173 @@ func TestPipelineRetryBarrierMergeIsLinear(t *testing.T) {
 	// quadratic behaviour coming back, with ample headroom.
 	if elapsed > time.Second {
 		t.Fatalf("pipelineRetrySuffix took %v for %d barriers, want < 1s (the per-barrier rescan is quadratic)", elapsed, n)
+	}
+}
+
+// TestPipelineRetryStickyConnSessionRetireSkipped: on a dedicated Conn
+// with retries remaining, a SET answering NOREPLICAS followed by an
+// answered CLIENT SETNAME must not retire the connection: there is no
+// fresh connection to start on — StickyConnPool records the mark as a
+// persistent BadConnError, so the scheduled retry cannot run at all
+// and the dedicated Conn stays unusable. The retry re-runs the suffix
+// on the same connection instead: changing the client name cannot
+// affect the SET's database, so the batch recovers. Regression test
+// for the Cursor Bugbot High and Codex P2 findings on #4351 (round 41).
+func TestPipelineRetryStickyConnSessionRetireSkipped(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.setNoreplicasOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+	conn := client.Conn()
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx := context.Background()
+	pipe := conn.Pipeline()
+	set := pipe.Set(ctx, "k", "v", 0)
+	setname := pipe.Do(ctx, "client", "setname", "n")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run on the same dedicated connection, not retire it)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := setname.Err(); err != nil {
+		t.Fatalf("CLIENT SETNAME: %v", err)
+	}
+	if got := server.setsDB0.Load(); got != 1 {
+		t.Fatalf("server executed %d SETs in DB 0, want 1 (the retried SET must run in the database it was issued for)", got)
+	}
+	if got := server.conns.Load(); got != 1 {
+		t.Fatalf("server saw %d connections, want 1 (the retry must reuse the dedicated connection)", got)
+	}
+	after := conn.Set(ctx, "after", "v", 0)
+	if err := after.Err(); err != nil {
+		t.Fatalf("follow-up SET: %v, want nil (the dedicated Conn must stay usable after the retry)", err)
+	}
+}
+
+// TestPipelineRetryPendingPingDoesNotInvalidateAnsweredWrite: a refused
+// PING is not a pending write — PING carries no readonly flag in the
+// COMMAND metadata, yet it writes nothing, so it cannot invalidate the
+// data results after it. With ECHO ready; PING; INCR counter receiving
+// [ready, LOADING, 1], the answered INCR must stay dropped: the retry
+// re-runs only the PING, and the counter increments once. Regression
+// test for the Codex P1 finding on #4351 (round 41).
+func TestPipelineRetryPendingPingDoesNotInvalidateAnsweredWrite(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.pingLoadingOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	echo := pipe.Do(ctx, "echo", "ready")
+	ping := pipe.Ping(ctx)
+	incr := pipe.Incr(ctx, "counter")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retried PING must succeed once the server has recovered)", err)
+	}
+	if err := echo.Err(); err != nil {
+		t.Fatalf("ECHO: %v", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("PING: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil (the answered INCR must not be re-run)", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server executed %d INCRs, want 1 (a refused PING is not a pending write)", got)
+	}
+}
+
+// TestPipelineRetryQueuedSwapdbExecErrorNeedsNoInverse: a SWAPDB queued
+// inside MULTI/EXEC answers +QUEUED with a nil error, but its EXEC
+// result element holds the rejection — SWAPDB 99 0 on a server with
+// fewer than 100 databases never swapped, so the whole-batch retry
+// owes it no inverse. With MULTI; SWAPDB 99 0; EXEC; WAIT 1 1000 and a
+// disconnect after EXEC's reply, the retry must re-dispatch the batch
+// unchanged: a synthesised standalone SWAPDB inverse would be rejected
+// on the healthy retry and promoted into the batch error. Regression
+// test for the Codex P2 finding on #4351 (round 41).
+func TestPipelineRetryQueuedSwapdbExecErrorNeedsNoInverse(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.dropAfterExecReplyOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	multi := pipe.Do(ctx, "multi")
+	swapdb := pipe.Do(ctx, "swapdb", 99, 0)
+	exec := pipe.Do(ctx, "exec")
+	wait := pipe.Do(ctx, "wait", 1, 1000)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the swap never ran, so the retry owes it no inverse)", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if err := wait.Err(); err != nil {
+		t.Fatalf("WAIT: %v", err)
+	}
+	if got := server.swapdbs.Load(); got != 2 {
+		t.Fatalf("server received %d SWAPDB commands, want 2 (the first attempt plus the whole-batch re-run, with no synthesised inverse)", got)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the retry must start on a fresh connection after the disconnect)", got)
+	}
+}
+
+// TestPipelineRetryQueuedSwapdbExecErrorNeedsNoSuffixInverse: the same
+// EXEC-element check in the suffix inverse collector — with MSET k v;
+// MULTI; SWAPDB 99 0; EXEC; GET k receiving [TRYAGAIN, OK, QUEUED,
+// array, v], the answered SWAPDB past the boundary is kept in the tail
+// as a dropped write, but its EXEC element rejected it, so no
+// swap-back clone is owed ahead of the retry. Without the check the
+// clone's standalone SWAPDB is rejected on the healthy retry and fails
+// the batch. Regression test for the Codex P2 finding on #4351 (round 41).
+func TestPipelineRetryQueuedSwapdbExecErrorNeedsNoSuffixInverse(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.msetTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mset := pipe.MSet(ctx, "k", "v")
+	multi := pipe.Do(ctx, "multi")
+	swapdb := pipe.Do(ctx, "swapdb", 99, 0)
+	exec := pipe.Do(ctx, "exec")
+	get := pipe.Get(ctx, "k")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the swap never ran, so the retry owes it no inverse)", err)
+	}
+	if err := mset.Err(); err != nil {
+		t.Fatalf("MSET: %v", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	if got := server.swapdbs.Load(); got != 2 {
+		t.Fatalf("server received %d SWAPDB commands, want 2 (the first attempt plus the tail re-run, with no synthesised inverse)", got)
+	}
+	if got := server.conns.Load(); got != 1 {
+		t.Fatalf("server saw %d connections, want 1 (nothing in this batch forces a fresh connection)", got)
 	}
 }
