@@ -2967,6 +2967,78 @@ func pipelineHasOpenMulti(cmds []Cmder) bool {
 	return false
 }
 
+// pipelineRetryTailKeepsSessionState reports whether retrying cmds would
+// re-run answered connection-state commands from past the
+// answered/unanswered boundary: the retry suffix replays those commands
+// at their original positions, so the commands ahead of them in the
+// suffix run on the same connection under the session state the first
+// attempt left behind — a SELECT 1 answered after a NOREPLICAS SET
+// leaves the retry's SET running in DB 1 instead of the DB 0 it was
+// issued for. Only state the retry re-establishes ahead of the suffix
+// is exempt: a command in the answered prefix is reissued by the
+// rebuild, and a SWAPDB is undone ahead of the tail by its swap-back
+// clone, so neither forces a fresh connection. A command inside a
+// transaction DISCARD dropped or the server aborted established
+// nothing, a command still queued in an open transaction has not run
+// yet either, and a one-shot flag (ASKING, CLIENT CACHING) was
+// consumed by its follower, so none of those count; MULTI / EXEC /
+// DISCARD frame the transaction the suffix re-runs as a unit, so they
+// do not count either. The boundary here is approximate — the first
+// command with a retryable Redis error, without the stale / synthetic /
+// settled-frame skips the suffix builder applies — which can only move
+// it earlier: a state command past the true boundary is past this one
+// too, so the check never misses a case, and a false positive only
+// costs a fresh connection. The SWAPDB veto uses the same boundary for
+// the same reason: an answered SWAPDB past it vetoes the retirement,
+// because its swap-back clones assume the same connection — retiring
+// would let them swap a fresh connection that never had the swap
+// applied.
+func pipelineRetryTailKeepsSessionState(cmds []Cmder) bool {
+	abortedTx := pipelineAbortedTxCmds(cmds)
+	discardedTx := pipelineDiscardedTxCmds(cmds)
+	txBodyNeedsRetry := pipelineTxBodyNeedsRetryMap(cmds)
+	boundary := -1
+	for i, cmd := range cmds {
+		if e := pipelineCmdErr(cmd); e != nil && isRedisError(e) && shouldRetry(e, true) {
+			boundary = i
+			break
+		}
+	}
+	if boundary < 0 {
+		return false
+	}
+	for idx := boundary + 1; idx < len(cmds); idx++ {
+		cmd := cmds[idx]
+		if abortedTx[cmd.base()] || discardedTx[cmd.base()] || txBodyNeedsRetry[idx] {
+			continue
+		}
+		if cmd.Name() != "swapdb" || pipelineCmdErr(cmd) != nil {
+			continue
+		}
+		// An answered SWAPDB past the boundary: its swap-back
+		// clones assume the retry reuses this connection.
+		return false
+	}
+	for idx := boundary + 1; idx < len(cmds); idx++ {
+		cmd := cmds[idx]
+		if abortedTx[cmd.base()] || discardedTx[cmd.base()] || txBodyNeedsRetry[idx] {
+			continue
+		}
+		if pipelineCmdErr(cmd) != nil {
+			continue
+		}
+		if !pipelineConnStateCmd(cmd) || pipelineOneShotStateCmd(cmd) {
+			continue
+		}
+		switch cmd.Name() {
+		case "swapdb", "multi", "exec", "discard":
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // pipelineTxBodyNeedsRetryMap precomputes, in one O(n) pass over cmds,
 // whether each command sits inside a MULTI/EXEC transaction whose EXEC did
 // not settle, so it still needs to run on retry: its EXEC follows it in
@@ -3727,9 +3799,28 @@ func isScriptPreExecRejection(cmd Cmder, err error) bool {
 	return false
 }
 
+// redisWireInt parses s as an integer argument the way Redis parses one
+// on the wire: digits only, with no sign and no leading zero unless the
+// value is exactly "0". strconv.Atoi accepts "+1" and "01", which Redis
+// rejects (see the count guard in routing_metadata.go), so a validator
+// that trusts Atoi calls a rejected count valid — an EVAL refused for
+// its numkeys would then count as having run and cached its script.
+func redisWireInt(s string) (int, bool) {
+	if len(s) == 0 || s[0] < '0' || s[0] > '9' || len(s) > 1 && s[0] == '0' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 // evalNumKeysValid reports whether cmd's EVAL numkeys argument is a
 // well-formed key count: an integer from 0 to the number of arguments
-// that follow it. A raw command built with Do may carry numkeys as a
+// that follow it, written the way Redis accepts it on the wire (see
+// redisWireInt — "+1" and "01" are not well-formed, even though
+// strconv.Atoi accepts them). A raw command built with Do may carry numkeys as a
 // string, an integer, a byte slice or a string pointer — WriteArg sends
 // all of them the same way — so the validator accepts every form
 // evalScriptSource already does; anything else — a missing numkeys, a
@@ -3746,27 +3837,27 @@ func evalNumKeysValid(cmd Cmder) bool {
 	var n int
 	switch v := args[2].(type) {
 	case string:
-		var err error
-		n, err = strconv.Atoi(v)
-		if err != nil {
+		var ok bool
+		n, ok = redisWireInt(v)
+		if !ok {
 			return false
 		}
 	case *string:
 		if v == nil {
 			return false
 		}
-		var err error
-		n, err = strconv.Atoi(*v)
-		if err != nil {
+		var ok bool
+		n, ok = redisWireInt(*v)
+		if !ok {
 			return false
 		}
 	case []byte:
 		if v == nil {
 			return false
 		}
-		var err error
-		n, err = strconv.Atoi(string(v))
-		if err != nil {
+		var ok bool
+		n, ok = redisWireInt(string(v))
+		if !ok {
 			return false
 		}
 	case int:
@@ -3799,6 +3890,56 @@ func evalScriptCached(cmd Cmder) bool {
 		return false
 	}
 	return !isScriptPreExecRejection(cmd, err)
+}
+
+// pipelineWholeBatchRetry returns the commands for a whole-batch retry:
+// cmds unchanged when it holds no answered SWAPDB, and otherwise cmds
+// with a swap-back clone prepended for every answered SWAPDB, in reverse
+// original order. A whole-batch retry re-dispatches every command,
+// including an answered SWAPDB — but the swap already took effect, so
+// re-running it bare swaps the databases back and undoes the confirmed
+// swap, while the commands before it re-run in the swapped database
+// instead of the one they were issued for. The clones undo each swap
+// ahead of the batch (SWAPDB is its own inverse, so undoing the
+// composition means undoing each swap in reverse — the same rule the
+// suffix rebuild's swap-back clones follow), and the kept originals
+// then swap them back at their own positions, so the commands after
+// them still land in the post-swap database. Only a SWAPDB that
+// actually swapped counts: one the server rejected never swapped, one
+// queued inside a still-open transaction swaps only when its EXEC
+// runs, and one in a frame DISCARD dropped or the server aborted never
+// swapped either. The clones are fresh commands, not the originals:
+// the originals keep their OK results. They are required: a failed
+// swap-back must fail the batch rather than let the batch run in the
+// wrong database.
+func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
+	abortedTx := pipelineAbortedTxCmds(cmds)
+	discardedTx := pipelineDiscardedTxCmds(cmds)
+	txBodyNeedsRetry := pipelineTxBodyNeedsRetryMap(cmds)
+	var swaps []Cmder
+	for idx, cmd := range cmds {
+		if cmd.Name() != "swapdb" {
+			continue
+		}
+		if abortedTx[cmd.base()] || discardedTx[cmd.base()] || txBodyNeedsRetry[idx] {
+			continue
+		}
+		if pipelineCmdErr(cmd) != nil {
+			continue
+		}
+		swaps = append(swaps, cmd)
+	}
+	if len(swaps) == 0 {
+		return cmds
+	}
+	retry := make([]Cmder, 0, len(swaps)+len(cmds))
+	for k := len(swaps) - 1; k >= 0; k-- {
+		fresh := swaps[k].Clone()
+		fresh.SetErr(nil)
+		retry = append(retry, fresh)
+		markPipelineSynthetic(ctx, true, fresh)
+	}
+	return append(retry, cmds...)
 }
 
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
@@ -3879,7 +4020,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 	// re-running the answered writes (a replied INCR would apply
 	// twice while Exec still reports success).
 	if err == nil || (isRedisError(err) && !shouldRetry(err, true)) {
-		return cmds
+		return pipelineWholeBatchRetry(ctx, cmds)
 	}
 	synthetic := pipelineSyntheticFromCtx(ctx)
 	required := pipelineRequiredSyntheticFromCtx(ctx)
@@ -4131,7 +4272,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 						// The follower sits past the boundary:
 						// the flag cannot be reissued ahead
 						// of it from the front.
-						return cmds
+						return pipelineWholeBatchRetry(ctx, cmds)
 					}
 					// An open MULTI frames only its own body: the
 					// frame re-runs as a unit on the retry, so
@@ -4143,7 +4284,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 						openMultiAt = idx
 						break
 					}
-					return cmds
+					return pipelineWholeBatchRetry(ctx, cmds)
 				}
 			}
 			// A failed required re-establishment in the answered prefix
@@ -4158,7 +4299,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			if required := pipelineRequiredSyntheticFromCtx(ctx); required != nil {
 				for _, answered := range cmds[:i+1] {
 					if required[answered.base()] && pipelineCmdErr(answered) != nil {
-						return cmds
+						return pipelineWholeBatchRetry(ctx, cmds)
 					}
 				}
 			}
@@ -4183,7 +4324,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			oneShotReissue := make(map[*baseCmd]bool)
 			for base, followerIdx := range oneShotCandidates {
 				if followerIdx > i {
-					return cmds
+					return pipelineWholeBatchRetry(ctx, cmds)
 				}
 				if followerIdx == i {
 					oneShotReissue[base] = true
@@ -4278,6 +4419,23 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				}
 				if staleErrs[cmd.base()] {
 					keep[j] = true
+					continue
+				}
+				// A command inside a transaction DISCARD dropped or
+				// the server aborted never executed, so its
+				// retryable refusal is the frame's outcome, not a
+				// result the retry may rewind to: the boundary scan
+				// above skips it for the same reason, and keeping it
+				// here would re-run a write from a definitively
+				// aborted transaction standalone while the original
+				// EXEC still reports its abort. It is dropped
+				// outright, not recorded as answered: it holds no
+				// result to preserve, and a dropped write or read
+				// must not be resurrected by the retention scan
+				// below (which already excludes both sets) or
+				// counted as a dirty follower by the WATCH safety
+				// walk — it never executed, so it dirtied nothing.
+				if abortedTx[cmd.base()] || discardedTx[cmd.base()] {
 					continue
 				}
 				// A command in a transaction the server aborted is
@@ -4529,7 +4687,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// instead of replaying the answered writes.
 			for _, pending := range tail {
 				if name := pending.Name(); name == "wait" || name == "waitaof" {
-					return cmds
+					return pipelineWholeBatchRetry(ctx, cmds)
 				}
 			}
 			// A reissued WATCH is only the same watch when nothing
@@ -4697,7 +4855,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// its watch survived it: a clear later in the pass
 			// already discarded it above.
 			if dirtyActive {
-				return cmds
+				return pipelineWholeBatchRetry(ctx, cmds)
 			}
 			// Only rebuild cache entries the suffix actually needs: a
 			// retried EVALSHA fails NOSCRIPT without them, but any other
@@ -4714,6 +4872,20 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				}
 			}
 			var retry []Cmder
+			// retryPos records, for each entry of retry, the index
+			// in cmds of the original command it stands for: a kept
+			// original its own index, a reissued session command
+			// or swap-back clone its original's, a script
+			// prerequisite the answered command it was emitted
+			// for. The barrier reissue below inserts a reissued
+			// barrier by this position instead of appending it at
+			// the end, so it runs at its original place relative
+			// to the retained session commands (see below).
+			var retryPos []int
+			appendRetry := func(cmd Cmder, pos int) {
+				retry = append(retry, cmd)
+				retryPos = append(retryPos, pos)
+			}
 			// Re-establish answered connection-local state and rebuild
 			// script cache entries in the order the original batch
 			// established them. The retry must run the suffix under the
@@ -4797,6 +4969,18 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					}
 				}
 			}
+			// cmdIndex maps each command to its position in cmds, so
+			// the rebuild below can consult the EXEC result element
+			// of a queued command (see getExecErrs), and the retry
+			// builder can record each entry's original position
+			// (see retryPos above). It is declared ahead of
+			// emitScriptPrereq so the prerequisite emitter can use
+			// it: a closure may only name variables declared
+			// before it in the same block.
+			cmdIndex := make(map[*baseCmd]int, len(cmds))
+			for idx, cmd := range cmds {
+				cmdIndex[cmd.base()] = idx
+			}
 			// Commands inside a transaction DISCARD dropped never
 			// executed, so their effects never happened: the rebuild
 			// below must not re-establish them as session state or
@@ -4823,7 +5007,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// best-effort: the suffix's own replies show
 					// whether the script is there.
 					fresh := NewStringCmd(ctx, answered.Args()...)
-					retry = append(retry, fresh)
+					appendRetry(fresh, cmdIndex[answered.base()])
 					markPipelineSynthetic(ctx, false, fresh)
 				case isScriptFlushCmd(answered):
 					// A FLUSH the transaction's EXEC rejected never
@@ -4856,7 +5040,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// acknowledged FLUSH had removed while Exec
 					// still reports success.
 					fresh := NewStringCmd(ctx, answered.Args()...)
-					retry = append(retry, fresh)
+					appendRetry(fresh, cmdIndex[answered.base()])
 					markPipelineSynthetic(ctx, true, fresh)
 				case isEvalCmd(answered) && evalScriptCached(answered) && !rejectedQueuedEval[answered.base()]:
 					// Only an EVAL that actually ran populates the
@@ -4869,7 +5053,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// was cached, so those preload.
 					if src, ok := evalScriptSource(answered); ok {
 						fresh := NewStringCmd(ctx, "script", "load", src)
-						retry = append(retry, fresh)
+						appendRetry(fresh, cmdIndex[answered.base()])
 						markPipelineSynthetic(ctx, false, fresh)
 					}
 				}
@@ -4877,13 +5061,6 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			replay := make([]Cmder, 0, i+len(answeredTail))
 			replay = append(replay, cmds[:i]...)
 			replay = append(replay, answeredTail...)
-			// cmdIndex maps each command to its position in cmds, so
-			// the rebuild below can consult the EXEC result element
-			// of a queued command (see getExecErrs).
-			cmdIndex := make(map[*baseCmd]int, len(cmds))
-			for idx, cmd := range cmds {
-				cmdIndex[cmd.base()] = idx
-			}
 			for _, answered := range replay {
 				if discardedTx[answered.base()] || abortedTx[answered.base()] {
 					// A command inside a discarded or aborted
@@ -4959,7 +5136,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// first attempt's answer, not this attempt's.
 					fresh := answered.Clone()
 					fresh.SetErr(nil)
-					retry = append(retry, fresh)
+					appendRetry(fresh, cmdIndex[answered.base()])
 					markPipelineSynthetic(ctx, true, fresh)
 					continue
 				}
@@ -5007,7 +5184,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			for k := len(keptAnsweredSwapdbs) - 1; k >= 0; k-- {
 				fresh := keptAnsweredSwapdbs[k].Clone()
 				fresh.SetErr(nil)
-				retry = append(retry, fresh)
+				appendRetry(fresh, cmdIndex[keptAnsweredSwapdbs[k].base()])
 				markPipelineSynthetic(ctx, true, fresh)
 			}
 			// A one-shot flag whose follower is the first command
@@ -5028,7 +5205,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				if oneShotReissue[answered.base()] {
 					fresh := answered.Clone()
 					fresh.SetErr(nil)
-					retry = append(retry, fresh)
+					appendRetry(fresh, cmdIndex[answered.base()])
 					markPipelineSynthetic(ctx, true, fresh)
 				}
 			}
@@ -5046,7 +5223,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					}
 					continue
 				}
-				retry = append(retry, cmd)
+				appendRetry(cmd, i+j)
 			}
 			// An answered WAIT/WAITAOF the tail filter dropped still
 			// guards the writes before it: the retry re-runs those
@@ -5054,10 +5231,22 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// already measured, so Exec would return the retained
 			// barrier result while the write may still be
 			// unreplicated. Reissue the barrier after the pending
-			// writes instead — the original command itself, at the
-			// end of the retry, so it runs on the retry connection
-			// once the writes it follows have run there — without
-			// replaying the unrelated answered writes before it.
+			// writes instead — the original command itself, at its
+			// original position in the retry, so it runs on the
+			// retry connection once the writes it follows have run
+			// there and under the session the original ordering
+			// ran it under — without replaying the unrelated
+			// answered writes before it. Appending it at the end
+			// instead moves it past the retained session commands
+			// after it: a WAIT answered while the default user
+			// could run it would re-run after an AUTH to a user
+			// that cannot, and fail a batch the original ordering
+			// would have completed. Inserting it by retryPos keeps
+			// it ahead of every retained command it originally
+			// preceded — and behind every pending write before
+			// it, which the tail keeps in original order — while a
+			// barrier past every retained command still lands at
+			// the end, as before.
 			// It must be the original, not a clone: the reissued
 			// barrier's acknowledgement count is the only fresh
 			// measurement, and a clone would keep it while the
@@ -5132,14 +5321,32 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				// rejected command. The read path overwrites the
 				// error of every command it dispatches, so a
 				// barrier that actually runs still replaces it
-				// with the fresh result.
-				retry = append(retry, barrier)
+				// with the fresh result. Insert at the barrier's
+				// original position (see retryPos above): retryPos
+				// is not sorted — swap-back clones precede the
+				// tail while standing for later commands — so the
+				// scan is linear; barriers are few and the retry
+				// is built once per attempt.
+				at := cmdIndex[barrier.base()]
+				pos := len(retryPos)
+				for p, orig := range retryPos {
+					if orig > at {
+						pos = p
+						break
+					}
+				}
+				retry = append(retry, nil)
+				copy(retry[pos+1:], retry[pos:])
+				retry[pos] = barrier
+				retryPos = append(retryPos, 0)
+				copy(retryPos[pos+1:], retryPos[pos:])
+				retryPos[pos] = at
 				markPipelineSynthetic(ctx, true, barrier)
 			}
 			return retry
 		}
 	}
-	return cmds
+	return pipelineWholeBatchRetry(ctx, cmds)
 }
 
 // pipelineUnansweredSuffix returns the commands of a dispatched batch that
@@ -6006,6 +6213,23 @@ func (c *baseClient) pipelineProcessCmds(
 	// contract in place.
 	if readErr != nil && shouldRetry(readErr, true) && pipelineHasOpenMulti(cmds) {
 		cn.MarkCloseOnPut("pipeline: EXEC did not clear transaction state")
+	}
+	// The same holds when the retry suffix re-runs answered
+	// connection-state commands from past the boundary (see
+	// pipelineRetryTailKeepsSessionState): a SELECT 1 the first
+	// attempt answered after a NOREPLICAS SET leaves the retry's SET
+	// running in DB 1 on this connection instead of the DB 0 it was
+	// issued for, while Exec still reports success. Retire the
+	// connection instead, so the retry starts on a fresh one — its
+	// initialisation (see initConn) restores the default session,
+	// and the rebuild re-establishes the answered prefix state ahead
+	// of the suffix. Only when this attempt failed with a retryable
+	// error: a successful attempt keeps its connection on purpose,
+	// and a failed attempt whose suffix holds no such state reuses
+	// it as before, so a batch that never selected a database keeps
+	// running under the session it started in.
+	if readErr != nil && shouldRetry(readErr, true) && pipelineRetryTailKeepsSessionState(cmds) {
+		cn.MarkCloseOnPut("pipeline: retry tail re-runs answered session state")
 	}
 	return readErr != nil, readErr
 }

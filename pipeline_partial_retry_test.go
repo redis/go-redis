@@ -227,6 +227,12 @@ type connStateRetryServer struct {
 	// once; later MSETs succeed. Unlike msetTryagain it lets a retry
 	// complete, so a test can assert what the retry re-ran.
 	msetTryagainOnce atomic.Bool
+	// msetNoreplicasOnce, when set, makes the next MSET answer
+	// NOREPLICAS without executing: the keys are not recorded,
+	// exactly like a real server refusing the write while replicas
+	// lag. Unlike a TRYAGAIN it is a retryable error on the
+	// boundary command itself, so the retry suffix starts at it.
+	msetNoreplicasOnce atomic.Bool
 	// trackValues, when set, makes SET/MSET record values and GET
 	// return the recorded value for a key instead of the fixed "v":
 	// tests that assert a retry preserved the batch's ordering need
@@ -415,6 +421,11 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 	// connection: the next command after it runs opt-in, and the flag
 	// is then consumed (see the modelling below).
 	cachingArmed := false
+	// limited tracks whether this connection authenticated as the
+	// limited user: WAIT is refused NOPERM for it, exactly like a
+	// real server's ACL, so a barrier that runs after the AUTH to
+	// that user fails where one that ran before it succeeds.
+	limited := false
 	// queued holds the commands accepted into the open MULTI frame,
 	// in order, so EXEC can answer one result element per queued
 	// command (see the exec case below).
@@ -487,6 +498,13 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 		switch name {
 		case "hello":
 			reply = "%0\r\n"
+		case "auth":
+			// AUTH to the limited user restricts this connection
+			// from here on; any other user keeps full access.
+			// The reply is +OK either way, like a real server.
+			if len(args) >= 1 && args[0] == "limited" {
+				limited = true
+			}
 		case "select":
 			s.selects.Add(1)
 			if inMulti {
@@ -642,7 +660,12 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				reply = "*2\r\n$1\r\na\r\n$1\r\nb\r\n"
 			}
 		case "mset":
-			if s.msetTryagain.Load() || s.msetTryagainOnce.CompareAndSwap(true, false) {
+			if s.msetNoreplicasOnce.CompareAndSwap(true, false) {
+				// A NOREPLICAS MSET never executed: it records
+				// no value, exactly like a real server refusing
+				// the write while replicas lag.
+				reply = "-NOREPLICAS Not enough replicas to apply the write\r\n"
+			} else if s.msetTryagain.Load() || s.msetTryagainOnce.CompareAndSwap(true, false) {
 				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
 			} else if s.trackValues && !inMulti {
 				s.valuesMu.Lock()
@@ -666,7 +689,7 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			reply = ":1\r\n"
 		case "wait":
 			s.waits.Add(1)
-			if s.failWait.Load() {
+			if s.failWait.Load() || limited {
 				reply = "-NOPERM this user has no permissions to run the 'wait' command\r\n"
 			} else {
 				reply = ":1\r\n"
@@ -869,6 +892,47 @@ func TestPipelineRetryKeepsSelectDB(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryDoesNotRunSuffixUnderAnsweredTailSelect: a SELECT
+// answered after the retry boundary must not leak its database into the
+// retry suffix: PING; SET out v; SELECT 1 reads [PONG, NOREPLICAS, OK],
+// so the retry is [SET, SELECT 1] — and the SET must run in DB 0, the
+// database it was issued for, not in DB 1 on the reused connection the
+// first attempt left selected. Regression test for the Codex P1 finding
+// on #4351.
+func TestPipelineRetryDoesNotRunSuffixUnderAnsweredTailSelect(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.setNoreplicasOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	ping := pipe.Ping(ctx)
+	set := pipe.Set(ctx, "out", "v", 0)
+	sel := pipe.Select(ctx, 1)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run the SET in DB 0 and re-run the SELECT after it)", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("PING: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if got := server.setsDB0.Load(); got != 1 {
+		t.Fatalf("server executed %d SETs in DB 0, want 1 (the retried SET must run in the database it was issued for)", got)
+	}
+	if got := server.setsDB1.Load(); got != 0 {
+		t.Fatalf("server executed %d SETs in DB 1, want 0 (the answered SELECT after the boundary must not leak into the retry suffix)", got)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the retry must start on a fresh connection, not the one the first attempt left in DB 1)", got)
+	}
+}
+
 // TestPipelineRetryKeepsMultiTransaction: a MULTI issued in a regular
 // pipeline must not be dropped by the suffix retry, or the retried EXEC
 // runs on a fresh connection with no transaction open.
@@ -1039,6 +1103,57 @@ func TestPipelineRetryAbortedTxBodyDoesNotSeedRetry(t *testing.T) {
 	}
 	if got := server.multiCount.Load(); got != 2 {
 		t.Fatalf("server received %d MULTI commands, want 2 (the transaction re-runs as a unit)", got)
+	}
+}
+
+// TestPipelineRetryAbortedTxBodyIsNotRetriedStandalone: a SET refused
+// READONLY ahead of a MULTI/EXEC frame whose INCR the replica also
+// refuses READONLY (so EXEC answers EXECABORT) must not promote the
+// aborted INCR into a standalone retry: the retry is only the SET —
+// the INCR never executed, and re-running it alone would apply a write
+// from a definitively aborted transaction while the original EXEC still
+// reports its abort. Regression test for the Codex P1 finding on #4351.
+func TestPipelineRetryAbortedTxBodyIsNotRetriedStandalone(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.setReadonlyOnce.Store(true)
+	server.failIncrReadonlyOnce.Store(true)
+	server.failExecAbortOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	set := pipe.Set(ctx, "a", "v", 0)
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Incr(ctx, "counter")
+	execCmd := pipe.Do(ctx, "exec")
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "READONLY") {
+		t.Fatalf("Exec: %v, want READONLY (the first failed command wins; the aborted transaction's INCR keeps its refusal)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := incr.Err(); err == nil || !strings.Contains(err.Error(), "READONLY") {
+		t.Fatalf("INCR: %v, want READONLY (the queued write was refused, not executed)", err)
+	}
+	if err := execCmd.Err(); err == nil || !strings.Contains(err.Error(), "EXECABORT") {
+		t.Fatalf("EXEC: %v, want EXECABORT (the frame's outcome is preserved)", err)
+	}
+	if got := server.incrs.Load(); got != 0 {
+		t.Fatalf("server executed %d INCR commands, want 0 (the aborted transaction's body must not run standalone on retry)", got)
+	}
+	if got := server.sets.Load(); got != 2 {
+		t.Fatalf("server received %d SET commands, want 2 (the refused SET plus its retry)", got)
+	}
+	if got := server.setsDB0.Load(); got != 1 {
+		t.Fatalf("server executed %d SETs in DB 0, want 1 (the retried SET runs once)", got)
+	}
+	if got := server.execs.Load(); got != 1 {
+		t.Fatalf("server received %d EXEC commands, want 1 (the aborted EXEC must not run again)", got)
 	}
 }
 
@@ -2683,6 +2798,27 @@ var emptyScriptSHA = func() string {
 	return hex.EncodeToString(sum[:])
 }()
 
+// retryRedisIntValid reports whether s is an integer in the form Redis
+// accepts on the wire: an optional leading '-' (but not '+'), digits
+// only, no leading zero unless the value is exactly "0" (or "-0"). It
+// mirrors the count guard in routing_metadata.go and the client-side
+// evalNumKeysValid; the script server models a real server, so it must
+// reject the forms strconv.Atoi accepts but Redis does not ("01", "+1").
+// A negative count parses fine — it is an integer, just not a valid
+// count — so "-1" is valid here: it must reach the negative-count
+// branch below and be refused "wrong number of keys", not answered
+// "value is not an integer".
+func retryRedisIntValid(s string) bool {
+	if strings.HasPrefix(s, "-") {
+		s = s[1:]
+	}
+	if len(s) == 0 || s[0] < '0' || s[0] > '9' || len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	_, err := strconv.Atoi(s)
+	return err == nil
+}
+
 type scriptRetryServer struct {
 	ln             net.Listener
 	conns          atomic.Int32
@@ -3026,13 +3162,15 @@ func (s *scriptRetryServer) serve(conn net.Conn, first bool) {
 			// A malformed EVAL is refused before the script is
 			// cached, like a negative key count: a missing numkeys
 			// is an arity error, and a non-integer one fails
-			// argument validation. Both are pre-execution
-			// rejections, so the script cached nothing.
+			// argument validation — including the wire forms
+			// strconv.Atoi accepts but Redis rejects ("01", "+1"):
+			// both are pre-execution rejections, so the script
+			// cached nothing.
 			if len(args) < 2 {
 				_, _ = conn.Write([]byte("-ERR wrong number of arguments for 'eval' command\r\n"))
 				continue
 			}
-			if _, err := strconv.Atoi(args[1]); err != nil {
+			if !retryRedisIntValid(args[1]) {
 				if s.attrEvalRejectionOnce.CompareAndSwap(true, false) {
 					// A RESP3 attribute block in front of the
 					// error: a raw client keeps it in the reply
@@ -4198,7 +4336,45 @@ func TestPipelineRetryRejectedEvalIsNotPreloaded(t *testing.T) {
 	}
 }
 
-// TestPipelineRetryCrossslotEvalIsNotPreloaded: a CROSSSLOT rejection is a
+// TestPipelineRetryEvalLeadingZeroNumkeysIsNotPreloaded: an EVAL whose
+// numkeys is "01" is refused before execution — Redis's integer parser
+// rejects the leading zero, even though strconv.Atoi accepts it — so
+// the script never cached and the retried EVALSHA must fail NOSCRIPT,
+// not execute the write script a synthesised SCRIPT LOAD would load.
+// Regression test for the Codex P1 finding on #4351.
+func TestPipelineRetryEvalLeadingZeroNumkeysIsNotPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	const src = "return 1"
+	sum := sha1.Sum([]byte(src))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Do(ctx, "eval", src, "01", "k")
+	evalsha := pipe.EvalSha(ctx, sha, []string{"k"})
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("Exec: %v, want the rejected EVAL's error (the first failed command wins; the retry must not turn the rejection into a successful SCRIPT LOAD)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("EVAL: %v, want the value-is-not-an-integer rejection", err)
+	}
+	if err := evalsha.Err(); err == nil || !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Fatalf("EVALSHA: %v, want NOSCRIPT (the rejected EVAL cached nothing)", err)
+	}
+	if got := server.loads.Load(); got != 0 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 0 (a rejected EVAL establishes no cache entry to reissue)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the rejected script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 1 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 1", got)
+	}
+}
+
 // pre-execution cluster refusal — the script never ran, so it cached
 // nothing. The retry must not turn it into a successful SCRIPT LOAD: the
 // retried EVALSHA would then execute writes the original batch refused.
@@ -7752,7 +7928,50 @@ func TestPipelineRetryDoesNotRerunAnsweredSwapdbAfterBoundary(t *testing.T) {
 	}
 }
 
-// TestPipelineRetrySwapdbCountsAsPendingWriteForBarrier: a SWAPDB the
+// TestPipelineRetryWholeBatchDoesNotRerunAnsweredSwapdb: a live WATCH
+// followed by an answered SWAPDB forces the whole batch on retry (the
+// swap dirties the watch), but the whole-batch retry must not re-send
+// the answered SWAPDB bare: that would swap the databases back and undo
+// the confirmed swap, so the SET after it would land in the pre-swap
+// database while Exec still reports success. The retry undoes the swap
+// ahead of the batch and re-applies it at its own position, so the SET
+// still lands in the post-swap database. Regression test for the Cursor
+// Bugbot finding on #4351.
+func TestPipelineRetryWholeBatchDoesNotRerunAnsweredSwapdb(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.trackValues = true
+	server.setTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	watch := pipe.Do(ctx, "watch", "k")
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	set := pipe.Set(ctx, "x", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run the SET in the post-swap database)", err)
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("WATCH: %v", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := server.swapdbs.Load(); got != 3 {
+		t.Fatalf("server received %d SWAPDB commands, want 3 (the answered SWAPDB plus its swap-back clone ahead of the whole-batch retry)", got)
+	}
+	if got := server.setsDB1.Load(); got != 1 {
+		t.Fatalf("server executed %d SETs in DB 1, want 1 (after SWAPDB 0 1, a SET on DB 0 lands in DB 1)", got)
+	}
+	if got := server.setsDB0.Load(); got != 0 {
+		t.Fatalf("server executed %d SETs in DB 0, want 0 (the whole-batch retry must not undo the confirmed swap)", got)
+	}
+}
+
 // server rejected with NOREPLICAS is a pending server-global write, so
 // a WAIT answered after it must be reissued with the retried SWAPDB:
 // the retained acknowledgement count measured nothing about the swap.
@@ -11004,6 +11223,50 @@ func TestPipelineRetryRetrimsAnsweredReissuedBarrier(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryBarrierReissuedBeforeLaterSessionChange: an answered
+// WAIT the retry reissues must run at its original position, not at the
+// end of the retry: MSET; WAIT 1 1000; AUTH limited pw; GET k reads
+// [NOREPLICAS, ack, ack, drop], so the retry is the MSET, the AUTH and
+// the GET with the WAIT re-measured — and the WAIT ran while the
+// default user could run it, so it must run before the AUTH switches
+// to the limited user, which cannot run WAIT at all. Appending it at
+// the end would run it as limited and fail the batch with NOPERM.
+// Regression test for the Codex P2 finding on #4351.
+func TestPipelineRetryBarrierReissuedBeforeLaterSessionChange(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 0
+	server.msetNoreplicasOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mset := pipe.Do(ctx, "mset", "k", "v")
+	wait := pipe.Do(ctx, "wait", 1, 1000)
+	auth := pipe.Do(ctx, "auth", "limited", "pw")
+	get := pipe.Get(ctx, "k")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the reissued WAIT must run before the AUTH to the limited user)", err)
+	}
+	if err := mset.Err(); err != nil {
+		t.Fatalf("MSET: %v", err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(1) {
+		t.Fatalf("WAIT = %v, %v; want 1, nil (the reissued barrier must measure as the default user, before the AUTH)", got, err)
+	}
+	if err := auth.Err(); err != nil {
+		t.Fatalf("AUTH: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	if got := server.waits.Load(); got != 2 {
+		t.Fatalf("server received %d WAIT commands, want 2 (one per attempt: the answered WAIT is re-measured on the retry)", got)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the retry must run on a fresh connection)", got)
+	}
+}
+
 // TestPipelineRetryEvalMsetArityRuntimeErrorIsPreloaded: a Lua runtime
 // error reports the same "wrong number of arguments" prefix EVAL itself
 // reports when refused before execution — but the script ran and cached
@@ -11114,6 +11377,16 @@ func TestEvalNumKeysValid(t *testing.T) {
 		{"nil byte slice", []any{"eval", "return 1", nilBytes, "k1"}, false},
 		{"empty string", []any{"eval", "return 1", emptyStr, "k1"}, false},
 		{"float", []any{"eval", "return 1", 1.0, "k1"}, false},
+		// Redis's integer parser rejects the wire forms strconv.Atoi
+		// accepts: a leading zero ("01", "00") or a plus sign ("+1")
+		// is not a well-formed count, so an EVAL refused for it
+		// cached nothing.
+		{"leading zero string", []any{"eval", "return 1", "01", "k1"}, false},
+		{"double zero string", []any{"eval", "return 1", "00", "k1"}, false},
+		{"plus sign string", []any{"eval", "return 1", "+1", "k1"}, false},
+		{"leading zero byte slice", []any{"eval", "return 1", []byte("01"), "k1"}, false},
+		{"plus sign byte slice", []any{"eval", "return 1", []byte("+1"), "k1"}, false},
+		{"zero string", []any{"eval", "return 1", "0", "k1"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
