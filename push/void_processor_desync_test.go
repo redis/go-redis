@@ -2,6 +2,8 @@ package push
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -139,4 +141,60 @@ func TestVoidProcessorKeepsPushOnUnparseableHeader(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestVoidProcessorReturnsMidFrameReadError verifies that VoidProcessor surfaces
+// errors from ReadReply once a push frame has started being consumed. Unlike
+// boundary peek errors (which consume nothing), a mid-frame ReadReply failure
+// leaves the reader desynchronized; returning nil would let callers such as
+// full-duplex autopipelining or CSC drainers keep reading shifted bytes or
+// re-pool the corrupted connection.
+func TestVoidProcessorReturnsMidFrameReadError(t *testing.T) {
+	t.Run("read timeout", func(t *testing.T) {
+		rd := proto.NewReader(&prefixThenErrReader{
+			prefix: []byte(">2\r\n$6\r\nMOVING\r\n"),
+			err:    readTimeoutError{},
+		})
+
+		err := NewVoidProcessor().ProcessPendingNotifications(
+			context.Background(), NotificationHandlerContext{}, rd,
+		)
+		var te readTimeoutError
+		if !errors.As(err, &te) {
+			t.Fatalf("ProcessPendingNotifications err = %v, want %T", err, te)
+		}
+	})
+
+	t.Run("truncated EOF", func(t *testing.T) {
+		rd := proto.NewReader(strings.NewReader(">2\r\n$6\r\nMOVING\r\n$5\r\nhi"))
+
+		err := NewVoidProcessor().ProcessPendingNotifications(
+			context.Background(), NotificationHandlerContext{}, rd,
+		)
+		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("ProcessPendingNotifications err = %v, want EOF/ErrUnexpectedEOF", err)
+		}
+	})
+
+	t.Run("malformed body", func(t *testing.T) {
+		rd := proto.NewReader(strings.NewReader(">2\r\n$6\r\nMOVING\r\n$x\r\n+OK\r\n"))
+
+		err := NewVoidProcessor().ProcessPendingNotifications(
+			context.Background(), NotificationHandlerContext{}, rd,
+		)
+		if err == nil {
+			t.Fatal("ProcessPendingNotifications err = nil, want parse error after partial push read")
+		}
+	})
+
+	t.Run("unpeekable name malformed body", func(t *testing.T) {
+		rd := proto.NewReader(strings.NewReader(">2\r\n:5\r\n$x\r\n+OK\r\n"))
+
+		err := NewVoidProcessor().ProcessPendingNotifications(
+			context.Background(), NotificationHandlerContext{}, rd,
+		)
+		if err == nil {
+			t.Fatal("ProcessPendingNotifications err = nil, want parse error after partial push read")
+		}
+	})
 }
