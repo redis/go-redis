@@ -346,9 +346,10 @@ func (p *ProxyNotificationInjector) SetClusterSlotsReply(reply string) error {
 }
 
 func (p *ProxyNotificationInjector) updateClusterSlotsInterceptor() error {
-	// The proxy doesn't support updating existing interceptors
-	// As a workaround, we'll send the updated CLUSTER SLOTS response directly to all clients
-	// This simulates what would happen when the client calls CLUSTER SLOTS after SMIGRATED
+	// Sends the updated CLUSTER SLOTS reply to all connected clients, to
+	// simulate the client calling CLUSTER SLOTS after SMIGRATED. It does not
+	// change the cluster-slots interceptor; SetClusterSlotsReply does that (the
+	// proxy replaces an interceptor with the same name).
 
 	clusterSlotsResponse := p.buildClusterSlotsResponse()
 
