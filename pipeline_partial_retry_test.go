@@ -265,6 +265,11 @@ type connStateRetryServer struct {
 	// is not changed, so a retry that runs it lands in the
 	// database the swap state leaves it in.
 	setTryagainOnce atomic.Bool
+	// getTryagainOnce, when set, makes the next GET answer TRYAGAIN
+	// without executing: the key is not read, exactly like a real
+	// server refusing the read while a slot migrates. Unlike
+	// mgetTryagainCount it fires once, so a retry completes.
+	getTryagainOnce atomic.Bool
 	// setReadonlyOnce, when set, makes the next SET answer READONLY
 	// without executing: the key is not recorded, exactly like a
 	// read-only replica refusing the write during promotion.
@@ -632,6 +637,13 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				reply = ":1\r\n"
 			}
 		case "get":
+			if s.getTryagainOnce.CompareAndSwap(true, false) {
+				// A TRYAGAIN GET never executed: it reads no
+				// value, exactly like a real server refusing
+				// the read while a slot migrates.
+				reply = "-TRYAGAIN Multiple keys request during slot migration\r\n"
+				break
+			}
 			reply = "$1\r\nv\r\n"
 			if s.trackValues && len(args) >= 1 {
 				s.valuesMu.Lock()
@@ -11446,5 +11458,264 @@ func TestPipelineRetryRestoresUnconsumedTrailingOneShotFlag(t *testing.T) {
 	}
 	if got := server.optinGets.Load(); got != 1 {
 		t.Fatalf("server saw %d opt-in GETs, want 1 (the GET after the retry must still run opt-in)", got)
+	}
+}
+
+// TestPipelineRetrySwapdbVetoDoesNotSuppressTailSelect: an answered
+// SWAPDB past the boundary must not veto the retirement an answered
+// SELECT after it requires: PING; SET out v; SWAPDB 0 1; SELECT 1 reads
+// [PONG, NOREPLICAS, OK, OK], so the retry must run on a fresh
+// connection — the SWAPDB is server-global, so its swap-back clone stays
+// valid on the replacement connection, while the SELECT's session state
+// does not. Without the fix the retry reuses the connection still
+// selecting DB 1 and the SET lands there. Regression test for the Codex
+// P1 finding on #4351 (review 6042465465 follow-up, round 40).
+func TestPipelineRetrySwapdbVetoDoesNotSuppressTailSelect(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.setNoreplicasOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	ping := pipe.Ping(ctx)
+	set := pipe.Set(ctx, "out", "v", 0)
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	sel := pipe.Select(ctx, 1)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run the SET in DB 0 on a fresh connection)", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("PING: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if got := server.setsDB0.Load(); got != 1 {
+		t.Fatalf("server executed %d SETs in DB 0, want 1 (the retried SET must run in the database it was issued for)", got)
+	}
+	if got := server.setsDB1.Load(); got != 0 {
+		t.Fatalf("server executed %d SETs in DB 1, want 0 (the answered SELECT after the SWAPDB must not leak into the retry suffix)", got)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the retry must start on a fresh connection, not the one the first attempt left in DB 1)", got)
+	}
+}
+
+// TestPipelineRetryTrailingOneShotFlagDoesNotOptInRetriedRead: a trailing
+// answered CLIENT CACHING YES is still armed when the batch ends — it
+// has no follower in the batch to consume it — so on a pooled connection
+// the retry must start on a fresh one: the first retried command would
+// otherwise consume the armed flag and run opt-in although it was never
+// issued as such. Here the retried GET answers TRYAGAIN first and the
+// flag follows it, so the GET is the first retried command. The flag is
+// still re-sent at the end of the retry, so it ends armed for the
+// command after the batch. Regression test for the Cursor Bugbot High
+// finding on #4351 (round 40).
+func TestPipelineRetryTrailingOneShotFlagDoesNotOptInRetriedRead(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.getTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	get := pipe.Get(ctx, "k")
+	caching := pipe.Do(ctx, "client", "caching", "yes")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	if err := caching.Err(); err != nil {
+		t.Fatalf("CLIENT CACHING: %v", err)
+	}
+	if got := server.optinGets.Load(); got != 0 {
+		t.Fatalf("server saw %d opt-in GETs, want 0 (the retried GET must not consume the armed flag)", got)
+	}
+	if got := server.cachingCmds.Load(); got != 2 {
+		t.Fatalf("server received %d CLIENT CACHING commands, want 2 (the answered trailing flag must be re-sent at the end of the retry)", got)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the retry must start on a fresh connection, not the one still carrying the armed flag)", got)
+	}
+}
+
+// TestPipelineRetrySessionRetireNeedsScheduledRetry: on a dedicated Conn
+// with retries disabled (MaxRetries -1), a fully read SET out v; SELECT
+// 1 receiving [NOREPLICAS, OK] must not retire the connection: no retry
+// can run, so the retirement only turns the otherwise synchronized Conn
+// into a persistent BadConnError for the next command. The follow-up SET
+// must succeed and run in DB 1, the database the answered SELECT left
+// selected. Regression test for the Codex P2 finding on #4351 (round 40).
+func TestPipelineRetrySessionRetireNeedsScheduledRetry(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.setNoreplicasOnce.Store(true)
+	client := newMaxRetriesClient(t, server.ln.Addr().String(), -1)
+	conn := client.Conn()
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx := context.Background()
+	pipe := conn.Pipeline()
+	set := pipe.Set(ctx, "out", "v", 0)
+	sel := pipe.Select(ctx, 1)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOREPLICAS") {
+		t.Fatalf("Exec: %v, want the NOREPLICAS error (no retry is scheduled, so the batch ends on the first attempt)", err)
+	}
+	if err := set.Err(); err == nil || !strings.Contains(err.Error(), "NOREPLICAS") {
+		t.Fatalf("SET: %v, want the NOREPLICAS error", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	after := conn.Set(ctx, "after", "v", 0)
+	if err := after.Err(); err != nil {
+		t.Fatalf("follow-up SET: %v, want nil (the connection must not be retired when no retry is scheduled)", err)
+	}
+	if got := server.setsDB1.Load(); got != 1 {
+		t.Fatalf("server executed %d SETs in DB 1, want 1 (the follow-up SET must run in the database the answered SELECT left selected)", got)
+	}
+}
+
+// TestPipelineRetrySessionRetireSkippedOnFinalAttempt: the same gate on
+// the final allowed attempt — a pooled client with one retry left runs
+// the first attempt, retires, and retries; when that attempt fails the
+// same way, no further dispatch is scheduled, so the connection must
+// survive for the next operation. The MGET answers TRYAGAIN on both
+// attempts, so the SELECT after it is answered session state past the
+// boundary on each. A follow-up pipeline must reuse the second connection
+// instead of dialing a third. Regression test for the Codex P2 finding
+// on #4351 (round 40).
+func TestPipelineRetrySessionRetireSkippedOnFinalAttempt(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.mgetTryagainCount.Store(2)
+	client := newMaxRetriesClient(t, server.ln.Addr().String(), 1)
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	mget := pipe.MGet(ctx, "k")
+	sel := pipe.Select(ctx, 1)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "TRYAGAIN") {
+		t.Fatalf("Exec: %v, want the TRYAGAIN error (both attempts fail the MGET)", err)
+	}
+	if err := mget.Err(); err == nil || !strings.Contains(err.Error(), "TRYAGAIN") {
+		t.Fatalf("MGET: %v, want the TRYAGAIN error", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	// A follow-up pipeline reuses the pipeline pool, so it must run on
+	// the second connection: a single-command PING would dial the main
+	// pool instead and prove nothing about the retired connection.
+	pipe2 := client.Pipeline()
+	pipe2.Ping(ctx)
+	if _, err := pipe2.Exec(ctx); err != nil {
+		t.Fatalf("follow-up pipeline: %v, want nil", err)
+	}
+	if got := server.conns.Load(); got != 2 {
+		t.Fatalf("server saw %d connections, want 2 (the final attempt must not retire the connection it ran on)", got)
+	}
+}
+
+// TestPipelineRetryBarrierAfterRestorationPrefix: a reissued barrier
+// must run after the restoration prefix, not before it. With SET out v;
+// WAIT 1 1000; SWAPDB 0 1 receiving [NOREPLICAS, 1, OK], the rebuild
+// creates a swap-back clone whose retryPos is 2; the old insertion scan
+// met that clone before the pending SET and produced WAIT; SWAPDB; SET;
+// SWAPDB, so WAIT measured the old replication offset and Exec could
+// succeed although the retried SET was never covered by a barrier. The
+// barrier is ordered against the retained logical tail instead: the
+// swap-back clone first, then SET, WAIT, SWAPDB. Regression test for
+// the Codex P1 finding on #4351 (round 40).
+func TestPipelineRetryBarrierAfterRestorationPrefix(t *testing.T) {
+	ctx := context.Background()
+	noreplicas := proto.RedisError("NOREPLICAS Not enough replicas to apply the write")
+	set := NewStringCmd(ctx, "set", "out", "v")
+	set.SetErr(noreplicas)
+	wait := NewIntCmd(ctx, "wait", 1, 1000)
+	wait.SetVal(1)
+	swapdb := NewStringCmd(ctx, "swapdb", 0, 1)
+	cmds := []Cmder{set, wait, swapdb}
+	suffix := pipelineRetrySuffix(ctx, cmds, noreplicas, nil)
+	want := []string{"swapdb", "set", "wait", "swapdb"}
+	if len(suffix) != len(want) {
+		t.Fatalf("suffix has %d commands, want %d", len(suffix), len(want))
+	}
+	for i, name := range want {
+		if got := suffix[i].Name(); got != name {
+			t.Fatalf("suffix[%d] = %q, want %q (full order: %v)", i, got, name, cmdNames(suffix))
+		}
+	}
+	if suffix[0] == swapdb {
+		t.Fatalf("suffix[0] is the original SWAPDB, want the swap-back clone (the original must stay in the tail to swap back)")
+	}
+	if suffix[2] != wait {
+		t.Fatalf("suffix[2] is not the original WAIT, want the original (the reissued barrier must re-measure, not keep the first count)")
+	}
+	if suffix[3] != swapdb {
+		t.Fatalf("suffix[3] is not the original SWAPDB, want the original (the kept swap must re-apply at its own position)")
+	}
+}
+
+func cmdNames(cmds []Cmder) []string {
+	names := make([]string, len(cmds))
+	for i, cmd := range cmds {
+		names[i] = cmd.Name()
+	}
+	return names
+}
+
+// TestPipelineRetryBarrierMergeIsLinear: one pending write followed by
+// many answered barriers must not rescan the growing retry per barrier:
+// the old insertion pass restarted the search for every barrier, so
+// 100,000 barriers cost about 2.4 seconds of quadratic work. The single
+// ordered merge pass below runs in milliseconds; the bound only guards
+// against the quadratic behaviour coming back, with ample headroom (see
+// TestPipelineRetrySuffixNoTxIsLinear for the same shape). Regression
+// test for the Codex P2 finding on #4351 (round 40).
+func TestPipelineRetryBarrierMergeIsLinear(t *testing.T) {
+	const n = 100000
+	ctx := context.Background()
+	noreplicas := proto.RedisError("NOREPLICAS Not enough replicas to apply the write")
+	cmds := make([]Cmder, 0, n+1)
+	set := NewStringCmd(ctx, "set", "out", "v")
+	set.SetErr(noreplicas)
+	cmds = append(cmds, set)
+	for i := 0; i < n; i++ {
+		wait := NewIntCmd(ctx, "wait", 1, 1000)
+		wait.SetVal(1)
+		cmds = append(cmds, wait)
+	}
+	start := time.Now()
+	suffix := pipelineRetrySuffix(ctx, cmds, noreplicas, nil)
+	elapsed := time.Since(start)
+	if len(suffix) != n+1 {
+		t.Fatalf("suffix has %d commands, want %d (the pending SET plus every reissued barrier)", len(suffix), n+1)
+	}
+	if suffix[0] != set {
+		t.Fatalf("suffix[0] is not the pending SET, want it first (every barrier follows the write it guards)")
+	}
+	for i := 1; i <= n; i++ {
+		if suffix[i] != cmds[i] {
+			t.Fatalf("suffix[%d] is not the original WAIT, want the barriers in original order", i)
+		}
+	}
+	// Machine-dependent by nature: the single merge pass runs in
+	// milliseconds on this workload, while the per-barrier rescan it
+	// replaced took seconds. The bound only guards against the
+	// quadratic behaviour coming back, with ample headroom.
+	if elapsed > time.Second {
+		t.Fatalf("pipelineRetrySuffix took %v for %d barriers, want < 1s (the per-barrier rescan is quadratic)", elapsed, n)
 	}
 }

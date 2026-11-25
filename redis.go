@@ -2967,6 +2967,18 @@ func pipelineHasOpenMulti(cmds []Cmder) bool {
 	return false
 }
 
+// pipelineRetryTailBoundary returns the index of the first command in
+// cmds with a retryable Redis error — the answered/unanswered boundary
+// the retry suffix rebuilds from — or -1 when no command has one.
+func pipelineRetryTailBoundary(cmds []Cmder) int {
+	for i, cmd := range cmds {
+		if e := pipelineCmdErr(cmd); e != nil && isRedisError(e) && shouldRetry(e, true) {
+			return i
+		}
+	}
+	return -1
+}
+
 // pipelineRetryTailKeepsSessionState reports whether retrying cmds would
 // re-run answered connection-state commands from past the
 // answered/unanswered boundary: the retry suffix replays those commands
@@ -2977,46 +2989,27 @@ func pipelineHasOpenMulti(cmds []Cmder) bool {
 // issued for. Only state the retry re-establishes ahead of the suffix
 // is exempt: a command in the answered prefix is reissued by the
 // rebuild, and a SWAPDB is undone ahead of the tail by its swap-back
-// clone, so neither forces a fresh connection. A command inside a
+// clone, so neither forces a fresh connection. A SWAPDB past the
+// boundary does not veto the check: it is server-global, so its inverse
+// stays valid on a replacement connection, and it must not suppress the
+// session reset a SELECT or AUTH after it requires. A command inside a
 // transaction DISCARD dropped or the server aborted established
 // nothing, a command still queued in an open transaction has not run
-// yet either, and a one-shot flag (ASKING, CLIENT CACHING) was
-// consumed by its follower, so none of those count; MULTI / EXEC /
-// DISCARD frame the transaction the suffix re-runs as a unit, so they
-// do not count either. The boundary here is approximate — the first
-// command with a retryable Redis error, without the stale / synthetic /
-// settled-frame skips the suffix builder applies — which can only move
-// it earlier: a state command past the true boundary is past this one
-// too, so the check never misses a case, and a false positive only
-// costs a fresh connection. The SWAPDB veto uses the same boundary for
-// the same reason: an answered SWAPDB past it vetoes the retirement,
-// because its swap-back clones assume the same connection — retiring
-// would let them swap a fresh connection that never had the swap
-// applied.
+// yet either, and a one-shot flag (ASKING, CLIENT CACHING) is reported
+// separately (see pipelineRetryTailHasArmedOneShot), so none of those
+// count here; MULTI / EXEC / DISCARD frame the transaction the suffix
+// re-runs as a unit, so they do not count either. The boundary here is
+// approximate — the first command with a retryable Redis error, without
+// the stale / synthetic / settled-frame skips the suffix builder
+// applies — which can only move it earlier: a state command past the
+// true boundary is past this one too, so the check never misses a case,
+// and a false positive only costs a fresh connection.
 func pipelineRetryTailKeepsSessionState(cmds []Cmder) bool {
 	abortedTx := pipelineAbortedTxCmds(cmds)
 	discardedTx := pipelineDiscardedTxCmds(cmds)
 	txBodyNeedsRetry := pipelineTxBodyNeedsRetryMap(cmds)
-	boundary := -1
-	for i, cmd := range cmds {
-		if e := pipelineCmdErr(cmd); e != nil && isRedisError(e) && shouldRetry(e, true) {
-			boundary = i
-			break
-		}
-	}
+	boundary := pipelineRetryTailBoundary(cmds)
 	if boundary < 0 {
-		return false
-	}
-	for idx := boundary + 1; idx < len(cmds); idx++ {
-		cmd := cmds[idx]
-		if abortedTx[cmd.base()] || discardedTx[cmd.base()] || txBodyNeedsRetry[idx] {
-			continue
-		}
-		if cmd.Name() != "swapdb" || pipelineCmdErr(cmd) != nil {
-			continue
-		}
-		// An answered SWAPDB past the boundary: its swap-back
-		// clones assume the retry reuses this connection.
 		return false
 	}
 	for idx := boundary + 1; idx < len(cmds); idx++ {
@@ -3037,6 +3030,63 @@ func pipelineRetryTailKeepsSessionState(cmds []Cmder) bool {
 		return true
 	}
 	return false
+}
+
+// pipelineRetryTailHasArmedOneShot reports whether an answered one-shot
+// state command (ASKING, CLIENT CACHING) past the boundary is still
+// armed on the connection: its follower — the next command in the batch
+// — was never answered, so the flag was never consumed, and the first
+// command the retry runs on the reused connection consumes it instead.
+// A flag whose follower answered — with no error, or with a
+// non-retryable Redis reply, so the follower ran and the flag applied
+// to it — was consumed and does not count; neither does a flag the
+// server rejected (it never armed anything), one inside a transaction
+// DISCARD dropped or the server aborted, or one queued in a still-open
+// frame (it never ran). A trailing flag has no follower at all, so it
+// counts: the builder re-sends it at the end of the retry, so the flag
+// ends armed for the command after the batch either way — but the
+// retried commands ahead of that re-send still run under the armed
+// flag, so on a pooled connection the retry starts on a fresh one
+// instead (see the retire site in pipelineProcessCmds). On a dedicated
+// connection there is no fresh connection to start on — retiring would
+// fail the retry itself — so the re-send is the whole handling there.
+func pipelineRetryTailHasArmedOneShot(cmds []Cmder) bool {
+	abortedTx := pipelineAbortedTxCmds(cmds)
+	discardedTx := pipelineDiscardedTxCmds(cmds)
+	txBodyNeedsRetry := pipelineTxBodyNeedsRetryMap(cmds)
+	boundary := pipelineRetryTailBoundary(cmds)
+	if boundary < 0 {
+		return false
+	}
+	for idx := boundary + 1; idx < len(cmds); idx++ {
+		cmd := cmds[idx]
+		if abortedTx[cmd.base()] || discardedTx[cmd.base()] || txBodyNeedsRetry[idx] {
+			continue
+		}
+		if !pipelineOneShotStateCmd(cmd) {
+			continue
+		}
+		if pipelineCmdErr(cmd) != nil {
+			continue
+		}
+		if idx+1 < len(cmds) {
+			if e := pipelineCmdErr(cmds[idx+1]); e == nil || (isRedisError(e) && !shouldRetry(e, true)) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// pipelineClientHasStickyConn reports whether c serves operations on a
+// dedicated connection (Client.Conn): its pool hands the same connection
+// back on every Get, so retiring it fails the retry itself — the next
+// Get returns the BadConnError the sticky pool records — instead of
+// starting the retry on a fresh connection.
+func (c *baseClient) pipelineClientHasStickyConn() bool {
+	_, ok := c.connPool.(*pool.StickyConnPool)
+	return ok
 }
 
 // pipelineTxBodyNeedsRetryMap precomputes, in one O(n) pass over cmds,
@@ -5209,6 +5259,15 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					markPipelineSynthetic(ctx, true, fresh)
 				}
 			}
+			// tailStart marks where the retained tail begins in
+			// retry: everything before it is restoration — session
+			// reissues, script preloads, swap-back clones, the
+			// reissued one-shot flag above — and the barrier merge
+			// below runs only over the tail, whose retryPos is
+			// sorted (the tail keeps original order). A barrier
+			// therefore never lands ahead of a restoration command
+			// that stands for a later command (see below).
+			tailStart := len(retry)
 			for j, cmd := range cmds[i:] {
 				if j > 0 && !keep[j-1] {
 					// Dropped from the tail: an answered command
@@ -5241,12 +5300,17 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// after it: a WAIT answered while the default user
 			// could run it would re-run after an AUTH to a user
 			// that cannot, and fail a batch the original ordering
-			// would have completed. Inserting it by retryPos keeps
-			// it ahead of every retained command it originally
+			// would have completed. Merging it by retryPos keeps
+			// it ahead of every retained tail command it originally
 			// preceded — and behind every pending write before
 			// it, which the tail keeps in original order — while a
 			// barrier past every retained command still lands at
-			// the end, as before.
+			// the end, as before. Restoration commands always stay
+			// ahead of it: a swap-back clone stands for a later
+			// command, so ordering the barrier against the whole
+			// retry would put it before the clone and let it
+			// measure the old offset — the merge below runs only
+			// over the retained tail (see tailStart).
 			// It must be the original, not a clone: the reissued
 			// barrier's acknowledgement count is the only fresh
 			// measurement, and a clone would keep it while the
@@ -5301,6 +5365,24 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					pendingWritesBefore[k+1]++
 				}
 			}
+			// Collect the barriers to reissue first — answeredTail
+			// is in original order, so their positions are
+			// non-decreasing — then merge them into the retained
+			// tail in one ordered pass: a barrier goes before the
+			// first tail entry standing for a later command, and
+			// after every tail entry at or before its own
+			// position, exactly where the old per-barrier scan put
+			// it. Restarting that scan for every barrier rescanned
+			// the growing retry each time, so one pending write
+			// followed by many answered barriers was quadratic
+			// (about 2.4 seconds for 100,000 barriers); the merge
+			// is linear in the retry plus the barriers, and needs
+			// no context check per barrier — the work is one pass,
+			// not one scan per barrier. The merge runs only over
+			// the tail (see tailStart): retryPos is sorted there,
+			// while the restoration prefix ahead of it is not.
+			var reissue []Cmder
+			var reissuePos []int
 			for _, barrier := range answeredTail {
 				if name := barrier.Name(); name != "wait" && name != "waitaof" {
 					continue
@@ -5321,28 +5403,31 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				// rejected command. The read path overwrites the
 				// error of every command it dispatches, so a
 				// barrier that actually runs still replaces it
-				// with the fresh result. Insert at the barrier's
-				// original position (see retryPos above): retryPos
-				// is not sorted — swap-back clones precede the
-				// tail while standing for later commands — so the
-				// scan is linear; barriers are few and the retry
-				// is built once per attempt.
-				at := cmdIndex[barrier.base()]
-				pos := len(retryPos)
-				for p, orig := range retryPos {
-					if orig > at {
-						pos = p
-						break
-					}
-				}
-				retry = append(retry, nil)
-				copy(retry[pos+1:], retry[pos:])
-				retry[pos] = barrier
-				retryPos = append(retryPos, 0)
-				copy(retryPos[pos+1:], retryPos[pos:])
-				retryPos[pos] = at
-				markPipelineSynthetic(ctx, true, barrier)
+				// with the fresh result.
+				reissue = append(reissue, barrier)
+				reissuePos = append(reissuePos, cmdIndex[barrier.base()])
 			}
+			merged := make([]Cmder, 0, len(retry)+len(reissue))
+			mergedPos := make([]int, 0, len(retry)+len(reissue))
+			merged = append(merged, retry[:tailStart]...)
+			mergedPos = append(mergedPos, retryPos[:tailStart]...)
+			b := 0
+			for p := tailStart; p < len(retry); p++ {
+				for b < len(reissue) && retryPos[p] > reissuePos[b] {
+					merged = append(merged, reissue[b])
+					mergedPos = append(mergedPos, reissuePos[b])
+					markPipelineSynthetic(ctx, true, reissue[b])
+					b++
+				}
+				merged = append(merged, retry[p])
+				mergedPos = append(mergedPos, retryPos[p])
+			}
+			for ; b < len(reissue); b++ {
+				merged = append(merged, reissue[b])
+				mergedPos = append(mergedPos, reissuePos[b])
+				markPipelineSynthetic(ctx, true, reissue[b])
+			}
+			retry, retryPos = merged, mergedPos
 			return retry
 		}
 	}
@@ -5612,6 +5697,7 @@ func (c *baseClient) generalProcessPipelineFrom(
 		dispatched := &pipelineAttemptProgress{}
 		attemptCtx, dialExhausted := c.captureFixedPipelineDialExhaustion(ctx)
 		attemptCtx = context.WithValue(attemptCtx, pipelineAttemptKey{}, dispatched)
+		attemptCtx = context.WithValue(attemptCtx, pipelineRetryScheduledKey{}, attempt < maxRetries)
 		lastErr = c.withPipelineConn(attemptCtx, func(ctx context.Context, cn *pool.Conn) error {
 			connAcquired = true
 			lastConn = cn
@@ -5847,6 +5933,25 @@ func markPipelineExecuted(ctx context.Context, cmds []Cmder) {
 // the attempt never reached are never marked, so their stale markers
 // survive.
 type pipelineAttemptKey struct{}
+
+// pipelineRetryScheduledKey carries whether the retry loop will dispatch
+// another attempt after this one: attempt < maxRetries at the time the
+// attempt started. The read path consults it before retiring a
+// connection whose retry tail re-runs answered session state (see
+// pipelineProcessCmds): retiring only helps when a retry actually runs —
+// on the final allowed attempt, or with retries disabled, there is no
+// fresh connection to start on, and the retirement only turns the
+// otherwise usable connection into a BadConnError for the next command.
+// Callers that do not go through the retry loop read the zero value and
+// keep the old behaviour.
+type pipelineRetryScheduledKey struct{}
+
+func pipelineRetryScheduled(ctx context.Context) bool {
+	if v, ok := ctx.Value(pipelineRetryScheduledKey{}).(bool); ok {
+		return v
+	}
+	return true
+}
 
 type pipelineAttemptProgress struct {
 	// read is the slice the read loop is reading, in order; only the
@@ -6227,9 +6332,26 @@ func (c *baseClient) pipelineProcessCmds(
 	// error: a successful attempt keeps its connection on purpose,
 	// and a failed attempt whose suffix holds no such state reuses
 	// it as before, so a batch that never selected a database keeps
-	// running under the session it started in.
-	if readErr != nil && shouldRetry(readErr, true) && pipelineRetryTailKeepsSessionState(cmds) {
-		cn.MarkCloseOnPut("pipeline: retry tail re-runs answered session state")
+	// running under the session it started in. And only when another
+	// dispatch is actually scheduled (see pipelineRetryScheduled): on
+	// the final allowed attempt, or with retries disabled, there is
+	// no retry to start on a fresh connection, and retiring only
+	// turns this otherwise usable connection into a BadConnError for
+	// the next command. The same applies when a command in the batch
+	// disables retries, which ends the operation the same way. The
+	// same gate covers a still-armed one-shot flag past the boundary (see
+	// pipelineRetryTailHasArmedOneShot): the first retried command
+	// would consume it, so on a pooled connection the retry starts
+	// on a fresh one instead — but never on a dedicated connection,
+	// where retiring would fail the retry itself and the builder's
+	// end-of-retry re-send already restores the flag for the command
+	// after the batch.
+	if readErr != nil && shouldRetry(readErr, true) && pipelineRetryScheduled(ctx) && !cmdsContainNoRetry(cmds) {
+		if pipelineRetryTailKeepsSessionState(cmds) {
+			cn.MarkCloseOnPut("pipeline: retry tail re-runs answered session state")
+		} else if pipelineRetryTailHasArmedOneShot(cmds) && !c.pipelineClientHasStickyConn() {
+			cn.MarkCloseOnPut("pipeline: retry tail leaves a one-shot flag armed")
+		}
 	}
 	return readErr != nil, readErr
 }
