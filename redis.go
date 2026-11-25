@@ -3980,8 +3980,17 @@ func evalScriptCached(cmd Cmder) bool {
 // runs, and one in a frame DISCARD dropped or the server aborted never
 // swapped either. A queued SWAPDB's rejection lives in its EXEC
 // result element, not in its own +QUEUED reply (see
-// pipelineQueuedExecErrMap), so the element decides there. The clones
-// are fresh commands, not the originals: the originals keep their OK
+// pipelineQueuedExecErrMap), so the element decides there. A SWAPDB
+// counts only when this invocation recorded reply progress for it
+// (see pipelineAnsweredFromCtx): a nil error also sits on a command no
+// attempt ever dispatched — a failed acquisition or initialisation
+// leaves every command untouched — and an inverse for one would run
+// two swaps on retry and cancel the requested operation while Exec
+// reports success. And a synthetic SWAPDB is a swap-back clone a
+// previous retry already inserted, not an original command: it already
+// undoes a swap, so treating it as an answered SWAPDB would prepend
+// another inverse for it and land later writes in the wrong database.
+// The clones are fresh commands, not the originals: the originals keep their OK
 // results. They are required: a failed
 // swap-back must fail the batch rather than let the batch run in the
 // wrong database.
@@ -3990,9 +3999,17 @@ func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
 	discardedTx := pipelineDiscardedTxCmds(cmds)
 	txBodyNeedsRetry := pipelineTxBodyNeedsRetryMap(cmds)
 	execErrs := pipelineQueuedExecErrMap(cmds)
+	answered := pipelineAnsweredFromCtx(ctx)
+	synthetic := pipelineSyntheticFromCtx(ctx)
 	var swaps []Cmder
 	for idx, cmd := range cmds {
 		if cmd.Name() != "swapdb" {
+			continue
+		}
+		if synthetic[cmd.base()] {
+			continue
+		}
+		if !answered[cmd.base()] {
 			continue
 		}
 		if abortedTx[cmd.base()] || discardedTx[cmd.base()] || txBodyNeedsRetry[idx] {

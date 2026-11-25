@@ -8042,6 +8042,129 @@ func TestPipelineRetryWholeBatchDoesNotRerunAnsweredSwapdb(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryZeroDispatchSwapdbIsNotInverted: when the first
+// connection acquisition fails with a retryable error before the
+// pipeline processor runs, no command was dispatched — but the fresh
+// commands still carry nil errors, so the whole-batch builder used to
+// treat the never-sent SWAPDB as answered and synthesise an inverse
+// for it. The retry then executed two swaps, cancelling the requested
+// operation while Exec reported nil, and the SET landed in the
+// pre-swap database. The builder must require recorded reply progress
+// before adding an inverse. Regression test for the Codex P1 finding
+// on #4351.
+func TestPipelineRetryZeroDispatchSwapdbIsNotInverted(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	var dials atomic.Int32
+	client := NewClient(&Options{
+		Addr:            server.ln.Addr().String(),
+		Protocol:        2,
+		PoolSize:        10,
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 2 * time.Millisecond,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// A pipeline acquisition dials the dedicated pipeline
+			// pool first (5 attempts) and spills to the main pool
+			// on failure (5 more), so the first attempt's
+			// acquisition fails only when every dial in both
+			// pools fails: fail the first ten dials and let the
+			// retry's dial through. PoolSize 10 keeps the pool
+			// dial breaker closed, so no background probe dials
+			// in between and the count stays deterministic.
+			if dials.Add(1) <= 10 {
+				return nil, &net.OpError{Op: "dial", Net: network, Err: errors.New("connection refused")}
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	set := pipe.Set(ctx, "k", "v", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must run the SWAPDB once, on the second acquisition)", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if got := dials.Load(); got != 11 {
+		t.Fatalf("client dialed %d times, want 11 (the first attempt's ten pool dials fail, the retry dials again)", got)
+	}
+	if got := server.swapdbs.Load(); got != 1 {
+		t.Fatalf("server received %d SWAPDB commands, want 1 (a SWAPDB the first attempt never sent must not gain an inverse)", got)
+	}
+	if got := server.setDB.Load(); got != 1 {
+		t.Fatalf("SET ran on DB %d, want 1 (after one SWAPDB 0 1, a SET on DB 0 lands in DB 1)", got)
+	}
+}
+
+// TestPipelineRetryWholeBatchRequiresAnsweredSwapdb: the whole-batch
+// builder must require recorded reply progress before adding a SWAPDB
+// inverse. A nil error also sits on a command no attempt ever
+// dispatched — a failed acquisition leaves every command untouched —
+// so synthesising an inverse for one would run two swaps on retry
+// and cancel the requested operation while Exec reports success.
+func TestPipelineRetryWholeBatchRequiresAnsweredSwapdb(t *testing.T) {
+	ctx := context.Background()
+	answered := make(map[*baseCmd]bool)
+	ctx = context.WithValue(ctx, pipelineAnsweredKey{}, answered)
+	ctx = context.WithValue(ctx, pipelineSyntheticKey{}, make(map[*baseCmd]bool))
+	ctx = context.WithValue(ctx, pipelineRequiredSyntheticKey{}, make(map[*baseCmd]bool))
+
+	swapdb := NewCmd(ctx, "swapdb", 0, 1)
+	set := NewCmd(ctx, "set", "k", "v")
+	cmds := []Cmder{swapdb, set}
+
+	if retry := pipelineWholeBatchRetry(ctx, cmds); len(retry) != 2 || retry[0] != swapdb || retry[1] != set {
+		t.Fatalf("whole-batch retry of a never-dispatched SWAPDB returned %d commands, want the 2 originals unchanged (no inverse is owed)", len(retry))
+	}
+
+	answered[swapdb.base()] = true
+	if retry := pipelineWholeBatchRetry(ctx, cmds); len(retry) != 3 || retry[1] != swapdb || retry[2] != set {
+		t.Fatalf("whole-batch retry of an answered SWAPDB returned %d commands, want 3 (one swap-back clone ahead of the originals)", len(retry))
+	}
+}
+
+// TestPipelineRetryWholeBatchSkipsSyntheticSwapdbClone: a swap-back
+// clone a previous suffix rebuild inserted is synthetic, not an
+// answered original SWAPDB. A later whole-batch fallback must not
+// prepend another inverse for it: the extra swap would land later
+// writes in the wrong database while Exec still reports success.
+func TestPipelineRetryWholeBatchSkipsSyntheticSwapdbClone(t *testing.T) {
+	ctx := context.Background()
+	swapdb := NewCmd(ctx, "swapdb", 0, 1)
+	clone := swapdb.Clone()
+	set := NewCmd(ctx, "set", "k", "v")
+	cmds := []Cmder{clone, swapdb, set}
+
+	answered := map[*baseCmd]bool{swapdb.base(): true}
+	ctx = context.WithValue(ctx, pipelineAnsweredKey{}, answered)
+	ctx = context.WithValue(ctx, pipelineSyntheticKey{}, map[*baseCmd]bool{clone.base(): true})
+	ctx = context.WithValue(ctx, pipelineRequiredSyntheticKey{}, map[*baseCmd]bool{clone.base(): true})
+
+	retry := pipelineWholeBatchRetry(ctx, cmds)
+	if len(retry) != 4 || retry[1] != clone || retry[2] != swapdb || retry[3] != set {
+		t.Fatalf("whole-batch retry returned %d commands, want 4 (one inverse for the answered original, the synthetic clone untouched)", len(retry))
+	}
+	if retry[0].base() == clone.base() || retry[0].base() == swapdb.base() {
+		t.Fatalf("whole-batch retry prepended an existing command instead of a fresh swap-back clone")
+	}
+}
+
 // server rejected with NOREPLICAS is a pending server-global write, so
 // a WAIT answered after it must be reissued with the retried SWAPDB:
 // the retained acknowledgement count measured nothing about the swap.
