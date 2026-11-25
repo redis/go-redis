@@ -205,7 +205,7 @@ func (r *Reader) ReadAttributeLen() (int, error) {
 	if line[0] != RespAttr {
 		return 0, fmt.Errorf("redis: can't parse attribute reply: %.100q", line)
 	}
-	return replyLen(line)
+	return r.replyLen(line)
 }
 
 // MinRESP3ReadBufferSize is the minimum buffer size used when RESP3 push
@@ -526,17 +526,15 @@ func (r *Reader) readBigInt(line []byte) (*big.Int, error) {
 }
 
 func (r *Reader) readStringReply(line []byte) (string, error) {
-	n, err := replyLen(line)
+	n, err := r.replyLen(line)
 	if err != nil {
 		return "", err
 	}
 
-	b := make([]byte, n+2)
-	_, err = io.ReadFull(r.rd, b)
+	b, err := r.readBulkPayload(n)
 	if err != nil {
 		return "", err
 	}
-
 	return util.BytesToString(b[:n]), nil
 }
 
@@ -557,26 +555,26 @@ func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
 	}
 	defer func() { r.depth-- }()
 
-	n, err := replyLen(line)
+	n, err := r.replyLen(line)
 	if err != nil {
 		return nil, err
 	}
 
-	val := make([]interface{}, n)
-	for i := 0; i < len(val); i++ {
+	val := make([]interface{}, 0, min(n, maxAggregateHint))
+	for i := 0; i < n; i++ {
 		v, err := r.ReadReply()
 		if err != nil {
 			if err == Nil {
-				val[i] = nil
+				val = append(val, nil)
 				continue
 			}
 			if isServerError(err) {
-				val[i] = err
+				val = append(val, err)
 				continue
 			}
 			return nil, err
 		}
-		val[i] = v
+		val = append(val, v)
 	}
 	return val, nil
 }
@@ -587,11 +585,11 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 	}
 	defer func() { r.depth-- }()
 
-	n, err := replyLen(line)
+	n, err := r.replyLen(line)
 	if err != nil {
 		return nil, err
 	}
-	m := make(map[interface{}]interface{}, n)
+	m := make(map[interface{}]interface{}, min(n, maxAggregateHint))
 	for i := 0; i < n; i++ {
 		k, err := r.ReadReply()
 		if err != nil {
@@ -741,7 +739,7 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 		return copy(buf, s), nil
 
 	case RespString:
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			return 0, err
 		}
@@ -869,7 +867,7 @@ func (r *Reader) ReadArrayLen() (int, error) {
 	}
 	switch line[0] {
 	case RespArray, RespSet, RespPush:
-		return replyLen(line)
+		return r.replyLen(line)
 	default:
 		return 0, fmt.Errorf("redis: can't parse array/set/push reply: %.100q", line)
 	}
@@ -898,10 +896,10 @@ func (r *Reader) ReadMapLen() (int, error) {
 	}
 	switch line[0] {
 	case RespMap:
-		return replyLen(line)
+		return r.replyLen(line)
 	case RespArray, RespSet, RespPush:
 		// Some commands and RESP2 protocol may respond to array types.
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			return 0, err
 		}
@@ -944,7 +942,7 @@ func (r *Reader) Discard(line []byte) (err error) {
 		return nil
 	}
 
-	n, err := replyLen(line)
+	n, err := r.replyLen(line)
 	if err != nil {
 		if err == Nil {
 			// A nil reply ($-1, =-1, !-1, *-1, %-1) carries no payload; the
@@ -1009,6 +1007,26 @@ func (r *Reader) discardElement() error {
 	}
 }
 
+// maxBulkLen is the largest bulk string length the reader accepts from the
+// wire. It is deliberately not the 512MB default of the server's
+// `proto-max-bulk-len`: that limit is configurable (the bitmap tests in this
+// repository raise it to 2gb), so a client cap at the default would reject
+// legitimate replies. The reader only rejects lengths it cannot decode at all:
+// the payload plus its trailing CRLF (n+2) has to fit in an int, so a longer
+// advertised length would wrap negative in readStringReply, readRawReplyBuf or
+// a Discard call. The allocation of a large reply is bounded
+// separately, by growing the buffer as payload bytes arrive (see
+// readBulkPayload), and the streaming paths (ReadRawReplyWriteTo, Discard,
+// ReadStringInto) never allocate the payload, so they keep accepting every
+// length that is not rejected here. See replyLen.
+const maxBulkLen = math.MaxInt - 2
+
+// maxAggregateHint bounds the initial capacity reserved for array, set, push
+// and map replies. The advertised element count is still honoured — the
+// collection grows while the reply is read — so a corrupt count from the wire
+// cannot make the reader allocate the whole advertised size up front.
+const maxAggregateHint = 1024
+
 func replyLen(line []byte) (n int, err error) {
 	n, err = util.Atoi(line[1:])
 	if err != nil {
@@ -1020,6 +1038,13 @@ func replyLen(line []byte) (n int, err error) {
 	}
 
 	switch line[0] {
+	case RespString, RespVerbatim, RespBlobError:
+		if n > maxBulkLen {
+			return 0, fmt.Errorf("redis: invalid reply: bulk length %d is too large to read", n)
+		}
+	}
+
+	switch line[0] {
 	case RespString, RespVerbatim, RespBlobError,
 		RespArray, RespSet, RespPush, RespMap, RespAttr:
 		if n == -1 {
@@ -1027,6 +1052,64 @@ func replyLen(line []byte) (n int, err error) {
 		}
 	}
 	return n, nil
+}
+
+// replyLen parses the length field of a reply header that readLine has already
+// consumed. When the header cannot be measured the rest of the frame cannot be
+// located either, so reading on would decode the rejected frame's remaining
+// bytes as the next reply. Record the error as fatal so every later read
+// returns it until Reset, like an over-deep aggregate. Nil is a complete empty
+// frame, so it does not poison the reader.
+func (r *Reader) replyLen(line []byte) (int, error) {
+	n, err := replyLen(line)
+	if err == nil || err == Nil {
+		return n, err
+	}
+	if r.fatalErr == nil {
+		r.fatalErr = err
+	}
+	return n, err
+}
+
+// maxBulkPrealloc is the largest bulk payload allocated in one call before any
+// payload byte has arrived. Longer advertised lengths are read by
+// readBulkPayload, which grows the buffer as data arrives instead of reserving
+// the advertised size up front.
+const maxBulkPrealloc = 1 << 20
+
+// readBulkPayload reads a bulk payload of n bytes plus its trailing CRLF. The
+// length comes from the wire and is not trusted for allocation: the buffer
+// starts at maxBulkPrealloc and grows geometrically, clamped to the advertised
+// size, only as payload bytes actually arrive. A corrupt length that is within
+// the range replyLen accepts therefore costs the bytes that were really sent,
+// not the advertised size, and cannot panic make. Streaming paths
+// (ReadRawReplyWriteTo, Discard, ReadStringInto) do not allocate at all and
+// need no such guard.
+func (r *Reader) readBulkPayload(n int) ([]byte, error) {
+	total := n + 2
+	b := make([]byte, 0, min(total, maxBulkPrealloc))
+	for len(b) < total {
+		if len(b) == cap(b) {
+			newCap := total
+			// cap(b) < total/4 rules out an overflow in cap(b)*4.
+			if cap(b) < total/4 {
+				newCap = cap(b) * 4
+			}
+			grown := make([]byte, len(b), newCap)
+			copy(grown, b)
+			b = grown
+		}
+		readEnd := cap(b)
+		if readEnd > total {
+			readEnd = total
+		}
+		from := len(b)
+		b = b[:readEnd]
+		if _, err := io.ReadFull(r.rd, b[from:]); err != nil {
+			return nil, err
+		}
+	}
+	return b, nil
 }
 
 // IsNilReply detects redis.Nil of RESP2.
@@ -1062,20 +1145,30 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 		return buf, nil
 
 	case RespString, RespVerbatim, RespBlobError:
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return buf, nil
 			}
 			return buf, err
 		}
-		curLen := len(buf)
-		buf = append(buf, make([]byte, n+2)...)
-		_, err = io.ReadFull(r.rd, buf[curLen:])
-		return buf, err
+		total := n + 2
+		if total <= maxBulkPrealloc {
+			curLen := len(buf)
+			buf = append(buf, make([]byte, total)...)
+			_, err = io.ReadFull(r.rd, buf[curLen:])
+			return buf, err
+		}
+		// A large advertised length is not trusted for one up-front
+		// allocation; readBulkPayload grows the buffer as bytes arrive.
+		payload, err := r.readBulkPayload(n)
+		if err != nil {
+			return buf, err
+		}
+		return append(buf, payload...), nil
 
 	case RespArray, RespSet, RespPush:
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return buf, nil
@@ -1091,7 +1184,7 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 		return buf, nil
 
 	case RespMap:
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return buf, nil
@@ -1111,7 +1204,7 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 	case RespAttr:
 		// Per RESP3 spec, an attribute is always followed by the actual command reply.
 		// We need to read the attribute's key-value pairs AND the following reply.
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return buf, nil
@@ -1174,7 +1267,7 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 		return written, nil
 
 	case RespString, RespVerbatim, RespBlobError:
-		dataLen, err := replyLen(line)
+		dataLen, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return written, nil
@@ -1186,7 +1279,7 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 		return written, err
 
 	case RespArray, RespSet, RespPush:
-		count, err := replyLen(line)
+		count, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return written, nil
@@ -1203,7 +1296,7 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 		return written, nil
 
 	case RespMap:
-		count, err := replyLen(line)
+		count, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return written, nil
@@ -1224,7 +1317,7 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 	case RespAttr:
 		// Per RESP3 spec, an attribute is always followed by the actual command reply.
 		// We need to read the attribute's key-value pairs AND the following reply.
-		count, err := replyLen(line)
+		count, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return written, nil
