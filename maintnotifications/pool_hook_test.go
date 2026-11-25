@@ -876,7 +876,6 @@ func TestConnectionHook(t *testing.T) {
 
 		ctx := context.Background()
 		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
-
 		if err != nil {
 			t.Fatalf("OnPut failed: %v", err)
 		}
@@ -968,6 +967,11 @@ func TestConnectionHook(t *testing.T) {
 
 		// Set a dialer that will check the context timeout
 		var timeoutVerified atomic.Int32
+		// Atomic, like timeoutVerified above: the init func below runs on the
+		// handoff worker goroutine while the assertions run on the test
+		// goroutine, so a plain string would be a data race — and it would fire
+		// exactly on the failing path this diagnostic exists to capture.
+		var timeoutNotSetError atomic.Pointer[string]
 		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
 			// Check that the context has the expected timeout
 			deadline, ok := ctx.Deadline()
@@ -980,8 +984,10 @@ func TestConnectionHook(t *testing.T) {
 			expectedDeadline := time.Now().Add(customTimeout)
 			timeDiff := deadline.Sub(expectedDeadline)
 			if timeDiff < -500*time.Millisecond || timeDiff > 500*time.Millisecond {
-				t.Errorf("Context deadline not as expected. Expected around %v, got %v (diff: %v)",
+				msg := fmt.Sprintf("Context deadline not as expected. Expected around %v, got %v (diff: %v)",
 					expectedDeadline, deadline, timeDiff)
+				timeoutNotSetError.Store(&msg)
+				t.Error(msg)
 			} else {
 				timeoutVerified.Store(1)
 			}
@@ -1005,6 +1011,16 @@ func TestConnectionHook(t *testing.T) {
 
 		if timeoutVerified.Load() == 0 {
 			t.Error("HandoffTimeout was not properly applied to context")
+			// Distinguish the two failures that look identical otherwise: the
+			// init func ran and saw a wrong deadline, or it never ran inside the
+			// fixed wait above. Printing an unset message reads like the former
+			// with no numbers, while on a loaded machine the latter is the more
+			// likely flake.
+			if msg := timeoutNotSetError.Load(); msg != nil {
+				t.Error(*msg)
+			} else {
+				t.Error("the init func never ran: the handoff did not reach it within the wait above")
+			}
 		}
 
 		t.Logf("HandoffTimeout configuration test completed successfully")
@@ -1106,4 +1122,100 @@ func TestPoolHookNeverReturnsConnectionMarkedForHandoff(t *testing.T) {
 			t.Fatalf("OnGet should accept the connection after handoff completes: accept=%v err=%v", accept, err)
 		}
 	})
+}
+
+func TestSuccessfulHandoffUntracksMovingOperation(t *testing.T) {
+	manager := createTestManager("127.0.0.1:6379")
+	processor := NewPoolHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return &mockNetConn{addr: addr}, nil
+	}, "tcp", &Config{
+		Mode:              ModeAuto,
+		EndpointType:      EndpointTypeAuto,
+		MaxWorkers:        1,
+		HandoffQueueSize:  10,
+		MaxHandoffRetries: 3,
+	}, manager)
+	defer processor.Shutdown(context.Background())
+
+	conn := createMockPoolConnection()
+	conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error { return nil })
+
+	handler := &NotificationHandler{manager: manager, operationsManager: manager}
+	if err := handler.markConnForHandoff(conn, "new-endpoint:6379", 12345, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("markConnForHandoff: %v", err)
+	}
+	if got := manager.GetActiveOperationCount(); got != 1 {
+		t.Fatalf("active operations after MOVING: got %d, want 1", got)
+	}
+
+	if _, _, err := processor.OnPut(context.Background(), conn); err != nil {
+		t.Fatalf("OnPut: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn.IsUsable() && !processor.IsHandoffPending(conn) && manager.GetActiveOperationCount() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !conn.IsUsable() || processor.IsHandoffPending(conn) {
+		t.Fatalf("handoff did not complete (IsUsable=%v, pending=%v)", conn.IsUsable(), processor.IsHandoffPending(conn))
+	}
+	if got := manager.GetActiveOperationCount(); got != 0 {
+		t.Fatalf("active operations after successful handoff: got %d, want 0", got)
+	}
+	if manager.IsHandoffInProgress() {
+		t.Fatal("IsHandoffInProgress is true after the handoff succeeded")
+	}
+}
+
+// A failed handoff is retried from a timer. When the retry cannot be queued the
+// connection is closed, and the MOVING operation has to be untracked with it.
+func TestFailedRetryQueueUntracksMovingOperation(t *testing.T) {
+	manager := createTestManager("127.0.0.1:6379")
+	processor := NewPoolHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return nil, errors.New("dial failed")
+	}, "tcp", &Config{
+		Mode:              ModeAuto,
+		EndpointType:      EndpointTypeAuto,
+		MaxWorkers:        1,
+		HandoffQueueSize:  10,
+		MaxHandoffRetries: 3,
+		HandoffTimeout:    100 * time.Millisecond, // the retry timer then fires after 500ms
+	}, manager)
+
+	conn := createMockPoolConnection()
+	conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error { return nil })
+
+	handler := &NotificationHandler{manager: manager, operationsManager: manager}
+	if err := handler.markConnForHandoff(conn, "new-endpoint:6379", 12345, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("markConnForHandoff: %v", err)
+	}
+	if _, _, err := processor.OnPut(context.Background(), conn); err != nil {
+		t.Fatalf("OnPut: %v", err)
+	}
+
+	// Wait for the first attempt to fail, then shut down so the retry cannot be queued.
+	deadline := time.Now().Add(2 * time.Second)
+	for conn.HandoffRetries() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if conn.HandoffRetries() == 0 {
+		t.Fatal("first handoff attempt did not run")
+	}
+	if got := manager.GetActiveOperationCount(); got != 1 {
+		t.Fatalf("active operations while the retry is scheduled: got %d, want 1", got)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for manager.GetActiveOperationCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := manager.GetActiveOperationCount(); got != 0 {
+		t.Fatalf("active operations after the retry could not be queued: got %d, want 0", got)
+	}
 }

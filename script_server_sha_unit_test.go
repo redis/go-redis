@@ -298,3 +298,37 @@ func TestScriptLoad_ServerSHAAdoptsServerDigest(t *testing.T) {
 		t.Fatalf("Hash() = %q, want %q", s.Hash(), hash)
 	}
 }
+
+func TestScriptServerSHA_Run_QueuedLoadFallsBackToEval(t *testing.T) {
+	// A SCRIPT LOAD buffered in a pipeline answers with an empty digest until
+	// the pipeline executes, so Run must not send EVALSHA "".
+	ctx := context.Background()
+	c := &fakeScripter{hashToReturn: ""}
+
+	s := NewScriptServerSHA("return 1")
+	if err := s.Run(ctx, c, []string{"k"}).Err(); err != nil {
+		t.Fatalf("Run() err: %v", err)
+	}
+	if c.evalShaCalls != 0 {
+		t.Fatalf("expected no EVALSHA, got %d calls with digest %q", c.evalShaCalls, c.lastEvalShaSHA)
+	}
+	if c.evalCalls != 1 {
+		t.Fatalf("expected Eval 1 call, got %d", c.evalCalls)
+	}
+}
+
+func TestScriptServerSHA_RunRO_QueuedLoadFallsBackToEvalRO(t *testing.T) {
+	ctx := context.Background()
+	c := &fakeScripter{hashToReturn: ""}
+
+	s := NewScriptServerSHA("return 1")
+	if err := s.RunRO(ctx, c, []string{"k"}).Err(); err != nil {
+		t.Fatalf("RunRO() err: %v", err)
+	}
+	if c.evalShaROCalls != 0 {
+		t.Fatalf("expected no EVALSHA_RO, got %d calls with digest %q", c.evalShaROCalls, c.lastEvalShaROSHA)
+	}
+	if c.evalROCalls != 1 {
+		t.Fatalf("expected EvalRO 1 call, got %d", c.evalROCalls)
+	}
+}

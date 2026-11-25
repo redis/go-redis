@@ -3,6 +3,7 @@ package hscan
 import (
 	"encoding"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"sync"
@@ -118,6 +119,16 @@ func (s StructValue) decode(field *structField, v reflect.Value, value string) e
 		switch scan := v.Interface().(type) {
 		case Scanner:
 			return scan.ScanRedis(value)
+		case *net.IP:
+			// HSET stores a net.IP as its raw 4 or 16 bytes (proto.Writer),
+			// which is not the text form UnmarshalText expects.
+			if err := scan.UnmarshalText([]byte(value)); err != nil {
+				if len(value) != net.IPv4len && len(value) != net.IPv6len {
+					return err
+				}
+				*scan = net.IP(value)
+			}
+			return nil
 		case encoding.TextUnmarshaler:
 			// Copy: both contracts allow decoding in place, so the bytes must
 			// not alias value's backing array (internal/proto.Scan copies
@@ -134,8 +145,8 @@ func (s StructValue) decode(field *structField, v reflect.Value, value string) e
 
 	if err := field.fn(v, value); err != nil {
 		t := s.value.Type()
-		return fmt.Errorf("cannot scan redis.result %s into struct field %s.%s of type %s, error-%s",
-			value, t.Name(), t.Field(field.index).Name, t.Field(field.index).Type, err.Error())
+		return fmt.Errorf("cannot scan redis.result %s into struct field %s.%s of type %s, error-%w",
+			value, t.Name(), t.Field(field.index).Name, t.Field(field.index).Type, err)
 	}
 	return nil
 }

@@ -91,6 +91,12 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 		})
 		return nil
 	case *redis.Ring:
+		// NewRing creates the shards before OnNewNode can be called.
+		for _, shard := range rdb.GetShardClients() {
+			if err := registerClient(shard, conf, state); err != nil {
+				return err
+			}
+		}
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			if err := registerClient(rdb, conf, state); err != nil {
 				otel.Handle(err)
@@ -159,7 +165,12 @@ func cumulativePoolStat(conf *config, name, description string) (metric.Int64Obs
 	)
 }
 
-func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, error) {
+type poolStatsClient interface {
+	Options() *redis.Options
+	PoolStats() *redis.PoolStats
+}
+
+func reportPoolStats(rdb poolStatsClient, conf *config) (metric.Registration, error) {
 	poolAttrs, idleAttrs, usedAttrs := poolStatsAttrs(conf)
 
 	idleMax, err := conf.meter.Int64ObservableUpDownCounter(
@@ -244,15 +255,22 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), metric.WithAttributeSet(poolAttrs))
 			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), metric.WithAttributeSet(poolAttrs))
 
-			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributeSet(idleAttrs))
-			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributeSet(usedAttrs))
-
 			o.ObserveInt64(waits, int64(stats.WaitCount), metric.WithAttributeSet(poolAttrs))
 			o.ObserveInt64(waitsDuration, stats.WaitDurationNs, metric.WithAttributeSet(poolAttrs))
 
 			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributeSet(poolAttrs))
 			o.ObserveInt64(hits, int64(stats.Hits), metric.WithAttributeSet(poolAttrs))
 			o.ObserveInt64(misses, int64(stats.Misses), metric.WithAttributeSet(poolAttrs))
+
+			// Omit both usage states if the snapshot is inconsistent, without
+			// discarding unrelated observations or publishing a wrapped count.
+			if stats.IdleConns > stats.TotalConns {
+				otel.Handle(fmt.Errorf("redisotel: invalid pool stats: idle connections (%d) exceed total connections (%d)",
+					stats.IdleConns, stats.TotalConns))
+				return nil
+			}
+			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributeSet(idleAttrs))
+			o.ObserveInt64(usage, int64(stats.TotalConns)-int64(stats.IdleConns), metric.WithAttributeSet(usedAttrs))
 			return nil
 		},
 		idleMax,

@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"reflect"
 	"testing"
 )
@@ -178,6 +179,47 @@ func TestAuthEmptyPasswordCSCNamespace(t *testing.T) {
 				t.Fatalf("cscKeyPrefix = %q, want %q", c.cscKeyPrefix, tt.want)
 			}
 		})
+	}
+}
+
+// TestCSCNamespaceTLSClientCert checks that clients sharing a Cache without
+// AUTH are kept apart by their TLS client certificate, which the server can map
+// to an ACL user (tls-auth-clients-user CN).
+func TestCSCNamespaceTLSClientCert(t *testing.T) {
+	cert := func(der string) *tls.Config {
+		return &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{[]byte(der)}}}}
+	}
+	newClient := func(opt Options) *Client {
+		opt.Addr = "127.0.0.1:1"
+		opt.Protocol = 3
+		opt.ClientSideCacheConfig = &ClientSideCacheConfig{}
+		c := NewClient(&opt)
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+
+	plain := newClient(Options{}).cscKeyPrefix
+	admin := newClient(Options{TLSConfig: cert("admin")}).cscKeyPrefix
+	reader := newClient(Options{TLSConfig: cert("reader")}).cscKeyPrefix
+	if admin == plain || reader == plain || admin == reader {
+		t.Fatalf("certificate identities share a namespace: plain=%q admin=%q reader=%q", plain, admin, reader)
+	}
+	if again := newClient(Options{TLSConfig: cert("admin")}).cscKeyPrefix; again != admin {
+		t.Fatalf("same certificate: cscKeyPrefix = %q, want %q", again, admin)
+	}
+	// AUTH sets the identity, so the certificate does not split the namespace.
+	authed := newClient(Options{Username: "u", Password: "pw", TLSConfig: cert("admin")})
+	if want := cscNamespacePrefix(0, "u"); authed.cscKeyPrefix != want {
+		t.Fatalf("AUTH user: cscKeyPrefix = %q, want %q", authed.cscKeyPrefix, want)
+	}
+
+	dynamic := newClient(Options{TLSConfig: &tls.Config{
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return &tls.Certificate{}, nil
+		},
+	}})
+	if dynamic.csc != nil {
+		t.Fatal("client-side cache attached with a GetClientCertificate callback")
 	}
 }
 

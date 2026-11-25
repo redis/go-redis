@@ -128,13 +128,14 @@ type UniversalOptions struct {
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
-	PoolTimeout           time.Duration
-	MinIdleConns          int
-	MaxIdleConns          int
-	MaxActiveConns        int
-	ConnMaxIdleTime       time.Duration
-	ConnMaxLifetime       time.Duration
-	ConnMaxLifetimeJitter time.Duration
+	PoolTimeout                 time.Duration
+	MinIdleConns                int
+	MaxIdleConns                int
+	MaxActiveConns              int
+	ConnMaxIdleTime             time.Duration
+	ConnMaxLifetime             time.Duration
+	ConnMaxLifetimeJitter       time.Duration
+	ConnMaxLifetimeReapInterval time.Duration
 
 	TLSConfig *tls.Config
 
@@ -191,6 +192,11 @@ type UniversalOptions struct {
 	// MaintNotificationsConfig provides configuration for maintnotifications upgrades.
 	MaintNotificationsConfig *maintnotifications.Config
 
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. Every client built from these options and its pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
+
 	// ClientSideCacheConfig enables client-side caching when NewUniversalClient
 	// selects a standalone Client or ClusterClient. Cluster limits apply per node.
 	// Sentinel-backed ClusterClients are supported; single-node failover clients
@@ -199,6 +205,17 @@ type UniversalOptions struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
+
+	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
+	// The zero value is TrackingModePlain. An invalid value logs a warning and
+	// disables CSC at construction. Requires an enabled client-side cache.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheTrackingMode TrackingMode
+
+	// ClientSideCacheable selects eligible unmarked calls for caching. It also
+	// applies with a custom Cache. See CacheablePredicate for its callback contract.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheable CacheablePredicate
 
 	// ClientSideCache supplies an explicit cache when NewUniversalClient selects
 	// a standalone Client. See Options.ClientSideCache.
@@ -248,6 +265,9 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 	return &ClusterOptions{
 		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		OTelRecorder:                           o.OTelRecorder,
+		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    o.ClientSideCacheable,
 		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
@@ -291,16 +311,17 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PipelinePoolSize:        o.PipelinePoolSize,
 		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
-		PoolFIFO:              o.PoolFIFO,
-		PoolSize:              o.PoolSize,
-		MaxConcurrentDials:    o.MaxConcurrentDials,
-		PoolTimeout:           o.PoolTimeout,
-		MinIdleConns:          o.MinIdleConns,
-		MaxIdleConns:          o.MaxIdleConns,
-		MaxActiveConns:        o.MaxActiveConns,
-		ConnMaxIdleTime:       o.ConnMaxIdleTime,
-		ConnMaxLifetime:       o.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
+		PoolFIFO:                    o.PoolFIFO,
+		PoolSize:                    o.PoolSize,
+		MaxConcurrentDials:          o.MaxConcurrentDials,
+		PoolTimeout:                 o.PoolTimeout,
+		MinIdleConns:                o.MinIdleConns,
+		MaxIdleConns:                o.MaxIdleConns,
+		MaxActiveConns:              o.MaxActiveConns,
+		ConnMaxIdleTime:             o.ConnMaxIdleTime,
+		ConnMaxLifetime:             o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       o.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: o.ConnMaxLifetimeReapInterval,
 
 		TLSConfig: o.TLSConfig,
 
@@ -324,6 +345,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 
 	return &FailoverOptions{
 		ClientSideCacheConfig:                  o.ClientSideCacheConfig,
+		OTelRecorder:                           o.OTelRecorder,
+		ClientSideCacheTrackingMode:            o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:                    o.ClientSideCacheable,
 		ClientSideCacheStrategy:                o.ClientSideCacheStrategy,
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
@@ -372,16 +396,17 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PipelinePoolSize:        o.PipelinePoolSize,
 		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
-		PoolFIFO:              o.PoolFIFO,
-		PoolSize:              o.PoolSize,
-		MaxConcurrentDials:    o.MaxConcurrentDials,
-		PoolTimeout:           o.PoolTimeout,
-		MinIdleConns:          o.MinIdleConns,
-		MaxIdleConns:          o.MaxIdleConns,
-		MaxActiveConns:        o.MaxActiveConns,
-		ConnMaxIdleTime:       o.ConnMaxIdleTime,
-		ConnMaxLifetime:       o.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
+		PoolFIFO:                    o.PoolFIFO,
+		PoolSize:                    o.PoolSize,
+		MaxConcurrentDials:          o.MaxConcurrentDials,
+		PoolTimeout:                 o.PoolTimeout,
+		MinIdleConns:                o.MinIdleConns,
+		MaxIdleConns:                o.MaxIdleConns,
+		MaxActiveConns:              o.MaxActiveConns,
+		ConnMaxIdleTime:             o.ConnMaxIdleTime,
+		ConnMaxLifetime:             o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       o.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: o.ConnMaxLifetimeReapInterval,
 
 		TLSConfig: o.TLSConfig,
 
@@ -441,30 +466,34 @@ func (o *UniversalOptions) Simple() *Options {
 		PipelinePoolSize:        o.PipelinePoolSize,
 		PipelineMinIdleConns:    o.PipelineMinIdleConns,
 
-		PoolFIFO:              o.PoolFIFO,
-		PoolSize:              o.PoolSize,
-		MaxConcurrentDials:    o.MaxConcurrentDials,
-		PoolTimeout:           o.PoolTimeout,
-		MinIdleConns:          o.MinIdleConns,
-		MaxIdleConns:          o.MaxIdleConns,
-		MaxActiveConns:        o.MaxActiveConns,
-		ConnMaxIdleTime:       o.ConnMaxIdleTime,
-		ConnMaxLifetime:       o.ConnMaxLifetime,
-		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
+		PoolFIFO:                    o.PoolFIFO,
+		PoolSize:                    o.PoolSize,
+		MaxConcurrentDials:          o.MaxConcurrentDials,
+		PoolTimeout:                 o.PoolTimeout,
+		MinIdleConns:                o.MinIdleConns,
+		MaxIdleConns:                o.MaxIdleConns,
+		MaxActiveConns:              o.MaxActiveConns,
+		ConnMaxIdleTime:             o.ConnMaxIdleTime,
+		ConnMaxLifetime:             o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       o.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: o.ConnMaxLifetimeReapInterval,
 
 		TLSConfig: o.TLSConfig,
 
-		DisableIdentity:           o.DisableIdentity,
-		DisableIndentity:          o.DisableIndentity,
-		IdentitySuffix:            o.IdentitySuffix,
-		AutoPipelineOptions:       o.AutoPipelineOptions,
-		UnstableResp3:             o.UnstableResp3,
-		PushNotificationProcessor: o.PushNotificationProcessor,
-		MaintNotificationsConfig:  o.MaintNotificationsConfig,
-		ClientSideCacheConfig:     o.ClientSideCacheConfig,
-		ClientSideCache:           o.ClientSideCache,
-		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
-		CommandMetadata:           o.CommandMetadata,
+		DisableIdentity:             o.DisableIdentity,
+		DisableIndentity:            o.DisableIndentity,
+		IdentitySuffix:              o.IdentitySuffix,
+		AutoPipelineOptions:         o.AutoPipelineOptions,
+		UnstableResp3:               o.UnstableResp3,
+		PushNotificationProcessor:   o.PushNotificationProcessor,
+		MaintNotificationsConfig:    o.MaintNotificationsConfig,
+		OTelRecorder:                o.OTelRecorder,
+		ClientSideCacheConfig:       o.ClientSideCacheConfig,
+		ClientSideCacheTrackingMode: o.ClientSideCacheTrackingMode,
+		ClientSideCacheable:         o.ClientSideCacheable,
+		ClientSideCache:             o.ClientSideCache,
+		ClientSideCacheStrategy:     o.ClientSideCacheStrategy,
+		CommandMetadata:             o.CommandMetadata,
 
 		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
 		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,

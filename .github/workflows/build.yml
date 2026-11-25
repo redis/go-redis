@@ -57,7 +57,7 @@ jobs:
         run: |
           go vet .
           go test ./internal/...
-          go test -run 'TestNew(Failover)?ClientPanic|TestSlotNodeWithinLatencyRotationPastIntMax' .
+          go test -run 'TestNew(Failover)?ClientPanic|TestSlotNodeWithinLatencyRotationPastIntMax|TestCmdIntFromIntegerReplyOutOfRange' .
 
   benchmark:
     name: benchmark
@@ -67,7 +67,7 @@ jobs:
       fail-fast: false
       matrix:
         redis-version:
-          - "8.12.x" # Redis CE 8.12 (pre-release)
+          - "8.12.x" # Redis CE 8.12
           - "8.10.x" # Redis CE 8.10
           - "8.6.x" # Redis CE 8.6
           - "8.4.x" # Redis CE 8.4
@@ -94,8 +94,8 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.12.x"]="8.12-m02-int"
-            ["8.10.x"]="8.10.0"
+            ["8.12.x"]="8.12.0"
+            ["8.10.x"]="8.10.3"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
             ["8.2.x"]="8.2.1-pre"
@@ -128,7 +128,7 @@ jobs:
         fail-fast: false
         matrix:
           redis-version:
-            - "8.12.x" # Redis CE 8.12 (pre-release)
+            - "8.12.x" # Redis CE 8.12
             - "8.10.x" # Redis CE 8.10
             - "8.6.x" # Redis CE 8.6
             - "8.4.x" # Redis CE 8.4
@@ -159,7 +159,7 @@ jobs:
       fail-fast: false
       matrix:
         redis-version:
-          - "8.10.x" # Redis CE 8.10
+          - "8.12.x" # Redis CE 8.12
         go-version:
           - "stable"
         # One AutoPipeliner face per cell: the half-duplex blocking and async

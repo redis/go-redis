@@ -34,7 +34,8 @@ func clusterCSCCommandPolicy(name string) clusterCSCReplyPolicy {
 	case "getrange", "substr", "hgetall", "hkeys", "hvals", "lrange", "smembers",
 		"sinter", "zinter", "zrange", "zrangebylex", "zrangebyscore", "zrevrange",
 		"zrevrangebylex", "zrevrangebyscore", "sort_ro", "geosearch",
-		"georadiusbymember_ro", "georadius_ro", "xrange", "xrevrange":
+		"georadiusbymember_ro", "georadius_ro", "xrange", "xrevrange",
+		"bitrangeintarray":
 		return clusterCSCReplyNonEmpty
 	case "getbit", "strlen", "hlen", "hexists", "hstrlen", "llen", "scard",
 		"sismember", "sintercard", "zcard", "zcount", "zlexcount", "bitcount", "xlen":

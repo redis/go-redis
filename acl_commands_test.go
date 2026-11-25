@@ -103,6 +103,25 @@ var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 		Expect(res1).To(Equal("default"))
 	})
 
+	It("gets a user", func() {
+		SkipBeforeRedisVersion("7.0", "the selectors of ACL GETUSER require Redis 7.0+")
+
+		Expect(client.ACLSetUser(ctx, TestUserName,
+			"on", ">secret", "~app:*", "&news", "+get", "(~tmp:* +set)").Err()).NotTo(HaveOccurred())
+
+		user, err := client.ACLGetUser(ctx, TestUserName).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(user.Flags).To(ContainElement("on"))
+		Expect(user.Passwords).To(HaveLen(1))
+		Expect(user.Commands).To(Equal("-@all +get"))
+		Expect(user.Keys).To(Equal("~app:*"))
+		Expect(user.Channels).To(Equal("&news"))
+		Expect(user.Selectors).To(Equal([]redis.ACLSelector{{Commands: "-@all +set", Keys: "~tmp:*"}}))
+
+		_, err = client.ACLGetUser(ctx, "no-such-user").Result()
+		Expect(err).To(Equal(redis.Nil))
+	})
+
 	It("gen password", func() {
 		password, err := client.ACLGenPass(ctx, 0).Result()
 		Expect(err).NotTo(HaveOccurred())

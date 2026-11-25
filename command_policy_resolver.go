@@ -191,12 +191,25 @@ func NewCommandInfoResolver(resolveFunc CommandInfoResolveFunc) *commandInfoReso
 	return &commandInfoResolver{resolveFunc: resolveFunc}
 }
 
-// NewDefaultCommandPolicyResolver preserves the built-in Search routing policies.
-// It does not enable new fan-out policies for other commands. Use
-// NewCommandMetadataResolver to opt into metadata-based fan-out and aggregation.
+// scanPolicy is the policy the server advertises for SCAN (request_policy:special,
+// response_policy:special). The default resolver applies it too, so a SCAN
+// iterator covers every master without opting into metadata policies.
+var scanPolicy = &routing.CommandPolicy{
+	Request:  routing.ReqSpecial,
+	Response: routing.RespSpecial,
+	Tips:     map[string]string{"readonly": ""},
+}
+
+// NewDefaultCommandPolicyResolver preserves the built-in Search routing policies
+// and the SCAN policy. It does not enable new fan-out policies for other
+// commands. Use NewCommandMetadataResolver to opt into metadata-based fan-out
+// and aggregation.
 func NewDefaultCommandPolicyResolver() *commandInfoResolver {
 	r := NewCommandInfoResolver(func(_ context.Context, cmd Cmder) *routing.CommandPolicy {
 		name := cmd.Name()
+		if name == "scan" {
+			return scanPolicy
+		}
 		dot := strings.IndexByte(name, '.')
 		if dot < 0 || strings.IndexByte(name[dot+1:], '.') >= 0 {
 			return nil

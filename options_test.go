@@ -1,9 +1,11 @@
 package redis
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +82,23 @@ func TestParseURLConnectionValidation(t *testing.T) {
 					}
 				})
 			}
+			// A negative pool size is not a capacity: the pool builds a
+			// semaphore and an idle slice of that size, so NewClient panicked
+			// with "makechan: size out of range" before it could connect.
+			for _, value := range []string{"-1", "-10", "bad"} {
+				t.Run("pool_size/"+value, func(t *testing.T) {
+					if _, err := parser.parse("pool_size=" + value); err == nil || !strings.Contains(err.Error(), "pool_size") {
+						t.Fatalf("expected a pool_size error, got %v", err)
+					}
+				})
+			}
+			for _, value := range []string{"0", "10"} {
+				t.Run("pool_size/"+value, func(t *testing.T) {
+					if _, err := parser.parse("pool_size=" + value); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
 			for _, field := range []string{"read_buffer_size", "write_buffer_size"} {
 				for _, value := range []string{"-1", "bad", "0", "65536"} {
 					t.Run(field+"/"+value, func(t *testing.T) {
@@ -109,6 +128,50 @@ func TestParseURLConnectionValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A pool size set on Options directly, rather than through a URL, is the
+// caller's value and no longer goes through ParseURL's validation. A negative
+// one cannot be a capacity, so init gives it the default like it does for 0.
+func TestOptionsNegativePoolSizeUsesDefault(t *testing.T) {
+	want := 10 * runtime.GOMAXPROCS(0)
+
+	opt := &Options{PoolSize: -1}
+	opt.init()
+	if opt.PoolSize != want {
+		t.Fatalf("PoolSize = %d, want %d", opt.PoolSize, want)
+	}
+
+	// The client allocates the pool from PoolSize, so construction is where the
+	// negative value used to panic.
+	c := NewClient(&Options{Addr: "localhost:6379", PoolSize: -1})
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if got := c.Options().PoolSize; got != want {
+		t.Fatalf("client PoolSize = %d, want %d", got, want)
+	}
+}
+
+// ClusterOptions sizes one pool per node, and init leaves the value to be
+// copied into each node's Options. A negative PoolSize therefore has to be
+// normalized here as well, or every node inherits a pool size it cannot use.
+func TestClusterOptionsNegativePoolSizeUsesDefault(t *testing.T) {
+	want := 5 * runtime.GOMAXPROCS(0)
+
+	opt := &ClusterOptions{Addrs: []string{"localhost:7000"}, PoolSize: -1}
+	opt.init()
+	if opt.PoolSize != want {
+		t.Fatalf("cluster PoolSize = %d, want %d", opt.PoolSize, want)
+	}
+
+	node := opt.clientOptions()
+	node.init()
+	if node.PoolSize != want {
+		t.Fatalf("node PoolSize = %d, want %d", node.PoolSize, want)
 	}
 }
 
@@ -208,6 +271,9 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost:123/?conn_max_lifetime_jitter=6m",
 			o:   &Options{Addr: "localhost:123", ConnMaxLifetimeJitter: 0},
 		}, {
+			url: "redis://localhost:123/?conn_max_lifetime=1h&conn_max_lifetime_reap_interval=30s",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetime: time.Hour, ConnMaxLifetimeReapInterval: 30 * time.Second},
+		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
 		}, {
@@ -257,6 +323,18 @@ func TestParseURL(t *testing.T) {
 		}, {
 			url: "redis://localhost/iamadatabase",
 			err: errors.New(`redis: invalid database number: "iamadatabase"`),
+		}, {
+			// a negative db parses as an int but fails on every SELECT
+			url: "redis://localhost/-1",
+			err: errors.New(`redis: invalid database number: "-1"`),
+		}, {
+			url: "redis://localhost/?db=-1",
+			err: errors.New(`redis: invalid database number: "-1"`),
+		}, {
+			// a plain number is seconds; an oversized one must error out
+			// instead of wrapping into a negative duration
+			url: "redis://localhost/?dial_timeout=10000000000",
+			err: errors.New(`redis: invalid dial_timeout duration: value out of range`),
 		},
 	}
 
@@ -278,6 +356,42 @@ func TestParseURL(t *testing.T) {
 			}
 			comprareOptions(t, actual, tc.o)
 		})
+	}
+}
+
+func TestParseURLPlainNumberDurations(t *testing.T) {
+	t.Parallel()
+
+	// Oversized seconds must be rejected for every duration parameter.
+	// 9223372037s overflows int64 nanoseconds; parse with ParseInt so this
+	// expectation holds on both 32-bit and 64-bit hosts.
+	for _, name := range []string{"dial_timeout", "read_timeout", "write_timeout", "pool_timeout", "conn_max_lifetime"} {
+		if _, err := ParseURL("redis://localhost/?" + name + "=9223372037"); err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s: expected overflow error, got %v", name, err)
+		}
+	}
+
+	o, err := ParseURL("redis://localhost/?dial_timeout=9223372036&read_timeout=60")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Duration(9223372036) * time.Second; o.DialTimeout != want {
+		t.Fatalf("dial_timeout = %v, want %v", o.DialTimeout, want)
+	}
+	if o.ReadTimeout != time.Minute {
+		t.Fatalf("read_timeout = %v, want 1m", o.ReadTimeout)
+	}
+
+	// Zero and negative values still disable the timeout, including large
+	// negatives that would overflow as a ParseDuration string.
+	for _, raw := range []string{"-5", "-10000000000", "0"} {
+		o, err = ParseURL("redis://localhost/?write_timeout=" + raw)
+		if err != nil {
+			t.Fatalf("write_timeout=%s: unexpected error: %v", raw, err)
+		}
+		if o.WriteTimeout != -1 {
+			t.Fatalf("write_timeout=%s => %v, want -1 (disabled)", raw, o.WriteTimeout)
+		}
 	}
 }
 
@@ -955,5 +1069,42 @@ func TestParseURLConnectionOptions(t *testing.T) {
 	}
 	if _, err = ParseClusterURL("redis://localhost:6379?read_buffer_size=big"); err == nil {
 		t.Fatal("ParseClusterURL accepted an invalid read_buffer_size")
+	}
+}
+
+// A retry budget below -1 must disable retries like -1 does. It must not skip
+// the first attempt: the command would then report success without being sent.
+func TestNegativeRetryBudgetStillExecutes(t *testing.T) {
+	ctx := context.Background()
+	errDial := errors.New("dial refused")
+	dialer := func(context.Context, string, string) (net.Conn, error) { return nil, errDial }
+	pipelined := func(p Pipeliner) error { p.Set(ctx, "k", "v", 0); return nil }
+
+	client := NewClient(&Options{Dialer: dialer, MaxRetries: -2, DialerRetries: 1})
+	defer client.Close()
+	if _, err := client.Pipelined(ctx, pipelined); err == nil {
+		t.Error("Client pipeline with MaxRetries=-2 reported success without sending")
+	}
+	if _, err := client.TxPipelined(ctx, pipelined); err == nil {
+		t.Error("Client tx pipeline with MaxRetries=-2 reported success without sending")
+	}
+
+	ring := NewRing(&RingOptions{
+		Addrs: map[string]string{"a": "127.0.0.1:1"}, Dialer: dialer, MaxRetries: -2, DialerRetries: 1,
+	})
+	defer ring.Close()
+	if err := ring.Set(ctx, "k", "v", 0).Err(); err == nil {
+		t.Error("Ring command with MaxRetries=-2 reported success without sending")
+	}
+
+	cluster := NewClusterClient(&ClusterOptions{
+		Addrs: []string{"127.0.0.1:1"}, Dialer: dialer, MaxRedirects: -2, DialerRetries: 1,
+	})
+	defer cluster.Close()
+	if err := cluster.Set(ctx, "k", "v", 0).Err(); err == nil {
+		t.Error("ClusterClient command with MaxRedirects=-2 reported success without sending")
+	}
+	if _, err := cluster.Pipelined(ctx, pipelined); err == nil {
+		t.Error("ClusterClient pipeline with MaxRedirects=-2 reported success without sending")
 	}
 }

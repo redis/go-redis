@@ -55,6 +55,57 @@ var _ = Describe("Client-side cache (standalone)", func() {
 		}
 	})
 
+	It("isolates EphemeralConn session commands from the cached pool", Label("NonRedisEnterprise"), func() {
+		opt := redisOptions()
+		opt.Protocol = 3
+		opt.PoolSize = 1
+		opt.ClientSideCacheConfig = &redis.ClientSideCacheConfig{MaxEntries: 16}
+		db := redis.NewClient(opt)
+		defer func() { Expect(db.Close()).NotTo(HaveOccurred()) }()
+		Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+		conn := db.EphemeralConn()
+		defer conn.Close()
+
+		Expect(conn.Select(ctx, 1).Err()).NotTo(HaveOccurred())
+		_, err := conn.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Do(ctx, "reset")
+			pipe.Do(ctx, "select", 1)
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		info, err := conn.ClientInfo(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.DB).To(Equal(1))
+		Expect(conn.Close()).NotTo(HaveOccurred())
+
+		info, err = db.ClientInfo(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.DB).To(Equal(0))
+	})
+
+	It("keeps parent cache invalidations after EphemeralConn RESET", Label("NonRedisEnterprise"), func() {
+		key := "csc-e2e-ephemeral-reset"
+		Expect(mutator.Set(ctx, key, "before", 0).Err()).NotTo(HaveOccurred())
+		Expect(client.Get(ctx, key).Val()).To(Equal("before"))
+		Expect(cache.Len()).To(Equal(1))
+
+		conn := client.EphemeralConn()
+		defer func() { Expect(conn.Close()).NotTo(HaveOccurred()) }()
+		// Keep the ephemeral connection open throughout invalidation: relying
+		// on its Close to evict entries would conceal the stale-cache window.
+		Expect(conn.Do(ctx, "reset").Err()).NotTo(HaveOccurred())
+		Expect(cache.Len()).To(Equal(1))
+		Expect(mutator.Set(ctx, key, "after", 0).Err()).NotTo(HaveOccurred())
+		Eventually(func() int {
+			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+			return cache.Len()
+		}, 2*time.Second, 10*time.Millisecond).Should(Equal(0))
+		value, err := client.Get(ctx, key).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(value).To(Equal("after"))
+	})
+
 	It("populates the local cache after a cacheable command is issued", func() {
 		key := "csc-e2e-populate"
 		Expect(mutator.Set(ctx, key, "hello", 0).Err()).NotTo(HaveOccurred())
@@ -556,6 +607,55 @@ func TestCSCModuleReadsCacheAndInvalidate(t *testing.T) {
 			}
 			if reflect.DeepEqual(fresh, before) || !reflect.DeepEqual(fresh, want) {
 				t.Fatalf("post-invalidation reply = %v, want %v (previously %v)", fresh, want, before)
+			}
+		})
+	}
+}
+
+func TestCSCBareClientReturnsServerError(t *testing.T) {
+	c, plain, _ := newTrackedCSCClient(t)
+	ctx := context.Background()
+	if !rawClientHasTrackingFlag(t, c) {
+		t.Fatal("CSC connection must have tracking enabled")
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(*redis.Client) error
+	}{
+		{"Do", func(c *redis.Client) error {
+			return c.Do(ctx, "CLIENT").Err()
+		}},
+		{"Pipeline", func(c *redis.Client) error {
+			_, err := c.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Do(ctx, "CLIENT")
+				return nil
+			})
+			return err
+		}},
+		{"TxPipeline", func(c *redis.Client) error {
+			_, err := c.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Do(ctx, "CLIENT")
+				return nil
+			})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.run(plain)
+			var serverErr redis.Error
+			if !errors.As(want, &serverErr) {
+				t.Fatalf("plain CLIENT error = %v, want a server error", want)
+			}
+			got := tc.run(c)
+			if !errors.As(got, &serverErr) || got.Error() != want.Error() {
+				t.Fatalf("CSC CLIENT error = %v, want %v", got, want)
+			}
+			if err := c.Ping(ctx).Err(); err != nil {
+				t.Fatalf("PING after CLIENT error: %v", err)
+			}
+			if !rawClientHasTrackingFlag(t, c) {
+				t.Fatal("CLIENT error disabled tracking")
 			}
 		})
 	}

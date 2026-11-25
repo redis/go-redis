@@ -592,7 +592,9 @@ var _ = Describe("ClusterClient", func() {
 			val, _ := client.ScriptExists(ctx, script.Hash()).Result()
 			Expect(val).To(Equal([]bool{true}))
 
-			client.ScriptFlush(ctx)
+			res, err := client.ScriptFlush(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("OK"))
 
 			val, _ = client.ScriptExists(ctx, script.Hash()).Result()
 			Expect(val).To(Equal([]bool{false}))
@@ -1368,6 +1370,55 @@ var _ = Describe("ClusterClient", func() {
 			}
 		})
 
+		It("should CLUSTER SLOT-STATS", func() {
+			SkipBeforeRedisVersion("8.2", "CLUSTER SLOT-STATS requires Redis 8.2+")
+
+			// "A" is in slot 6373 and "B" in slot 10374, on different shards.
+			Expect(client.MSet(ctx, "{A}1", "v", "{A}2", "v").Err()).NotTo(HaveOccurred())
+			Expect(client.Set(ctx, "B", "v", 0).Err()).NotTo(HaveOccurred())
+
+			// A node answers for its own slots only, so the client asks every
+			// master and merges the replies, with and without metadata routing.
+			check := func() {
+				stats, err := client.ClusterSlotStats(ctx, 0, 16383).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stats).To(HaveLen(16384))
+				for slot, stat := range stats {
+					Expect(stat.Slot).To(Equal(int64(slot)))
+				}
+				Expect(stats[6373].KeyCount).To(Equal(int64(2)))
+				Expect(stats[10374].KeyCount).To(Equal(int64(1)))
+
+				top, err := client.ClusterSlotStatsOrderBy(ctx, &redis.ClusterSlotStatsOrderByArgs{
+					Metric: "key-count",
+					Limit:  3,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(top).To(Equal([]redis.ClusterSlotStat{
+					{Slot: 6373, KeyCount: 2},
+					{Slot: 10374, KeyCount: 1},
+					{Slot: 0},
+				}))
+
+				bottom, err := client.ClusterSlotStatsOrderBy(ctx, &redis.ClusterSlotStatsOrderByArgs{
+					Metric: "key-count",
+					Limit:  2,
+					Asc:    true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(bottom).To(Equal([]redis.ClusterSlotStat{{Slot: 0}, {Slot: 1}}))
+
+				err = client.ClusterSlotStatsOrderBy(ctx, &redis.ClusterSlotStatsOrderByArgs{Metric: "nope"}).Err()
+				Expect(err).To(MatchError(ContainSubstring("Unrecognized sort metric")))
+			}
+			check()
+
+			resolver := client.GetResolver()
+			client.SetCommandInfoResolver(redis.NewCommandMetadataResolver())
+			defer client.SetCommandInfoResolver(resolver)
+			check()
+		})
+
 		It("should cluster client setname", func() {
 			err := client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
 				return c.Ping(ctx).Err()
@@ -2073,11 +2124,10 @@ var _ = Describe("ClusterClient", func() {
 })
 
 // With cluster-preferred-endpoint-type unknown-endpoint the servers send a
-// null host in CLUSTER SLOTS and an empty host in MOVED and ASK.
-// The MOVED check passes only because the test cluster is on loopback: the
-// client dials an empty-host target ":port" on the local machine, so a
-// redirect from a remote host is not covered. Taking the host of the node
-// that sent the redirect is left for a follow-up.
+// null host in CLUSTER SLOTS and an empty host in MOVED and ASK. The client
+// reuses the host it connected to for the topology and the host of the node
+// that sent a redirect for its target. Redirects from a non-loopback host are
+// covered by TestClusterRedirectEmptyHost.
 var _ = Describe("ClusterClient with unknown-endpoint", func() {
 	const param = "cluster-preferred-endpoint-type"
 
@@ -2115,7 +2165,7 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	It("should load the topology and follow a MOVED redirect on loopback", func() {
+	It("should load the topology and follow a MOVED redirect", func() {
 		slots, err := cluster.masters()[0].ClusterSlots(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		for _, slot := range slots {
@@ -2137,7 +2187,7 @@ var _ = Describe("ClusterClient with unknown-endpoint", func() {
 		}
 
 		// Route the slot of A at its replica, which answers with
-		// -MOVED <slot> :<port>; see the note above the Describe.
+		// -MOVED <slot> :<port>.
 		Expect(client.SwapNodes(ctx, "A")).NotTo(HaveOccurred())
 		Expect(client.Set(ctx, "A", "MOVED", 0).Err()).NotTo(HaveOccurred())
 		Expect(client.Get(ctx, "A").Val()).To(Equal("MOVED"))
@@ -3411,6 +3461,23 @@ var _ = Describe("Command Tips tests", func() {
 				}
 			})
 
+			It("should count keys in the same slot once with multi-slot routing", func() {
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
+
+				keys := []string{"{sameslot}a", "{sameslot}b", "{sameslot}c", "sameslot_1111", "sameslot_2222"}
+				for _, key := range keys {
+					Expect(client.Set(ctx, key, "value", 0).Err()).NotTo(HaveOccurred())
+				}
+
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}b", "{sameslot}missing").Result()).To(Equal(int64(2)))
+				Expect(client.Exists(ctx, keys...).Result()).To(Equal(int64(5)))
+				Expect(client.Exists(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b").Result()).To(Equal(int64(3)))
+				Expect(client.Touch(ctx, "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Del(ctx, "{sameslot}a", "{sameslot}a", "{sameslot}b", "sameslot_1111").Result()).To(Equal(int64(3)))
+				Expect(client.Unlink(ctx, "{sameslot}c", "sameslot_2222").Result()).To(Equal(int64(2)))
+			})
+
 			It("should test DBSIZE command with agg_sum aggregation across all shards", func() {
 				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
@@ -3739,6 +3806,55 @@ var _ = Describe("Command Tips tests", func() {
 			// Total should match what we sent
 			Expect(totalEchos).To(Equal(numCommands))
 		})
+	})
+
+	It("should MSETEX with the dynamic resolver", func() {
+		SkipBeforeRedisVersion("8.3", "MSetEX is available since redis 8.4")
+
+		sameA, sameB := "{m}a", "{m}b"
+		crossA, crossB := "{msetex:one}a", "{msetex:two}b"
+
+		Expect(hashtag.Slot(sameA)).To(Equal(hashtag.Slot(sameB)))
+		ex := &redis.ExpirationOption{Mode: redis.EX, Value: 100}
+		withEX := client.MSetEX(ctx, redis.MSetEXArgs{Expiration: ex}, sameA, "1", sameB, "2")
+		Expect(withEX.Err()).NotTo(HaveOccurred())
+		Expect(withEX.Val()).To(Equal(int64(1)))
+		Expect(client.Get(ctx, sameA).Val()).To(Equal("1"))
+		Expect(client.Get(ctx, sameB).Val()).To(Equal("2"))
+		Expect(client.TTL(ctx, sameA).Val()).To(BeNumerically(">", 0))
+		Expect(client.TTL(ctx, sameA).Val()).To(BeNumerically("<=", 100*time.Second))
+		Expect(client.TTL(ctx, sameB).Val()).To(BeNumerically(">", 0))
+		Expect(client.TTL(ctx, sameB).Val()).To(BeNumerically("<=", 100*time.Second))
+
+		Expect(client.Del(ctx, sameA, sameB).Err()).NotTo(HaveOccurred())
+
+		plain := client.MSetEX(ctx, redis.MSetEXArgs{}, sameA, "1", sameB, "2")
+		Expect(plain.Err()).NotTo(HaveOccurred())
+		Expect(plain.Val()).To(Equal(int64(1)))
+		Expect(client.Get(ctx, sameA).Val()).To(Equal("1"))
+		Expect(client.TTL(ctx, sameA).Val()).To(Equal(time.Duration(-1)))
+
+		Expect(client.Del(ctx, sameA, sameB).Err()).NotTo(HaveOccurred())
+
+		Expect(hashtag.Slot(crossA)).NotTo(Equal(hashtag.Slot(crossB)))
+		cross := client.MSetEX(ctx, redis.MSetEXArgs{Expiration: ex}, crossA, "1", crossB, "2")
+		Expect(cross.Err()).NotTo(HaveOccurred())
+		Expect(cross.Val()).To(Equal(int64(1)))
+		Expect(client.Get(ctx, crossA).Val()).To(Equal("1"))
+		Expect(client.Get(ctx, crossB).Val()).To(Equal("2"))
+		Expect(client.TTL(ctx, crossA).Val()).To(BeNumerically(">", 0))
+		Expect(client.TTL(ctx, crossA).Val()).To(BeNumerically("<=", 100*time.Second))
+		Expect(client.TTL(ctx, crossB).Val()).To(BeNumerically(">", 0))
+		Expect(client.TTL(ctx, crossB).Val()).To(BeNumerically("<=", 100*time.Second))
+
+		Expect(client.Del(ctx, crossA, crossB).Err()).NotTo(HaveOccurred())
+
+		for _, condition := range []redis.SetCondition{redis.NX, redis.XX} {
+			res := client.MSetEX(ctx, redis.MSetEXArgs{Condition: condition}, crossA, "1", crossB, "2")
+			Expect(res.Err()).To(MatchError(redis.ErrCrossSlot))
+			Expect(client.Get(ctx, crossA).Err()).To(Equal(redis.Nil))
+			Expect(client.Get(ctx, crossB).Err()).To(Equal(redis.Nil))
+		}
 	})
 
 	_ = Describe("ClusterClient ParseURL", func() {

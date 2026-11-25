@@ -98,7 +98,7 @@ func (ap *AutoPipeliner) FDPipelined(ctx context.Context, cmds []Cmder) error {
 	}
 	return ap.fd.client.wrapPipelineHooks(func(ctx context.Context, cmds []Cmder) error {
 		var start time.Time
-		if otel.GetPipelineOperationDurationCallback() != nil {
+		if otel.Enabled(ap.fd.client.recorder()) {
 			start = time.Now()
 		}
 		res, err := ap.fdPipelined(ctx, cmds)
@@ -126,7 +126,10 @@ func (hs *hooksMixin) wrapPipelineHooks(next ProcessPipelineHook) ProcessPipelin
 // fdPipelineMetrics records an FD batch the way generalProcessPipeline records
 // an ordinary pipeline: one duration with the command count and attempts, and
 // one error when the pipeline as a whole failed. The reader skips its
-// per-command metrics for pipelined commands, so nothing is counted twice.
+// per-command duration for pipelined commands, so nothing is counted twice;
+// it records their per-command samples (recordCommandSamples) as each reply
+// is read, so a reply the Close-time flush reads through a pooled pipeline is
+// sampled by that pipeline's read loop instead, once either way.
 //
 // attempts counts the times the batch was issued. One difference from an
 // ordinary pipeline: connection-lease retries are not counted. The lease
@@ -138,17 +141,16 @@ func (ap *AutoPipeliner) fdPipelineMetrics(ctx context.Context, start time.Time,
 	perr := fdPipelineLevelErr(cmds)
 	db := ap.fd.client.opt.DB
 	ap.fd.emitMetricsGuarded(ctx, func() {
-		// A zero start means no duration callback existed when the operation
+		// A zero start means no recorder was enabled when the operation
 		// began (a recorder installed mid-flight). Record no duration then, as
 		// an ordinary pipeline does, rather than time.Since(time.Time{}).
-		if cb := otel.GetPipelineOperationDurationCallback(); cb != nil && !start.IsZero() {
-			cb(ctx, time.Since(start), "PIPELINE", len(cmds), attempts, perr, cn, db)
+		rec := ap.fd.client.recorder()
+		if !start.IsZero() {
+			rec.RecordPipelineOperationDuration(ctx, time.Since(start), "PIPELINE", len(cmds), attempts, perr, cn, db)
 		}
-		if perr != nil {
-			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-				errorType, statusCode, isInternal := classifyCommandErrorGuarded(perr)
-				errorCallback(ctx, errorType, cn, statusCode, isInternal, attempts-1)
-			}
+		if perr != nil && otel.Enabled(rec) {
+			errorType, statusCode, isInternal := classifyCommandErrorGuarded(perr)
+			rec.RecordError(ctx, errorType, cn, statusCode, isInternal, attempts-1)
 		}
 	})
 }

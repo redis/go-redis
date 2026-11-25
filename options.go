@@ -47,15 +47,20 @@ type Limiter interface {
 
 // Options keeps the settings to set up redis connection.
 type Options struct {
+	// cscDisabled preserves a construction-time rejection through node factories.
+	// It prevents a factory-supplied Cache from re-enabling rejected CSC options.
+	cscDisabled bool
 	// cscPresenceOnly enables node-local presence filtering and redirect eviction.
 	// It owns no Cluster state and leaves standalone defaults unchanged.
 	cscPresenceOnly bool
+	// cscMetadataSource is borrowed from a ClusterClient; it grants no ownership.
+	cscMetadataSource *commandMetadataStore
 	// Network type, either tcp or unix.
 	//
 	// default: is tcp.
 	Network string
 
-	// Addr is the address formated as host:port
+	// Addr is the address formatted as host:port
 	Addr string
 
 	// NodeAddress is the address of the Redis node as reported by the server.
@@ -130,8 +135,11 @@ type Options struct {
 	// DB is the database to be selected after connecting to the server.
 	DB int
 
-	// MaxRetries is the maximum number of retries before giving up.
-	// -1 (not 0) disables retries.
+	// MaxRetries is the maximum number of command retries before giving up.
+	// -1 (not 0) disables retries. Any other negative value is treated as -1.
+	//
+	// With the default dialer, command retries do not restart an exhausted dial
+	// sequence to the same address.
 	//
 	// default: 3 retries
 	MaxRetries int
@@ -147,12 +155,16 @@ type Options struct {
 	// default: 1 second;
 	MaxRetryBackoff time.Duration
 
-	// DialTimeout for establishing new connections.
+	// DialTimeout is the timeout for one attempt to establish a connection.
+	// With the default dialer, a failed dial sequence can take up to
+	// DialTimeout * DialerRetries plus the backoff between attempts. A command
+	// context deadline limits the caller's wait for a pooled connection, but the
+	// background dial sequence can continue after that deadline.
 	//
 	// default: 5 seconds
 	DialTimeout time.Duration
 
-	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	// DialerRetries is the maximum number of dial attempts, including the first.
 	// A value <= 0 uses the default.
 	//
 	// default: 5
@@ -192,6 +204,8 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
+	// Socket timeouts caused by the context deadline match context.DeadlineExceeded with errors.Is.
+	// Earlier ReadTimeout or WriteTimeout limits still return network timeout errors.
 	// See https://redis.uptrace.dev/guide/go-redis-debugging.html#timeouts
 	ContextTimeoutEnabled bool
 
@@ -359,6 +373,8 @@ type Options struct {
 
 	// PoolSize is the base number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
+	// Zero and negative values are both treated the same way: they select the default
+	// pool size. A negative size is not a capacity, so it is never used as one.
 	// If there is not enough connections in the pool, new connections will be allocated in excess of PoolSize,
 	// you can limit it through MaxActiveConns
 	//
@@ -440,6 +456,19 @@ type Options struct {
 	// default: 0
 	ConnMaxLifetimeJitter time.Duration
 
+	// ConnMaxLifetimeReapInterval enables a background reaper that closes idle
+	// connections past ConnMaxLifetime or idle longer than ConnMaxIdleTime,
+	// instead of waiting for a Get to find them. This also shrinks the pool
+	// after a spike. It runs every interval and refills toward MinIdleConns.
+	// Connections in use are not touched. One that expires while in use is
+	// closed by the first tick after it is returned, or by the next Get.
+	//
+	// If <= 0, the reaper is off and expired idle connections are closed lazily
+	// on Get. Has no effect unless ConnMaxLifetime or ConnMaxIdleTime is > 0.
+	//
+	// default: 0
+	ConnMaxLifetimeReapInterval time.Duration
+
 	// TLSConfig to use. When set, TLS will be negotiated.
 	TLSConfig *tls.Config
 
@@ -491,6 +520,11 @@ type Options struct {
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
 
+	// OTelRecorder records this client's metrics instead of the global recorder
+	// installed by SetOTelRecorder. The client's connection pools are bound to it
+	// for their whole life. nil records to the global recorder.
+	OTelRecorder OTelRecorder
+
 	// Client-side caching is eventually consistent. A cached value may be
 	// stale until its invalidation arrives, and reads are not guaranteed to
 	// be monotonic: a value observed through an uncached path can be newer
@@ -502,7 +536,8 @@ type Options struct {
 	// takes precedence over this config.
 	//
 	// Client-side caching is disabled when CredentialsProvider,
-	// CredentialsProviderContext, or StreamingCredentialsProvider is set:
+	// CredentialsProviderContext, or StreamingCredentialsProvider is set, and
+	// when TLSConfig.GetClientCertificate is set without AUTH credentials:
 	// provider-backed credentials can change the ACL identity after the cache
 	// namespace is selected. Fixed Username/Password values are supported and
 	// the ACL user they authenticate as is included in the cache namespace.
@@ -523,14 +558,27 @@ type Options struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
+	// ClientSideCacheTrackingMode selects the tracking mode for each connection.
+	// The zero value is TrackingModePlain. An invalid value logs a warning and
+	// disables CSC at construction. Requires an enabled client-side cache.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheTrackingMode TrackingMode
+
+	// ClientSideCacheable selects eligible unmarked calls for caching. It also
+	// applies with a custom Cache. See CacheablePredicate for its callback contract.
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheable CacheablePredicate
+
 	// ClientSideCache is an explicit Cache implementation used for client-side
-	// caching. When set, it overrides ClientSideCacheConfig. Intended for
+	// caching. When set, it overrides the storage settings of ClientSideCacheConfig;
+	// ClientSideCacheTrackingMode and ClientSideCacheable still apply. Intended for
 	// advanced users that want to share a cache across clients or supply a
 	// custom implementation.
 	//
 	// A shared Cache is only safe across clients on the same server and DB.
 	// Clients with different fixed Username/Password values are isolated by a
-	// username namespace.
+	// username namespace. Clients that send no AUTH are also isolated by their
+	// TLSConfig.Certificates, which can select the ACL user on the server.
 	// Client-side caching is restricted to DB 0 and disabled with a warning
 	// otherwise. It is also disabled with any credential provider; see
 	// ClientSideCacheConfig.
@@ -674,25 +722,18 @@ const DefaultPipelinePoolSize = 10
 // holds one connection per engine plus one idle spare, regardless of pool size.
 const DefaultPipelineBufferSize = 128 * 1024
 
-// DefaultPipelinePoolTimeout is the dedicated pipeline pool's PoolTimeout
-// (pipelinePoolOptions caps the pipeline clone's PoolTimeout at this value but honors
-// a caller's SHORTER PoolTimeout). It does NOT gate the spill to the main pool:
-// withPipelineConn acquires with a non-blocking TryGet, so a burst wider than the
-// pipeline pool's cap spills to the main pool IMMEDIATELY (see the pipeline-pool note
-// in Options and withPipelineConn), never waiting this timeout, and the spilled op
-// then uses the MAIN pool's own PoolTimeout, not this one.
+// DefaultPipelinePoolTimeout caps the dedicated pipeline pool's PoolTimeout.
+// A shorter positive Options.PoolTimeout takes precedence.
 //
-// It currently has NO other live effect either. Every acquisition against the
-// dedicated pipeline pool — withPipelineConn's per-round-trip borrow above, and
-// the full-duplex engine's own session lease (autopipeline_fullduplex.go) — uses
-// TryGet, never the blocking Get. TryGet's non-wait branch returns ErrPoolTryFull
-// at once for BOTH a saturated pool turn and an active maintnotifications drainer
-// claim, before waitForDrainer or this deadline is ever consulted (see
-// ConnPool.getConn/waitTurn in internal/pool). A previous version of this doc
-// claimed a residual drainer-handoff budget; that was inaccurate (codex on #4002)
-// — there is no code path that currently waits out this value. It is kept short
-// anyway in case a future acquisition path, or a caller that obtains the pool via
-// getPipelinePool's exported pool.Pooler interface, uses the blocking Get.
+// Ordinary pipelines and native full-duplex sessions without CSC acquire with
+// TryGet. On saturation, they spill to the main pool without waiting for this
+// timeout; that pool uses its own PoolTimeout.
+//
+// Native full-duplex sessions on clients with CSC attached use blocking Get and
+// do not spill to the main pool, whose connections may have tracking enabled.
+// This remains true after CSC serving stops. The timeout bounds the wait for a
+// pool turn and a drainer handoff, not dialing or connection initialization.
+// Lease failures follow the existing retry policy, and Close cancels acquisition.
 const DefaultPipelinePoolTimeout = 100 * time.Millisecond
 
 func (opt *Options) init() {
@@ -746,7 +787,13 @@ func (opt *Options) init() {
 	if opt.Protocol < 2 {
 		opt.Protocol = 3
 	}
-	if opt.DialTimeout == 0 {
+	// A duration option is disabled with a value of 0 or less in ParseURL, and
+	// ReadTimeout/WriteTimeout turn that into "no deadline". A negative value
+	// cannot do that for DialTimeout: net.Dialer reads it as a deadline that has
+	// already passed and fails every dial at once, so it has to become 0.
+	if opt.DialTimeout < 0 {
+		opt.DialTimeout = 0
+	} else if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
 	// <= 0, not == 0: the pool already treats a nonpositive value as the default
@@ -762,7 +809,11 @@ func (opt *Options) init() {
 	if opt.Dialer == nil {
 		opt.Dialer = NewDialer(opt)
 	}
-	if opt.PoolSize == 0 {
+	// <= 0, not == 0: a negative size cannot be a pool capacity — the pool
+	// allocates a semaphore and an idle slice of this size, so it panics — and
+	// ParseURL rejects it for URLs. Normalize here too, so an Options value set
+	// directly behaves like the default instead of crashing the caller.
+	if opt.PoolSize <= 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
 	}
 
@@ -822,10 +873,11 @@ func (opt *Options) init() {
 
 	opt.ConnMaxLifetimeJitter = min(opt.ConnMaxLifetimeJitter, opt.ConnMaxLifetime)
 
-	switch opt.MaxRetries {
-	case -1:
+	// < 0, not == -1: the retry loops run while attempt <= MaxRetries, so a
+	// value below -1 would skip the first attempt and report success.
+	if opt.MaxRetries < 0 {
 		opt.MaxRetries = 0
-	case 0:
+	} else if opt.MaxRetries == 0 {
 		opt.MaxRetries = 3
 	}
 	switch opt.MinRetryBackoff {
@@ -843,6 +895,17 @@ func (opt *Options) init() {
 
 	if opt.FailingTimeoutSeconds == 0 {
 		opt.FailingTimeoutSeconds = 15
+	}
+
+	if opt.ClientSideCacheTrackingMode > TrackingModeOptOut {
+		internal.Logger.Printf(context.Background(), "redis: invalid CSC tracking mode %s; caching is disabled", opt.ClientSideCacheTrackingMode)
+		opt.cscDisabled = true
+	}
+	if opt.cscDisabled {
+		opt.ClientSideCacheConfig = nil
+		opt.ClientSideCache = nil
+		opt.ClientSideCacheTrackingMode = TrackingModePlain
+		opt.ClientSideCacheable = nil
 	}
 
 	if opt.Protocol == 2 && (opt.ClientSideCache != nil || opt.ClientSideCacheConfig != nil) {
@@ -884,6 +947,10 @@ func (opt *Options) init() {
 
 func (opt *Options) clone() *Options {
 	clone := *opt
+	if opt.ClientSideCacheConfig != nil {
+		cfg := *opt.ClientSideCacheConfig
+		clone.ClientSideCacheConfig = &cfg
+	}
 
 	// Deep clone MaintNotificationsConfig to avoid sharing between clients
 	if opt.MaintNotificationsConfig != nil {
@@ -915,8 +982,17 @@ var defaultKeepAliveConfig = net.KeepAliveConfig{
 // when none is specified in Options.Dialer.
 func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// ParseURL disables DialTimeout with a value of 0 or less, and init turns
+		// that into 0 ("no deadline"). This dialer is exported and can be built
+		// straight from a parsed Options, without NewClient's clone or init, so it
+		// normalises the value itself: net.Dialer reads a negative timeout as a
+		// deadline that has already passed.
+		timeout := opt.DialTimeout
+		if timeout < 0 {
+			timeout = 0
+		}
 		netDialer := &net.Dialer{
-			Timeout:         opt.DialTimeout,
+			Timeout:         timeout,
 			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if opt.TLSConfig == nil {
@@ -1001,6 +1077,11 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 	case 1:
 		var err error
 		if o.DB, err = strconv.Atoi(f[0]); err != nil {
+			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
+		}
+		// A negative index parses fine but makes every connection fail on
+		// SELECT, so reject it when the URL is read.
+		if o.DB < 0 {
 			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
 		}
 	default:
@@ -1132,11 +1213,21 @@ func (o *queryOptions) duration(name string) time.Duration {
 	if s == "" {
 		return 0
 	}
-	// try plain number first
-	if i, err := strconv.Atoi(s); err == nil {
+	// Plain integers are seconds. Use a 64-bit parse so large values work on
+	// 32-bit targets the same as on amd64, and keep the historical rule that
+	// any non-positive integer disables the timeout (including values that
+	// would overflow when expressed as a ParseDuration string).
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		if i <= 0 {
 			// disable timeouts
 			return -1
+		}
+		const maxSeconds = int64((1<<63 - 1) / int64(time.Second))
+		if i > maxSeconds {
+			if o.err == nil {
+				o.err = fmt.Errorf("redis: invalid %s duration: value out of range", name)
+			}
+			return 0
 		}
 		return time.Duration(i) * time.Second
 	}
@@ -1187,6 +1278,9 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 		if err != nil {
 			return nil, fmt.Errorf("redis: invalid database number: %w", err)
 		}
+		if db < 0 {
+			return nil, fmt.Errorf("redis: invalid database number: %q", tmp)
+		}
 		o.DB = db
 	}
 
@@ -1207,7 +1301,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.DisableIdentity = q.bool("disable_identity")
 	o.IdentitySuffix = q.string("identity_suffix")
 	o.PoolFIFO = q.bool("pool_fifo")
-	o.PoolSize = q.int("pool_size")
+	o.PoolSize = q.nonNegativeInt("pool_size")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
@@ -1233,6 +1327,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	if q.has("conn_max_lifetime_jitter") {
 		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
 	}
+	o.ConnMaxLifetimeReapInterval = q.duration("conn_max_lifetime_reap_interval")
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
 	}
@@ -1263,6 +1358,7 @@ func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 	poolName string,
+	metrics *pool.MetricCallbacks,
 ) (*pool.ConnPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -1288,24 +1384,26 @@ func newConnPool(
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return dialer(ctx, opt.Network, opt.Addr)
 		},
-		PoolFIFO:                 opt.PoolFIFO,
-		PoolSize:                 poolSize,
-		MaxConcurrentDials:       opt.MaxConcurrentDials,
-		PoolTimeout:              opt.PoolTimeout,
-		DialTimeout:              opt.DialTimeout,
-		DialerRetries:            opt.DialerRetries,
-		DialerRetryTimeout:       opt.DialerRetryTimeout,
-		DialerRetryBackoff:       opt.DialerRetryBackoff,
-		MinIdleConns:             minIdleConns,
-		MaxIdleConns:             maxIdleConns,
-		MaxActiveConns:           maxActiveConns,
-		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
-		ConnMaxLifetime:          opt.ConnMaxLifetime,
-		ConnMaxLifetimeJitter:    opt.ConnMaxLifetimeJitter,
-		ReadBufferSize:           opt.ReadBufferSize,
-		WriteBufferSize:          opt.WriteBufferSize,
-		PushNotificationsEnabled: opt.Protocol == 3,
-		Name:                     poolName,
+		PoolFIFO:                    opt.PoolFIFO,
+		PoolSize:                    poolSize,
+		MaxConcurrentDials:          opt.MaxConcurrentDials,
+		PoolTimeout:                 opt.PoolTimeout,
+		DialTimeout:                 opt.DialTimeout,
+		DialerRetries:               opt.DialerRetries,
+		DialerRetryTimeout:          opt.DialerRetryTimeout,
+		DialerRetryBackoff:          opt.DialerRetryBackoff,
+		MinIdleConns:                minIdleConns,
+		MaxIdleConns:                maxIdleConns,
+		MaxActiveConns:              maxActiveConns,
+		ConnMaxIdleTime:             opt.ConnMaxIdleTime,
+		ConnMaxLifetime:             opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       opt.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: opt.ConnMaxLifetimeReapInterval,
+		ReadBufferSize:              opt.ReadBufferSize,
+		WriteBufferSize:             opt.WriteBufferSize,
+		PushNotificationsEnabled:    opt.Protocol == 3,
+		Name:                        poolName,
+		Metrics:                     metrics,
 	}), nil
 }
 
@@ -1313,6 +1411,7 @@ func newPubSubPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
 	poolName string,
+	metrics *pool.MetricCallbacks,
 ) (*pool.PubSubPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -1335,23 +1434,25 @@ func newPubSubPool(
 	}
 
 	return pool.NewPubSubPool(&pool.Options{
-		PoolFIFO:                 opt.PoolFIFO,
-		PoolSize:                 poolSize,
-		MaxConcurrentDials:       opt.MaxConcurrentDials,
-		PoolTimeout:              opt.PoolTimeout,
-		DialTimeout:              opt.DialTimeout,
-		DialerRetries:            opt.DialerRetries,
-		DialerRetryTimeout:       opt.DialerRetryTimeout,
-		DialerRetryBackoff:       opt.DialerRetryBackoff,
-		MinIdleConns:             minIdleConns,
-		MaxIdleConns:             maxIdleConns,
-		MaxActiveConns:           maxActiveConns,
-		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
-		ConnMaxLifetime:          opt.ConnMaxLifetime,
-		ConnMaxLifetimeJitter:    opt.ConnMaxLifetimeJitter,
-		ReadBufferSize:           32 * 1024,
-		WriteBufferSize:          32 * 1024,
-		PushNotificationsEnabled: opt.Protocol == 3,
-		Name:                     poolName,
+		PoolFIFO:                    opt.PoolFIFO,
+		PoolSize:                    poolSize,
+		MaxConcurrentDials:          opt.MaxConcurrentDials,
+		PoolTimeout:                 opt.PoolTimeout,
+		DialTimeout:                 opt.DialTimeout,
+		DialerRetries:               opt.DialerRetries,
+		DialerRetryTimeout:          opt.DialerRetryTimeout,
+		DialerRetryBackoff:          opt.DialerRetryBackoff,
+		MinIdleConns:                minIdleConns,
+		MaxIdleConns:                maxIdleConns,
+		MaxActiveConns:              maxActiveConns,
+		ConnMaxIdleTime:             opt.ConnMaxIdleTime,
+		ConnMaxLifetime:             opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:       opt.ConnMaxLifetimeJitter,
+		ConnMaxLifetimeReapInterval: opt.ConnMaxLifetimeReapInterval,
+		ReadBufferSize:              32 * 1024,
+		WriteBufferSize:             32 * 1024,
+		PushNotificationsEnabled:    opt.Protocol == 3,
+		Name:                        poolName,
+		Metrics:                     metrics,
 	}, dialer), nil
 }

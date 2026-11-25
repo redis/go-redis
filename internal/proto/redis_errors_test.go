@@ -91,6 +91,13 @@ func TestTypedRedisErrors(t *testing.T) {
 			checkFunc:    IsMaxClientsError,
 		},
 		{
+			name:         "Max clients error in cluster mode",
+			errorMsg:     "ERR max number of clients + cluster connections reached",
+			expectedType: &MaxClientsError{},
+			expectedMsg:  "ERR max number of clients + cluster connections reached",
+			checkFunc:    IsMaxClientsError,
+		},
+		{
 			name:         "NOAUTH error",
 			errorMsg:     "NOAUTH Authentication required",
 			expectedType: &AuthError{},

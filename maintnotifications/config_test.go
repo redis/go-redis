@@ -115,6 +115,19 @@ func TestConfig(t *testing.T) {
 }
 
 func TestApplyDefaults(t *testing.T) {
+	t.Run("NilConfigWithMaxActiveConns", func(t *testing.T) {
+		var config *Config
+		result := config.ApplyDefaultsWithPoolConfig(100, 50)
+
+		// Queue size is capped by MaxActiveConns+1, same as for an empty config
+		if result.HandoffQueueSize != 51 {
+			t.Errorf("Expected HandoffQueueSize to be 51 (MaxActiveConns+1), got %d", result.HandoffQueueSize)
+		}
+		if want := (&Config{}).ApplyDefaultsWithPoolConfig(100, 50); *result != *want {
+			t.Errorf("Expected nil config to match empty config %+v, got %+v", want, result)
+		}
+	})
+
 	t.Run("NilConfig", func(t *testing.T) {
 		var config *Config
 		result := config.ApplyDefaultsWithPoolSize(100) // Use explicit pool size for testing

@@ -1346,6 +1346,11 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("1"))
 		Expect(res.Docs[1].ID).To(BeEquivalentTo("2"))
 
+		info, err := client.FTInfo(ctx, "idx1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Attributes).To(HaveLen(1))
+		Expect(info.Attributes[0].CaseSensitive).To(BeFalse())
+
 		resDrop, err := client.FTDropIndex(ctx, "idx1").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resDrop).To(BeEquivalentTo("OK"))
@@ -1361,6 +1366,10 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Total).To(BeEquivalentTo(1))
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("1"))
 
+		info, err = client.FTInfo(ctx, "idx1").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Attributes).To(HaveLen(1))
+		Expect(info.Attributes[0].CaseSensitive).To(BeTrue())
 	})
 
 	It("should FTSearch ReturnFields", Label("search", "ftsearch"), func() {
@@ -2787,7 +2796,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
 	})
 
-	It("should fail when using a non-zero offset with a zero limit", Label("search", "ftsearch"), func() {
+	It("should use the default page size when using a non-zero offset with a zero limit", Label("search", "ftsearch"), func() {
 		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "testIdx", &redis.FTCreateOptions{}, &redis.FieldSchema{
 			FieldName: "txt",
@@ -2799,12 +2808,15 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 		client.HSet(ctx, "doc1", "txt", "hello world")
 
-		// Attempt to search with a non-zero offset and zero limit.
-		_, err = client.FTSearchWithArgs(ctx, "testIdx", "hello", &redis.FTSearchOptions{
+		// A non-zero offset without a limit uses the default page size of 10
+		// instead of sending LIMIT 5 0, which Redis 8 rejects.
+		res, err := client.FTSearchWithArgs(ctx, "testIdx", "hello", &redis.FTSearchOptions{
 			LimitOffset: 5,
 			Limit:       0,
 		}).Result()
-		Expect(err).To(HaveOccurred())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(1))
+		Expect(res.Docs).To(BeEmpty())
 	})
 
 	It("should evaluate exponentiation precedence in APPLY expressions correctly", Label("search", "ftaggregate"), func() {
@@ -3962,6 +3974,46 @@ var _ = Describe("FT.HYBRID Commands", func() {
 		for _, result := range res.Results {
 			Expect(result).To(HaveKey("__score"))
 			Expect(result).To(HaveKey("__key"))
+		}
+	})
+
+	// RERANK on the KNN/RANGE clauses is only valid for disk-based indexes. The
+	// test image has none, so this checks that the token is placed where the
+	// server parses it (inside the counted method params).
+	It("should perform hybrid search with RERANK", Label("search", "fthybrid", "rerank"), func() {
+		SkipBeforeRedisVersion("8.12", "RERANK in KNN/RANGE is not parsed before 8.12 (not in 8.10.3)")
+		vector := &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})}
+
+		for _, tc := range []struct {
+			name   string
+			method string
+			params []interface{}
+			rerank redis.FTRerank
+		}{
+			{"knn enabled", "KNN", []interface{}{"K", 3}, redis.FTRerankEnabled},
+			{"knn disabled", "KNN", []interface{}{"K", 3}, redis.FTRerankDisabled},
+			{"range enabled", "RANGE", []interface{}{"RADIUS", 1000}, redis.FTRerankEnabled},
+			{"range disabled", "RANGE", []interface{}{"RADIUS", 1000}, redis.FTRerankDisabled},
+		} {
+			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", &redis.FTHybridOptions{
+				CountExpressions:  2,
+				SearchExpressions: []redis.FTHybridSearchExpression{{Query: "@color:{red}"}},
+				VectorExpressions: []redis.FTHybridVectorExpression{{
+					VectorField:  "embedding",
+					VectorData:   vector,
+					Method:       tc.method,
+					MethodParams: tc.params,
+					Rerank:       tc.rerank,
+				}},
+				Load: []string{"@__key", "@__score"},
+			}).Result()
+			if err != nil {
+				// Servers without disk-based indexes parse RERANK, then refuse it
+				// for the index. A misplaced token fails earlier with a parse error.
+				Expect(err.Error()).To(ContainSubstring("disk-based"), tc.name)
+				continue
+			}
+			Expect(res.TotalResults).To(BeNumerically(">", 0), tc.name)
 		}
 	})
 

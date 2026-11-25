@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
@@ -1598,14 +1599,12 @@ func TestProcessCached_CoalescerBailCarriesAttempt(t *testing.T) {
 				callsMu sync.Mutex
 				calls   []errCall
 			)
-			pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-				Error: func(_ context.Context, _ string, cn *pool.Conn, _ string, _ bool, retries int) {
-					callsMu.Lock()
-					calls = append(calls, errCall{cn, retries})
-					callsMu.Unlock()
-				},
+			setTestErrorRecorder(func(_ context.Context, _ string, cn *pool.Conn, _ string, _ bool, retries int) {
+				callsMu.Lock()
+				calls = append(calls, errCall{cn, retries})
+				callsMu.Unlock()
 			})
-			t.Cleanup(func() { pool.SetAllMetricCallbacks(nil) })
+			t.Cleanup(func() { otel.SetGlobalRecorder(nil) })
 			failOnSession(f.mc, cn)
 			cmd, state, err := run(t, f.c, tc.start)
 			if err != sessErr {
@@ -2020,6 +2019,38 @@ func TestClientTrackingRejectedWithCSC_Pipeline(t *testing.T) {
 	})
 	if !errors.Is(err, errUnverifiableCommandWithCSC) {
 		t.Fatalf("pipelined marshaled CLIENT TRACKING must fail closed, got %v", err)
+	}
+}
+
+func TestCSCClientCommandGuard(t *testing.T) {
+	c := NewClient(&Options{
+		Addr:                  "localhost:1",
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16},
+	})
+	t.Cleanup(func() { _ = c.Close() })
+
+	client := "client"
+	for _, tc := range []struct {
+		name string
+		args []interface{}
+		want error
+	}{
+		{"bare string", []interface{}{"client"}, nil},
+		{"bare mixed case", []interface{}{"ClIeNt"}, nil},
+		{"bare bytes", []interface{}{[]byte("CLIENT")}, nil},
+		{"bare pointer", []interface{}{&client}, nil},
+		{"info", []interface{}{"client", "info"}, nil},
+		{"tracking", []interface{}{"client", "tracking", "off"}, errClientTrackingWithCSC},
+		{"caching", []interface{}{"client", "caching", "no"}, errClientCachingWithCSC},
+		{"opaque subcommand", []interface{}{"client", cscWireSmuggler{wire: "tracking", str: "info"}}, errUnverifiableCommandWithCSC},
+		{"opaque command", []interface{}{cscWireSmuggler{wire: "client", str: "get"}}, errUnverifiableCommandWithCSC},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := c.cscCommandError(makeCmd(tc.args...)); !errors.Is(err, tc.want) {
+				t.Fatalf("guard error = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -5491,6 +5522,7 @@ bf.mexists
 bitcount
 bitfield_ro
 bitpos
+bitrangeintarray
 cf.count
 cf.exists
 cf.mexists
@@ -5538,12 +5570,14 @@ pfcount
 scard
 sdiff
 sdiffcard
+sexpiretime
 sinter
 sintercard
 sismember
 smembers
 smismember
 sort_ro
+spexpiretime
 strlen
 substr
 sunion
@@ -5620,7 +5654,7 @@ func TestCSCPerformanceCompatibility(t *testing.T) {
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("eligible commands changed: removed %v, added %v", removed, added)
 	}
-	if view.cscFingerprint != "789bd9d45282d1f83111e8ef96eaac1a" {
+	if view.cscFingerprint != "4624cdeaed3bcbe281696bfcd11a4522" {
 		t.Fatalf("default CSC fingerprint changed: %s", view.cscFingerprint)
 	}
 	if path := os.Getenv("CSC_COMPATIBILITY_DUMP"); path != "" {

@@ -687,3 +687,145 @@ func TestCommandsInfoClonePreservesMalformedTombstone(t *testing.T) {
 		t.Fatal("clone shares its legacy provenance map with the original")
 	}
 }
+
+func TestCommandsInfoPublicReplyDropsTombstones(t *testing.T) {
+	// firstkey 257 does not fit int8, so the record is malformed and tombstoned.
+	raw := commandInfoTestArray(
+		commandInfoTestArray(
+			commandInfoTestBulk("get"),
+			commandInfoTestInt(2),
+			commandInfoTestArray(commandInfoTestBulk("readonly")),
+			commandInfoTestInt(257),
+			commandInfoTestInt(1),
+			commandInfoTestInt(1),
+		),
+		commandInfoTestEntry6("after"),
+	)
+	cmd := commandInfoTestReadReply(t, raw)
+
+	if _, exists := cmd.val["get"]; !exists {
+		t.Fatal("a malformed record must stay in the parsed reply as a tombstone")
+	}
+
+	val, err := cmd.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		val  map[string]*CommandInfo
+	}{{"Val", cmd.Val()}, {"Result", val}} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, info := range tc.val {
+				// Callers range over the reply and read fields off each value.
+				if info == nil || info.Name == "" {
+					t.Fatalf("public accessor exposed a tombstone: %+v", tc.val)
+				}
+			}
+			if tc.val["get"] != nil || tc.val["after"] == nil {
+				t.Fatalf("public accessor changed the valid records: got %+v", tc.val)
+			}
+		})
+	}
+
+	// The metadata builder reads the tombstones back: a name the server reported
+	// malformed must not fall through to the built-in snapshot.
+	view := buildCommandMetadataViewForServer(cmd.valWithTombstones(), nil, "redis", "8.10.0")
+	if _, ok := view.tombstones["get"]; !ok {
+		t.Fatal("valWithTombstones hid a tombstone from the metadata builder")
+	}
+	if rec := view.records["get"]; rec != nil {
+		t.Fatalf("a malformed live record fell back to the snapshot: %+v", rec)
+	}
+
+	// With only the public reply the snapshot would silently win.
+	filtered := buildCommandMetadataViewForServer(cmd.Val(), nil, "redis", "8.10.0")
+	if rec := filtered.records["get"]; rec == nil || rec.FirstKeyPos != 1 {
+		t.Fatalf("expected the snapshot record when the tombstone is hidden, got %+v", rec)
+	}
+}
+
+func commandInfoTestKeySpecSection(typ string, spec ...string) string {
+	return commandInfoTestMap(
+		commandInfoTestBulk("type"), commandInfoTestBulk(typ),
+		commandInfoTestBulk("spec"), commandInfoTestMap(spec...),
+	)
+}
+
+func TestKeySpecSectionRequiredAndDuplicateFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		beginSearch bool
+		typ         string
+		fields      []string
+		want        bool
+	}{
+		{"index", true, "index", []string{"index"}, true},
+		{"index missing", true, "index", nil, false},
+		{"index duplicate", true, "index", []string{"index", "index"}, false},
+		{"keyword", true, "keyword", []string{"keyword", "startfrom"}, true},
+		{"keyword missing keyword", true, "keyword", []string{"startfrom"}, false},
+		{"keyword missing startfrom", true, "keyword", []string{"keyword"}, false},
+		{"keyword duplicate keyword", true, "keyword", []string{"keyword", "startfrom", "keyword"}, false},
+		{"keyword duplicate startfrom", true, "keyword", []string{"startfrom", "keyword", "startfrom"}, false},
+		{"begin search ignores find keys field", true, "index", []string{"lastkey"}, false},
+		{"range", false, "range", []string{"lastkey", "keystep", "limit"}, true},
+		{"range missing lastkey", false, "range", []string{"keystep", "limit"}, false},
+		{"range missing keystep", false, "range", []string{"lastkey", "limit"}, false},
+		{"range missing limit", false, "range", []string{"lastkey", "keystep"}, false},
+		{"range duplicate limit", false, "range", []string{"lastkey", "keystep", "limit", "limit"}, false},
+		{"keynum", false, "keynum", []string{"keynumidx", "firstkey", "keystep"}, true},
+		{"keynum missing keynumidx", false, "keynum", []string{"firstkey", "keystep"}, false},
+		{"keynum missing firstkey", false, "keynum", []string{"keynumidx", "keystep"}, false},
+		{"keynum missing keystep", false, "keynum", []string{"keynumidx", "firstkey"}, false},
+		{"keynum duplicate firstkey", false, "keynum", []string{"keynumidx", "firstkey", "firstkey", "keystep"}, false},
+		{"find keys ignores begin search field", false, "keynum", []string{"keynumidx", "firstkey", "index"}, false},
+		{"find keys ignores keyword", false, "range", []string{"lastkey", "keystep", "limit", "keyword", "keyword"}, true},
+		{"unknown algorithm", false, "future", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := make([]string, 0, len(tt.fields)*2)
+			for _, name := range tt.fields {
+				value := commandInfoTestInt(1)
+				if name == "keyword" {
+					value = commandInfoTestBulk("STORE")
+				}
+				spec = append(spec, commandInfoTestBulk(name), value)
+			}
+			raw := commandInfoTestKeySpecSection(tt.typ, spec...) + commandInfoTestBulk("after")
+			rd := proto.NewReader(strings.NewReader(raw))
+			var ks KeySpec
+			got, err := readKeySpecSectionChecked(rd, &ks, tt.beginSearch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("valid = %v, want %v", got, tt.want)
+			}
+			after, err := rd.ReadString()
+			if err != nil || after != "after" {
+				t.Fatalf("next value = %q, %v; the section left the reader misaligned", after, err)
+			}
+		})
+	}
+}
+
+func BenchmarkReadKeySpecSection(b *testing.B) {
+	raw := commandInfoTestKeySpecSection("range",
+		commandInfoTestBulk("lastkey"), commandInfoTestInt(-1),
+		commandInfoTestBulk("keystep"), commandInfoTestInt(1),
+		commandInfoTestBulk("limit"), commandInfoTestInt(0),
+	)
+	src := strings.NewReader(raw)
+	rd := proto.NewReader(src)
+	b.ReportAllocs()
+	for b.Loop() {
+		src.Reset(raw)
+		rd.Reset(src)
+		var ks KeySpec
+		if valid, err := readKeySpecSectionChecked(rd, &ks, false); err != nil || !valid {
+			b.Fatalf("valid = %v, err = %v", valid, err)
+		}
+	}
+}

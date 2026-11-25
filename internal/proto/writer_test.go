@@ -5,6 +5,7 @@ import (
 	"encoding"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,13 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
 )
+
+// countingWriter counts the calls that write to it.
+type countingWriter struct{ writes int }
+
+func (w *countingWriter) Write(b []byte) (int, error)       { w.writes++; return len(b), nil }
+func (w *countingWriter) WriteByte(byte) error              { w.writes++; return nil }
+func (w *countingWriter) WriteString(s string) (int, error) { w.writes++; return len(s), nil }
 
 type MyType struct{}
 
@@ -51,6 +59,27 @@ var _ = Describe("WriteBuffer", func() {
 			"$1\r\n1\r\n" +
 			"$0\r\n" +
 			"\r\n")))
+	})
+
+	It("should write bulk strings around the one-write limit", func() {
+		for _, n := range []int{127, 128, 129, 1024} {
+			buf.Reset()
+			val := strings.Repeat("v", n)
+			err := wr.WriteArgs([]interface{}{val, []byte(val)})
+			Expect(err).NotTo(HaveOccurred())
+
+			bulk := fmt.Sprintf("$%d\r\n%s\r\n", n, val)
+			Expect(buf.String()).To(Equal("*2\r\n" + bulk + bulk))
+		}
+	})
+
+	It("should use one Write up to the limit and four above it", func() {
+		for n, writes := range map[int]int{128: 1, 129: 4} {
+			cw := &countingWriter{}
+			err := proto.NewWriter(cw).WriteArg(strings.Repeat("v", n))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cw.writes).To(Equal(writes), "value of %d bytes", n)
+		}
 	})
 
 	It("should append time", func() {

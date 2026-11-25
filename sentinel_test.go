@@ -591,6 +591,15 @@ func TestParseSentinelURL(t *testing.T) {
 			url: "redis://localhost/database",
 			err: errors.New(`redis: invalid database number: "database"`),
 		},
+		{
+			// a negative db parses as an int but fails on every SELECT
+			url: "redis://localhost:6379/-1",
+			err: errors.New(`redis: invalid database number: "-1"`),
+		},
+		{
+			url: "redis://localhost:6379?db=-1",
+			err: errors.New(`redis: invalid database number: "-1"`),
+		},
 	}
 
 	for i := range cases {

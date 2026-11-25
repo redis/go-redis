@@ -32,6 +32,7 @@ var keylessCommands = map[string]struct{}{
 	"acl":          {},
 	"asking":       {},
 	"auth":         {},
+	"backup":       {},
 	"bgrewriteaof": {},
 	"bgsave":       {},
 	"client":       {},
@@ -168,6 +169,9 @@ const (
 	CmdTypeUint
 	CmdTypeUintSlice
 	CmdTypeAREntrySlice
+	CmdTypeBackupStatus
+	CmdTypeACLUser
+	CmdTypeClusterSlotStats
 )
 
 type (
@@ -204,6 +208,9 @@ type (
 )
 
 type Cmder interface {
+	cacheState() *cscCommandState
+	cacheView() *commandMetadataView
+	setCacheView(*commandMetadataView)
 	// command name.
 	// e.g. "set k v ex 10" -> "set", "cluster info" -> "cluster".
 	Name() string
@@ -258,6 +265,15 @@ type Cmder interface {
 	// Commands that write directly to an io.Writer should return true since
 	// partial writes cannot be undone on retry.
 	NoRetry() bool
+	// setNoRetry sets the flag NoRetry reports. Part of the interface (not
+	// only of baseCmd) so a decorator that embeds a Cmder promotes it: the
+	// MultiDB transaction path marks every command of a transaction, and a
+	// decorated command must not slip through unmarked.
+	setNoRetry(bool)
+	// base returns the command's embedded baseCmd: the identity of the
+	// command that executes, stable across decorators, and usable as a map
+	// key where the Cmder value itself may not be comparable.
+	base() *baseCmd
 
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
@@ -478,19 +494,12 @@ type baseCmd struct {
 	ctx          context.Context
 	args         []interface{}
 	err          error
-	keyPos       int8
-	_stepCount   int8
 	rawVal       interface{}
 	_readTimeout *time.Duration
-	cmdType      CmdType
-	// slotCache memoizes the cluster slot once computed, so the cluster
-	// autopipeline shard router and the pipeline flush router don't each
-	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
-	// distinguishable from unset. A plain field is safe by construction: it
-	// is written during admission or explicit pipeline resolution, before the
-	// command is dispatched to any worker. Workers only read it until the
-	// command completes. A shared routing template carries no slot of its own.
-	slotCache uint16
+
+	// noRetry marks the command as never-retryable (see NoRetry). It is set
+	// before the command is handed to an execution path, never concurrently.
+	noRetry bool
 
 	// ready, when non-nil, is the batch whose done channel closes once the
 	// command has executed. It is set only by the deferred (async)
@@ -508,6 +517,22 @@ type baseCmd struct {
 	// routing pins admission metadata until cluster dispatch completes. Keeping
 	// it on the command avoids retaining commands in a client-wide lookup table.
 	routing atomic.Pointer[clusterRoutingDecision]
+	// The pinned CSC view is independent of the consumed routing decision.
+	cscView *commandMetadataView
+
+	// slotCache memoizes the cluster slot once computed, so the cluster
+	// autopipeline shard router and the pipeline flush router don't each
+	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
+	// distinguishable from unset. A plain field is safe by construction: it
+	// is written during admission or explicit pipeline resolution, before the
+	// command is dispatched to any worker. Workers only read it until the
+	// command completes. A shared routing template carries no slot of its own.
+	slotCache uint16
+
+	keyPos     int8
+	_stepCount int8
+	cmdType    CmdType
+	csc        cscCommandState
 }
 
 func (cmd *baseCmd) clusterRoutingDecision() *clusterRoutingDecision {
@@ -588,6 +613,10 @@ func (cmd *baseCmd) resultReady() bool {
 }
 
 var _ Cmder = (*Cmd)(nil)
+
+func (cmd *baseCmd) cacheState() *cscCommandState           { return &cmd.csc }
+func (cmd *baseCmd) cacheView() *commandMetadataView        { return cmd.cscView }
+func (cmd *baseCmd) setCacheView(view *commandMetadataView) { cmd.cscView = view }
 
 func (cmd *baseCmd) Name() string {
 	if len(cmd.args) == 0 {
@@ -705,10 +734,25 @@ func (cmd *baseCmd) isRawReply() bool { return false }
 // io.Writer (like RawWriteToCmd) should override this to return true since
 // partial writes cannot be undone on retry.
 func (cmd *baseCmd) NoRetry() bool {
+	if cmd.noRetry {
+		return true
+	}
 	// A READ advances server-side cursor state. Retrying after a lost reply
 	// would silently skip the results that were already consumed.
 	return len(cmd.args) > 1 && strings.EqualFold(cmd.stringArg(0), "ft.cursor") &&
 		strings.EqualFold(cmd.stringArg(1), "read")
+}
+
+// setNoRetry marks the command as never-retryable, e.g. the synthetic MULTI
+// of a MultiDB transaction whose batch must not be replayed by the member
+// client's retry loop.
+func (cmd *baseCmd) setNoRetry(v bool) {
+	cmd.noRetry = v
+}
+
+// base returns the command's identity (see Cmder.base).
+func (cmd *baseCmd) base() *baseCmd {
+	return cmd
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -721,6 +765,12 @@ func (cmd *baseCmd) setArgs(args []interface{}) {
 }
 
 func (cmd *baseCmd) cloneBaseCmd() baseCmd {
+	state := cmd.csc
+	state.depth = 0
+	state.set(cscNoLookup, false)
+	if state.has(cscForceBypass) {
+		state.setMark(cacheBypassed)
+	}
 	var readTimeout *time.Duration
 	if cmd._readTimeout != nil {
 		timeout := *cmd._readTimeout
@@ -732,6 +782,8 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 	copy(args, cmd.args)
 
 	return baseCmd{
+		csc:          state,
+		cscView:      cmd.cscView,
 		ctx:          cmd.ctx,
 		args:         args,
 		err:          cmd.err,
@@ -740,6 +792,7 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 		rawVal:       cmd.rawVal,
 		_readTimeout: readTimeout,
 		cmdType:      cmd.cmdType,
+		noRetry:      cmd.noRetry,
 	}
 }
 
@@ -839,7 +892,12 @@ func (cmd *Cmd) Int() (int, error) {
 	}
 	switch val := cmd.val.(type) {
 	case int64:
-		return int(val), nil
+		if n := int(val); int64(n) == val {
+			return n, nil
+		}
+		// int is 32 bits on 386 and arm: give the range error Atoi gives
+		// for the same number in a bulk string, not a truncated value.
+		return strconv.Atoi(strconv.FormatInt(val, 10))
 	case string:
 		return strconv.Atoi(val)
 	case float64:
@@ -887,6 +945,11 @@ func (cmd *Cmd) Uint64() (uint64, error) {
 func toUint64(val interface{}) (uint64, error) {
 	switch val := val.(type) {
 	case int64:
+		if val < 0 {
+			// Give the error ParseUint gives for the same number in a
+			// bulk string, not a wrapped value.
+			return toUint64(strconv.FormatInt(val, 10))
+		}
 		return uint64(val), nil
 	case string:
 		return strconv.ParseUint(val, 10, 64)
@@ -1704,6 +1767,20 @@ func (cmd *IntSliceCmd) String() string {
 }
 
 func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
+	// JSON.ARRLEN and the other JSON array commands reply to a legacy path
+	// (one that does not start with "$") with a single integer instead of an
+	// array with one integer per match.
+	if typ, err := rd.PeekReplyType(); err != nil {
+		return err
+	} else if typ == proto.RespInt {
+		num, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		cmd.val = []int64{num}
+		return nil
+	}
+
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
@@ -2300,6 +2377,19 @@ func (cmd *StringSliceCmd) ScanSlice(container interface{}) error {
 }
 
 func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {
+	// JSON.ARRPOP replies to a legacy path (one that does not start with "$")
+	// with a single string instead of an array with one string per match.
+	if typ, err := rd.PeekReplyType(); err != nil {
+		return err
+	} else if typ == proto.RespString {
+		s, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		cmd.val = []string{s}
+		return nil
+	}
+
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
@@ -2650,8 +2740,9 @@ func (cmd *MapStringStringCmd) String() string {
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag. If a field
-// fails to decode, Scan still sets every other field it can and returns the
-// error of the failing field with the smallest key.
+// fails to decode, Scan still sets every other field it can. One failing field
+// returns its error as is; several return them joined with errors.Join in key
+// order, so errors.Is and errors.As match any of them.
 func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 	cmd.await()
 	if cmd.err != nil {
@@ -2663,17 +2754,28 @@ func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
 		return err
 	}
 
-	// cmd.val is a map, so keep the error of the smallest key to return the
-	// same error on every call.
-	var firstErr error
-	var errKey string
+	// cmd.val is a map, so order the field errors by key to return the same
+	// error on every call.
+	var errKeys []string
+	var keyErrs map[string]error
 	for k, v := range cmd.val {
-		if err := strct.Scan(k, v); err != nil && (firstErr == nil || k < errKey) {
-			firstErr, errKey = err, k
+		if err := strct.Scan(k, v); err != nil {
+			if keyErrs == nil {
+				keyErrs = make(map[string]error)
+			}
+			keyErrs[k] = err
+			errKeys = append(errKeys, k)
 		}
 	}
-
-	return firstErr
+	if len(errKeys) == 0 {
+		return nil
+	}
+	slices.Sort(errKeys)
+	errs := make([]error, len(errKeys))
+	for i, k := range errKeys {
+		errs[i] = keyErrs[k]
+	}
+	return hscan.JoinErrors(errs)
 }
 
 func (cmd *MapStringStringCmd) readReply(rd *proto.Reader) error {
@@ -3041,12 +3143,8 @@ func (cmd *XMessageSliceCmd) Clone() Cmder {
 	if cmd.val != nil {
 		val = make([]XMessage, len(cmd.val))
 		for i, msg := range cmd.val {
-			val[i] = XMessage{
-				ID: msg.ID,
-			}
-			if msg.Values != nil {
-				val[i].Values = maps.Clone(msg.Values)
-			}
+			val[i] = msg
+			val[i].Values = maps.Clone(msg.Values)
 		}
 	}
 	return &XMessageSliceCmd{
@@ -3223,15 +3321,8 @@ func (cmd *XStreamSliceCmd) Clone() Cmder {
 			if stream.Messages != nil {
 				val[i].Messages = make([]XMessage, len(stream.Messages))
 				for j, msg := range stream.Messages {
-					val[i].Messages[j] = XMessage{
-						ID: msg.ID,
-					}
-					if msg.Values != nil {
-						val[i].Messages[j].Values = make(map[string]interface{}, len(msg.Values))
-						for k, v := range msg.Values {
-							val[i].Messages[j].Values[k] = v
-						}
-					}
+					val[i].Messages[j] = msg
+					val[i].Messages[j].Values = maps.Clone(msg.Values)
 				}
 			}
 		}
@@ -4148,35 +4239,10 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 func (cmd *XInfoStreamCmd) Clone() Cmder {
 	var val *XInfoStream
 	if cmd.val != nil {
-		val = &XInfoStream{
-			Length:               cmd.val.Length,
-			RadixTreeKeys:        cmd.val.RadixTreeKeys,
-			RadixTreeNodes:       cmd.val.RadixTreeNodes,
-			Groups:               cmd.val.Groups,
-			LastGeneratedID:      cmd.val.LastGeneratedID,
-			MaxDeletedEntryID:    cmd.val.MaxDeletedEntryID,
-			EntriesAdded:         cmd.val.EntriesAdded,
-			RecordedFirstEntryID: cmd.val.RecordedFirstEntryID,
-		}
-		// Clone XMessage fields
-		val.FirstEntry = XMessage{
-			ID: cmd.val.FirstEntry.ID,
-		}
-		if cmd.val.FirstEntry.Values != nil {
-			val.FirstEntry.Values = make(map[string]interface{}, len(cmd.val.FirstEntry.Values))
-			for k, v := range cmd.val.FirstEntry.Values {
-				val.FirstEntry.Values[k] = v
-			}
-		}
-		val.LastEntry = XMessage{
-			ID: cmd.val.LastEntry.ID,
-		}
-		if cmd.val.LastEntry.Values != nil {
-			val.LastEntry.Values = make(map[string]interface{}, len(cmd.val.LastEntry.Values))
-			for k, v := range cmd.val.LastEntry.Values {
-				val.LastEntry.Values[k] = v
-			}
-		}
+		v := *cmd.val
+		v.FirstEntry.Values = maps.Clone(v.FirstEntry.Values)
+		v.LastEntry.Values = maps.Clone(v.LastEntry.Values)
+		val = &v
 	}
 	return &XInfoStreamCmd{
 		baseCmd: cmd.cloneBaseCmd(),
@@ -4585,15 +4651,9 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 func (cmd *XInfoStreamFullCmd) Clone() Cmder {
 	var val *XInfoStreamFull
 	if cmd.val != nil {
-		val = &XInfoStreamFull{
-			Length:               cmd.val.Length,
-			RadixTreeKeys:        cmd.val.RadixTreeKeys,
-			RadixTreeNodes:       cmd.val.RadixTreeNodes,
-			LastGeneratedID:      cmd.val.LastGeneratedID,
-			MaxDeletedEntryID:    cmd.val.MaxDeletedEntryID,
-			EntriesAdded:         cmd.val.EntriesAdded,
-			RecordedFirstEntryID: cmd.val.RecordedFirstEntryID,
-		}
+		// Copy the struct so a field added later is not left out.
+		v := *cmd.val
+		val = &v
 		// Clone Entries
 		if cmd.val.Entries != nil {
 			val.Entries = make([]XMessage, len(cmd.val.Entries))
@@ -4609,10 +4669,21 @@ func (cmd *XInfoStreamFullCmd) Clone() Cmder {
 				}
 			}
 		}
-		// Clone Groups - simplified copy for now due to complexity
+		// Clone Groups
 		if cmd.val.Groups != nil {
 			val.Groups = make([]XInfoStreamGroup, len(cmd.val.Groups))
-			copy(val.Groups, cmd.val.Groups)
+			for i, group := range cmd.val.Groups {
+				group.Pending = slices.Clone(group.Pending)
+				if group.Consumers != nil {
+					consumers := make([]XInfoStreamConsumer, len(group.Consumers))
+					for j, consumer := range group.Consumers {
+						consumer.Pending = slices.Clone(consumer.Pending)
+						consumers[j] = consumer
+					}
+					group.Consumers = consumers
+				}
+				val.Groups[i] = group
+			}
 		}
 	}
 	return &XInfoStreamFullCmd{
@@ -4802,6 +4873,10 @@ type ScanCmd struct {
 	cursor uint64
 
 	process cmdable
+
+	// clusterScan is the walk over the masters of a cluster SCAN, kept on the
+	// command because ScanIterator re-sends the same command for every page.
+	clusterScan *clusterScanState
 }
 
 var _ Cmder = (*ScanCmd)(nil)
@@ -4820,6 +4895,11 @@ func NewScanCmd(ctx context.Context, process cmdable, args ...interface{}) *Scan
 func (cmd *ScanCmd) SetVal(page []string, cursor uint64) {
 	cmd.page = page
 	cmd.cursor = cursor
+}
+
+// more reports whether the iterator has more pages to fetch.
+func (cmd *ScanCmd) more() bool {
+	return cmd.cursor != 0 || cmd.clusterScan.pending()
 }
 
 func (cmd *ScanCmd) Val() (keys []string, cursor uint64) {
@@ -4873,6 +4953,7 @@ func (cmd *ScanCmd) Clone() Cmder {
 		page:    page,
 		cursor:  cmd.cursor,
 		process: cmd.process,
+		// clusterScan is not copied: a clone is a new command, not the same walk.
 	}
 }
 
@@ -5396,6 +5477,14 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 		withLen++
 	}
 	for i := 0; i < n; i++ {
+		// Without WITH flags the reply is a flat array of names.
+		if withLen == 1 {
+			if cmd.val[i].Name, err = rd.ReadString(); err != nil {
+				return err
+			}
+			continue
+		}
+
 		nn, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
@@ -5620,14 +5709,46 @@ func (cmd *CommandsInfoCmd) SetVal(val map[string]*CommandInfo) {
 	cmd.val = val
 }
 
+// Val omits records that the client could not parse.
 func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
+	cmd.await()
+	return withoutCommandInfoTombstones(cmd.val)
+}
+
+// Result omits records that the client could not parse.
+func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
+	cmd.await()
+	return withoutCommandInfoTombstones(cmd.val), cmd.err
+}
+
+// valWithTombstones returns the reply as parsed, including the nil entries.
+// The command-metadata builder needs them to block snapshot and correction
+// fallback for a name the server reported malformed or conflicting; the public
+// accessors hide them because ranging over the reply and dereferencing a value
+// is the natural way to read it.
+func (cmd *CommandsInfoCmd) valWithTombstones() map[string]*CommandInfo {
 	cmd.await()
 	return cmd.val
 }
 
-func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
-	cmd.await()
-	return cmd.val, cmd.err
+func withoutCommandInfoTombstones(val map[string]*CommandInfo) map[string]*CommandInfo {
+	tombstones := 0
+	for _, info := range val {
+		if info == nil {
+			tombstones++
+		}
+	}
+	if tombstones == 0 {
+		return val
+	}
+
+	valid := make(map[string]*CommandInfo, len(val)-tombstones)
+	for name, info := range val {
+		if info != nil {
+			valid[name] = info
+		}
+	}
+	return valid
 }
 
 func (cmd *CommandsInfoCmd) String() string {
@@ -6224,6 +6345,25 @@ func readKeySpec(rd *proto.Reader) (KeySpec, bool, error) {
 	return ks, valid && seenFlags && seenBeginSearch && seenFindKeys, nil
 }
 
+// keySpecField is a set of the spec fields seen in a key-spec section.
+type keySpecField uint8
+
+const (
+	keySpecFieldIndex keySpecField = 1 << iota
+	keySpecFieldKeyword
+	keySpecFieldStartFrom
+	keySpecFieldLastKey
+	keySpecFieldKeyStep
+	keySpecFieldLimit
+	keySpecFieldKeyNumIdx
+	keySpecFieldFirstKey
+)
+
+// has reports whether every field in want is in the set.
+func (f keySpecField) has(want keySpecField) bool {
+	return f&want == want
+}
+
 // readKeySpecSectionChecked parses a begin_search or find_keys section.
 func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) (bool, error) {
 	n, ok, err := readCommandInfoMapLen(rd)
@@ -6235,7 +6375,7 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 	}
 	valid := true
 	var seenType, seenSpec bool
-	seenSpecFields := make(map[string]bool)
+	var seenSpecFields keySpecField
 	for i := 0; i < n; i++ {
 		field, fieldOK, err := readCommandInfoString(rd)
 		if err != nil {
@@ -6300,10 +6440,10 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 						}
 						continue
 					}
-					if seenSpecFields[name] {
+					if seenSpecFields&keySpecFieldKeyword != 0 {
 						valid = false
 					}
-					seenSpecFields[name] = true
+					seenSpecFields |= keySpecFieldKeyword
 					keyword, keywordOK, err := readCommandInfoString(rd)
 					if err != nil {
 						return false, err
@@ -6315,25 +6455,26 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 					ks.Keyword = keyword
 				default:
 					var dst *int
+					var specField keySpecField
 					if beginSearch {
 						switch name {
 						case "index":
-							dst = &ks.Index
+							dst, specField = &ks.Index, keySpecFieldIndex
 						case "startfrom":
-							dst = &ks.StartFrom
+							dst, specField = &ks.StartFrom, keySpecFieldStartFrom
 						}
 					} else {
 						switch name {
 						case "lastkey":
-							dst = &ks.LastKey
+							dst, specField = &ks.LastKey, keySpecFieldLastKey
 						case "keystep":
-							dst = &ks.KeyStep
+							dst, specField = &ks.KeyStep, keySpecFieldKeyStep
 						case "limit":
-							dst = &ks.Limit
+							dst, specField = &ks.Limit, keySpecFieldLimit
 						case "keynumidx":
-							dst = &ks.KeyNumIdx
+							dst, specField = &ks.KeyNumIdx, keySpecFieldKeyNumIdx
 						case "firstkey":
-							dst = &ks.FirstKey
+							dst, specField = &ks.FirstKey, keySpecFieldFirstKey
 						}
 					}
 					if dst == nil {
@@ -6342,10 +6483,10 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 						}
 						continue
 					}
-					if seenSpecFields[name] {
+					if seenSpecFields&specField != 0 {
 						valid = false
 					}
-					seenSpecFields[name] = true
+					seenSpecFields |= specField
 					v, valueOK, err := readCommandInfoInt(rd)
 					if err != nil {
 						return false, err
@@ -6376,13 +6517,13 @@ func readKeySpecSectionChecked(rd *proto.Reader, ks *KeySpec, beginSearch bool) 
 	valid = valid && seenType && seenSpec && typ != ""
 	switch {
 	case beginSearch && typ == "index":
-		valid = valid && seenSpecFields["index"]
+		valid = valid && seenSpecFields.has(keySpecFieldIndex)
 	case beginSearch && typ == "keyword":
-		valid = valid && seenSpecFields["keyword"] && seenSpecFields["startfrom"]
+		valid = valid && seenSpecFields.has(keySpecFieldKeyword|keySpecFieldStartFrom)
 	case !beginSearch && typ == "range":
-		valid = valid && seenSpecFields["lastkey"] && seenSpecFields["keystep"] && seenSpecFields["limit"]
+		valid = valid && seenSpecFields.has(keySpecFieldLastKey|keySpecFieldKeyStep|keySpecFieldLimit)
 	case !beginSearch && typ == "keynum":
-		valid = valid && seenSpecFields["keynumidx"] && seenSpecFields["firstkey"] && seenSpecFields["keystep"]
+		valid = valid && seenSpecFields.has(keySpecFieldKeyNumIdx|keySpecFieldFirstKey|keySpecFieldKeyStep)
 	default:
 		// Preserve unknown algorithms; generic consumers reject them.
 	}
@@ -7978,8 +8119,9 @@ func (cmd *FunctionStatsCmd) readRunningScripts(rd *proto.Reader) ([]RunningScri
 func (cmd *FunctionStatsCmd) Clone() Cmder {
 	val := FunctionStats{
 		isRunning: cmd.val.isRunning,
-		rs:        cmd.val.rs, // RunningScript is a simple struct, can be copied directly
+		rs:        cmd.val.rs,
 	}
+	val.rs.Command = slices.Clone(cmd.val.rs.Command)
 	if cmd.val.Engines != nil {
 		val.Engines = make([]Engine, len(cmd.val.Engines))
 		copy(val.Engines, cmd.val.Engines)
@@ -8417,6 +8559,119 @@ func (cmd *ClusterLinksCmd) Clone() Cmder {
 
 // ------------------------------------------------------------------------------------------------------------------
 
+// ClusterSlotStat is the usage of one slot, as reported by CLUSTER SLOT-STATS.
+// Without cluster-slot-stats-enabled the server reports KeyCount only.
+type ClusterSlotStat struct {
+	Slot            int64
+	KeyCount        int64
+	MemoryBytes     int64
+	CPUUsec         int64
+	NetworkBytesIn  int64
+	NetworkBytesOut int64
+}
+
+type ClusterSlotStatsCmd struct {
+	baseCmd
+
+	val []ClusterSlotStat
+}
+
+var _ Cmder = (*ClusterSlotStatsCmd)(nil)
+
+func NewClusterSlotStatsCmd(ctx context.Context, args ...interface{}) *ClusterSlotStatsCmd {
+	return &ClusterSlotStatsCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeClusterSlotStats,
+		},
+	}
+}
+
+func (cmd *ClusterSlotStatsCmd) SetVal(val []ClusterSlotStat) {
+	cmd.val = val
+}
+
+func (cmd *ClusterSlotStatsCmd) Val() []ClusterSlotStat {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *ClusterSlotStatsCmd) Result() ([]ClusterSlotStat, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *ClusterSlotStatsCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ClusterSlotStatsCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]ClusterSlotStat, n)
+
+	for i := range cmd.val {
+		stat := &cmd.val[i]
+		if err := rd.ReadFixedArrayLen(2); err != nil {
+			return err
+		}
+		if stat.Slot, err = rd.ReadInt(); err != nil {
+			return err
+		}
+		// A map in RESP3, a flat array in RESP2.
+		m, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		for j := 0; j < m; j++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			if field := stat.metric(key); field != nil {
+				*field, err = rd.ReadInt()
+			} else {
+				err = rd.DiscardNext()
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// metric returns the field that holds the named metric, or nil.
+func (s *ClusterSlotStat) metric(name string) *int64 {
+	switch name {
+	case "key-count":
+		return &s.KeyCount
+	case "memory-bytes":
+		return &s.MemoryBytes
+	case "cpu-usec":
+		return &s.CPUUsec
+	case "network-bytes-in":
+		return &s.NetworkBytesIn
+	case "network-bytes-out":
+		return &s.NetworkBytesOut
+	}
+	return nil
+}
+
+func (cmd *ClusterSlotStatsCmd) Clone() Cmder {
+	return &ClusterSlotStatsCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     slices.Clone(cmd.val),
+	}
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+
 type SlotRange struct {
 	Start int64
 	End   int64
@@ -8500,6 +8755,9 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 				l, err := rd.ReadArrayLen()
 				if err != nil {
 					return err
+				}
+				if l%2 != 0 {
+					return fmt.Errorf("redis: got %d elements in the CLUSTER SHARDS slots array, wanted a multiple of 2", l)
 				}
 				for k := 0; k < l; k += 2 {
 					start, err := rd.ReadInt()
@@ -9003,6 +9261,9 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 			OutputListLength:   cmd.val.OutputListLength,
 			OutputMemory:       cmd.val.OutputMemory,
 			TotalMemory:        cmd.val.TotalMemory,
+			TotalNetIn:         cmd.val.TotalNetIn,
+			TotalNetOut:        cmd.val.TotalNetOut,
+			TotalCmds:          cmd.val.TotalCmds,
 			IoThread:           cmd.val.IoThread,
 			Events:             cmd.val.Events,
 			LastCmd:            cmd.val.LastCmd,
@@ -9157,48 +9418,165 @@ func (cmd *ACLLogCmd) Clone() Cmder {
 				}
 				// Clone ClientInfo if present
 				if entry.ClientInfo != nil {
-					val[i].ClientInfo = &ClientInfo{
-						ID:                 entry.ClientInfo.ID,
-						Addr:               entry.ClientInfo.Addr,
-						LAddr:              entry.ClientInfo.LAddr,
-						FD:                 entry.ClientInfo.FD,
-						Name:               entry.ClientInfo.Name,
-						Age:                entry.ClientInfo.Age,
-						Idle:               entry.ClientInfo.Idle,
-						Flags:              entry.ClientInfo.Flags,
-						DB:                 entry.ClientInfo.DB,
-						Sub:                entry.ClientInfo.Sub,
-						PSub:               entry.ClientInfo.PSub,
-						SSub:               entry.ClientInfo.SSub,
-						Multi:              entry.ClientInfo.Multi,
-						Watch:              entry.ClientInfo.Watch,
-						QueryBuf:           entry.ClientInfo.QueryBuf,
-						QueryBufFree:       entry.ClientInfo.QueryBufFree,
-						ArgvMem:            entry.ClientInfo.ArgvMem,
-						MultiMem:           entry.ClientInfo.MultiMem,
-						BufferSize:         entry.ClientInfo.BufferSize,
-						BufferPeak:         entry.ClientInfo.BufferPeak,
-						OutputBufferLength: entry.ClientInfo.OutputBufferLength,
-						OutputListLength:   entry.ClientInfo.OutputListLength,
-						OutputMemory:       entry.ClientInfo.OutputMemory,
-						TotalMemory:        entry.ClientInfo.TotalMemory,
-						IoThread:           entry.ClientInfo.IoThread,
-						Events:             entry.ClientInfo.Events,
-						LastCmd:            entry.ClientInfo.LastCmd,
-						User:               entry.ClientInfo.User,
-						Redir:              entry.ClientInfo.Redir,
-						Resp:               entry.ClientInfo.Resp,
-						LibName:            entry.ClientInfo.LibName,
-						LibVer:             entry.ClientInfo.LibVer,
-						ReadEvents:         entry.ClientInfo.ReadEvents,
-						AvgPipelineLenSum:  entry.ClientInfo.AvgPipelineLenSum,
-						AvgPipelineLenCnt:  entry.ClientInfo.AvgPipelineLenCnt,
-					}
+					// Copy the struct so a field added later is not left out.
+					ci := *entry.ClientInfo
+					val[i].ClientInfo = &ci
 				}
 			}
 		}
 	}
 	return &ACLLogCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+// -------------------------------------------
+
+// ACLSelector is a set of ACL permissions: the allowed commands, key patterns
+// and Pub/Sub channel patterns, each as a rule string.
+type ACLSelector struct {
+	Commands string
+	Keys     string
+	Channels string
+}
+
+// ACLUser is the reply of ACL GETUSER.
+type ACLUser struct {
+	Flags     []string
+	Passwords []string
+	// The root permissions of the user.
+	ACLSelector
+	// The selectors added to the user with "(...)" rules.
+	Selectors []ACLSelector
+}
+
+type ACLUserCmd struct {
+	baseCmd
+
+	val *ACLUser
+}
+
+var _ Cmder = (*ACLUserCmd)(nil)
+
+func NewACLUserCmd(ctx context.Context, args ...interface{}) *ACLUserCmd {
+	return &ACLUserCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeACLUser,
+		},
+	}
+}
+
+func (cmd *ACLUserCmd) SetVal(val *ACLUser) {
+	cmd.val = val
+}
+
+func (cmd *ACLUserCmd) Val() *ACLUser {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *ACLUserCmd) Result() (*ACLUser, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *ACLUserCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *ACLUserCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	user := &ACLUser{}
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case "flags":
+			user.Flags, err = readStringSlice(rd)
+		case "passwords":
+			user.Passwords, err = readStringSlice(rd)
+		case "selectors":
+			var m int
+			if m, err = rd.ReadArrayLen(); err != nil {
+				return err
+			}
+			user.Selectors = make([]ACLSelector, m)
+			for j := 0; j < m; j++ {
+				var fields int
+				if fields, err = rd.ReadMapLen(); err != nil {
+					return err
+				}
+				for k := 0; k < fields; k++ {
+					if key, err = rd.ReadString(); err != nil {
+						return err
+					}
+					if err = user.Selectors[j].readField(rd, key); err != nil {
+						return err
+					}
+				}
+			}
+		default:
+			err = user.readField(rd, key)
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd.val = user
+	return nil
+}
+
+func (s *ACLSelector) readField(rd *proto.Reader, key string) (err error) {
+	switch key {
+	case "commands":
+		s.Commands, err = rd.ReadString()
+	case "keys":
+		s.Keys, err = rd.ReadString()
+	case "channels":
+		s.Channels, err = rd.ReadString()
+	default:
+		// skip unknown fields
+		err = rd.DiscardNext()
+	}
+	return err
+}
+
+func readStringSlice(rd *proto.Reader) ([]string, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+	ss := make([]string, n)
+	for i := range ss {
+		if ss[i], err = rd.ReadString(); err != nil {
+			return nil, err
+		}
+	}
+	return ss, nil
+}
+
+func (cmd *ACLUserCmd) Clone() Cmder {
+	var val *ACLUser
+	if cmd.val != nil {
+		u := *cmd.val
+		u.Flags = slices.Clone(u.Flags)
+		u.Passwords = slices.Clone(u.Passwords)
+		u.Selectors = slices.Clone(u.Selectors)
+		val = &u
+	}
+	return &ACLUserCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
@@ -9497,7 +9875,7 @@ func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
 func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	return &VectorScoreSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		val:     cmd.val,
+		val:     slices.Clone(cmd.val),
 	}
 }
 
@@ -9718,9 +10096,16 @@ func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *VectorAttribSliceCmd) Clone() Cmder {
+	val := slices.Clone(cmd.val)
+	for i := range val {
+		if val[i].Attribs != nil {
+			attribs := *val[i].Attribs
+			val[i].Attribs = &attribs
+		}
+	}
 	return &VectorAttribSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		val:     cmd.val,
+		val:     val,
 	}
 }
 
@@ -9820,9 +10205,16 @@ func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
+	val := slices.Clone(cmd.val)
+	for i := range val {
+		if val[i].Attribs != nil {
+			attribs := *val[i].Attribs
+			val[i].Attribs = &attribs
+		}
+	}
 	return &VectorScoreAttribSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		val:     cmd.val,
+		val:     val,
 	}
 }
 
@@ -10054,6 +10446,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return slowLogCmd.Val(), slowLogCmd.Err()
 			}
+		case CmdTypeACLUser:
+			if aclUserCmd, ok := cmd.(interface {
+				Val() *ACLUser
+				Err() error
+			}); ok {
+				return aclUserCmd.Val(), aclUserCmd.Err()
+			}
 		case CmdTypeHotKeys:
 			if hotKeysCmd, ok := cmd.(interface {
 				Val() *HotKeysResult
@@ -10125,6 +10524,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return clusterLinksCmd.Val(), clusterLinksCmd.Err()
+			}
+		case CmdTypeClusterSlotStats:
+			if clusterSlotStatsCmd, ok := cmd.(interface {
+				Val() []ClusterSlotStat
+				Err() error
+			}); ok {
+				return clusterSlotStatsCmd.Val(), clusterSlotStatsCmd.Err()
 			}
 		case CmdTypeClusterShards:
 			if clusterShardsCmd, ok := cmd.(interface {
@@ -10342,6 +10748,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return arEntrySliceCmd.Val(), arEntrySliceCmd.Err()
+			}
+		case CmdTypeBackupStatus:
+			if backupStatusCmd, ok := cmd.(interface {
+				Val() *BackupStatus
+				Err() error
+			}); ok {
+				return backupStatusCmd.Val(), backupStatusCmd.Err()
 			}
 		case CmdTypeMapStringString:
 			if mapCmd, ok := cmd.(interface {
@@ -10601,6 +11014,111 @@ func (cmd *AREntrySliceCmd) Clone() Cmder {
 		copy(val, cmd.val)
 	}
 	return &AREntrySliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// BackupStatus is the reply of BACKUP STATUS.
+type BackupStatus struct {
+	// State is one of idle, pending, snapshotting, incrementing, sealed or failed.
+	State string
+	// Error says why the backup failed ("aborted by user" after BACKUP ABORT). It is empty otherwise.
+	Error string
+	// StartTime is when the current or last backup started; zero if none has.
+	StartTime time.Time
+	// EndTime is when the backup was sealed; zero otherwise.
+	EndTime time.Time
+}
+
+// BackupStatusCmd is a command that returns the state of a node's backup (BACKUP STATUS).
+type BackupStatusCmd struct {
+	baseCmd
+	val *BackupStatus
+}
+
+var _ Cmder = (*BackupStatusCmd)(nil)
+
+func NewBackupStatusCmd(ctx context.Context, args ...interface{}) *BackupStatusCmd {
+	return &BackupStatusCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeBackupStatus,
+		},
+	}
+}
+
+func (cmd *BackupStatusCmd) SetVal(val *BackupStatus) {
+	cmd.val = val
+}
+
+func (cmd *BackupStatusCmd) Val() *BackupStatus {
+	cmd.await()
+	return cmd.val
+}
+
+func (cmd *BackupStatusCmd) Result() (*BackupStatus, error) {
+	cmd.await()
+	return cmd.val, cmd.err
+}
+
+func (cmd *BackupStatusCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
+
+// readReply reads a map in RESP3 and a flat array of name/value pairs in RESP2.
+// The times are Unix seconds, with 0 for a time that hasn't happened.
+func (cmd *BackupStatusCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	status := &BackupStatus{}
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "state":
+			status.State, err = rd.ReadString()
+		case "error":
+			status.Error, err = rd.ReadString()
+		case "start_time":
+			status.StartTime, err = readBackupTime(rd)
+		case "end_time":
+			status.EndTime, err = readBackupTime(rd)
+		default:
+			err = rd.DiscardNext()
+		}
+		if err != nil {
+			return err
+		}
+	}
+	cmd.val = status
+	return nil
+}
+
+func readBackupTime(rd *proto.Reader) (time.Time, error) {
+	sec, err := rd.ReadInt()
+	if err != nil || sec == 0 {
+		return time.Time{}, err
+	}
+	return time.Unix(sec, 0), nil
+}
+
+func (cmd *BackupStatusCmd) Clone() Cmder {
+	var val *BackupStatus
+	if cmd.val != nil {
+		v := *cmd.val
+		val = &v
+	}
+	return &BackupStatusCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}

@@ -31,6 +31,11 @@ var (
 // digest is kept so EVALSHA stays pinned to this script's source.
 var ErrScriptDigestMismatch = errors.New("redis: SCRIPT LOAD returned a digest that does not match the client-computed SHA-1")
 
+// errNoScriptDigest reports that a successful SCRIPT LOAD carries no digest,
+// which means the command is still queued and has not been executed. It only
+// steers ensureHash's callers to the EVAL fallback, so it never reaches them.
+var errNoScriptDigest = errors.New("redis: SCRIPT LOAD has not returned a digest yet")
+
 type Script struct {
 	src       string
 	mu        sync.RWMutex
@@ -143,7 +148,17 @@ func (s *Script) ensureHash(ctx context.Context, c Scripter) error {
 		s.mu.Unlock()
 		return err
 	}
-	s.hash = cmd.Val()
+	hash := cmd.Val()
+	if hash == "" {
+		// No digest yet: the load is only queued, as in a pipeline (a buffered
+		// command answers Err() == nil and Val() == "" until Exec). Redis never
+		// returns an empty digest, so caching this value would make every later
+		// EVALSHA carry "". Reporting it lets the callers fall back to EVAL with
+		// the source, which the same pipeline can execute.
+		s.mu.Unlock()
+		return errNoScriptDigest
+	}
+	s.hash = hash
 	s.mu.Unlock()
 	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/routing"
 )
@@ -37,12 +38,13 @@ type clusterFanoutResponseHandlerKey struct {
 // These collection replies need command-specific aggregation.
 // Unsupported RespSpecial policies fail closed.
 var clusterFanoutResponseHandlers = map[clusterFanoutResponseHandlerKey]clusterFanoutResponseHandler{
-	{name: "keys", response: routing.RespDefaultKeyless}:         aggregateClusterKeys,
-	{name: "latency|reset", response: routing.RespAggSum}:        aggregateClusterLatencyReset,
-	{name: "randomkey", response: routing.RespSpecial}:           aggregateClusterRandomKey,
-	{name: "script|exists", response: routing.RespAggLogicalAnd}: aggregateClusterScriptExists,
-	{name: "slowlog|get", response: routing.RespDefaultKeyless}:  aggregateClusterSlowLog,
-	{name: "waitaof", response: routing.RespAggMin}:              aggregateClusterWaitAOF,
+	{name: "cluster|slot-stats", response: routing.RespDefaultKeyless}: aggregateClusterSlotStats,
+	{name: "keys", response: routing.RespDefaultKeyless}:               aggregateClusterKeys,
+	{name: "latency|reset", response: routing.RespAggSum}:              aggregateClusterLatencyReset,
+	{name: "randomkey", response: routing.RespSpecial}:                 aggregateClusterRandomKey,
+	{name: "script|exists", response: routing.RespAggLogicalAnd}:       aggregateClusterScriptExists,
+	{name: "slowlog|get", response: routing.RespDefaultKeyless}:        aggregateClusterSlowLog,
+	{name: "waitaof", response: routing.RespAggMin}:                    aggregateClusterWaitAOF,
 }
 
 // Pass a value across the callback boundary so ordinary routing decisions stay on the stack.
@@ -51,6 +53,7 @@ type clusterSpecialRequestHandler func(*ClusterClient, context.Context, Cmder, *
 var clusterSpecialRequestHandlers = map[string]clusterSpecialRequestHandler{
 	"ft.cursor|del":  (*ClusterClient).executeCursorCommand,
 	"ft.cursor|read": (*ClusterClient).executeCursorCommand,
+	"scan":           (*ClusterClient).executeScanCommand,
 }
 
 // slotResult represents the result of executing a command on a specific slot
@@ -300,10 +303,29 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	slot int,
 	decision *clusterRoutingDecision,
 ) error {
+	newPolicy := c.opt.cachePolicy().configured() || cmd.cacheState().mark() != cacheUnmarked || cmd.cacheState().has(cscForceBypass)
+	if newPolicy || c.captureCacheIntent {
+		// A fragment belongs to the parent invocation, even in plain mode.
+		// Preserve its pinned metadata when entering the node client.
+		cscEnter(cmd)
+		defer cscLeave(cmd)
+	}
+	callerCtx := ctx
 	var node *clusterNode
 	var moved, ask bool
+	var redirected bool
 	var lastErr error
+	var exhaustedEndpoints map[string]error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		ctx = callerCtx
+		if redirected {
+			if newPolicy {
+				cmd.cacheState().set(cscNoLookup, true)
+				cmd.cacheState().set(cscAsk, ask)
+			} else {
+				ctx = cscBypass(ctx)
+			}
+		}
 		if attempt > 0 && !moved && !ask {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
@@ -326,6 +348,20 @@ func (c *ClusterClient) executeMultiSlotCommand(
 			}
 		}
 
+		endpoint := node.Client.opt.Addr
+		if err := exhaustedEndpoints[endpoint]; err != nil {
+			lastErr = err
+			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+				return lastErr
+			}
+			// A topology refresh may replace this slot's owner. Keep routing
+			// attempts bounded and never restart an exhausted dial sequence.
+			node = nil
+			moved, ask = false, false
+			continue
+		}
+		ctx, dialExhausted := node.Client.captureFixedDialExhaustion(ctx)
+		c.cscCheckNode(cmd, node.Client)
 		if ask {
 			ask = false
 			pipe := node.Client.Pipeline()
@@ -335,10 +371,35 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		} else {
 			lastErr = node.Client.Process(ctx, cmd)
 		}
+		// Walk wrappers the same way process/Watch do so a hook-wrapped
+		// MOVED/ASK still carries the handoff host (#4233 Bugbot).
+		servingEp := servingEndpointFromErr(lastErr)
+		if e, ok := lastErr.(*errWithServingEndpoint); ok {
+			lastErr = e.err
+		} else if e, ok := lastErr.(*redirectFromNodeError); ok {
+			lastErr = e.err
+			if e.endpoint != "" {
+				servingEp = e.endpoint
+			}
+		}
 		if lastErr == nil {
 			return nil
 		}
 
+		if dialExhausted != nil && dialExhausted.Load() {
+			if ctx.Err() != nil || cmd.NoRetry() || attempt == c.opt.MaxRedirects {
+				return lastErr
+			}
+			moved, ask, redirected = false, false, false
+			if exhaustedEndpoints == nil {
+				exhaustedEndpoints = make(map[string]error)
+			}
+			exhaustedEndpoints[endpoint] = lastErr
+			node.MarkAsFailing()
+			c.state.LazyReload()
+			node = nil
+			continue
+		}
 		if readOnly := isReadOnlyError(lastErr); readOnly || lastErr == pool.ErrClosed {
 			if readOnly {
 				c.state.LazyReload()
@@ -355,9 +416,10 @@ func (c *ClusterClient) executeMultiSlotCommand(
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
+			redirected = true
 			c.state.LazyReload()
-			recordClusterRedirectMetric(ctx, ask)
-			redirected, err := c.nodes.GetOrCreate(addr)
+			c.recordClusterRedirectMetric(ctx, ask)
+			redirected, err := c.nodes.GetOrCreate(redirectAddr(addr, node, servingEp))
 			if err != nil {
 				return err
 			}
@@ -377,13 +439,22 @@ func (c *ClusterClient) executeMultiSlotCommand(
 	return lastErr
 }
 
-func recordClusterRedirectMetric(ctx context.Context, ask bool) {
-	if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+// recorder returns where the cluster client's metrics go. A hand-built value (tests) leaves
+// rec nil, which means the global recorder.
+func (c *ClusterClient) recorder() otel.Recorder {
+	if c.rec == nil {
+		return otel.Scoped(nil)
+	}
+	return c.rec
+}
+
+func (c *ClusterClient) recordClusterRedirectMetric(ctx context.Context, ask bool) {
+	if otel.Enabled(c.recorder()) {
 		errorType, statusCode := "MOVED", "MOVED"
 		if ask {
 			errorType, statusCode = "ASK", "ASK"
 		}
-		errorCallback(ctx, errorType, nil, statusCode, false, 0)
+		c.recorder().RecordError(ctx, errorType, nil, statusCode, false, 0)
 	}
 }
 
@@ -456,7 +527,18 @@ func (c *ClusterClient) executeCursorCommand(
 		}
 	}
 
-	return node.Client.Process(ctx, cmd)
+	c.cscCheckNode(cmd, node.Client)
+	attemptCtx, exhausted := node.Client.captureFixedDialExhaustion(ctx)
+	err = node.Client.Process(attemptCtx, cmd)
+	if err != nil {
+		if exhausted != nil && exhausted.Load() {
+			return &clusterSpecialDialExhausted{err: err, node: node}
+		}
+		if moved, ask, _ := isMovedError(err); moved || ask {
+			return &redirectFromNodeError{node: node, endpoint: servingEndpointFromErr(err), err: err}
+		}
+	}
+	return err
 }
 
 func cursorRoutingKey(cmd Cmder) (string, error) {
@@ -554,6 +636,8 @@ func (c *ClusterClient) executeParallelTarget(
 	targetSlot int,
 	cmd Cmder,
 ) error {
+	cscEnter(cmd)
+	defer cscLeave(cmd)
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		if attempt > 0 {
@@ -561,9 +645,17 @@ func (c *ClusterClient) executeParallelTarget(
 				return err
 			}
 		}
-		lastErr = node.Client.Process(ctx, cmd)
+		c.cscCheckNode(cmd, node.Client)
+		attemptCtx, dialExhausted := node.Client.captureFixedDialExhaustion(ctx)
+		lastErr = node.Client.Process(attemptCtx, cmd)
 		if lastErr == nil {
 			return nil
+		}
+		if dialExhausted != nil && dialExhausted.Load() {
+			if ctx.Err() == nil {
+				c.state.LazyReload()
+			}
+			return lastErr
 		}
 		if targetSlot >= 0 && (isReadOnlyError(lastErr) || lastErr == pool.ErrClosed) {
 			state, err := c.state.ReloadOrGet(ctx)
@@ -579,7 +671,7 @@ func (c *ClusterClient) executeParallelTarget(
 		if moved, ask, _ := isMovedError(lastErr); moved || ask {
 			// Do not redirect one keyless broadcast target into another.
 			c.state.LazyReload()
-			recordClusterRedirectMetric(ctx, ask)
+			c.recordClusterRedirectMetric(ctx, ask)
 			return lastErr
 		}
 		if !shouldRetry(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {
@@ -847,6 +939,72 @@ func aggregateClusterSlowLog(cmd Cmder, cmds []Cmder) (interface{}, error) {
 		result = result[:count]
 	}
 	return result, nil
+}
+
+// aggregateClusterSlotStats merges the slots of every shard. Each shard orders
+// and limits only its own slots, so ORDERBY and LIMIT are applied again here.
+func aggregateClusterSlotStats(cmd Cmder, cmds []Cmder) (interface{}, error) {
+	if cmd.GetCmdType() != CmdTypeClusterSlotStats {
+		// An untyped command keeps one reply per shard.
+		result := make([]interface{}, 0, len(cmds))
+		for _, shardCmd := range cmds {
+			value, err := ExtractCommandValue(shardCmd)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, value)
+		}
+		return result, nil
+	}
+
+	var result []ClusterSlotStat
+	for _, shardCmd := range cmds {
+		value, err := ExtractCommandValue(shardCmd)
+		if err != nil {
+			return nil, err
+		}
+		stats, ok := value.([]ClusterSlotStat)
+		if !ok {
+			return nil, fanoutTypeError(cmd, value, "[]redis.ClusterSlotStat")
+		}
+		result = append(result, stats...)
+	}
+
+	bySlot := func(a, b ClusterSlotStat) int { return cmp.Compare(a.Slot, b.Slot) }
+	if form, _ := routingArgText(cmd, 2); !strings.EqualFold(form, "orderby") {
+		slices.SortFunc(result, bySlot)
+		return result, nil
+	}
+
+	metric, _ := routingArgText(cmd, 3)
+	metric = strings.ToLower(metric)
+	if new(ClusterSlotStat).metric(metric) == nil {
+		return nil, fmt.Errorf("redis: unknown CLUSTER SLOT-STATS metric %q", metric)
+	}
+	limit, desc := len(result), true
+	for i := 4; i < len(cmd.Args()); i++ {
+		arg, _ := routingArgText(cmd, i)
+		switch strings.ToLower(arg) {
+		case "asc":
+			desc = false
+		case "limit":
+			i++
+			arg, _ = routingArgText(cmd, i)
+			n, err := strconv.Atoi(arg)
+			if err != nil || n < 1 {
+				return nil, fmt.Errorf("redis: invalid CLUSTER SLOT-STATS limit %q", arg)
+			}
+			limit = min(limit, n)
+		}
+	}
+	slices.SortFunc(result, func(a, b ClusterSlotStat) int {
+		order := cmp.Compare(*a.metric(metric), *b.metric(metric))
+		if desc {
+			order = -order
+		}
+		return cmp.Or(order, bySlot(a, b))
+	})
+	return result[:limit], nil
 }
 
 func aggregateClusterScriptExists(cmd Cmder, cmds []Cmder) (interface{}, error) {
@@ -1389,6 +1547,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 				return nil
 			}
 		}
+	case CmdTypeClusterSlotStats:
+		if c, ok := cmd.(interface{ SetVal([]ClusterSlotStat) }); ok {
+			if v, ok := value.([]ClusterSlotStat); ok {
+				c.SetVal(v)
+				return nil
+			}
+		}
 	case CmdTypeClusterShards:
 		if c, ok := cmd.(interface{ SetVal([]ClusterShard) }); ok {
 			if v, ok := value.([]ClusterShard); ok {
@@ -1406,6 +1571,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 	case CmdTypeClientInfo:
 		if c, ok := cmd.(interface{ SetVal(*ClientInfo) }); ok {
 			if v, ok := value.(*ClientInfo); ok {
+				c.SetVal(v)
+				return nil
+			}
+		}
+	case CmdTypeACLUser:
+		if c, ok := cmd.(interface{ SetVal(*ACLUser) }); ok {
+			if v, ok := value.(*ACLUser); ok {
 				c.SetVal(v)
 				return nil
 			}

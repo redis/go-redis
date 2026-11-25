@@ -64,6 +64,23 @@ func appendArgs(dst, src []interface{}) []interface{} {
 	return dst
 }
 
+// appendElements appends src to dst. A single slice argument is expanded
+// into its elements. Any other argument, a nil one included, is sent as it is.
+func appendElements(dst, src []interface{}) []interface{} {
+	if len(src) == 1 {
+		switch arg := src[0].(type) {
+		case []string:
+			for _, s := range arg {
+				dst = append(dst, s)
+			}
+			return dst
+		case []interface{}:
+			return append(dst, arg...)
+		}
+	}
+	return append(dst, src...)
+}
+
 func appendArg(dst []interface{}, arg interface{}) []interface{} {
 	switch arg := arg.(type) {
 	case []string:
@@ -89,7 +106,7 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 	case nil:
 		return dst
 	default:
-		// scan struct field
+		// scan struct field / typed string-key maps
 		v := reflect.ValueOf(arg)
 		if v.Type().Kind() == reflect.Pointer {
 			if v.IsNil() {
@@ -97,6 +114,16 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 				return dst
 			}
 			v = v.Elem()
+		}
+
+		// Flatten map[string]T the same way as map[string]string /
+		// map[string]interface{}, so HSet/HMSet accept typed numeric maps.
+		if v.Kind() == reflect.Map && v.Type().Key().Kind() == reflect.String {
+			iter := v.MapRange()
+			for iter.Next() {
+				dst = append(dst, iter.Key().Interface(), iter.Value().Interface())
+			}
+			return dst
 		}
 
 		if v.Type().Kind() == reflect.Struct {
@@ -295,14 +322,14 @@ func (c statefulCmdable) AuthACL(ctx context.Context, username, password string)
 }
 
 func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration) *IntCmd {
-	cmd := NewIntCmd(ctx, "wait", numSlaves, int(timeout/time.Millisecond))
+	cmd := NewIntCmd(ctx, "wait", numSlaves, formatMs(ctx, timeout))
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntSliceCmd {
-	cmd := NewIntSliceCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
+	cmd := NewIntSliceCmd(ctx, "waitAOF", numLocal, numSlaves, formatMs(ctx, timeout))
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd

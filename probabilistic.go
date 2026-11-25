@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -33,6 +34,7 @@ type ProbabilisticCmdable interface {
 
 	CFAdd(ctx context.Context, key string, element interface{}) *BoolCmd
 	CFAddNX(ctx context.Context, key string, element interface{}) *BoolCmd
+	CFCompact(ctx context.Context, key string) *StatusCmd
 	CFCount(ctx context.Context, key string, element interface{}) *IntCmd
 	CFDel(ctx context.Context, key string, element interface{}) *BoolCmd
 	CFExists(ctx context.Context, key string, element interface{}) *BoolCmd
@@ -267,8 +269,9 @@ func (cmd *ScanDumpCmd) readReply(rd *proto.Reader) (err error) {
 		if err != nil {
 			return err
 		}
+		// CF.SCANDUMP ends the dump with a null chunk.
 		data, err := rd.ReadString()
-		if err != nil {
+		if err != nil && err != Nil {
 			return err
 		}
 		cmd.val.Data = data
@@ -367,9 +370,11 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			return fmt.Errorf("redis: BLOOM.INFO unexpected key %s", key)
 		}
 
-		// Read the integer and assign to the field via pointer dereferencing
+		// Read the integer and assign to the field via pointer dereferencing.
+		// A non-scaling filter reports a null expansion rate, which is left
+		// as zero.
 		val, err := rd.ReadInt()
-		if err != nil {
+		if err != nil && err != Nil {
 			return err
 		}
 		*fieldPtr = val
@@ -387,7 +392,8 @@ func (cmd *BFInfoCmd) readReply(rd *proto.Reader) (err error) {
 			return err
 		}
 		if key, ok := cmd.args[2].(string); ok && n == 1 {
-			if err := readAndAssignValue(key, false); err != nil {
+			// The server matches the option case-insensitively.
+			if err := readAndAssignValue(strings.ToUpper(key), false); err != nil {
 				return err
 			}
 		} else {
@@ -483,7 +489,7 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOpti
 		}
 	}
 	args = append(args, "ITEMS")
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -495,7 +501,7 @@ func (c cmdable) BFInsert(ctx context.Context, key string, options *BFInsertOpti
 // For more information - https://redis.io/commands/bf.madd/
 func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"BF.MADD", key}
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -506,7 +512,7 @@ func (c cmdable) BFMAdd(ctx context.Context, key string, elements ...interface{}
 // For more information - https://redis.io/commands/bf.mexists/
 func (c cmdable) BFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"BF.MEXISTS", key}
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -558,15 +564,18 @@ func (c cmdable) CFReserveMaxIterations(ctx context.Context, key string, capacit
 // maximum number of iterations and expansion rate.
 // For more information - https://redis.io/commands/cf.reserve/
 func (c cmdable) CFReserveWithArgs(ctx context.Context, key string, options *CFReserveOptions) *StatusCmd {
-	args := []interface{}{"CF.RESERVE", key, options.Capacity}
-	if options.BucketSize != 0 {
-		args = append(args, "BUCKETSIZE", options.BucketSize)
-	}
-	if options.MaxIterations != 0 {
-		args = append(args, "MAXITERATIONS", options.MaxIterations)
-	}
-	if options.Expansion != 0 {
-		args = append(args, "EXPANSION", options.Expansion)
+	args := []interface{}{"CF.RESERVE", key}
+	if options != nil {
+		args = append(args, options.Capacity)
+		if options.BucketSize != 0 {
+			args = append(args, "BUCKETSIZE", options.BucketSize)
+		}
+		if options.MaxIterations != 0 {
+			args = append(args, "MAXITERATIONS", options.MaxIterations)
+		}
+		if options.Expansion != 0 {
+			args = append(args, "EXPANSION", options.Expansion)
+		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -598,6 +607,17 @@ func (c cmdable) CFAddNX(ctx context.Context, key string, element interface{}) *
 func (c cmdable) CFCount(ctx context.Context, key string, element interface{}) *IntCmd {
 	args := []interface{}{"CF.COUNT", key, element}
 	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// CFCompact compacts a Cuckoo filter: it moves items into earlier sub-filters
+// and frees the sub-filters left empty. CF.DEL compacts automatically but stops
+// at the first sub-filter it cannot empty; CF.COMPACT tries all of them.
+// cmd: CF.COMPACT key
+func (c cmdable) CFCompact(ctx context.Context, key string) *StatusCmd {
+	args := []interface{}{"CF.COMPACT", key}
+	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -784,7 +804,7 @@ func (c cmdable) getCfInsertWithArgs(args []interface{}, options *CFInsertOption
 		}
 	}
 	args = append(args, "ITEMS")
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 
 	return args
 }
@@ -794,7 +814,7 @@ func (c cmdable) getCfInsertWithArgs(args []interface{}, options *CFInsertOption
 // For more information - https://redis.io/commands/cf.mexists/
 func (c cmdable) CFMExists(ctx context.Context, key string, elements ...interface{}) *BoolSliceCmd {
 	args := []interface{}{"CF.MEXISTS", key}
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 	cmd := NewBoolSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -1019,7 +1039,7 @@ func (c cmdable) CMSMergeWithWeight(ctx context.Context, destKey string, sourceK
 // For more information - https://redis.io/commands/cms.query/
 func (c cmdable) CMSQuery(ctx context.Context, key string, elements ...interface{}) *IntSliceCmd {
 	args := []interface{}{"CMS.QUERY", key}
-	args = append(args, elements...)
+	args = appendElements(args, elements)
 	cmd := NewIntSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd

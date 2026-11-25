@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +12,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/logging"
 )
@@ -345,121 +345,42 @@ func TestDrainIdleConnsReportsBorrowedConnectionStates(t *testing.T) {
 	cn.GetStateMachine().Transition(pool.StateInUse)
 	connPool.Put(ctx, cn)
 
-	type event struct {
-		delta int
-		state string
+	type counts struct{ total, idle uint32 }
+	snapshot := func() counts {
+		s := connPool.Stats()
+		return counts{s.TotalConns, s.IdleConns}
 	}
-	var mu sync.Mutex
-	var events []event
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		ConnectionCount: func(_ context.Context, delta int, c *pool.Conn, state string, _ bool) {
-			if c != cn {
-				return
-			}
-			mu.Lock()
-			events = append(events, event{delta: delta, state: state})
-			mu.Unlock()
-		},
-	})
-	defer pool.SetAllMetricCallbacks(nil)
-
+	if got := snapshot(); got != (counts{1, 1}) {
+		t.Fatalf("before drain: got %+v, want 1 total, 1 idle", got)
+	}
+	var during counts
 	var state pool.DrainState
-	connPool.DrainIdleConns(ctx, &state, func(*pool.Conn) error { return nil })
-
-	mu.Lock()
-	defer mu.Unlock()
-	want := []event{
-		{delta: 1, state: pool.MetricStateIdle},
-		{delta: -1, state: pool.MetricStateIdle},
-		{delta: 1, state: pool.MetricStateUsed},
-		{delta: -1, state: pool.MetricStateUsed},
-		{delta: 1, state: pool.MetricStateIdle},
+	connPool.DrainIdleConns(ctx, &state, func(*pool.Conn) error {
+		during = snapshot()
+		return nil
+	})
+	if during != (counts{1, 0}) {
+		t.Fatalf("while borrowed by the drainer: got %+v, want 1 total, 0 idle", during)
 	}
-	if !reflect.DeepEqual(events, want) {
-		t.Fatalf("connection state events: got %#v, want %#v", events, want)
+	if got := snapshot(); got != (counts{1, 1}) {
+		t.Fatalf("after drain: got %+v, want 1 total, 1 idle", got)
 	}
 }
 
-func TestConnectionCountIncludesExistingConns(t *testing.T) {
+// Stats reads the total and idle counts under one lock, so a concurrent
+// reader never sees more idle than total connections, and once the load stops
+// every connection is idle again.
+func TestStatsIdleNeverExceedsTotalUnderChurn(t *testing.T) {
 	connPool := pool.NewConnPool(&pool.Options{
-		Name:               "existing-conns",
-		Dialer:             dummyDialer,
-		PoolSize:           4,
-		MinIdleConns:       4,
-		MaxConcurrentDials: 4,
-		PoolTimeout:        time.Second,
-		ConnMaxIdleTime:    -1,
-	})
-	t.Cleanup(func() { _ = connPool.Close() })
-
-	deadline := time.Now().Add(time.Second)
-	for connPool.Len() != 4 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := connPool.Len(); got != 4 {
-		t.Fatalf("MinIdleConns: got %d, want 4", got)
-	}
-
-	var mu sync.Mutex
-	counts := map[string]int{}
-	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
-		ConnectionCount: func(_ context.Context, delta int, cn *pool.Conn, state string, _ bool) {
-			if cn.PoolName() != "existing-conns" {
-				return
-			}
-			mu.Lock()
-			counts[state] += delta
-			mu.Unlock()
-		},
-	})
-
-	mu.Lock()
-	got := map[string]int{pool.MetricStateIdle: counts[pool.MetricStateIdle], pool.MetricStateUsed: counts[pool.MetricStateUsed]}
-	mu.Unlock()
-	want := map[string]int{pool.MetricStateIdle: 4, pool.MetricStateUsed: 0}
-	if !reflect.DeepEqual(got, want) {
-		pool.SetAllMetricCallbacks(nil)
-		t.Fatalf("after attach: got %v, want %v", got, want)
-	}
-
-	pool.SetAllMetricCallbacks(nil)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if counts[pool.MetricStateIdle] != 0 || counts[pool.MetricStateUsed] != 0 {
-		t.Fatalf("after detach: got %v, want all zero", counts)
-	}
-}
-
-func TestConnectionCountBalancedWhileCallbacksChange(t *testing.T) {
-	opt := &pool.Options{
-		Name:               "callback-churn",
+		Name:               "stats-churn",
 		Dialer:             dummyDialer,
 		PoolSize:           8,
 		MinIdleConns:       2,
 		MaxConcurrentDials: 8,
 		PoolTimeout:        time.Second,
 		ConnMaxIdleTime:    -1,
-	}
-	connPool := pool.NewConnPool(opt)
-	t.Cleanup(func() { _ = connPool.Close() })
-	pubSubPool := pool.NewPubSubPool(opt, func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return dummyDialer(ctx)
 	})
-	t.Cleanup(func() { _ = pubSubPool.Close() })
-
-	var mu sync.Mutex
-	counts := map[string]int{}
-	callbacks := &pool.MetricCallbacks{
-		ConnectionCount: func(_ context.Context, delta int, cn *pool.Conn, state string, _ bool) {
-			if cn.PoolName() != "callback-churn" {
-				return
-			}
-			mu.Lock()
-			counts[state] += delta
-			mu.Unlock()
-		},
-	}
+	t.Cleanup(func() { _ = connPool.Close() })
 
 	ctx := context.Background()
 	stop := make(chan struct{})
@@ -486,61 +407,25 @@ func TestConnectionCountBalancedWhileCallbacksChange(t *testing.T) {
 			}
 		}(i)
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			cn, err := pubSubPool.NewConn(ctx, "tcp", "", nil)
-			if err != nil {
-				continue
-			}
-			pubSubPool.TrackConn(cn)
-			pubSubPool.UntrackConn(cn)
-			_ = cn.Close()
+	for i := 0; i < 20000; i++ {
+		if s := connPool.Stats(); s.IdleConns > s.TotalConns {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("idle %d > total %d", s.IdleConns, s.TotalConns)
 		}
-	}()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			p := pool.NewConnPool(&pool.Options{
-				Name:               "callback-churn",
-				Dialer:             dummyDialer,
-				PoolSize:           1,
-				MaxConcurrentDials: 1,
-				PoolTimeout:        time.Second,
-				ConnMaxIdleTime:    -1,
-			})
-			if cn, err := p.Get(ctx); err == nil {
-				p.Put(ctx, cn)
-			}
-			_ = p.Close()
-		}
-	}()
-
-	for i := 0; i < 200; i++ {
-		pool.SetAllMetricCallbacks(callbacks)
-		pool.SetAllMetricCallbacks(nil)
 	}
 	close(stop)
 	wg.Wait()
-
-	mu.Lock()
-	defer mu.Unlock()
-	for state, count := range counts {
-		if count != 0 {
-			t.Fatalf("connection count for state %q after detach: got %d, want 0", state, count)
+	deadline := time.Now().Add(time.Second)
+	for {
+		s := connPool.Stats()
+		if s.IdleConns == s.TotalConns && int(s.TotalConns) == connPool.Len() {
+			return
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after churn: total %d, idle %d, Len %d; want all idle", s.TotalConns, s.IdleConns, connPool.Len())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

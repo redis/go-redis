@@ -32,9 +32,12 @@ func newTestRecorder(t *testing.T, groups MetricGroupFlags) (*metricsRecorder, *
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	o := &ObservabilityInstance{}
 	cfg := NewConfig().WithEnabled(true).WithMeterProvider(mp).WithMetricGroups(groups)
-	rec, err := o.createRecorder(mp.Meter("test"), o.configToInternal(cfg))
+	rec, err := o.createRecorder(mp.Meter("test"), o.configToInternal(cfg), nil)
 	if err != nil {
 		t.Fatalf("createRecorder: %v", err)
+	}
+	if rec.opq != nil {
+		t.Cleanup(rec.opq.stop) // no Init, so no Shutdown stops the worker
 	}
 	return rec, reader
 }

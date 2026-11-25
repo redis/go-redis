@@ -68,9 +68,24 @@ func (c *ClusterClient) ScriptLoad(ctx context.Context, script string) *StringCm
 func (c *ClusterClient) ScriptFlush(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "script", "flush")
 	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
-		return c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
-			return shard.ScriptFlush(ctx).Err()
+		var mu sync.Mutex
+		var status string
+		err := c.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
+			val, err := shard.ScriptFlush(ctx).Result()
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			status = val
+			mu.Unlock()
+
+			return nil
 		})
+		if err == nil {
+			cmd.val = status
+		}
+		return err
 	})
 	return cmd
 }
@@ -111,9 +126,51 @@ func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 	return cmd
 }
 
+func (c *ClusterClient) ClusterSlotStats(ctx context.Context, startSlot, endSlot int) *ClusterSlotStatsCmd {
+	cmd := NewClusterSlotStatsCmd(ctx, "cluster", "slot-stats", "slotsrange", startSlot, endSlot)
+	c.clusterSlotStats(ctx, cmd)
+	return cmd
+}
+
+func (c *ClusterClient) ClusterSlotStatsOrderBy(ctx context.Context, a *ClusterSlotStatsOrderByArgs) *ClusterSlotStatsCmd {
+	cmd := NewClusterSlotStatsCmd(ctx, clusterSlotStatsOrderByArgs(a)...)
+	c.clusterSlotStats(ctx, cmd)
+	return cmd
+}
+
+// clusterSlotStats asks every master, since a node reports only its own slots.
+func (c *ClusterClient) clusterSlotStats(ctx context.Context, cmd *ClusterSlotStatsCmd) {
+	c.processClusterHelper(ctx, cmd, func(ctx context.Context, _ Cmder) error {
+		var mu sync.Mutex
+		var cmds []Cmder
+		err := c.ForEachMaster(ctx, func(ctx context.Context, master *Client) error {
+			shardCmd := NewClusterSlotStatsCmd(ctx, cmd.Args()...)
+			if err := master.Process(ctx, shardCmd); err != nil {
+				return err
+			}
+
+			mu.Lock()
+			cmds = append(cmds, shardCmd)
+			mu.Unlock()
+
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		val, err := aggregateClusterSlotStats(cmd, cmds)
+		if err != nil {
+			return err
+		}
+		cmd.val = val.([]ClusterSlotStat)
+		return nil
+	})
+}
+
 // processClusterHelper resolves the helper policy only after process hooks
 // continue. Legacy helper fan-out and policy routing share the same hook call.
 func (c *ClusterClient) processClusterHelper(ctx context.Context, cmd Cmder, legacy ProcessHook) {
+	ctx = cscUnmarkedContext(ctx)
 	err := c.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
 		if c.usesLegacyClusterHelpers(ctx, cmd) {
 			return legacy(ctx, cmd)
