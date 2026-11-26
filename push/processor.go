@@ -222,7 +222,7 @@ func (v *VoidProcessor) UnregisterHandler(pushNotificationName string) error {
 // This method should be called by the client in WithReader before reading the reply
 // to be sure there are no buffered push notifications.
 // It will try to read from the socket and if it is empty - it may block.
-func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader) error {
+func (v *VoidProcessor) ProcessPendingNotifications(ctx context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader) error {
 	// read and discard all push notifications
 	if rd == nil {
 		return nil
@@ -263,11 +263,14 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 			break
 		}
 
-		// Read the push notification
+		// Surface a ReadReply error (unlike the boundary peek errors above,
+		// which consumed nothing): it happens mid-frame after bytes are
+		// consumed, so the connection stream is desynced and callers such as
+		// full-duplex autopipelining or CSC drainers must retire the connection.
 		_, err = rd.ReadReply()
 		if err != nil {
-			internal.Logger.Printf(context.Background(), "push: error reading push notification: %v", err)
-			return nil
+			internal.Logger.Printf(ctx, "push: error reading push notification: %v", err)
+			return err
 		}
 	}
 	return nil
