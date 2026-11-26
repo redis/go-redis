@@ -50,3 +50,30 @@ func TestJSONGetWithArgsArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestJSONDebugMemoryArgs(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		path string
+		want []interface{}
+	}{
+		{name: "default_path", want: []interface{}{"JSON.DEBUG", "MEMORY", "key"}},
+		{name: "legacy_path", path: ".a", want: []interface{}{"JSON.DEBUG", "MEMORY", "key", ".a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).JSONDebugMemory(ctx, "key", tt.path)
+			if captured != cmd {
+				t.Fatal("JSONDebugMemory did not dispatch the command")
+			}
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+			if got := cmd.firstKeyPos(); got != 2 {
+				t.Errorf("firstKeyPos = %d, want 2", got)
+			}
+		})
+	}
+}
