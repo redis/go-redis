@@ -261,6 +261,18 @@ func TestHandleMoving_NullEndpointLeavesPubSubMarkedNotQueued(t *testing.T) {
 		}
 		assertPubSubMarkedNotQueued(t, cn, manager, hook)
 	})
+	t.Run("timeS=1 keeps the timeS/2 delay", func(t *testing.T) {
+		cn, manager, hook := setupNullMovingPubSub(t, 1)
+		time.Sleep(200 * time.Millisecond)
+		if cn.ShouldHandoff() {
+			t.Fatal("PubSub conn marked before timeS/2")
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for !cn.ShouldHandoff() && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		assertPubSubMarkedNotQueued(t, cn, manager, hook)
+	})
 }
 
 func setupNullMovingPubSub(t *testing.T, timeS int64) (*pool.Conn, *Manager, *PoolHook) {
