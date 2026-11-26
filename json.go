@@ -504,10 +504,16 @@ func (c cmdable) JSONClear(ctx context.Context, key, path string) *IntCmd {
 	return cmd
 }
 
-// JSONDebugMemory reports a value's memory usage in bytes (unimplemented)
+// JSONDebugMemory reports a value's memory usage in bytes.
 // For more information, see https://redis.io/commands/json.debug-memory
 func (c cmdable) JSONDebugMemory(ctx context.Context, key, path string) *IntCmd {
-	panic("not implemented")
+	args := []interface{}{"JSON.DEBUG", "MEMORY", key}
+	if path != "" {
+		args = append(args, path)
+	}
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
 }
 
 // JSONDel deletes a value.

@@ -50,3 +50,40 @@ func TestJSONGetWithArgsArgs(t *testing.T) {
 		})
 	}
 }
+
+// TestJSONDebugMemoryArgs checks that JSONDebugMemory sends
+// JSON.DEBUG MEMORY with the key after the MEMORY subcommand and omits an
+// empty path instead of panicking.
+func TestJSONDebugMemoryArgs(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		key  string
+		path string
+		want []interface{}
+	}{
+		{
+			name: "empty_path",
+			key:  "doc",
+			path: "",
+			want: []interface{}{"JSON.DEBUG", "MEMORY", "doc"},
+		},
+		{
+			name: "legacy_path",
+			key:  "doc",
+			path: ".a",
+			want: []interface{}{"JSON.DEBUG", "MEMORY", "doc", ".a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			cmd := captureCmdable(&captured).JSONDebugMemory(ctx, tt.key, tt.path)
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
