@@ -798,13 +798,13 @@ func (c cmdable) TSRevRangeWithArgs(ctx context.Context, key string, fromTimesta
 		if options.Latest {
 			args = append(args, "LATEST")
 		}
-		if options.FilterByTS != nil {
+		if len(options.FilterByTS) > 0 {
 			args = append(args, "FILTER_BY_TS")
 			for _, f := range options.FilterByTS {
 				args = append(args, f)
 			}
 		}
-		if options.FilterByValue != nil {
+		if len(options.FilterByValue) > 0 {
 			args = append(args, "FILTER_BY_VALUE")
 			for _, f := range options.FilterByValue {
 				args = append(args, f)
@@ -860,13 +860,13 @@ func (c cmdable) TSRangeWithArgs(ctx context.Context, key string, fromTimestamp 
 		if options.Latest {
 			args = append(args, "LATEST")
 		}
-		if options.FilterByTS != nil {
+		if len(options.FilterByTS) > 0 {
 			args = append(args, "FILTER_BY_TS")
 			for _, f := range options.FilterByTS {
 				args = append(args, f)
 			}
 		}
-		if options.FilterByValue != nil {
+		if len(options.FilterByValue) > 0 {
 			args = append(args, "FILTER_BY_VALUE")
 			for _, f := range options.FilterByValue {
 				args = append(args, f)
@@ -1065,13 +1065,13 @@ func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTime
 		if options.Latest {
 			args = append(args, "LATEST")
 		}
-		if options.FilterByTS != nil {
+		if len(options.FilterByTS) > 0 {
 			args = append(args, "FILTER_BY_TS")
 			for _, f := range options.FilterByTS {
 				args = append(args, f)
 			}
 		}
-		if options.FilterByValue != nil {
+		if len(options.FilterByValue) > 0 {
 			args = append(args, "FILTER_BY_VALUE")
 			for _, f := range options.FilterByValue {
 				args = append(args, f)
@@ -1162,13 +1162,13 @@ func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toT
 		if options.Latest {
 			args = append(args, "LATEST")
 		}
-		if options.FilterByTS != nil {
+		if len(options.FilterByTS) > 0 {
 			args = append(args, "FILTER_BY_TS")
 			for _, f := range options.FilterByTS {
 				args = append(args, f)
 			}
 		}
-		if options.FilterByValue != nil {
+		if len(options.FilterByValue) > 0 {
 			args = append(args, "FILTER_BY_VALUE")
 			for _, f := range options.FilterByValue {
 				args = append(args, f)
