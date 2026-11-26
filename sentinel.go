@@ -1381,7 +1381,7 @@ func (c *sentinelFailover) setSentinel(ctx context.Context, sentinel *SentinelCl
 	c.sentinel = sentinel
 	c.discoverSentinels(ctx)
 
-	c.pubsub = sentinel.Subscribe(ctx, "+switch-master", "+replica-reconf-done")
+	c.pubsub = sentinel.Subscribe(ctx, "+switch-master", "+slave-reconf-done")
 	go c.listen(c.pubsub)
 }
 
