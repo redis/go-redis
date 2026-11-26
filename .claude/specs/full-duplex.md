@@ -265,17 +265,21 @@ even though Redis and the pools are still up. See `onCloseHooks.run` and `sentin
 
 These are documented gaps, tracked as follow-ups, not fixed in the current PR.
 
-- **CSC on the ordered async FD fast path.** When client-side caching is active,
-  the submit captures the command's cache intent (`cscBegin`), and `cscAdmitMarked`
-  then FORCE-bypasses cacheable commands on the ordered async face
-  (`cscForceBypass`), so they stream straight to the FD writer and neither hit
-  nor populate the cache while FD is active, unlike the half-duplex path, which
-  routes cacheable commands through `process`. The cache is involved only when
-  a retryable reply diverts to the normal client path. On the BLOCKING face
-  `cscAdmitMarked` diverts instead, so cacheable commands leave FD and run
-  through the normal cache-aware path (hit/populate work). Routing cacheable
-  async FD submits through the cache-aware path (reserve/capture/fulfill) before
-  streaming is a follow-up.
+- **CSC on the FD fast path.** When client-side caching is active, the submit
+  captures the command's cache intent (`cscBegin`), but only an EXPLICITLY
+  marked context (`WithCache`/`WithoutCache`) reaches `cscAdmitMarked` —
+  `submitToken` gates it on `cmd.cacheState().mark() != cacheUnmarked`
+  (autopipeline.go:2223-2225). A marked command on the ordered async face is
+  FORCE-bypassed (`cscForceBypass`) and streams straight to the FD writer; a
+  marked BLOCKING call diverts to the normal cache-aware path instead (so
+  hit/populate work for it). An UNMARKED context — the default, including
+  `TrackingModePlain` clients whose cacheability the policy, not the caller,
+  decides — never reaches the gate: a blocking `ap.Get(ctx, key)` streams
+  straight to FD and neither hits nor populates the cache while FD is active,
+  unlike the half-duplex single-command path, which routes cacheable commands
+  through `process`. The cache is involved only when a retryable reply diverts
+  to the normal client path. Routing cacheable FD submits through the
+  cache-aware path (reserve/capture/fulfill) before streaming is a follow-up.
 
 - **Terminal-failure duration metrics.** A command that terminates through
   `failReqs`/`failQueue` (lease failure, limiter denial, retry exhaustion, failed Close
