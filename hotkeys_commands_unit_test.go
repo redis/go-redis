@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -71,4 +72,23 @@ func TestHotKeysCmdReadReplyCPUFields(t *testing.T) {
 
 func hotKeysBulkTestString(s string) string {
 	return "$" + strconv.Itoa(len(s)) + "\r\n" + s + "\r\n"
+}
+
+// TestHotKeysStartNilArgs checks that passing nil options returns
+// ErrHotKeysNoMetrics instead of panicking.
+func TestHotKeysStartNilArgs(t *testing.T) {
+	ctx := context.Background()
+
+	client := NewClient(&Options{})
+	defer client.Close()
+
+	cmd := client.HotKeysStart(ctx, nil)
+	if err := cmd.Err(); !errors.Is(err, ErrHotKeysNoMetrics) {
+		t.Errorf("HotKeysStart(nil) err = %v; want %v", err, ErrHotKeysNoMetrics)
+	}
+
+	cmd = client.HotKeysStart(ctx, &HotKeysStartArgs{})
+	if err := cmd.Err(); !errors.Is(err, ErrHotKeysNoMetrics) {
+		t.Errorf("HotKeysStart(&HotKeysStartArgs{}) err = %v; want %v", err, ErrHotKeysNoMetrics)
+	}
 }
