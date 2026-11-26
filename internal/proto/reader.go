@@ -531,7 +531,7 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 		return "", err
 	}
 
-	b, err := r.readBulkPayload(n)
+	b, err := r.readBulkPayload(nil, n)
 	if err != nil {
 		return "", err
 	}
@@ -1071,45 +1071,61 @@ func (r *Reader) replyLen(line []byte) (int, error) {
 	return n, err
 }
 
-// maxBulkPrealloc is the largest bulk payload allocated in one call before any
+// maxBulkPrealloc is the largest payload reserved in one step before any
 // payload byte has arrived. Longer advertised lengths are read by
-// readBulkPayload, which grows the buffer as data arrives instead of reserving
+// readBulkPayload, which grows its buffer as data arrives instead of reserving
 // the advertised size up front.
 const maxBulkPrealloc = 1 << 20
 
-// readBulkPayload reads a bulk payload of n bytes plus its trailing CRLF. The
-// length comes from the wire and is not trusted for allocation: the buffer
-// starts at maxBulkPrealloc and grows geometrically, clamped to the advertised
-// size, only as payload bytes actually arrive. A corrupt length that is within
-// the range replyLen accepts therefore costs the bytes that were really sent,
-// not the advertised size, and cannot panic make. Streaming paths
-// (ReadRawReplyWriteTo, Discard, ReadStringInto) do not allocate at all and
-// need no such guard.
-func (r *Reader) readBulkPayload(n int) ([]byte, error) {
+// readBulkPayload reads a bulk payload of n bytes plus its trailing CRLF and
+// appends it to buf. The length comes from the wire and is not trusted for
+// allocation: the payload reservation starts at maxBulkPrealloc and grows
+// geometrically, clamped to the advertised size, only as payload bytes
+// actually arrive. A corrupt length that is within the range replyLen accepts
+// therefore costs the bytes that were really sent, not the advertised size, and
+// cannot panic make.
+//
+// Appending to the caller's buffer also keeps a large raw reply to a single
+// copy of the payload: readRawReplyBuf passes the reply buffer it is building,
+// so the bytes are read straight into it instead of into a staging payload of
+// the advertised size that is then appended (both full-size slices used to be
+// live at once). Streaming paths (ReadRawReplyWriteTo, Discard,
+// ReadStringInto) do not allocate at all and need no such guard.
+func (r *Reader) readBulkPayload(buf []byte, n int) ([]byte, error) {
 	total := n + 2
-	b := make([]byte, 0, min(total, maxBulkPrealloc))
-	for len(b) < total {
-		if len(b) == cap(b) {
-			newCap := total
-			// cap(b) < total/4 rules out an overflow in cap(b)*4.
-			if cap(b) < total/4 {
-				newCap = cap(b) * 4
+	start := len(buf)
+	// payloadCap is how many payload bytes buf has room for right now.
+	payloadCap := cap(buf) - start
+	for have := len(buf) - start; have < total; have = len(buf) - start {
+		if payloadCap == have {
+			// Reserve the first maxBulkPrealloc payload bytes (clamped to the
+			// advertised size), then grow by a factor of four. Never reserve
+			// more than the reply still needs.
+			next := min(total, maxBulkPrealloc)
+			if payloadCap >= maxBulkPrealloc {
+				next = total
+				// payloadCap < total/4 rules out an overflow in payloadCap*4.
+				if payloadCap < total/4 {
+					next = payloadCap * 4
+				}
 			}
-			grown := make([]byte, len(b), newCap)
-			copy(grown, b)
-			b = grown
+			grown := make([]byte, len(buf), start+next)
+			copy(grown, buf)
+			buf, payloadCap = grown, next
 		}
-		readEnd := cap(b)
-		if readEnd > total {
-			readEnd = total
+		readEnd := start + payloadCap
+		if readEnd > start+total {
+			readEnd = start + total
 		}
-		from := len(b)
-		b = b[:readEnd]
-		if _, err := io.ReadFull(r.rd, b[from:]); err != nil {
-			return nil, err
+		from := len(buf)
+		buf = buf[:readEnd]
+		if _, err := io.ReadFull(r.rd, buf[from:]); err != nil {
+			// The payload is incomplete, so it is not part of the reply. Keep
+			// the bytes that were already read into buf and report the error.
+			return buf[:start], err
 		}
 	}
-	return b, nil
+	return buf, nil
 }
 
 // IsNilReply detects redis.Nil of RESP2.
@@ -1160,12 +1176,9 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			return buf, err
 		}
 		// A large advertised length is not trusted for one up-front
-		// allocation; readBulkPayload grows the buffer as bytes arrive.
-		payload, err := r.readBulkPayload(n)
-		if err != nil {
-			return buf, err
-		}
-		return append(buf, payload...), nil
+		// allocation: readBulkPayload grows buf as the payload bytes arrive,
+		// so the payload is never staged in a second full-size slice.
+		return r.readBulkPayload(buf, n)
 
 	case RespArray, RespSet, RespPush:
 		n, err := r.replyLen(line)

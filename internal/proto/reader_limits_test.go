@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"math"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -156,6 +157,79 @@ func TestReadReplyRejectsUnreadableLengths(t *testing.T) {
 				t.Fatalf("ReadReply(%q) = nil error, want an error", tc.data)
 			}
 		})
+	}
+}
+
+// patternReader streams the byte 'x' without allocating, so a large payload can
+// be read by a test without holding a second copy of it.
+type patternReader struct{}
+
+func (patternReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
+}
+
+// patternBulkFrame returns a reader for one bulk reply of size bytes filled with
+// 'x', followed by the +next status reply that proves the stream stays aligned.
+func patternBulkFrame(size int) io.Reader {
+	return io.MultiReader(
+		strings.NewReader(bulkHeader(strconv.Itoa(size))+"\r\n"),
+		io.LimitReader(patternReader{}, int64(size)),
+		strings.NewReader("\r\n+next\r\n"),
+	)
+}
+
+// TestReaderReadsLargeRawBulkReplyInOneBuffer pins the raw-reply allocation
+// behavior above maxBulkPrealloc: ReadRawReply reads the payload into the reply
+// buffer as it arrives instead of staging the whole payload in a second
+// full-size slice and appending it. A 64 MiB reply used to allocate about
+// 149 MiB (staging payload + reply buffer); the growth copies of the single
+// buffer now stay under 1.5x the payload.
+func TestReaderReadsLargeRawBulkReplyInOneBuffer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("reads a 64 MiB reply")
+	}
+	const size = 64 << 20
+	header := bulkHeader(strconv.Itoa(size)) + "\r\n"
+	r := proto.NewReader(patternBulkFrame(size))
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	raw, err := r.ReadRawReply()
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("ReadRawReply: %v", err)
+	}
+
+	wantLen := len(header) + size + 2
+	if len(raw) != wantLen {
+		t.Fatalf("ReadRawReply returned %d bytes, want %d", len(raw), wantLen)
+	}
+	if got := string(raw[:len(header)]); got != header {
+		t.Fatalf("reply header = %q, want %q", got, header)
+	}
+	if got := string(raw[len(raw)-2:]); got != "\r\n" {
+		t.Fatalf("reply trailer = %q, want %q", got, "\r\n")
+	}
+	for i, c := range raw[len(header) : len(header)+size] {
+		if c != 'x' {
+			t.Fatalf("payload byte %d = %q, want 'x'", i, c)
+		}
+	}
+
+	// The payload is appended to the reply buffer, so the total allocated for
+	// the read is the final buffer plus the geometric growth copies (1 + 4 + 16
+	// MiB for this size), never a second complete payload.
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > size+size/2 {
+		t.Fatalf("ReadRawReply allocated %d bytes for a %d byte payload, want at most %d (payload copied twice?)",
+			grown, size, size+size/2)
+	}
+
+	if next, err := r.ReadString(); err != nil || next != "next" {
+		t.Fatalf("follow-up ReadString = %q, %v; want \"next\", nil", next, err)
 	}
 }
 
