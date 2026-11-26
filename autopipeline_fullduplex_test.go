@@ -5146,7 +5146,7 @@ func TestClusterFullDuplexReuseAfterClose(t *testing.T) {
 // getOrCreateChild's own pre-existing cached-but-closed rebuild
 // (autopipeline_cluster_fd.go childFor) already satisfies this test on its
 // own — the harder case (a submit that is already parked inside
-// fdEngine.submit's backpressure select when the child closes, per
+// fdEngine.submitToken's backpressure select when the child closes, per
 // autopipeline_fullduplex.go) is a true TOCTOU race with no deterministic
 // repro; clusterFDRouter.submit's post-dispatch retry (same file) narrows
 // that window but is not exercised as a distinct case here.

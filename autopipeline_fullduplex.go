@@ -25,7 +25,7 @@ import (
 // when its reply lands. Latency is about 1 RTT; throughput saturates the pipe.
 //
 // Ordering: each goroutine's commands run in submit order. Order between
-// goroutines is not defined. The submit channel is MPSC and the connection is
+// goroutines is not defined. The submit queue is MPSC (fdQueue) and the connection
 // FIFO on the wire, so a command's position in the in-flight deque matches its
 // reply.
 //
@@ -38,11 +38,12 @@ import (
 // Pipeline: a command whose write landed but whose reply was lost can re-execute.
 // Only the unacked tail is ambiguous.
 //
-// Enable it with AutoPipelineOptions.FullDuplex. It runs on the ordered
-// single-shard faces of a standalone *Client with a pipeline pool. Tune it with
-// the FullDuplex* options (see their GoDoc). RESP3 push frames are demuxed inline.
-// Cluster support and window auto-tune are follow-ups (see
-// AP_ORDERED_FULLDUPLEX_DESIGN.md).
+// Enable it with AutoPipelineOptions.FullDuplex. It runs on the ordered faces
+// of a standalone *Client with a pipeline pool (see FullDuplexPipes for several
+// held connections) and, on a ClusterClient, natively per node (see
+// autopipeline_cluster_fd.go). Tune it with the FullDuplex* options (see their
+// GoDoc). RESP3 push frames are demuxed inline. Window auto-tune is a
+// follow-up.
 
 var errFDReaderGone = errors.New("redis: autopipeline full-duplex reader exited")
 
@@ -1007,12 +1008,12 @@ func (fd *fdEngine) submitToken(ctx context.Context, cmd Cmder, token fdOutcomeT
 	}
 	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx, attempts: 1, ownerToken: token}
 
-	// Send under RLock and re-check closed so a send can never win the race with
-	// run()'s shutdown drain (takeQueue: WLock, set closed, drain fd.ch). Once the
-	// final drain has run no new req can land in fd.ch, where it would never be
-	// completed and would hang its caller forever. A send blocked on a full channel
-	// is released by the ctx.Done() branch below, so holding the RLock cannot wedge
-	// the WLock.
+	// Enqueue under RLock and re-check closed so a submit can never win the race
+	// with run()'s shutdown drain (takeQueue: WLock, set closed, drain fd.q). Once
+	// the final drain has run no new req can land in fd.q, where it would never be
+	// completed and would hang its caller forever. A submitter parked on the full
+	// queue is released by its ctx.Done() arms — room only arrives when the writer
+	// takes a wave — so holding the RLock cannot wedge the WLock.
 	fd.submitMu.RLock()
 	if fd.closed {
 		fd.submitMu.RUnlock()
@@ -1600,7 +1601,7 @@ func (fd *fdEngine) run() {
 		case fdLeaseErr:
 			// Could not lease/init a connection for a new session (server down, pool
 			// saturated). Retry for a transient outage; once retries are exhausted,
-			// fail-fast the carry tail AND the fd.ch backlog rather than leaving accepted
+			// fail-fast the carry tail AND the fd.q backlog rather than leaving accepted
 			// commands buffered indefinitely, and stay alive to serve again once the
 			// server/pool recovers. Replaying the carry wholesale is safe: any SENT
 			// NoRetry was already failed by the split (a never-sent NoRetry in the carry
@@ -2569,7 +2570,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 
 	switch result {
 	case fdGraceful:
-		// Clean Close: flush the accepted-but-unwritten fd.ch backlog on this
+		// Clean Close: flush the accepted-but-unwritten fd.q backlog on this
 		// connection first, so Close honors "accepted ⇒ completes" instead of failing
 		// it ErrClosed, then let the reader drain every in-flight reply to a RESP
 		// boundary.
@@ -2584,7 +2585,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// per-command budget partition and the NoRetry split. Because ap.ctx
 			// is cancelled (this is Close), the eligible prefix is then executed by
 			// shutdownFlush on a fresh connection. That honors "accepted ⇒ completes"
-			// for the never-sent fd.ch backlog (attempts==1, never touched the dead
+			// for the never-sent fd.q backlog (attempts==1, never touched the dead
 			// socket) instead of failing it errFDReaderGone, while the NoRetry split
 			// still keeps a written-but-unacked NoRetry command from a second execution
 			// (it is failed by the split, never reaching shutdownFlush). takeRemaining
@@ -2856,7 +2857,7 @@ func fdBatchEnd(reqs []fdReq, start, maxBatch int, byteLimit int64) int {
 // fdBatchEndSafe is fdBatchEnd with a per-command recover. cmd.Args() (used by
 // cmdApproxBytes) is user code and may panic. A carried chunk can include commands
 // that never passed the serve loop's cmdApproxBytesSafe admission — the session-start
-// command handed straight from fd.ch (run() blocks on the first command and re-issues
+// command handed straight from fd.q (run() blocks on the first command and re-issues
 // it as carry) and an unacked tail carried between sessions — so a deterministic
 // panicking Args() can reach here; it must be contained WITHOUT tearing down a healthy
 // connection (nothing in the chunk is written yet, so the conn is not desynced). This
@@ -2905,8 +2906,9 @@ func fdBatchEndSafe(reqs []fdReq, start, maxBatch int, byteLimit int64) (end, ba
 //   - (suffix, errFDConnMoving): the connection was marked for handoff mid-replay
 //     on a still-alive connection. The unwritten suffix is returned OUT-OF-BAND
 //     (not pushed into inflight) so the caller can drain the already-written prefix
-//     to completion, REMOVE the moving connection, and replay ONLY the never-sent
-//     suffix on a fresh connection — the written prefix is not re-executed.
+//     to completion, PUT the connection back (the maintnotifications OnPut hook
+//     performs the seamless handoff — see errFDConnMoving), and replay ONLY the
+//     never-sent suffix on a fresh connection — the written prefix is not re-executed.
 //   - (suffix, errFDMaxHold): the LIVE connection was held past FullDuplexMaxHold
 //     mid-replay. Same out-of-band suffix handling as errFDConnMoving; the caller
 //     clean-recycles (drains the prefix, Puts the conn so the hold ends) and replays
@@ -2943,8 +2945,9 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		// large replay must not keep streaming to a moving node. The connection is
 		// still ALIVE, so return the unwritten suffix OUT-OF-BAND (do NOT push it into
 		// inflight): the caller drains the already-written prefix to completion (no
-		// re-execution), REMOVES the moving connection, and replays only the suffix on
-		// a fresh one. ShouldHandoff() is an atomic load, safe to poll here.
+		// re-execution), PUTS the connection back (the maintnotifications OnPut hook
+		// performs the handoff), and replays only the suffix on a
+		// fresh one. ShouldHandoff() is an atomic load, safe to poll here.
 		if cn.ShouldHandoff() {
 			return carry[i:], errFDConnMoving
 		}
@@ -3030,7 +3033,7 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		// Carry re-sizing uses cmd.Args() (user code), guarded by fdBatchEndSafe. A
 		// carried chunk CAN include commands that never passed the serve loop's
 		// cmdApproxBytesSafe admission — the session-start command taken straight from
-		// fd.ch (run() blocks on the first command and hands it in as carry) and an
+		// fd.q (run() blocks on the first command and hands it in as carry) and an
 		// unacked tail carried between sessions — so a deterministic panicking Args()
 		// can reach here. (The terminal Close backlog drained by takeQueue does NOT reach
 		// here; it flushes through shutdownFlush/flushReqs, whose own recover aborts the
@@ -3047,7 +3050,7 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 				// writeBatch pushed carry[i:end] into inflight before the failed write (it
 				// was attempted — at-least-once — so the serialized prefix keeps its bumped count), but
 				// the suffix carry[end:] was never pushed. Push it too, or it sits in neither
-				// fd.ch nor inflight and its callers hang: on fdConnErr takeRemaining replays
+				// fd.q nor inflight and its callers hang: on fdConnErr takeRemaining replays
 				// it, on Close the caller fails it. It is only ever settled via failReqs or
 				// replayed — never completed inline by the reader — so its zero writtenOff
 				// never reaches the write→reply metric. carry[end:] was NEVER written, so
@@ -3330,16 +3333,17 @@ func (fd *fdEngine) failReqsAcct(reqs []fdReq, err error, account bool) {
 	}
 }
 
-// takeQueue closes the submit gate and returns everything buffered in fd.ch. The
-// WLock blocks until in-flight submit sends finish (each either landed in fd.ch,
-// is drained below, or took its ctx.Done() branch), so after the drain no submit
+// takeQueue closes the submit gate and returns everything buffered in fd.q. The
+// WLock blocks until in-flight submits finish (each either landed in fd.q, is
+// drained below, or took its ctx.Done() branch), so after the drain no submit
 // can enqueue work that would be left un-completed.
 //
 // INVARIANT: every takeQueue call is a terminal shutdown drain — run() exits
 // right after, past a ctx-cancel check. Never call it on a non-close path: a
-// submit blocked on a full channel is unwedged only by its ctx.Done() branch, so
-// without a cancelled ctx the WLock deadlocks against the RLock held across that
-// send.
+// submitter parked on the full queue holds the RLock across its wait, and room
+// arrives only when the writer takes a wave — the writer is the goroutine stuck
+// in this WLock — so without a cancelled ctx the WLock deadlocks against that
+// RLock.
 func (fd *fdEngine) takeQueue() []fdReq {
 	fd.submitMu.Lock()
 	fd.closed = true
@@ -3351,7 +3355,7 @@ func (fd *fdEngine) takeQueue() []fdReq {
 }
 
 // shutdownFlush is the between-sessions Close flush: accepted commands in carry
-// (an unacked tail from a failed session, never re-leased) and in fd.ch
+// (an unacked tail from a failed session, never re-leased) and in fd.q
 // (accepted while no session held a connection) are executed on the client's
 // normal pipeline path, honoring the "accepted ⇒ completes" Close contract
 // instead of failing them ErrClosed just because Close won the race between
@@ -3694,14 +3698,14 @@ func (fd *fdEngine) flushReqsVia(bg context.Context, reqs []fdReq, maxRetries in
 	return nil
 }
 
-// failQueue fails every command currently buffered in fd.ch with err WITHOUT
+// failQueue fails every command currently buffered in fd.q with err WITHOUT
 // closing the engine (unlike takeQueue, the shutdown drain, which sets closed).
 // Used on fdLeaseErr, where the carry goes through failReqs and this drains the
 // accepted backlog — both halves emit the native error metric. The engine stays
 // alive, so a command submitted after this returns is served once the
-// server/pool recovers, or failed when the next lease exhausts its retries. The
-// channel receive is safe against a concurrent submit send, so no lock is taken
-// here.
+// server/pool recovers, or failed when the next lease exhausts its retries.
+// drainAll takes the whole backlog under the queue's lock, so a submit racing
+// this drain either lands before it (failed here) or after it (queued).
 func (fd *fdEngine) failQueue(err error) {
 	rec := fd.recorder()
 	recordErrors := otel.Enabled(rec)
@@ -3736,7 +3740,7 @@ func (fd *fdEngine) failQueue(err error) {
 }
 
 // flushBacklogForClose is the graceful-Close flush: it stops new submits (sets
-// closed) and writes every command still buffered in fd.ch on the current
+// closed) and writes every command still buffered in fd.q on the current
 // connection, in the same MaxBatchSize/MaxBatchBytes chunks as normal writes, so
 // ACCEPTED commands complete instead of failing ErrClosed. The caller then
 // closeGraceful()s the deque so the reader drains these replies before exiting.

@@ -109,9 +109,9 @@ aggregating correctly; only single-node commands route through a child.
   `Process` path — correct, just not pipelined for that command.
 - **Node-close race**: cluster topology GC can close a node's `*Client` (and its
   cached FD child) concurrently with an in-flight submit for that node, off the
-  router's own lock — including while the submit is parked on a full `fd.ch`
-  (`fdEngine.submit`'s `fd.ap.ctx.Done()`/`fd.closed` arms). `clusterFDRouter.submit`
-  detects that specific rejection shape (`child.fd.submit` returned the
+  router's own lock — including while the submit is parked on a full `fd.q`
+  (`fdEngine.submitToken`'s `fd.ap.ctx.Done()`/`fd.closed` arms). `clusterFDRouter.submit`
+  detects that specific rejection shape (`child.fd.submitToken` returned the
   submit-time-rejection sentinel with `ErrClosed`, as opposed to the caller's own
   ctx cancelling) and re-resolves the child ONCE before the async face is armed,
   so a GC'd node self-heals into a fresh child (still in the topology) or a clean
@@ -220,8 +220,8 @@ or let a live/half-initialized connection return to the pool. The boundaries:
   the panic reaches the reader's session-failure recover, which would replay an
   already-answered command — a mutating command run twice.
 - Carry / in-session Close sizing: `fdBatchEndSafe` recovers a panicking `Args()` during
-  carry replay — the session-start command (taken straight from `fd.ch`) and the
-  in-session Close backlog (`flushBacklogForClose` drains `fd.ch` inline, then
+  carry replay — the session-start command (taken straight from `fd.q`) and the
+  in-session Close backlog (`flushBacklogForClose` drains `fd.q` inline, then
   `writeCarryChunked`), which never passed the serve loop's `cmdApproxBytesSafe`
   admission. It fails+drops just the offending command and keeps the healthy connection.
 - Serve-loop sizing: `cmdApproxBytesSafe` (same fail+drop behavior).
@@ -265,14 +265,21 @@ even though Redis and the pools are still up. See `onCloseHooks.run` and `sentin
 
 These are documented gaps, tracked as follow-ups, not fixed in the current PR.
 
-- **CSC on the FD fast path.** When client-side caching is active, a cacheable command
-  submitted in FD mode is streamed straight to the FD writer; the initial submit does
-  NOT consult CSC. The cache is involved only when a retryable reply diverts to the
-  normal client path. So sparse sequential reads on the blocking face (e.g. repeated
-  `GET`) neither hit nor populate the cache while FD is active, unlike the half-duplex
-  single-command path, which routes cacheable commands through `process`. Routing
-  cacheable FD submits through the cache-aware path (reserve/capture/fulfill) before
-  streaming is a follow-up.
+- **CSC on the FD fast path.** When client-side caching is active, the submit
+  captures the command's cache intent (`cscBegin`), but only an EXPLICITLY
+  marked context (`WithCache`/`WithoutCache`) reaches `cscAdmitMarked` —
+  `submitToken` gates it on `cmd.cacheState().mark() != cacheUnmarked`
+  (autopipeline.go:2223-2225). A marked command on the ordered async face is
+  FORCE-bypassed (`cscForceBypass`) and streams straight to the FD writer; a
+  marked BLOCKING call diverts to the normal cache-aware path instead (so
+  hit/populate work for it). An UNMARKED context — the default, including
+  `TrackingModePlain` clients whose cacheability the policy, not the caller,
+  decides — never reaches the gate: a blocking `ap.Get(ctx, key)` streams
+  straight to FD and neither hits nor populates the cache while FD is active,
+  unlike the half-duplex single-command path, which routes cacheable commands
+  through `process`. The cache is involved only when a retryable reply diverts
+  to the normal client path. Routing cacheable FD submits through the
+  cache-aware path (reserve/capture/fulfill) before streaming is a follow-up.
 
 - **Terminal-failure duration metrics.** A command that terminates through
   `failReqs`/`failQueue` (lease failure, limiter denial, retry exhaustion, failed Close
