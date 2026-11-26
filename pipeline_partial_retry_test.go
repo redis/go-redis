@@ -12470,3 +12470,153 @@ func TestPipelineRetryOpenMultiRetireKeepsPooledConnOutOfPoolWithoutRetry(t *tes
 		t.Fatalf("server saw %d connections, want 2 (the connection with the still-open MULTI must be retired, not reused)", got)
 	}
 }
+
+// TestPipelineRetryPublishIsNonMutating: PUBLISH/SPUBLISH send a message
+// to subscribers but write no key, so they are non-mutating like PING:
+// a refused publish must not keep an answered INCR after it (the INCR
+// would be applied twice), and an answered publish after a refused
+// write must not be re-sent (the message would be delivered twice).
+// Regression test for the Cursor Medium finding on #4351 (round 46).
+func TestPipelineRetryPublishIsNonMutating(t *testing.T) {
+	ctx := context.Background()
+	readonly := proto.RedisError("READONLY You can't write against a read only replica")
+
+	// Case A: refused PUBLISH, answered INCR — retry only the PUBLISH.
+	publish := NewIntCmd(ctx, "publish", "ch", "msg")
+	publish.SetErr(readonly)
+	incr := NewIntCmd(ctx, "incr", "counter")
+	incr.SetVal(1)
+	suffix := pipelineRetrySuffix(ctx, []Cmder{publish, incr}, readonly, nil)
+	if got := cmdNames(suffix); len(got) != 1 || got[0] != "publish" {
+		t.Fatalf("case A suffix = %v, want [publish] (answered INCR must not be re-applied)", got)
+	}
+
+	// Case B: refused SET, answered PUBLISH — retry only the SET.
+	set := NewStringCmd(ctx, "set", "k", "v")
+	set.SetErr(readonly)
+	publish2 := NewIntCmd(ctx, "publish", "ch", "msg")
+	publish2.SetVal(1)
+	suffix = pipelineRetrySuffix(ctx, []Cmder{set, publish2}, readonly, nil)
+	if got := cmdNames(suffix); len(got) != 1 || got[0] != "set" {
+		t.Fatalf("case B suffix = %v, want [set] (answered PUBLISH must not be re-sent)", got)
+	}
+
+	// Case C: SPUBLISH behaves the same as PUBLISH.
+	spublish := NewIntCmd(ctx, "spublish", "ch", "msg")
+	spublish.SetErr(readonly)
+	incr2 := NewIntCmd(ctx, "incr", "counter")
+	incr2.SetVal(1)
+	suffix = pipelineRetrySuffix(ctx, []Cmder{spublish, incr2}, readonly, nil)
+	if got := cmdNames(suffix); len(got) != 1 || got[0] != "spublish" {
+		t.Fatalf("case C suffix = %v, want [spublish]", got)
+	}
+}
+
+// TestPipelineRetryWholeBatchAccountsExecutedInverseSwaps: after a retry
+// rebuild `inverse-SWAPDB; SET; SWAPDB; WAIT` acknowledges both swaps
+// and the SET but drops while reading WAIT, the next whole-batch retry
+// must prepend exactly one fresh inverse for the original SWAPDB and
+// drop the already-executed inverse clone: `fresh-inverse; SET; SWAPDB;
+// WAIT`. Keeping the old inverse would send three swaps (a fresh inverse
+// plus the executed one plus the original) instead of a cancelling
+// restoration/reapplication pair, leaving the databases swapped while
+// Exec reports success. Regression test for the Codex P1 finding on
+// #4351 (comment 4699506484, on head e22fc372).
+func TestPipelineRetryWholeBatchAccountsExecutedInverseSwaps(t *testing.T) {
+	ctx := context.Background()
+	// The batch as the second attempt dispatched it: the inverse clone
+	// a previous whole-batch retry prepended, then the originals.
+	oldInverse := NewCmd(ctx, "swapdb", 1, 0)
+	set := NewCmd(ctx, "set", "out", "v")
+	swapdb := NewCmd(ctx, "swapdb", 0, 1)
+	wait := NewIntCmd(ctx, "wait", 1, 1000)
+	cmds := []Cmder{oldInverse, set, swapdb, wait}
+
+	answered := map[*baseCmd]bool{oldInverse.base(): true, set.base(): true, swapdb.base(): true}
+	synthetic := map[*baseCmd]bool{oldInverse.base(): true}
+	ctx = context.WithValue(ctx, pipelineAnsweredKey{}, answered)
+	ctx = context.WithValue(ctx, pipelineSyntheticKey{}, synthetic)
+	ctx = context.WithValue(ctx, pipelineRequiredSyntheticKey{}, map[*baseCmd]bool{})
+
+	retry := pipelineWholeBatchRetry(ctx, cmds)
+	if got := cmdNames(retry); len(got) != 4 || got[0] != "swapdb" || got[1] != "set" || got[2] != "swapdb" || got[3] != "wait" {
+		t.Fatalf("whole-batch retry = %v, want [swapdb set swapdb wait] (one fresh inverse, executed inverse dropped)", got)
+	}
+	if retry[0].base() == oldInverse.base() || retry[0].base() == swapdb.base() {
+		t.Fatalf("whole-batch retry reused an existing SWAPDB instead of prepending a fresh inverse clone")
+	}
+}
+
+// TestPipelineRetrySettledFrameKeepsSessionChangeInFrame: a SELECT queued
+// inside a committed transaction must stay inside its frame on retry, not
+// be hoisted into the restoration prefix. With `PING; SET a v; MULTI;
+// SET b x; SELECT 1; SET c y; EXEC` receiving `[PONG, NOREPLICAS, OK,
+// QUEUED, QUEUED, QUEUED, [OK, OK, OK]]`, the old rebuild moved the
+// SELECT ahead of the pending SET, so both the retried SET and the
+// transaction's writes landed in DB 1 while Exec reported success.
+// Regression test for the Codex P1 finding on #4351 (comment 4703855458,
+// on head 5c19a541).
+func TestPipelineRetrySettledFrameKeepsSessionChangeInFrame(t *testing.T) {
+	ctx := context.Background()
+	noreplicas := proto.RedisError("NOREPLICAS Not enough replicas to apply the write")
+	ping := NewStatusCmd(ctx, "ping")
+	set := NewStringCmd(ctx, "set", "a", "v")
+	set.SetErr(noreplicas)
+	multi := NewStatusCmd(ctx, "multi")
+	setb := NewStringCmd(ctx, "set", "b", "x")
+	sel := NewStatusCmd(ctx, "select", 1)
+	setc := NewStringCmd(ctx, "set", "c", "y")
+	exec := NewCmd(ctx, "exec")
+	exec.SetVal([]interface{}{"OK", "OK", "OK"})
+	cmds := []Cmder{ping, set, multi, setb, sel, setc, exec}
+	suffix := pipelineRetrySuffix(ctx, cmds, noreplicas, nil)
+	want := []string{"set", "multi", "set", "select", "set", "exec"}
+	if got := cmdNames(suffix); len(got) != len(want) {
+		t.Fatalf("suffix = %v, want %v (the SELECT must stay inside its frame, not move ahead of the pending SET)", got, want)
+	} else {
+		for i, name := range want {
+			if got[i] != name {
+				t.Fatalf("suffix = %v, want %v (the SELECT must stay inside its frame, not move ahead of the pending SET)", got, want)
+			}
+		}
+	}
+	if suffix[3] != sel {
+		t.Fatalf("suffix[3] is not the original SELECT, want the original inside its frame (a prefix clone would run it before the pending SET)")
+	}
+}
+
+// TestPipelineRetryPendingSwapdbKeepsLaterSwapdb: a SWAPDB answered after
+// a pending one must be kept, not dropped: the retry re-runs the pending
+// swap, so the later swap's permutation has to be re-applied after it —
+// dropping it leaves the databases in the wrong order while Exec reports
+// success. With `PING; SWAPDB 0 1; SWAPDB 1 2` receiving `[PONG,
+// NOREPLICAS, OK]` on databases `[A, B, C]`, the retry must be a
+// swap-back clone of the second swap, then both swaps in order, landing
+// on `[B, C, A]`. Regression test for the Codex P1 finding on #4351
+// (comment 4704062772, on head 39cd887c).
+func TestPipelineRetryPendingSwapdbKeepsLaterSwapdb(t *testing.T) {
+	ctx := context.Background()
+	noreplicas := proto.RedisError("NOREPLICAS Not enough replicas to apply the write")
+	ping := NewStatusCmd(ctx, "ping")
+	swap1 := NewStatusCmd(ctx, "swapdb", 0, 1)
+	swap1.SetErr(noreplicas)
+	swap2 := NewStatusCmd(ctx, "swapdb", 1, 2)
+	cmds := []Cmder{ping, swap1, swap2}
+	suffix := pipelineRetrySuffix(ctx, cmds, noreplicas, nil)
+	want := []string{"swapdb", "swapdb", "swapdb"}
+	if got := cmdNames(suffix); len(got) != len(want) {
+		t.Fatalf("suffix = %v, want %v (swap-back clone plus both swaps, in order)", got, want)
+	} else {
+		for i, name := range want {
+			if got[i] != name {
+				t.Fatalf("suffix = %v, want %v (swap-back clone plus both swaps, in order)", got, want)
+			}
+		}
+	}
+	if suffix[0].base() == swap1.base() || suffix[0].base() == swap2.base() {
+		t.Fatalf("suffix[0] reused an existing SWAPDB, want a fresh swap-back clone undoing the second swap")
+	}
+	if suffix[1] != swap1 || suffix[2] != swap2 {
+		t.Fatalf("suffix[1:3] are not the original swaps in order, want the pending swap re-run then the answered one re-applied")
+	}
+}

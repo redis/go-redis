@@ -252,9 +252,24 @@ func (c *baseClient) himportInjectedCmds(ctx context.Context, cn *pool.Conn, cmd
 			// the same batch may replace the registry entry before
 			// the retry runs, and re-preparing from the registry
 			// would write the SET's values under the new field
-			// names. The stamp is set once, on the first dispatch,
-			// and never overwritten by a later attempt.
-			if !hc.issuedSet {
+			// names. The stamp is kept only while this invocation
+			// still owns the dispatch: a reused SET in a later
+			// invocation must be re-stamped from the schema in
+			// force then, or it keeps preparing the first
+			// invocation's fields after the fieldset was replaced.
+			// "This invocation" is the per-invocation answered
+			// set for pipelines — a SET answered in this
+			// invocation is in it — or, on paths without one (a
+			// single command, a cluster node batch, a direct
+			// call), a non-stale error: an error this invocation
+			// recorded on the SET. A reused SET carrying a stale
+			// error from an earlier invocation on a path without
+			// either record still keeps its stamp; that case
+			// needs a reset at the invocation entry, not here.
+			answered := pipelineAnsweredFromCtx(ctx)
+			stale := pipelineStaleErrsFromCtx(ctx)
+			dispatched := answered[hc.base()] || (pipelineCmdErr(hc) != nil && !stale[hc.base()])
+			if !hc.issuedSet || !dispatched {
 				if fs, ok := batchSchemas[hc.fieldsetName]; ok {
 					hc.issuedFields = append([]string(nil), fs.fields...)
 					hc.issuedVersion = fs.version

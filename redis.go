@@ -2738,7 +2738,11 @@ func pipelineCmdReadOnly(cmd Cmder) bool {
 // noscript/loading/stale/fast, LASTSAVE loading/stale/fast, COMMAND
 // loading/stale), yet none of them writes anything either, so a refused
 // one must not count as a pending write that keeps answered writes
-// after it. Unknown commands are not non-mutating: treating them as
+// after it. PUBLISH and SPUBLISH are the same kind of non-mutating:
+// they send a message to subscribers, but they write no key, so a
+// refused one cannot invalidate the data results after it either —
+// and an answered one must never be re-run, as re-sending it would
+// deliver the message twice. Unknown commands are not non-mutating: treating them as
 // writes only keeps an answered command or reissues a barrier, while
 // treating a write as a read would drop a result the retry must
 // preserve.
@@ -2747,7 +2751,7 @@ func pipelineCmdNonMutating(cmd Cmder) bool {
 		return true
 	}
 	switch cmd.Name() {
-	case "ping", "echo", "time", "info", "role", "lastsave", "command":
+	case "ping", "echo", "time", "info", "role", "lastsave", "command", "publish", "spublish":
 		return true
 	}
 	return false
@@ -4760,7 +4764,12 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// cache commands are not data writes: a LOAD or FLUSH
 			// the filter drops is rebuilt by the reconstruction
 			// below, while an EVAL that ran is a data write, so it
-			// is kept like any other. An answered SWAPDB counts as
+			// is kept like any other. A non-mutating command is not
+			// a dropped write either: its answer cannot be
+			// invalidated by a pending write (it reads nothing the
+			// write changes), so keeping it would only re-run it —
+			// and re-running PUBLISH/SPUBLISH would deliver the
+			// message a second time. An answered SWAPDB counts as
 			// a dropped write, not just a pending one: a pending
 			// write before it must run in the pre-swap database,
 			// so the swap is kept in the tail at its original
@@ -4784,6 +4793,7 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					!pipelineIsBarrierCmd(cmd) &&
 					(!pipelineConnStateCmd(cmd) || cmd.Name() == "swapdb") &&
 					!pipelineCmdReadOnly(cmd) &&
+					!pipelineCmdNonMutating(cmd) &&
 					!isScriptLoadCmd(cmd) && !isScriptFlushCmd(cmd)
 			}
 			// isDroppedRead is the read half of isDroppedWrite: an
@@ -4828,7 +4838,17 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					keep[j] = true
 					answered[j] = false
 				}
-				if pendingSwapdbSeen && answered[j] && isDroppedRead(cmd) {
+				// A SWAPDB answered after a pending one is not a
+				// write the retry can drop: the pending swap is
+				// re-run, but the later swap's permutation is not
+				// re-applied with it — dropping it leaves the
+				// databases in the wrong order while Exec reports
+				// success. Keep it so the swap-back clone below
+				// undoes it ahead of the pending swap and the kept
+				// original re-applies it after. A swap inside a
+				// discarded or aborted frame never ran, so it holds
+				// no permutation to preserve.
+				if pendingSwapdbSeen && answered[j] && (isDroppedRead(cmd) || (cmd.Name() == "swapdb" && !discardedTx[cmd.base()] && !abortedTx[cmd.base()])) {
 					keep[j] = true
 					answered[j] = false
 				}
@@ -4859,6 +4879,23 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				}
 				for _, idx := range []int{frame[0], frame[len(frame)-1]} {
 					if idx > i {
+						keep[idx-(i+1)] = true
+						answered[idx-(i+1)] = false
+					}
+				}
+				// A session change queued inside the frame (a SELECT,
+				// an AUTH) belongs to the frame too: keeping it at
+				// its original position re-runs it inside the
+				// transaction, where it ran the first time. Leaving
+				// it dropped lets the rebuild below reissue it as a
+				// prerequisite ahead of the suffix, so it runs before
+				// the pending write it originally followed and later
+				// commands land in the wrong database. SWAPDB is
+				// excluded: the retention scan above already keeps
+				// an answered one as a dropped write, with its own
+				// swap-back handling.
+				for _, idx := range frame[1 : len(frame)-1] {
+					if idx > i && pipelineConnStateCmd(cmds[idx]) && cmds[idx].Name() != "swapdb" {
 						keep[idx-(i+1)] = true
 						answered[idx-(i+1)] = false
 					}
