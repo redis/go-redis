@@ -319,6 +319,21 @@ func (sm *ConnStateMachine) notifyWaiters() {
 	currentState := sm.GetState()
 
 	for {
+		// StateClosed is terminal: no waiter can ever match a valid transition
+		// again, so wake every parked waiter immediately instead of leaving it
+		// blocked until its context expires.
+		if currentState == StateClosed {
+			for elem := sm.waiters.Front(); elem != nil; {
+				next := elem.Next()
+				w := elem.Value.(*waiter)
+				sm.waiters.Remove(elem)
+				sm.waiterCount.Add(-1)
+				w.done <- ErrStateMachineClosed
+				elem = next
+			}
+			return
+		}
+
 		processed := false
 
 		for elem := sm.waiters.Front(); elem != nil; elem = elem.Next() {
