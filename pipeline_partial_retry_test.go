@@ -10559,6 +10559,53 @@ func TestPipelineRetryReadAfterWatchIsSafeFollower(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryNonMutatingAfterWatchIsSafeFollower: an answered
+// introspection command after a WATCH must not dirty it — PING and ECHO
+// write nothing, so they cannot invalidate a watched key. Here INCR,
+// WATCH, PING, ECHO and a TRYAGAIN MGET run: without the fix the safety
+// scan treats the answered PING/ECHO as dirty followers and returns the
+// whole batch, so the answered INCR runs a second time while Exec reports
+// success; with it the retry resends only the rejected MGET. Regression
+// test for the Cursor Bugbot High review finding on #4351.
+func TestPipelineRetryNonMutatingAfterWatchIsSafeFollower(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 99
+	server.tryagainConn = 1
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	incr := pipe.Incr(ctx, "counter")
+	watch := pipe.Do(ctx, "watch", "k")
+	ping := pipe.Ping(ctx)
+	echo := pipe.Do(ctx, "echo", "ready")
+	mget := pipe.MGet(ctx, "{m}a", "{m}b")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must send only the rejected MGET)", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil", got, err)
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("WATCH: %v", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("PING: %v", err)
+	}
+	if err := echo.Err(); err != nil {
+		t.Fatalf("ECHO: %v", err)
+	}
+	if got, err := mget.Result(); err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("MGET = %v, %v; want [a b], nil", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server received %d INCR commands, want 1 (the answered INCR before the watch must not be re-run)", got)
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the rejected MGET must be retried once)", got)
+	}
+}
+
 // TestPipelineRetryUnwatchAfterBoundaryClearsWatchSafetyScan: a successful
 // UNWATCH the first attempt answered past the boundary still cleared the
 // watch before the followers after it ran, even though the tail filter

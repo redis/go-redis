@@ -2775,17 +2775,20 @@ func pipelineIsBarrierCmd(cmd Cmder) bool {
 // after it could have dirtied it. Only followers the retry re-emits
 // without replaying their writes qualify: re-established connection
 // state (see pipelineConnStateReissueCmd) and SCRIPT LOAD/FLUSH cache
-// rebuilds, neither of which modifies a key. A read-only command
+// rebuilds, neither of which modifies a key. A non-mutating command
 // qualifies the same way: it modifies no key, so it cannot dirty a
 // watched key however many writes precede it (see
-// pipelineCmdReadOnly — an unknown command is not read-only, so it
-// still counts as a write). An answered EVAL does not: its preload
+// pipelineCmdNonMutating — the metadata-readonly check alone would miss
+// PING, ECHO, TIME, INFO, ROLE, LASTSAVE and COMMAND, none of which
+// writes anything, and the WAIT/WAITAOF barriers, which only measure
+// replication). An unknown command is not non-mutating, so it still
+// counts as a write. An answered EVAL does not: its preload
 // replays only the script source, not the writes it ran, so a script
 // that wrote a watched key would leave the reissued watch clean.
 // Every other answered follower keeps the whole batch (see
 // pipelineRetrySuffix).
 func pipelineWatchSafeFollowerCmd(cmd Cmder) bool {
-	return pipelineConnStateReissueCmd(cmd) || isScriptLoadCmd(cmd) || isScriptFlushCmd(cmd) || pipelineCmdReadOnly(cmd)
+	return pipelineConnStateReissueCmd(cmd) || isScriptLoadCmd(cmd) || isScriptFlushCmd(cmd) || pipelineCmdNonMutating(cmd) || pipelineIsBarrierCmd(cmd)
 }
 
 // scriptSubcommand returns the SCRIPT subcommand (LOAD, FLUSH, ...) of cmd,
