@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 
@@ -233,11 +234,37 @@ func (c *baseClient) himportInjectedCmds(ctx context.Context, cn *pool.Conn, cmd
 		}
 		covered[name] = struct{}{}
 	}
+	// batchSchemas holds the fieldset a user-issued PREPARE earlier in
+	// this batch registered, so a SET after it is stamped with the
+	// schema it was issued under rather than the registry's older one.
+	var batchSchemas map[string]himportFieldset
 	for _, cmd := range cmds {
 		switch hc := cmd.(type) {
 		case *HImportPrepareCmd:
+			if batchSchemas == nil {
+				batchSchemas = make(map[string]himportFieldset)
+			}
+			batchSchemas[hc.fieldsetName] = himportFieldset{fields: hc.fields, version: hc.registryVersion}
 			cover(hc.fieldsetName)
 		case *HImportSetCmd:
+			// Stamp the SET with the fieldset schema in force when
+			// it was first dispatched: a later answered PREPARE in
+			// the same batch may replace the registry entry before
+			// the retry runs, and re-preparing from the registry
+			// would write the SET's values under the new field
+			// names. The stamp is set once, on the first dispatch,
+			// and never overwritten by a later attempt.
+			if !hc.issuedSet {
+				if fs, ok := batchSchemas[hc.fieldsetName]; ok {
+					hc.issuedFields = append([]string(nil), fs.fields...)
+					hc.issuedVersion = fs.version
+					hc.issuedSet = true
+				} else if fs, ok := c.himport.lookup(hc.fieldsetName); ok {
+					hc.issuedFields = append([]string(nil), fs.fields...)
+					hc.issuedVersion = fs.version
+					hc.issuedSet = true
+				}
+			}
 			if _, ok := covered[hc.fieldsetName]; ok {
 				continue
 			}
@@ -245,14 +272,30 @@ func (c *baseClient) himportInjectedCmds(ctx context.Context, cn *pool.Conn, cmd
 			if !ok {
 				continue
 			}
-			if !sessionWiped && cn.FieldsetPreparedVersion(hc.fieldsetName) == fs.version {
+			// A stamped SET runs under its issued schema, not the
+			// registry's current one: a later answered PREPARE
+			// replaced the fieldset after the SET was issued, and
+			// the retry must re-prepare the old fields before the
+			// SET. When the registry no longer holds the name at
+			// all (a discard), there is nothing to re-prepare, as
+			// before. A stamp whose fields match the registry is
+			// the same schema, so the normal path below applies.
+			if hc.issuedSet && !slices.Equal(hc.issuedFields, fs.fields) {
+				fs = himportFieldset{fields: hc.issuedFields, version: hc.issuedVersion}
+			}
+			preparedVersion := cn.FieldsetPreparedVersion(hc.fieldsetName)
+			// A stamp from a user-issued PREPARE carries version 0:
+			// the session holds nothing at version 0, so the
+			// prepared-version equality below must not skip the
+			// injection for it — a fresh session needs the PREPARE.
+			if !sessionWiped && fs.version != 0 && preparedVersion == fs.version {
 				continue
 			}
 			// The session holds an older version. Discard it before the
 			// re-prepare: the SET behind it is already on the wire, and if
 			// the re-prepare fails the SET must answer "no such fieldset"
 			// rather than silently writing the old version's field names.
-			if !sessionWiped && cn.FieldsetPreparedVersion(hc.fieldsetName) != 0 {
+			if !sessionWiped && preparedVersion != 0 {
 				injected = append(injected, NewHImportDiscardCmd(ctx, hc.fieldsetName))
 			}
 			prep := NewHImportPrepareCmd(ctx, hc.fieldsetName, fs.fields...)

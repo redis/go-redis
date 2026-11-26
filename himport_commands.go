@@ -76,6 +76,16 @@ type HImportSetCmd struct {
 	StatusCmd
 
 	fieldsetName string
+
+	// issuedFields and issuedVersion record the fieldset schema this
+	// SET was first dispatched under (see himportInjectedCmds):
+	// a later answered PREPARE may replace the registry entry before
+	// the retry runs, but the retry must re-prepare the original
+	// fields, or the values land under the new field names while
+	// Exec still reports success. issuedSet marks the stamp present.
+	issuedFields  []string
+	issuedVersion uint64
+	issuedSet     bool
 }
 
 func (cmd *HImportSetCmd) himportCmd() {}

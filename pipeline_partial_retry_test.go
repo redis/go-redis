@@ -2078,7 +2078,11 @@ type himportRetryServer struct {
 	// so the command after the PREPARE is the retry boundary instead
 	// of the PREPARE itself.
 	dropNextAfterPrepare bool
-	discards             atomic.Int32 // HIMPORT DISCARD commands seen, all connections
+	// setReadonlyOnce, when set, makes the next HIMPORT SET answer
+	// READONLY without executing: the write never happened, exactly
+	// like a read-only replica refusing the write during promotion.
+	setReadonlyOnce atomic.Bool
+	discards        atomic.Int32 // HIMPORT DISCARD commands seen, all connections
 }
 
 func newHImportRetryServer(t *testing.T) *himportRetryServer {
@@ -2229,6 +2233,16 @@ func (s *himportRetryServer) serve(conn net.Conn, n int32) {
 				s.mu.Lock()
 				s.sets = append(s.sets, himportSetRecord{conn: n, fields: fields})
 				s.mu.Unlock()
+				if s.setReadonlyOnce.CompareAndSwap(true, false) {
+					// A READONLY SET never executed: it records no
+					// value, exactly like a read-only replica
+					// refusing the write while promoting. The
+					// connection stays up, so the commands after
+					// it still answer.
+					seenSet = true
+					_, _ = conn.Write([]byte("-READONLY You can't write against a read only replica\r\n"))
+					continue
+				}
 				if n == 1 && !s.dropNextAfterSet {
 					// Drop before replying: the SET must be retried
 					// together with its PREPARE.
@@ -6867,9 +6881,13 @@ func TestPipelineRetryKeepsQueuedCommandsAfterRedisRejection(t *testing.T) {
 // of the test above — when the transaction's EXEC already answered
 // successfully on an attempt, the queued commands ran, so the retry after
 // the TRYAGAIN must not re-queue them. Here the second connection commits
-// the transaction (EXEC returns the INCR's result) and the retry runs an
-// empty MULTI/EXEC on the same connection; re-sending the INCR would
-// increment the counter twice.
+// the transaction (EXEC returns the INCR's result) and the retry runs
+// only the MGET on the same connection: re-running the settled MULTI/EXEC
+// would overwrite the committed EXEC result with an empty array, losing
+// the increment result while Exec reports success (see the Codex P2
+// finding on #4351, 2026-11-26) — so the settled frame is trimmed with
+// its body instead, and the EXEC keeps its committed result. Re-sending
+// the INCR would increment the counter twice.
 func TestPipelineRetryDropsQueuedCommandsAfterExecCommitted(t *testing.T) {
 	server := newQueuedRetryServer(t)
 	server.dropAfter = 1
@@ -6903,8 +6921,8 @@ func TestPipelineRetryDropsQueuedCommandsAfterExecCommitted(t *testing.T) {
 	}
 	if got, err := exec.Result(); err != nil {
 		t.Fatalf("EXEC: %v", err)
-	} else if vals, ok := got.([]interface{}); !ok || len(vals) != 0 {
-		t.Fatalf("EXEC = %v, want an empty array (the retry's transaction holds nothing)", got)
+	} else if vals, ok := got.([]interface{}); !ok || len(vals) != 1 {
+		t.Fatalf("EXEC = %v, want one result (the committed INCR); an empty array means the retry re-ran the settled frame and overwrote its result", got)
 	}
 	if got := server.conns.Load(); got != 2 {
 		t.Fatalf("server saw %d connections, want 2 (the first drops after SELECT; the second stays healthy)", got)
@@ -6915,8 +6933,8 @@ func TestPipelineRetryDropsQueuedCommandsAfterExecCommitted(t *testing.T) {
 	if got := server.incrs.Load(); got != 1 {
 		t.Fatalf("server received %d INCR commands, want 1 (the INCR already ran under the committed EXEC)", got)
 	}
-	if got := server.execs.Load(); got != 2 {
-		t.Fatalf("server received %d EXEC commands, want 2 (one committing, one empty on retry)", got)
+	if got := server.execs.Load(); got != 1 {
+		t.Fatalf("server received %d EXEC commands, want 1 (only the committing EXEC runs; the retry must not re-run the settled frame)", got)
 	}
 }
 
@@ -8156,8 +8174,13 @@ func TestPipelineRetryWholeBatchRequiresAnsweredSwapdb(t *testing.T) {
 // TestPipelineRetryWholeBatchSkipsSyntheticSwapdbClone: a swap-back
 // clone a previous suffix rebuild inserted is synthetic, not an
 // answered original SWAPDB. A later whole-batch fallback must not
-// prepend another inverse for it: the extra swap would land later
-// writes in the wrong database while Exec still reports success.
+// prepend another inverse for it — and must not re-dispatch it either:
+// the fresh clone for the answered original already undoes the swap
+// once, so running the old clone as well would land later writes in
+// the wrong database while Exec still reports success. (The clone used
+// to be kept untouched; the Cursor Bugbot finding on #4351, 2026-11-26,
+// showed the re-dispatch stacks the inverses on a second whole-batch
+// retry.)
 func TestPipelineRetryWholeBatchSkipsSyntheticSwapdbClone(t *testing.T) {
 	ctx := context.Background()
 	swapdb := NewCmd(ctx, "swapdb", 0, 1)
@@ -8171,11 +8194,53 @@ func TestPipelineRetryWholeBatchSkipsSyntheticSwapdbClone(t *testing.T) {
 	ctx = context.WithValue(ctx, pipelineRequiredSyntheticKey{}, map[*baseCmd]bool{clone.base(): true})
 
 	retry := pipelineWholeBatchRetry(ctx, cmds)
-	if len(retry) != 4 || retry[1] != clone || retry[2] != swapdb || retry[3] != set {
-		t.Fatalf("whole-batch retry returned %d commands, want 4 (one inverse for the answered original, the synthetic clone untouched)", len(retry))
+	if len(retry) != 3 || retry[1] != swapdb || retry[2] != set {
+		t.Fatalf("whole-batch retry returned %d commands, want 3 (one fresh inverse for the answered original, the synthetic clone dropped)", len(retry))
 	}
 	if retry[0].base() == clone.base() || retry[0].base() == swapdb.base() {
 		t.Fatalf("whole-batch retry prepended an existing command instead of a fresh swap-back clone")
+	}
+}
+
+// TestPipelineRetryWholeBatchDropsDispatchedSwapbackClone: a second
+// whole-batch retry must not re-dispatch a swap-back clone the previous
+// attempt already ran. The first whole-batch retry prepends a fresh clone
+// for the answered SWAPDB; the second attempt dispatches that clone and
+// the original, then falls back to whole-batch again. The fresh clone the
+// second rebuild prepends already undoes the swap once, so keeping the
+// old clone would run two inverses plus the original SWAPDB and land
+// later writes in the wrong database while Exec still reports success.
+// Regression test for the Cursor Bugbot finding on #4351 (2026-11-26).
+func TestPipelineRetryWholeBatchDropsDispatchedSwapbackClone(t *testing.T) {
+	ctx := context.Background()
+	swapdb := NewCmd(ctx, "swapdb", 0, 1)
+	set := NewCmd(ctx, "set", "k", "v")
+	cmds := []Cmder{swapdb, set}
+
+	answered := map[*baseCmd]bool{swapdb.base(): true}
+	synthetic := map[*baseCmd]bool{}
+	ctx = context.WithValue(ctx, pipelineAnsweredKey{}, answered)
+	ctx = context.WithValue(ctx, pipelineSyntheticKey{}, synthetic)
+	ctx = context.WithValue(ctx, pipelineRequiredSyntheticKey{}, map[*baseCmd]bool{})
+
+	retry1 := pipelineWholeBatchRetry(ctx, cmds)
+	if len(retry1) != 3 || retry1[1] != swapdb || retry1[2] != set {
+		t.Fatalf("first whole-batch retry returned %d commands, want 3 (one swap-back clone ahead of the originals)", len(retry1))
+	}
+	clone := retry1[0]
+	if clone.base() == swapdb.base() {
+		t.Fatalf("first whole-batch retry prepended the original SWAPDB instead of a fresh swap-back clone")
+	}
+	// The second attempt dispatched the clone (and the original) before
+	// falling back to whole-batch again.
+	answered[clone.base()] = true
+
+	retry2 := pipelineWholeBatchRetry(ctx, retry1)
+	if len(retry2) != 3 || retry2[1] != swapdb || retry2[2] != set {
+		t.Fatalf("second whole-batch retry returned %d commands, want 3 (one fresh swap-back clone ahead of the originals, the dispatched clone dropped)", len(retry2))
+	}
+	if retry2[0].base() == clone.base() || retry2[0].base() == swapdb.base() {
+		t.Fatalf("second whole-batch retry reused an existing command instead of prepending a fresh swap-back clone")
 	}
 }
 
@@ -10882,6 +10947,52 @@ func TestPipelineRetryHImportSetNoSuchFieldsetIsRetriedAfterDrop(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryHImportSetKeepsOriginalFieldset: a retried HIMPORT
+// SET must run under the fieldset it was issued under, not the one a
+// later answered PREPARE registered. Here the pipeline PING; HIMPORT SET
+// k fs v; HIMPORT PREPARE fs new reads [PONG, READONLY, OK]: the SET is
+// refused, the PREPARE registers [new] in the client registry, and the
+// suffix retry re-issues the SET — without the fix the retry injects
+// PREPARE fs new ahead of it and writes {new: v} while Exec reports
+// success; with it the retry injects PREPARE fs old (the SET's original
+// fieldset) and writes {old: v}. Regression test for the Codex P1 review
+// finding on #4351 (2026-11-26).
+func TestPipelineRetryHImportSetKeepsOriginalFieldset(t *testing.T) {
+	server := newHImportRetryServer(t)
+	server.setReadonlyOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	if err := client.HImportPrepare(ctx, "fs", "old").Err(); err != nil {
+		t.Fatalf("setup HImportPrepare: %v", err)
+	}
+
+	pipe := client.Pipeline()
+	ping := pipe.Ping(ctx)
+	set := pipe.HImportSet(ctx, "k", "fs", "v")
+	prep := pipe.HImportPrepare(ctx, "fs", "new")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-issue the SET under its original fieldset)", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("PING: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("HIMPORT SET: %v", err)
+	}
+	if err := prep.Err(); err != nil {
+		t.Fatalf("HIMPORT PREPARE: %v", err)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if got := len(server.sets); got != 2 {
+		t.Fatalf("server received %d HIMPORT SET commands, want 2 (the READONLY SET plus its retry)", got)
+	}
+	if got := server.sets[1]; len(got.fields) != 1 || got.fields[0] != "old" {
+		t.Fatalf("retried SET ran under PREPARE fields %v, want [old] (the retry must use the fieldset the SET was issued under, not the later PREPARE's)", got.fields)
+	}
+}
+
 // TestPipelineRetryFailedDiscardKeepsQueuedBody: a DISCARD that fails with
 // a transport error leaves its transaction open, so the queued commands
 // never executed and still need a retry. Here MULTI, SET, EXISTS and
@@ -11054,6 +11165,66 @@ func TestPipelineRetryFailedDiscardHidesSettledExec(t *testing.T) {
 	}
 	if got := server.discards.Load(); got != 1 {
 		t.Fatalf("server received %d DISCARD commands, want 1 (the failed DISCARD must not be re-sent)", got)
+	}
+}
+
+// TestPipelineRetrySettledExecFrameTrimmedFromRetryTail: a MULTI/EXEC
+// frame that already committed must not be re-run by the retry tail.
+// Here MGET answers TRYAGAIN and the following MULTI, INCR, GET and EXEC
+// all answered (the EXEC committed [1, WRONGTYPE]): without the fix the
+// tail filter keeps MULTI and EXEC as connection state while dropping
+// their answered body, so the retry re-runs MGET; MULTI; EXEC and the
+// empty retried transaction overwrites the settled EXEC result with an
+// empty array while Exec still reports success; with it the settled
+// frame is trimmed with its body and only the MGET is retried.
+// Regression test for the Codex P2 review finding on #4351 (2026-11-26).
+func TestPipelineRetrySettledExecFrameTrimmedFromRetryTail(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 10
+	server.mgetTryagainCount.Store(1)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	ping := pipe.Ping(ctx)
+	mget := pipe.MGet(ctx, "a", "b")
+	multi := pipe.Do(ctx, "multi")
+	incr := pipe.Do(ctx, "incr", "counter")
+	get := pipe.Get(ctx, "wrong-type-key")
+	exec := pipe.Do(ctx, "exec")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must re-run only the MGET, not the settled transaction)", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("PING: %v", err)
+	}
+	if err := mget.Err(); err != nil {
+		t.Fatalf("MGET: %v", err)
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := incr.Err(); err != nil {
+		t.Fatalf("INCR: %v", err)
+	}
+	if err := get.Err(); err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	vals, _ := exec.Val().([]interface{})
+	if len(vals) != 2 {
+		t.Fatalf("EXEC returned %d result(s), want 2 (the settled EXEC result must not be overwritten by an empty retried transaction)", len(vals))
+	}
+	if got := server.mgets.Load(); got != 2 {
+		t.Fatalf("server received %d MGET commands, want 2 (the TRYAGAIN MGET plus its retry)", got)
+	}
+	if got := server.multiCount.Load(); got != 1 {
+		t.Fatalf("server received %d MULTI commands, want 1 (the settled frame must not be re-opened)", got)
+	}
+	if got := server.execWithMulti.Load(); got != 1 {
+		t.Fatalf("EXEC ran %d time(s) inside MULTI, want 1 (the settled EXEC must not be re-run)", got)
 	}
 }
 

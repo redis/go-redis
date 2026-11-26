@@ -3403,6 +3403,73 @@ func pipelineAbortedTxCmds(cmds []Cmder) map[*baseCmd]bool {
 	return aborted
 }
 
+// pipelineSettledTxCmds returns the commands of cmds that sit inside a
+// MULTI/EXEC transaction the server committed: a MULTI frame closed by an
+// EXEC that answered without an error and with a result array. Unlike an
+// aborted frame (see pipelineAbortedTxCmds) the queued commands did run,
+// so their results are definitive: the framing commands must not be
+// reissued as connection state and the body must not be re-run, or the
+// retry would commit a second — empty, when the body was trimmed as
+// answered — transaction over the settled results and overwrite the
+// EXEC's result while Exec reports success. Only a committed EXEC
+// counts: an aborted one (redis.Nil, EXECABORT) is covered by
+// pipelineAbortedTxCmds, a rejected one leaves the frame open, and an
+// unanswered one leaves its fate unknown.
+func pipelineSettledTxCmds(cmds []Cmder) map[*baseCmd]bool {
+	settled := make(map[*baseCmd]bool)
+	for _, frame := range pipelineSettledTxFrames(cmds) {
+		for _, idx := range frame {
+			settled[cmds[idx].base()] = true
+		}
+	}
+	return settled
+}
+
+// pipelineSettledTxFrames returns, for each MULTI/EXEC transaction the
+// server committed, the indices of its framing and body commands in
+// order: the MULTI, the queued body, and the EXEC. It shares the frame
+// tracking of pipelineTxBodyNeedsRetryMap (a rejected MULTI opens no
+// frame, a nested one belongs to the outer frame, only a settled EXEC
+// closes one).
+func pipelineSettledTxFrames(cmds []Cmder) [][]int {
+	var frames [][]int
+	var frame []int
+	for idx, cmd := range cmds {
+		switch cmd.Name() {
+		case "multi":
+			// A rejected MULTI opens no frame (see
+			// pipelineMultiAccepted): a nested MULTI inside an
+			// already-open frame still belongs to it.
+			if len(frame) > 0 || pipelineMultiAccepted(cmd) {
+				frame = append(frame, idx)
+			}
+		case "exec":
+			if len(frame) > 0 && pipelineExecSettled(cmd) && pipelineCmdErr(cmd) == nil && !pipelineExecNullReply(cmd) {
+				frame = append(frame, idx)
+				frames = append(frames, frame)
+			}
+			// Only a settled EXEC closes the frame: one the server
+			// rejected leaves the transaction open, so a later
+			// DISCARD still drops its body (see
+			// pipelineDiscardedTxCmds for the same rule).
+			if pipelineExecSettled(cmd) {
+				frame = nil
+			}
+		case "discard", "reset":
+			// Only a DISCARD or RESET the server executed closes
+			// the frame (see pipelineDiscardedTxCmds).
+			if pipelineCmdErr(cmd) == nil {
+				frame = nil
+			}
+		default:
+			if len(frame) > 0 {
+				frame = append(frame, idx)
+			}
+		}
+	}
+	return frames
+}
+
 // pipelineExecElems returns the EXEC result elements when the EXEC
 // command's reply decoded as an array: the typed decoders store it in
 // Val, while a raw EXEC keeps the verbatim RESP array bytes (see
@@ -3998,7 +4065,13 @@ func evalScriptCached(cmd Cmder) bool {
 // The clones are fresh commands, not the originals: the originals keep their OK
 // results. They are required: a failed
 // swap-back must fail the batch rather than let the batch run in the
-// wrong database.
+// wrong database. And a swap-back clone a previous retry already
+// inserted is dropped, not re-dispatched: the fresh clone above already
+// undoes its original's swap once, so running the old clone as well
+// would swap the databases a second time and land later writes in the
+// wrong database. Only when a fresh clone is prepended: with no
+// answered original nothing undoes the swap yet, so the old clones stay
+// (see the early return above).
 func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
 	abortedTx := pipelineAbortedTxCmds(cmds)
 	discardedTx := pipelineDiscardedTxCmds(cmds)
@@ -4042,7 +4115,13 @@ func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
 		retry = append(retry, fresh)
 		markPipelineSynthetic(ctx, true, fresh)
 	}
-	return append(retry, cmds...)
+	for _, cmd := range cmds {
+		if synthetic[cmd.base()] && cmd.Name() == "swapdb" {
+			continue
+		}
+		retry = append(retry, cmd)
+	}
+	return retry
 }
 
 // pipelineRetrySuffix returns the commands of a failed pipeline attempt that
@@ -4139,8 +4218,16 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 	// the whole batch the way a committed frame's PREPARE does, and
 	// computing them after the scan (as before) let the scan return
 	// the whole batch before they could exempt the frame's body.
+	// Commands inside a transaction the server committed did execute
+	// (see pipelineSettledTxCmds): the tail filter below drops the
+	// committed frame's framing with its body the same way, so the
+	// retry does not commit a second transaction over the settled
+	// results. It is computed here with the other two sets so the
+	// filter and the rebuild share one pass over the batch.
 	discardedTx := pipelineDiscardedTxCmds(cmds)
 	abortedTx := pipelineAbortedTxCmds(cmds)
+	settledTx := pipelineSettledTxCmds(cmds)
+	settledFrames := pipelineSettledTxFrames(cmds)
 	for i, cmd := range cmds {
 		// A stale error — one the command already carried when this
 		// invocation started — is not a record of this invocation's
@@ -4541,6 +4628,34 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				if abortedTx[cmd.base()] || discardedTx[cmd.base()] {
 					continue
 				}
+				// A command inside a transaction the server
+				// committed already ran, so its result is
+				// definitive: the framing commands must not be
+				// reissued as connection state, or the retry would
+				// commit a second — empty, when the body was
+				// trimmed as answered — transaction over the
+				// settled results and overwrite the EXEC's result
+				// while Exec reports success. It is recorded as
+				// answered, like any other answered command: the
+				// retention scan below may still keep a body
+				// command past a pending write (an answered write
+				// the retried write would otherwise overwrite),
+				// and the frame is then restored with it (see
+				// below) — a queued command re-run standalone
+				// answers its EXEC-element rejection as its own
+				// error, while re-queued it keeps +QUEUED. A
+				// committed frame's body cannot have dirtied a live
+				// watch (it would have aborted the frame), and its
+				// own settled EXEC clears the watch, so counting
+				// it as a dropped follower in the WATCH safety walk
+				// is moot. Its script effects still count: a LOAD,
+				// FLUSH or EVAL the frame ran still decides what a
+				// retried EVALSHA may rely on, so the suffix walk
+				// below still emits its prerequisite.
+				if settledTx[cmd.base()] {
+					answered[j] = true
+					continue
+				}
 				// A command in a transaction the server aborted is
 				// not kept as connection state: its frame's outcome
 				// — the EXEC's redis.Nil or EXECABORT — is the
@@ -4713,6 +4828,37 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 				if pendingSwapdbSeen && answered[j] && isDroppedRead(cmd) {
 					keep[j] = true
 					answered[j] = false
+				}
+			}
+			// A settled frame the filter dropped as answered may
+			// still have a body command the scan above kept (an
+			// answered write past a pending write, which the
+			// retried write would otherwise overwrite): the body
+			// must be re-run inside its transaction, not
+			// standalone — a queued command re-run standalone
+			// answers its EXEC-element rejection as its own error,
+			// while re-queued it keeps +QUEUED — so restore the
+			// frame's MULTI and EXEC with it. A frame with no kept
+			// body stays dropped, as above. Only framing commands
+			// past the boundary can be restored: a MULTI before it
+			// is already settled in the answered prefix and is not
+			// reissued.
+			for _, frame := range settledFrames {
+				keptBody := false
+				for _, idx := range frame[1 : len(frame)-1] {
+					if idx > i && keep[idx-(i+1)] {
+						keptBody = true
+						break
+					}
+				}
+				if !keptBody {
+					continue
+				}
+				for _, idx := range []int{frame[0], frame[len(frame)-1]} {
+					if idx > i {
+						keep[idx-(i+1)] = true
+						answered[idx-(i+1)] = false
+					}
 				}
 			}
 			// A one-shot state command (ASKING, CLIENT CACHING) applies
