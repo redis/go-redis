@@ -300,6 +300,11 @@ func (o *ObservabilityInstance) configToInternal(cfg *Config) config {
 		enabledGroups[MetricGroupMultiDB] = true
 	}
 
+	retention := cfg.ClosedPoolSeriesRetention
+	if retention <= 0 {
+		retention = defaultClosedSeriesRetention
+	}
+
 	return config{
 		meterProvider:                   cfg.MeterProvider,
 		enabled:                         cfg.Enabled,
@@ -315,6 +320,7 @@ func (o *ObservabilityInstance) configToInternal(cfg *Config) config {
 		bucketsConnectionCreateTime:     cfg.BucketsConnectionCreateTime,
 		bucketsConnectionWaitTime:       cfg.BucketsConnectionWaitTime,
 		customAttributes:                slices.Clone(cfg.CustomAttributes),
+		closedSeriesRetention:           retention,
 	}
 }
 
@@ -591,7 +597,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config, s
 		cfg: &cfg,
 	}
 	if connectionCount != nil || connectionPendingReqs != nil {
-		recorder.poolObs, err = newPoolObserver(meter, connectionCount, connectionPendingReqs)
+		recorder.poolObs, err = newPoolObserver(meter, connectionCount, connectionPendingReqs, cfg.closedSeriesRetention)
 		if err != nil {
 			if opq != nil && opq != shared {
 				opq.stop()

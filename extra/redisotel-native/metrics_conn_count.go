@@ -3,12 +3,17 @@ package redisotel
 import (
 	"context"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/redis/go-redis/v9"
 )
+
+// defaultClosedSeriesRetention is how long a closed pool's series is observed
+// at 0: longer than common export and scrape intervals (up to a few minutes).
+const defaultClosedSeriesRetention = 5 * time.Minute
 
 // poolObserver reports db.client.connection.count and
 // db.client.connection.pending_requests by reading each registered pool when
@@ -22,17 +27,21 @@ type poolObserver struct {
 	mu     sync.Mutex
 	pools  map[redis.Pooler]*poolSeries
 	pubSub map[redis.PubSubPooler]*series
-	// closed are the exported series of pools that are gone. They are
-	// observed at 0 until release: the SDK emits no point for a series that
-	// is no longer observed, so a delta reader would never get the final
-	// decrement. One entry per series; release drops them.
+	// closed are the exported series of pools that are gone. The SDK emits no
+	// point for a series that is no longer observed, so a delta reader would
+	// never get the final decrement. Each one is observed at 0 for retain
+	// after it closed, so every reader that collects in that window gets it,
+	// and is then dropped. release drops all of them.
 	closed  []closedSeries
+	retain  time.Duration
+	now     func() time.Time
 	stopped bool
 }
 
 type closedSeries struct {
 	inst  metric.Int64ObservableUpDownCounter
 	attrs metric.MeasurementOption
+	at    time.Time // when the pool closed
 }
 
 type poolSeries struct {
@@ -87,12 +96,14 @@ func (s *pendingSeries) read(p redis.Pooler) int64 {
 	return int64(v)
 }
 
-func newPoolObserver(meter metric.Meter, count, pending metric.Int64ObservableUpDownCounter) (*poolObserver, error) {
+func newPoolObserver(meter metric.Meter, count, pending metric.Int64ObservableUpDownCounter, retain time.Duration) (*poolObserver, error) {
 	c := &poolObserver{
 		count:   count,
 		pending: pending,
 		pools:   make(map[redis.Pooler]*poolSeries),
 		pubSub:  make(map[redis.PubSubPooler]*series),
+		retain:  retain,
+		now:     time.Now,
 	}
 	var insts []metric.Observable
 	if count != nil {
@@ -118,9 +129,29 @@ func (c *poolObserver) observe(o metric.Observer) {
 	if !c.stopped {
 		c.observePoolsLocked(o)
 	}
+	c.observeClosedLocked(o)
+}
+
+// observeClosedLocked observes every closed series at 0, then drops the ones
+// past the retention window. Observing before dropping gives a reader that
+// collects just after the window its final decrement. Caller holds c.mu.
+func (c *poolObserver) observeClosedLocked(o metric.Observer) {
+	now := c.now()
+	kept := c.closed[:0]
 	for _, s := range c.closed {
 		o.ObserveInt64(s.inst, 0, s.attrs)
+		if now.Sub(s.at) < c.retain {
+			kept = append(kept, s)
+		}
 	}
+	clear(c.closed[len(kept):])
+	c.closed = kept
+}
+
+// addClosedLocked keeps one exported series at 0 from now on. Caller holds
+// c.mu.
+func (c *poolObserver) addClosedLocked(inst metric.Int64ObservableUpDownCounter, attrs metric.MeasurementOption) {
+	c.closed = append(c.closed, closedSeries{inst: inst, attrs: attrs, at: c.now()})
 }
 
 func (c *poolObserver) observePoolsLocked(o metric.Observer) {
@@ -168,7 +199,7 @@ func (c *poolObserver) closeLocked(p redis.Pooler, a *poolSeries) {
 		c.dropSeriesLocked(&a.used)
 	}
 	if c.pending != nil && a.pending.seen {
-		c.closed = append(c.closed, closedSeries{c.pending, a.pending.attrs})
+		c.addClosedLocked(c.pending, a.pending.attrs)
 	}
 }
 
@@ -176,7 +207,7 @@ func (c *poolObserver) closeLocked(p redis.Pooler, a *poolSeries) {
 // c.mu.
 func (c *poolObserver) dropSeriesLocked(s *series) {
 	if s.seen {
-		c.closed = append(c.closed, closedSeries{c.count, s.attrs})
+		c.addClosedLocked(c.count, s.attrs)
 	}
 }
 
@@ -187,8 +218,8 @@ func collected(p any) bool {
 	return ok && c.Collected()
 }
 
-// stop is called by Shutdown. Every exported series is observed at 0 from
-// then on, so delta readers get the final decrement at their next
+// stop is called by Shutdown. Every exported series is observed at 0 for the
+// retention window, so delta readers get the final decrement at their next
 // collection. Pools are no longer read and registrations are ignored; the
 // pool map is kept for inheritSeen.
 func (c *poolObserver) stop() {
