@@ -322,6 +322,11 @@ type connStateRetryServer struct {
 	// results after it, exactly like a real server refusing
 	// commands while loading.
 	pingLoadingOnce atomic.Bool
+	// roleLoadingOnce, when set, makes the next ROLE answer LOADING
+	// without executing: like PING, ROLE is read-only introspection
+	// that carries no readonly flag, so a refused ROLE must not
+	// invalidate the data results after it either.
+	roleLoadingOnce atomic.Bool
 	// dropAfterExecReplyOnce, when set, makes the connection close
 	// right after writing the EXEC reply: the queued commands ran,
 	// but the commands after EXEC get no reply on this connection.
@@ -916,6 +921,15 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				break
 			}
 			reply = "+PONG\r\n"
+		case "role":
+			if s.roleLoadingOnce.CompareAndSwap(true, false) {
+				// A LOADING ROLE never executed: it reads
+				// nothing, exactly like a real server refusing
+				// commands while loading.
+				reply = "-LOADING Redis is loading the dataset in memory\r\n"
+				break
+			}
+			reply = "+OK\r\n"
 		}
 		if _, err := conn.Write([]byte(reply)); err != nil {
 			return
@@ -11975,6 +11989,58 @@ func TestPipelineRetryPendingPingDoesNotInvalidateAnsweredWrite(t *testing.T) {
 	}
 	if got := server.incrs.Load(); got != 1 {
 		t.Fatalf("server executed %d INCRs, want 1 (a refused PING is not a pending write)", got)
+	}
+}
+
+// TestPipelineRetryPendingRoleDoesNotInvalidateAnsweredWrite: a refused
+// ROLE is not a pending write — ROLE carries no readonly flag in the
+// COMMAND metadata, yet it writes nothing, so it cannot invalidate the
+// data results after it. With ECHO ready; ROLE; INCR counter receiving
+// [ready, LOADING, 1], the answered INCR must stay dropped: the retry
+// re-runs only the ROLE, and the counter increments once. Regression
+// test for the Cursor Bugbot Medium finding on #4351 (round 42).
+func TestPipelineRetryPendingRoleDoesNotInvalidateAnsweredWrite(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 1 << 30
+	server.roleLoadingOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	echo := pipe.Do(ctx, "echo", "ready")
+	role := pipe.Do(ctx, "role")
+	incr := pipe.Incr(ctx, "counter")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retried ROLE must succeed once the server has recovered)", err)
+	}
+	if err := echo.Err(); err != nil {
+		t.Fatalf("ECHO: %v", err)
+	}
+	if err := role.Err(); err != nil {
+		t.Fatalf("ROLE: %v", err)
+	}
+	if got, err := incr.Result(); err != nil || got != 1 {
+		t.Fatalf("INCR = %d, %v; want 1, nil (the answered INCR must not be re-run)", got, err)
+	}
+	if got := server.incrs.Load(); got != 1 {
+		t.Fatalf("server executed %d INCRs, want 1 (a refused ROLE is not a pending write)", got)
+	}
+}
+
+// TestPipelineCmdNonMutating: the introspection commands the COMMAND
+// metadata leaves unflagged must still classify as non-mutating, while
+// real writes and unknown commands must not.
+func TestPipelineCmdNonMutating(t *testing.T) {
+	ctx := context.Background()
+	for _, name := range []string{"ping", "echo", "time", "info", "role", "lastsave", "command", "get"} {
+		if !pipelineCmdNonMutating(NewCmd(ctx, name)) {
+			t.Errorf("pipelineCmdNonMutating(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"set", "incr", "del", "unknowncmd"} {
+		if pipelineCmdNonMutating(NewCmd(ctx, name)) {
+			t.Errorf("pipelineCmdNonMutating(%q) = true, want false", name)
+		}
 	}
 }
 

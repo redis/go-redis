@@ -2733,6 +2733,11 @@ func pipelineCmdReadOnly(cmd Cmder) bool {
 // small set of introspection commands the metadata leaves unflagged —
 // PING, ECHO, TIME and INFO carry no readonly flag, yet none of them
 // writes anything, so a refused one cannot invalidate the data results
+// after it. ROLE, LASTSAVE and COMMAND are the same kind of read-only
+// introspection: the metadata leaves them unflagged (ROLE is
+// noscript/loading/stale/fast, LASTSAVE loading/stale/fast, COMMAND
+// loading/stale), yet none of them writes anything either, so a refused
+// one must not count as a pending write that keeps answered writes
 // after it. Unknown commands are not non-mutating: treating them as
 // writes only keeps an answered command or reissues a barrier, while
 // treating a write as a read would drop a result the retry must
@@ -2742,7 +2747,7 @@ func pipelineCmdNonMutating(cmd Cmder) bool {
 		return true
 	}
 	switch cmd.Name() {
-	case "ping", "echo", "time", "info":
+	case "ping", "echo", "time", "info", "role", "lastsave", "command":
 		return true
 	}
 	return false
