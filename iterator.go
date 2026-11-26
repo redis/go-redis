@@ -78,7 +78,7 @@ func (it *ScanIterator) Val() string {
 	return v
 }
 
-// Vals returns iterator over key/field at the current cursor position.
+// Vals returns an iterator over the remaining keys or fields.
 func (it *ScanIterator) Vals(ctx context.Context) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		if it.cmd.Err() != nil {
@@ -86,7 +86,9 @@ func (it *ScanIterator) Vals(ctx context.Context) iter.Seq[string] {
 		}
 
 		for {
-			for _, val := range it.cmd.page {
+			for it.pos < len(it.cmd.page) {
+				val := it.cmd.page[it.pos]
+				it.pos++
 				if !yield(val) {
 					return
 				}
@@ -120,6 +122,7 @@ func (it *ScanIterator) Vals(ctx context.Context) iter.Seq[string] {
 			if it.cmd.Err() != nil {
 				return
 			}
+			it.pos = 0
 		}
 	}
 }
