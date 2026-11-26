@@ -218,12 +218,12 @@ func (r *clusterFDRouter) submitToken(ctx context.Context, cmd Cmder, token fdOu
 	if b == completedBatch && errors.Is(cmd.Err(), ErrClosed) {
 		// Topology GC (a cluster reload dropping this node, or the node's own pool
 		// close hook) can close this child at any point up to and including while
-		// fd.submit is parked on a full fd.ch waiting for room — the fd.ap.ctx.Done()
-		// / fd.closed arms in fdEngine.submit. Those keep the race SAFE (ErrClosed,
+		// fd.submitToken is parked on a full fd.q waiting for room — the fd.ap.ctx.Done()
+		// / fd.closed arms in fdEngine.submitToken. Those keep the race SAFE (ErrClosed,
 		// no hang), but silently failing the command instead of falling back
 		// contradicts this router's own contract (see the doc comment above): a
 		// routing miss should divert to Process, not error. Distinguish from the
-		// CALLER's own ctx cancelling mid-backpressure (fdEngine.submit's separate
+		// CALLER's own ctx cancelling mid-backpressure (fdEngine.submitToken's separate
 		// ctx.Done() arm, which sets ctx.Err(), not ErrClosed) — that one must NOT
 		// be retried; the caller asked to stop.
 		//

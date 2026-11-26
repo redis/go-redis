@@ -181,7 +181,7 @@ type AutoPipelineOptions struct {
 	//
 	// TODO(fullduplex): offer opt-in write-gating for blocking hooks — a per-client
 	// or per-command flag that waits for the hook to call next before enqueuing the
-	// command onto fd.ch, so a policy hook can veto the write, at the cost of the
+	// command onto fd.q, so a policy hook can veto the write, at the cost of the
 	// ~1-RTT concurrency for gated commands (observability-only hooks keep the fast
 	// path). Until then the short-circuit-does-not-block semantics above are
 	// intentional, not a bug.
@@ -1599,7 +1599,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			sem:     internal.NewFIFOSemaphore(int32(permits)),
 		}
 		for j := range s.stripes {
-			// In full-duplex mode submissions go straight to the FD engine (fd.ch),
+			// In full-duplex mode submissions go straight to the FD engine (fd.q),
 			// or — on a cluster — to a per-node FD child (clusterFD); the shard
 			// queues are never enqueued to and no flusher drains them, so do NOT
 			// preallocate them to MaxBatchSize. Otherwise a large MaxBatchSize with
