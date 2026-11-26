@@ -33,7 +33,8 @@ func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
 	case *redis.ClusterClient:
 		rdb.OnNewNode(func(rdb *redis.Client) {
 			opt := rdb.Options()
-			opts = addServerAttributes(opts, opt.Addr)
+			// Clone: the captured opts are shared by every node.
+			opts := addServerAttributes(slices.Clone(opts), opt.Addr)
 			connString := formatDBConnString(opt.Network, opt.Addr)
 			rdb.AddHook(newTracingHook(connString, opts...))
 		})
