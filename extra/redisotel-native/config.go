@@ -2,6 +2,7 @@ package redisotel
 
 import (
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -55,6 +56,9 @@ type config struct {
 	bucketsConnectionWaitTime       []float64
 
 	customAttributes []attribute.KeyValue
+
+	// How long a closed pool's series is observed at 0 before it is dropped
+	closedSeriesRetention time.Duration
 }
 
 func (c *config) isMetricGroupEnabled(group MetricGroup) bool {
@@ -169,6 +173,11 @@ type Config struct {
 	BucketsConnectionWaitTime   []float64
 
 	CustomAttributes []attribute.KeyValue
+
+	// ClosedPoolSeriesRetention is how long the connection count and pending
+	// requests series of a closed pool are still reported at 0 before they
+	// are dropped. Zero or negative uses the default (5 minutes).
+	ClosedPoolSeriesRetention time.Duration
 }
 
 // NewConfig creates a new Config with default values.
@@ -288,6 +297,16 @@ func (c *Config) WithHistogramBuckets(buckets []float64) *Config {
 	c.BucketsStreamLag = buckets
 	c.BucketsConnectionCreateTime = buckets
 	c.BucketsConnectionWaitTime = buckets
+	return c
+}
+
+// WithClosedPoolSeriesRetention sets how long the db.client.connection.count
+// and db.client.connection.pending_requests series of a closed pool are still
+// reported at 0 before they are dropped. Each reader must collect at least
+// once in this window to get the final decrement, so set it above the longest
+// export or scrape interval. Zero or negative uses the default (5 minutes).
+func (c *Config) WithClosedPoolSeriesRetention(d time.Duration) *Config {
+	c.ClosedPoolSeriesRetention = d
 	return c
 }
 
