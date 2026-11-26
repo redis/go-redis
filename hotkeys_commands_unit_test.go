@@ -72,3 +72,15 @@ func TestHotKeysCmdReadReplyCPUFields(t *testing.T) {
 func hotKeysBulkTestString(s string) string {
 	return "$" + strconv.Itoa(len(s)) + "\r\n" + s + "\r\n"
 }
+
+func TestHotKeysStartMissingMetrics(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{})
+	t.Cleanup(func() { _ = client.Close() })
+
+	for _, options := range []*HotKeysStartArgs{nil, {}} {
+		if err := client.HotKeysStart(ctx, options).Err(); err != ErrHotKeysNoMetrics {
+			t.Errorf("HotKeysStart(%#v) error = %v, want %v", options, err, ErrHotKeysNoMetrics)
+		}
+	}
+}

@@ -61,7 +61,7 @@ func (c *Client) HotKeysStart(ctx context.Context, args *HotKeysStartArgs) *Stat
 	cmdArgs = append(cmdArgs, "hotkeys", "start")
 
 	// Validate that at least one metric is specified
-	if len(args.Metrics) == 0 {
+	if args == nil || len(args.Metrics) == 0 {
 		cmd := NewStatusCmd(ctx, cmdArgs...)
 		cmd.SetErr(ErrHotKeysNoMetrics)
 		return cmd
