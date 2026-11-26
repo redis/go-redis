@@ -1819,14 +1819,19 @@ func (c *clusterState) slotShardPickerSlaveNode(slot int, shardPicker routing.Sh
 	}
 
 	// nodes[0] is master, nodes[1:] are slaves
-	// First, try all slave nodes for this slot using ShardPicker order
+	// First, try all slave nodes for this slot, starting at the ShardPicker's
+	// choice. Asking the picker again may repeat a slave and skip a healthy one.
 	slaves := nodes[1:]
 	if len(slaves) > 0 {
-		for i := 0; i < len(slaves); i++ {
-			idx := shardPicker.Next(len(slaves))
+		idx := shardPicker.Next(len(slaves))
+		for range slaves {
 			slave := slaves[idx]
 			if c.nodeOnline(slave) && !slave.Failing() && !slave.Loading() {
 				return slave, nil
+			}
+			idx++
+			if idx == len(slaves) {
+				idx = 0
 			}
 		}
 	}
