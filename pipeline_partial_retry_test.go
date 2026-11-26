@@ -249,12 +249,24 @@ type connStateRetryServer struct {
 	// after it run standalone.
 	failMulti atomic.Bool
 	waits     atomic.Int32
+	// waitNoreplicasNth, when positive, makes the Nth WAIT received
+	// answer NOREPLICAS once; other WAITs succeed. Unlike failWait it
+	// can refuse a later WAIT while an earlier one (the barrier the
+	// first attempt measured) succeeds, so a test can script a refusal
+	// of the retried barrier only.
+	waitNoreplicasNth atomic.Int32
 	// failWait, when set, makes every WAIT answer NOPERM: the
 	// barrier is rejected and measures nothing.
 	failWait atomic.Bool
 	// failSwapdbOnce, when set, makes the next SWAPDB answer
 	// NOREPLICAS without swapping; later SWAPDBs succeed.
 	failSwapdbOnce atomic.Bool
+	// swapdbNoreplicasNth, when positive, makes the Nth SWAPDB received
+	// answer NOREPLICAS once; other SWAPDBs succeed. Unlike
+	// failSwapdbOnce it can refuse a later SWAPDB while an earlier one
+	// (a swap-back clone a previous retry prepended) succeeds, so a
+	// test can script a refusal of the original swap only.
+	swapdbNoreplicasNth atomic.Int32
 	// failSwapdbTryagainOnce, when set, makes the next SWAPDB answer
 	// TRYAGAIN without swapping; later SWAPDBs succeed. Unlike
 	// failSwapdbOnce it models a migration rejection, so the
@@ -715,7 +727,10 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 			reply = ":1\r\n"
 		case "wait":
 			s.waits.Add(1)
-			if s.failWait.Load() || limited {
+			if nth := s.waitNoreplicasNth.Load(); nth > 0 && s.waits.Load() == nth {
+				s.waitNoreplicasNth.Store(0)
+				reply = "-NOREPLICAS Not enough replicas to apply the write\r\n"
+			} else if s.failWait.Load() || limited {
 				reply = "-NOPERM this user has no permissions to run the 'wait' command\r\n"
 			} else {
 				reply = ":1\r\n"
@@ -797,6 +812,14 @@ func (s *connStateRetryServer) serve(conn net.Conn, n int32) {
 				// its EXEC result element, exactly like a real
 				// server.
 				reply = "+QUEUED\r\n"
+				break
+			}
+			// Only a standalone SWAPDB can be refused this way: a
+			// queued one answers +QUEUED and fails as its EXEC
+			// result element instead (see above).
+			if nth := s.swapdbNoreplicasNth.Load(); nth > 0 && s.swapdbs.Load() == nth {
+				s.swapdbNoreplicasNth.Store(0)
+				reply = "-NOREPLICAS Not enough replicas to apply the swap\r\n"
 				break
 			}
 			if len(args) >= 2 {
@@ -12618,5 +12641,403 @@ func TestPipelineRetryPendingSwapdbKeepsLaterSwapdb(t *testing.T) {
 	}
 	if suffix[1] != swap1 || suffix[2] != swap2 {
 		t.Fatalf("suffix[1:3] are not the original swaps in order, want the pending swap re-run then the answered one re-applied")
+	}
+}
+
+// TestPipelineRetryWholeBatchDropsExecutedInverseWhenNoSwapQualifies: a
+// whole-batch retry must not re-dispatch a swap-back clone a previous
+// attempt already executed when no original SWAPDB qualifies for a fresh
+// inverse. With `PING; SET out v; SWAPDB 0 1; WAIT 1 1000` reading
+// `[PONG, NOREPLICAS, OK, 1]` the rebuild is `inverse-SWAPDB; SET; SWAPDB;
+// WAIT`; when that retry reads `[OK, OK, NOREPLICAS, EOF]` the inverse has
+// already restored the starting layout, but the refused original SWAPDB
+// qualifies for nothing, so the old early return kept the executed inverse
+// and the next attempt sent it again — SET then ran in the wrong database
+// and the final swap left the databases incorrectly arranged while Exec
+// succeeded. Regression test for the Codex P1 finding on #4351 (comment
+// 4704778798, on head bef92201).
+func TestPipelineRetryWholeBatchDropsExecutedInverseWhenNoSwapQualifies(t *testing.T) {
+	ctx := context.Background()
+	noreplicas := proto.RedisError("NOREPLICAS Not enough replicas to apply the swap")
+	// The batch as the second attempt dispatched it: the inverse clone a
+	// previous whole-batch retry prepended, then the originals.
+	oldInverse := NewCmd(ctx, "swapdb", 1, 0)
+	set := NewCmd(ctx, "set", "out", "v")
+	swapdb := NewCmd(ctx, "swapdb", 0, 1)
+	swapdb.SetErr(noreplicas)
+	wait := NewIntCmd(ctx, "wait", 1, 1000)
+	cmds := []Cmder{oldInverse, set, swapdb, wait}
+
+	answered := map[*baseCmd]bool{oldInverse.base(): true, set.base(): true, swapdb.base(): true}
+	synthetic := map[*baseCmd]bool{oldInverse.base(): true}
+	ctx = context.WithValue(ctx, pipelineAnsweredKey{}, answered)
+	ctx = context.WithValue(ctx, pipelineSyntheticKey{}, synthetic)
+	ctx = context.WithValue(ctx, pipelineRequiredSyntheticKey{}, map[*baseCmd]bool{})
+
+	retry := pipelineWholeBatchRetry(ctx, cmds)
+	if got := cmdNames(retry); len(got) != 3 || got[0] != "set" || got[1] != "swapdb" || got[2] != "wait" {
+		t.Fatalf("whole-batch retry = %v, want [set swapdb wait] (the executed inverse already restored the layout, and no original swap qualifies for a fresh one)", got)
+	}
+	if retry[0] != set || retry[1] != swapdb || retry[2] != wait {
+		t.Fatalf("whole-batch retry returned commands other than the originals, want the executed inverse dropped and nothing fresh prepended")
+	}
+}
+
+// TestPipelineRetrySettledTailSessionChangeStaysAfterPendingRead: a SELECT
+// queued inside a committed transaction that sits after the retry boundary
+// must stay after the pending read, not be hoisted into the restoration
+// prefix. With `ROLE; GET k; MULTI; SELECT 1; EXEC` reading `[OK,
+// MASTERDOWN, OK, QUEUED, [OK]]` the old rebuild cloned the acknowledged
+// tail SELECT ahead of the pending GET, so GET read DB 1 while Exec
+// reported success. Regression test for the Codex P1 finding on #4351
+// (comment 4704778806, on head bef92201).
+func TestPipelineRetrySettledTailSessionChangeStaysAfterPendingRead(t *testing.T) {
+	ctx := context.Background()
+	masterdown := proto.RedisError("MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'")
+	role := NewStatusCmd(ctx, "role")
+	get := NewStringCmd(ctx, "get", "k")
+	get.SetErr(masterdown)
+	multi := NewStatusCmd(ctx, "multi")
+	sel := NewStatusCmd(ctx, "select", 1)
+	exec := NewCmd(ctx, "exec")
+	exec.SetVal([]interface{}{"OK"})
+	cmds := []Cmder{role, get, multi, sel, exec}
+	suffix := pipelineRetrySuffix(ctx, cmds, masterdown, nil)
+	want := []string{"get", "select"}
+	if got := cmdNames(suffix); len(got) != len(want) {
+		t.Fatalf("suffix = %v, want %v (the settled tail SELECT must stay after the pending GET, not move ahead of it)", got, want)
+	} else {
+		for i, name := range want {
+			if got[i] != name {
+				t.Fatalf("suffix = %v, want %v (the settled tail SELECT must stay after the pending GET, not move ahead of it)", got, want)
+			}
+		}
+	}
+	if suffix[0] != get || suffix[1] != sel {
+		t.Fatalf("suffix is not the original GET and SELECT in order, want the pending read first and the settled SELECT kept after it")
+	}
+}
+
+// TestPipelineRetrySettledTailAuthStaysAfterPendingRead: the same settled
+// tail rule as the SELECT case, for an AUTH queued inside a committed
+// transaction after the retry boundary. With `PING; GET k; MULTI; AUTH
+// limited pass; EXEC` reading `[PONG, TRYAGAIN, OK, QUEUED, [OK]]` the old
+// rebuild cloned the acknowledged tail AUTH ahead of the pending GET, so
+// the read was retried as the wrong user while Exec reported success.
+// Regression test for the Cursor High finding on #4351 (comment 4704784782,
+// on head bef92201).
+func TestPipelineRetrySettledTailAuthStaysAfterPendingRead(t *testing.T) {
+	ctx := context.Background()
+	tryagain := proto.RedisError("TRYAGAIN Multiple keys request during slot migration")
+	ping := NewStatusCmd(ctx, "ping")
+	get := NewStringCmd(ctx, "get", "k")
+	get.SetErr(tryagain)
+	multi := NewStatusCmd(ctx, "multi")
+	auth := NewStatusCmd(ctx, "auth", "limited", "pass")
+	exec := NewCmd(ctx, "exec")
+	exec.SetVal([]interface{}{"OK"})
+	cmds := []Cmder{ping, get, multi, auth, exec}
+	suffix := pipelineRetrySuffix(ctx, cmds, tryagain, nil)
+	want := []string{"get", "auth"}
+	if got := cmdNames(suffix); len(got) != len(want) {
+		t.Fatalf("suffix = %v, want %v (the settled tail AUTH must stay after the pending GET, not move ahead of it)", got, want)
+	} else {
+		for i, name := range want {
+			if got[i] != name {
+				t.Fatalf("suffix = %v, want %v (the settled tail AUTH must stay after the pending GET, not move ahead of it)", got, want)
+			}
+		}
+	}
+	if suffix[0] != get || suffix[1] != auth {
+		t.Fatalf("suffix is not the original GET and AUTH in order, want the pending read first and the settled AUTH kept after it")
+	}
+}
+
+// TestPipelineRetrySettledExecClearSuppressesWatchReissue: a WATCH whose
+// clear is a settled EXEC the tail filter trimmed must not be reissued.
+// With `WATCH k; GET k; MULTI; ECHO ready; EXEC` reading `[OK, MASTERDOWN,
+// OK, QUEUED, [ready]]` the old rebuild reissued the WATCH (its clear lay
+// after the boundary) while the settled EXEC stayed dropped, so the retry
+// returned nil with a watch left active on the connection and a later
+// change to k aborted an unrelated transaction. Regression test for the
+// Codex P2 finding on #4351 (comment 4704778814, on head bef92201).
+func TestPipelineRetrySettledExecClearSuppressesWatchReissue(t *testing.T) {
+	ctx := context.Background()
+	masterdown := proto.RedisError("MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'")
+	watch := NewStatusCmd(ctx, "watch", "k")
+	get := NewStringCmd(ctx, "get", "k")
+	get.SetErr(masterdown)
+	multi := NewStatusCmd(ctx, "multi")
+	echo := NewStatusCmd(ctx, "echo", "ready")
+	exec := NewCmd(ctx, "exec")
+	exec.SetVal([]interface{}{"ready"})
+	cmds := []Cmder{watch, get, multi, echo, exec}
+	suffix := pipelineRetrySuffix(ctx, cmds, masterdown, nil)
+	want := []string{"get"}
+	if got := cmdNames(suffix); len(got) != len(want) {
+		t.Fatalf("suffix = %v, want %v (the WATCH must not be reissued: its clear is the settled EXEC the retry trimmed)", got, want)
+	} else {
+		for i, name := range want {
+			if got[i] != name {
+				t.Fatalf("suffix = %v, want %v (the WATCH must not be reissued: its clear is the settled EXEC the retry trimmed)", got, want)
+			}
+		}
+	}
+	if suffix[0] != get {
+		t.Fatalf("suffix[0] is not the original GET, want only the pending read in the retry")
+	}
+}
+
+// TestPipelineRetryDiscardedClearSuppressesWatchReissue: the same rule as
+// the settled-EXEC clear, for a DISCARD the frame dropped with it. With
+// `WATCH k; GET k; MULTI; SET x 1; DISCARD` reading `[OK, TRYAGAIN, OK,
+// QUEUED, OK]` the old rebuild reissued the WATCH while the DISCARD stayed
+// dropped, so the retry returned nil with a watch left active on the
+// connection. Same Codex P2 finding on #4351 (comment 4704778814, on head
+// bef92201).
+func TestPipelineRetryDiscardedClearSuppressesWatchReissue(t *testing.T) {
+	ctx := context.Background()
+	tryagain := proto.RedisError("TRYAGAIN Multiple keys request during slot migration")
+	watch := NewStatusCmd(ctx, "watch", "k")
+	get := NewStringCmd(ctx, "get", "k")
+	get.SetErr(tryagain)
+	multi := NewStatusCmd(ctx, "multi")
+	set := NewStringCmd(ctx, "set", "x", "1")
+	discard := NewStatusCmd(ctx, "discard")
+	cmds := []Cmder{watch, get, multi, set, discard}
+	suffix := pipelineRetrySuffix(ctx, cmds, tryagain, nil)
+	want := []string{"get"}
+	if got := cmdNames(suffix); len(got) != len(want) {
+		t.Fatalf("suffix = %v, want %v (the WATCH must not be reissued: its clear is the DISCARD the retry dropped)", got, want)
+	} else {
+		for i, name := range want {
+			if got[i] != name {
+				t.Fatalf("suffix = %v, want %v (the WATCH must not be reissued: its clear is the DISCARD the retry dropped)", got, want)
+			}
+		}
+	}
+	if suffix[0] != get {
+		t.Fatalf("suffix[0] is not the original GET, want only the pending read in the retry")
+	}
+}
+
+// TestPipelineRetryWholeBatchLiveDropsExecutedInverseWhenNoSwapQualifies is
+// the live version of
+// TestPipelineRetryWholeBatchDropsExecutedInverseWhenNoSwapQualifies: the
+// full retry loop must not re-send the executed inverse on the third
+// attempt. With `PING; SET out v; SWAPDB 0 1; WAIT 1 1000` the first attempt
+// reads `[PONG, NOREPLICAS, OK, 1]`, the second `[OK, OK, NOREPLICAS,
+// NOREPLICAS]` (the original SWAPDB refused, the barrier refused), and the
+// WAIT in the tail forces a whole-batch rebuild for the third attempt —
+// where no original swap qualifies for a fresh inverse, so the executed
+// inverse must be dropped instead of retained. Regression test for the
+// Codex P1 finding on #4351 (comment 4704778798, on head bef92201).
+func TestPipelineRetryWholeBatchLiveDropsExecutedInverseWhenNoSwapQualifies(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 100
+	server.setNoreplicasOnce.Store(true)
+	server.swapdbNoreplicasNth.Store(3)
+	server.waitNoreplicasNth.Store(2)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	ping := pipe.Ping(ctx)
+	set := pipe.Set(ctx, "out", "v", 0)
+	swapdb := pipe.Do(ctx, "swapdb", 0, 1)
+	wait := pipe.Do(ctx, "wait", 1, 1000)
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("PING: %v", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("SET: %v", err)
+	}
+	if err := swapdb.Err(); err != nil {
+		t.Fatalf("SWAPDB: %v", err)
+	}
+	if got, err := wait.Result(); err != nil || got != int64(1) {
+		t.Fatalf("WAIT = %v, %v; want 1, nil", got, err)
+	}
+	// The third attempt must run its SET in DB 0 (the starting layout the
+	// executed inverse restored), not in DB 1 (where a re-sent inverse
+	// would have moved it).
+	if got := server.setsDB0.Load(); got != 2 {
+		t.Fatalf("server ran %d SET(s) in DB 0, want 2 (the second and third attempts both run SET in the starting layout)", got)
+	}
+	if got := server.setsDB1.Load(); got != 0 {
+		t.Fatalf("server ran %d SET(s) in DB 1, want 0 (a re-sent inverse would run the third SET there)", got)
+	}
+	if got := server.swapdbs.Load(); got != 4 {
+		t.Fatalf("server received %d SWAPDB commands, want 4 (one per attempt, plus the one inverse of the second)", got)
+	}
+}
+
+// TestPipelineRetrySettledTailSelectReadsOriginalDB is the live version of
+// TestPipelineRetrySettledTailSessionChangeStaysAfterPendingRead: the
+// retried GET must read the database it was issued for, and the settled
+// tail SELECT must still run after it so the connection is left where the
+// first attempt left it. Regression test for the Codex P1 finding on #4351
+// (comment 4704778806, on head bef92201).
+func TestPipelineRetrySettledTailSelectReadsOriginalDB(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 100
+	server.trackValues = true
+	server.getTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	if err := client.Do(ctx, "select", 0).Err(); err != nil {
+		t.Fatalf("SELECT 0: %v", err)
+	}
+	if err := client.Set(ctx, "k", "db0val", 0).Err(); err != nil {
+		t.Fatalf("SET db0val: %v", err)
+	}
+	if err := client.Do(ctx, "select", 1).Err(); err != nil {
+		t.Fatalf("SELECT 1: %v", err)
+	}
+	if err := client.Set(ctx, "k", "db1val", 0).Err(); err != nil {
+		t.Fatalf("SET db1val: %v", err)
+	}
+	if err := client.Do(ctx, "select", 0).Err(); err != nil {
+		t.Fatalf("SELECT 0: %v", err)
+	}
+
+	pipe := client.Pipeline()
+	role := pipe.Do(ctx, "role")
+	get := pipe.Get(ctx, "k")
+	multi := pipe.Do(ctx, "multi")
+	sel := pipe.Do(ctx, "select", 1)
+	exec := pipe.Do(ctx, "exec")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil (the retry must read k in DB 0, then restore DB 1)", err)
+	}
+	if err := role.Err(); err != nil {
+		t.Fatalf("ROLE: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "db0val" {
+		t.Fatalf("GET = %q, %v; want %q, nil (the pending read must run before the settled tail SELECT)", got, err, "db0val")
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := sel.Err(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	// The retry must send exactly one SELECT: the settled tail one, kept
+	// after the read — not a prefix clone ahead of it.
+	if got := server.selects.Load(); got != 5 {
+		t.Fatalf("server received %d SELECT commands, want 5 (three seed, one queued, one retried)", got)
+	}
+	// The retried SELECT runs after the read on the retry's connection, so
+	// the connection is left in DB 1 as the first attempt left it; a plain
+	// follow-up Get would use the main pool instead of the pipeline pool,
+	// so it cannot observe that connection's state.
+}
+
+// TestPipelineRetrySettledExecClearLeavesNoStrayWatch is the live version
+// of TestPipelineRetrySettledExecClearSuppressesWatchReissue: after the
+// retried pipeline the connection must hold no watch, so an unrelated
+// transaction on the same connection commits instead of aborting.
+// Regression test for the Codex P2 finding on #4351 (comment 4704778814,
+// on head bef92201).
+func TestPipelineRetrySettledExecClearLeavesNoStrayWatch(t *testing.T) {
+	server := newConnStateRetryServer(t)
+	server.dropAfter = 100
+	server.getTryagainOnce.Store(true)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	watch := pipe.Do(ctx, "watch", "k")
+	get := pipe.Get(ctx, "k")
+	multi := pipe.Do(ctx, "multi")
+	echo := pipe.Do(ctx, "echo", "ready")
+	exec := pipe.Do(ctx, "exec")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("Exec: %v, want nil", err)
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("WATCH: %v", err)
+	}
+	if got, err := get.Result(); err != nil || got != "v" {
+		t.Fatalf("GET = %q, %v; want %q, nil", got, err, "v")
+	}
+	if err := multi.Err(); err != nil {
+		t.Fatalf("MULTI: %v", err)
+	}
+	if err := echo.Err(); err != nil {
+		t.Fatalf("ECHO: %v", err)
+	}
+	if err := exec.Err(); err != nil {
+		t.Fatalf("EXEC: %v", err)
+	}
+	if got := server.watches.Load(); got != 1 {
+		t.Fatalf("server received %d WATCH commands, want 1 (the settled EXEC's clear must suppress the reissue)", got)
+	}
+	// Probe the connection the pipeline used: a change to k followed by
+	// an unrelated transaction must commit when no watch survived.
+	probe := client.Pipeline()
+	set := probe.Set(ctx, "k", "changed", 0)
+	pmulti := probe.Do(ctx, "multi")
+	ping := probe.Ping(ctx)
+	pexec := probe.Do(ctx, "exec")
+	if _, err := probe.Exec(ctx); err != nil {
+		t.Fatalf("probe Exec: %v, want nil (no watch must survive the retried pipeline)", err)
+	}
+	if err := set.Err(); err != nil {
+		t.Fatalf("probe SET: %v", err)
+	}
+	if err := pmulti.Err(); err != nil {
+		t.Fatalf("probe MULTI: %v", err)
+	}
+	if err := ping.Err(); err != nil {
+		t.Fatalf("probe PING: %v", err)
+	}
+	if err := pexec.Err(); err != nil {
+		t.Fatalf("probe EXEC: %v, want nil (the stray watch must not abort the unrelated transaction)", err)
+	}
+	if got := server.execAborted.Load(); got != 0 {
+		t.Fatalf("EXEC aborted %d time(s), want 0 (the stray watch must not abort the unrelated transaction)", got)
+	}
+}
+
+// TestPipelineRetrySettledFrameRejectedWatchNotKept: a WATCH the server
+// rejected inside MULTI must not be kept in the tail by the settled-frame
+// session-change keep: it established no watch, so re-running it standalone
+// would succeed and lose its rejection. With `MGET; MULTI; WATCH k; SET x
+// 1; EXEC` reading `[TRYAGAIN, OK, "WATCH inside MULTI is not allowed",
+// QUEUED, [OK]]` the retry must be only the MGET. Guards the session-change
+// keep added for the Codex P1 finding on #4351 (comment 4704778806).
+func TestPipelineRetrySettledFrameRejectedWatchNotKept(t *testing.T) {
+	ctx := context.Background()
+	tryagain := proto.RedisError("TRYAGAIN Multiple keys request during slot migration")
+	mget := NewStringCmd(ctx, "mget", "a", "b")
+	mget.SetErr(tryagain)
+	multi := NewStatusCmd(ctx, "multi")
+	watch := NewStatusCmd(ctx, "watch", "k")
+	watch.SetErr(proto.RedisError("ERR WATCH inside MULTI is not allowed"))
+	set := NewStringCmd(ctx, "set", "x", "1")
+	exec := NewCmd(ctx, "exec")
+	exec.SetVal([]interface{}{"OK"})
+	cmds := []Cmder{mget, multi, watch, set, exec}
+	suffix := pipelineRetrySuffix(ctx, cmds, tryagain, nil)
+	want := []string{"mget"}
+	if got := cmdNames(suffix); len(got) != len(want) {
+		t.Fatalf("suffix = %v, want %v (the rejected WATCH must not be kept in the tail: it established no watch)", got, want)
+	} else {
+		for i, name := range want {
+			if got[i] != name {
+				t.Fatalf("suffix = %v, want %v (the rejected WATCH must not be kept in the tail: it established no watch)", got, want)
+			}
+		}
+	}
+	if suffix[0] != mget {
+		t.Fatalf("suffix[0] is not the original MGET, want only the pending read in the retry")
 	}
 }

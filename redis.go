@@ -4078,7 +4078,9 @@ func evalScriptCached(cmd Cmder) bool {
 // would swap the databases a second time and land later writes in the
 // wrong database. Only when a fresh clone is prepended: with no
 // answered original nothing undoes the swap yet, so the old clones stay
-// (see the early return above).
+// (see the early return below) — unless one already executed: its undo
+// already took effect, so re-sending it would swap the databases a
+// second time even though no original qualifies for a fresh inverse.
 func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
 	abortedTx := pipelineAbortedTxCmds(cmds)
 	discardedTx := pipelineDiscardedTxCmds(cmds)
@@ -4113,7 +4115,32 @@ func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
 		swaps = append(swaps, cmd)
 	}
 	if len(swaps) == 0 {
-		return cmds
+		// No answered original qualifies for a fresh inverse — but a
+		// swap-back clone a previous retry already executed already
+		// undid its swap once, so keeping it would run the undo a
+		// second time and land later writes in the wrong database
+		// while Exec still reports success. Drop only clones that
+		// definitively ran: one the server refused never swapped, so
+		// its undo is still owed, and one whose reply was never read
+		// may never have run, so it stays for the same reason.
+		executed := false
+		for _, cmd := range cmds {
+			if cmd.Name() == "swapdb" && synthetic[cmd.base()] && answered[cmd.base()] && pipelineCmdErr(cmd) == nil {
+				executed = true
+				break
+			}
+		}
+		if !executed {
+			return cmds
+		}
+		retry := make([]Cmder, 0, len(cmds))
+		for _, cmd := range cmds {
+			if cmd.Name() == "swapdb" && synthetic[cmd.base()] && answered[cmd.base()] && pipelineCmdErr(cmd) == nil {
+				continue
+			}
+			retry = append(retry, cmd)
+		}
+		return retry
 	}
 	retry := make([]Cmder, 0, len(swaps)+len(cmds))
 	for k := len(swaps) - 1; k >= 0; k-- {
@@ -4866,6 +4893,11 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 			// past the boundary can be restored: a MULTI before it
 			// is already settled in the answered prefix and is not
 			// reissued.
+			// The EXEC result element for every queued command (see
+			// pipelineQueuedExecErrMap): a session change the EXEC
+			// rejected never ran, so the keep below must skip it
+			// the way the rebuild skips reissuing one.
+			settledExecErrs := pipelineQueuedExecErrMap(cmds)
 			for _, frame := range settledFrames {
 				keptBody := false
 				for _, idx := range frame[1 : len(frame)-1] {
@@ -4874,28 +4906,47 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 						break
 					}
 				}
+				// A session change queued inside the frame (a SELECT,
+				// an AUTH) belongs to the frame too, and stays at
+				// its original position whether or not a body
+				// command was kept. With a kept body it re-runs
+				// inside the restored transaction, where it ran the
+				// first time; without one it re-runs standalone
+				// after the pending read instead. Leaving it
+				// dropped lets the rebuild below reissue it as a
+				// prerequisite ahead of the suffix, so it runs
+				// before the pending read it originally followed
+				// and later commands land in the wrong database —
+				// a read-only boundary never keeps a body, so the
+				// frame-restore gate alone never saves it. Only a
+				// session change that actually ran is kept: one the
+				// server rejected never established state — a WATCH
+				// refused inside MULTI (its own error reply), or a
+				// queued SELECT the EXEC refused (its EXEC result
+				// element) — so keeping it would re-run it
+				// standalone, where a rejected WATCH would succeed
+				// and lose its rejection. SWAPDB is excluded: the
+				// retention scan above already keeps an answered
+				// one as a dropped write, with its own swap-back
+				// handling.
+				for _, idx := range frame[1 : len(frame)-1] {
+					if idx <= i || !pipelineConnStateCmd(cmds[idx]) || cmds[idx].Name() == "swapdb" {
+						continue
+					}
+					if pipelineCmdErr(cmds[idx]) != nil {
+						continue
+					}
+					if err, ok := settledExecErrs[idx]; ok && err != nil {
+						continue
+					}
+					keep[idx-(i+1)] = true
+					answered[idx-(i+1)] = false
+				}
 				if !keptBody {
 					continue
 				}
 				for _, idx := range []int{frame[0], frame[len(frame)-1]} {
 					if idx > i {
-						keep[idx-(i+1)] = true
-						answered[idx-(i+1)] = false
-					}
-				}
-				// A session change queued inside the frame (a SELECT,
-				// an AUTH) belongs to the frame too: keeping it at
-				// its original position re-runs it inside the
-				// transaction, where it ran the first time. Leaving
-				// it dropped lets the rebuild below reissue it as a
-				// prerequisite ahead of the suffix, so it runs before
-				// the pending write it originally followed and later
-				// commands land in the wrong database. SWAPDB is
-				// excluded: the retention scan above already keeps
-				// an answered one as a dropped write, with its own
-				// swap-back handling.
-				for _, idx := range frame[1 : len(frame)-1] {
-					if idx > i && pipelineConnStateCmd(cmds[idx]) && cmds[idx].Name() != "swapdb" {
 						keep[idx-(i+1)] = true
 						answered[idx-(i+1)] = false
 					}
@@ -5372,9 +5423,21 @@ func pipelineRetrySuffix(ctx context.Context, cmds []Cmder, err error, staleErrs
 					// watch the retry's own writes then dirty,
 					// aborting a transaction the original ordering
 					// would have committed (see watchNextClear,
-					// precomputed once per retry above).
-					if answered.Name() == "watch" && watchNextClear[cmdIndex[answered.base()]+1] < i {
-						continue
+					// precomputed once per retry above). The same
+					// holds when the clear lies past the boundary
+					// but the retry omits it: a settled EXEC the
+					// tail filter trimmed, or a DISCARD the frame
+					// dropped with it, already cleared the watch
+					// on the first attempt, so reissuing the WATCH
+					// without its clear leaves it live on the retry
+					// connection. Only a clear the retry actually
+					// runs — kept in the tail, or a frame restored
+					// with its EXEC — still needs the WATCH ahead
+					// of it.
+					if answered.Name() == "watch" {
+						if clear := watchNextClear[cmdIndex[answered.base()]+1]; clear < i || (clear > i && clear < len(cmds) && !keep[clear-(i+1)]) {
+							continue
+						}
 					}
 					// A WATCH the server rejected established
 					// nothing: there is no watch to re-establish
