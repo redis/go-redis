@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -557,6 +559,73 @@ func TestReader_ReadSlice_RejectsNonArrayHeader(t *testing.T) {
 		v, err := r.ReadSlice()
 		if err != nil || len(v) != 2 {
 			t.Fatalf("%q: ReadSlice = %v, %v; want 2 elements", src, v, err)
+		}
+	}
+}
+
+func TestReader_ReadReply_AnnouncedAggregateCountIsNotPreallocated(t *testing.T) {
+	// A header that announces a huge aggregate and sends no elements must
+	// fail with the read error, without allocating in proportion to the
+	// announced count: 20M elements would be 320 MB of slice slots (and
+	// over 1 GB of map buckets) if the count were trusted.
+	for _, data := range []string{"*20000000\r\n", "%20000000\r\n", "~20000000\r\n"} {
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		r := proto.NewReader(bytes.NewReader([]byte(data)))
+		if _, err := r.ReadReply(); err == nil {
+			t.Fatalf("%q: expected an error for a header with no elements", data)
+		}
+		runtime.ReadMemStats(&after)
+		if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 64<<20 {
+			t.Fatalf("%q: allocated %d bytes from the announced count alone", data, alloc)
+		}
+	}
+}
+
+func TestReader_ReadReply_AggregateStillGrowsPastPreallocCap(t *testing.T) {
+	// Aggregates larger than the preallocation cap must still be read in
+	// full, growing as elements arrive.
+	var sb strings.Builder
+	n := (1 << 16) + 100 // just past the reader's aggregate preallocation cap
+	fmt.Fprintf(&sb, "*%d\r\n", n)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&sb, ":%d\r\n", i)
+	}
+	r := proto.NewReader(strings.NewReader(sb.String()))
+	v, err := r.ReadReply()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slice, ok := v.([]interface{})
+	if !ok || len(slice) != n {
+		t.Fatalf("got %T of len %d, wanted []interface{} of len %d", v, len(slice), n)
+	}
+	if slice[n-1] != int64(n-1) {
+		t.Fatalf("last element = %v, wanted %d", slice[n-1], n-1)
+	}
+}
+
+func BenchmarkReader_ReadReply_AggregateAboveCap(b *testing.B) {
+	// A complete aggregate larger than maxAggregatePrealloc: exercises the
+	// append-growth path above the cap, so the preallocation tradeoff
+	// stays measurable (see the review on #4403).
+	var sb strings.Builder
+	n := (1 << 16) + 100
+	fmt.Fprintf(&sb, "*%d\r\n", n)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&sb, ":%d\r\n", i)
+	}
+	reply := []byte(sb.String())
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r := proto.NewReader(bytes.NewReader(reply))
+		v, err := r.ReadReply()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if slice, ok := v.([]interface{}); !ok || len(slice) != n {
+			b.Fatalf("got %T of len %d, wanted []interface{} of len %d", v, len(slice), n)
 		}
 	}
 }
