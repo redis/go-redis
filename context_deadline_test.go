@@ -87,7 +87,7 @@ func TestContextDeadlineClusterPipelineErrors(t *testing.T) {
 	cmds := []Cmder{NewStringCmd(ctx, "get", "a"), NewStringCmd(ctx, "get", "b")}
 	failed := newCmdsMap()
 	err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
-		return c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failed, nil, nil)
+		return c.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failed, nil, nil, nil)
 	})
 	for _, cmd := range cmds {
 		if !errors.Is(cmd.Err(), context.DeadlineExceeded) {
