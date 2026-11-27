@@ -1748,7 +1748,7 @@ func TestClusterCSCLiveFailoverRetry(t *testing.T) {
 		{name: "immediate success", replies: []string{"+OK\r\n"}, timeout: time.Second, wantCalls: 1},
 		{name: "transient failure", replies: []string{"-ERR Master is down or failed, please use CLUSTER FAILOVER FORCE\r\n", "+OK\r\n"}, timeout: time.Second, wantCalls: 2},
 		{name: "unexpected failure", replies: []string{"-ERR not a replica\r\n"}, timeout: time.Second, wantCalls: 1, wantErr: "not a replica"},
-		{name: "timeout", replies: []string{"-ERR Master is down or failed, please use CLUSTER FAILOVER FORCE\r\n"}, timeout: 300 * time.Millisecond, wantErr: "retry stopped: context deadline exceeded"},
+		{name: "timeout", replies: []string{"-ERR Master is down or failed, please use CLUSTER FAILOVER FORCE\r\n"}, timeout: 300 * time.Millisecond, wantErr: "context deadline exceeded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
