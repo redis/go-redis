@@ -531,13 +531,191 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 		return "", err
 	}
 
-	b := make([]byte, n+2)
-	_, err = io.ReadFull(r.rd, b)
+	b, err := r.readBulkBody(n)
 	if err != nil {
 		return "", err
 	}
 
 	return util.BytesToString(b[:n]), nil
+}
+
+// maxBulkPrealloc is the largest buffer a bulk reply allocates from its header
+// up front. Realistic large replies keep the single allocation; only a larger
+// announcement grows with the bytes that arrive, so a header that announces
+// GiBs cannot make the client reserve them before any body is received. Redis
+// itself caps a bulk string at proto-max-bulk-len (512 MiB by default).
+const maxBulkPrealloc = 32 << 20
+
+// bulkTotal returns the number of bytes a bulk string of length n occupies
+// (payload plus the trailing CRLF), and whether n can be represented.
+func bulkTotal(n int) (int, bool) {
+	if n < 0 || n > math.MaxInt-2 {
+		return 0, false
+	}
+	return n + 2, true
+}
+
+// bulkGrowFactor is how many times the bytes already buffered the next buffer
+// may hold. Doubling would honour the announced length too literally: a
+// 512 MiB body would grow five times, copying its own tail again right before
+// it completes. Four keeps the buffer within four times the bytes received
+// while that body pays two growth steps instead of five.
+const bulkGrowFactor = 4
+
+// maxRespHeaderLen bounds the raw RESP line that precedes a reply element: the
+// type byte, at most 19 digits of length and CRLF.
+const maxRespHeaderLen = 1 + 19 + 2
+
+// bulkGrowCap returns the capacity to give a full buffer so that it can hold
+// need bytes. It adds up to maxBulkPrealloc of headroom (bounded by need) so a
+// large body does not grow in tiny steps, and it jumps straight to need when
+// the growth step would leave less than an eighth of a step missing, so the
+// last few bytes do not copy the whole buffer again.
+func bulkGrowCap(b []byte, need int) int {
+	next := cap(b) * bulkGrowFactor
+	if headroom := len(b) + min(maxBulkPrealloc, need-len(b)); headroom > next {
+		next = headroom
+	}
+	if next > need || next < cap(b) {
+		next = need
+	} else if need-next < cap(b)/8 {
+		next = need
+	}
+	return next
+}
+
+// growBulkBuffer returns b, which is full, with room for more bytes: it is
+// passed the length the buffer ultimately has to hold (need). The new capacity
+// is at most bulkGrowFactor times the bytes already buffered, so memory follows
+// the data received rather than an announced length.
+func growBulkBuffer(b []byte, need int) []byte {
+	grown := make([]byte, len(b), bulkGrowCap(b, need))
+	copy(grown, b)
+	return grown
+}
+
+// growAppendBulkBuffer grows b, which is full, for a bulk body appended to a
+// raw reply. need is the length the accumulated reply reaches at the end of
+// this body; the new capacity may exceed it, because a raw reply keeps
+// appending elements and ending every allocation at need would copy the whole
+// reply once per element. Doubling the bytes already buffered keeps the
+// allocations for a reply of many elements amortized linear: every step doubles
+// the buffer, so the total copied is proportional to the final size. Growth is
+// also never more than one maxBulkPrealloc read-ahead chunk beyond the bytes
+// received, so an announced length that the peer does not send still cannot
+// reserve more than received bytes plus one chunk. One RESP header of room is
+// left past need so the header of the next element does not reallocate either.
+func growAppendBulkBuffer(b []byte, need int) []byte {
+	next := len(b) * 2
+	if next < len(b) { // overflow
+		next = need
+	}
+	if readAhead := len(b) + min(maxBulkPrealloc, need-len(b)); readAhead > next {
+		next = readAhead
+	}
+	if next > math.MaxInt-maxRespHeaderLen {
+		next = need
+	} else if next >= need {
+		next += maxRespHeaderLen
+	}
+	grown := make([]byte, len(b), next)
+	copy(grown, b)
+	return grown
+}
+
+// readBulkBody reads the n payload bytes of a bulk string plus the trailing
+// CRLF. Replies up to maxBulkPrealloc keep a single allocation. A larger
+// announcement grows with the data that arrives, so it only costs the bytes
+// actually buffered. A length that cannot be represented is an error, not a
+// panic.
+func (r *Reader) readBulkBody(n int) ([]byte, error) {
+	total, ok := bulkTotal(n)
+	if !ok {
+		return nil, fmt.Errorf("redis: invalid bulk length %d", n)
+	}
+	if total <= maxBulkPrealloc {
+		b := make([]byte, total)
+		if _, err := io.ReadFull(r.rd, b); err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
+	// Grow with the data instead of reserving the announced length. Reading
+	// into the spare capacity avoids the scratch buffer and its second copy.
+	b := make([]byte, 0, maxBulkPrealloc)
+	for len(b) < total {
+		if len(b) == cap(b) {
+			b = growBulkBuffer(b, total)
+		}
+		end := len(b) + min(cap(b)-len(b), total-len(b))
+		m, err := r.rd.Read(b[len(b):end])
+		b = b[:len(b)+m]
+		// Check completeness before the error: the final Read may return the
+		// last bytes together with io.EOF, which io.ReadFull accepts.
+		if len(b) == total {
+			return b, nil
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+	}
+	return b, nil
+}
+
+// appendBulkBody appends the n payload bytes of a bulk string plus the trailing
+// CRLF to buf. Small replies keep the single allocation; larger ones grow with
+// the bytes that arrive (see readBulkBody).
+func (r *Reader) appendBulkBody(buf []byte, n int) ([]byte, error) {
+	total, ok := bulkTotal(n)
+	if !ok {
+		return buf, fmt.Errorf("redis: invalid bulk length %d", n)
+	}
+	if total <= maxBulkPrealloc {
+		start := len(buf)
+		buf = append(buf, make([]byte, total)...)
+		if _, err := io.ReadFull(r.rd, buf[start:]); err != nil {
+			return buf, err
+		}
+		return buf, nil
+	}
+	return r.appendLargeBulkBody(buf, total)
+}
+
+// appendLargeBulkBody appends a bulk body larger than maxBulkPrealloc to buf,
+// reading into its spare capacity and growing it as the data arrives. It keeps
+// the small path free of the growth bookkeeping.
+func (r *Reader) appendLargeBulkBody(buf []byte, total int) ([]byte, error) {
+	start := len(buf)
+	// total is representable on its own, but adding it to the reply already
+	// accumulated can overflow the int used for the buffer length; reject that
+	// instead of wrapping around into a negative capacity.
+	if total > math.MaxInt-start {
+		return buf, fmt.Errorf("redis: bulk length %d overflows the reply buffer", total-2)
+	}
+	need := start + total
+	for len(buf)-start < total {
+		// Consume the spare capacity already in buf before reallocating: a raw
+		// reply accumulates several bodies and the buffer often still has room.
+		if len(buf) == cap(buf) {
+			buf = growAppendBulkBuffer(buf, need)
+		}
+		end := len(buf) + min(cap(buf)-len(buf), need-len(buf))
+		m, err := r.rd.Read(buf[len(buf):end])
+		buf = buf[:len(buf)+m]
+		if len(buf)-start == total {
+			return buf, nil
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return buf, err
+		}
+	}
+	return buf, nil
 }
 
 func (r *Reader) readVerb(line []byte) (string, error) {
@@ -1069,10 +1247,7 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			}
 			return buf, err
 		}
-		curLen := len(buf)
-		buf = append(buf, make([]byte, n+2)...)
-		_, err = io.ReadFull(r.rd, buf[curLen:])
-		return buf, err
+		return r.appendBulkBody(buf, n)
 
 	case RespArray, RespSet, RespPush:
 		n, err := replyLen(line)
