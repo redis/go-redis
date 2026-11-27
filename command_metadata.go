@@ -1329,7 +1329,11 @@ func (c *baseClient) fetchMetadataIdentity(ctx context.Context, infoCmd *Command
 	if infoCmd != nil {
 		cmds = append(cmds, infoCmd)
 	}
-	err := fetchClient.processPipeline(ctx, cmds)
+	// Whole-batch retries only: the HELLO identity and the COMMAND records
+	// must describe one physical connection, so a transport failure after
+	// the HELLO reply must not retry COMMAND alone against a new connection
+	// while keeping the first connection's identity.
+	err := fetchClient.processPipelineWholeBatch(ctx, cmds)
 	hello := helloCmd.Val()
 	if err != nil {
 		// Match initConn's RESP2 fallback for servers that reject HELLO.
@@ -1345,7 +1349,7 @@ func (c *baseClient) fetchMetadataIdentity(ctx context.Context, infoCmd *Command
 		if infoCmd != nil {
 			cmds = append(cmds, infoCmd)
 		}
-		if err := fetchClient.processPipeline(ctx, cmds); err != nil {
+		if err := fetchClient.processPipelineWholeBatch(ctx, cmds); err != nil {
 			return commandMetadataFetchResult{}, err
 		}
 		modules := make([]interface{}, len(modulesCmd.Val()))

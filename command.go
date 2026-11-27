@@ -288,6 +288,96 @@ func setCmdsErr(cmds []Cmder, e error) {
 	}
 }
 
+// setCmdsErrSkippingAnswered is setCmdsErr for a read that failed partway
+// through a retried batch: commands a prior attempt of this invocation
+// already answered hold a result read from the server, so their nil error
+// is not an unanswered command and must not be stamped over. Commands never
+// answered are stamped exactly like setCmdsErr — including one carrying an
+// entry error from a previous invocation (see pipelineStaleErrsFromCtx):
+// its reply was not read on this attempt, so a Redis error on it is stale,
+// not this attempt's record, and the fresh failure replaces it instead of
+// surviving as the batch's outcome while the command is dropped as
+// answered.
+func setCmdsErrSkippingAnswered(ctx context.Context, cmds []Cmder, e error) {
+	answered := pipelineAnsweredFromCtx(ctx)
+	stale := pipelineStaleErrsFromCtx(ctx)
+	for _, cmd := range cmds {
+		// rawErr: this runs on the execution path; never await here.
+		if answered[cmd.base()] {
+			continue
+		}
+		if cmd.rawErr() == nil || stale[cmd.base()] {
+			cmd.SetErr(e)
+		}
+	}
+}
+
+// pipelineAnsweredKey carries the per-invocation set of pipeline commands
+// that already hold a result read from the server in an earlier attempt of
+// the same invocation (see generalProcessPipelineFrom). A nil error on a
+// command in the set means the server answered it with a value; the set is
+// what distinguishes that from a command that was never dispatched, which
+// also carries a nil error.
+type pipelineAnsweredKey struct{}
+
+// pipelineAnsweredFromCtx returns the answered set stored in ctx, or nil
+// when the pipeline did not run through generalProcessPipelineFrom.
+func pipelineAnsweredFromCtx(ctx context.Context) map[*baseCmd]bool {
+	if ctx == nil {
+		return nil
+	}
+	answered, _ := ctx.Value(pipelineAnsweredKey{}).(map[*baseCmd]bool)
+	return answered
+}
+
+// pipelineStaleErrKey carries the per-invocation set of pipeline commands
+// that already carried an error when this invocation started (see
+// generalProcessPipelineFrom): a Cmder reused from an earlier operation
+// keeps its old error, and that error is not a record of this
+// invocation's progress. Like pipelineAnsweredKey it lives in ctx so the
+// execution paths below can read it.
+type pipelineStaleErrKey struct{}
+
+// pipelineStaleErrsFromCtx returns the stale-error set stored in ctx, or
+// nil when the pipeline did not run through generalProcessPipelineFrom.
+func pipelineStaleErrsFromCtx(ctx context.Context) map[*baseCmd]bool {
+	if ctx == nil {
+		return nil
+	}
+	stale, _ := ctx.Value(pipelineStaleErrKey{}).(map[*baseCmd]bool)
+	return stale
+}
+
+// setCmdsTransportErr stamps e onto commands that do not already hold a
+// server reply: a nil error, a stale transport error left by an earlier
+// attempt, or an entry error a reused command carried into this
+// invocation (see pipelineStaleErrsFromCtx) — on a path where the attempt
+// consumed no replies, a Redis error on a command this invocation never
+// dispatched cannot be this attempt's answer, so it is stale and the
+// fresh failure replaces it instead of surviving as the batch's outcome
+// while the command is dropped as answered. A per-command Redis reply
+// error from this invocation is a real answer from the server and is
+// kept; a transport error is replaced, including an errConnUnusable
+// marker even when it wraps a redis.Error. A command answered by a prior
+// attempt of this invocation already holds its result, so it is skipped
+// even though its error is nil. Use it on paths where the attempt consumed
+// no replies (a failed write, a failed push drain, unread injected replies):
+// there every transport error on the batch is stale, and keeping the
+// earliest one would report an old io.EOF instead of the current failure.
+func setCmdsTransportErr(ctx context.Context, cmds []Cmder, e error) {
+	answered := pipelineAnsweredFromCtx(ctx)
+	stale := pipelineStaleErrsFromCtx(ctx)
+	for _, cmd := range cmds {
+		// rawErr: this runs on the execution path; never await here.
+		if answered[cmd.base()] {
+			continue
+		}
+		if err := cmd.rawErr(); err == nil || stale[cmd.base()] || pipelineErrShouldStamp(err) {
+			cmd.SetErr(e)
+		}
+	}
+}
+
 func cmdsFirstErr(cmds []Cmder) error {
 	for _, cmd := range cmds {
 		// rawErr: this runs on the execution path; never await here.

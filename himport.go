@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 
@@ -233,11 +234,52 @@ func (c *baseClient) himportInjectedCmds(ctx context.Context, cn *pool.Conn, cmd
 		}
 		covered[name] = struct{}{}
 	}
+	// batchSchemas holds the fieldset a user-issued PREPARE earlier in
+	// this batch registered, so a SET after it is stamped with the
+	// schema it was issued under rather than the registry's older one.
+	var batchSchemas map[string]himportFieldset
 	for _, cmd := range cmds {
 		switch hc := cmd.(type) {
 		case *HImportPrepareCmd:
+			if batchSchemas == nil {
+				batchSchemas = make(map[string]himportFieldset)
+			}
+			batchSchemas[hc.fieldsetName] = himportFieldset{fields: hc.fields, version: hc.registryVersion}
 			cover(hc.fieldsetName)
 		case *HImportSetCmd:
+			// Stamp the SET with the fieldset schema in force when
+			// it was first dispatched: a later answered PREPARE in
+			// the same batch may replace the registry entry before
+			// the retry runs, and re-preparing from the registry
+			// would write the SET's values under the new field
+			// names. The stamp is kept only while this invocation
+			// still owns the dispatch: a reused SET in a later
+			// invocation must be re-stamped from the schema in
+			// force then, or it keeps preparing the first
+			// invocation's fields after the fieldset was replaced.
+			// "This invocation" is the per-invocation answered
+			// set for pipelines — a SET answered in this
+			// invocation is in it — or, on paths without one (a
+			// single command, a cluster node batch, a direct
+			// call), a non-stale error: an error this invocation
+			// recorded on the SET. A reused SET carrying a stale
+			// error from an earlier invocation on a path without
+			// either record still keeps its stamp; that case
+			// needs a reset at the invocation entry, not here.
+			answered := pipelineAnsweredFromCtx(ctx)
+			stale := pipelineStaleErrsFromCtx(ctx)
+			dispatched := answered[hc.base()] || (pipelineCmdErr(hc) != nil && !stale[hc.base()])
+			if !hc.issuedSet || !dispatched {
+				if fs, ok := batchSchemas[hc.fieldsetName]; ok {
+					hc.issuedFields = append([]string(nil), fs.fields...)
+					hc.issuedVersion = fs.version
+					hc.issuedSet = true
+				} else if fs, ok := c.himport.lookup(hc.fieldsetName); ok {
+					hc.issuedFields = append([]string(nil), fs.fields...)
+					hc.issuedVersion = fs.version
+					hc.issuedSet = true
+				}
+			}
 			if _, ok := covered[hc.fieldsetName]; ok {
 				continue
 			}
@@ -245,14 +287,30 @@ func (c *baseClient) himportInjectedCmds(ctx context.Context, cn *pool.Conn, cmd
 			if !ok {
 				continue
 			}
-			if !sessionWiped && cn.FieldsetPreparedVersion(hc.fieldsetName) == fs.version {
+			// A stamped SET runs under its issued schema, not the
+			// registry's current one: a later answered PREPARE
+			// replaced the fieldset after the SET was issued, and
+			// the retry must re-prepare the old fields before the
+			// SET. When the registry no longer holds the name at
+			// all (a discard), there is nothing to re-prepare, as
+			// before. A stamp whose fields match the registry is
+			// the same schema, so the normal path below applies.
+			if hc.issuedSet && !slices.Equal(hc.issuedFields, fs.fields) {
+				fs = himportFieldset{fields: hc.issuedFields, version: hc.issuedVersion}
+			}
+			preparedVersion := cn.FieldsetPreparedVersion(hc.fieldsetName)
+			// A stamp from a user-issued PREPARE carries version 0:
+			// the session holds nothing at version 0, so the
+			// prepared-version equality below must not skip the
+			// injection for it — a fresh session needs the PREPARE.
+			if !sessionWiped && fs.version != 0 && preparedVersion == fs.version {
 				continue
 			}
 			// The session holds an older version. Discard it before the
 			// re-prepare: the SET behind it is already on the wire, and if
 			// the re-prepare fails the SET must answer "no such fieldset"
 			// rather than silently writing the old version's field names.
-			if !sessionWiped && cn.FieldsetPreparedVersion(hc.fieldsetName) != 0 {
+			if !sessionWiped && preparedVersion != 0 {
 				injected = append(injected, NewHImportDiscardCmd(ctx, hc.fieldsetName))
 			}
 			prep := NewHImportPrepareCmd(ctx, hc.fieldsetName, fs.fields...)
@@ -366,7 +424,26 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 			}
 		}
 	}
-	for _, cmd := range cmds {
+	// A queued HIMPORT command only executed when its transaction's
+	// EXEC committed it: +QUEUED merely acknowledges the queueing, so
+	// the frame outcomes are precomputed once for the guard below —
+	// but only when the batch actually holds a queued HIMPORT command,
+	// so batches without one pay no extra scans.
+	var discardedTx, abortedTx map[*baseCmd]bool
+	var txBodyNeedsRetry []bool
+	var queuedExecErrs map[int]error
+	queuedGuardReady := false
+	queuedGuard := func() {
+		if queuedGuardReady {
+			return
+		}
+		discardedTx = pipelineDiscardedTxCmds(cmds)
+		abortedTx = pipelineAbortedTxCmds(cmds)
+		txBodyNeedsRetry = pipelineTxBodyNeedsRetryMap(cmds)
+		queuedExecErrs = pipelineQueuedExecErrMap(cmds)
+		queuedGuardReady = true
+	}
+	for idx, cmd := range cmds {
 		hc, ok := cmd.(himportCmder)
 		if !ok {
 			continue
@@ -396,6 +473,24 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 			continue
 		}
 		if hc.rawErr() == nil {
+			// A queued HIMPORT command never executed on its own:
+			// it runs only when its transaction's EXEC commits it.
+			// A PREPARE in a frame DISCARD dropped, the server
+			// aborted, or still open registered nothing — applying
+			// its bookkeeping would mark a fieldset prepared that
+			// the server never saw, and a later SET would write
+			// values under the wrong field names. Only a queued
+			// command whose EXEC element answered without error
+			// counts as executed.
+			if pipelineCmdQueued(cmd) {
+				queuedGuard()
+				if discardedTx[cmd.base()] || abortedTx[cmd.base()] || txBodyNeedsRetry[idx] {
+					continue
+				}
+				if elemErr, ok := queuedExecErrs[idx]; !ok || elemErr != nil {
+					continue
+				}
+			}
 			c.himportAfterCmd(cn, hc)
 		}
 	}
@@ -455,6 +550,21 @@ func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, 
 		c.himportAfterBatch(cn, injected, retry)
 		return nil
 	})
+}
+
+// himportSetNeedsRecovery reports whether cmd is an HIMPORT SET whose
+// "no such fieldset" reply means its write never happened and the managed
+// recovery (a re-PREPARE plus a re-issued SET, see
+// himportRetryFailedSets) has not run yet: that recovery runs only after
+// a fully read attempt, so a transport failure partway through the replies
+// returns before it. Such a SET must stay pending in a retry — trimming
+// it as settled would keep the fieldset error while the write never
+// happens. The registry is not consulted here: the retry re-prepares
+// only a registered fieldset, so an unregistered one simply fails the
+// same way again, with the same terminal error.
+func himportSetNeedsRecovery(cmd Cmder) bool {
+	_, ok := cmd.(*HImportSetCmd)
+	return ok && himportNoSuchFieldset(pipelineCmdErr(cmd))
 }
 
 // himportShouldRetrySet reports whether a retry of cmd may succeed after it
