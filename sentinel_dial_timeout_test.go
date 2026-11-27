@@ -72,6 +72,9 @@ func TestFailoverClientSubscribeBoundedByDialTimeout(t *testing.T) {
 		MasterName:    "mymaster",
 		SentinelAddrs: []string{sentinel.Addr().String()},
 		TLSConfig:     &tls.Config{InsecureSkipVerify: true},
+		// The shared pub/sub connection dials with the client's retry
+		// policy, like the pool; one attempt isolates the per-dial bound.
+		DialerRetries: 1,
 	})
 	defer client.Close()
 

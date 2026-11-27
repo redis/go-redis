@@ -2362,9 +2362,11 @@ func TestMultiDBNewerSwitchCancelsStuckPubSubReconnect(t *testing.T) {
 	// it in time. Signal when that cancellation actually reaches the dial.
 	dbB.cfg.Options.DialTimeout = 30 * time.Second
 	dbB.cfg.Options.DialerRetries = 1
+	bDialEntered := make(chan struct{})
 	bDialCanceled := make(chan struct{})
-	var once sync.Once
+	var enterOnce, once sync.Once
 	dbB.cfg.Options.Dialer = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		enterOnce.Do(func() { close(bDialEntered) })
 		<-ctx.Done()
 		once.Do(func() { close(bDialCanceled) })
 		return nil, ctx.Err()
@@ -2381,11 +2383,15 @@ func TestMultiDBNewerSwitchCancelsStuckPubSubReconnect(t *testing.T) {
 	sub := mdb.Subscribe(context.Background(), "ch")
 	defer sub.Close()
 
-	// Fail A -> failover to B -> notifyPubSubs reconnect dials B and blocks,
-	// holding the subscription lock.
+	// Fail A -> failover to B -> the subscription's reconnect dials B and
+	// blocks there.
 	dbA.hook.fail.Store(true)
 	_ = mdb.Get(context.Background(), "k").Err()
-	time.Sleep(50 * time.Millisecond) // let the B reconnect enter the blocking dial
+	select {
+	case <-bDialEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the subscription never dialed B after the A->B failover")
+	}
 
 	// Fail B too and drive a second failover to C. The B->C switch must cancel
 	// the stuck B reconnect (freeing the subscription lock for C).

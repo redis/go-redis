@@ -915,7 +915,7 @@ func (c *MultiDBClient) SSubscribe(ctx context.Context, channels ...string) *Pub
 	// silently subscribing to nothing.
 	pubsub := c.core.newPubSub()
 	if len(channels) > 0 {
-		_ = pubsub.SSubscribe(ctx, channels...)
+		pubsub.reportInitialErr(pubsub.SSubscribe(ctx, channels...))
 	}
 	return pubsub
 }

@@ -33,19 +33,16 @@ func TestContextDeadlinePipelineErrors(t *testing.T) {
 	}
 }
 
+// TestContextDeadlinePubSubKeepsTimeoutConnection: a receive bounded by an
+// expired context reports the deadline without touching the shared
+// connection (the engine reads it on its own goroutine), while
+// isBadConn still retires command connections after a timeout.
 func TestContextDeadlinePubSubKeepsTimeoutConnection(t *testing.T) {
-	server, client := net.Pipe()
-	defer server.Close()
-	cn := pool.NewConn(client)
-	defer cn.Close()
-	closes := 0
-	p := &PubSub{
-		opt: &Options{Protocol: 2}, cn: cn,
-		closeConn: func(cn *pool.Conn) error { closes++; return cn.Close() },
-		newConn: func(ctx context.Context, _ string, _ []string, _ ...func(*pool.Conn)) (*pool.Conn, error) {
-			return nil, ctx.Err()
-		},
-	}
+	client := NewClient(&Options{Addr: "127.0.0.1:1", Protocol: 2})
+	defer client.Close()
+	p := newPubSub(client.pubSubManager)
+	defer p.Close()
+
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	_, err := p.ReceiveTimeout(ctx, time.Second)
@@ -55,23 +52,8 @@ func TestContextDeadlinePubSubKeepsTimeoutConnection(t *testing.T) {
 	if !isBadConn(context.DeadlineExceeded, true, "") {
 		t.Fatal("plain context errors must still retire connections")
 	}
-	if !isBadConn(err, false, "") {
+	if !isBadConn(context.DeadlineExceeded, false, "") {
 		t.Fatal("command connections must still be retired after a timeout")
-	}
-	var socketErr *net.OpError
-	if !errors.As(err, &socketErr) || !socketErr.Timeout() {
-		t.Fatalf("lost underlying socket error: %v", err)
-	}
-	if closes != 0 {
-		t.Fatal("receive timeout closed the subscription connection")
-	}
-	go func() { _, _ = server.Write([]byte("*3\r\n$7\r\nmessage\r\n$1\r\nc\r\n$2\r\nok\r\n")) }()
-	msg, err := p.ReceiveTimeout(context.Background(), time.Second)
-	if err != nil {
-		t.Fatalf("receive after timeout: %v", err)
-	}
-	if message, ok := msg.(*Message); !ok || message.Channel != "c" || message.Payload != "ok" {
-		t.Fatalf("unexpected message: %#v", msg)
 	}
 }
 

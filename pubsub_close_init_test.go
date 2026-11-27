@@ -71,7 +71,7 @@ func TestClientCloseDuringPubSubInitialization(t *testing.T) {
 		MaintNotificationsConfig:     &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 	})
 	defer client.Close()
-	ps := client.pubSub()
+	ps := newPubSub(client.pubSubManager)
 	defer ps.Close()
 	// Unblock initialization before cleanup tries to acquire the PubSub mutex,
 	// including when a timeout causes this test to exit early.

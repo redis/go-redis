@@ -23,6 +23,9 @@ type Pooler interface {
 	PoolStats() *pool.Stats
 }
 
+// PubSubPooler describes the stats of a client's pub/sub connections,
+// which the client's shared pub/sub manager owns (see
+// OTelPoolRegistrar.RegisterPubSubPool).
 type PubSubPooler interface {
 	Stats() *pool.PubSubStats
 }
@@ -157,7 +160,8 @@ type OTelPoolRegistrar interface {
 	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
 	// poolName: the pool's name, as carried by its connections (e.g., "localhost:6379_1_pubsub")
 	RegisterPubSubPool(poolName string, pool PubSubPooler)
-	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
+	// UnregisterPubSubPool is called when a client is closed to remove its
+	// PubSub pool.
 	UnregisterPubSubPool(pool PubSubPooler)
 }
 

@@ -224,6 +224,9 @@ type Stats struct {
 	StaleConns      uint32 // number of stale connections removed from the pool
 	PendingRequests uint32 // number of pending requests waiting for a connection
 
+	// PubSubStats counts the client's pub/sub connections. They are not
+	// pooled: the shared pub/sub manager owns them, and the pub/sub pool
+	// only dials and tracks them.
 	PubSubStats PubSubStats
 
 	// PipelineStats holds the stats of the separate pipeline connection pool

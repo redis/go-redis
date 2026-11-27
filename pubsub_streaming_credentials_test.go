@@ -4,9 +4,49 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+// connRecordingClient is a pubSubClienter that records every pub/sub
+// connection its client dials, so a test can inspect the shared
+// connection's re-auth state.
+type connRecordingClient struct {
+	*Client
+	mu    sync.Mutex
+	conns []*pool.Conn
+}
+
+func (r *connRecordingClient) pubsubConnect(ctx context.Context, addr string) (*pool.Conn, error) {
+	cn, err := r.Client.pubsubConnect(ctx, addr)
+	if err == nil {
+		r.mu.Lock()
+		r.conns = append(r.conns, cn)
+		r.mu.Unlock()
+	}
+	return cn, err
+}
+
+func (r *connRecordingClient) connIDs() []uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make([]uint64, 0, len(r.conns))
+	for _, cn := range r.conns {
+		ids = append(ids, cn.GetID())
+	}
+	return ids
+}
+
+// recordPubSubConns rebuilds client's pub/sub manager over a recording
+// wrapper. Call before the first Subscribe.
+func recordPubSubConns(client *Client) *connRecordingClient {
+	r := &connRecordingClient{Client: client}
+	_ = client.pubSubManager.Close()
+	client.pubSubManager = newPubSubManager(r, client.cloneOpt())
+	return r
+}
 
 // rotatingCredentialsProvider is a StreamingCredentialsProvider whose rotate
 // method pushes new credentials to every subscribed listener.
@@ -60,14 +100,13 @@ func TestPubSubCloseRemovesStreamingCredentialsState(t *testing.T) {
 		t.Skipf("redis is not reachable with the test credentials: %v", err)
 	}
 
+	rec := recordPubSubConns(client)
 	const subscriptions = 20
-	connIDs := make([]uint64, 0, subscriptions)
 	for i := 0; i < subscriptions; i++ {
 		pubsub := client.Subscribe(ctx, "streaming-credentials-leak")
 		if _, err := pubsub.Receive(ctx); err != nil {
 			t.Fatalf("subscribe #%d: %v", i, err)
 		}
-		connIDs = append(connIDs, pubsub.cn.GetID())
 		if i%2 == 0 {
 			// Rotate while the connection is open, so a re-auth is scheduled
 			// for it.
@@ -78,8 +117,18 @@ func TestPubSubCloseRemovesStreamingCredentialsState(t *testing.T) {
 		}
 	}
 
+	// The last Close releases the shared connection once the server
+	// confirms the unsubscribe; wait for every dialed one to be closed.
 	manager := client.streamingCredentialsManager
+	connIDs := rec.connIDs()
+	if len(connIDs) == 0 {
+		t.Fatal("no pub/sub connection was dialed")
+	}
+	deadline := time.Now().Add(5 * time.Second)
 	for _, connID := range connIDs {
+		for manager.IsTracking(connID) && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
 		if manager.IsTracking(connID) {
 			t.Fatalf("closed pub/sub connection %d still has re-auth state", connID)
 		}
@@ -87,7 +136,7 @@ func TestPubSubCloseRemovesStreamingCredentialsState(t *testing.T) {
 }
 
 // Closing the client closes its open pub/sub connections through the pub/sub
-// pool, not through PubSub.Close. That must drop their re-auth state too.
+// manager, not through PubSub.Close. That must drop their re-auth state too.
 func TestClientCloseRemovesStreamingCredentialsStateOfOpenPubSubs(t *testing.T) {
 	ctx := context.Background()
 	provider := &rotatingCredentialsProvider{
@@ -103,14 +152,17 @@ func TestClientCloseRemovesStreamingCredentialsStateOfOpenPubSubs(t *testing.T) 
 		t.Skipf("redis is not reachable with the test credentials: %v", err)
 	}
 
+	rec := recordPubSubConns(client)
 	const subscriptions = 5
-	connIDs := make([]uint64, 0, subscriptions)
 	for i := 0; i < subscriptions; i++ {
 		pubsub := client.Subscribe(ctx, "streaming-credentials-leak")
 		if _, err := pubsub.Receive(ctx); err != nil {
 			t.Fatalf("subscribe #%d: %v", i, err)
 		}
-		connIDs = append(connIDs, pubsub.cn.GetID())
+	}
+	connIDs := rec.connIDs()
+	if len(connIDs) == 0 {
+		t.Fatal("no pub/sub connection was dialed")
 	}
 	provider.rotate(auth.NewBasicCredentials("default", "password"))
 

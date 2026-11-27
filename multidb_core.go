@@ -16,8 +16,8 @@ import (
 	"github.com/redis/go-redis/v9/internal/failuredetector"
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/pubsub"
 	"github.com/redis/go-redis/v9/maintnotifications"
-	"github.com/redis/go-redis/v9/push"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
@@ -354,12 +354,13 @@ type multidbCore struct {
 	// earlier, already-recovered outage.
 	successSinceFailover atomic.Bool
 
-	pubsubMu sync.Mutex
-	pubsubs  map[*PubSub]struct{}
-	// reconnectCancel cancels the most recent notifyPubSubs reconnect batch, so
-	// a newer active-member change can abandon an older one whose dial is stuck
-	// against an already-superseded member. Guarded by pubsubMu.
-	reconnectCancel context.CancelFunc
+	// psManager multiplexes every MultiDB PubSub over one shared
+	// connection that follows the active member (see multidb_pubsub.go);
+	// created on first use. psHooks are its hooks. Both guarded by
+	// pubsubMu.
+	pubsubMu  sync.Mutex
+	psManager *pubsub.Manager
+	psHooks   *multidbPubSubHooks
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -425,7 +426,6 @@ func newMultidbCore(opts *MultiDBOptions) *multidbCore {
 		detector: opts.FailureDetector,
 		strategy: opts.FailoverStrategy,
 		dbs:      make(map[int]*multidbDatabase),
-		pubsubs:  make(map[*PubSub]struct{}),
 		stopCh:   make(chan struct{}),
 	}
 	// A stateful default detector must be per-client: writing it back into
@@ -2485,249 +2485,6 @@ func (c *multidbCore) standaloneForPubSub() *Client {
 	return cl
 }
 
-// newPubSub creates a PubSub whose connections always target the currently
-// active database: every (re-)dial resolves the active snapshot, and
-// notifyPubSubs forces a re-dial on every active-database change.
-func (c *multidbCore) newPubSub() *PubSub {
-	// Connections may be dialed against different members over the PubSub's
-	// lifetime; remember each connection's owner so closeConn can untrack it
-	// on the right member's pool.
-	var ownersMu sync.Mutex
-	owners := make(map[*pool.Conn]*Client)
-	// handoffAddrs holds the endpoint a member's connection was moved to by a
-	// maintenance handoff (MOVING). Keyed by member so a failover never dials
-	// another member's endpoint. The addr argument of newConn is not used: it
-	// is the PubSub's single opt.Addr, which does not follow the member.
-	handoffAddrs := make(map[*Client]string)
-
-	// Terminality of "a cluster member is active and no standalone can serve the
-	// subscription" is decided by the config at creation, not by live
-	// membership: a passive standalone can be removed after a failover and a new
-	// one added later, so "no standalone right now" is transient. Only a config
-	// that was all-cluster when this PubSub was created — and still has no
-	// standalone — is a permanent mismatch worth the terminal ErrClosed.
-	staticAllCluster := !c.hasStandaloneMember()
-
-	pubsub := &PubSub{
-		rec: c.rec,
-		newConn: func(ctx context.Context, _ string, channels []string, onInit ...func(*pool.Conn)) (*pool.Conn, error) {
-			if c.closed.Load() {
-				// ErrClosed (== pool.ErrClosed) is the only error the PubSub
-				// channel loop treats as terminal; anything else would make
-				// a post-close subscription retry forever.
-				return nil, ErrClosed
-			}
-			db, _ := c.activeSnapshot()
-			if db == nil {
-				return nil, ErrTemporarilyNotAvailable
-			}
-			if db.c == nil {
-				// A cluster member is active and cannot serve the subscription.
-				// Terminal only for an all-cluster-at-creation config that still
-				// has no standalone member (fail fast so Channel loops exit);
-				// otherwise the mismatch is transient — a later
-				// failover/fallback to, or an AddDatabase of, a standalone member
-				// lets the re-dial succeed — so return the retryable error and
-				// keep the channel loop polling.
-				if staticAllCluster && !c.hasStandaloneMember() {
-					return nil, ErrClosed
-				}
-				return nil, errPubSubRequiresStandalone
-			}
-			// newPubSubConn dials, runs the handshake and tracks the conn as one
-			// Limiter admission, and closes the conn on failure. A member
-			// removed meanwhile answers with the pool's ErrClosed, which
-			// pubSubDialErr keeps terminal for the channel loops.
-			addr := db.c.opt.Addr
-			ownersMu.Lock()
-			if a := handoffAddrs[db.c]; a != "" {
-				addr = a
-			}
-			ownersMu.Unlock()
-			cn, err := db.c.newPubSubConn(ctx, addr, channels, onInit...)
-			if err != nil {
-				return nil, pubSubDialErr(db, err, c.closed.Load())
-			}
-			// Removal (and Close) marks the member before closing its PubSub
-			// pool, which checks closed only before dialing: re-check after
-			// tracking, so either the pool close sees this conn or this sees
-			// the mark. A conn to a removed member would otherwise stay open.
-			if db.removed.Load() {
-				db.c.pubSubPool.UntrackConn(cn)
-				_ = cn.Close()
-				return nil, pubSubDialErr(db, pool.ErrClosed, c.closed.Load())
-			}
-			ownersMu.Lock()
-			owners[cn] = db.c
-			ownersMu.Unlock()
-			return cn, nil
-		},
-		closeConn: func(cn *pool.Conn) error {
-			ownersMu.Lock()
-			owner := owners[cn]
-			// PubSub.reconnect closes a connection marked for handoff before
-			// re-dialing: remember the new endpoint for its member.
-			if ep := cn.GetHandoffEndpoint(); owner != nil && cn.ShouldHandoff() && ep != "" && ep != internal.RedisNull {
-				handoffAddrs[owner] = ep
-			}
-			ownersMu.Unlock()
-			if owner != nil {
-				owner.pubSubPool.UntrackConn(cn)
-			}
-			// Close first, forget the owner after: a receive that is still
-			// processing a buffered push on this connection looks the owner
-			// up lock-free, and must not find it gone while the connection
-			// is alive. After Close a miss means "closed", and pushes on a
-			// closed connection are dropped (see processorFor).
-			err := cn.Close()
-			ownersMu.Lock()
-			delete(owners, cn)
-			ownersMu.Unlock()
-			return err
-		},
-	}
-	// A push is handled by the processor of the member that owns the
-	// connection it arrived on, not by the creation-time member's: after a
-	// failover the follower re-dials through another member, and that
-	// member's handlers (maintenance notifications, for one) must see its
-	// pushes. The owner map is the same one closeConn uses; a member's
-	// processor never changes after the client is built.
-	// The owner decides both halves of the push gate: whether the connection
-	// speaks RESP3 at all, and which processor handles its pushes. A PubSub
-	// created while a RESP2 member was active must still dispatch the pushes
-	// of a RESP3 member it re-dials to after a failover, and the reverse
-	// must not decode RESP2 traffic as pushes.
-	pubsub.processorFor = func(cn *pool.Conn) push.NotificationProcessor {
-		ownersMu.Lock()
-		owner := owners[cn]
-		ownersMu.Unlock()
-		if owner == nil {
-			// Every connection is registered before newConn returns, so a
-			// miss means closeConn has finished with it: a push read after
-			// that belongs to a member that is no longer serving this
-			// subscription and is dropped rather than dispatched through
-			// another member's processor.
-			return nil
-		}
-		if owner.opt.Protocol != 3 {
-			return nil
-		}
-		return owner.pushProcessor
-	}
-
-	// opt must always be non-nil (PubSub reads it unconditionally). Clone the
-	// active standalone member's options rather than sharing the pointer: the
-	// owning client mutates its own opt (e.g. maintnotifications handoffs).
-	//
-	// These fields are captured ONCE, from the member active at Subscribe
-	// time, and deliberately not refreshed on failover: PubSub reads opt
-	// outside its mutex (e.g. the RESP3 push gate on the receive path), so
-	// swapping it at re-dial time would be a data race. Each connection is
-	// still initialized through the owning member's own initConn/handshake,
-	// and push processing (the RESP3 gate and the processor) follows the
-	// connection's owner through processorFor below; only the PubSub-level
-	// write timeout on subscribe frames keeps the creation-time value.
-	if db, _ := c.activeSnapshot(); db != nil && db.c != nil {
-		optCopy := *db.c.opt
-		pubsub.opt = &optCopy
-		pubsub.pushProcessor = db.c.pushProcessor
-	} else if sd := c.standaloneForPubSub(); sd != nil {
-		// Active is a cluster member (or none), but a standalone member exists:
-		// the subscription lands on it after failover. Adopt its options now
-		// rather than the zero Options — otherwise subscribe frames would use a
-		// zero WriteTimeout and the wrong Protocol gate until (and after) the
-		// failover, even though the connection itself handshakes correctly.
-		optCopy := *sd.opt
-		pubsub.opt = &optCopy
-		pubsub.pushProcessor = sd.pushProcessor
-	} else {
-		pubsub.opt = &Options{}
-		pubsub.pushProcessor = push.NewVoidProcessor()
-	}
-	pubsub.onClose = func() { c.removePubSub(pubsub) }
-	pubsub.init()
-
-	c.pubsubMu.Lock()
-	if c.closed.Load() {
-		// Racing Close: it already snapshotted+cleared the registry, so a
-		// PubSub registered now would never be closed by close(). Close it here
-		// instead of leaking its connection; the caller's Subscribe then errors.
-		c.pubsubMu.Unlock()
-		_ = pubsub.Close()
-		return pubsub
-	}
-	c.pubsubs[pubsub] = struct{}{}
-	c.pubsubMu.Unlock()
-	return pubsub
-}
-
-// removePubSub deregisters a subscription closed by the caller so the
-// registry does not grow unbounded and notifyPubSubs stops touching it.
-func (c *multidbCore) removePubSub(ps *PubSub) {
-	c.pubsubMu.Lock()
-	delete(c.pubsubs, ps)
-	c.pubsubMu.Unlock()
-}
-
-// notifyPubSubs forces every registered subscription to re-dial so it lands
-// on the new active database immediately instead of waiting for the next
-// read error.
-func (c *multidbCore) notifyPubSubs(ctx context.Context) {
-	c.pubsubMu.Lock()
-	subs := make([]*PubSub, 0, len(c.pubsubs))
-	for ps := range c.pubsubs {
-		subs = append(subs, ps)
-	}
-	if len(subs) == 0 {
-		c.pubsubMu.Unlock()
-		return
-	}
-
-	// Reconnect dials and resubscribes synchronously; running it inline would
-	// bill every subscription's recovery to whichever command triggered the
-	// failover. Detach from the caller's context — its cancellation must not
-	// abort recovery — but bind cancellation to client shutdown so close() can
-	// interrupt an in-flight dial instead of blocking on a subscription's lock
-	// (PubSub.Reconnect holds it across the dial). Reconnect each subscription
-	// on its own goroutine so one slow dial cannot stall the others; each
-	// resolves the active member at dial time, so a late reconnect still lands
-	// on the current active.
-	//
-	// Supersede the previous switch's reconnect batch: with rapid A->B->C
-	// changes, the A->B reconnect can block dialing an unreachable B while
-	// holding each subscription's mutex, stalling the B->C reconnect behind it
-	// until B's dial timeout. A newer switch wins, so record this batch's cancel
-	// and cancel the previous one — freeing those mutexes for this batch. The
-	// prior cancel is invoked AFTER unlocking: it can wake a Reconnect that
-	// calls back into removePubSub, which takes pubsubMu.
-	rctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	prevCancel := c.reconnectCancel
-	c.reconnectCancel = cancel
-	c.pubsubMu.Unlock()
-	if prevCancel != nil {
-		prevCancel()
-	}
-
-	reason := errors.New("multidb: active database changed")
-	var wg sync.WaitGroup
-	for _, ps := range subs {
-		wg.Add(1)
-		go func(ps *PubSub) {
-			defer wg.Done()
-			ps.forceReconnect(rctx, reason)
-		}(ps)
-	}
-	go func() {
-		defer cancel()
-		done := make(chan struct{})
-		go func() { wg.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-c.stopCh: // client closing: unblock any in-flight reconnect dial
-		}
-	}()
-}
-
 func (c *multidbCore) close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
@@ -2738,19 +2495,8 @@ func (c *multidbCore) close() error {
 	close(c.stopCh)
 	c.wg.Wait()
 
-	// Snapshot and clear the registry first, close outside the lock:
-	// PubSub.Close fires onClose (which calls removePubSub → pubsubMu), so
-	// closing under pubsubMu would self-deadlock.
-	c.pubsubMu.Lock()
-	subs := make([]*PubSub, 0, len(c.pubsubs))
-	for ps := range c.pubsubs {
-		subs = append(subs, ps)
-	}
-	c.pubsubs = map[*PubSub]struct{}{}
-	c.pubsubMu.Unlock()
-	for _, ps := range subs {
-		_ = ps.Close()
-	}
+	// End every PubSub before the members close their pub/sub pools.
+	c.closePubSub()
 
 	return c.closeAll()
 }
