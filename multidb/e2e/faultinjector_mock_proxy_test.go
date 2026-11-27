@@ -26,9 +26,20 @@ func (m *recordingMechanism) Sever(_ context.Context, container string) error {
 }
 
 func (m *recordingMechanism) Restore(_ context.Context, container, _ string) error {
+	return m.StartContainer(context.Background(), container, "")
+}
+
+func (m *recordingMechanism) StopContainer(_ context.Context, container string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, "restore:"+container)
+	m.calls = append(m.calls, "stop:"+container)
+	return nil
+}
+
+func (m *recordingMechanism) StartContainer(_ context.Context, container, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "start:"+container)
 	return nil
 }
 
@@ -61,12 +72,12 @@ func TestMockProxyFailureStopStartRestart(t *testing.T) {
 
 	run(fi.ProxyStop, 0)
 	// A stop is not undone by the mock either: only the start restores it.
-	if got := strings.Join(mech.seen(), ","); got != "sever:m0" {
+	if got := strings.Join(mech.seen(), ","); got != "stop:m0" {
 		t.Fatalf("after stop: %q", got)
 	}
 	run(fi.ProxyStart, 0)
 	run(fi.ProxyRestart, 1)
-	want := "sever:m0,restore:m0,sever:m1,restore:m1"
+	want := "stop:m0,start:m0,stop:m1,start:m1"
 	if got := strings.Join(mech.seen(), ","); got != want {
 		t.Fatalf("calls = %q, want %q", got, want)
 	}

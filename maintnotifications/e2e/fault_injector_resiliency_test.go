@@ -141,6 +141,18 @@ func TestResiliencyNetworkLatencyRequest(t *testing.T) {
 		p["delay_ms"] != float64(3000) || p["duration"] != float64(45) {
 		t.Errorf("request = %+v", got)
 	}
+
+	// A positive sub-second duration is rounded up: truncating it to 0 would
+	// make the latency permanent.
+	if _, err := c.TriggerBDBNetworkLatency(ctx, 7, 0, 3*time.Second, 500*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(f.last(t).Body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Parameters["duration"] != float64(1) {
+		t.Errorf("sub-second duration must round up to 1, parameters = %v", got.Parameters)
+	}
 }
 
 func TestResiliencyStandaloneTopologyRoutes(t *testing.T) {

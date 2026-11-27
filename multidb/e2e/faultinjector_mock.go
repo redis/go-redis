@@ -31,6 +31,12 @@ type NetworkFaultMechanism interface {
 	Sever(ctx context.Context, container string) error
 	// Restore must return once container is reachable again.
 	Restore(ctx context.Context, container string, addr string) error
+	// StopContainer stops the container outright, for proxy_failure: that
+	// action takes the proxy down regardless of how traffic faults are
+	// injected elsewhere.
+	StopContainer(ctx context.Context, container string) error
+	// StartContainer starts the container and returns once addr is reachable.
+	StartContainer(ctx context.Context, container, addr string) error
 }
 
 // DockerStopStartMechanism is the default: the listener dies, so clients
@@ -41,10 +47,18 @@ type DockerStopStartMechanism struct{}
 func (DockerStopStartMechanism) name() string { return "docker-stop-start" }
 
 func (DockerStopStartMechanism) Sever(ctx context.Context, container string) error {
-	return RunDocker(ctx, "stop", "-t", "0", container)
+	return DockerStopStartMechanism{}.StopContainer(ctx, container)
 }
 
 func (DockerStopStartMechanism) Restore(ctx context.Context, container, addr string) error {
+	return DockerStopStartMechanism{}.StartContainer(ctx, container, addr)
+}
+
+func (DockerStopStartMechanism) StopContainer(ctx context.Context, container string) error {
+	return RunDocker(ctx, "stop", "-t", "0", container)
+}
+
+func (DockerStopStartMechanism) StartContainer(ctx context.Context, container, addr string) error {
 	if err := RunDocker(ctx, "start", container); err != nil {
 		return err
 	}
@@ -98,6 +112,16 @@ func (m DockerIptablesMechanism) Sever(ctx context.Context, container string) er
 		}
 	}
 	return nil
+}
+
+// StopContainer and StartContainer are process-level operations: a proxy
+// failure stops the proxy container even when traffic faults use iptables.
+func (m DockerIptablesMechanism) StopContainer(ctx context.Context, container string) error {
+	return DockerStopStartMechanism{}.StopContainer(ctx, container)
+}
+
+func (m DockerIptablesMechanism) StartContainer(ctx context.Context, container, addr string) error {
+	return DockerStopStartMechanism{}.StartContainer(ctx, container, addr)
 }
 
 // Restore sets every chain back to ACCEPT, attempting all of them even if one
@@ -301,13 +325,13 @@ func (s *MockFaultInjector) executeProxyFailure(id string, member MockMember, op
 	s.setStatus(id, fi.StatusRunning, "")
 	ctx := context.Background()
 	if op == "stop" || op == "restart" {
-		if err := s.mech.Sever(ctx, member.Container); err != nil {
+		if err := s.mech.StopContainer(ctx, member.Container); err != nil {
 			s.setStatus(id, fi.StatusFailed, fmt.Sprintf("stop %s: %v", member.Container, err))
 			return
 		}
 	}
 	if op == "start" || op == "restart" {
-		if err := s.mech.Restore(ctx, member.Container, member.Addr); err != nil {
+		if err := s.mech.StartContainer(ctx, member.Container, member.Addr); err != nil {
 			s.setStatus(id, fi.StatusFailed, fmt.Sprintf("start %s: %v", member.Container, err))
 			return
 		}
