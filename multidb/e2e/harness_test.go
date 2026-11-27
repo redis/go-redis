@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 	fi "github.com/redis/go-redis/v9/maintnotifications/e2e"
 	"github.com/redis/go-redis/v9/multidb"
 )
@@ -224,7 +225,21 @@ func endpointOptions(raw string) *redis.Options {
 	// failover logic drives recovery, not the per-client retries.
 	opts.MaxRetries = -1
 	opts.ContextTimeoutEnabled = true
+	// Smart Client Handoff is off for every client built here, so the
+	// "without SCH" cells of the matrix are literally true on any environment.
+	// The default (Auto) would only be off by accident: the mock backend rejects
+	// the handshake and the cae Active-Active job disables notifications.
+	// Callers that want SCH on override this after the call.
+	opts.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
 	return opts
+}
+
+// requireSCHOff fails when c has a maintenance-notification manager.
+func requireSCHOff(t *testing.T, c *redis.Client) {
+	t.Helper()
+	if c.GetMaintNotificationsManager() != nil {
+		t.Fatalf("client has a maintenance-notification manager, SCH is not off")
+	}
 }
 
 // triggerNetworkFailure fires fi.ActionNetworkFailure against member (a

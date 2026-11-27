@@ -92,15 +92,26 @@ func TestStandaloneScenarioHarnessAgainstFakeFI(t *testing.T) {
 		runStandaloneEffect(t, NewFaultInjectorClient(srv.URL), StandaloneConnDrop)
 	})
 
-	// The fake dropped every connection, so the harness must have seen it:
-	// otherwise a passing run proves nothing about recovery.
-	if len(observed) != 1 || !observed[0].Reconnected {
-		t.Errorf("observed %+v, want one run that reconnected", observed)
+	// The fake dropped every connection, so the harness must have seen it in
+	// both modes: otherwise a passing run proves nothing about recovery.
+	if len(observed) != len(schModes) {
+		t.Fatalf("observed %+v, want one run per SCH mode", observed)
+	}
+	for i, mode := range schModes {
+		r := observed[i]
+		if r.Mode != mode.name || !r.Reconnected {
+			t.Errorf("run %d = %+v, want mode %q and a reconnect", i, r, mode.name)
+		}
+		// The without-SCH run must really have run without a manager.
+		if mode.off && r.SCHActive {
+			t.Errorf("run %d (%s) had SCH active", i, mode.name)
+		}
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if counts["setup"] != 1 || counts["trigger"] != 1 || counts["teardown"] != 1 {
-		t.Errorf("calls = %v, want one setup, trigger and teardown each", counts)
+	want := len(schModes)
+	if counts["setup"] != want || counts["trigger"] != want || counts["teardown"] != want {
+		t.Errorf("calls = %v, want %d setups, triggers and teardowns each", counts, want)
 	}
 }
