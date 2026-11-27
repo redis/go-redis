@@ -307,12 +307,18 @@ func (p *ProxyNotificationInjector) buildClusterSlotsResponse() string {
 }
 
 func (p *ProxyNotificationInjector) addClusterSlotsInterceptor() error {
-	clusterSlotsResponse := p.buildClusterSlotsResponse()
+	return p.SetClusterSlotsReply(p.buildClusterSlotsResponse())
+}
 
+// SetClusterSlotsReply makes every proxy node answer CLUSTER SLOTS with the
+// raw RESP reply. The proxy replaces an interceptor of the same name and runs
+// it before the built-in cluster interceptor, so this also restores the
+// topology: pass p.buildClusterSlotsResponse().
+func (p *ProxyNotificationInjector) SetClusterSlotsReply(reply string) error {
 	interceptor := map[string]interface{}{
 		"name":     "cluster-slots",
 		"match":    "*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n",
-		"response": clusterSlotsResponse,
+		"response": reply,
 		"encoding": "raw",
 	}
 
@@ -340,9 +346,10 @@ func (p *ProxyNotificationInjector) addClusterSlotsInterceptor() error {
 }
 
 func (p *ProxyNotificationInjector) updateClusterSlotsInterceptor() error {
-	// The proxy doesn't support updating existing interceptors
-	// As a workaround, we'll send the updated CLUSTER SLOTS response directly to all clients
-	// This simulates what would happen when the client calls CLUSTER SLOTS after SMIGRATED
+	// Sends the updated CLUSTER SLOTS reply to all connected clients, to
+	// simulate the client calling CLUSTER SLOTS after SMIGRATED. It does not
+	// change the cluster-slots interceptor; SetClusterSlotsReply does that (the
+	// proxy replaces an interceptor with the same name).
 
 	clusterSlotsResponse := p.buildClusterSlotsResponse()
 
