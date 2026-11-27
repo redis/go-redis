@@ -1045,7 +1045,7 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //		MaxRetries:  2,
 //	}
 func ParseURL(redisURL string) (*Options, error) {
-	u, err := url.Parse(redisURL)
+	u, err := parseURL(redisURL)
 	if err != nil {
 		return nil, err
 	}
@@ -1058,6 +1058,109 @@ func ParseURL(redisURL string) (*Options, error) {
 	default:
 		return nil, fmt.Errorf("redis: invalid URL scheme: %s", u.Scheme)
 	}
+}
+
+// parseURL is url.Parse with the password removed from the error. A
+// *url.Error prints the whole input, so a malformed URL would otherwise
+// return its credentials in the error, which callers typically log.
+func parseURL(redisURL string) (*url.URL, error) {
+	u, err := url.Parse(redisURL)
+	if err != nil {
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			var password string
+			uerr.URL, password = redactRawURL(redisURL)
+			// url.Parse ends the authority at the first '/', '?' or '#', so
+			// with one of them unescaped in the password it parses part of
+			// the password as host or port and quotes it in uerr.Err. An
+			// invalid escape in the password is quoted as well.
+			var escErr url.EscapeError
+			switch {
+			case strings.ContainsAny(password, "/?#"):
+				uerr.Err = errors.New("password contains unescaped '/', '?' or '#'")
+			case errors.As(uerr.Err, &escErr) && strings.Contains(password, string(escErr)):
+				uerr.Err = errors.New("password contains an invalid URL escape")
+			}
+		}
+		return nil, err
+	}
+	return u, nil
+}
+
+// redactRawURL returns a URL that failed to parse with the password replaced
+// by "xxxxx", like url.URL.Redacted, and the query and fragment dropped, since
+// ParseFailoverURL reads a password from the query. It also returns the
+// password it found. The userinfo ends at the last '@', so a password
+// containing unescaped '@' or '/' is still covered.
+func redactRawURL(s string) (string, string) {
+	start := 0
+	if i := strings.Index(s, "://"); i >= 0 && !strings.ContainsAny(s[:i], "?#") {
+		start = i + len("://")
+	}
+	end := len(s)
+	if i := strings.IndexAny(s[start:], "?#"); i >= 0 {
+		end = start + i
+	}
+	at := strings.LastIndexByte(s, '@')
+	if at < start {
+		return s[:end], ""
+	}
+	user, password, ok := strings.Cut(s[start:at], ":")
+	switch {
+	case at > end:
+		// The '@' is in the password or in a query value, and the two
+		// can't be told apart, so quote only the scheme. An earlier '@'
+		// ends the userinfo that url.Parse read, so return that password.
+		if i := strings.LastIndexByte(s[start:end], '@'); i >= 0 {
+			_, password, _ = strings.Cut(s[start:start+i], ":")
+		}
+		return s[:start], password
+	case !ok:
+		return s[:end], ""
+	default:
+		return s[:start] + user + ":xxxxx" + s[at:end], password
+	}
+}
+
+// hiddenURLPart returns why parts can't be quoted in an error message, or ""
+// when the last of them is safe to show. A part with an '@' likely holds a
+// password that url.Parse split at an unescaped '/', '?' or '#'. A query with
+// a password= value may hold the rest of that password after an unescaped '&'.
+func hiddenURLPart(parts ...string) string {
+	for _, p := range parts {
+		if strings.Contains(p, "@") {
+			return "(not shown: it contains '@'; escape '/', '?' and '#' in the password)"
+		}
+	}
+	for _, p := range parts {
+		if strings.Contains(p, "password=") {
+			return "(not shown: the query has a password; escape '&' in it)"
+		}
+	}
+	return ""
+}
+
+// quoteURLPart returns the last of parts for an error message, or the reason
+// it is left out.
+func quoteURLPart(parts ...string) string {
+	if hidden := hiddenURLPart(parts...); hidden != "" {
+		return hidden
+	}
+	return parts[len(parts)-1]
+}
+
+// quoteURLError is quoteURLPart for an error that quotes the last of parts. A
+// *strconv.NumError keeps its type, so errors.As and errors.Is still work.
+func quoteURLError(err error, parts ...string) error {
+	hidden := hiddenURLPart(parts...)
+	if hidden == "" {
+		return err
+	}
+	var numErr *strconv.NumError
+	if errors.As(err, &numErr) {
+		return &strconv.NumError{Func: numErr.Func, Num: hidden, Err: numErr.Err}
+	}
+	return errors.New(hidden)
 }
 
 func setupTCPConn(u *url.URL) (*Options, error) {
@@ -1077,7 +1180,7 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 	case 1:
 		var err error
 		if o.DB, err = strconv.Atoi(f[0]); err != nil {
-			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
+			return nil, fmt.Errorf("redis: invalid database number: %s", quoteURLPart(strconv.Quote(f[0])))
 		}
 		// A negative index parses fine but makes every connection fail on
 		// SELECT, so reject it when the URL is read.
@@ -1085,7 +1188,7 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 			return nil, fmt.Errorf("redis: invalid database number: %q", f[0])
 		}
 	default:
-		return nil, fmt.Errorf("redis: invalid URL path: %s", u.Path)
+		return nil, fmt.Errorf("redis: invalid URL path: %s", quoteURLPart(u.Path))
 	}
 
 	if u.Scheme == "rediss" {
@@ -1132,6 +1235,7 @@ func setupUnixConn(u *url.URL) (*Options, error) {
 
 type queryOptions struct {
 	q   url.Values
+	raw string // u.RawQuery, checked by quoteURLPart before a value is quoted
 	err error
 }
 
@@ -1164,7 +1268,7 @@ func (o *queryOptions) int(name string) int {
 		return i
 	}
 	if o.err == nil {
-		o.err = fmt.Errorf("redis: invalid %s number: %s", name, err)
+		o.err = fmt.Errorf("redis: invalid %s number: %s", name, quoteURLError(err, o.raw, s))
 	}
 	return 0
 }
@@ -1240,7 +1344,7 @@ func (o *queryOptions) duration(name string) time.Duration {
 		return dur
 	}
 	if o.err == nil {
-		o.err = fmt.Errorf("redis: invalid %s duration: %w", name, err)
+		o.err = fmt.Errorf("redis: invalid %s duration: %w", name, quoteURLError(err, o.raw, s))
 	}
 	return 0
 }
@@ -1253,7 +1357,7 @@ func (o *queryOptions) bool(name string) bool {
 		return false
 	default:
 		if o.err == nil {
-			o.err = fmt.Errorf("redis: invalid %s boolean: expected true/false/1/0 or an empty string, got %q", name, s)
+			o.err = fmt.Errorf("redis: invalid %s boolean: expected true/false/1/0 or an empty string, got %s", name, quoteURLPart(o.raw, strconv.Quote(s)))
 		}
 		return false
 	}
@@ -1270,13 +1374,13 @@ func (o *queryOptions) remaining() []string {
 
 // setupConnParams converts query parameters in u to option value in o.
 func setupConnParams(u *url.URL, o *Options) (*Options, error) {
-	q := queryOptions{q: u.Query()}
+	q := queryOptions{q: u.Query(), raw: u.RawQuery}
 
 	// compat: a future major release may use q.int("db")
 	if tmp := q.string("db"); tmp != "" {
 		db, err := strconv.Atoi(tmp)
 		if err != nil {
-			return nil, fmt.Errorf("redis: invalid database number: %w", err)
+			return nil, fmt.Errorf("redis: invalid database number: %w", quoteURLError(err, u.RawQuery, tmp))
 		}
 		if db < 0 {
 			return nil, fmt.Errorf("redis: invalid database number: %q", tmp)
@@ -1337,7 +1441,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
-		return nil, fmt.Errorf("redis: unexpected option: %s", strings.Join(r, ", "))
+		return nil, fmt.Errorf("redis: unexpected option: %s", quoteURLPart(u.RawQuery, strings.Join(r, ", ")))
 	}
 
 	return o, nil
