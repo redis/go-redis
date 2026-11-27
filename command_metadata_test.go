@@ -126,6 +126,7 @@ func TestCommandMetadataStaticStoreNeverStartsWorker(t *testing.T) {
 	s.onConnInit()
 	s.requestRefresh()
 	s.requestVerification()
+	s.requestHelloLessVerification()
 	s.onClusterServerHelloReply(map[string]interface{}{"version": "8.10.0"})
 	s.onClusterServerHelloReply(nil)
 	s.mu.Lock()
@@ -1209,6 +1210,12 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 }
 
 func TestCommandMetadataReconnectWithoutHello(t *testing.T) {
+	// This test reconnects twice within milliseconds to assert immediate
+	// verification and unchanged-view reuse; disable the HELLO-less cooldown.
+	oldVerifyInterval := cmdMetaVerifyInterval
+	cmdMetaVerifyInterval = 0
+	defer func() { cmdMetaVerifyInterval = oldVerifyInterval }()
+
 	var phase, fetches atomic.Int32
 	client := NewClient(&Options{
 		Protocol: 3, DisableIdentity: true, MaxRetries: -1, PoolSize: 1,
@@ -1270,6 +1277,211 @@ func TestCommandMetadataReconnectWithoutHello(t *testing.T) {
 		if moduleVersion == 0 && view != previous {
 			t.Fatal("unchanged identity rebuilt the metadata view")
 		}
+	}
+}
+
+func TestCommandMetadataHelloLessVerificationRateLimited(t *testing.T) {
+	oldVerifyInterval, oldBackoffMin := cmdMetaVerifyInterval, cmdMetaBackoffMin
+	cmdMetaVerifyInterval = 150 * time.Millisecond
+	cmdMetaBackoffMin = time.Millisecond
+	defer func() {
+		cmdMetaVerifyInterval = oldVerifyInterval
+		cmdMetaBackoffMin = oldBackoffMin
+	}()
+
+	var phase, infoProbes atomic.Int32
+	client := NewClient(&Options{
+		Protocol: 2, DisableIdentity: true, MaxRetries: -1, PoolSize: 1,
+		CommandMetadata: &CommandMetadataConfig{Mode: CommandMetadataPreferLive},
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go serveTestRESPConn(server, func(command string) string {
+				switch command {
+				case "hello":
+					return "-ERR unknown command 'hello'\r\n"
+				case "info":
+					infoProbes.Add(1)
+					return commandInfoTestBulk("# Server\r\nredis_version:5.0.14\r\n")
+				case "module":
+					return commandInfoTestArray(commandInfoTestMap(
+						commandInfoTestBulk("name"), commandInfoTestBulk("custom"),
+						commandInfoTestBulk("ver"), commandInfoTestInt(int64(phase.Load())),
+					))
+				case "command":
+					return commandInfoTestArray(commandInfoTestEntry6(fmt.Sprintf("custom.read%d", phase.Load())))
+				case "ping":
+					return "+PONG\r\n"
+				default:
+					return "+OK\r\n"
+				}
+			})
+			return client, nil
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForCondition(t, time.Second, func() bool { return client.metadataView().live }) {
+		t.Fatal("initial metadata did not load")
+	}
+	waitForCommandMetadataRefresh(t, client.cmdMeta)
+	if probes := infoProbes.Load(); probes != 1 {
+		t.Fatalf("initial HELLO-less probes = %d, want 1", probes)
+	}
+
+	// Reconnects within the cooldown must not re-run INFO + MODULE LIST + COMMAND.
+	for range 5 {
+		if err := client.connPool.(*pool.ConnPool).Filter(func(*pool.Conn) bool { return true }); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Ping(ctx).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(40 * time.Millisecond)
+	if probes := infoProbes.Load(); probes != 1 {
+		t.Fatalf("reconnects inside cooldown triggered extra probes: got %d, want 1", probes)
+	}
+
+	// Once the cooldown elapses, a new connection verifies again (1 probe when unchanged).
+	time.Sleep(cmdMetaVerifyInterval)
+	if err := client.connPool.(*pool.ConnPool).Filter(func(*pool.Conn) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForCondition(t, 2*time.Second, func() bool { return infoProbes.Load() == 2 }) {
+		t.Fatalf("reconnect after cooldown did not re-verify (probes=%d, want 2)", infoProbes.Load())
+	}
+	waitForCommandMetadataRefresh(t, client.cmdMeta)
+
+	// After another cooldown, a server module upgrade is detected and adopted.
+	time.Sleep(cmdMetaVerifyInterval)
+	phase.Store(1)
+	if err := client.connPool.(*pool.ConnPool).Filter(func(*pool.Conn) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForCondition(t, 2*time.Second, func() bool {
+		view := client.metadataView()
+		return infoProbes.Load() >= 3 && view.records["custom.read1"] != nil &&
+			client.cmdMeta.serverFingerprint() == "5.0.14|custom:1"
+	}) {
+		t.Fatalf("reconnect after module change did not refresh metadata (probes=%d, fp=%q)",
+			infoProbes.Load(), client.cmdMeta.serverFingerprint())
+	}
+}
+
+func TestCommandMetadataHelloLessBurstStartupRateLimited(t *testing.T) {
+	oldVerifyInterval := cmdMetaVerifyInterval
+	cmdMetaVerifyInterval = 200 * time.Millisecond
+	defer func() { cmdMetaVerifyInterval = oldVerifyInterval }()
+
+	var infoProbes atomic.Int32
+	client := NewClient(&Options{
+		Protocol: 2, DisableIdentity: true, MaxRetries: -1, PoolSize: 8,
+		CommandMetadata: &CommandMetadataConfig{Mode: CommandMetadataPreferLive},
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go serveTestRESPConn(server, func(command string) string {
+				switch command {
+				case "hello":
+					return "-ERR unknown command 'hello'\r\n"
+				case "info":
+					infoProbes.Add(1)
+					return commandInfoTestBulk("# Server\r\nredis_version:5.0.14\r\n")
+				case "module":
+					return commandInfoTestArray()
+				case "command":
+					return commandInfoTestArray(commandInfoTestEntry6("custom.read"))
+				case "ping":
+					return "+PONG\r\n"
+				default:
+					return "+OK\r\n"
+				}
+			})
+			return client, nil
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- client.Ping(ctx).Err()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !waitForCondition(t, 2*time.Second, func() bool { return client.metadataView().live }) {
+		t.Fatal("initial metadata did not load")
+	}
+	waitForCommandMetadataRefresh(t, client.cmdMeta)
+	time.Sleep(50 * time.Millisecond)
+	if probes := infoProbes.Load(); probes != 1 {
+		t.Fatalf("concurrent startup dials triggered %d probes, want 1", probes)
+	}
+}
+
+func TestCommandMetadataClusterHelloLessRateLimited(t *testing.T) {
+	oldVerifyInterval := cmdMetaVerifyInterval
+	cmdMetaVerifyInterval = 200 * time.Millisecond
+	defer func() { cmdMetaVerifyInterval = oldVerifyInterval }()
+
+	var calls atomic.Int32
+	s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive},
+		func(context.Context) (commandMetadataFetchResult, error) {
+			calls.Add(1)
+			return testCommandMetadataFetchResultFor(nil, "8.10.0", "8.10.0"), nil
+		})
+	defer s.stopAndJoin()
+
+	// Cold start: first HELLO-less node callback loads live metadata immediately.
+	s.onClusterServerHelloReply(nil)
+	if !waitForCondition(t, time.Second, func() bool { return s.view().live }) {
+		t.Fatal("initial live view never published")
+	}
+	waitForCommandMetadataRefresh(t, s)
+	if calls.Load() != 1 {
+		t.Fatalf("initial calls = %d, want 1", calls.Load())
+	}
+
+	// Subsequent HELLO-less callbacks within cooldown are suppressed.
+	for range 5 {
+		s.onClusterServerHelloReply(nil)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if calls.Load() != 1 {
+		t.Fatalf("HELLO-less cluster callbacks inside cooldown triggered %d calls, want 1", calls.Load())
+	}
+
+	// An explicit non-empty fingerprint mismatch bypasses the HELLO-less cooldown.
+	s.onClusterServerHelloReply(map[string]interface{}{"version": "8.11.0"})
+	if !waitForCondition(t, time.Second, func() bool { return calls.Load() == 2 }) {
+		t.Fatalf("explicit fingerprint mismatch did not verify promptly (calls=%d)", calls.Load())
+	}
+	waitForCommandMetadataRefresh(t, s)
+
+	// Invalidating live metadata clears the cooldown so the next HELLO-less callback runs immediately.
+	s.invalidateLive()
+	s.onClusterServerHelloReply(nil)
+	if !waitForCondition(t, time.Second, func() bool { return calls.Load() == 3 && s.view().live }) {
+		t.Fatalf("HELLO-less callback after invalidateLive did not verify immediately (calls=%d)", calls.Load())
 	}
 }
 

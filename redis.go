@@ -1536,11 +1536,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	if c.cmdMeta.wantsServerHello() {
 		// Without HELLO, a reconnect must verify the old identity in the
-		// background.
+		// background, rate-limited to avoid probing on every pool dial.
 		if helloOK {
 			c.cmdMeta.onServerHello(helloServerFingerprint(helloCmd.Val()))
 		} else {
-			c.cmdMeta.requestVerification()
+			c.cmdMeta.requestHelloLessVerification()
 		}
 	}
 	if c.opt.onServerHello != nil {
