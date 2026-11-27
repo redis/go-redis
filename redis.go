@@ -3983,9 +3983,9 @@ func redisWireInt(s string) (int, bool) {
 // that follow it, written the way Redis accepts it on the wire (see
 // redisWireInt — "+1" and "01" are not well-formed, even though
 // strconv.Atoi accepts them). A raw command built with Do may carry numkeys as a
-// string, an integer, a byte slice or a string pointer — WriteArg sends
-// all of them the same way — so the validator accepts every form
-// evalScriptSource already does; anything else — a missing numkeys, a
+// string, a byte slice, a string pointer, or any Go integer kind —
+// WriteArg sends all of them the same way — so the validator accepts
+// every form evalScriptSource already does; anything else — a missing numkeys, a
 // non-integer value, a negative count, or a count past the argument
 // list — is not a valid count, so a "value is not an integer" error for
 // such a command comes from argument validation before execution. Args
@@ -3996,40 +3996,59 @@ func evalNumKeysValid(cmd Cmder) bool {
 	if len(args) < 3 {
 		return false
 	}
-	var n int
+	var n int64
 	switch v := args[2].(type) {
 	case string:
-		var ok bool
-		n, ok = redisWireInt(v)
+		parsed, ok := redisWireInt(v)
 		if !ok {
 			return false
 		}
+		n = int64(parsed)
 	case *string:
 		if v == nil {
 			return false
 		}
-		var ok bool
-		n, ok = redisWireInt(*v)
+		parsed, ok := redisWireInt(*v)
 		if !ok {
 			return false
 		}
+		n = int64(parsed)
 	case []byte:
 		if v == nil {
 			return false
 		}
-		var ok bool
-		n, ok = redisWireInt(string(v))
+		parsed, ok := redisWireInt(string(v))
 		if !ok {
 			return false
 		}
+		n = int64(parsed)
 	case int:
-		n = v
+		n = int64(v)
+	case int8:
+		n = int64(v)
+	case int16:
+		n = int64(v)
+	case int32:
+		n = int64(v)
 	case int64:
-		n = int(v)
+		n = v
+	case uint:
+		n = int64(v)
+	case uint8:
+		n = int64(v)
+	case uint16:
+		n = int64(v)
+	case uint32:
+		n = int64(v)
+	case uint64:
+		// A count past the argument list is invalid anyway; a value
+		// too large for int64 converts to a negative here and fails
+		// the range check below.
+		n = int64(v)
 	default:
 		return false
 	}
-	return n >= 0 && n <= len(args)-3
+	return n >= 0 && n <= int64(len(args)-3)
 }
 
 // evalScriptCached reports whether an answered EVAL or EVAL_RO populated
@@ -4086,10 +4105,12 @@ func evalScriptCached(cmd Cmder) bool {
 // results. They are required: a failed
 // swap-back must fail the batch rather than let the batch run in the
 // wrong database. And a swap-back clone a previous retry already
-// inserted is dropped, not re-dispatched: the fresh clone above already
-// undoes its original's swap once, so running the old clone as well
-// would swap the databases a second time and land later writes in the
-// wrong database. Only when a fresh clone is prepended: with no
+// inserted is dropped, not re-dispatched, unless the server explicitly
+// refused it: the fresh clone above already undoes its original's swap
+// once, so running the old clone as well would swap the databases a
+// second time and land later writes in the wrong database. A clone the
+// server refused never swapped, so its undo is still owed and it stays.
+// Only when a fresh clone is prepended: with no
 // answered original nothing undoes the swap yet, so the old clones stay
 // (see the early return below) — unless one already executed: its undo
 // already took effect, so re-sending it would swap the databases a
@@ -4163,7 +4184,15 @@ func pipelineWholeBatchRetry(ctx context.Context, cmds []Cmder) []Cmder {
 		markPipelineSynthetic(ctx, true, fresh)
 	}
 	for _, cmd := range cmds {
-		if synthetic[cmd.base()] && cmd.Name() == "swapdb" {
+		// Keep only a clone the server explicitly refused: its undo
+		// never took effect, so it is still owed alongside the fresh
+		// clone above. A clone that definitively ran already undid
+		// the swap once, and one whose reply was never read is
+		// dropped with it — the fresh clone already undoes the
+		// original's swap once, so running either again would swap
+		// the databases a second time and land later writes in the
+		// wrong database while Exec reports success.
+		if synthetic[cmd.base()] && cmd.Name() == "swapdb" && !(answered[cmd.base()] && pipelineCmdErr(cmd) != nil) {
 			continue
 		}
 		retry = append(retry, cmd)

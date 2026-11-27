@@ -11834,6 +11834,46 @@ func TestPipelineRetryEvalByteNumkeysIsPreloaded(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryEvalUintNumkeysIsPreloaded: the same preload rule as the
+// byte-slice case, for a numkeys passed as a Go integer kind WriteArg
+// serializes identically to int — uint(1) here (int32 behaves the same).
+// With the count rejected, the EVAL's runtime error is classified as a
+// pre-execution rejection: the script actually ran and cached, but the
+// retry never preloads it and the retried EVALSHA fails NOSCRIPT.
+// Regression test for the Codex P2 finding on #4351 (comment 4719969906,
+// on head 1d354a6).
+func TestPipelineRetryEvalUintNumkeysIsPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	sum := sha1.Sum([]byte(runtimeIntErrScript))
+	sha := hex.EncodeToString(sum[:])
+
+	ctx := context.Background()
+	pipe := client.Pipeline()
+	eval := pipe.Do(ctx, "eval", runtimeIntErrScript, uint(1), "bad")
+	evalsha := pipe.EvalSha(ctx, sha, nil)
+	_, err := pipe.Exec(ctx)
+	if err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("Exec: %v, want the EVAL's runtime integer error (it is the first command error)", err)
+	}
+	if err := eval.Err(); err == nil || !strings.Contains(err.Error(), "value is not an integer") {
+		t.Fatalf("EVAL: %v, want the runtime integer error", err)
+	}
+	if got, err := evalsha.Result(); err != nil || got != int64(1) {
+		t.Fatalf("EVALSHA = %v, %v; want 1, nil (the EVAL ran and cached the script before failing, so the retry must preload it)", got, err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (a runtime-failing EVAL populated the cache)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
 // TestEvalNumKeysValid: the numkeys argument of an EVAL may arrive as a
 // string, an integer, a byte slice or a string pointer — WriteArg sends
 // all of them the same way — so the validator must accept every form
@@ -11853,6 +11893,20 @@ func TestEvalNumKeysValid(t *testing.T) {
 		{"string", []any{"eval", "return 1", "1", "k1"}, true},
 		{"int", []any{"eval", "return 1", 1, "k1"}, true},
 		{"int64", []any{"eval", "return 1", int64(1), "k1"}, true},
+		// WriteArg serializes every Go integer kind the same way, so
+		// a uint or int32 count is a valid numkeys too — rejecting
+		// one makes a runtime error look like a pre-execution
+		// rejection and the retry skips the SCRIPT LOAD preload.
+		{"uint", []any{"eval", "return 1", uint(1), "k1"}, true},
+		{"uint8", []any{"eval", "return 1", uint8(1), "k1"}, true},
+		{"uint16", []any{"eval", "return 1", uint16(1), "k1"}, true},
+		{"uint32", []any{"eval", "return 1", uint32(1), "k1"}, true},
+		{"uint64", []any{"eval", "return 1", uint64(1), "k1"}, true},
+		{"int8", []any{"eval", "return 1", int8(1), "k1"}, true},
+		{"int16", []any{"eval", "return 1", int16(1), "k1"}, true},
+		{"int32", []any{"eval", "return 1", int32(1), "k1"}, true},
+		{"negative int32", []any{"eval", "return 1", int32(-1), "k1"}, false},
+		{"uint count past the arguments", []any{"eval", "return 1", uint(2), "k1"}, false},
 		{"byte slice", []any{"eval", "return 1", []byte("1"), "k1"}, true},
 		{"string pointer", []any{"eval", "return 1", &strNumkeys, "k1"}, true},
 		{"zero keys", []any{"eval", "return 1", 0}, true},
@@ -12774,6 +12828,52 @@ func TestPipelineRetryWholeBatchDropsExecutedInverseWhenNoSwapQualifies(t *testi
 	}
 	if retry[0] != set || retry[1] != swapdb || retry[2] != wait {
 		t.Fatalf("whole-batch retry returned commands other than the originals, want the executed inverse dropped and nothing fresh prepended")
+	}
+}
+
+// TestPipelineRetryWholeBatchKeepsRefusedInverseWhenFreshInversePrepended: a
+// whole-batch retry must not drop a swap-back clone a previous attempt was
+// refused when an original SWAPDB still qualifies for a fresh inverse.
+// With `PING; SET out v; SWAPDB 0 1; WAIT 1 1000` reading `[PONG,
+// NOREPLICAS, OK, 1]` the rebuild is `inverse-SWAPDB; SET; SWAPDB; WAIT`;
+// when that retry reads `[NOREPLICAS, NOREPLICAS, OK, 1]` the original swap
+// ran again but its inverse was explicitly refused, so the undo is still
+// owed — yet the old rebuild dropped every synthetic clone whenever a fresh
+// inverse was prepended, so the next attempt ran SET in the wrong database
+// and the final attempt returned nil after four successful swaps, leaving
+// the databases unswapped instead of applying the requested permutation.
+// Regression test for the Codex P1 finding on #4351 (comment 4719969899,
+// on head 1d354a6).
+func TestPipelineRetryWholeBatchKeepsRefusedInverseWhenFreshInversePrepended(t *testing.T) {
+	ctx := context.Background()
+	noreplicas := proto.RedisError("NOREPLICAS Not enough replicas to apply the swap")
+	// The batch as the second attempt dispatched it: the inverse clone a
+	// previous whole-batch retry prepended (refused), then the originals.
+	oldInverse := NewCmd(ctx, "swapdb", 1, 0)
+	oldInverse.SetErr(noreplicas)
+	set := NewCmd(ctx, "set", "out", "v")
+	set.SetErr(noreplicas)
+	swapdb := NewCmd(ctx, "swapdb", 0, 1)
+	wait := NewIntCmd(ctx, "wait", 1, 1000)
+	cmds := []Cmder{oldInverse, set, swapdb, wait}
+
+	answered := map[*baseCmd]bool{oldInverse.base(): true, set.base(): true, swapdb.base(): true, wait.base(): true}
+	synthetic := map[*baseCmd]bool{oldInverse.base(): true}
+	ctx = context.WithValue(ctx, pipelineAnsweredKey{}, answered)
+	ctx = context.WithValue(ctx, pipelineSyntheticKey{}, synthetic)
+	ctx = context.WithValue(ctx, pipelineRequiredSyntheticKey{}, map[*baseCmd]bool{})
+
+	retry := pipelineWholeBatchRetry(ctx, cmds)
+	// The answered original qualifies for a fresh inverse, and the refused
+	// old inverse is still owed, so both swaps run ahead of the originals.
+	if got := cmdNames(retry); len(got) != 5 || got[0] != "swapdb" || got[1] != "swapdb" || got[2] != "set" || got[3] != "swapdb" || got[4] != "wait" {
+		t.Fatalf("whole-batch retry = %v, want [swapdb swapdb set swapdb wait] (a fresh inverse for the answered original, the refused old inverse kept, then the originals)", got)
+	}
+	if retry[1] != oldInverse {
+		t.Fatalf("whole-batch retry dropped the refused inverse, want it kept second so its undo still runs")
+	}
+	if retry[2] != set || retry[3] != swapdb || retry[4] != wait {
+		t.Fatalf("whole-batch retry returned commands other than the originals after the inverses, want the original SET, SWAPDB and WAIT in order")
 	}
 }
 
