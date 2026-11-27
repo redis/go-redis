@@ -1722,6 +1722,65 @@ func clusterCSCLiveEventually(t testing.TB, check func() bool) {
 	t.Fatal("live Cluster condition did not complete")
 }
 
+func clusterCSCLiveFailover(ctx context.Context, replica *Client) error {
+	for {
+		err := replica.ClusterFailover(ctx).Err()
+		// Replication and role gossip may converge before the cluster-bus link.
+		if err == nil || !HasErrorPrefix(err, "Master is down or failed") {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("manual failover: %w (retry stopped: %v)", err, ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func TestClusterCSCLiveFailoverRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		replies   []string
+		timeout   time.Duration
+		wantCalls int32
+		wantErr   string
+	}{
+		{name: "immediate success", replies: []string{"+OK\r\n"}, timeout: time.Second, wantCalls: 1},
+		{name: "transient failure", replies: []string{"-ERR Master is down or failed, please use CLUSTER FAILOVER FORCE\r\n", "+OK\r\n"}, timeout: time.Second, wantCalls: 2},
+		{name: "unexpected failure", replies: []string{"-ERR not a replica\r\n"}, timeout: time.Second, wantCalls: 1, wantErr: "not a replica"},
+		{name: "timeout", replies: []string{"-ERR Master is down or failed, please use CLUSTER FAILOVER FORCE\r\n"}, timeout: 300 * time.Millisecond, wantErr: "retry stopped: context deadline exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			addr := newClusterCSCTestServer(t, func(command string) string {
+				if command == "cluster" {
+					i := int(calls.Add(1)) - 1
+					if i >= len(tc.replies) {
+						i = len(tc.replies) - 1
+					}
+					return tc.replies[i]
+				}
+				if command == "hello" {
+					return "%0\r\n"
+				}
+				return "+OK\r\n"
+			})
+			client := NewClient(&Options{Addr: addr, DisableIdentity: true, MaxRetries: -1,
+				MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}})
+			t.Cleanup(func() { _ = client.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
+			defer cancel()
+			err := clusterCSCLiveFailover(ctx, client)
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := calls.Load(); got == 0 || tc.wantCalls != 0 && got != tc.wantCalls {
+				t.Fatalf("failover calls = %d, want %d", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
 func TestClusterCSCLiveReplicaInvalidation(t *testing.T) {
 	writer, _ := newClusterCSCLive(t)
 	ctx := context.Background()
@@ -1986,9 +2045,15 @@ func TestClusterCSCLiveChangedValueFailoverFailback(t *testing.T) {
 			return err == nil && n.opt.Addr == expected.opt.Addr
 		})
 	}
-	if err := b.ClusterFailover(ctx).Err(); err != nil {
-		t.Fatal(err)
+	failover := func(replica *Client) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := clusterCSCLiveFailover(ctx, replica); err != nil {
+			t.Fatal(err)
+		}
 	}
+	failover(b)
 	reloadOwner(b)
 	if err := c.Set(ctx, key, "changed-on-b", 0).Err(); err != nil {
 		t.Fatal(err)
@@ -2029,9 +2094,7 @@ func TestClusterCSCLiveChangedValueFailoverFailback(t *testing.T) {
 		}
 		return true
 	})
-	if err := a.ClusterFailover(ctx).Err(); err != nil {
-		t.Fatal(err)
-	}
+	failover(a)
 	reloadOwner(a)
 	for i := 0; i < 3; i++ {
 		if got, err := c.Get(ctx, key).Result(); err != nil || got != "changed-on-b" {
@@ -2535,19 +2598,11 @@ func TestClusterCSCLive(t *testing.T) {
 			t.Fatal(err)
 		}
 		clusterCSCLiveEventually(t, func() bool { return replica.Get(ctx, key).Val() == "before" })
-		// A plain CLUSTER FAILOVER fails with "Master is down or failed"
-		// until the replica's cluster-bus link to its master is up. The
-		// previous subtests reshape the cluster, so retry until it is accepted.
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			err := replica.ClusterFailover(ctx).Err()
-			if err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal(err)
-			}
-			time.Sleep(50 * time.Millisecond)
+		// The replica's cluster-bus link can lag behind data replication.
+		failoverCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := clusterCSCLiveFailover(failoverCtx, replica); err != nil {
+			t.Fatal(err)
 		}
 		clusterCSCLiveEventually(t, func() bool {
 			_, e := c.state.Reload(ctx)
