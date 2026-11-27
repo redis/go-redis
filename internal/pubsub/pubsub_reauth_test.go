@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -112,17 +113,91 @@ func TestReAuthPasswordOnly(t *testing.T) {
 }
 
 // A subscribed RESP2 connection cannot run AUTH: new credentials replace
-// the connection instead, and the replacement resubscribes.
+// the connection instead. The old connection is unsubscribed and fenced
+// before the replacement resubscribes, and it is read up to the fence
+// pong, so a message the server queued on it is still delivered.
 func TestReAuthRESP2ReplacesConnection(t *testing.T) {
+	t.Run("ConfirmedBeforeRotation", func(t *testing.T) {
+		testReAuthRESP2Drain(t, true)
+	})
+	// The subscribe confirmation is still unread on the old connection
+	// when the rotation swaps it out. It must still confirm the handle,
+	// or the messages after it on the old connection are skipped.
+	t.Run("ConfirmationUnreadAtRotation", func(t *testing.T) {
+		testReAuthRESP2Drain(t, false)
+	})
+}
+
+func testReAuthRESP2Drain(t *testing.T, confirmFirst bool) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	var replace atomic.Bool
+	m := newReAuthTestManager(t, srv, false, &replace)
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	ch := h.Channel()
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "ch")
+	if confirmFirst {
+		fsc1.sendConfirm(t, "subscribe", "ch", 1)
+		fsc1.sendMessage(t, "message", "ch", "before")
+		if msg := recvMsg(t, ch); msg.Payload != "before" {
+			t.Fatalf("got %q, want \"before\"", msg.Payload)
+		}
+	}
+
+	if err := fsc1.poolConn.GetPubSubReAuth()("user", "pass"); err != nil {
+		t.Fatalf("re-auth: %v", err)
+	}
+	fsc2 := srv.waitDial(t)
+	fsc1.expectCmd(t, "unsubscribe")
+	fsc1.expectCmd(t, "punsubscribe")
+	fence := fsc1.waitCmd(t)
+	if len(fence) != 2 || fence[0] != "ping" || !strings.HasPrefix(fence[1], "go-redis-rotation-") {
+		t.Fatalf("fence = %v, want [ping go-redis-rotation-...]", fence)
+	}
+	fsc2.expectCmd(t, "subscribe", "ch")
+
+	if !confirmFirst {
+		fsc1.sendConfirm(t, "subscribe", "ch", 1)
+	}
+	// Queued on the old connection ahead of the fence: still delivered.
+	fsc1.sendMessage(t, "message", "ch", "queued")
+	if msg := recvMsg(t, ch); msg.Payload != "queued" {
+		t.Fatalf("got %q, want \"queued\"", msg.Payload)
+	}
+	fsc1.pong(fence)
+	fsc1.expectClosed(t)
+
+	fsc2.sendConfirm(t, "subscribe", "ch", 1)
+	fsc2.sendMessage(t, "message", "ch", "after")
+	if msg := recvMsg(t, ch); msg.Payload != "after" {
+		t.Fatalf("got %q, want \"after\"", msg.Payload)
+	}
+}
+
+// A replaced RESP2 connection whose fence pong never arrives is closed
+// after rotationDrainTimeout, and the read loop moves on to the
+// replacement.
+func TestReAuthRESP2DrainTimeout(t *testing.T) {
+	old := rotationDrainTimeout
+	rotationDrainTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { rotationDrainTimeout = old })
+
 	ctx := context.Background()
 	srv := newFakeServer()
 	srv.autoConfirm = true
 	var replace atomic.Bool
 	m := newReAuthTestManager(t, srv, false, &replace)
 
-	if _, err := m.Subscribe(ctx, "ch"); err != nil {
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
+	ch := h.Channel()
 	fsc1 := srv.waitDial(t)
 	fsc1.expectCmd(t, "subscribe", "ch")
 
@@ -132,6 +207,11 @@ func TestReAuthRESP2ReplacesConnection(t *testing.T) {
 	fsc2 := srv.waitDial(t)
 	fsc2.expectCmd(t, "subscribe", "ch")
 	fsc1.expectClosed(t)
+
+	fsc2.sendMessage(t, "message", "ch", "after")
+	if msg := recvMsg(t, ch); msg.Payload != "after" {
+		t.Fatalf("got %q, want \"after\"", msg.Payload)
+	}
 }
 
 // ReAuth on a closed manager reports ErrClosed.

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -197,7 +198,29 @@ type Manager struct {
 	// connection was still being dialed; installLocked writes it after
 	// the replay (see ReAuth). Guarded by mu.
 	pendingAuth *pendingReAuth
+
+	// draining holds the connections a RESP2 credential rotation
+	// replaced, oldest first. Each one was unsubscribed and sent a fence
+	// PING before its replacement subscribed. The read loop reads the
+	// oldest one until the fence pong, so the messages the server queued
+	// on it are still delivered, then closes it (see receive). drainSeq
+	// makes the fence payloads unique. Guarded by mu.
+	draining []*drainingConn
+	drainSeq uint64
 }
+
+// drainingConn is a replaced connection still being read until its
+// fence pong (see Manager.draining).
+type drainingConn struct {
+	cn     *pool.Conn
+	fence  string
+	closed bool
+	timer  *time.Timer
+}
+
+// rotationDrainTimeout bounds how long a replaced connection stays open
+// when its fence pong does not arrive.
+var rotationDrainTimeout = 30 * time.Second
 
 // pendingReAuth is a deferred AUTH for a connection not yet installed.
 type pendingReAuth struct {
@@ -787,6 +810,11 @@ func (m *Manager) closeNowLocked(closed *pool.Conn, closedErr error) error {
 		m.conn.Store(nil)
 	}
 
+	for _, d := range m.draining {
+		m.closeDrainingLocked(d)
+	}
+	m.draining = nil
+
 	for _, h := range slices.Collect(maps.Keys(m.handles)) {
 		h.closeLocked()
 	}
@@ -867,6 +895,8 @@ func (m *Manager) listen() {
 			m.mu.Lock()
 			if m.conn.Load() == cn {
 				m.fanoutSubscriptionLocked(ev)
+			} else if m.isDrainingLocked(cn) {
+				m.confirmFromDrainLocked(ev)
 			}
 			m.mu.Unlock()
 			continue
@@ -1622,6 +1652,104 @@ func (m *Manager) resolveAddrLocked(prev *pool.Conn) {
 	}
 }
 
+// writeFenceLocked unsubscribes cn from every channel, pattern and shard
+// channel, then writes PING fence. The replies are not ledgered: the
+// read loop ignores confirmations and pongs from a connection that is
+// not live, and stops draining cn at the fence pong. Callers must hold
+// m.mu.
+func (m *Manager) writeFenceLocked(cn *pool.Conn, fence string) error {
+	writeTimeout := m.cfg.WriteTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = fallbackWriteTimeout
+	}
+	cmds := [][]any{{"unsubscribe"}, {"punsubscribe"}}
+	if len(m.shardSubscribers) > 0 || len(m.leavingShards) > 0 {
+		cmds = append(cmds, []any{"sunsubscribe"})
+	}
+	cmds = append(cmds, []any{"ping", fence})
+	return cn.WithWriter(socketCtx, writeTimeout, func(wr *proto.Writer) error {
+		for _, args := range cmds {
+			if err := wr.WriteArgs(args); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// startDrainLocked queues cn, already fenced, for the read loop to drain
+// (see Manager.draining). A timer closes it if the fence pong does not
+// arrive. Callers must hold m.mu.
+func (m *Manager) startDrainLocked(cn *pool.Conn, fence string) {
+	d := &drainingConn{cn: cn, fence: fence}
+	d.timer = time.AfterFunc(rotationDrainTimeout, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.closeDrainingLocked(d)
+	})
+	m.draining = append(m.draining, d)
+}
+
+// closeDrainingLocked closes d's connection once. It stays queued: the
+// read loop removes it when its read fails (see finishDrainLocked).
+// Callers must hold m.mu.
+func (m *Manager) closeDrainingLocked(d *drainingConn) {
+	if d.closed {
+		return
+	}
+	d.closed = true
+	d.timer.Stop()
+	_ = m.hooks.CloseConn(d.cn)
+}
+
+// finishDrainLocked ends the drain of cn, the oldest draining
+// connection: it is closed and the read loop moves on. Callers must
+// hold m.mu.
+func (m *Manager) finishDrainLocked(cn *pool.Conn) {
+	if len(m.draining) == 0 || m.draining[0].cn != cn {
+		return
+	}
+	d := m.draining[0]
+	m.draining = m.draining[1:]
+	m.closeDrainingLocked(d)
+}
+
+// isDrainingLocked reports whether cn is a connection being drained
+// (see Manager.draining). Callers must hold m.mu.
+func (m *Manager) isDrainingLocked(cn *pool.Conn) bool {
+	for _, d := range m.draining {
+		if d.cn == cn {
+			return true
+		}
+	}
+	return false
+}
+
+// confirmFromDrainLocked handles a confirmation read from a draining
+// connection. A subscribe confirmation that was still unread at the
+// swap confirms the handles that do not have it yet, so the messages
+// that follow it on the draining connection reach them. The ledger is
+// not touched: it belongs to the live connection. Unsubscribe
+// confirmations are the rotation's own (see writeFenceLocked) and are
+// ignored. Callers must hold m.mu.
+func (m *Manager) confirmFromDrainLocked(sub *Subscription) {
+	switch sub.Kind {
+	case "subscribe", "psubscribe", "ssubscribe":
+	default:
+		return
+	}
+	entry := m.registryForKind(sub.Kind)[sub.Channel]
+	if entry == nil {
+		return
+	}
+	key := confirmKeyFor(sub.Kind, sub.Channel)
+	for h := range entry.handles {
+		if _, ok := h.confirmed[key]; !ok {
+			h.deliverSubscriptionLocked(sub)
+		}
+	}
+}
+
 // installLocked installs a dial's outcome; the dialer calls it with
 // m.mu held. A new connection replaces the live one, if any, with the
 // registry replay written on it first: the old connection is retired
@@ -1655,9 +1783,29 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 		return errPubSubNoConn
 	}
 
+	// A RESP2 credential rotation replaces a healthy connection. Its
+	// subscriptions are released before the replay subscribes the new
+	// one, so no message arrives on both, and the read loop drains it up
+	// to the fence (see Manager.draining).
+	var fence string
+	if live := m.conn.Load(); live != nil && errors.Is(reason, errReAuthRESP2) && live.IsUsable() {
+		m.drainSeq++
+		fence = fmt.Sprintf("go-redis-rotation-%d-%d", live.GetID(), m.drainSeq)
+		if err := m.writeFenceLocked(live, fence); err != nil {
+			// The old connection may now be unsubscribed or desynced:
+			// close it at the swap, as without a drain.
+			fence = ""
+		}
+	}
+
 	cmds, waiters := m.prepareReplayLocked()
 	if err = m.writeLocked(socketCtx, cn, cmds); err != nil {
 		_ = m.hooks.CloseConn(cn)
+		if fence != "" {
+			// The fence unsubscribed the live connection: drop it, so
+			// the restoration replays the registry.
+			m.dropConnLocked(err)
+		}
 		m.dialFailedLocked("resubscribe failed", reason, err)
 		return err
 	}
@@ -1672,7 +1820,11 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 		// The old connection's outstanding replies die with the switch;
 		// settle them before the replay installs the fresh ledger.
 		m.failReplyWaitersLocked(cmp.Or(reason, error(errConnUnusable)))
-		_ = m.hooks.CloseConn(oldConn)
+		if fence != "" {
+			m.startDrainLocked(oldConn, fence)
+		} else {
+			_ = m.hooks.CloseConn(oldConn)
+		}
 	} else {
 		m.settleUnsubscribeWaitersLocked(m.replyQueue)
 		m.replyQueue = nil
@@ -2192,9 +2344,15 @@ func (m *Manager) dropConnLocked(err error) {
 // connection it was read from.
 func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 	// Snapshot the connection: reconnect may replace m.conn while this
-	// goroutine is blocked reading.
+	// goroutine is blocked reading. A connection replaced by a RESP2
+	// credential rotation is read first, up to its fence (see
+	// Manager.draining).
 	m.mu.RLock()
 	cn := m.conn.Load()
+	var fence string
+	if len(m.draining) > 0 {
+		cn, fence = m.draining[0].cn, m.draining[0].fence
+	}
 	m.mu.RUnlock()
 
 	if cn == nil {
@@ -2252,6 +2410,18 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 		reply, err = rd.ReadReply()
 		return err
 	})
+	if err != nil && fence != "" {
+		// A draining connection: an error reply (e.g. SUNSUBSCRIBE on a
+		// server without it) is ignored, a broken or timed-out
+		// connection ends the drain.
+		m.flushBatch()
+		if m.hooks.IsBadConn(err, false) {
+			m.mu.Lock()
+			m.finishDrainLocked(cn)
+			m.mu.Unlock()
+		}
+		return nil, nil, nil
+	}
 	if err != nil {
 		// Error handling below delivers too: the batch goes first.
 		m.flushBatch()
@@ -2338,6 +2508,15 @@ func (m *Manager) receive(ctx context.Context) (any, *pool.Conn, error) {
 	if err != nil {
 		m.parseLog.Printf(ctx, "pubsub: skipped a frame on shared connection: %v", err)
 		return nil, nil, nil
+	}
+	if fence != "" {
+		if pong, ok := parsed.(*Pong); ok && pong.Payload == fence {
+			m.flushBatch()
+			m.mu.Lock()
+			m.finishDrainLocked(cn)
+			m.mu.Unlock()
+			return nil, nil, nil
+		}
 	}
 
 	// Record received-message telemetry.
