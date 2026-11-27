@@ -91,6 +91,12 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return false
 	}
 
+	// A callback error comes from user code, not the server: never retry on
+	// what it wraps.
+	if isReplyLevelStreamingError(err) {
+		return false
+	}
+
 	// Check for EOF errors (works with wrapped errors)
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
@@ -197,6 +203,12 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 	// Pub/Sub permits receive timeouts even when the socket deadline came from ctx.
 	var deadlineErr *pool.ContextDeadlineError
 	if allowTimeout && errors.As(err, &deadlineErr) {
+		return false
+	}
+
+	// A streaming callback failure (even one wrapping a context error) leaves
+	// the connection aligned: the reply was fully read.
+	if isReplyLevelStreamingError(err) {
 		return false
 	}
 

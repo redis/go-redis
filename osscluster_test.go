@@ -1433,6 +1433,23 @@ var _ = Describe("ClusterClient", func() {
 			})
 		})
 
+		It("should stream CLIENT LIST from a shard", func() {
+			var names []string
+			cmd := client.ClientListStreaming(ctx, func(info *redis.ClientInfo) error {
+				names = append(names, info.Name)
+				return nil
+			})
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			Expect(cmd.Val()).To(Equal(len(names)))
+			Expect(names).To(ContainElement("cluster_hi"))
+
+			// A callback error must not poison the shard connection.
+			boom := errors.New("boom")
+			Expect(client.ClientListStreaming(ctx, func(*redis.ClientInfo) error { return boom }).Err()).
+				To(MatchError(boom))
+			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+		})
+
 		It("should CLUSTER PROTO 3", func() {
 			_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
 				val, err := c.Do(ctx, "HELLO").Result()

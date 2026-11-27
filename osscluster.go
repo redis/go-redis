@@ -2343,6 +2343,11 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		if lastErr == nil || lastErr == Nil {
 			return lastErr
 		}
+		// The reply was read in full; a streaming callback error must not
+		// drive redirects or topology retries on what it wraps.
+		if isReplyLevelStreamingError(lastErr) {
+			return lastErr
+		}
 		var fanoutErr *clusterFanoutExecutionError
 		if errors.As(lastErr, &fanoutErr) {
 			return fanoutErr.err
@@ -3624,6 +3629,9 @@ type pipelineRedirect struct {
 func (c *ClusterClient) checkMovedErr(
 	ctx context.Context, from *clusterNode, cmd Cmder, err error, servingEndpoint string,
 ) pipelineRedirect {
+	if isReplyLevelStreamingError(err) {
+		return pipelineRedirect{}
+	}
 	moved, ask, addr := isMovedError(err)
 	if !moved && !ask {
 		return pipelineRedirect{}
