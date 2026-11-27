@@ -293,8 +293,34 @@ type ClusterOptions struct {
 	// ClusterStateReloadInterval is the interval for reloading the cluster state.
 	// MOVED/ASK redirects still trigger an immediate reactive reload, so this
 	// only bounds how stale a topology can get without traffic errors.
-	// Default is 60 seconds.
+	// Default is 60 seconds, or 10 seconds with StandaloneFallback (unless
+	// ClusterSlots is set).
 	ClusterStateReloadInterval time.Duration
+
+	// StandaloneFallback lets the client work against a non-cluster endpoint.
+	// When no node returns a topology and a node replies that cluster support
+	// is disabled or the CLUSTER command is unknown, the client uses a
+	// single-node topology with that node owning all slots. Topology reloads
+	// keep running, so the client switches to the real topology when the
+	// endpoint becomes a cluster, and back when it stops being one.
+	// Seeds in Addrs are preferred, in order, over nodes from an old
+	// topology, so list the primary first.
+	// With ReadOnly, a rejected READONLY on such a node is ignored.
+	// Network errors never trigger the fallback. Ignored when ClusterSlots
+	// is set.
+	//
+	// A standalone server sends no MOVED, so a switch back to standalone is
+	// seen only on the next reload: periodic, or after errors from the old
+	// nodes. Until then commands still go to the old nodes. The default
+	// ClusterStateReloadInterval is 10 seconds with this option to keep that
+	// window short.
+	//
+	// Write cluster-safe code even while the endpoint is standalone: a
+	// standalone server accepts keys from any slot, a cluster does not.
+	// MULTI/EXEC and WATCH keys must share a slot (checked by the client in
+	// both modes), and scripts must declare every key they touch in KEYS and
+	// keep them in one slot, or they fail with CROSSSLOT after the switch.
+	StandaloneFallback bool
 }
 
 func (opt *ClusterOptions) init() {
@@ -381,6 +407,11 @@ func (opt *ClusterOptions) init() {
 
 	if opt.ClusterStateReloadInterval == 0 {
 		opt.ClusterStateReloadInterval = 60 * time.Second
+		if opt.StandaloneFallback && opt.ClusterSlots == nil {
+			// A standalone server sends no MOVED; reload sooner to see a
+			// cluster -> standalone switch. ClusterSlots disables the fallback.
+			opt.ClusterStateReloadInterval = 10 * time.Second
+		}
 	}
 }
 
@@ -515,6 +546,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.ConnMaxLifetimeReapInterval = q.duration("conn_max_lifetime_reap_interval")
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.FailingTimeoutSeconds = q.int("failing_timeout_seconds")
+	o.StandaloneFallback = q.bool("standalone_fallback")
 	if o.TLSConfig != nil && q.has("skip_verify") {
 		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
 	}
@@ -626,6 +658,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		// READONLY command against that node -- setting readOnly to false in such
 		// situations in the options below will prevent that from happening.
 		readOnly:                  opt.ReadOnly && opt.ClusterSlots == nil,
+		ignoreReadOnlyUnsupported: opt.StandaloneFallback,
 		UnstableResp3:             opt.UnstableResp3,
 		cscMetadataSource:         opt.cscMetadataSource,
 		MaintNotificationsConfig:  maintNotificationsConfig,
@@ -1017,6 +1050,10 @@ type clusterState struct {
 
 	generation uint32
 	createdAt  time.Time
+
+	// standalone marks a StandaloneFallback topology: one non-cluster node
+	// owning all slots.
+	standalone bool
 }
 
 func (c *clusterState) declaredMasters() []*clusterNode {
@@ -1091,6 +1128,34 @@ func clusterMetadataSourceChanged(current, previous *clusterState) bool {
 		}
 	}
 	return false
+}
+
+// pickStandaloneAddr picks the StandaloneFallback node: the first seed, in
+// configured order, that replied it is not a cluster. Seeds name the
+// endpoint the user asked for; other candidates are nodes left over from an
+// old topology, used only when no seed qualifies.
+func pickStandaloneAddr(seeds, candidates []string) string {
+	for _, seed := range seeds {
+		if slices.Contains(candidates, seed) {
+			return seed
+		}
+	}
+	return candidates[0]
+}
+
+// newStandaloneClusterState builds the StandaloneFallback topology: addr
+// owns every slot and has no replicas.
+func newStandaloneClusterState(nodes *clusterNodes, addr string) (*clusterState, error) {
+	state, err := newClusterState(nodes, []ClusterSlot{{
+		Start: 0,
+		End:   16383,
+		Nodes: []ClusterNode{{Addr: addr}},
+	}}, addr)
+	if err != nil {
+		return nil, err
+	}
+	state.standalone = true
+	return state, nil
 }
 
 func newClusterState(
@@ -2680,7 +2745,18 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 		}
 	}
 
+	if c.opt.StandaloneFallback {
+		// Known nodes come from the last topology and may not include the
+		// seeds. Try the seeds last so a downgraded endpoint is found.
+		for _, seed := range c.opt.Addrs {
+			addrs = appendIfNotExist(addrs, seed)
+		}
+	}
+
 	var firstErr error
+	// Nodes that replied they are not a cluster; used by StandaloneFallback
+	// when no node returns a real topology.
+	var notCluster []string
 
 	for _, addr := range addrs {
 		if err := ctx.Err(); err != nil {
@@ -2731,6 +2807,9 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 		if slotsErr == nil {
 			return newClusterState(c.nodes, slots, addr)
 		}
+		if c.opt.StandaloneFallback && isClusterUnsupportedError(slotsErr) {
+			notCluster = append(notCluster, addr)
+		}
 		if firstErr == nil {
 			if shardsErr != nil {
 				firstErr = shardsErr
@@ -2738,6 +2817,10 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 				firstErr = slotsErr
 			}
 		}
+	}
+
+	if len(notCluster) > 0 {
+		return newStandaloneClusterState(c.nodes, pickStandaloneAddr(c.opt.Addrs, notCluster))
 	}
 
 	/*

@@ -1335,14 +1335,14 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// untracked, so it must not keep the OPTOUT NO prefix (#4236).
 		c.cscForgetConn(cn.GetID())
 	}
-	var trackingCmd *StatusCmd
+	var trackingCmd, readOnlyCmd *StatusCmd
 	initCmds, initErr := conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
 		}
 
 		if c.opt.readOnly {
-			pipe.ReadOnly(ctx)
+			readOnlyCmd = pipe.ReadOnly(ctx)
 		}
 
 		if c.opt.ClientName != "" {
@@ -1359,6 +1359,23 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// The exemption is init-only. OnConnect is user code and must go through
 	// the same CSC connection-state guard as every other public command path.
 	conn.baseClient.allowClientTracking = false
+	// A standalone node behind a cluster client with StandaloneFallback
+	// rejects READONLY. It has no replicas, so the conn stays usable.
+	if readOnlyCmd != nil && c.opt.ignoreReadOnlyUnsupported &&
+		isClusterUnsupportedError(readOnlyCmd.Err()) {
+		kept := make([]Cmder, 0, len(initCmds))
+		initErr = nil
+		for _, cmd := range initCmds {
+			if cmd == readOnlyCmd {
+				continue
+			}
+			kept = append(kept, cmd)
+			if initErr == nil {
+				initErr = cmd.Err()
+			}
+		}
+		initCmds = kept
+	}
 	trackingRejected := trackingCmd != nil && isRedisError(trackingCmd.Err())
 	for _, cmd := range initCmds {
 		if cmd != trackingCmd && cmd.Err() != nil {

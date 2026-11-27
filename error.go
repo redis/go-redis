@@ -295,6 +295,21 @@ func isReadOnlyError(err error) bool {
 	return proto.IsReadOnlyError(err)
 }
 
+// isClusterUnsupportedError reports whether a server rejected a cluster
+// command (CLUSTER SLOTS, READONLY) because it does not run in cluster mode.
+// It matches the server's message, not err.Error(), so a hook that wraps the
+// error does not hide it.
+func isClusterUnsupportedError(err error) bool {
+	var redisErr proto.RedisError
+	if !errors.As(err, &redisErr) {
+		return false
+	}
+	s := strings.ToLower(string(redisErr))
+	return strings.Contains(s, "cluster support disabled") ||
+		strings.HasPrefix(s, "err unknown command") ||
+		strings.HasPrefix(s, "err unknown subcommand")
+}
+
 func isMovedSameConnAddr(err error, addr string) bool {
 	movedErr, ok := proto.IsMovedError(err)
 	if !ok {
