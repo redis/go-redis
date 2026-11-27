@@ -1,8 +1,14 @@
 package redis
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -222,4 +228,189 @@ func TestSentinelOptionsMinIdleConnsZero(t *testing.T) {
 	if sopt.PoolSize != 100 {
 		t.Fatalf("sentinel PoolSize = %d, want inherited 100", sopt.PoolSize)
 	}
+}
+
+// TestSentinelFailoverMasterAddrCoalesces checks that a cold burst of
+// MasterAddr calls shares one SENTINEL get-master-addr-by-name query (#4146).
+// The fake sentinel holds its first reply until every caller has joined the
+// in-flight lookup (through onWaiter), so the burst cannot race the reply the
+// way a fixed sleep did.
+func TestSentinelFailoverMasterAddrCoalesces(t *testing.T) {
+	const (
+		n          = 40
+		masterAddr = "127.0.0.1:6379"
+	)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen sentinel: %v", err)
+	}
+	defer ln.Close()
+
+	var queries atomic.Int32
+	firstQuery := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveHeldMasterAddr(conn, masterAddr, &queries, firstQuery, release)
+		}
+	}()
+
+	sentinelAddr := ln.Addr().String()
+	failover := &sentinelFailover{
+		opt: &FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: []string{sentinelAddr},
+			PoolSize:      n,
+			DialTimeout:   time.Second,
+			ReadTimeout:   time.Second,
+			WriteTimeout:  time.Second,
+		},
+		sentinelAddrs: []string{sentinelAddr},
+	}
+	defer func() { _ = failover.Close() }()
+
+	joined := make(chan struct{}, n)
+	failover.masterAddrFlight.onWaiter = func() { joined <- struct{}{} }
+
+	var wg sync.WaitGroup
+	addrs := make(chan string, n)
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			addr, err := failover.MasterAddr(context.Background())
+			if err != nil {
+				errs <- err
+				return
+			}
+			addrs <- addr
+		}()
+	}
+
+	select {
+	case <-firstQuery:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sentinel did not receive get-master-addr-by-name")
+	}
+	// Every other caller has joined the in-flight lookup, so releasing the
+	// reply cannot let a late caller start a second one.
+	for i := 0; i < n-1; i++ {
+		select {
+		case <-joined:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d callers joined the lookup, want %d", i, n-1)
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(addrs)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("MasterAddr: %v", err)
+	}
+	for addr := range addrs {
+		if addr != masterAddr {
+			t.Fatalf("MasterAddr = %q, want %q", addr, masterAddr)
+		}
+	}
+	if got := queries.Load(); got != 1 {
+		t.Fatalf("get-master-addr-by-name queries = %d, want 1", got)
+	}
+}
+
+// serveHeldMasterAddr answers a fake sentinel connection. It holds the first
+// get-master-addr-by-name reply until release, and answers every later one
+// immediately.
+func serveHeldMasterAddr(
+	conn net.Conn,
+	masterAddr string,
+	queries *atomic.Int32,
+	firstQuery chan struct{},
+	release <-chan struct{},
+) {
+	defer conn.Close()
+	host, port, _ := net.SplitHostPort(masterAddr)
+	rd := bufio.NewReader(conn)
+	for {
+		args, err := readSentinelCommand(rd)
+		if err != nil {
+			return
+		}
+		var reply string
+		switch {
+		case len(args) == 3 && strings.EqualFold(args[0], "sentinel") &&
+			strings.EqualFold(args[1], "get-master-addr-by-name"):
+			if queries.Add(1) == 1 {
+				close(firstQuery)
+			}
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+				return
+			}
+			reply = fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(host), host, len(port), port)
+		case strings.EqualFold(args[0], "sentinels"):
+			// No other sentinels to discover.
+			reply = "*0\r\n"
+		case strings.EqualFold(args[0], "psubscribe"):
+			var b strings.Builder
+			for i, pattern := range args[1:] {
+				fmt.Fprintf(&b, "*3\r\n$10\r\npsubscribe\r\n$%d\r\n%s\r\n:%d\r\n", len(pattern), pattern, i+1)
+			}
+			reply = b.String()
+		case strings.EqualFold(args[0], "hello"):
+			reply = "-NOPROTO sorry this protocol version is not supported\r\n"
+		default:
+			reply = "+OK\r\n"
+		}
+		if reply != "" {
+			if _, err := conn.Write([]byte(reply)); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// readSentinelCommand parses one RESP2 array-of-bulk-strings request.
+func readSentinelCommand(rd *bufio.Reader) ([]string, error) {
+	line, err := rd.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	if len(line) == 0 || line[0] != '*' {
+		return nil, fmt.Errorf("unexpected request line %q", line)
+	}
+	n, err := strconv.Atoi(line[1:])
+	if err != nil {
+		return nil, err
+	}
+	args := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		sizeLine, err := rd.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		sizeLine = strings.TrimSuffix(strings.TrimSuffix(sizeLine, "\n"), "\r")
+		if len(sizeLine) == 0 || sizeLine[0] != '$' {
+			return nil, fmt.Errorf("unexpected bulk header %q", sizeLine)
+		}
+		size, err := strconv.Atoi(sizeLine[1:])
+		if err != nil {
+			return nil, err
+		}
+		buf := make([]byte, size+2)
+		if _, err := io.ReadFull(rd, buf); err != nil {
+			return nil, err
+		}
+		args = append(args, string(buf[:size]))
+	}
+	return args, nil
 }
