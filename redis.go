@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"context"
+	"encoding"
 	"errors"
 	"fmt"
 	"io"
@@ -2848,29 +2849,41 @@ func isEvalShaCmd(cmd Cmder) bool {
 
 // evalScriptSource returns the script an EVAL or EVAL_RO command runs: its
 // second argument. A raw command built with Do may carry the script as
-// []byte or *string; anything else is not a script this code can reissue as
-// a SCRIPT LOAD. An empty script still counts: Redis caches an empty Lua
-// chunk, so presence is judged by the argument's representation, not its
-// contents — a nil *string or nil []byte carries no script, but an empty
-// string or empty slice is a script that ran.
+// []byte, *string, or any encoding.BinaryMarshaler; anything else is not
+// a script this code can reissue as a SCRIPT LOAD. The extraction follows
+// the accepted wire representation, not the Go type: proto.Writer.WriteArg
+// sends a nil argument, a nil *string, and a nil []byte all as an empty
+// script string, so those carry a script — an empty one. An empty script
+// still counts: Redis caches an empty Lua chunk, so presence is judged by
+// the argument's representation, not its contents. A BinaryMarshaler
+// whose MarshalBinary fails carries no script: the write itself fails
+// before dispatch, so the command never ran.
 func evalScriptSource(cmd Cmder) (string, bool) {
 	args := cmd.Args()
 	if len(args) < 2 {
 		return "", false
 	}
 	switch v := args[1].(type) {
+	case nil:
+		return "", true
 	case string:
 		return v, true
 	case *string:
 		if v == nil {
-			return "", false
+			return "", true
 		}
 		return *v, true
 	case []byte:
 		if v == nil {
-			return "", false
+			return "", true
 		}
 		return string(v), true
+	case encoding.BinaryMarshaler:
+		b, err := v.MarshalBinary()
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
 	}
 	return "", false
 }

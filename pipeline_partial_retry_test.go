@@ -5489,6 +5489,47 @@ func TestPipelineRetryEmptyEvalSourceIsPreloaded(t *testing.T) {
 	}
 }
 
+// TestPipelineRetryNilEvalSourceIsPreloaded: the same empty-script
+// preload through a raw Do command whose script arrives as a nil []byte
+// (or a nil *string): WriteArg sends either as an empty script string,
+// so the server runs and caches the empty script exactly as for an
+// empty string — but evalScriptSource used to classify both nil forms
+// as "no script", so the retry omitted the preload and the retried
+// EVALSHA failed NOSCRIPT. Regression test for the Codex P2 finding on
+// #4351 (comment 4714400402).
+func TestPipelineRetryNilEvalSourceIsPreloaded(t *testing.T) {
+	server := newScriptRetryServer(t)
+	client := newPartialRetryClient(t, server.ln.Addr().String())
+
+	ctx := context.Background()
+	var nilScript []byte
+	pipe := client.Pipeline()
+	eval := pipe.Do(ctx, "eval", nilScript, 0)
+	evalsha := pipe.EvalSha(ctx, emptyScriptSHA, nil)
+	_, err := pipe.Exec(ctx)
+	// The EVAL's own nil reply is the first command error, so Exec
+	// reports redis.Nil; what must hold is that the retried EVALSHA
+	// executed instead of returning NOSCRIPT.
+	if err == nil || !errors.Is(err, Nil) {
+		t.Fatalf("Exec: %v, want redis.Nil (the nil-script EVAL's own nil reply is the first command error)", err)
+	}
+	if err := eval.Err(); !errors.Is(err, Nil) {
+		t.Fatalf("EVAL: %v, want redis.Nil (the nil-script EVAL ran and returned nil)", err)
+	}
+	if err := evalsha.Err(); !errors.Is(err, Nil) {
+		t.Fatalf("EVALSHA: %v, want redis.Nil (the nil-script EVAL cached the empty script, so the retry must preload it)", err)
+	}
+	if got := server.loads.Load(); got != 1 {
+		t.Fatalf("server received %d SCRIPT LOAD commands, want 1 (the nil-script EVAL populated the cache)", got)
+	}
+	if got := server.evals.Load(); got != 1 {
+		t.Fatalf("server received %d EVAL commands, want 1 (the answered script must not be executed again)", got)
+	}
+	if got := server.noscripts.Load(); got != 0 {
+		t.Fatalf("server returned NOSCRIPT %d time(s), want 0", got)
+	}
+}
+
 // TestPipelineRetryPreloadFailureDoesNotFailBatch: when the server is still
 // running, the script an answered EVAL cached is still there, so a
 // synthetic SCRIPT LOAD that fails (an ACL user without SCRIPT LOAD
@@ -11841,6 +11882,59 @@ func TestEvalNumKeysValid(t *testing.T) {
 			cmd := NewCmd(ctx, tc.args...)
 			if got := evalNumKeysValid(cmd); got != tc.want {
 				t.Fatalf("evalNumKeysValid(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+type testBinaryMarshaler struct {
+	b   []byte
+	err error
+}
+
+func (m testBinaryMarshaler) MarshalBinary() ([]byte, error) {
+	return m.b, m.err
+}
+
+// TestEvalScriptSource: the script argument of an EVAL may arrive as a
+// string, a byte slice, a string pointer, or a value implementing
+// encoding.BinaryMarshaler — WriteArg sends all of them the same way —
+// so source extraction must follow the accepted wire representation
+// rather than a narrower Go-type/nullability test. In particular a nil
+// *string or a nil []byte is sent as an empty script string, not as "no
+// script": Redis caches an empty Lua chunk, so an EVAL with a nil script
+// still populates the cache and a retried EVALSHA needs the preload.
+// Regression test for the Codex P2 finding on #4351 (comment 4714400402).
+func TestEvalScriptSource(t *testing.T) {
+	ctx := context.Background()
+	var nilStr *string
+	var nilBytes []byte
+	strSrc := "return 1"
+	cases := []struct {
+		name    string
+		args    []any
+		wantSrc string
+		wantOk  bool
+	}{
+		{"string", []any{"eval", "return 1", "1"}, "return 1", true},
+		{"string pointer", []any{"eval", &strSrc, "1"}, "return 1", true},
+		{"nil string pointer", []any{"eval", nilStr, "1"}, "", true},
+		{"byte slice", []any{"eval", []byte("return 1"), "1"}, "return 1", true},
+		{"nil byte slice", []any{"eval", nilBytes, "1"}, "", true},
+		{"empty string", []any{"eval", "", "1"}, "", true},
+		{"empty byte slice", []any{"eval", []byte{}, "1"}, "", true},
+		{"untyped nil", []any{"eval", nil, "1"}, "", true},
+		{"binary marshaler", []any{"eval", testBinaryMarshaler{b: []byte("return 1")}, "1"}, "return 1", true},
+		{"binary marshaler empty", []any{"eval", testBinaryMarshaler{b: []byte{}}, "1"}, "", true},
+		{"binary marshaler error", []any{"eval", testBinaryMarshaler{err: errors.New("boom")}, "1"}, "", false},
+		{"int", []any{"eval", 1, "1"}, "", false},
+		{"missing script", []any{"eval"}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewCmd(ctx, tc.args...)
+			if got, ok := evalScriptSource(cmd); got != tc.wantSrc || ok != tc.wantOk {
+				t.Fatalf("evalScriptSource(%v) = (%q, %v), want (%q, %v)", tc.args, got, ok, tc.wantSrc, tc.wantOk)
 			}
 		})
 	}
