@@ -19,6 +19,14 @@
       "Bash(git status)",
       "Bash(git diff:*)",
       "Bash(git log:*)"
+    ],
+    "deny": [
+      "Bash(gh *guard-approve*)",
+      "Bash(gh *guard-reject*)",
+      "Bash(curl *guard-approve*)",
+      "Bash(curl *guard-reject*)",
+      "Edit(scripts/apidiff-allow.txt)",
+      "Write(scripts/apidiff-allow.txt)"
     ]
   }
 }

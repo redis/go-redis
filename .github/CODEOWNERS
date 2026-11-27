@@ -1,1 +1,11 @@
 doctests/* @dmaier-redislabs
+
+# Behavioral regression guard, API check and the CI that runs them
+# (internal/guard/doc.go).
+/internal/guard/ @ndyakov
+/scripts/guard-*.sh @ndyakov
+/scripts/apidiff.sh @ndyakov
+/scripts/apidiff-allow.txt @ndyakov
+/.github/ @ndyakov
+/Makefile @ndyakov
+/.golangci.yml @ndyakov
