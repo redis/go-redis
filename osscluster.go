@@ -3527,14 +3527,19 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 			}
 		}
 	}()
-	retryCmds := func() {
+	// retryCmds queues the commands that have no definitive outcome for another
+	// attempt: cmds[unread:], whose replies were never read, and the commands
+	// that Redis rejected with a retryable error. A command that already got
+	// a reply keeps it, so a successful write is not applied twice.
+	retryCmds := func(unread int) {
 		_ = c.mapCmdsByNodeInViewWith(ctx, failedCmds, cmds, route, func(i int, _ *clusterNode) bool {
-			if redirects == nil || redirects[i].node == nil {
-				return false
+			if redirects != nil && redirects[i].node != nil {
+				failedCmds.Add(redirects[i].node, redirects[i].cmds...)
+				redirects[i].node = nil
+				return true
 			}
-			failedCmds.Add(redirects[i].node, redirects[i].cmds...)
-			redirects[i].node = nil
-			return true
+			// Returning true without queueing leaves cmds[i] as it is.
+			return i < unread && !c.pipelineCmdNeedsRetry(cmds[i])
 		})
 	}
 
@@ -3582,7 +3587,7 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 
 		if !isRedisError(err) {
 			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
-				retryCmds()
+				retryCmds(i)
 			}
 			setCmdsErr(cmds[i+1:], err)
 			return err
@@ -3591,11 +3596,34 @@ func (c *ClusterClient) pipelineReadCmdsInView(
 
 	// rawErr: execution path; never await an async command's batch here.
 	if err := cmds[0].rawErr(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
-		retryCmds()
+		retryCmds(len(cmds))
 		return err
 	}
 
 	return nil
+}
+
+// pipelineCmdNeedsRetry reports whether cmd, whose reply was read, still has
+// no definitive outcome: the server rejected it with a retryable error, or a
+// transport error was recorded on it. A successful reply and an error reply
+// that is not retryable are final, and sending the command again would run it
+// a second time.
+func (c *ClusterClient) pipelineCmdNeedsRetry(cmd Cmder) bool {
+	err := cmd.rawErr()
+	if err == nil {
+		return false
+	}
+	if !isRedisError(err) {
+		return true
+	}
+	// A SET of a registered fieldset that lost its session state is
+	// re-prepared lazily by the next attempt (see himportRequeueFailedSets).
+	if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(err) {
+		if _, registered := c.himport.lookup(set.fieldsetName); registered {
+			return true
+		}
+	}
+	return shouldRetry(err, true)
 }
 
 // movedToSameConnAddr returns the first MOVED in cmds that points back to addr.
