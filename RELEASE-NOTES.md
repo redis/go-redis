@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+# 9.24.1 (2026-11-27)
+
+This is a patch release with bug fixes. It also adds one option to `redisotel-native` (`WithClosedPoolSeriesRetention`), which has a default and needs no change. Upgrading from 9.24.0 is a drop-in replacement. Note the behavior change of `ScanIterator.Vals` below.
+
+## 🚀 Highlights
+
+### Large reply announcements no longer allocate up front
+
+The RESP reader allocated a bulk reply with the length announced in its header. A server or proxy that announced a large length could make the client allocate that much memory before any data arrived. Replies up to 32 MiB are read as before. A larger reply now grows with the data that actually arrives. Above 32 MiB this costs more memory and time than a single allocation (fixes [#4324](https://github.com/redis/go-redis/issues/4324)) ([#4343](https://github.com/redis/go-redis/pull/4343)) by [@PerryLink](https://github.com/PerryLink).
+
+### Closed pools are dropped from the connection metrics
+
+In `redisotel-native`, the `db.client.connection.count` and `db.client.connection.pending_requests` series of a closed client were observed at 0 until the next `Shutdown`. With clients created and closed over the process lifetime, the observer and each collection grew without limit. A closed pool's series is now observed at 0 for a retention window, so every reader that collects in that window gets the final decrement, and is then dropped. The default window is 5 minutes. Set it with `Config.WithClosedPoolSeriesRetention`, above your longest export or scrape interval ([#4442](https://github.com/redis/go-redis/pull/4442)) by [@ndyakov](https://github.com/ndyakov).
+
+### `ScanIterator.Vals` resumes from the iterator position
+
+`Vals` started at the first value of the current page each time, so after `Next`/`Val` or after a `break` out of a `range` over `Vals`, a new `Vals` loop returned values again. `Vals` now shares its position with `Next` and `Val` and returns only the remaining values. Code that ranged over `Vals` a second time to read the same page again now gets nothing for the values already returned (fixes [#4427](https://github.com/redis/go-redis/issues/4427)) ([#4428](https://github.com/redis/go-redis/pull/4428)) by [@xixi-box](https://github.com/xixi-box).
+
+## 🐛 Bug Fixes
+
+- **`HotKeysStart`**: nil options return `ErrHotKeysNoMetrics` instead of panicking (fixes [#4434](https://github.com/redis/go-redis/issues/4434)) ([#4437](https://github.com/redis/go-redis/pull/4437)) by [@Dazhou-del](https://github.com/Dazhou-del)
+- **`JSONDebugMemory`**: implemented with an `IntCmd`; it panicked before. The key position is set, so a cluster client routes it by key. For JSONPath queries, which return an array, use `Do` (fixes [#4433](https://github.com/redis/go-redis/issues/4433)) ([#4436](https://github.com/redis/go-redis/pull/4436)) by [@Dazhou-del](https://github.com/Dazhou-del)
+- **TimeSeries range filters**: empty `FilterByTS` and `FilterByValue` slices are omitted like nil in `TS.RANGE`, `TS.REVRANGE`, `TS.MRANGE` and `TS.MREVRANGE`, instead of sending an empty clause (fixes [#4432](https://github.com/redis/go-redis/issues/4432)) ([#4435](https://github.com/redis/go-redis/pull/4435)) by [@Dazhou-del](https://github.com/Dazhou-del)
+- **TimeSeries selected labels**: an empty `SelectedLabels` slice no longer sends a bare `SELECTED_LABELS` in `TS.MGET`, `TS.MRANGE` and `TS.MREVRANGE` ([#4425](https://github.com/redis/go-redis/pull/4425)) by [@pcbeingused333](https://github.com/pcbeingused333)
+- **Connection state machine**: a transition to the closed state wakes every waiter with `ErrStateMachineClosed`, instead of leaving it blocked until its context expires ([#4430](https://github.com/redis/go-redis/pull/4430)) by [@xgbtxy](https://github.com/xgbtxy)
+- **Push notifications**: `VoidProcessor` returns a `ReadReply` error in the middle of a frame, like `Processor`, so the connection is discarded instead of reading the rest of the frame as a reply ([#4431](https://github.com/redis/go-redis/pull/4431)) by [@xgbtxy](https://github.com/xgbtxy)
+- **Sentinel**: the failover client subscribes to `+slave-reconf-done` again. An earlier rename to `+replica-reconf-done` meant it never received the event, because Sentinel still publishes the old name ([#4387](https://github.com/redis/go-redis/pull/4387)) by [@ruziba3vich](https://github.com/ruziba3vich)
+- **Cluster replica reads**: the replica picker is called once per read and then every replica is tried, so a repeated index can no longer hide a healthy replica ([#4394](https://github.com/redis/go-redis/pull/4394)) by [@ruziba3vich](https://github.com/ruziba3vich)
+- **Cluster with a `ClusterSlots` function**: loopback node addresses are kept as given and no longer rewritten to `:port` ([#4411](https://github.com/redis/go-redis/pull/4411)) by [@ruziba3vich](https://github.com/ruziba3vich)
+- **`RoundRobinPicker`**: the index stays in range on 32-bit platforms ([#4409](https://github.com/redis/go-redis/pull/4409)) by [@ruziba3vich](https://github.com/ruziba3vich)
+- **Cluster and Ring `PoolStats`**: include the per-node Pub/Sub stats, `Unusable` and `PendingRequests`, like `Client.PoolStats` ([#4413](https://github.com/redis/go-redis/pull/4413)) by [@ruziba3vich](https://github.com/ruziba3vich)
+- **Maintenance notifications**: the delay for a `MOVING` notification without an endpoint keeps the half second for an odd `timeS` ([#4393](https://github.com/redis/go-redis/pull/4393)) by [@ruziba3vich](https://github.com/ruziba3vich)
+- **`redisotel` tracing**: each cluster node gets its own copy of the tracing options, so its spans no longer carry the server attributes of other nodes, and a data race in `OnNewNode` is removed ([#4412](https://github.com/redis/go-redis/pull/4412)) by [@ruziba3vich](https://github.com/ruziba3vich)
+- **`redisotel-native` error types**: only a Redis server error is classified by its prefix. Errors such as `io.EOF` are reported as internal, and a server error wrapped by a hook keeps its prefix ([#4395](https://github.com/redis/go-redis/pull/4395)) by [@ruziba3vich](https://github.com/ruziba3vich)
+- **`rediscmd`**: `CmdString` redacts the `sentinel-pass` value of `SENTINEL CONFIG SET` ([#4382](https://github.com/redis/go-redis/pull/4382)) by [@ruziba3vich](https://github.com/ruziba3vich)
+
+## ⚡ Performance
+
+- **Command metadata without CSC**: a standalone client with `CommandMetadataPreferLive` and no client-side caching no longer starts a metadata worker or sends `COMMAND` in the background. The metadata store is built only when CSC attaches ([#4424](https://github.com/redis/go-redis/pull/4424)) by [@wozhenbang2004](https://github.com/wozhenbang2004)
+
+## 👥 Contributors
+
+We'd like to thank all the contributors who worked on this release!
+
+[@Dazhou-del](https://github.com/Dazhou-del), [@ndyakov](https://github.com/ndyakov), [@pcbeingused333](https://github.com/pcbeingused333), [@PerryLink](https://github.com/PerryLink), [@ruziba3vich](https://github.com/ruziba3vich), [@wozhenbang2004](https://github.com/wozhenbang2004), [@xgbtxy](https://github.com/xgbtxy), [@xixi-box](https://github.com/xixi-box)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.24.0...v9.24.1
+
 # 9.24.0 (2026-11-24)
 
 This is a minor release. It contains everything from 9.24.0-beta.1 and 9.24.0-beta.2, so these notes cover the full 9.23.0 → 9.24.0 upgrade. The release adds:
