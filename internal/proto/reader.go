@@ -77,6 +77,12 @@ func ParseErrorReply(line []byte) error {
 // hardening may be removed if its performance cost outweighs the benefit.
 const maxNestingDepth = 1000
 
+// maxAggregatePrealloc caps how much of an aggregate reply's announced
+// element count is turned into an up-front allocation. The count comes
+// from the peer and says nothing about how many elements will actually
+// arrive, so anything above the cap is grown into as elements are read.
+const maxAggregatePrealloc = 1 << 16
+
 var errMaxNestingDepth = errors.New("redis: maximum nesting depth exceeded")
 
 type Reader struct {
@@ -562,21 +568,25 @@ func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
 		return nil, err
 	}
 
-	val := make([]interface{}, n)
-	for i := 0; i < len(val); i++ {
+	// The announced element count is not trusted as an allocation size:
+	// a peer can announce a huge aggregate and send no elements, so the
+	// backing array grows with the elements actually read instead. The
+	// capacity hint is capped; append doubles it as real elements arrive.
+	val := make([]interface{}, 0, min(n, maxAggregatePrealloc))
+	for i := 0; i < n; i++ {
 		v, err := r.ReadReply()
 		if err != nil {
 			if err == Nil {
-				val[i] = nil
+				val = append(val, nil)
 				continue
 			}
 			if isServerError(err) {
-				val[i] = err
+				val = append(val, err)
 				continue
 			}
 			return nil, err
 		}
-		val[i] = v
+		val = append(val, v)
 	}
 	return val, nil
 }
@@ -591,7 +601,9 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := make(map[interface{}]interface{}, n)
+	// As in readSlice, the announced pair count only caps the map's
+	// initial capacity hint; the map grows with the pairs actually read.
+	m := make(map[interface{}]interface{}, min(n, maxAggregatePrealloc))
 	for i := 0; i < n; i++ {
 		k, err := r.ReadReply()
 		if err != nil {
