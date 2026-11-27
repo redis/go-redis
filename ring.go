@@ -1020,10 +1020,9 @@ func (c *Ring) generalProcessPipeline(
 			}
 			continue
 		}
-		hash := cmd.stringArg(pos)
-		if hash != "" {
-			hash = c.sharding.Hash(hash)
-		}
+		// The empty string is a valid key: hash it as cmdShard does, or the
+		// empty shard name sends the command to a random shard.
+		hash := c.sharding.Hash(cmd.stringArg(pos))
 		cmdsMap[hash] = append(cmdsMap[hash], cmd)
 	}
 
