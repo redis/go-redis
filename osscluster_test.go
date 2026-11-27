@@ -1497,6 +1497,13 @@ var _ = Describe("ClusterClient", func() {
 			Expect(nodesList).Should(HaveLen(1))
 		})
 
+		It("should CLUSTER REPLICAS", func() {
+			nodesList, err := client.ClusterReplicas(ctx, cluster.nodeIDs[0]).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nodesList).Should(ContainElement(ContainSubstring("slave")))
+			Expect(nodesList).Should(HaveLen(1))
+		})
+
 		It("should RANDOMKEY", func() {
 			const nkeys = 100
 

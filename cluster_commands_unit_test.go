@@ -10,6 +10,20 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
+func TestClusterReplicas_Args(t *testing.T) {
+	var captured Cmder
+	c := captureCmdable(&captured)
+
+	cmd := c.ClusterReplicas(context.Background(), "node-id")
+	if err := cmd.Err(); err != nil {
+		t.Fatalf("ClusterReplicas: %v", err)
+	}
+	want := []any{"cluster", "replicas", "node-id"}
+	if captured == nil || !reflect.DeepEqual(captured.Args(), want) {
+		t.Fatalf("ClusterReplicas sent %v, want %v", captured, want)
+	}
+}
+
 // CLUSTER ADDSLOTS/DELSLOTS take a list of slots, and the *SlotsRange helpers
 // expand an inclusive range into that list. A range the caller cannot have
 // meant must be reported as an error: the length it implies is negative, so
