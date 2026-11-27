@@ -531,10 +531,12 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 		return "", err
 	}
 
-	b, err := r.readBulkPayload(nil, n)
+	b := make([]byte, n+2)
+	_, err = io.ReadFull(r.rd, b)
 	if err != nil {
 		return "", err
 	}
+
 	return util.BytesToString(b[:n]), nil
 }
 
@@ -560,21 +562,21 @@ func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
 		return nil, err
 	}
 
-	val := make([]interface{}, 0, min(n, maxAggregateHint))
-	for i := 0; i < n; i++ {
+	val := make([]interface{}, n)
+	for i := 0; i < len(val); i++ {
 		v, err := r.ReadReply()
 		if err != nil {
 			if err == Nil {
-				val = append(val, nil)
+				val[i] = nil
 				continue
 			}
 			if isServerError(err) {
-				val = append(val, err)
+				val[i] = err
 				continue
 			}
 			return nil, err
 		}
-		val = append(val, v)
+		val[i] = v
 	}
 	return val, nil
 }
@@ -589,7 +591,7 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := make(map[interface{}]interface{}, min(n, maxAggregateHint))
+	m := make(map[interface{}]interface{}, n)
 	for i := 0; i < n; i++ {
 		k, err := r.ReadReply()
 		if err != nil {
@@ -1007,26 +1009,6 @@ func (r *Reader) discardElement() error {
 	}
 }
 
-// maxBulkLen is the largest bulk string length the reader accepts from the
-// wire. It is deliberately not the 512MB default of the server's
-// `proto-max-bulk-len`: that limit is configurable (the bitmap tests in this
-// repository raise it to 2gb), so a client cap at the default would reject
-// legitimate replies. The reader only rejects lengths it cannot decode at all:
-// the payload plus its trailing CRLF (n+2) has to fit in an int, so a longer
-// advertised length would wrap negative in readStringReply, readRawReplyBuf or
-// a Discard call. The allocation of a large reply is bounded
-// separately, by growing the buffer as payload bytes arrive (see
-// readBulkPayload), and the streaming paths (ReadRawReplyWriteTo, Discard,
-// ReadStringInto) never allocate the payload, so they keep accepting every
-// length that is not rejected here. See replyLen.
-const maxBulkLen = math.MaxInt - 2
-
-// maxAggregateHint bounds the initial capacity reserved for array, set, push
-// and map replies. The advertised element count is still honoured — the
-// collection grows while the reply is read — so a corrupt count from the wire
-// cannot make the reader allocate the whole advertised size up front.
-const maxAggregateHint = 1024
-
 func replyLen(line []byte) (n int, err error) {
 	n, err = util.Atoi(line[1:])
 	if err != nil {
@@ -1035,13 +1017,6 @@ func replyLen(line []byte) (n int, err error) {
 
 	if n < -1 {
 		return 0, fmt.Errorf("redis: invalid reply: %q", line)
-	}
-
-	switch line[0] {
-	case RespString, RespVerbatim, RespBlobError:
-		if n > maxBulkLen {
-			return 0, fmt.Errorf("redis: invalid reply: bulk length %d is too large to read", n)
-		}
 	}
 
 	switch line[0] {
@@ -1069,63 +1044,6 @@ func (r *Reader) replyLen(line []byte) (int, error) {
 		r.fatalErr = err
 	}
 	return n, err
-}
-
-// maxBulkPrealloc is the largest payload reserved in one step before any
-// payload byte has arrived. Longer advertised lengths are read by
-// readBulkPayload, which grows its buffer as data arrives instead of reserving
-// the advertised size up front.
-const maxBulkPrealloc = 1 << 20
-
-// readBulkPayload reads a bulk payload of n bytes plus its trailing CRLF and
-// appends it to buf. The length comes from the wire and is not trusted for
-// allocation: the payload reservation starts at maxBulkPrealloc and grows
-// geometrically, clamped to the advertised size, only as payload bytes
-// actually arrive. A corrupt length that is within the range replyLen accepts
-// therefore costs the bytes that were really sent, not the advertised size, and
-// cannot panic make.
-//
-// Appending to the caller's buffer also keeps a large raw reply to a single
-// copy of the payload: readRawReplyBuf passes the reply buffer it is building,
-// so the bytes are read straight into it instead of into a staging payload of
-// the advertised size that is then appended (both full-size slices used to be
-// live at once). Streaming paths (ReadRawReplyWriteTo, Discard,
-// ReadStringInto) do not allocate at all and need no such guard.
-func (r *Reader) readBulkPayload(buf []byte, n int) ([]byte, error) {
-	total := n + 2
-	start := len(buf)
-	// payloadCap is how many payload bytes buf has room for right now.
-	payloadCap := cap(buf) - start
-	for have := len(buf) - start; have < total; have = len(buf) - start {
-		if payloadCap == have {
-			// Reserve the first maxBulkPrealloc payload bytes (clamped to the
-			// advertised size), then grow by a factor of four. Never reserve
-			// more than the reply still needs.
-			next := min(total, maxBulkPrealloc)
-			if payloadCap >= maxBulkPrealloc {
-				next = total
-				// payloadCap < total/4 rules out an overflow in payloadCap*4.
-				if payloadCap < total/4 {
-					next = payloadCap * 4
-				}
-			}
-			grown := make([]byte, len(buf), start+next)
-			copy(grown, buf)
-			buf, payloadCap = grown, next
-		}
-		readEnd := start + payloadCap
-		if readEnd > start+total {
-			readEnd = start + total
-		}
-		from := len(buf)
-		buf = buf[:readEnd]
-		if _, err := io.ReadFull(r.rd, buf[from:]); err != nil {
-			// The payload is incomplete, so it is not part of the reply. Keep
-			// the bytes that were already read into buf and report the error.
-			return buf[:start], err
-		}
-	}
-	return buf, nil
 }
 
 // IsNilReply detects redis.Nil of RESP2.
@@ -1168,17 +1086,10 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			}
 			return buf, err
 		}
-		total := n + 2
-		if total <= maxBulkPrealloc {
-			curLen := len(buf)
-			buf = append(buf, make([]byte, total)...)
-			_, err = io.ReadFull(r.rd, buf[curLen:])
-			return buf, err
-		}
-		// A large advertised length is not trusted for one up-front
-		// allocation: readBulkPayload grows buf as the payload bytes arrive,
-		// so the payload is never staged in a second full-size slice.
-		return r.readBulkPayload(buf, n)
+		curLen := len(buf)
+		buf = append(buf, make([]byte, n+2)...)
+		_, err = io.ReadFull(r.rd, buf[curLen:])
+		return buf, err
 
 	case RespArray, RespSet, RespPush:
 		n, err := r.replyLen(line)
