@@ -79,6 +79,43 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) boo
 	return cond()
 }
 
+func TestCommandMetadataWithoutCSC(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(*Options)
+	}{
+		{name: "no cache", configure: func(opt *Options) {}},
+		{name: "RESP2", configure: func(opt *Options) {
+			opt.Protocol = 2
+			opt.ClientSideCacheConfig = &CacheConfig{MaxEntries: 8}
+		}},
+		{name: "nonzero DB", configure: func(opt *Options) {
+			opt.DB = 1
+			opt.ClientSideCacheConfig = &CacheConfig{MaxEntries: 8}
+		}},
+		{name: "credential provider", configure: func(opt *Options) {
+			opt.CredentialsProvider = func() (string, string) { return "", "" }
+			opt.ClientSideCacheConfig = &CacheConfig{MaxEntries: 8}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opt := &Options{
+				Protocol:        3,
+				CommandMetadata: &CommandMetadataConfig{Mode: CommandMetadataPreferLive},
+			}
+			tc.configure(opt)
+			client := NewClient(opt)
+			t.Cleanup(func() { _ = client.Close() })
+			if client.csc != nil {
+				t.Fatal("client unexpectedly enabled CSC")
+			}
+			if client.cmdMeta != nil {
+				t.Fatal("uncached client owns an unused metadata store")
+			}
+		})
+	}
+}
+
 func TestCommandMetadataStaticStoreNeverStartsWorker(t *testing.T) {
 	s := newCommandMetadataStore(&CommandMetadataConfig{
 		Overrides: map[string]*CommandInfo{"get": nil},
@@ -1174,7 +1211,8 @@ func TestCommandMetadataFetchWithoutHello(t *testing.T) {
 func TestCommandMetadataReconnectWithoutHello(t *testing.T) {
 	var phase, fetches atomic.Int32
 	client := NewClient(&Options{
-		Protocol: 2, DisableIdentity: true, MaxRetries: -1, PoolSize: 1,
+		Protocol: 3, DisableIdentity: true, MaxRetries: -1, PoolSize: 1,
+		ClientSideCache: NewLocalCache(CacheConfig{MaxEntries: 8}),
 		CommandMetadata: &CommandMetadataConfig{Mode: CommandMetadataPreferLive},
 		Dialer: func(context.Context, string, string) (net.Conn, error) {
 			client, server := net.Pipe()

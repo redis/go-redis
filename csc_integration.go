@@ -774,6 +774,11 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 	if ih := lookupInvalidateHandler(c.pushProcessor); ih != nil {
 		ih.setInvalBatchWindow(c.opt.ClientSideCacheInvalidationBatchWindow)
 	}
+	// Allocate standalone metadata only after CSC has been accepted. Cluster
+	// node clients already share their parent's store.
+	if c.cmdMeta == nil && c.metadataSource == nil {
+		c.cmdMeta = newCommandMetadataStore(c.opt.CommandMetadata, c.fetchCommandMetadata)
+	}
 	if c.cmdMeta == nil {
 		c.staticCmdMeta = defaultCommandMetadataView()
 	}

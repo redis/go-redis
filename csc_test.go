@@ -612,9 +612,13 @@ func TestCommandMetadataViewLivePrecedence(t *testing.T) {
 }
 
 func TestCSCMetadataStoreSurvivesClone(t *testing.T) {
-	client := NewClient(&Options{CommandMetadata: &CommandMetadataConfig{
-		Mode: CommandMetadataPreferLive, Overrides: map[string]*CommandInfo{"get": nil},
-	}})
+	client := NewClient(&Options{
+		Protocol:        3,
+		ClientSideCache: NewLocalCache(CacheConfig{MaxEntries: 8}),
+		CommandMetadata: &CommandMetadataConfig{
+			Mode: CommandMetadataPreferLive, Overrides: map[string]*CommandInfo{"get": nil},
+		},
+	})
 	t.Cleanup(func() { _ = client.Close() })
 	clone := client.WithTimeout(time.Second)
 	if isCacheableInView(clone.metadataView(), makeCmd("get", "k")) {
