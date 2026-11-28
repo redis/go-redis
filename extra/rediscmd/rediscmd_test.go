@@ -84,6 +84,16 @@ var _ = Describe("CmdString", func() {
 			"sentinel config set sentinel-pass <redacted>"),
 		Entry("", []interface{}{"sentinel", "config", "set", "sentinel-user", "alice", "sentinel-pass", "s3cret"},
 			"sentinel config set sentinel-user alice sentinel-pass <redacted>"),
+		Entry("", []interface{}{"sentinel", "monitor", "mymaster", "10.0.0.1", "6379", "2", "auth-pass", "s3cret"},
+			"sentinel monitor mymaster 10.0.0.1 6379 2 auth-pass <redacted>"),
+		Entry("", []interface{}{"sentinel", "monitor", "mymaster", "10.0.0.1", "6379", "2", "auth-pass", "s3cret", "auth-user", "alice"},
+			"sentinel monitor mymaster 10.0.0.1 6379 2 auth-pass <redacted> auth-user alice"),
+		// The options start after the quorum, so a master named like one is not
+		// read as an option, and a command without an option is left as it is.
+		Entry("", []interface{}{"sentinel", "monitor", "auth-pass", "10.0.0.1", "6379", "2"},
+			"sentinel monitor auth-pass 10.0.0.1 6379 2"),
+		Entry("", []interface{}{"sentinel", "monitor", "mymaster", "10.0.0.1", "6379", "2"},
+			"sentinel monitor mymaster 10.0.0.1 6379 2"),
 		Entry("", []interface{}{"get", "key"}, "get key"),
 		Entry("", []interface{}{"set", "auth", "value"}, "set auth value"),
 		// Keywords and rules passed as *string are still recognised.

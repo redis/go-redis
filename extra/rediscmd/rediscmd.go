@@ -184,6 +184,16 @@ func secretArgs(args []interface{}) []bool {
 				mark(i + 1)
 			}
 		}
+
+	case equalFoldArg(args, 0, "sentinel") && equalFoldArg(args, 1, "monitor"):
+		// SENTINEL MONITOR name ip port quorum [auth-pass password] [auth-user
+		// username]; auth-pass holds the monitored master's password, and
+		// "Monitor" takes no such argument, so it reaches the client as a Do().
+		for i := 6; i+1 < len(args); i += 2 {
+			if equalFoldArg(args, i, "auth-pass") {
+				mark(i + 1)
+			}
+		}
 	}
 
 	return marks
