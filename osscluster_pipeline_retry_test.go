@@ -216,3 +216,128 @@ func TestClusterPipelineReadErrorRetriesOnlyUnreadCmds(t *testing.T) {
 		}
 	}
 }
+
+// TestClusterPipelineRetryResendsDurabilityBarrier tests that WAIT and WAITAOF
+// run again after an earlier write was retried. The barrier only covers the
+// writes that ran before it, so keeping its first reply would acknowledge a
+// write that has not been replicated.
+func TestClusterPipelineRetryResendsDurabilityBarrier(t *testing.T) {
+	for _, barrier := range []string{"wait", "waitaof"} {
+		t.Run(barrier, func(t *testing.T) {
+			var mu sync.Mutex
+			counts := map[string]int{}
+			var failed atomic.Bool
+			srv := newClusterCSCTestServer(t, func(cmd string) string {
+				if cmd == "hello" {
+					return "%0\r\n"
+				}
+				mu.Lock()
+				counts[cmd]++
+				mu.Unlock()
+				switch cmd {
+				case "set":
+					if !failed.Swap(true) {
+						return "-TRYAGAIN Multiple keys request during rehashing of slot\r\n"
+					}
+				case "wait":
+					return ":1\r\n"
+				case "waitaof":
+					return "*2\r\n:1\r\n:1\r\n"
+				}
+				return "+OK\r\n"
+			})
+			client := newSingleNodeRetryClient(t, srv)
+			ctx := context.Background()
+
+			var set *StatusCmd
+			var barrierCmd *Cmd
+			_, err := client.Pipelined(ctx, func(pipe Pipeliner) error {
+				set = pipe.Set(ctx, "key", "v", 0)
+				if barrier == "wait" {
+					barrierCmd = pipe.Do(ctx, "wait", 1, 0)
+				} else {
+					barrierCmd = pipe.Do(ctx, "waitaof", 1, 1, 0)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("exec error: %q; want nil", err)
+			}
+			if err := set.Err(); err != nil {
+				t.Fatalf("set error: %q; want nil", err)
+			}
+			if err := barrierCmd.Err(); err != nil {
+				t.Fatalf("%s error: %q; want nil", barrier, err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			for cmd, want := range map[string]int{"set": 2, barrier: 2} {
+				if counts[cmd] != want {
+					t.Errorf("server received %d %s, want %d", counts[cmd], cmd, want)
+				}
+			}
+		})
+	}
+}
+
+// TestClusterPipelineRetryAppliesHImportBookkeeping tests that a successful
+// HIMPORT PREPARE is sent again when the batch is retried. The registry is
+// updated only for a batch that completed, so skipping it would leave the
+// fieldset unregistered although the caller saw it succeed.
+func TestClusterPipelineRetryAppliesHImportBookkeeping(t *testing.T) {
+	var mu sync.Mutex
+	counts := map[string]int{}
+	srv := newClusterCSCTestServer(t, func(cmd string) string {
+		if cmd == "hello" {
+			return "%0\r\n"
+		}
+		mu.Lock()
+		counts[cmd]++
+		n := counts[cmd]
+		mu.Unlock()
+		if cmd == "get" {
+			if n == 1 {
+				// Reply after the client's read timeout expired.
+				time.Sleep(3 * time.Second / 5)
+			}
+			return "$2\r\nok\r\n"
+		}
+		return "+OK\r\n"
+	})
+	client := NewClusterClient(&ClusterOptions{
+		Protocol:                 3,
+		DisableIdentity:          true,
+		ReadTimeout:              200 * time.Millisecond,
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			return []ClusterSlot{{Start: 0, End: 16383, Nodes: []ClusterNode{{Addr: "node-1.example:6379"}}}}, nil
+		},
+		Dialer: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, "127.0.0.1"+srv)
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := context.Background()
+
+	var prep *StatusCmd
+	var get *StringCmd
+	_, err := client.Pipelined(ctx, func(pipe Pipeliner) error {
+		prep = pipe.HImportPrepare(ctx, "fs", "a", "b")
+		get = pipe.Get(ctx, "key")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("exec error: %q; want nil", err)
+	}
+	if err := prep.Err(); err != nil {
+		t.Fatalf("prepare error: %q; want nil", err)
+	}
+	if val, err := get.Result(); err != nil || val != "ok" {
+		t.Fatalf("get %q, error: %q; want ok, nil", val, err)
+	}
+	if _, registered := client.himport.lookup("fs"); !registered {
+		t.Fatal("fieldset fs is not registered after a successful PREPARE")
+	}
+}
