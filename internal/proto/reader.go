@@ -205,7 +205,7 @@ func (r *Reader) ReadAttributeLen() (int, error) {
 	if line[0] != RespAttr {
 		return 0, fmt.Errorf("redis: can't parse attribute reply: %.100q", line)
 	}
-	return replyLen(line)
+	return r.replyLen(line)
 }
 
 // MinRESP3ReadBufferSize is the minimum buffer size used when RESP3 push
@@ -526,7 +526,7 @@ func (r *Reader) readBigInt(line []byte) (*big.Int, error) {
 }
 
 func (r *Reader) readStringReply(line []byte) (string, error) {
-	n, err := replyLen(line)
+	n, err := r.replyLen(line)
 	if err != nil {
 		return "", err
 	}
@@ -735,7 +735,7 @@ func (r *Reader) readSlice(line []byte) ([]interface{}, error) {
 	}
 	defer func() { r.depth-- }()
 
-	n, err := replyLen(line)
+	n, err := r.replyLen(line)
 	if err != nil {
 		return nil, err
 	}
@@ -765,7 +765,7 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 	}
 	defer func() { r.depth-- }()
 
-	n, err := replyLen(line)
+	n, err := r.replyLen(line)
 	if err != nil {
 		return nil, err
 	}
@@ -919,7 +919,7 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 		return copy(buf, s), nil
 
 	case RespString:
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			return 0, err
 		}
@@ -1047,7 +1047,7 @@ func (r *Reader) ReadArrayLen() (int, error) {
 	}
 	switch line[0] {
 	case RespArray, RespSet, RespPush:
-		return replyLen(line)
+		return r.replyLen(line)
 	default:
 		return 0, fmt.Errorf("redis: can't parse array/set/push reply: %.100q", line)
 	}
@@ -1076,10 +1076,10 @@ func (r *Reader) ReadMapLen() (int, error) {
 	}
 	switch line[0] {
 	case RespMap:
-		return replyLen(line)
+		return r.replyLen(line)
 	case RespArray, RespSet, RespPush:
 		// Some commands and RESP2 protocol may respond to array types.
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			return 0, err
 		}
@@ -1122,7 +1122,7 @@ func (r *Reader) Discard(line []byte) (err error) {
 		return nil
 	}
 
-	n, err := replyLen(line)
+	n, err := r.replyLen(line)
 	if err != nil {
 		if err == Nil {
 			// A nil reply ($-1, =-1, !-1, *-1, %-1) carries no payload; the
@@ -1207,6 +1207,23 @@ func replyLen(line []byte) (n int, err error) {
 	return n, nil
 }
 
+// replyLen parses the length field of a reply header that readLine has already
+// consumed. When the header cannot be measured the rest of the frame cannot be
+// located either, so reading on would decode the rejected frame's remaining
+// bytes as the next reply. Record the error as fatal so every later read
+// returns it until Reset, like an over-deep aggregate. Nil is a complete empty
+// frame, so it does not poison the reader.
+func (r *Reader) replyLen(line []byte) (int, error) {
+	n, err := replyLen(line)
+	if err == nil || err == Nil {
+		return n, err
+	}
+	if r.fatalErr == nil {
+		r.fatalErr = err
+	}
+	return n, err
+}
+
 // IsNilReply detects redis.Nil of RESP2.
 func IsNilReply(line []byte) bool {
 	return len(line) == 3 &&
@@ -1240,7 +1257,7 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 		return buf, nil
 
 	case RespString, RespVerbatim, RespBlobError:
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return buf, nil
@@ -1250,7 +1267,7 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 		return r.appendBulkBody(buf, n)
 
 	case RespArray, RespSet, RespPush:
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return buf, nil
@@ -1266,7 +1283,7 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 		return buf, nil
 
 	case RespMap:
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return buf, nil
@@ -1286,7 +1303,7 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 	case RespAttr:
 		// Per RESP3 spec, an attribute is always followed by the actual command reply.
 		// We need to read the attribute's key-value pairs AND the following reply.
-		n, err := replyLen(line)
+		n, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return buf, nil
@@ -1349,7 +1366,7 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 		return written, nil
 
 	case RespString, RespVerbatim, RespBlobError:
-		dataLen, err := replyLen(line)
+		dataLen, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return written, nil
@@ -1361,7 +1378,7 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 		return written, err
 
 	case RespArray, RespSet, RespPush:
-		count, err := replyLen(line)
+		count, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return written, nil
@@ -1378,7 +1395,7 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 		return written, nil
 
 	case RespMap:
-		count, err := replyLen(line)
+		count, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return written, nil
@@ -1399,7 +1416,7 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 	case RespAttr:
 		// Per RESP3 spec, an attribute is always followed by the actual command reply.
 		// We need to read the attribute's key-value pairs AND the following reply.
-		count, err := replyLen(line)
+		count, err := r.replyLen(line)
 		if err != nil {
 			if err == Nil {
 				return written, nil
