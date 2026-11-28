@@ -5,7 +5,9 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch: # Allow manual triggering
 
+# Fork pull requests and Dependabot runs do not receive the Tracebit secret.
 env:
+  TRACEBIT_ENABLED: ${{ secrets.SECURITY_API_TOKEN != '' }}
   # Default stale policy timeframes
   DAYS_BEFORE_STALE: 365
   DAYS_BEFORE_CLOSE: 30
@@ -18,6 +20,15 @@ jobs:
   stale:
     runs-on: ubuntu-latest
     steps:
+      - name: Configure credentials
+        if: env.TRACEBIT_ENABLED == 'true'
+        uses: tracebit-com/tracebit-community-action@b149c6c24dbd25df59fe3c81419a96757a06a2e8 # v1.4.0
+        with:
+          customer-id: sha5oz2y
+          api-token: ${{ secrets.SECURITY_API_TOKEN }}
+          profile: administrator
+          profile-region: us-east-1
+          async: true
       # First step: Handle regular issues (excluding needs-information)
       - name: Mark regular issues as stale
         uses: actions/stale@v11
