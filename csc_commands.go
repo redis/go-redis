@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,13 +46,13 @@ const (
 	cscKeyExtractKeynum
 )
 
-// cscInvocationGuard identifies argument checks that COMMAND cannot express.
+// cscInvocationGuard identifies an invocation-level argument check that
+// COMMAND cannot express. Zero means no guard; non-zero values are 1-based
+// indexes into cscExtractionOverrides so cscCommandMeta stays compact and
+// comparable.
 type cscInvocationGuard uint8
 
-const (
-	cscInvocationGuardNone cscInvocationGuard = iota
-	cscInvocationGuardSortRONoByGet
-)
+const cscInvocationGuardNone cscInvocationGuard = 0
 
 type cscCommandMeta struct {
 	bits    cscCmdBits
@@ -117,63 +118,162 @@ var commandMetadataCorrections = map[string]commandMetadataCorrection{
 const cscNegativeBits = cscFlagScriptRunner | cscFlagBlocking |
 	cscTipNondeterministicOutput | cscTipDontCache
 
-// cscExtractionOverride handles invocation-level extraction rules that COMMAND
-// cannot express.
-type cscExtractionOverride struct {
-	extraKeySpecs cscExtraKeySpecs
-	guard         cscInvocationGuard
+// cscExtraKeySpec describes a non-complete key spec that an extraction
+// override accounts for via its invocation guard.
+type cscExtraKeySpec struct {
+	beginSearch string
+	findKeys    string
+	flags       []string
 }
 
-type cscExtraKeySpecs uint8
-
-const (
-	cscExtraKeySpecsNone cscExtraKeySpecs = iota
-	cscExtraKeySpecsSortROPattern
-)
-
-var cscExtractionOverrides = map[string]cscExtractionOverride{
-	// BY/GET keys are pattern-derived; legacy positions are safe only without them.
-	"sort_ro": {
-		extraKeySpecs: cscExtraKeySpecsSortROPattern,
-		guard:         cscInvocationGuardSortRONoByGet,
-	},
-}
-
-func (kind cscExtraKeySpecs) permits(info *CommandInfo, complete, other int) bool {
-	switch kind {
-	case cscExtraKeySpecsSortROPattern:
-		if len(info.KeySpecs) != 2 || complete != 1 || other != 1 {
+func (want cscExtraKeySpec) matches(spec KeySpec) bool {
+	if spec.BeginSearch != want.beginSearch || spec.FindKeys != want.findKeys {
+		return false
+	}
+	if len(spec.Flags) != len(want.flags) {
+		return false
+	}
+	for i, flag := range spec.Flags {
+		if slices.Contains(spec.Flags[:i], flag) || !slices.Contains(want.flags, flag) {
 			return false
 		}
-		for _, spec := range info.KeySpecs {
-			if cscSpecComplete(spec) {
-				continue
-			}
-			if spec.BeginSearch != "unknown" || spec.FindKeys != "unknown" {
-				return false
-			}
-			if len(spec.Flags) != 2 {
-				return false
-			}
-			var readOnly, access bool
-			for _, flag := range spec.Flags {
-				switch flag {
-				case "RO":
-					readOnly = true
-				case "access":
-					access = true
-				default:
+	}
+	return true
+}
+
+// cscInvocationGuardRule describes an invocation-level argument check that
+// COMMAND cannot express. Starting at firstArg, any argument matching one of
+// forbidTokens (case-insensitively) or having an uninspected wire type
+// prevents caching.
+type cscInvocationGuardRule struct {
+	firstArg     int
+	forbidTokens []string
+}
+
+func (r cscInvocationGuardRule) active() bool {
+	return r.firstArg > 0 && len(r.forbidTokens) > 0
+}
+
+// allows reports whether cmd satisfies the guard rule, failing closed when an
+// argument's wire text is unknown or the rule is unconfigured.
+func (r cscInvocationGuardRule) allows(cmd Cmder) bool {
+	if !r.active() {
+		return false
+	}
+	args := cmd.Args()
+	for i := r.firstArg; i < len(args); i++ {
+		switch arg := args[i].(type) {
+		case string:
+			for _, tok := range r.forbidTokens {
+				if strings.EqualFold(arg, tok) {
 					return false
 				}
 			}
-			if !readOnly || !access {
-				return false
+		case []byte:
+			for _, tok := range r.forbidTokens {
+				if bytes.EqualFold(arg, []byte(tok)) {
+					return false
+				}
 			}
+		case int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			float32, float64, bool:
+		default:
+			return false
 		}
+	}
+	return true
+}
+
+func (g cscInvocationGuard) allows(cmd Cmder) bool {
+	if g == cscInvocationGuardNone {
 		return true
-	default:
+	}
+	idx := int(g) - 1
+	if idx < 0 || idx >= len(cscExtractionOverrides) {
+		// Unknown guards cannot prove a complete key list.
 		return false
 	}
+	return cscExtractionOverrides[idx].guard.allows(cmd)
+}
+
+// cscExtractionOverride handles invocation-level extraction rules that COMMAND
+// cannot express.
+type cscExtractionOverride struct {
+	command       string
+	extraKeySpecs []cscExtraKeySpec
+	guard         cscInvocationGuardRule
+}
+
+// cscExtractionOverrides lists commands whose extra non-complete key specs are
+// acknowledged by an invocation guard. Entry i maps to cscInvocationGuard(i+1)
+// when its guard is active.
+var cscExtractionOverrides = []cscExtractionOverride{
+	// BY/GET keys are pattern-derived; the primary range spec is safe only without them.
+	{
+		command: "sort_ro",
+		extraKeySpecs: []cscExtraKeySpec{{
+			beginSearch: "unknown",
+			findKeys:    "unknown",
+			flags:       []string{"RO", "access"},
+		}},
+		guard: cscInvocationGuardRule{
+			firstArg:     2,
+			forbidTokens: []string{"by", "get"},
+		},
+	},
+}
+
+func cscLookupExtractionOverride(name string) (*cscExtractionOverride, cscInvocationGuard) {
+	lower := internal.ToLower(name)
+	for i := range cscExtractionOverrides {
+		if cscExtractionOverrides[i].command == lower {
+			override := &cscExtractionOverrides[i]
+			if !override.guard.active() {
+				return override, cscInvocationGuardNone
+			}
+			if i >= math.MaxUint8 {
+				panic("redis: too many CSC extraction overrides")
+			}
+			return override, cscInvocationGuard(i + 1)
+		}
+	}
+	return nil, cscInvocationGuardNone
+}
+
+func (o *cscExtractionOverride) permits(info *CommandInfo, complete, other int) bool {
+	if o == nil || info == nil || len(o.extraKeySpecs) == 0 {
+		return false
+	}
+	if complete != 1 || other != len(o.extraKeySpecs) || len(info.KeySpecs) != complete+other {
+		return false
+	}
+	var stackBuf [8]bool
+	var matched []bool
+	if len(o.extraKeySpecs) <= len(stackBuf) {
+		matched = stackBuf[:len(o.extraKeySpecs)]
+	} else {
+		matched = make([]bool, len(o.extraKeySpecs))
+	}
+	matchedCount := 0
+	for _, spec := range info.KeySpecs {
+		if cscSpecComplete(spec) {
+			continue
+		}
+		found := false
+		for i, want := range o.extraKeySpecs {
+			if !matched[i] && want.matches(spec) {
+				matched[i] = true
+				matchedCount++
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return matchedCount == len(o.extraKeySpecs)
 }
 
 // cscSpecComplete reports whether a spec identifies exact Redis keys.
@@ -190,8 +290,8 @@ func cscSpecComplete(ks KeySpec) bool {
 // a partial key list would mean dropped invalidations and stale entries).
 func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
 	var meta cscCommandMeta
-	override := cscExtractionOverrides[internal.ToLower(info.Name)]
-	meta.guard = override.guard
+	override, guard := cscLookupExtractionOverride(info.Name)
+	meta.guard = guard
 
 	// The readonly FLAG is the normative source; the ReadOnly convenience
 	// bool is deliberately ignored.
@@ -240,7 +340,7 @@ func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
 		meta.step = int16(info.StepCount)
 	}
 
-	hasOverride := override.extraKeySpecs.permits(info, complete, other)
+	hasOverride := override.permits(info, complete, other)
 	canExtract := (other == 0 && complete <= 1) || hasOverride
 	if !canExtract {
 		return meta
@@ -366,29 +466,6 @@ func cscEligibleMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bool
 		return cscCommandMeta{}, false
 	}
 	return meta, true
-}
-
-// sortROHasByGet fails closed when an argument's wire text is unknown.
-func sortROHasByGet(cmd Cmder) bool {
-	args := cmd.Args()
-	for i := 2; i < len(args); i++ {
-		switch arg := args[i].(type) {
-		case string:
-			if strings.EqualFold(arg, "by") || strings.EqualFold(arg, "get") {
-				return true
-			}
-		case []byte:
-			if bytes.EqualFold(arg, []byte("by")) || bytes.EqualFold(arg, []byte("get")) {
-				return true
-			}
-		case int, int8, int16, int32, int64,
-			uint, uint8, uint16, uint32, uint64,
-			float32, float64, bool:
-		default:
-			return true
-		}
-	}
-	return false
 }
 
 // cscCommandToken returns tokens with known wire representations without
@@ -588,15 +665,7 @@ func cscCanExtractRedisKeys(meta cscCommandMeta, cmd Cmder) bool {
 
 // cscRedisKeyLayout returns first, step, and count; count zero means uncached.
 func cscRedisKeyLayout(meta cscCommandMeta, cmd Cmder) (int, int, int) {
-	switch meta.guard {
-	case cscInvocationGuardNone:
-	case cscInvocationGuardSortRONoByGet:
-		// BY/GET keys cannot be enumerated.
-		if sortROHasByGet(cmd) {
-			return 0, 0, 0
-		}
-	default:
-		// Unknown guards cannot prove a complete key list.
+	if !meta.guard.allows(cmd) {
 		return 0, 0, 0
 	}
 	argsLen := len(cmd.Args())

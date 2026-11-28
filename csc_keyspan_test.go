@@ -12,10 +12,12 @@ func TestCSCKeyGateAllocatesNothing(t *testing.T) {
 	// A no-op cmdable builds the typed commands without any I/O.
 	c := cmdable(func(context.Context, Cmder) error { return nil })
 	cmds := map[string]Cmder{
-		"get":    c.Get(ctx, "k"),
-		"mget":   c.MGet(ctx, "a", "b", "c"),
-		"zinter": c.ZInter(ctx, &ZStore{Keys: []string{"a", "b"}}),
-		"lcs":    c.LCS(ctx, &LCSQuery{Key1: "a", Key2: "b"}),
+		"get":           c.Get(ctx, "k"),
+		"mget":          c.MGet(ctx, "a", "b", "c"),
+		"zinter":        c.ZInter(ctx, &ZStore{Keys: []string{"a", "b"}}),
+		"lcs":           c.LCS(ctx, &LCSQuery{Key1: "a", Key2: "b"}),
+		"sort_ro":       c.SortRO(ctx, "mylist", &Sort{Offset: 0, Count: 10, Alpha: true}),
+		"sort_ro_bytes": NewCmd(ctx, "sort_ro", "mylist", []byte("LIMIT"), 0, 10, []byte("ALPHA")),
 	}
 	for name, cmd := range cmds {
 		meta, ok := cscCommandMetaFor(cmd)

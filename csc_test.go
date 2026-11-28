@@ -14,6 +14,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -471,15 +472,33 @@ func TestCSCDeriveMeta(t *testing.T) {
 		t.Errorf("keynum derivation wrong: %+v", m)
 	}
 	// sort_ro accepts its primary range with an invocation guard.
-	sortRO := readonly(completeRange, unknownSpec)
-	sortRO.Name = "sort_ro"
-	if m := cscDeriveMeta(sortRO); m.extract != cscKeyExtractRange || m.guard != cscInvocationGuardSortRONoByGet {
-		t.Errorf("sort_ro adaptation should keep guarded range extraction, got %+v", m)
+	_, sortROGuard := cscLookupExtractionOverride("sort_ro")
+	if sortROGuard == cscInvocationGuardNone {
+		t.Fatal("sort_ro must register an active invocation guard")
+	}
+	for name, specs := range map[string][]KeySpec{
+		"canonical":      {completeRange, unknownSpec},
+		"reversed specs": {unknownSpec, completeRange},
+		"reversed flags": {completeRange, {Flags: []string{"access", "RO"}, BeginSearch: "unknown", FindKeys: "unknown"}},
+	} {
+		t.Run("sort_ro accepts "+name, func(t *testing.T) {
+			sortRO := readonly(specs...)
+			sortRO.Name = "sort_ro"
+			if m := cscDeriveMeta(sortRO); m.extract != cscKeyExtractRange || m.guard != sortROGuard {
+				t.Errorf("sort_ro adaptation should keep guarded range extraction, got %+v", m)
+			}
+		})
 	}
 	for name, specs := range map[string][]KeySpec{
 		"extra third spec":      {completeRange, unknownSpec, unknownSpec},
-		"different algorithm":   {completeRange, {Flags: []string{"RO", "access"}, BeginSearch: "future", FindKeys: "unknown"}},
+		"different begin":       {completeRange, {Flags: []string{"RO", "access"}, BeginSearch: "future", FindKeys: "unknown"}},
+		"different find":        {completeRange, {Flags: []string{"RO", "access"}, BeginSearch: "unknown", FindKeys: "future"}},
 		"write-capable unknown": {completeRange, {Flags: []string{"RW", "access"}, BeginSearch: "unknown", FindKeys: "unknown"}},
+		"missing flag":          {completeRange, {Flags: []string{"RO"}, BeginSearch: "unknown", FindKeys: "unknown"}},
+		"extra flag":            {completeRange, {Flags: []string{"RO", "access", "incomplete"}, BeginSearch: "unknown", FindKeys: "unknown"}},
+		"duplicate flag":        {completeRange, {Flags: []string{"RO", "RO"}, BeginSearch: "unknown", FindKeys: "unknown"}},
+		"no complete spec":      {unknownSpec},
+		"two complete specs":    {completeRange, completeRange, unknownSpec},
 	} {
 		t.Run("sort_ro rejects "+name, func(t *testing.T) {
 			record := readonly(specs...)
@@ -488,6 +507,153 @@ func TestCSCDeriveMeta(t *testing.T) {
 				t.Fatalf("unexpected extraction for unacknowledged shape: %+v", got)
 			}
 		})
+	}
+}
+
+func TestCSCExtractionOverridePermits(t *testing.T) {
+	completeRange := KeySpec{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}
+	unknownRO := KeySpec{Flags: []string{"RO", "access"}, BeginSearch: "unknown", FindKeys: "unknown"}
+	unknownKeyword := KeySpec{Flags: []string{"RO", "incomplete"}, BeginSearch: "keyword", FindKeys: "unknown"}
+
+	var nilOverride *cscExtractionOverride
+	if nilOverride.permits(&CommandInfo{KeySpecs: []KeySpec{completeRange, unknownRO}}, 1, 1) {
+		t.Error("nil override must not permit extra specs")
+	}
+	if (&cscExtractionOverride{
+		command:       "custom",
+		extraKeySpecs: []cscExtraKeySpec{{beginSearch: "unknown", findKeys: "unknown", flags: []string{"RO", "access"}}},
+	}).permits(nil, 1, 1) {
+		t.Error("nil CommandInfo must not permit extra specs")
+	}
+	emptyOverride := &cscExtractionOverride{command: "empty"}
+	if emptyOverride.permits(&CommandInfo{KeySpecs: []KeySpec{completeRange}}, 1, 0) {
+		t.Error("override without extraKeySpecs must not report a match")
+	}
+
+	multi := &cscExtractionOverride{
+		command: "custom",
+		extraKeySpecs: []cscExtraKeySpec{
+			{beginSearch: "unknown", findKeys: "unknown", flags: []string{"RO", "access"}},
+			{beginSearch: "keyword", findKeys: "unknown", flags: []string{"RO", "incomplete"}},
+		},
+	}
+	for name, tc := range map[string]struct {
+		specs    []KeySpec
+		complete int
+		other    int
+		want     bool
+	}{
+		"matching order": {
+			specs: []KeySpec{completeRange, unknownRO, unknownKeyword}, complete: 1, other: 2, want: true,
+		},
+		"reversed order and flags": {
+			specs: []KeySpec{
+				{Flags: []string{"incomplete", "RO"}, BeginSearch: "keyword", FindKeys: "unknown"},
+				completeRange,
+				{Flags: []string{"access", "RO"}, BeginSearch: "unknown", FindKeys: "unknown"},
+			},
+			complete: 1, other: 2, want: true,
+		},
+		"duplicate first spec cannot satisfy distinct pair": {
+			specs: []KeySpec{completeRange, unknownRO, unknownRO}, complete: 1, other: 2, want: false,
+		},
+		"fewer extra specs than expected": {
+			specs: []KeySpec{completeRange, unknownRO}, complete: 1, other: 1, want: false,
+		},
+		"inconsistent counts rejected": {
+			specs: []KeySpec{completeRange, completeRange, completeRange}, complete: 1, other: 2, want: false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := multi.permits(&CommandInfo{KeySpecs: tc.specs}, tc.complete, tc.other)
+			if got != tc.want {
+				t.Errorf("permits() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	pair := &cscExtractionOverride{
+		command: "pair",
+		extraKeySpecs: []cscExtraKeySpec{
+			{beginSearch: "unknown", findKeys: "unknown", flags: []string{"RO", "access"}},
+			{beginSearch: "unknown", findKeys: "unknown", flags: []string{"RO", "access"}},
+		},
+	}
+	if !pair.permits(&CommandInfo{KeySpecs: []KeySpec{completeRange, unknownRO, unknownRO}}, 1, 2) {
+		t.Error("override with two identical extra specs should match two matching specs")
+	}
+}
+
+func TestCSCInvocationGuardRule(t *testing.T) {
+	rule := cscInvocationGuardRule{
+		firstArg:     3,
+		forbidTokens: []string{"store", "weights"},
+	}
+	for _, cmd := range []Cmder{
+		makeCmd("custom", "store", "weights"),
+		makeCmd("custom", "k1", "k2", "ALPHA", int64(10), uint8(2), float64(1.5), true, []byte("DESC")),
+	} {
+		if !rule.allows(cmd) {
+			t.Errorf("%v: expected guard to allow", cmd.Args())
+		}
+	}
+	tok := "ALPHA"
+	for _, cmd := range []Cmder{
+		makeCmd("custom", "k1", "k2", "STORE", "dest"),
+		makeCmd("custom", "k1", "k2", "alpha", []byte("WeIgHtS"), 1),
+		makeCmd("custom", "k1", "k2", &tok),
+		makeCmd("custom", "k1", "k2", struct{}{}),
+	} {
+		if rule.allows(cmd) {
+			t.Errorf("%v: expected guard to reject", cmd.Args())
+		}
+	}
+
+	// Unconfigured guard rules and unknown guard IDs must fail closed.
+	for name, bad := range map[string]cscInvocationGuardRule{
+		"zero value":      {},
+		"zero firstArg":   {firstArg: 0, forbidTokens: []string{"by"}},
+		"negative arg":    {firstArg: -1, forbidTokens: []string{"by"}},
+		"no forbidTokens": {firstArg: 2},
+	} {
+		if bad.allows(makeCmd("custom", "k1", "ALPHA")) {
+			t.Errorf("%s: unconfigured rule must fail closed", name)
+		}
+	}
+	if !cscInvocationGuardNone.allows(makeCmd("get", "k")) {
+		t.Error("cscInvocationGuardNone must allow commands")
+	}
+	if cscInvocationGuard(255).allows(makeCmd("get", "k")) {
+		t.Error("unknown cscInvocationGuard ID must fail closed")
+	}
+}
+
+func TestCSCExtractionOverridesValid(t *testing.T) {
+	if len(cscExtractionOverrides) > math.MaxUint8 {
+		t.Fatalf("len(cscExtractionOverrides) = %d exceeds uint8 guard capacity", len(cscExtractionOverrides))
+	}
+	seen := make(map[string]struct{}, len(cscExtractionOverrides))
+	for i, override := range cscExtractionOverrides {
+		if override.command == "" || override.command != strings.ToLower(override.command) {
+			t.Errorf("override[%d]: command %q must be non-empty lowercase", i, override.command)
+		}
+		if _, dup := seen[override.command]; dup {
+			t.Errorf("override[%d]: duplicate command %q", i, override.command)
+		}
+		seen[override.command] = struct{}{}
+		for j, spec := range override.extraKeySpecs {
+			if spec.beginSearch == "" || spec.findKeys == "" {
+				t.Errorf("override[%d].extraKeySpecs[%d]: beginSearch and findKeys must be non-empty", i, j)
+			}
+			for k, flag := range spec.flags {
+				if slices.Contains(spec.flags[:k], flag) {
+					t.Errorf("override[%d].extraKeySpecs[%d]: duplicate flag %q", i, j, flag)
+				}
+			}
+		}
+		if len(override.guard.forbidTokens) > 0 && override.guard.firstArg <= 0 {
+			t.Errorf("override[%d]: guard with forbidTokens must set firstArg > 0", i)
+		}
 	}
 }
 
@@ -960,6 +1126,11 @@ func TestExtractRedisKeys_SortROByGetUncached(t *testing.T) {
 	}
 	if keys := extractRedisKeys(makeCmd("sort_ro", "mylist", "LIMIT", int64(0), int64(10), "ALPHA")); len(keys) != 1 || keys[0] != "mylist" {
 		t.Errorf("plain SORT_RO: expected [mylist], got %v", keys)
+	}
+	for _, key := range []string{"by", "get"} {
+		if keys := extractRedisKeys(makeCmd("sort_ro", key, "ALPHA")); len(keys) != 1 || keys[0] != key {
+			t.Errorf("SORT_RO with key %q: expected [%s], got %v", key, key, keys)
+		}
 	}
 	for _, cmd := range []Cmder{
 		makeCmd("sort_ro", "mylist", "BY", "weight_*"),
