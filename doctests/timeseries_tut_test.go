@@ -200,9 +200,9 @@ func ExampleClient_timeseries_range() {
 	fmt.Println(res2) // >>> [0 1 2 3 4]
 
 	// Retrieve all the data points in ascending order.
-	// Note: use 0 and `math.MaxInt64` instead of - and +
+	// Note: use 0 and `math.MaxInt` instead of - and +
 	// to denote the minimum and maximum possible timestamps.
-	res3, err := rdb.TSRange(ctx, "rg:1", 0, math.MaxInt64).Result()
+	res3, err := rdb.TSRange(ctx, "rg:1", 0, math.MaxInt).Result()
 	if err != nil {
 		panic(err)
 	}
@@ -220,7 +220,7 @@ func ExampleClient_timeseries_range() {
 	// >>> [{0 18} {1 14}]
 
 	// Retrieve data points from time 3 onwards.
-	res5, err := rdb.TSRange(ctx, "rg:1", 3, math.MaxInt64).Result()
+	res5, err := rdb.TSRange(ctx, "rg:1", 3, math.MaxInt).Result()
 	if err != nil {
 		panic(err)
 	}
@@ -229,7 +229,7 @@ func ExampleClient_timeseries_range() {
 	// >>> [{3 18} {4 24}]
 
 	// Retrieve all the data points in descending order.
-	res6, err := rdb.TSRevRange(ctx, "rg:1", 0, math.MaxInt64).Result()
+	res6, err := rdb.TSRevRange(ctx, "rg:1", 0, math.MaxInt).Result()
 	if err != nil {
 		panic(err)
 	}
@@ -253,7 +253,7 @@ func ExampleClient_timeseries_range() {
 		ctx,
 		"rg:1",
 		0,
-		math.MaxInt64,
+		math.MaxInt,
 		&redis.TSRangeOptions{
 			FilterByTS: []int{0, 2, 4},
 		},
@@ -268,7 +268,7 @@ func ExampleClient_timeseries_range() {
 		ctx,
 		"rg:1",
 		0,
-		math.MaxInt64,
+		math.MaxInt,
 		&redis.TSRevRangeOptions{
 			FilterByTS:    []int{0, 2, 4},
 			FilterByValue: []int{20, 25},
@@ -284,7 +284,7 @@ func ExampleClient_timeseries_range() {
 		ctx,
 		"rg:1",
 		0,
-		math.MaxInt64,
+		math.MaxInt,
 		&redis.TSRevRangeOptions{
 			FilterByTS:    []int{0, 2, 4},
 			FilterByValue: []int{22, 22},
@@ -655,7 +655,7 @@ func ExampleClient_timeseries_aggregation() {
 		ctx,
 		"rg:2",
 		0,
-		math.MaxInt64,
+		math.MaxInt,
 		&redis.TSRangeOptions{
 			Aggregator:     redis.Avg,
 			BucketDuration: 2,
@@ -676,7 +676,7 @@ func ExampleClient_timeseries_aggregation() {
 		ctx,
 		"rg:2",
 		0,
-		math.MaxInt64,
+		math.MaxInt,
 		&redis.TSRangeOptions{
 			Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
 			BucketDuration: 2,
@@ -867,7 +867,7 @@ func ExampleClient_timeseries_aggmulti() {
 	res44, err := rdb.TSMRangeWithArgs(
 		ctx,
 		0,
-		math.MaxInt64,
+		math.MaxInt,
 		[]string{"country=(us,uk)"},
 		&redis.TSMRangeOptions{
 			GroupByLabel: "country",
@@ -915,7 +915,7 @@ func ExampleClient_timeseries_aggmulti() {
 	res45, err := rdb.TSMRangeWithArgs(
 		ctx,
 		0,
-		math.MaxInt64,
+		math.MaxInt,
 		[]string{"country=(us,uk)"},
 		&redis.TSMRangeOptions{
 			GroupByLabel: "country",
@@ -1052,7 +1052,7 @@ func ExampleClient_timeseries_compaction() {
 	fmt.Println(res50) // >>> [0 1 2]
 
 	res51, err := rdb.TSRange(
-		ctx, "hyg:compacted", 0, math.MaxInt64,
+		ctx, "hyg:compacted", 0, math.MaxInt,
 	).Result()
 	if err != nil {
 		panic(err)
@@ -1068,7 +1068,7 @@ func ExampleClient_timeseries_compaction() {
 	fmt.Println(res52) // >>> 3
 
 	res53, err := rdb.TSRange(
-		ctx, "hyg:compacted", 0, math.MaxInt64,
+		ctx, "hyg:compacted", 0, math.MaxInt,
 	).Result()
 	if err != nil {
 		panic(err)
