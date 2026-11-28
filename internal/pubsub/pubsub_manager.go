@@ -279,6 +279,10 @@ type replyWaiter struct {
 	// pong settles the unsubscribe of kind release for names, which
 	// other handles keep, for the handles in affected.
 	release string
+	// quiet marks the replay of a credential rotation: its confirmations
+	// reach only the handles that do not have them yet, so a rotation
+	// shows no subscribe events (see fanoutSubscriptionLocked).
+	quiet bool
 }
 
 // unsubKind is the unsubscribe kind an entry settles for its leaving
@@ -1098,7 +1102,13 @@ func (m *Manager) fanoutSubscriptionLocked(sub *Subscription) {
 				w.h.deliverSubscriptionLocked(sub)
 			}
 		} else { // Broadcast
+			key := confirmKeyFor(sub.Kind, sub.Channel)
 			for h := range entry.handles {
+				if matched && w.quiet {
+					if _, ok := h.confirmed[key]; ok {
+						continue // a rotation: already confirmed, no event
+					}
+				}
 				h.deliverSubscriptionLocked(sub)
 			}
 		}
@@ -1798,7 +1808,7 @@ func (m *Manager) installLocked(cn *pool.Conn, err, reason error) error {
 		}
 	}
 
-	cmds, waiters := m.prepareReplayLocked()
+	cmds, waiters := m.prepareReplayLocked(errors.Is(reason, errReAuthRESP2))
 	if err = m.writeLocked(socketCtx, cn, cmds); err != nil {
 		_ = m.hooks.CloseConn(cn)
 		if fence != "" {
@@ -1901,7 +1911,7 @@ func (m *Manager) reconnectBackoffLocked() time.Duration {
 // ledger entries without mutating m.replyQueue or any subscription's
 // state, so a failed replay write can discard the new connection without
 // disturbing a still-live old connection. Callers must hold m.mu.
-func (m *Manager) prepareReplayLocked() ([][]any, []replyWaiter) {
+func (m *Manager) prepareReplayLocked(quiet bool) ([][]any, []replyWaiter) {
 	var cmds [][]any
 	var waiters []replyWaiter
 	for _, r := range []struct {
@@ -1915,7 +1925,7 @@ func (m *Manager) prepareReplayLocked() ([][]any, []replyWaiter) {
 		if len(r.registry) == 0 {
 			continue
 		}
-		c, w := m.buildSubscribeCmdsLocked(r.kind, replyWaiter{broadcast: true}, collectAllChannelNames(r.registry))
+		c, w := m.buildSubscribeCmdsLocked(r.kind, replyWaiter{broadcast: true, quiet: quiet}, collectAllChannelNames(r.registry))
 		cmds = append(cmds, c...)
 		waiters = append(waiters, w...)
 	}

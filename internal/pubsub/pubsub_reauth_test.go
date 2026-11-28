@@ -248,6 +248,70 @@ func TestReAuthRESP2DrainKinds(t *testing.T) {
 	}
 }
 
+// A rotation is invisible to subscribers: the replacement's confirmations
+// for names the handle already has produce no subscribe events, and the
+// rotation's own unsubscribes on the old connection produce none either.
+func TestReAuthRESP2NoSubscriptionEvents(t *testing.T) {
+	ctx := context.Background()
+	srv := newFakeServer()
+	var replace atomic.Bool
+	m := newReAuthTestManager(t, srv, false, &replace)
+
+	h, err := m.Subscribe(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	events := h.ChannelWithSubscriptions()
+	fsc1 := srv.waitDial(t)
+	fsc1.expectCmd(t, "subscribe", "ch")
+	fsc1.sendConfirm(t, "subscribe", "ch", 1)
+	expectEvent(t, events, func(ev any) bool {
+		sub, ok := ev.(*Subscription)
+		return ok && sub.Kind == "subscribe" && sub.Channel == "ch"
+	})
+
+	if err := fsc1.poolConn.GetPubSubReAuth()("user", "pass"); err != nil {
+		t.Fatalf("re-auth: %v", err)
+	}
+	fsc2 := srv.waitDial(t)
+	fsc1.expectCmd(t, "unsubscribe")
+	fsc1.expectCmd(t, "punsubscribe")
+	fence := fsc1.waitCmd(t)
+	fsc2.expectCmd(t, "subscribe", "ch")
+	fsc1.sendConfirm(t, "unsubscribe", "ch", 0)
+	fsc1.pong(fence)
+	fsc1.expectClosed(t)
+	fsc2.sendConfirm(t, "subscribe", "ch", 1)
+	fsc2.sendMessage(t, "message", "ch", "after")
+
+	// The first event after the rotation is the message.
+	expectEvent(t, events, func(ev any) bool {
+		msg, ok := ev.(*Message)
+		if !ok {
+			t.Fatalf("got %T %v before the message, want no subscription event", ev, ev)
+		}
+		return msg.Payload == "after"
+	})
+}
+
+func expectEvent(t *testing.T, events <-chan any, match func(any) bool) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("event channel closed")
+			}
+			if match(ev) {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for an event")
+		}
+	}
+}
+
 // A replaced RESP2 connection whose fence pong never arrives is closed
 // after rotationDrainTimeout, and the read loop moves on to the
 // replacement.
