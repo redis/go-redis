@@ -179,6 +179,75 @@ func testReAuthRESP2Drain(t *testing.T, confirmFirst bool) {
 	}
 }
 
+// The drain covers patterns and shard channels too: the fence releases
+// every kind in use (SUNSUBSCRIBE only when shard channels are), and a
+// pattern or shard message queued on the old connection is delivered.
+func TestReAuthRESP2DrainKinds(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		subscribe func(m *Manager, ctx context.Context) (PubSuber, error)
+		kind      string
+		fence     []string // commands before the fence PING
+		message   []string // message frame kind and fields
+	}{
+		{
+			name: "SSubscribe",
+			subscribe: func(m *Manager, ctx context.Context) (PubSuber, error) {
+				return m.SSubscribe(ctx, "sch")
+			},
+			kind:    "ssubscribe",
+			fence:   []string{"unsubscribe", "punsubscribe", "sunsubscribe"},
+			message: []string{"smessage", "sch", "queued"},
+		},
+		{
+			name: "PSubscribe",
+			subscribe: func(m *Manager, ctx context.Context) (PubSuber, error) {
+				return m.PSubscribe(ctx, "p.*")
+			},
+			kind:    "psubscribe",
+			fence:   []string{"unsubscribe", "punsubscribe"},
+			message: []string{"pmessage", "p.*", "p.x", "queued"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			srv := newFakeServer()
+			var replace atomic.Bool
+			m := newReAuthTestManager(t, srv, false, &replace)
+
+			h, err := tc.subscribe(m, ctx)
+			if err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			ch := h.Channel()
+			fsc1 := srv.waitDial(t)
+			name := tc.message[1]
+			fsc1.expectCmd(t, tc.kind, name)
+			fsc1.sendConfirm(t, tc.kind, name, 1)
+
+			if err := fsc1.poolConn.GetPubSubReAuth()("user", "pass"); err != nil {
+				t.Fatalf("re-auth: %v", err)
+			}
+			fsc2 := srv.waitDial(t)
+			for _, cmd := range tc.fence {
+				fsc1.expectCmd(t, cmd)
+			}
+			fence := fsc1.waitCmd(t)
+			if len(fence) != 2 || fence[0] != "ping" {
+				t.Fatalf("fence = %v, want [ping ...]", fence)
+			}
+			fsc2.expectCmd(t, tc.kind, name)
+
+			fsc1.sendMessage(t, tc.message[0], tc.message[1:]...)
+			if msg := recvMsg(t, ch); msg.Payload != "queued" {
+				t.Fatalf("got %q, want \"queued\"", msg.Payload)
+			}
+			fsc1.pong(fence)
+			fsc1.expectClosed(t)
+		})
+	}
+}
+
 // A replaced RESP2 connection whose fence pong never arrives is closed
 // after rotationDrainTimeout, and the read loop moves on to the
 // replacement.

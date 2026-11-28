@@ -81,8 +81,9 @@ func subscribedConns(t *testing.T, admin *redis.Client) map[string]int {
 			switch k {
 			case "user":
 				user = v
-			case "sub":
-				sub, _ = strconv.Atoi(v)
+			case "sub", "psub", "ssub":
+				n, _ := strconv.Atoi(v)
+				sub += n
 			}
 		}
 		if sub > 0 {
@@ -224,23 +225,29 @@ func TestPubSubRESP2RotationBlockedReceiverRealRedis(t *testing.T) {
 // Messages published while no connection was subscribed (PUBLISH returned 0)
 // are not delivered by Redis at all; they are logged, not asserted.
 func TestPubSubRESP2RotationNoMessageLossRealRedis(t *testing.T) {
-	resp2RotationLoss(t, false, false)
+	resp2RotationLoss(t, false, false, false)
 }
 
 // Same as above, but the consumer reads only after the rotation. The
 // Channel() buffer fills up, the reader goroutine stops reading the socket,
 // and messages wait unread on the old connection when the rotation happens.
 func TestPubSubRESP2RotationNoMessageLossSlowConsumerRealRedis(t *testing.T) {
-	resp2RotationLoss(t, true, false)
+	resp2RotationLoss(t, true, false, false)
 }
 
 // A second rotation arrives while the first one is still dialing, so it
 // runs while the first replaced connection may still be draining.
 func TestPubSubRESP2RapidRotationsNoMessageLossRealRedis(t *testing.T) {
-	resp2RotationLoss(t, true, true)
+	resp2RotationLoss(t, true, true, false)
 }
 
-func resp2RotationLoss(t *testing.T, slowConsumer, secondRotation bool) {
+// Shard channels (SSUBSCRIBE) on a standalone server: the fence releases
+// them with SUNSUBSCRIBE and their queued messages are drained too.
+func TestPubSubRESP2RotationShardedNoMessageLossRealRedis(t *testing.T) {
+	resp2RotationLoss(t, false, false, true)
+}
+
+func resp2RotationLoss(t *testing.T, slowConsumer, secondRotation, sharded bool) {
 	admin, users := resp2ReauthUsers(t)
 	inner := newTestStreamingProvider(users[0][0], users[0][1])
 	provider := &subscribeHookProvider{testStreamingProvider: inner, onSubscribe: func(n int) {
@@ -258,7 +265,12 @@ func resp2RotationLoss(t *testing.T, slowConsumer, secondRotation bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	channel := "resp2reauth_loss_" + users[0][0]
-	ps := client.Subscribe(ctx, channel)
+	var ps *redis.PubSub
+	if sharded {
+		ps = client.SSubscribe(ctx, channel)
+	} else {
+		ps = client.Subscribe(ctx, channel)
+	}
 	defer ps.Close()
 	if _, err := ps.Receive(ctx); err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -299,7 +311,11 @@ func resp2RotationLoss(t *testing.T, slowConsumer, secondRotation bool) {
 				return
 			default:
 			}
-			n, err := admin.Publish(ctx, channel, strconv.Itoa(i)).Result()
+			publish := admin.Publish
+			if sharded {
+				publish = admin.SPublish
+			}
+			n, err := publish(ctx, channel, strconv.Itoa(i)).Result()
 			if err != nil {
 				return
 			}
@@ -476,5 +492,207 @@ func TestPubSubRESP2RotationKeepsUserUnsubscribeRealRedis(t *testing.T) {
 		if sub.Kind == "unsubscribe" && sub.Channel == a {
 			return
 		}
+	}
+}
+
+var resp2ReauthClusterAddrs = []string{
+	"127.0.0.1:16600", "127.0.0.1:16601", "127.0.0.1:16602",
+	"127.0.0.1:16603", "127.0.0.1:16604", "127.0.0.1:16605",
+}
+
+// resp2ReauthClusterUsers creates three ACL users on every cluster node and
+// returns per-node admin clients. Everything is removed when the test ends.
+func resp2ReauthClusterUsers(t *testing.T) (nodes []*redis.Client, users [3][2]string) {
+	t.Helper()
+	if re, _ := strconv.ParseBool(os.Getenv("RE_CLUSTER")); re {
+		t.Skip("needs ACL SETUSER on an OSS cluster")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, addr := range resp2ReauthClusterAddrs {
+		n := redis.NewClient(&redis.Options{Addr: addr, Protocol: 2})
+		if err := n.Ping(ctx).Err(); err != nil {
+			_ = n.Close()
+			for _, c := range nodes {
+				_ = c.Close()
+			}
+			t.Skipf("cluster node %s not reachable: %v", addr, err)
+		}
+		nodes = append(nodes, n)
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	for i := range users {
+		name := fmt.Sprintf("resp2reauthcl_%d_%s", i, suffix)
+		users[i] = [2]string{name, "pass_" + name}
+		for _, n := range nodes {
+			if err := n.Do(ctx, "ACL", "SETUSER", name, "on", ">"+users[i][1], "~*", "&*", "+@all").Err(); err != nil {
+				t.Fatalf("ACL SETUSER on %s: %v", n.Options().Addr, err)
+			}
+		}
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		for _, n := range nodes {
+			for _, u := range users {
+				_ = n.Do(ctx, "ACL", "DELUSER", u[0]).Err()
+			}
+			_ = n.Close()
+		}
+	})
+	return nodes, users
+}
+
+// clusterSubscribedConns sums subscribedConns over every node.
+func clusterSubscribedConns(t *testing.T, nodes []*redis.Client) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for _, n := range nodes {
+		for user, c := range subscribedConns(t, n) {
+			out[user] += c
+		}
+	}
+	return out
+}
+
+// RESP2 rotation on an OSS cluster: shard channels on several slots (and
+// so several node connections) and a regular channel. Every message the
+// slot owner reported as delivered (SPUBLISH >= 1) must arrive, every node
+// connection must move to the new user, and the regular channel must keep
+// receiving. A regular PUBLISH reports only the receiving node's
+// subscribers, so it is not used for the loss check.
+func TestPubSubRESP2RotationClusterRealRedis(t *testing.T) {
+	nodes, users := resp2ReauthClusterUsers(t)
+	provider := newTestStreamingProvider(users[0][0], users[0][1])
+	client := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:                        resp2ReauthClusterAddrs[:3],
+		Protocol:                     2,
+		StreamingCredentialsProvider: provider,
+		DisableIdentity:              true,
+	})
+	defer client.Close()
+	admin := redis.NewClusterClient(&redis.ClusterOptions{Addrs: resp2ReauthClusterAddrs[:3], Protocol: 2})
+	defer admin.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Hash tags spread the shard channels over the three masters.
+	var shardChannels []string
+	for _, tag := range []string{"a", "b", "c", "d", "e", "f"} {
+		shardChannels = append(shardChannels, fmt.Sprintf("{%s}resp2reauthcl_%s", tag, users[0][0]))
+	}
+	regular := "resp2reauthcl_regular_" + users[0][0]
+
+	sps := client.SSubscribe(ctx, shardChannels...)
+	defer sps.Close()
+	rps := client.Subscribe(ctx, regular)
+	defer rps.Close()
+	sch := sps.Channel()
+	rch := rps.Channel()
+	if !waitFor(t, 5*time.Second, func() bool {
+		return clusterSubscribedConns(t, nodes)[users[0][0]] >= 2
+	}) {
+		t.Fatalf("subscriptions not established: %v", clusterSubscribedConns(t, nodes))
+	}
+
+	type key struct {
+		channel string
+		seq     int
+	}
+	var mu sync.Mutex
+	seen := map[key]int{}
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		until := time.After(6 * time.Second)
+		for {
+			select {
+			case m := <-sch:
+				n, _ := strconv.Atoi(m.Payload)
+				mu.Lock()
+				seen[key{m.Channel, n}]++
+				mu.Unlock()
+			case <-until:
+				return
+			}
+		}
+	}()
+
+	type pub struct {
+		key
+		receivers int64
+	}
+	var pubs []pub
+	stop := make(chan struct{})
+	pubDone := make(chan struct{})
+	go func() {
+		defer close(pubDone)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			channel := shardChannels[i%len(shardChannels)]
+			n, err := admin.SPublish(ctx, channel, strconv.Itoa(i)).Result()
+			if err != nil {
+				return
+			}
+			pubs = append(pubs, pub{key{channel, i}, n})
+			time.Sleep(200 * time.Microsecond)
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	before := clusterSubscribedConns(t, nodes)[users[0][0]]
+	provider.Update(users[1][0], users[1][1])
+	if !waitFor(t, 10*time.Second, func() bool {
+		c := clusterSubscribedConns(t, nodes)
+		return c[users[0][0]] == 0 && c[users[1][0]] == before
+	}) {
+		close(stop)
+		<-pubDone
+		t.Fatalf("after rotation: subscribed conns = %v, want %d for %s only", clusterSubscribedConns(t, nodes), before, users[1][0])
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	<-pubDone
+
+	if err := admin.Publish(ctx, regular, "after").Err(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-rch:
+		if m.Payload != "after" {
+			t.Fatalf("regular channel payload = %q, want \"after\"", m.Payload)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("regular channel received nothing after the rotation")
+	}
+	<-consumerDone
+
+	mu.Lock()
+	defer mu.Unlock()
+	var dropped, gap, dups int
+	for _, p := range pubs {
+		switch {
+		case p.receivers == 0:
+			gap++
+		case seen[p.key] == 0:
+			dropped++
+		}
+		if seen[p.key] > 1 {
+			dups++
+		}
+	}
+	t.Logf("node connections=%d published=%d dropped=%d published-with-no-subscriber=%d duplicates=%d",
+		before, len(pubs), dropped, gap, dups)
+	if dropped > 0 {
+		t.Fatalf("%d messages delivered by the slot owner were dropped during rotation", dropped)
+	}
+	// At most one duplicate per rotated node connection (see resp2RotationLoss).
+	if dups > before {
+		t.Fatalf("%d messages were delivered twice, want at most %d", dups, before)
 	}
 }
